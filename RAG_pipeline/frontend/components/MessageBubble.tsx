@@ -11,39 +11,35 @@ import {
   AlertCircle,
   RotateCcw,
   X,
+  ExternalLink,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SourceCitation } from "./SourceCitation";
 import { MarkdownContent } from "./MarkdownContent";
 import { HarnessActivityStatus } from "./HarnessActivityStatus";
 import { HarnessPendingAction } from "./HarnessPendingAction";
-import { RuntimeToolStatus, runtimeToolLabel } from "./RuntimeToolStatus";
-import { StructuredAnswer } from "./StructuredAnswer";
+import { WorkflowCard } from "./WorkflowCard";
 import { submitFeedback } from "@/lib/feedback";
 import { useViewport } from "@/hooks/useViewport";
 import type {
-  AgentStep,
   HarnessActivityEvent,
   HarnessPendingAction as HarnessPendingActionValue,
   MessageResponse,
-  RuntimeToolProgress,
+  TypedAgentResponse,
   UsageStats,
 } from "@/types";
 
+function isTypedAgentResponse(
+  value: MessageResponse["structured_answer"],
+): value is TypedAgentResponse {
+  return Boolean(value && "response_type" in value && value.response_type === "agent_response_v1");
+}
+
 export function currentActivityLabel(args: {
-  latestRunningStep?: AgentStep;
   harnessActivities?: HarnessActivityEvent[];
-  runtimeTools?: RuntimeToolProgress[];
   hasSources?: boolean;
 }): string {
-  const { latestRunningStep, harnessActivities, runtimeTools, hasSources } = args;
-  if (latestRunningStep?.status === "running") return latestRunningStep.label;
-  const runningActivity = harnessActivities?.findLast(
-    (activity) => activity.status === "running",
-  );
-  if (runningActivity?.label) return runningActivity.label;
-  const runningTool = runtimeTools?.findLast((tool) => tool.status === "running");
-  if (runningTool) return `${runtimeToolLabel(runningTool.toolName)}...`;
+  const { hasSources } = args;
   return hasSources ? "Thinking..." : "Searching...";
 }
 
@@ -51,12 +47,12 @@ interface MessageBubbleProps {
   message: MessageResponse;
   conversationId?: number | null;
   isStreaming?: boolean;
+  streamingStatus?: string | null;
   hasSources?: boolean;
   usage?: UsageStats | null;
-  steps?: AgentStep[];
   harnessActivities?: HarnessActivityEvent[];
   pendingAction?: HarnessPendingActionValue | null;
-  runtimeTools?: RuntimeToolProgress[];
+  workflowCards?: MessageResponse["workflow_cards"];
   onRetry?: () => void;
 }
 
@@ -64,15 +60,19 @@ export function MessageBubble({
   message,
   conversationId,
   isStreaming,
+  streamingStatus,
   hasSources,
   usage,
-  steps,
   harnessActivities,
   pendingAction,
-  runtimeTools,
+  workflowCards,
   onRetry,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
+  const typedResponse = isTypedAgentResponse(message.structured_answer)
+    ? message.structured_answer
+    : null;
+  const authoritativeCards = workflowCards ?? message.workflow_cards ?? typedResponse?.workflow_cards ?? [];
   const hasStructuredAnswer = Boolean(message.structured_answer);
   const transportFailed = !isUser && message.status === "failed";
   const showGenericFailure = transportFailed && !hasStructuredAnswer;
@@ -102,20 +102,12 @@ export function MessageBubble({
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const sourceCount = message.sources?.length ?? 0;
   const imageList = message.image_data;
-  const latestRunningStep = steps?.findLast((step) => step.status === "running");
 
   const closeLightbox = useCallback(() => setLightboxImage(null), []);
   const { isMobile } = useViewport();
 
   function handleCopy() {
-    const copyText = message.content || [
-      message.structured_answer?.headline,
-      message.structured_answer?.summary,
-      ...((message.structured_answer?.sections ?? []).flatMap((section) => [
-        section.heading,
-        section.body,
-      ])),
-    ].filter(Boolean).join("\n\n");
+    const copyText = message.content || typedResponse?.content || "";
     navigator.clipboard.writeText(copyText);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -157,9 +149,6 @@ export function MessageBubble({
           ) : (
             /* Assistant: raw text on page background */
             <div>
-              {runtimeTools && runtimeTools.length > 0 && (
-                <RuntimeToolStatus tools={runtimeTools} />
-              )}
               {pendingAction && (
                 <HarnessPendingAction action={pendingAction} />
               )}
@@ -184,25 +173,43 @@ export function MessageBubble({
                       </button>
                     )}
                   </div>
-                ) : message.structured_answer ? (
-                  <StructuredAnswer answer={message.structured_answer} />
+                ) : typedResponse ? (
+                  <MarkdownContent content={typedResponse.content} />
                 ) : message.content ? (
                   <MarkdownContent content={message.content} />
                 ) : isStreaming ? (
                   <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
                     <span className="inline-block h-3.5 w-3.5 rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground animate-spin" />
-                    {currentActivityLabel({
-                      latestRunningStep,
-                      harnessActivities,
-                      runtimeTools,
-                      hasSources,
-                    })}
+                    {streamingStatus || currentActivityLabel({ hasSources })}
                   </span>
                 ) : null}
                 {isStreaming && message.content && (
                   <span className="inline-block w-0.5 h-4 bg-foreground/70 animate-cursor-blink ml-0.5 align-text-bottom" />
                 )}
               </div>
+
+              {authoritativeCards.length > 0 && (
+                <div className="space-y-2 pt-2">
+                  {authoritativeCards.map((card) => (
+                    <WorkflowCard key={card.workflow_run_id} card={card} />
+                  ))}
+                </div>
+              )}
+
+              {typedResponse && typedResponse.artifact_links.length > 0 && (
+                <div className="flex flex-wrap gap-2 pt-2" aria-label="Artifacts">
+                  {typedResponse.artifact_links.map((artifact) => (
+                    <a
+                      key={`${artifact.kind}:${artifact.url}`}
+                      href={artifact.url}
+                      className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-muted"
+                    >
+                      {artifact.label}
+                      <ExternalLink className="h-3 w-3" aria-hidden />
+                    </a>
+                  ))}
+                </div>
+              )}
 
               {harnessActivities && harnessActivities.length > 0 && (
                 <div className="pt-2">

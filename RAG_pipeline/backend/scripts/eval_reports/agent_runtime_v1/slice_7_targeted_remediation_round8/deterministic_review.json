@@ -1,0 +1,64 @@
+{
+  "schema_version": "1.0.0",
+  "attempts": [
+    {
+      "attempt_id": "rag.followup.jobs.001.keyword_collision:rag.followup.jobs.001.keyword_collision.turn-1:stream",
+      "scenario_id": "rag.followup.jobs.001.keyword_collision",
+      "prompt_id": "rag.followup.jobs.001.keyword_collision",
+      "family": "rag_followup",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "runtime_protocol"
+      ],
+      "taxonomy": [
+        "RUNTIME_PROTOCOL"
+      ],
+      "assistant_text": "I couldn't complete this request because the model service was unavailable. Please try again.",
+      "review_rationale": "Expected tools [['project_document_list']]; observed ['project_document_list']. Terminal status 'failed' (HTTP 200) is outside ['completed'].",
+      "tool_trajectory": [
+        "project_document_list"
+      ],
+      "safe_arguments": [],
+      "latency_ms": 14813.010875019245,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "clarification_expected": false,
+      "clarified": false,
+      "unsupported_claims": 0
+    },
+    {
+      "attempt_id": "rag.followup.jobs.001.negation:rag.followup.jobs.001.negation.turn-1:nonstream",
+      "scenario_id": "rag.followup.jobs.001.negation",
+      "prompt_id": "rag.followup.jobs.001.negation",
+      "family": "rag_followup",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "response"
+      ],
+      "taxonomy": [
+        "RESPONSE"
+      ],
+      "assistant_text": "Based on the document inventory, the **reverseEngineer** project has generated documentation for the following components:\n\n## AssetCheck Interface Jobs\n- **AssetCheck_GetLocation** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md`\n- **AssetCheck_GetLocations** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md`\n- **AssetCheck_GetWorkOrder** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md`\n- **AssetCheck_GetWorkOrders** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md`\n- **AssetCheck_Main_Job** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md`\n- **AssetCheck_SendServiceRequest** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md`\n- **AssetCheck_SendWorkOrderUpdate** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md`\n\n## Maximo2AssetCheck Jobs\n- **Maximo2AssetCheck_MainJob** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md`\n- **Maximo2AssetCheck_SendLocation** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md`\n- **Maximo2AssetCheck_SendWorkOrder** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md`\n\nThe inventory shows **10 generated documents** total, all from source type `generated_doc` with observation timestamps from 2026-07-13.\n\n```json\nnexus-grounding\n{\n  \"answer_status\": \"complete\",\n  \"citations\": [\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md\"\n  ],\n  \"disclosures\": []\n}\n```",
+      "review_rationale": "Expected tools [['project_document_list']]; observed ['project_document_list']. response does not contain any of ['yes', 'does name', 'names jobs'].",
+      "tool_trajectory": [
+        "project_document_list"
+      ],
+      "safe_arguments": [],
+      "latency_ms": 24542.42712497944,
+      "input_tokens": 31810,
+      "output_tokens": 1032,
+      "cost_usd": 0.010162,
+      "clarification_expected": false,
+      "clarified": false,
+      "unsupported_claims": 0
+    }
+  ],
+  "total_attempts": 2,
+  "passed_attempts": 0,
+  "failed_attempts": 2
+}

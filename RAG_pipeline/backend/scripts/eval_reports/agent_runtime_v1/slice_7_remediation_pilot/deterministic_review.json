@@ -1,0 +1,255 @@
+{
+  "schema_version": "1.0.0",
+  "attempts": [
+    {
+      "attempt_id": "rag.followup.jobs.001:rag.followup.jobs.001.turn-1:nonstream",
+      "scenario_id": "rag.followup.jobs.001",
+      "prompt_id": "rag.followup.jobs.001",
+      "family": "rag_followup",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": true,
+      "deterministic_failures": [],
+      "taxonomy": [],
+      "assistant_text": "Here are the ten generated job documents for the **reverseEngineer** project:\n\n| # | Document | Generated |\n|---|----------|-----------|\n| 1 | `AssetCheck_GetLocation` | 2026-07-13 21:40:15 |\n| 2 | `AssetCheck_GetLocations` | 2026-07-13 21:41:23 |\n| 3 | `AssetCheck_GetWorkOrder` | 2026-07-13 21:40:05 |\n| 4 | `AssetCheck_GetWorkOrders` | 2026-07-13 21:41:02 |\n| 5 | `AssetCheck_Main_Job` | 2026-07-13 21:44:27 |\n| 6 | `AssetCheck_SendServiceRequest` | 2026-07-13 21:44:44 |\n| 7 | `AssetCheck_SendWorkOrderUpdate` | 2026-07-13 21:45:23 |\n| 8 | `Maximo2AssetCheck_MainJob` | 2026-07-13 21:44:07 |\n| 9 | `Maximo2AssetCheck_SendLocation` | 2026-07-13 21:49:24 |\n| 10 | `Maximo2AssetCheck_SendWorkOrder` | 2026-07-13 21:49:15 |\n\n**Summary:**\n- **AssetCheck Interface jobs (7):** GetLocation, GetLocations, GetWorkOrder, GetWorkOrders, Main_Job, SendServiceRequest, SendWorkOrderUpdate\n- **Maximo2AssetCheck jobs (3):** MainJob, SendLocation, SendWorkOrder\n\nAll documents were generated on 2026-07-13 within a ~9-minute window.\n\n```json\nnexus-grounding\n{\n  \"answer_status\": \"complete\",\n  \"citations\": [\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md\"\n  ],\n  \"disclosures\": []\n}\n```",
+      "review_rationale": "Expected tools [['project_document_list']]; observed ['project_document_list']. Deterministic terminal, path, response, grounding, and mechanics checks passed.",
+      "tool_trajectory": [
+        "project_document_list"
+      ],
+      "safe_arguments": [],
+      "latency_ms": 36010.83470904268,
+      "input_tokens": 31987,
+      "output_tokens": 1367,
+      "cost_usd": 0.010416,
+      "clarification_expected": false,
+      "clarified": false,
+      "unsupported_claims": 0
+    },
+    {
+      "attempt_id": "task.switch.001:task.switch.001.turn-1:nonstream",
+      "scenario_id": "task.switch.001",
+      "prompt_id": "task.switch.001",
+      "family": "task_interruption",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": true,
+      "deterministic_failures": [],
+      "taxonomy": [],
+      "assistant_text": "Based on the evidence retrieved, here is the information about the **reverseEngineer** project:\n\n| Attribute | Value | Evidence Source |\n|-----------|-------|-----------------|\n| **Project ID** | reverseEngineer | metadata:project_detail:reverseEngineer |\n| **Platform** | talend | metadata:project_detail:reverseEngineer |\n| **Source Type** | zip | metadata:project_detail:reverseEngineer |\n| **Status** | ready | metadata:project_detail:reverseEngineer |\n| **Integration Jobs** | 10 | metadata:project_detail:reverseEngineer |\n| **Generated Documents** | 10 | metadata:project_detail:reverseEngineer |\n| **Documents in RAG** | 21 | metadata:project_detail:reverseEngineer |\n| **Last Scan** | 2026-07-13 20:07 | metadata:project_detail:reverseEngineer |\n| **Last Doc Generation** | 2026-07-13 21:49 | metadata:project_detail:reverseEngineer |\n| **Last RAG Push** | 2026-07-13 21:49 | metadata:project_detail:reverseEngineer |\n| **Created** | 2026-07-13 | metadata:project_detail:reverseEngineer |\n\nAll factual claims in this response are derived from the single evidence item `metadata:project_detail:reverseEngineer`, which contains the complete project metadata summary.",
+      "review_rationale": "Expected tools [['documentation_search'], ['project_metadata_search']]; observed ['project_metadata_search']. Deterministic terminal, path, response, grounding, and mechanics checks passed.",
+      "tool_trajectory": [
+        "project_metadata_search"
+      ],
+      "safe_arguments": [],
+      "latency_ms": 18544.302207999863,
+      "input_tokens": 30274,
+      "output_tokens": 642,
+      "cost_usd": 0.009467,
+      "clarification_expected": false,
+      "clarified": false,
+      "unsupported_claims": 0
+    },
+    {
+      "attempt_id": "evidence.none.001:evidence.none.001.turn-1:nonstream",
+      "scenario_id": "evidence.none.001",
+      "prompt_id": "evidence.none.001",
+      "family": "no_evidence",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "trajectory",
+        "response"
+      ],
+      "taxonomy": [
+        "MODEL_TOOL",
+        "RESPONSE"
+      ],
+      "assistant_text": "**Honest Limitation:** The search for runtime logs and job executions returned no matching evidence. This could mean: (1) there are no invoice-sending jobs in the currently authorized project scope, (2) the job naming convention doesn't match the search terms used, (3) the logs may have been archived or are outside the retention window, or (4) the job may exist in a project that is not currently authorized for this conversation.\n\n---\n\nBased on my search of the runtime logs and job execution records, I found **no evidence of any job that sends invoices** in the currently authorized scope.\n\nI searched for:\n- Runtime logs containing terms like \"job sends invoices,\" \"invoice generation,\" and \"billing\"\n- Recent job executions across all accessible projects\n\nBoth searches returned empty results.\n\nTo help you find which job sends invoices, I would need:\n\n1. **A specific project ID** - Which project or system contains the invoice-sending job?\n2. **More context** - Are you asking about:\n   - A specific application or service you're working with?\n   - A scheduled/cron job?\n   - A workflow in a particular platform (e.g., Workato, Talend, custom application)?\n\nIf you can provide a project ID or more details about where this invoice job should exist, I can search the documentation or runtime evidence for that specific project.",
+      "review_rationale": "Expected tools [['documentation_search']]; observed ['runtime_log_search', 'runtime_failure_read']. Tool path ['runtime_log_search', 'runtime_failure_read'] does not match the authored path. response does not contain 'could not verify'.",
+      "tool_trajectory": [
+        "runtime_log_search",
+        "runtime_failure_read"
+      ],
+      "safe_arguments": [],
+      "latency_ms": 17339.21420801198,
+      "input_tokens": 39775,
+      "output_tokens": 625,
+      "cost_usd": 0.012307,
+      "clarification_expected": false,
+      "clarified": false,
+      "unsupported_claims": 0
+    },
+    {
+      "attempt_id": "policy.denial.001:policy.denial.001.turn-1:nonstream",
+      "scenario_id": "policy.denial.001",
+      "prompt_id": "policy.denial.001",
+      "family": "denial_recovery",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "trajectory"
+      ],
+      "taxonomy": [
+        "MODEL_TOOL"
+      ],
+      "assistant_text": "You're right - I should have been more direct about the limitation. Let me restate:\n\n**Honest limitation:** I cannot save a Pack draft because you have not provided a specific `draft_id` and `expected_revision`, which are required parameters for the save operation. I attempted to check for available drafts, but found none. Without these exact identifiers, I cannot proceed with a save operation.\n\n**Full answer:**\n\nTo save a Pack draft, I need you to provide:\n1. **draft_id** - The exact identifier of the Pack draft you want to save\n2. **expected_revision** - The current revision number of that draft\n\nThese are required parameters that I cannot infer or assume. The save operation also requires explicit user approval and appropriate write permissions.\n\nIf you have a specific Pack draft you'd like to save, please provide:\n- The draft ID (a positive integer)\n- The expected revision number (a positive integer)\n\nAlternatively, if you don't have a draft yet, you would need to first create one using `create_pack_draft` before it can be saved.",
+      "review_rationale": "Expected tools [['pack_save'], []]; observed ['unmapped:read pack draft', 'pack_list']. Tool path ['unmapped:read pack draft', 'pack_list'] does not match the authored path.",
+      "tool_trajectory": [
+        "unmapped:read pack draft",
+        "pack_list"
+      ],
+      "safe_arguments": [],
+      "latency_ms": 18371.77845800761,
+      "input_tokens": 36083,
+      "output_tokens": 597,
+      "cost_usd": 0.011183,
+      "clarification_expected": false,
+      "clarified": false,
+      "unsupported_claims": 0
+    },
+    {
+      "attempt_id": "stream.reconnect.001:stream.reconnect.001.turn-1:stream",
+      "scenario_id": "stream.reconnect.001",
+      "prompt_id": "stream.reconnect.001",
+      "family": "stream_reconnect",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "trajectory",
+        "response"
+      ],
+      "taxonomy": [
+        "MODEL_TOOL",
+        "RESPONSE"
+      ],
+      "assistant_text": "You're right. Let me re-examine the evidence and provide properly cited claims. Based on the evidence retrieved: 1. **There is 1 message in this conversation** - from `conversation:298:message:1080` (evidence_id: `conversation:298:message:1080`), which is your message asking to \"Reconnect to the interrupted response without rerunning work.\" 2. **There are 0 active project workflows** - the `list_active_project_workflows` call returned `\"workflows\":[]` with no evidence items (no active workflows to cite). 3. **No conversation tasks are in scope** - the background state shows `\"conversation_tasks\": []`. 4. **No agent plan exists** - the background state shows `\"agent_plan\": null`. Since there is no evidence of any interrupted workflows, drafts, tasks, orplans in the available evidence, I cannot reconnect to interrupted work without additional information from you. --- **What I need from you:** To reconnect to interrupted work without rerunning it, please provide identifying information such as: - A **project ID** (if documentation generation or onboarding was interrupted) - A **workflow name or reference** - A **draft ID** (if you were working on a Pack draft) - A **plan ID** (if an Agent Plan was paused) Without thisinformation, I have no evidence-based way to identify what work should be reconnected to.",
+      "review_rationale": "Expected tools [[]]; observed ['conversation_summary_read', 'workflow_status_read']. Tool path ['conversation_summary_read', 'workflow_status_read'] does not match the authored path. response does not contain 'resumed'.",
+      "tool_trajectory": [
+        "conversation_summary_read",
+        "workflow_status_read"
+      ],
+      "safe_arguments": [],
+      "latency_ms": 17973.08487497503,
+      "input_tokens": 39994,
+      "output_tokens": 646,
+      "cost_usd": 0.012386,
+      "clarification_expected": false,
+      "clarified": false,
+      "unsupported_claims": 0
+    },
+    {
+      "attempt_id": "stream.grounding.001:stream.grounding.001.turn-1:stream",
+      "scenario_id": "stream.grounding.001",
+      "prompt_id": "stream.grounding.001",
+      "family": "grounding_safe_stream",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "trajectory",
+        "grounding"
+      ],
+      "taxonomy": [
+        "MODEL_TOOL",
+        "GROUNDING"
+      ],
+      "assistant_text": "I need to be transparent: The tool I used (`list_active_project_workflows`) only reports workflows that are **actively running** at this moment. It does not show: - Completed workflows - Failed or interrupted workflows that have already terminated - Historical workflow history - Workflow status for specific projects unless they are currently in progress This is an honest limitation—if you need information about past workflows, a specific project's workflow history, or workflows that may have failed and already stopped, this tool cannot provide that information. ---**Full Answer:** No active workflows are currently running. The workflow ledger shows zero active onboarding, scan, or documentation generation processes.",
+      "review_rationale": "Expected tools [['documentation_search']]; observed ['workflow_status_read']. Tool path ['workflow_status_read'] does not match the authored path. Only 0 public evidence reference(s) were retained; 1 required.",
+      "tool_trajectory": [
+        "workflow_status_read"
+      ],
+      "safe_arguments": [],
+      "latency_ms": 9736.898834002204,
+      "input_tokens": 29479,
+      "output_tokens": 221,
+      "cost_usd": 0.008976,
+      "clarification_expected": false,
+      "clarified": false,
+      "unsupported_claims": 0
+    },
+    {
+      "attempt_id": "turn.duplicate.001:turn.duplicate.001.turn-1:stream",
+      "scenario_id": "turn.duplicate.001",
+      "prompt_id": "turn.duplicate.001",
+      "family": "rapid_duplicate_turn",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "response"
+      ],
+      "taxonomy": [
+        "RESPONSE"
+      ],
+      "assistant_text": "I can only execute one consequential tool per assistant response, and I don't have any pending proposals or workflows that need to be submitted. Could you clarify what you'd like me to do? For example: - Are you referring to a specific workflow, document update, or Pack draft that needs to be submitted/approved? - Do you want me to demonstrate how the system handles duplicate requests? - Is there a specific project or task you're working on that needs action? Please let meknow what specific action you'd like me to take, and I'll help you with it. ```json nexus-grounding { \"answer_status\": \"clarification_needed\", \"citations\": [], \"disclosures\": [] } ```",
+      "review_rationale": "Expected tools [[]]; observed []. response does not contain 'once'.",
+      "tool_trajectory": [],
+      "safe_arguments": [],
+      "latency_ms": 4443.487000011373,
+      "input_tokens": 9742,
+      "output_tokens": 149,
+      "cost_usd": 0.003012,
+      "clarification_expected": false,
+      "clarified": true,
+      "unsupported_claims": 0
+    },
+    {
+      "attempt_id": "transport.parity.001:transport.parity.001.turn-1:stream",
+      "scenario_id": "transport.parity.001",
+      "prompt_id": "transport.parity.001",
+      "family": "transport_parity",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "response"
+      ],
+      "taxonomy": [
+        "RESPONSE"
+      ],
+      "assistant_text": "I understand you're asking about transport-agnostic response consistency. However, I need more context about what you're trying to accomplish: 1. **Are you asking about API behavior?** - If you're asking about the Nexus API's behavior across different transport protocols (HTTP, WebSocket, etc.), I can explain the design principles, but I don't have a specific tool to query transport-layer configuration. 2. **Are you asking about a specific project or document?** - If there's a particular project where you've observed inconsistent behavior across transports, I can investigate that. 3. **Are you asking about documentation?** - I can search project documentation for information about transport protocols or API behavior if you specify a project. Could you clarify what you're looking for? For example: - A specific project ID where you've observed this behavior - Documentation about API transport behavior - Help with a particular integration or client implementation",
+      "review_rationale": "Expected tools [[]]; observed []. response does not contain 'same'.",
+      "tool_trajectory": [],
+      "safe_arguments": [],
+      "latency_ms": 5658.277957991231,
+      "input_tokens": 9745,
+      "output_tokens": 228,
+      "cost_usd": 0.00306,
+      "clarification_expected": false,
+      "clarified": true,
+      "unsupported_claims": 0
+    },
+    {
+      "attempt_id": "transport.parity.001:transport.parity.001.turn-1:nonstream",
+      "scenario_id": "transport.parity.001",
+      "prompt_id": "transport.parity.001",
+      "family": "transport_parity",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "response"
+      ],
+      "taxonomy": [
+        "RESPONSE"
+      ],
+      "assistant_text": "I understand you're asking about transport-agnostic response consistency. However, I need more context about what you're trying to accomplish:\n\n1. **Are you asking about API behavior?** - If you're asking about the Nexus API's behavior across different transport protocols (HTTP, WebSocket, etc.), I can explain the design principles, but I don't have a specific tool to query transport-layer configuration.\n\n2. **Are you asking about a specific project or document?** - If there's a particular project where you've observed inconsistent behavior across transports, I can investigate that.\n\n3. **Are you asking about documentation?** - I can search project documentation for information about transport protocols or API behavior if you specify a project.\n\nCould you clarify what you're looking for? For example:\n- A specific project ID where you've observed this behavior\n- Documentation about API transport behavior\n- Help with a particular integration or client implementation",
+      "review_rationale": "Expected tools [[]]; observed []. response does not contain 'same'.",
+      "tool_trajectory": [],
+      "safe_arguments": [],
+      "latency_ms": 34.03199999593198,
+      "input_tokens": 9745,
+      "output_tokens": 228,
+      "cost_usd": 0.00306,
+      "clarification_expected": false,
+      "clarified": true,
+      "unsupported_claims": 0
+    }
+  ],
+  "total_attempts": 9,
+  "passed_attempts": 2,
+  "failed_attempts": 7
+}

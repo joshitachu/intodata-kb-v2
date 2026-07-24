@@ -27,7 +27,7 @@ def parse_file(file_bytes: bytes, filename: str) -> str:
 
 
 def _parse_pdf(data: bytes) -> str:
-    from PyPDF2 import PdfReader
+    from pypdf import PdfReader
 
     reader = PdfReader(io.BytesIO(data))
     pages = []

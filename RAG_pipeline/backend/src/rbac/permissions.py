@@ -23,6 +23,7 @@ VIEW_AUDIT_LOGS = "view_audit_logs"
 CREATE_PROJECTS = "create_projects"
 RUNTIME_SOURCES_READ = "runtime_sources:read"
 RUNTIME_SOURCES_WRITE = "runtime_sources:write"
+MANAGE_PACKS = "manage_packs"
 
 ALL_PERMISSIONS = {
     MANAGE_USERS,
@@ -37,6 +38,7 @@ ALL_PERMISSIONS = {
     CREATE_PROJECTS,
     RUNTIME_SOURCES_READ,
     RUNTIME_SOURCES_WRITE,
+    MANAGE_PACKS,
 }
 
 

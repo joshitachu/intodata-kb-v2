@@ -1,4 +1,4 @@
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,15 +15,67 @@ class Settings(BaseSettings):
     # routes to exactly its provider — there is no cross-provider fallback chain.
     rag_default_model: str = "kimi/kimi-k2.5"
 
-    # Fast-path fallback chain for the lightweight intent classifier ONLY (query
-    # routing in intent_classifier.py, which uses its own small models). The main
-    # RAG chat answer path routes via rag_default_model / the provider registry
-    # and does NOT use this list.
+    # Provider preference for non-agent generation surfaces.
     llm_providers: list[str] = ["kimi", "ollama"]
 
-    # Transition guard for Slice 14. Plans are always persisted for telemetry;
-    # disabling enforcement restores the legacy RAG runtime gate during rollout.
-    harness_turn_plan_enforced: bool = True
+    # Unified bounded agent-loop limits. Chat routing is unconditional.
+    # Raised 2026-07-22: default ceilings were tight enough that structured-output
+    # retries (not real work) could exhaust the budget before the model reached
+    # its actual tool call. Ceilings stay in place (never fully removed) so a
+    # stuck retry loop still can't run unbounded cost/time.
+    agent_chat_max_iterations: int = Field(default=15, ge=1, le=40)
+    agent_chat_max_tool_calls: int = Field(default=20, ge=0, le=24)
+    agent_chat_deadline_seconds: float = Field(default=120.0, gt=0, le=300.0)
+    agent_chat_max_cost_usd: float = Field(default=1.50, ge=0, le=100.0)
+
+    # Standard agent runtime (V2) cohort routing — Slice 3. All default OFF so
+    # merging this code changes nothing until a deployment explicitly opts in.
+    # The master kill switch alone reverts every turn to the legacy runtime.
+    agent_runtime_v2_canary_stage: str = "off"
+    agent_runtime_v2_enabled: bool = False
+    # Explicit read-only canary allowlist by user id.
+    agent_runtime_v2_readonly_users: list[int] = []
+    # Stable per-user bucket percentage (0-100) for the read-only canary.
+    agent_runtime_v2_readonly_percent: int = Field(default=0, ge=0, le=100)
+    # Transports the V2 read-only cohort may serve.
+    agent_runtime_v2_transports: list[str] = ["nonstream", "stream"]
+    # Bounded grounding-correction rounds before the concise safe fallback.
+    agent_runtime_v2_max_grounding_corrections: int = Field(default=1, ge=0, le=2)
+    # Slice 4 planning cohort. It is independently default-off and therefore
+    # cannot widen the existing read-only canary accidentally.
+    agent_runtime_v2_planning_enabled: bool = False
+    agent_runtime_v2_planning_users: list[int] = []
+    agent_runtime_v2_planning_percent: int = Field(default=0, ge=0, le=100)
+    # Slice 5 effect/workflow cohort. Independently default-off.
+    agent_runtime_v2_effects_enabled: bool = False
+    agent_runtime_v2_effect_users: list[int] = []
+    agent_runtime_v2_effect_percent: int = Field(default=0, ge=0, le=100)
+    # Slice 6 persisted live-event projection. Independently default-off.
+    agent_runtime_v2_live_streaming_enabled: bool = False
+    agent_runtime_v2_live_streaming_users: list[int] = []
+    agent_runtime_v2_live_streaming_percent: int = Field(default=0, ge=0, le=100)
+    agent_runtime_v2_model_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
+    # Read tools include answer_from_documentation, which runs full retrieval
+    # + answer generation in one call (not just retrieval) and can legitimately
+    # take longer than a pure evidence lookup on broad/exhaustive questions.
+    agent_runtime_v2_read_tool_timeout_seconds: float = Field(default=90.0, gt=0, le=120)
+    agent_runtime_v2_write_tool_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
+    agent_runtime_v2_workflow_handoff_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
+    agent_runtime_v2_soft_deadline_seconds: float = Field(default=180.0, gt=0, le=300)
+    agent_runtime_v2_hard_deadline_seconds: float = Field(default=300.0, gt=0, le=600)
+    agent_runtime_v2_max_model_calls: int = Field(default=40, ge=2, le=64)
+    # Keep one answer call plus one grounding-correction call available after
+    # bounded evidence gathering. Provider retries are transport-level only and
+    # do not permit additional tool execution.
+    agent_runtime_v2_synthesis_reserve_calls: int = Field(default=2, ge=1, le=4)
+    agent_runtime_v2_provider_max_retries: int = Field(default=1, ge=0, le=3)
+
+    @model_validator(mode="after")
+    def validate_agent_runtime_canary_stage(self) -> "Settings":
+        from src.agent_runtime_canary import CanaryStagePolicy
+
+        CanaryStagePolicy(stage=self.agent_runtime_v2_canary_stage).validate_rollout_settings(self)
+        return self
 
     # Kimi (Moonshot AI)
     kimi_api_key: str = ""

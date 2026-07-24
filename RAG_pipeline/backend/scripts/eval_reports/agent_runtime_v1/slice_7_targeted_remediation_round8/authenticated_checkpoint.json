@@ -1,0 +1,861 @@
+[
+  {
+    "attempt_id": "rag.followup.jobs.001.keyword_collision:rag.followup.jobs.001.keyword_collision.turn-1:stream",
+    "scenario_id": "rag.followup.jobs.001.keyword_collision",
+    "family": "rag_followup",
+    "prompt_id": "rag.followup.jobs.001.keyword_collision",
+    "turn_id": "rag.followup.jobs.001.keyword_collision.turn-1",
+    "transport": "stream",
+    "status_code": 200,
+    "assistant_text": "I couldn't complete this request because the model service was unavailable. Please try again.",
+    "public_events": [
+      {
+        "event_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L:evt:000001",
+        "run_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L",
+        "sequence": 1,
+        "type": "run.started",
+        "created_at": "2026-07-21T16:52:40.090397Z",
+        "public_payload": {
+          "status": "running",
+          "cohort": "v2_effect_primary",
+          "transport": "stream",
+          "objective": "List only the ten generated reverseEngineer job document names. Do not open their contents and do not inspect workflow logs."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L:evt:000002",
+        "run_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L",
+        "sequence": 2,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:52:43.094853Z",
+        "public_payload": {
+          "tool_label": "list project documents",
+          "status": "proposed",
+          "call_ref": "list_project_documents_0"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L:evt:000003",
+        "run_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L",
+        "sequence": 3,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:52:43.109966Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L:evt:000004",
+        "run_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L",
+        "sequence": 4,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:52:43.113569Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L:evt:000005",
+        "run_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L",
+        "sequence": 5,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:52:43.116336Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L:evt:000006",
+        "run_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L",
+        "sequence": 6,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:52:43.130681Z",
+        "public_payload": {
+          "tool_label": "list project documents",
+          "status": "succeeded",
+          "summary": "Retrieved 10 evidence item(s).",
+          "evidence_refs": [
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md",
+              "observed_at": "2026-07-13T21:40:15.298821+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md",
+              "observed_at": "2026-07-13T21:41:23.655640+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md",
+              "observed_at": "2026-07-13T21:40:05.383964+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md",
+              "observed_at": "2026-07-13T21:41:02.949545+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md",
+              "observed_at": "2026-07-13T21:44:27.062386+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+              "observed_at": "2026-07-13T21:44:44.422380+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md",
+              "observed_at": "2026-07-13T21:45:23.619117+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md",
+              "observed_at": "2026-07-13T21:44:07.075067+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md",
+              "observed_at": "2026-07-13T21:49:24.568409+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md",
+              "observed_at": "2026-07-13T21:49:15.998995+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md"
+            }
+          ],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L:evt:000007",
+        "run_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L",
+        "sequence": 7,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:52:43.134371Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L:evt:000008",
+        "run_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L",
+        "sequence": 8,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:52:54.537786Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L:evt:000009",
+        "run_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L",
+        "sequence": 9,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:52:54.540771Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L:evt:000010",
+        "run_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L",
+        "sequence": 10,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:52:54.752548Z",
+        "public_payload": {
+          "content": "I couldn't complete this request because the model service was unavailable. Please try again."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L:evt:000011",
+        "run_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L",
+        "sequence": 11,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T16:52:54.754576Z",
+        "public_payload": {
+          "message_id": 1363,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L:evt:000012",
+        "run_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L",
+        "sequence": 12,
+        "type": "run.failed",
+        "created_at": "2026-07-21T16:52:54.763622Z",
+        "public_payload": {
+          "status": "failed",
+          "stop_reason": "planner_unavailable",
+          "latency_ms": 14678
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1363,
+        "latency_ms": 14678,
+        "run_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L",
+        "replayed": false,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 14813.010875019245,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cost_usd": 0.0,
+    "run_id": "run-F7mZtKa_uBJUAEQK-tW5gm_L",
+    "persisted_message_id": 1363,
+    "error": null
+  },
+  {
+    "attempt_id": "rag.followup.jobs.001.negation:rag.followup.jobs.001.negation.turn-1:nonstream",
+    "scenario_id": "rag.followup.jobs.001.negation",
+    "family": "rag_followup",
+    "prompt_id": "rag.followup.jobs.001.negation",
+    "turn_id": "rag.followup.jobs.001.negation.turn-1",
+    "transport": "nonstream",
+    "status_code": 200,
+    "assistant_text": "Based on the document inventory, the **reverseEngineer** project has generated documentation for the following components:\n\n## AssetCheck Interface Jobs\n- **AssetCheck_GetLocation** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md`\n- **AssetCheck_GetLocations** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md`\n- **AssetCheck_GetWorkOrder** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md`\n- **AssetCheck_GetWorkOrders** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md`\n- **AssetCheck_Main_Job** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md`\n- **AssetCheck_SendServiceRequest** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md`\n- **AssetCheck_SendWorkOrderUpdate** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md`\n\n## Maximo2AssetCheck Jobs\n- **Maximo2AssetCheck_MainJob** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md`\n- **Maximo2AssetCheck_SendLocation** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md`\n- **Maximo2AssetCheck_SendWorkOrder** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md`\n\nThe inventory shows **10 generated documents** total, all from source type `generated_doc` with observation timestamps from 2026-07-13.\n\n```json\nnexus-grounding\n{\n  \"answer_status\": \"complete\",\n  \"citations\": [\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md\"\n  ],\n  \"disclosures\": []\n}\n```",
+    "public_events": [
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000001",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 1,
+        "type": "run.started",
+        "created_at": "2026-07-21T16:52:54.923345Z",
+        "public_payload": {
+          "status": "running",
+          "cohort": "v2_effect_primary",
+          "transport": "nonstream",
+          "objective": "Using the reverseEngineer document inventory, answer yes or no: does the source name jobs? Do not list the names."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000002",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 2,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:52:56.492792Z",
+        "public_payload": {
+          "tool_label": "list project documents",
+          "status": "proposed",
+          "call_ref": "list_project_documents_0"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000003",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 3,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:52:56.503551Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000004",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 4,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:52:56.507801Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000005",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 5,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:52:56.512893Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000006",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 6,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:52:56.533330Z",
+        "public_payload": {
+          "tool_label": "list project documents",
+          "status": "succeeded",
+          "summary": "Retrieved 10 evidence item(s).",
+          "evidence_refs": [
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md",
+              "observed_at": "2026-07-13T21:40:15.298821+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md",
+              "observed_at": "2026-07-13T21:41:23.655640+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md",
+              "observed_at": "2026-07-13T21:40:05.383964+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md",
+              "observed_at": "2026-07-13T21:41:02.949545+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md",
+              "observed_at": "2026-07-13T21:44:27.062386+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+              "observed_at": "2026-07-13T21:44:44.422380+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md",
+              "observed_at": "2026-07-13T21:45:23.619117+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md",
+              "observed_at": "2026-07-13T21:44:07.075067+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md",
+              "observed_at": "2026-07-13T21:49:24.568409+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md",
+              "observed_at": "2026-07-13T21:49:15.998995+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md"
+            }
+          ],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000007",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 7,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:52:56.537049Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000008",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 8,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:53:03.728331Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000009",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 9,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:53:03.732759Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000010",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 10,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:53:19.375621Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000011",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 11,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:53:19.380044Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000012",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 12,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.398345Z",
+        "public_payload": {
+          "content": "Based on the document inventory, the **reverseEngineer** project has generated documentation for"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000013",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 13,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.400485Z",
+        "public_payload": {
+          "content": "the following components: ## AssetCheck Interface Jobs - **AssetCheck_GetLocation** - `mcp-doc"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000014",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 14,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.402164Z",
+        "public_payload": {
+          "content": ":reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md` - **Ass"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000015",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 15,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.403600Z",
+        "public_payload": {
+          "content": "etCheck_GetLocations** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__A"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000016",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 16,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.405058Z",
+        "public_payload": {
+          "content": "ssetCheck_GetLocations.md` - **AssetCheck_GetWorkOrder** - `mcp-doc:reverseEngineer:01_INTERFACE"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000017",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 17,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.406472Z",
+        "public_payload": {
+          "content": "_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md` - **AssetCheck_GetWorkOrders** - `m"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000018",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 18,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.407949Z",
+        "public_payload": {
+          "content": "cp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md`"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000019",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 19,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.409292Z",
+        "public_payload": {
+          "content": "- **AssetCheck_Main_Job** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interfac"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000020",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 20,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.410597Z",
+        "public_payload": {
+          "content": "e__AssetCheck_Main_Job.md` - **AssetCheck_SendServiceRequest** - `mcp-doc:reverseEngineer:01_INT"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000021",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 21,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.411917Z",
+        "public_payload": {
+          "content": "ERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md` - **AssetCheck_SendWork"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000022",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 22,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.413178Z",
+        "public_payload": {
+          "content": "OrderUpdate** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000023",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 23,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.414286Z",
+        "public_payload": {
+          "content": "_SendWorkOrderUpdate.md` ## Maximo2AssetCheck Jobs - **Maximo2AssetCheck_MainJob** - `mcp-doc:r"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000024",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 24,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.415382Z",
+        "public_payload": {
+          "content": "everseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md` - **Maxim"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000025",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 25,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.416450Z",
+        "public_payload": {
+          "content": "o2AssetCheck_SendLocation** - `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck_"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000026",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 26,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.417555Z",
+        "public_payload": {
+          "content": "_Maximo2AssetCheck_SendLocation.md` - **Maximo2AssetCheck_SendWorkOrder** - `mcp-doc:reverseEngi"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000027",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 27,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.418603Z",
+        "public_payload": {
+          "content": "neer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md` The inventor"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000028",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 28,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.419764Z",
+        "public_payload": {
+          "content": "y shows **10 generated documents** total, all from source type `generated_doc` with observation"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000029",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 29,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.420806Z",
+        "public_payload": {
+          "content": "timestamps from 2026-07-13. ```json nexus-grounding { \"answer_status\": \"complete\", \"citatio"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000030",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 30,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.421894Z",
+        "public_payload": {
+          "content": "ns\": [ \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetL"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000031",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 31,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.422865Z",
+        "public_payload": {
+          "content": "ocation.md\", \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetChec"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000032",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 32,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.424037Z",
+        "public_payload": {
+          "content": "k_GetLocations.md\", \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__As"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000033",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 33,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.424989Z",
+        "public_payload": {
+          "content": "setCheck_GetWorkOrder.md\", \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interf"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000034",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 34,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.425941Z",
+        "public_payload": {
+          "content": "ace__AssetCheck_GetWorkOrders.md\", \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetChec"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000035",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 35,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.426865Z",
+        "public_payload": {
+          "content": "k_Interface__AssetCheck_Main_Job.md\", \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetC"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000036",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 36,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.427801Z",
+        "public_payload": {
+          "content": "heck_Interface__AssetCheck_SendServiceRequest.md\", \"mcp-doc:reverseEngineer:01_INTERFACE_TEM"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000037",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 37,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.428722Z",
+        "public_payload": {
+          "content": "PLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md\", \"mcp-doc:reverseEngineer:01"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000038",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 38,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.429664Z",
+        "public_payload": {
+          "content": "_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md\", \"mcp-doc:reverseEngin"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000039",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 39,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.430603Z",
+        "public_payload": {
+          "content": "eer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md\", \"mcp-doc:r"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000040",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 40,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.431522Z",
+        "public_payload": {
+          "content": "everseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md\" ]"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000041",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 41,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:53:19.432405Z",
+        "public_payload": {
+          "content": ", \"disclosures\": [] } ```"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000042",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 42,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T16:53:19.433323Z",
+        "public_payload": {
+          "message_id": 1367,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-5RPtdsTvR5PQjvxk83UBX5DR:evt:000043",
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "sequence": 43,
+        "type": "run.completed",
+        "created_at": "2026-07-21T16:53:19.435471Z",
+        "public_payload": {
+          "status": "completed",
+          "stop_reason": "answered",
+          "usage": {
+            "input_tokens": 31810,
+            "output_tokens": 1032,
+            "model_cost_usd": 0.010162,
+            "capability_cost_usd": 0.0
+          },
+          "latency_ms": 24479
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1367,
+        "latency_ms": 24479,
+        "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+        "replayed": true,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 24542.42712497944,
+    "input_tokens": 31810,
+    "output_tokens": 1032,
+    "cost_usd": 0.010162,
+    "run_id": "run-5RPtdsTvR5PQjvxk83UBX5DR",
+    "persisted_message_id": 1367,
+    "error": null
+  }
+]

@@ -1,0 +1,141 @@
+{
+  "corpus_version": "agent-runtime-behavior-v2",
+  "base_corpus": "corpus_v1.json",
+  "real_project_snapshot": "reverse_engineer_snapshot_v1.json",
+  "family_overrides": {
+    "documentation_rag": {
+      "project_scope": ["reverseEngineer"],
+      "prompt_replacements": {"Fixture Project": "reverseEngineer", "fixture projct": "reverseEngineer project", "Fixture Project Pack": "reverseEngineer project"},
+      "argument_overrides": {"project_id": "reverseEngineer"}
+    },
+    "rag_followup": {
+      "project_scope": ["reverseEngineer"],
+      "prompt_replacements": {"The source describes ten scheduled jobs.": "The authorized reverseEngineer project has ten generated job documents."},
+      "tool_sequence": ["project_document_list"],
+      "decisions": ["tool_call", "answer"],
+      "observations": ["document_inventory_found"],
+      "argument_overrides": {"project_id": "reverseEngineer"},
+      "variant_overrides": {
+        "negation": {
+          "prompt": "Using the reverseEngineer document inventory, answer yes or no: does the source name jobs? Do not list the names.",
+          "tools": ["project_document_list"],
+          "policies": ["allowed"],
+          "alternate_tools": [],
+          "response_contains_any": ["yes", "does name", "names jobs"]
+        },
+        "keyword_collision": {
+          "prompt": "List only the ten generated reverseEngineer job document names. Do not open their contents and do not inspect workflow logs.",
+          "alternate_tools": [["project_document_list", "project_document_list"]]
+        },
+        "ambiguous": {
+          "decisions": ["tool_call", "answer"],
+          "tools": ["project_document_list"],
+          "policies": ["allowed"],
+          "observations": ["document_inventory_found"],
+          "grounding": "required",
+          "evidence_refs": 10,
+          "clarify": false,
+          "alternate_tools": [["project_document_list", "project_document_list"]]
+        }
+      }
+    },
+    "no_evidence": {
+      "project_scope": ["reverseEngineer"],
+      "argument_overrides": {"project_id": "reverseEngineer"},
+      "alternate_tool_sequences": [
+        ["documentation_search", "documentation_search"],
+        ["documentation_search", "documentation_search", "documentation_search"],
+        ["documentation_search", "documentation_search", "project_document_list"],
+        ["documentation_search", "documentation_search", "documentation_search", "project_document_list"],
+        ["documentation_search", "document_read"]
+      ],
+      "response_contains": [],
+      "response_contains_any": ["could not verify", "unable to find", "no evidence", "did not find", "found no", "cannot definitively", "cannot make a factual claim"],
+      "variant_overrides": {
+        "ambiguous": {
+          "history": [
+            {"role": "assistant", "content": "There are multiple possible targets: invoice sending and work-order sending."}
+          ],
+          "prompt": "Can you handle that one?"
+        }
+      }
+    },
+    "task_switch": {
+      "project_scope": ["reverseEngineer"],
+      "prompt_replacements": {"Fixture Project": "reverseEngineer", "fixture project": "reverseEngineer project"},
+      "argument_overrides": {"project_id": "reverseEngineer"},
+      "alternate_tool_sequences": [
+        ["project_metadata_search"],
+        ["documentation_search", "project_document_list", "documentation_search"]
+      ]
+    },
+    "cancel_workflow": {
+      "project_scope": ["reverseEngineer"],
+      "prompt_replacements": {"Fixture Project": "reverseEngineer", "fixture": "reverseEngineer"},
+      "argument_overrides": {"project_id": "reverseEngineer"},
+      "variant_overrides": {
+        "informal": {
+          "alternate_tools": [["workflow_status_read"]],
+          "response_contains": [],
+          "response_contains_any": ["approval", "no active", "cannot cancel", "does not show"]
+        },
+        "keyword_collision": {
+          "alternate_tools": [["workflow_status_read"]],
+          "response_contains": [],
+          "response_contains_any": ["no active", "cannot cancel", "does not show", "zero active"]
+        },
+        "ambiguous": {
+          "alternate_tools": [["workflow_status_read"]]
+        },
+        "negation": {
+          "alternate_tools": [[]]
+        }
+      }
+    },
+    "grounding_safe_stream": {
+      "project_scope": ["reverseEngineer"],
+      "prompt_replacements": {"Stream progress, then return only grounded factual prose.": "Using reverseEngineer documentation, identify which job sends service requests. Return only grounded factual prose."},
+      "argument_overrides": {"project_id": "reverseEngineer"}
+    },
+    "policy_denial": {
+      "project_scope": [],
+      "action_context_suffix": " Target draft_id is 29 and expected_revision is 1.",
+      "argument_overrides": {"draft_id": 29, "expected_revision": 1},
+      "alternate_tool_sequences": [
+        ["pack_draft_read"],
+        [],
+        ["pack_list"],
+        ["pack_list", "pack_list"]
+      ],
+      "response_contains": [],
+      "response_contains_any": ["permission", "not authorized", "read access", "no capability", "don't have a capability", "no save pack capability"],
+      "variant_overrides": {
+        "negation": {
+          "response_contains": [],
+          "response_contains_any": ["permission", "not authorized", "read access", "no capability"]
+        },
+        "ambiguous": {
+          "response_contains": [],
+          "response_contains_any": []
+        }
+      }
+    },
+    "scope_denied": {
+      "project_scope": [],
+      "prompt_replacements": {"the private project outside my scope": "the reverseEngineer project, which is outside my scope"},
+      "argument_overrides": {"project_id": "reverseEngineer"}
+    },
+    "stream_reconnect": {
+      "project_scope": [],
+      "prompt_replacements": {"Reconnect to the interrupted response without rerunning work.": "Acknowledge this reconnect check with the word resumed."}
+    },
+    "rapid_duplicate_turn": {
+      "project_scope": [],
+      "prompt_replacements": {"Submit this same client turn twice.": "Acknowledge this duplicate-delivery check with the word once."}
+    },
+    "transport_parity": {
+      "project_scope": [],
+      "prompt_replacements": {"Return the same answer and metadata over either transport.": "Reply with the exact phrase: same response."}
+    }
+  }
+}

@@ -28,7 +28,7 @@ def extract_metadata(file_bytes: bytes, filename: str) -> dict[str, str | None]:
 
 
 def _pdf_metadata(data: bytes) -> dict[str, str | None]:
-    from PyPDF2 import PdfReader
+    from pypdf import PdfReader
 
     reader = PdfReader(io.BytesIO(data))
     info = reader.metadata

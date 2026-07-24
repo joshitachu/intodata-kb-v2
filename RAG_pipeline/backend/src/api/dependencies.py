@@ -4,7 +4,7 @@ import logging
 from typing import Annotated
 
 from fastapi import Cookie, Depends, HTTPException, Request
-from jose import JWTError
+from jwt import InvalidTokenError as JWTError
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession

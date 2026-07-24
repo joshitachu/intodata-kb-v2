@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0.0",
+  "attempts": [
+    {
+      "attempt_id": "rag.followup.jobs.001.keyword_collision:rag.followup.jobs.001.keyword_collision.turn-1:stream",
+      "scenario_id": "rag.followup.jobs.001.keyword_collision",
+      "prompt_id": "rag.followup.jobs.001.keyword_collision",
+      "family": "rag_followup",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "trajectory"
+      ],
+      "taxonomy": [
+        "MODEL_TOOL"
+      ],
+      "assistant_text": "I ran into a problem completing this request and could not produce a grounded answer. Please tryagain, and rephrase if the issue continues.",
+      "review_rationale": "Expected tools [['project_document_list']]; observed ['project_document_list', 'project_document_list']. Tool path ['project_document_list', 'project_document_list'] does not match the authored path.",
+      "tool_trajectory": [
+        "project_document_list",
+        "project_document_list"
+      ],
+      "safe_arguments": [],
+      "latency_ms": 35672.967416991014,
+      "input_tokens": 44324,
+      "output_tokens": 1323,
+      "cost_usd": 0.014091,
+      "clarification_expected": false,
+      "clarified": false,
+      "unsupported_claims": 0
+    }
+  ],
+  "total_attempts": 1,
+  "passed_attempts": 0,
+  "failed_attempts": 1
+}

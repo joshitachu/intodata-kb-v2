@@ -34,6 +34,7 @@ from src.api.routes import runtime_audit as runtime_audit_routes
 from src.api.routes import harness as harness_routes
 from src.api.routes import harness_connectors as harness_connector_routes
 from src.api.routes import harness_packs as harness_pack_routes
+from src.api.routes import agent_traces as agent_trace_routes
 
 logger = logging.getLogger(__name__)
 
@@ -286,3 +287,4 @@ app.include_router(runtime_audit_routes.router, prefix="/api/v1")
 app.include_router(harness_routes.router, prefix="/api/v1")
 app.include_router(harness_connector_routes.router, prefix="/api/v1")
 app.include_router(harness_pack_routes.router, prefix="/api/v1")
+app.include_router(agent_trace_routes.router, prefix="/api/v1")

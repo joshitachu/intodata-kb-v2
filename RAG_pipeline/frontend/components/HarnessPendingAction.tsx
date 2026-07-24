@@ -20,13 +20,26 @@ export function HarnessPendingAction({ action }: HarnessPendingActionProps) {
     setSubmitting(true);
     setError(null);
     try {
+      const isGenericApproval = Boolean(action.proposal_id && action.conversation_id);
+      if (isGenericApproval && path === "cancel") {
+        responseValue = "reject";
+        path = "resume";
+      }
+      const target = isGenericApproval
+        ? `/api/conversations/${encodeURIComponent(String(action.conversation_id))}/approvals/${encodeURIComponent(String(action.proposal_id))}/decision`
+        : `/api/harness/workflows/${encodeURIComponent(String(action.workflow_run_id))}/${path}`;
       const fetchResponse = await fetch(
-        `/api/harness/workflows/${encodeURIComponent(action.workflow_run_id)}/${path}`,
+        target,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(
-            path === "resume"
+            isGenericApproval
+              ? {
+                  expected_version: action.expected_version,
+                  decision: responseValue === "approve" ? "approve" : "reject",
+                }
+              : path === "resume"
               ? {
                   interrupt_id: action.interrupt_id,
                   expected_version: action.expected_version,

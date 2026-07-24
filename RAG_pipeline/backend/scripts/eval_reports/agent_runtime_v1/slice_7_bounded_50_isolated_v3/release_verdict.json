@@ -1,0 +1,50 @@
+{
+  "verdict": "GO",
+  "blockers": [],
+  "total_attempts": 50,
+  "passed_attempts": 45,
+  "point_accuracy": 0.9,
+  "wilson_lower_95": 0.7863976856252035,
+  "family_accuracy": {
+    "denial_recovery": 1.0,
+    "direct_answer": 1.0,
+    "discuss_versus_act": 1.0,
+    "grounding_safe_stream": 1.0,
+    "multi_tool_read": 0.6,
+    "no_evidence": 1.0,
+    "pack_write": 0.8,
+    "rag_followup": 0.6,
+    "rapid_duplicate_turn": 1.0,
+    "stream_reconnect": 1.0,
+    "task_interruption": 1.0,
+    "transport_parity": 1.0,
+    "workflow_approval": 1.0
+  },
+  "clarification_precision": 0.7,
+  "clarification_recall": 0.875,
+  "rated_answers": 0,
+  "mean_rating": null,
+  "family_mean_rating": {},
+  "failed_attempt_ids": [
+    "rag.followup.jobs.001:rag.followup.jobs.001.turn-1:nonstream",
+    "rag.followup.jobs.001.negation:rag.followup.jobs.001.negation.turn-1:nonstream",
+    "read.multi.001:read.multi.001.turn-1:nonstream",
+    "read.multi.001.ambiguous:read.multi.001.ambiguous.turn-1:stream",
+    "pack.create.001:pack.create.001.turn-1:nonstream"
+  ],
+  "failures_by_taxonomy": {
+    "MODEL_TOOL": 2,
+    "RESPONSE": 3,
+    "RUNTIME_PROTOCOL": 4
+  },
+  "latency_ms": {
+    "p50": 7422.879500023555,
+    "p95": 35790.37045896985,
+    "max": 42042.86108299857
+  },
+  "tokens": {
+    "input": 955575,
+    "output": 18912
+  },
+  "cost_usd": 0.298016
+}

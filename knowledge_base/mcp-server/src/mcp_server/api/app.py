@@ -33,6 +33,7 @@ from mcp_server.services.log_manager import LogManager
 from mcp_server.services.git_poller import git_polling_loop
 from mcp_server.services.ops_telemetry import telemetry_enabled, telemetry_loop
 from mcp_server.services.project_paths import repair_managed_project_repo_paths
+from mcp_server.services.pack_governance import pack_governance
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,13 @@ async def lifespan(app: FastAPI):
             logger.warning("Repaired %d stale project repo path(s)", repaired_paths)
     except Exception:
         logger.exception("Startup project path repair failed")
+    try:
+        async with async_session_factory() as session:
+            migrated_packs = await pack_governance.backfill_explicit_legacy_packs(session)
+        if migrated_packs:
+            logger.info("Certified %d explicitly configured legacy Pack(s)", migrated_packs)
+    except Exception:
+        logger.exception("Startup Pack governance migration failed")
     app.state.log_manager = log_manager
     app.state.git_poller_task = asyncio.create_task(git_polling_loop(log_manager))
     app.state.ops_telemetry_task = (

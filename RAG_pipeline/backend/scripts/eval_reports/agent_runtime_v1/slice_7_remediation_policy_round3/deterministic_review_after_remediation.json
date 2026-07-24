@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0.0",
+  "attempts": [
+    {
+      "attempt_id": "policy.denial.001:policy.denial.001.turn-1:nonstream",
+      "scenario_id": "policy.denial.001",
+      "prompt_id": "policy.denial.001",
+      "family": "denial_recovery",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": true,
+      "deterministic_failures": [],
+      "taxonomy": [],
+      "assistant_text": "I don't have a capability to save or modify Packs. The available tools related to documentation Packs only allow me to:\n\n- **List** available documentation Packs (`list_documentation_packs`)\n- **Search** existing documentation (`search_documentation`)\n- **Read** documents (`read_document`)\n- **Propose** documentation updates for approval (`propose_documentation_update`)\n\nThere is no \"save Pack\" or \"write Pack\" tool available. If you're working with a Pack draft, you may need to use a different interface or request appropriate permissions to perform write operations.\n\nCould you clarify what you're trying to accomplish? I can help you:\n- List available Packs\n- Search documentation within a project\n- Propose updates to existing project documents (which would go through an approval workflow)\n\n```json\nnexus-grounding\n{\n  \"answer_status\": \"clarification_needed\",\n  \"citations\": [],\n  \"disclosures\": [\n    \"No Pack write capability available in current toolset\",\n    \"User requested operation that cannot be performed with available tools\"\n  ]\n}\n```",
+      "review_rationale": "Expected tools [['pack_save'], ['pack_draft_read'], []]; observed []. Deterministic terminal, path, response, grounding, and mechanics checks passed.",
+      "tool_trajectory": [],
+      "safe_arguments": [],
+      "latency_ms": 7371.3070419617,
+      "input_tokens": 5635,
+      "output_tokens": 224,
+      "cost_usd": 0.001825,
+      "clarification_expected": false,
+      "clarified": true,
+      "unsupported_claims": 0
+    }
+  ],
+  "total_attempts": 1,
+  "passed_attempts": 1,
+  "failed_attempts": 0
+}

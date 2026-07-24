@@ -1,0 +1,7 @@
+{
+  "cases": [
+    {"id": "greeting", "plan_required": false, "steps": [{"key": "answer", "objective": "Answer", "kind": "read"}, {"key": "cite", "objective": "Cite", "kind": "read"}]},
+    {"id": "onboarding", "plan_required": true, "steps": [{"key": "attach", "objective": "Attach", "kind": "effect"}, {"key": "docs", "objective": "Document", "kind": "workflow", "depends_on": ["attach"]}]},
+    {"id": "approval", "plan_required": true, "steps": [{"key": "prepare", "objective": "Prepare", "kind": "read"}, {"key": "approve", "objective": "Approve", "kind": "approval"}]}
+  ]
+}

@@ -82,6 +82,7 @@ from mcp_server.providers.custom.prompts import (
     facts_summary,
     group_analysis_prompt,
 )
+from mcp_server.services.nexus_execution_contract import private_analysis_instructions_for_document
 from mcp_server.providers.custom.providers import ModelProvider, build_model_provider
 from mcp_server.providers.custom.repair_planner import (
     REPAIR_TOKEN_CAP,
@@ -576,6 +577,8 @@ class CustomHarnessProvider(DocGenerationProvider):
         self._doc_bundle_map: dict[str, str] = dict(_catalog.doc_bundle_map)
         self._doc_section_bundle_map: dict[str, set[str]] = dict(_catalog.doc_section_bundle_map)
         self._doc_section_requirements_extra: dict[str, list[str]] = {}
+        self._private_analysis_instructions: dict[str, str] = {}
+        self._private_analysis_applied = False
         self._plugin_manifest = None
         self._plugin_doc_definitions: dict[str, object] = {}
         self._per_job_doc_units: dict[str, str] = {}
@@ -2595,12 +2598,48 @@ Fallback plan example:
             "info",
         )
 
+    def _apply_private_analysis_packs(self, ctx: DocGenContext) -> None:
+        """Add verified private declarations to Phase 3 without changing prior phases."""
+        if self._private_analysis_applied:
+            return
+        self._private_analysis_applied = True
+        if not ctx.nexus_private_analysis_packs:
+            return
+
+        existing = set(self._required_docs)
+        for pack in ctx.nexus_private_analysis_packs:
+            pack_slug = re.sub(
+                r"[^A-Za-z0-9]+", "_", pack.receipt.pack_id
+            ).strip("_").upper()[:40]
+            for output in pack.artifact.output_documents:
+                output_slug = re.sub(
+                    r"[^A-Za-z0-9]+", "_", output.id
+                ).strip("_").upper()[:60]
+                doc_name = f"PRIVATE_ANALYSIS__{pack_slug}__{output_slug}"
+                if not doc_name or doc_name in existing:
+                    raise RuntimeError(
+                        "Private Analysis Pack output filename collides with a required document: "
+                        + doc_name
+                    )
+                existing.add(doc_name)
+                self._required_docs.append(doc_name)
+                self._doc_assignments.setdefault("private_analysis", []).append(doc_name)
+                self._doc_bundle_map[doc_name] = "private_analysis"
+                self._doc_section_bundle_map[doc_name] = set()
+                self._doc_section_requirements_extra[doc_name] = [
+                    section.heading for section in output.sections
+                ]
+                self._private_analysis_instructions[doc_name] = (
+                    private_analysis_instructions_for_document(pack, output.id)
+                )
+
     async def _phase3_docs(
         self,
         ctx: DocGenContext,
         state: HarnessRunState,
         log_cb: LogCallback,
     ) -> None:
+        self._apply_private_analysis_packs(ctx)
         scorecard = ctx.staging_dir / "_assessment" / "scorecard.md"
         _doc_write_provider = self._provider_for_phase("doc_write")
         opts = ModelOptions(
@@ -2622,6 +2661,8 @@ Fallback plan example:
                 plugin_pack_dir=self.plugin_pack_dir,
                 extra_section_requirements=self._doc_section_requirements_extra,
                 scoped_unit=self._per_job_doc_units.get(doc_name),
+                nexus_presentation=ctx.nexus_presentation,
+                private_analysis_instructions=self._private_analysis_instructions.get(doc_name, ""),
             )
             context_files = self._phase3_context_files(ctx, doc_name)
             if scorecard.exists() and not self._pack_contract_mode:

@@ -23,7 +23,8 @@ from urllib.parse import urlencode
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError as JWTError
 from sqlalchemy import select
 
 from src.api.dependencies import DBSession
@@ -156,8 +157,6 @@ async def sso_callback(request: Request, db: DBSession):
 
     sub: str = claims.get("sub", "")
     email: str = claims.get("email", "")
-    name: str = claims.get("name", "") or claims.get("preferred_username", "")
-
     if not sub or not email:
         raise api_error(400, "sso_missing_claims", "ID token missing required claims (sub, email)")
 

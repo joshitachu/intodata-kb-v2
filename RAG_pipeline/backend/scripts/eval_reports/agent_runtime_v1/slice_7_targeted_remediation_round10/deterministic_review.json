@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0.0",
+  "attempts": [
+    {
+      "attempt_id": "rag.followup.jobs.001.keyword_collision:rag.followup.jobs.001.keyword_collision.turn-1:stream",
+      "scenario_id": "rag.followup.jobs.001.keyword_collision",
+      "prompt_id": "rag.followup.jobs.001.keyword_collision",
+      "family": "rag_followup",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "trajectory"
+      ],
+      "taxonomy": [
+        "MODEL_TOOL"
+      ],
+      "assistant_text": "Based on the evidence from the `list_project_documents` tool, I can identify the ten generated job document names. However, I must note that the evidence only provides the **filenames** of thegenerated documents, not the actual `job_name` properties defined within the document content.The filenames appear to follow a pattern of `01_INTERFACE_TEMPLATE__{InterfaceName}__{JobName}.md`. Here are the ten job document names as derived from the filenames: | # | Job Document Name(from filename) | Source Evidence | |---|-----------------------------------|-----------------|| 1 | AssetCheck_GetLocation | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md` | | 2 | AssetCheck_GetLocations | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md` | | 3 | AssetCheck_GetWorkOrder | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md` | | 4 | AssetCheck_GetWorkOrders | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md` | | 5 | AssetCheck_Main_Job | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md` | | 6 | AssetCheck_SendServiceRequest | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md` | | 7 | AssetCheck_SendWorkOrderUpdate | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md` | | 8 | Maximo2AssetCheck_MainJob | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md` | | 9 | Maximo2AssetCheck_SendLocation | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md` | | 10 | Maximo2AssetCheck_SendWorkOrder | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md` | **Important Note:** The evidence only confirms the **existence** of theseten generated documents and their filenames. The actual `job_name` values defined within each document's content have not been verified from the document bodies themselves.",
+      "review_rationale": "Expected tools [['project_document_list']]; observed ['project_document_list', 'documentation_search', 'document_read']. Tool path ['project_document_list', 'documentation_search', 'document_read'] does not match the authored path.",
+      "tool_trajectory": [
+        "project_document_list",
+        "documentation_search",
+        "document_read"
+      ],
+      "safe_arguments": [],
+      "latency_ms": 36971.5442089946,
+      "input_tokens": 55725,
+      "output_tokens": 1447,
+      "cost_usd": 0.017586,
+      "clarification_expected": false,
+      "clarified": false,
+      "unsupported_claims": 0
+    }
+  ],
+  "total_attempts": 1,
+  "passed_attempts": 0,
+  "failed_attempts": 1
+}

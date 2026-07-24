@@ -1,0 +1,3269 @@
+[
+  {
+    "attempt_id": "rag.followup.jobs.001.informal:rag.followup.jobs.001.informal.turn-1:nonstream",
+    "scenario_id": "rag.followup.jobs.001.informal",
+    "family": "rag_followup",
+    "prompt_id": "rag.followup.jobs.001.informal",
+    "turn_id": "rag.followup.jobs.001.informal.turn-1",
+    "transport": "nonstream",
+    "status_code": 200,
+    "assistant_text": "Based on the evidence returned by `list_project_documents`, here are the generated job documents for the **reverseEngineer** project:\n\n| # | Job Name | Evidence ID |\n|---|----------|-------------|\n| 1 | AssetCheck_GetLocation | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md` |\n| 2 | AssetCheck_GetLocations | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md` |\n| 3 | AssetCheck_GetWorkOrder | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md` |\n| 4 | AssetCheck_GetWorkOrders | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md` |\n| 5 | AssetCheck_Main_Job | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md` |\n| 6 | AssetCheck_SendServiceRequest | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md` |\n| 7 | AssetCheck_SendWorkOrderUpdate | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md` |\n| 8 | Maximo2AssetCheck_MainJob | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md` |\n| 9 | Maximo2AssetCheck_SendLocation | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md` |\n| 10 | Maximo2AssetCheck_SendWorkOrder | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md` |\n\nThe grouping into \"AssetCheck_Interface\" and \"Maximo2AssetCheck\" is derived from the evidence IDs themselves, which contain these interface names as path components.",
+    "public_events": [
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000001",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 1,
+        "type": "run.started",
+        "created_at": "2026-07-21T16:35:37.045294Z",
+        "public_payload": {
+          "status": "running",
+          "cohort": "v2_effect_primary",
+          "transport": "nonstream",
+          "objective": "Quick one \u2014 list those ten jobs."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000002",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 2,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:35:39.225436Z",
+        "public_payload": {
+          "tool_label": "list project documents",
+          "status": "proposed",
+          "call_ref": "list_project_documents_0"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000003",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 3,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:35:39.242553Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000004",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 4,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:35:39.246576Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000005",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 5,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:35:39.250186Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000006",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 6,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:35:39.266403Z",
+        "public_payload": {
+          "tool_label": "list project documents",
+          "status": "succeeded",
+          "summary": "Retrieved 10 evidence item(s).",
+          "evidence_refs": [
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md",
+              "observed_at": "2026-07-13T21:40:15.298821+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md",
+              "observed_at": "2026-07-13T21:41:23.655640+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md",
+              "observed_at": "2026-07-13T21:40:05.383964+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md",
+              "observed_at": "2026-07-13T21:41:02.949545+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md",
+              "observed_at": "2026-07-13T21:44:27.062386+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+              "observed_at": "2026-07-13T21:44:44.422380+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md",
+              "observed_at": "2026-07-13T21:45:23.619117+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md",
+              "observed_at": "2026-07-13T21:44:07.075067+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md",
+              "observed_at": "2026-07-13T21:49:24.568409+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md",
+              "observed_at": "2026-07-13T21:49:15.998995+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md"
+            }
+          ],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000007",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 7,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:35:39.269451Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000008",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 8,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:35:50.231248Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000009",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 9,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:35:50.237779Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000010",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 10,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:06.052157Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000011",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 11,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:06.061958Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000012",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 12,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:06.080141Z",
+        "public_payload": {
+          "content": "Based on the evidence returned by `list_project_documents`, here are the generated job documents"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000013",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 13,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:06.081892Z",
+        "public_payload": {
+          "content": "for the **reverseEngineer** project: | # | Job Name | Evidence ID | |---|----------|----------"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000014",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 14,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:06.083350Z",
+        "public_payload": {
+          "content": "---| | 1 | AssetCheck_GetLocation | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_I"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000015",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 15,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:06.084814Z",
+        "public_payload": {
+          "content": "nterface__AssetCheck_GetLocation.md` | | 2 | AssetCheck_GetLocations | `mcp-doc:reverseEngineer:"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000016",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 16,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:06.086122Z",
+        "public_payload": {
+          "content": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md` | | 3 | AssetCheck_GetW"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000017",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 17,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:06.087448Z",
+        "public_payload": {
+          "content": "orkOrder | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetW"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000018",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 18,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:06.088710Z",
+        "public_payload": {
+          "content": "orkOrder.md` | | 4 | AssetCheck_GetWorkOrders | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000019",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 19,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:06.089910Z",
+        "public_payload": {
+          "content": "AssetCheck_Interface__AssetCheck_GetWorkOrders.md` | | 5 | AssetCheck_Main_Job | `mcp-doc:revers"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000020",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 20,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:06.091299Z",
+        "public_payload": {
+          "content": "eEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md` | | 6 | AssetChec"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000021",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 21,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:06.092421Z",
+        "public_payload": {
+          "content": "k_SendServiceRequest | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__Ass"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000022",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 22,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:06.093559Z",
+        "public_payload": {
+          "content": "etCheck_SendServiceRequest.md` | | 7 | AssetCheck_SendWorkOrderUpdate | `mcp-doc:reverseEngineer"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000023",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 23,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:06.095010Z",
+        "public_payload": {
+          "content": ":01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md` | | 8 | Maximo2"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000024",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 24,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:06.096091Z",
+        "public_payload": {
+          "content": "AssetCheck_MainJob | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2A"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000025",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 25,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:06.097135Z",
+        "public_payload": {
+          "content": "ssetCheck_MainJob.md` | | 9 | Maximo2AssetCheck_SendLocation | `mcp-doc:reverseEngineer:01_INTER"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000026",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 26,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:06.098152Z",
+        "public_payload": {
+          "content": "FACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md` | | 10 | Maximo2AssetCheck_"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000027",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 27,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:06.099180Z",
+        "public_payload": {
+          "content": "SendWorkOrder | `mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetC"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000028",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 28,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:06.100188Z",
+        "public_payload": {
+          "content": "heck_SendWorkOrder.md` | The grouping into \"AssetCheck_Interface\" and \"Maximo2AssetCheck\" is de"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000029",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 29,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:06.101193Z",
+        "public_payload": {
+          "content": "rived from the evidence IDs themselves, which contain these interface names as path components."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000030",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 30,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T16:36:06.102200Z",
+        "public_payload": {
+          "message_id": 1317,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gPHPQRwGS_jgkwt5br-VGwg8:evt:000031",
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "sequence": 31,
+        "type": "run.completed",
+        "created_at": "2026-07-21T16:36:06.106415Z",
+        "public_payload": {
+          "status": "completed",
+          "stop_reason": "answered",
+          "usage": {
+            "input_tokens": 31825,
+            "output_tokens": 1225,
+            "model_cost_usd": 0.010282,
+            "capability_cost_usd": 0.0
+          },
+          "latency_ms": 29048
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1317,
+        "latency_ms": 29048,
+        "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+        "replayed": true,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 29104.121416981798,
+    "input_tokens": 31825,
+    "output_tokens": 1225,
+    "cost_usd": 0.010282,
+    "run_id": "run-gPHPQRwGS_jgkwt5br-VGwg8",
+    "persisted_message_id": 1317,
+    "error": null
+  },
+  {
+    "attempt_id": "rag.followup.jobs.001.keyword_collision:rag.followup.jobs.001.keyword_collision.turn-1:stream",
+    "scenario_id": "rag.followup.jobs.001.keyword_collision",
+    "family": "rag_followup",
+    "prompt_id": "rag.followup.jobs.001.keyword_collision",
+    "turn_id": "rag.followup.jobs.001.keyword_collision.turn-1",
+    "transport": "stream",
+    "status_code": 200,
+    "assistant_text": "I reached this run's call limit before I could safely finish.",
+    "public_events": [
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000001",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 1,
+        "type": "run.started",
+        "created_at": "2026-07-21T16:36:06.151961Z",
+        "public_payload": {
+          "status": "running",
+          "cohort": "v2_effect_primary",
+          "transport": "stream",
+          "objective": "Show those ten document jobs, not the workflow log."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000002",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 2,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:07.715443Z",
+        "public_payload": {
+          "tool_label": "list project documents",
+          "status": "proposed",
+          "call_ref": "list_project_documents_0"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000003",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 3,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:07.722072Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000004",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 4,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:07.724834Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000005",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 5,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:07.726833Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000006",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 6,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:36:07.740448Z",
+        "public_payload": {
+          "tool_label": "list project documents",
+          "status": "succeeded",
+          "summary": "Retrieved 10 evidence item(s).",
+          "evidence_refs": [
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md",
+              "observed_at": "2026-07-13T21:40:15.298821+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md",
+              "observed_at": "2026-07-13T21:41:23.655640+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md",
+              "observed_at": "2026-07-13T21:40:05.383964+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md",
+              "observed_at": "2026-07-13T21:41:02.949545+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md",
+              "observed_at": "2026-07-13T21:44:27.062386+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+              "observed_at": "2026-07-13T21:44:44.422380+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md",
+              "observed_at": "2026-07-13T21:45:23.619117+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md",
+              "observed_at": "2026-07-13T21:44:07.075067+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md",
+              "observed_at": "2026-07-13T21:49:24.568409+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md",
+              "observed_at": "2026-07-13T21:49:15.998995+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md"
+            }
+          ],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000007",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 7,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:07.743419Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000008",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 8,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:24.389061Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000009",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 9,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:24.392790Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000010",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 10,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:26.041847Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "proposed",
+          "call_ref": "read_document_1"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000011",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 11,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:26.047102Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000012",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 12,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:26.801893Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "proposed",
+          "call_ref": "read_document_2"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000013",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 13,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:26.807688Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000014",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 14,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:27.537804Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "proposed",
+          "call_ref": "read_document_3"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000015",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 15,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:27.543555Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000016",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 16,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:28.337659Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "proposed",
+          "call_ref": "read_document_4"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000017",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 17,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:28.346081Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000018",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 18,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:29.188907Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "proposed",
+          "call_ref": "read_document_5"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000019",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 19,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:29.195471Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000020",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 20,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:29.922632Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "proposed",
+          "call_ref": "read_document_6"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000021",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 21,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:29.927699Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000022",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 22,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:30.724755Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "proposed",
+          "call_ref": "read_document_7"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000023",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 23,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:30.731078Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000024",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 24,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:31.542654Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "proposed",
+          "call_ref": "read_document_8"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000025",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 25,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:31.550548Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000026",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 26,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:32.350288Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "proposed",
+          "call_ref": "read_document_9"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000027",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 27,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:32.356094Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000028",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 28,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:33.157707Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "proposed",
+          "call_ref": "read_document_10"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000029",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 29,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:33.162343Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000030",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 30,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:33.781990Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000031",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 31,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:33.791923Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000032",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 32,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:36:33.816243Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "failed",
+          "summary": "The run budget stopped this tool before execution.",
+          "evidence_refs": [],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000033",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 33,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:36:33.819760Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "failed",
+          "summary": "The run budget stopped this tool before execution.",
+          "evidence_refs": [],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000034",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 34,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:36:33.822192Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "failed",
+          "summary": "The run budget stopped this tool before execution.",
+          "evidence_refs": [],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000035",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 35,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:36:33.824465Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "failed",
+          "summary": "The run budget stopped this tool before execution.",
+          "evidence_refs": [],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000036",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 36,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:36:33.826578Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "failed",
+          "summary": "The run budget stopped this tool before execution.",
+          "evidence_refs": [],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000037",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 37,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:33.828775Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000038",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 38,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:33.829841Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000039",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 39,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:33.830982Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000040",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 40,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:33.832299Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000041",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 41,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:33.833416Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000042",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 42,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:36:33.834563Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "failed",
+          "summary": "The run budget stopped this tool before execution.",
+          "evidence_refs": [],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000043",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 43,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:33.836440Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000044",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 44,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:36:33.837423Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "failed",
+          "summary": "The run budget stopped this tool before execution.",
+          "evidence_refs": [],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000045",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 45,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:33.839218Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000046",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 46,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:36:34.220712Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "succeeded",
+          "summary": "No evidence matched the authorized scope.",
+          "evidence_refs": [],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000047",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 47,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:34.224211Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000048",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 48,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:36:34.593492Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "succeeded",
+          "summary": "No evidence matched the authorized scope.",
+          "evidence_refs": [],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000049",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 49,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:34.600190Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000050",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 50,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:36:34.941033Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "succeeded",
+          "summary": "No evidence matched the authorized scope.",
+          "evidence_refs": [],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000051",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 51,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:34.948013Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000052",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 52,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:34.970666Z",
+        "public_payload": {
+          "content": "I reached this run's call limit before I could safely finish."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000053",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 53,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T16:36:34.972241Z",
+        "public_payload": {
+          "message_id": 1322,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-72--xQO3E5eW1B1Ke3QTrI5K:evt:000054",
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "sequence": 54,
+        "type": "run.interrupted",
+        "created_at": "2026-07-21T16:36:34.975584Z",
+        "public_payload": {
+          "status": "interrupted",
+          "stop_reason": "tool_call_limit"
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1322,
+        "latency_ms": 28823,
+        "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+        "replayed": false,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 28943.77179100411,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cost_usd": 0.0,
+    "run_id": "run-72--xQO3E5eW1B1Ke3QTrI5K",
+    "persisted_message_id": 1322,
+    "error": null
+  },
+  {
+    "attempt_id": "rag.followup.jobs.001.negation:rag.followup.jobs.001.negation.turn-1:nonstream",
+    "scenario_id": "rag.followup.jobs.001.negation",
+    "family": "rag_followup",
+    "prompt_id": "rag.followup.jobs.001.negation",
+    "turn_id": "rag.followup.jobs.001.negation.turn-1",
+    "transport": "nonstream",
+    "status_code": 200,
+    "assistant_text": "I ran into a problem completing this request and could not produce a grounded answer. Please try again, and rephrase if the issue continues.",
+    "public_events": [
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000001",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 1,
+        "type": "run.started",
+        "created_at": "2026-07-21T16:36:35.123671Z",
+        "public_payload": {
+          "status": "running",
+          "cohort": "v2_effect_primary",
+          "transport": "nonstream",
+          "objective": "Using reverseEngineer documentation, verify whether the source names jobs, but do not list the names."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000002",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 2,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:36.768051Z",
+        "public_payload": {
+          "tool_label": "search documentation",
+          "status": "proposed",
+          "call_ref": "search_documentation_0"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000003",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 3,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:36.776387Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000004",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 4,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:37.194417Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000005",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 5,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:37.198531Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000006",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 6,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:36:38.029215Z",
+        "public_payload": {
+          "tool_label": "search documentation",
+          "status": "succeeded",
+          "summary": "Retrieved 10 evidence item(s).",
+          "evidence_refs": [
+            {
+              "chunk_index": 2,
+              "document_id": 448,
+              "evidence_id": "doc:448:2",
+              "score": 0.4008,
+              "source_type": "rag_document"
+            },
+            {
+              "chunk_index": 3,
+              "document_id": 448,
+              "evidence_id": "doc:448:3",
+              "score": 0.4219,
+              "source_type": "rag_document"
+            },
+            {
+              "chunk_index": 4,
+              "document_id": 448,
+              "evidence_id": "doc:448:4",
+              "score": 0.4008,
+              "source_type": "rag_document"
+            },
+            {
+              "chunk_index": 1,
+              "document_id": 453,
+              "evidence_id": "doc:453:1",
+              "score": 0.3971,
+              "source_type": "rag_document"
+            },
+            {
+              "chunk_index": 2,
+              "document_id": 453,
+              "evidence_id": "doc:453:2",
+              "score": 0.418,
+              "source_type": "rag_document"
+            },
+            {
+              "chunk_index": 3,
+              "document_id": 453,
+              "evidence_id": "doc:453:3",
+              "score": 0.3971,
+              "source_type": "rag_document"
+            },
+            {
+              "chunk_index": 1,
+              "document_id": 449,
+              "evidence_id": "doc:449:1",
+              "score": 0.3897,
+              "source_type": "rag_document"
+            },
+            {
+              "chunk_index": 2,
+              "document_id": 449,
+              "evidence_id": "doc:449:2",
+              "score": 0.4102,
+              "source_type": "rag_document"
+            },
+            {
+              "chunk_index": 3,
+              "document_id": 449,
+              "evidence_id": "doc:449:3",
+              "score": 0.3897,
+              "source_type": "rag_document"
+            },
+            {
+              "chunk_index": 8,
+              "document_id": 448,
+              "evidence_id": "doc:448:8",
+              "score": 0.373,
+              "source_type": "rag_document"
+            }
+          ],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000007",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 7,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:38.031799Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000008",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 8,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:43.390540Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000009",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 9,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:43.395023Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000010",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 10,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:45.396564Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "proposed",
+          "call_ref": "read_document_1"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000011",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 11,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:36:45.401941Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000012",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 12,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:46.064076Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000013",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 13,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:46.069639Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000014",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 14,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:36:47.137331Z",
+        "public_payload": {
+          "tool_label": "read document",
+          "status": "succeeded",
+          "summary": "Retrieved 10 evidence item(s).",
+          "evidence_refs": [
+            {
+              "chunk_index": 2,
+              "document_id": 448,
+              "evidence_id": "doc:448:2",
+              "project_id": "reverseEngineer",
+              "score": 0.4008,
+              "source_type": "rag_document_passage"
+            },
+            {
+              "chunk_index": 3,
+              "document_id": 448,
+              "evidence_id": "doc:448:3",
+              "project_id": "reverseEngineer",
+              "score": 0.4219,
+              "source_type": "rag_document_passage"
+            },
+            {
+              "chunk_index": 4,
+              "document_id": 448,
+              "evidence_id": "doc:448:4",
+              "project_id": "reverseEngineer",
+              "score": 0.4008,
+              "source_type": "rag_document_passage"
+            },
+            {
+              "chunk_index": 8,
+              "document_id": 448,
+              "evidence_id": "doc:448:8",
+              "project_id": "reverseEngineer",
+              "score": 0.373,
+              "source_type": "rag_document_passage"
+            },
+            {
+              "chunk_index": 9,
+              "document_id": 448,
+              "evidence_id": "doc:448:9",
+              "project_id": "reverseEngineer",
+              "score": 0.3926,
+              "source_type": "rag_document_passage"
+            },
+            {
+              "chunk_index": 10,
+              "document_id": 448,
+              "evidence_id": "doc:448:10",
+              "project_id": "reverseEngineer",
+              "score": 0.373,
+              "source_type": "rag_document_passage"
+            },
+            {
+              "chunk_index": 5,
+              "document_id": 448,
+              "evidence_id": "doc:448:5",
+              "project_id": "reverseEngineer",
+              "score": 0.3228,
+              "source_type": "rag_document_passage"
+            },
+            {
+              "chunk_index": 6,
+              "document_id": 448,
+              "evidence_id": "doc:448:6",
+              "project_id": "reverseEngineer",
+              "score": 0.3154,
+              "source_type": "rag_document_passage"
+            },
+            {
+              "chunk_index": 7,
+              "document_id": 448,
+              "evidence_id": "doc:448:7",
+              "project_id": "reverseEngineer",
+              "score": 0.3117,
+              "source_type": "rag_document_passage"
+            },
+            {
+              "chunk_index": 31,
+              "document_id": 448,
+              "evidence_id": "doc:448:31",
+              "project_id": "reverseEngineer",
+              "score": 0.308,
+              "source_type": "rag_document_passage"
+            }
+          ],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000015",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 15,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:47.144589Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000016",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 16,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:53.333216Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000017",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 17,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:53.336862Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000018",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 18,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:53.345161Z",
+        "public_payload": {
+          "content": "I ran into a problem completing this request and could not produce a grounded answer. Please try"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000019",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 19,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:53.346869Z",
+        "public_payload": {
+          "content": "again, and rephrase if the issue continues."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000020",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 20,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T16:36:53.348220Z",
+        "public_payload": {
+          "message_id": 1326,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r:evt:000021",
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "sequence": 21,
+        "type": "run.completed",
+        "created_at": "2026-07-21T16:36:53.352148Z",
+        "public_payload": {
+          "status": "completed",
+          "stop_reason": "answered",
+          "usage": {
+            "input_tokens": 41415,
+            "output_tokens": 531,
+            "model_cost_usd": 0.012743,
+            "capability_cost_usd": 0.0
+          },
+          "latency_ms": 18229
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1326,
+        "latency_ms": 18229,
+        "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+        "replayed": true,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 18263.241790991742,
+    "input_tokens": 41415,
+    "output_tokens": 531,
+    "cost_usd": 0.012743,
+    "run_id": "run-q5uaQhz3TFt9-UQ1Jr6E5B0r",
+    "persisted_message_id": 1326,
+    "error": null
+  },
+  {
+    "attempt_id": "capability.discussion.001.keyword_collision:capability.discussion.001.keyword_collision.turn-1:stream",
+    "scenario_id": "capability.discussion.001.keyword_collision",
+    "family": "discuss_versus_act",
+    "prompt_id": "capability.discussion.001.keyword_collision",
+    "turn_id": "capability.discussion.001.keyword_collision.turn-1",
+    "transport": "stream",
+    "status_code": 200,
+    "assistant_text": "Yes. Nexus can create private Analysis Packs. The capability is called `create_pack_draft`. Itbegins a new private Pack draft scoped to the current conversation. After creation, you can iteratively refine the draft's declarative fields (purpose, audience, analyses, evidence requirements, output documents, scoring dimensions, compatibility, and capability requirements) using `update_pack_draft`. Once complete, `validate_pack_draft` checks readiness, and `save_pack` publishesan immutable private version. This is a reversible write operation (approval=not_declared), soit does not require explicit approval to initiate.",
+    "public_events": [
+      {
+        "event_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs:evt:000001",
+        "run_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs",
+        "sequence": 1,
+        "type": "run.started",
+        "created_at": "2026-07-21T16:36:53.388635Z",
+        "public_payload": {
+          "status": "running",
+          "cohort": "v2_effect_primary",
+          "transport": "stream",
+          "objective": "Without switching to logs, Packs, or documents: Can Nexus create Packs?"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs:evt:000002",
+        "run_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs",
+        "sequence": 2,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:58.636008Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs:evt:000003",
+        "run_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs",
+        "sequence": 3,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:36:58.641437Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs:evt:000004",
+        "run_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs",
+        "sequence": 4,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:58.653601Z",
+        "public_payload": {
+          "content": "Yes. Nexus can create private Analysis Packs. The capability is called `create_pack_draft`. It"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs:evt:000005",
+        "run_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs",
+        "sequence": 5,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:58.655769Z",
+        "public_payload": {
+          "content": "begins a new private Pack draft scoped to the current conversation. After creation, you can iter"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs:evt:000006",
+        "run_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs",
+        "sequence": 6,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:58.657678Z",
+        "public_payload": {
+          "content": "atively refine the draft's declarative fields (purpose, audience, analyses, evidence requirement"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs:evt:000007",
+        "run_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs",
+        "sequence": 7,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:58.659866Z",
+        "public_payload": {
+          "content": "s, output documents, scoring dimensions, compatibility, and capability requirements) using `upda"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs:evt:000008",
+        "run_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs",
+        "sequence": 8,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:58.661546Z",
+        "public_payload": {
+          "content": "te_pack_draft`. Once complete, `validate_pack_draft` checks readiness, and `save_pack` publishes"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs:evt:000009",
+        "run_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs",
+        "sequence": 9,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:58.663166Z",
+        "public_payload": {
+          "content": "an immutable private version. This is a reversible write operation (approval=not_declared), so"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs:evt:000010",
+        "run_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs",
+        "sequence": 10,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:36:58.664796Z",
+        "public_payload": {
+          "content": "it does not require explicit approval to initiate."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs:evt:000011",
+        "run_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs",
+        "sequence": 11,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T16:36:58.666164Z",
+        "public_payload": {
+          "message_id": 1329,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs:evt:000012",
+        "run_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs",
+        "sequence": 12,
+        "type": "run.completed",
+        "created_at": "2026-07-21T16:36:58.669451Z",
+        "public_payload": {
+          "status": "completed",
+          "stop_reason": "answered",
+          "usage": {
+            "input_tokens": 9757,
+            "output_tokens": 188,
+            "model_cost_usd": 0.00304,
+            "capability_cost_usd": 0.0
+          },
+          "latency_ms": 5267
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1329,
+        "latency_ms": 5267,
+        "run_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs",
+        "replayed": false,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 5405.466542055365,
+    "input_tokens": 9757,
+    "output_tokens": 188,
+    "cost_usd": 0.00304,
+    "run_id": "run-EzZhMUHo8qbfXmAB1sp7RPLs",
+    "persisted_message_id": 1329,
+    "error": null
+  },
+  {
+    "attempt_id": "pack.create.001.negation:pack.create.001.negation.turn-1:nonstream",
+    "scenario_id": "pack.create.001.negation",
+    "family": "pack_write",
+    "prompt_id": "pack.create.001.negation",
+    "turn_id": "pack.create.001.negation.turn-1",
+    "transport": "nonstream",
+    "status_code": 200,
+    "assistant_text": "I can describe what an Analysis Pack draft would contain based on the available structure, but I won't create one since you've explicitly asked me not to.\n\n## Analysis Pack Draft Structure\n\nAn Analysis Pack draft is a declarative configuration that defines how to analyze and document projects. Here are the key components it would contain:\n\n### Core Metadata\n- **Name** (optional): A descriptive title for the Pack\n- **Purpose**: A clear statement (up to 1000 characters) explaining what the Pack is designed to analyze and why\n- **Schema Version**: Currently version 3\n\n### Audience Definition\n- **Label**: Who this Pack is for (e.g., \"Security Reviewers\", \"Migration Team\")\n- **Roles**: List of stakeholder roles (up to 12)\n- **Decision Needs**: What decisions the audience needs to make\n- **Desired Outcome**: What successful use of this Pack achieves\n- **Domain Familiarity**: Expected expertise level of users\n- **Render Preferences**: Detail level, seniority, decision horizon, and familiarity settings for output formatting\n\n### Analyses (1-30 items)\nEach analysis defines a specific investigation:\n- **ID**: Unique identifier (lowercase, dots/colons/underscores allowed)\n- **Label**: Human-readable name\n- **Purpose**: What this analysis investigates (up to 500 characters)\n\n### Evidence Requirements (1-30 items)\nWhat evidence must be gathered:\n- **ID**: Unique identifier\n- **Label**: Description of the evidence needed\n- **Required**: Whether this evidence is mandatory\n- **Weight**: Importance (1-100)\n\n### Output Documents (1-12 items)\nThe documentation to be generated:\n- **ID**: Unique identifier\n- **Title**: Document title\n- **Sections**: Ordered list with IDs, headings, and sequence numbers\n\n### Optional Components\n- **Capability Requirements**: Tools/capabilities needed (with purpose and whether required)\n- **Scoring Dimensions**: Criteria for evaluating findings (with weights)\n- **Compatibility**: Required domains and supported project kinds\n\n### What a Draft Does NOT Contain\nThe server explicitly rejects: prompts, tools, permissions, code, commands, and executable workflow fields. Packs are purely declarative configurations that guide the analysis process.\n\nWould you like me to elaborate on any specific aspect of Pack structure?",
+    "public_events": [
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000001",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 1,
+        "type": "run.started",
+        "created_at": "2026-07-21T16:36:58.820824Z",
+        "public_payload": {
+          "status": "running",
+          "cohort": "v2_effect_primary",
+          "transport": "nonstream",
+          "objective": "Do not make a Pack; describe what the draft would contain."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000002",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 2,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:10.416390Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000003",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 3,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:10.426334Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000004",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 4,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.438845Z",
+        "public_payload": {
+          "content": "I can describe what an Analysis Pack draft would contain based on the available structure, but I"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000005",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 5,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.440586Z",
+        "public_payload": {
+          "content": "won't create one since you've explicitly asked me not to. ## Analysis Pack Draft Structure An"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000006",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 6,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.442201Z",
+        "public_payload": {
+          "content": "Analysis Pack draft is a declarative configuration that defines how to analyze and document pro"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000007",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 7,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.443873Z",
+        "public_payload": {
+          "content": "jects. Here are the key components it would contain: ### Core Metadata - **Name** (optional): A"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000008",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 8,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.445329Z",
+        "public_payload": {
+          "content": "descriptive title for the Pack - **Purpose**: A clear statement (up to 1000 characters) explain"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000009",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 9,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.446865Z",
+        "public_payload": {
+          "content": "ing what the Pack is designed to analyze and why - **Schema Version**: Currently version 3 ###"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000010",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 10,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.448311Z",
+        "public_payload": {
+          "content": "Audience Definition - **Label**: Who this Pack is for (e.g., \"Security Reviewers\", \"Migration Te"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000011",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 11,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.449628Z",
+        "public_payload": {
+          "content": "am\") - **Roles**: List of stakeholder roles (up to 12) - **Decision Needs**: What decisions the"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000012",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 12,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.450896Z",
+        "public_payload": {
+          "content": "audience needs to make - **Desired Outcome**: What successful use of this Pack achieves - **Doma"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000013",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 13,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.452226Z",
+        "public_payload": {
+          "content": "in Familiarity**: Expected expertise level of users - **Render Preferences**: Detail level, seni"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000014",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 14,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.453514Z",
+        "public_payload": {
+          "content": "ority, decision horizon, and familiarity settings for output formatting ### Analyses (1-30 item"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000015",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 15,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.454742Z",
+        "public_payload": {
+          "content": "s) Each analysis defines a specific investigation: - **ID**: Unique identifier (lowercase, dots/"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000016",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 16,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.455983Z",
+        "public_payload": {
+          "content": "colons/underscores allowed) - **Label**: Human-readable name - **Purpose**: What this analysis i"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000017",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 17,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.457140Z",
+        "public_payload": {
+          "content": "nvestigates (up to 500 characters) ### Evidence Requirements (1-30 items) What evidence must be"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000018",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 18,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.458351Z",
+        "public_payload": {
+          "content": "gathered: - **ID**: Unique identifier - **Label**: Description of the evidence needed - **Requi"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000019",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 19,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.459469Z",
+        "public_payload": {
+          "content": "red**: Whether this evidence is mandatory - **Weight**: Importance (1-100) ### Output Documents"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000020",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 20,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.460591Z",
+        "public_payload": {
+          "content": "(1-12 items) The documentation to be generated: - **ID**: Unique identifier - **Title**: Docume"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000021",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 21,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.461891Z",
+        "public_payload": {
+          "content": "nt title - **Sections**: Ordered list with IDs, headings, and sequence numbers ### Optional Com"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000022",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 22,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.462943Z",
+        "public_payload": {
+          "content": "ponents - **Capability Requirements**: Tools/capabilities needed (with purpose and whether requi"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000023",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 23,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.464112Z",
+        "public_payload": {
+          "content": "red) - **Scoring Dimensions**: Criteria for evaluating findings (with weights) - **Compatibility"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000024",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 24,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.465213Z",
+        "public_payload": {
+          "content": "**: Required domains and supported project kinds ### What a Draft Does NOT Contain The server e"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000025",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 25,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.466259Z",
+        "public_payload": {
+          "content": "xplicitly rejects: prompts, tools, permissions, code, commands, and executable workflow fields."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000026",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 26,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.467259Z",
+        "public_payload": {
+          "content": "Packs are purely declarative configurations that guide the analysis process. Would you like me"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000027",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 27,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:10.468256Z",
+        "public_payload": {
+          "content": "to elaborate on any specific aspect of Pack structure?"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000028",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 28,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T16:37:10.469218Z",
+        "public_payload": {
+          "message_id": 1331,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7:evt:000029",
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "sequence": 29,
+        "type": "run.completed",
+        "created_at": "2026-07-21T16:37:10.471794Z",
+        "public_payload": {
+          "status": "completed",
+          "stop_reason": "answered",
+          "usage": {
+            "input_tokens": 9753,
+            "output_tokens": 476,
+            "model_cost_usd": 0.003211,
+            "capability_cost_usd": 0.0
+          },
+          "latency_ms": 11625
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1331,
+        "latency_ms": 11625,
+        "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+        "replayed": true,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 11682.620666979346,
+    "input_tokens": 9753,
+    "output_tokens": 476,
+    "cost_usd": 0.003211,
+    "run_id": "run-Am2ygQYmKNZnQKO-y9PIeoQ7",
+    "persisted_message_id": 1331,
+    "error": null
+  },
+  {
+    "attempt_id": "task.switch.001.informal:task.switch.001.informal.turn-1:nonstream",
+    "scenario_id": "task.switch.001.informal",
+    "family": "task_interruption",
+    "prompt_id": "task.switch.001.informal",
+    "turn_id": "task.switch.001.informal.turn-1",
+    "transport": "nonstream",
+    "status_code": 200,
+    "assistant_text": "Based on the evidence retrieved, here is the **reverseEngineer** project overview:\n\n| Attribute | Value |\n|-----------|-------|\n| **Project ID** | reverseEngineer |\n| **Platform** | talend |\n| **Source type** | zip |\n| **Status** | ready |\n| **Integration jobs** | 10 |\n| **Generated documents** | 10 |\n| **Documents in RAG** | 21 |\n\n**Recent activity:**\n- Last scan: 2026-07-13 20:07\n- Last documentation generation: 2026-07-13 21:49\n- Last RAG push: 2026-07-13 21:49\n- Created: 2026-07-13\n\nAll factual claims above are supported by evidence `metadata:project_detail:reverseEngineer`.\n\n```json\nnexus-grounding\n{\n  \"answer_status\": \"grounded\",\n  \"citations\": [\"metadata:project_detail:reverseEngineer\"],\n  \"disclosures\": []\n}\n```",
+    "public_events": [
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000001",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 1,
+        "type": "run.started",
+        "created_at": "2026-07-21T16:37:10.507925Z",
+        "public_payload": {
+          "status": "running",
+          "cohort": "v2_effect_primary",
+          "transport": "nonstream",
+          "objective": "Quick one \u2014 tell me about reverseEngineer project instead."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000002",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 2,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:37:12.023116Z",
+        "public_payload": {
+          "tool_label": "query project metadata",
+          "status": "proposed",
+          "call_ref": "query_project_metadata_0"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000003",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 3,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:37:12.030005Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000004",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 4,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:12.254738Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000005",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 5,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:12.257868Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000006",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 6,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:37:12.266336Z",
+        "public_payload": {
+          "tool_label": "query project metadata",
+          "status": "succeeded",
+          "summary": "Retrieved 1 evidence item(s).",
+          "evidence_refs": [
+            {
+              "evidence_id": "metadata:project_detail:reverseEngineer",
+              "observed_at": "2026-07-21T16:37:12.264575Z",
+              "project_id": "reverseEngineer",
+              "source_type": "structured_metadata"
+            }
+          ],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000007",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 7,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:12.270089Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000008",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 8,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:18.194150Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000009",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 9,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:18.199241Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000010",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 10,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:23.977459Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000011",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 11,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:23.981810Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000012",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 12,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:23.993677Z",
+        "public_payload": {
+          "content": "Based on the evidence retrieved, here is the **reverseEngineer** project overview: | Attribute"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000013",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 13,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:23.995889Z",
+        "public_payload": {
+          "content": "| Value | |-----------|-------| | **Project ID** | reverseEngineer | | **Platform** | talend | |"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000014",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 14,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:23.997933Z",
+        "public_payload": {
+          "content": "**Source type** | zip | | **Status** | ready | | **Integration jobs** | 10 | | **Generated docu"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000015",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 15,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:23.999955Z",
+        "public_payload": {
+          "content": "ments** | 10 | | **Documents in RAG** | 21 | **Recent activity:** - Last scan: 2026-07-13 20:07"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000016",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 16,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:24.001656Z",
+        "public_payload": {
+          "content": "- Last documentation generation: 2026-07-13 21:49 - Last RAG push: 2026-07-13 21:49 - Created:"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000017",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 17,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:24.003617Z",
+        "public_payload": {
+          "content": "2026-07-13 All factual claims above are supported by evidence `metadata:project_detail:reverseE"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000018",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 18,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:24.005475Z",
+        "public_payload": {
+          "content": "ngineer`. ```json nexus-grounding { \"answer_status\": \"grounded\", \"citations\": [\"metadata:pr"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000019",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 19,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:24.006929Z",
+        "public_payload": {
+          "content": "oject_detail:reverseEngineer\"], \"disclosures\": [] } ```"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000020",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 20,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T16:37:24.008211Z",
+        "public_payload": {
+          "message_id": 1336,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-SMxscNqDrsWyZ6mWLRteSMVT:evt:000021",
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "sequence": 21,
+        "type": "run.completed",
+        "created_at": "2026-07-21T16:37:24.011711Z",
+        "public_payload": {
+          "status": "completed",
+          "stop_reason": "answered",
+          "usage": {
+            "input_tokens": 30243,
+            "output_tokens": 474,
+            "model_cost_usd": 0.009357,
+            "capability_cost_usd": 0.0
+          },
+          "latency_ms": 13488
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1336,
+        "latency_ms": 13488,
+        "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+        "replayed": true,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 13532.067541964352,
+    "input_tokens": 30243,
+    "output_tokens": 474,
+    "cost_usd": 0.009357,
+    "run_id": "run-SMxscNqDrsWyZ6mWLRteSMVT",
+    "persisted_message_id": 1336,
+    "error": null
+  },
+  {
+    "attempt_id": "evidence.none.001.ambiguous:evidence.none.001.ambiguous.turn-1:stream",
+    "scenario_id": "evidence.none.001.ambiguous",
+    "family": "no_evidence",
+    "prompt_id": "evidence.none.001.ambiguous",
+    "turn_id": "evidence.none.001.ambiguous.turn-1",
+    "transport": "stream",
+    "status_code": 200,
+    "assistant_text": "I ran into a problem completing this request and could not produce a grounded answer. Please tryagain, and rephrase if the issue continues.",
+    "public_events": [
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000001",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 1,
+        "type": "run.started",
+        "created_at": "2026-07-21T16:37:24.052431Z",
+        "public_payload": {
+          "status": "running",
+          "cohort": "v2_effect_primary",
+          "transport": "stream",
+          "objective": "Can you handle that one?"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000002",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 2,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:37:28.027468Z",
+        "public_payload": {
+          "tool_label": "read conversation summary",
+          "status": "proposed",
+          "call_ref": "read_conversation_summary_0"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000003",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 3,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:37:28.033726Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000004",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 4,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:28.146280Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000005",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 5,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:28.151365Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000006",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 6,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:37:28.158766Z",
+        "public_payload": {
+          "tool_label": "read conversation summary",
+          "status": "succeeded",
+          "summary": "Retrieved 3 evidence item(s).",
+          "evidence_refs": [
+            {
+              "evidence_id": "conversation:391:message:1338",
+              "source_type": "conversation_message"
+            },
+            {
+              "evidence_id": "conversation:391:message:1339",
+              "source_type": "conversation_message"
+            },
+            {
+              "evidence_id": "conversation:391:message:1340",
+              "source_type": "conversation_message"
+            }
+          ],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000007",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 7,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:28.163482Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000008",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 8,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:33.744025Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000009",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 9,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:33.748165Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000010",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 10,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:37:38.280436Z",
+        "public_payload": {
+          "tool_label": "read conversation summary",
+          "status": "proposed",
+          "call_ref": "read_conversation_summary_1"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000011",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 11,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:37:38.286794Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000012",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 12,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:38.406534Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000013",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 13,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:38.409186Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000014",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 14,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:37:38.412665Z",
+        "public_payload": {
+          "tool_label": "read conversation summary",
+          "status": "succeeded",
+          "summary": "Retrieved 3 evidence item(s).",
+          "evidence_refs": [
+            {
+              "evidence_id": "conversation:391:message:1338",
+              "source_type": "conversation_message"
+            },
+            {
+              "evidence_id": "conversation:391:message:1339",
+              "source_type": "conversation_message"
+            },
+            {
+              "evidence_id": "conversation:391:message:1340",
+              "source_type": "conversation_message"
+            }
+          ],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000015",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 15,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:38.414957Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000016",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 16,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:46.289336Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000017",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 17,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:46.294184Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000018",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 18,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:46.304722Z",
+        "public_payload": {
+          "content": "I ran into a problem completing this request and could not produce a grounded answer. Please try"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000019",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 19,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:46.306537Z",
+        "public_payload": {
+          "content": "again, and rephrase if the issue continues."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000020",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 20,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T16:37:46.308173Z",
+        "public_payload": {
+          "message_id": 1341,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q:evt:000021",
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "sequence": 21,
+        "type": "run.completed",
+        "created_at": "2026-07-21T16:37:46.311865Z",
+        "public_payload": {
+          "status": "completed",
+          "stop_reason": "answered",
+          "usage": {
+            "input_tokens": 41041,
+            "output_tokens": 648,
+            "model_cost_usd": 0.012701,
+            "capability_cost_usd": 0.0
+          },
+          "latency_ms": 22255
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1341,
+        "latency_ms": 22255,
+        "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+        "replayed": false,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 22374.77808300173,
+    "input_tokens": 41041,
+    "output_tokens": 648,
+    "cost_usd": 0.012701,
+    "run_id": "run-Hk-YorDWDz5-rsxEmXRoyy2q",
+    "persisted_message_id": 1341,
+    "error": null
+  },
+  {
+    "attempt_id": "stream.grounding.001:stream.grounding.001.turn-1:stream",
+    "scenario_id": "stream.grounding.001",
+    "family": "grounding_safe_stream",
+    "prompt_id": "stream.grounding.001",
+    "turn_id": "stream.grounding.001.turn-1",
+    "transport": "stream",
+    "status_code": 200,
+    "assistant_text": "Based on the reverseEngineer project documentation, the job that sends service requests is **AssetCheck_SendServiceRequest**. This is supported by the following evidence from the project documentation: 1. **The job name is explicitly stated**: According to `doc:452:3`, \"This document describes the Talend job **AssetCheck_SendServiceRequest** within the `AssetCheck_Interface` group.\" 2. **Its purpose is to send service requests**: According to `doc:452:4`, \"The job transmits a service request (likely a work order or asset service request) from the AssetCheck system toIBM Maximo.\" 3. **It is a child job**: According to `doc:452:3`, it is \"a child job that sendsservice request XML file...\" and according to `doc:436:8`, it is invoked by the parent job `AssetCheck_Main_Job` based on routing flags.",
+    "public_events": [
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000001",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 1,
+        "type": "run.started",
+        "created_at": "2026-07-21T16:37:46.455163Z",
+        "public_payload": {
+          "status": "running",
+          "cohort": "v2_effect_primary",
+          "transport": "stream",
+          "objective": "Using reverseEngineer documentation, identify which job sends service requests. Return only grounded factual prose."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000002",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 2,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:37:47.933403Z",
+        "public_payload": {
+          "tool_label": "search documentation",
+          "status": "proposed",
+          "call_ref": "search_documentation_0"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000003",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 3,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T16:37:47.938364Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000004",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 4,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:48.070367Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000005",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 5,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:48.075079Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000006",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 6,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T16:37:48.992430Z",
+        "public_payload": {
+          "tool_label": "search documentation",
+          "status": "succeeded",
+          "summary": "Retrieved 5 evidence item(s).",
+          "evidence_refs": [
+            {
+              "chunk_index": 2,
+              "document_id": 452,
+              "evidence_id": "doc:452:2",
+              "score": 0.8424,
+              "source_type": "rag_document"
+            },
+            {
+              "chunk_index": 3,
+              "document_id": 452,
+              "evidence_id": "doc:452:3",
+              "score": 0.8867,
+              "source_type": "rag_document"
+            },
+            {
+              "chunk_index": 4,
+              "document_id": 452,
+              "evidence_id": "doc:452:4",
+              "score": 0.8424,
+              "source_type": "rag_document"
+            },
+            {
+              "chunk_index": 8,
+              "document_id": 436,
+              "evidence_id": "doc:436:8",
+              "score": 0.7756,
+              "source_type": "rag_document"
+            },
+            {
+              "chunk_index": 9,
+              "document_id": 436,
+              "evidence_id": "doc:436:9",
+              "score": 0.8164,
+              "source_type": "rag_document"
+            }
+          ],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000007",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 7,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:49.001151Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000008",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 8,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:52.382752Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000009",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 9,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:52.388052Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000010",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 10,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:58.762806Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000011",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 11,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T16:37:58.768284Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000012",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 12,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:58.780289Z",
+        "public_payload": {
+          "content": "Based on the reverseEngineer project documentation, the job that sends service requests is **Ass"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000013",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 13,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:58.782402Z",
+        "public_payload": {
+          "content": "etCheck_SendServiceRequest**. This is supported by the following evidence from the project docu"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000014",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 14,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:58.784291Z",
+        "public_payload": {
+          "content": "mentation: 1. **The job name is explicitly stated**: According to `doc:452:3`, \"This document d"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000015",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 15,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:58.785825Z",
+        "public_payload": {
+          "content": "escribes the Talend job **AssetCheck_SendServiceRequest** within the `AssetCheck_Interface` grou"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000016",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 16,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:58.787397Z",
+        "public_payload": {
+          "content": "p.\" 2. **Its purpose is to send service requests**: According to `doc:452:4`, \"The job transmit"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000017",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 17,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:58.788985Z",
+        "public_payload": {
+          "content": "s a service request (likely a work order or asset service request) from the AssetCheck system to"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000018",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 18,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:58.790672Z",
+        "public_payload": {
+          "content": "IBM Maximo.\" 3. **It is a child job**: According to `doc:452:3`, it is \"a child job that sends"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000019",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 19,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:58.792443Z",
+        "public_payload": {
+          "content": "service request XML file...\" and according to `doc:436:8`, it is invoked by the parent job `Ass"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000020",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 20,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T16:37:58.793761Z",
+        "public_payload": {
+          "content": "etCheck_Main_Job` based on routing flags."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000021",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 21,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T16:37:58.795090Z",
+        "public_payload": {
+          "message_id": 1343,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-jquMgEL1edDGQ1TRvNzIsuZt:evt:000022",
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "sequence": 22,
+        "type": "run.completed",
+        "created_at": "2026-07-21T16:37:58.798573Z",
+        "public_payload": {
+          "status": "completed",
+          "stop_reason": "answered",
+          "usage": {
+            "input_tokens": 31555,
+            "output_tokens": 386,
+            "model_cost_usd": 0.009698,
+            "capability_cost_usd": 0.0
+          },
+          "latency_ms": 12333
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1343,
+        "latency_ms": 12333,
+        "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+        "replayed": false,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 12465.458083024714,
+    "input_tokens": 31555,
+    "output_tokens": 386,
+    "cost_usd": 0.009698,
+    "run_id": "run-jquMgEL1edDGQ1TRvNzIsuZt",
+    "persisted_message_id": 1343,
+    "error": null
+  }
+]

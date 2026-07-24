@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from src.harness.workflow_projection import WorkflowCard
+
 from src.document_roles import DEFAULT_DOCUMENT_ROLE, DocumentRole
 
 
@@ -187,7 +189,15 @@ class ConversationMessageRequest(BaseModel):
     )
     images: list[str] | None = Field(
         default=None,
+        max_length=4,
         description="Base64-encoded images for vision",
+    )
+    client_turn_id: str | None = Field(
+        default=None,
+        min_length=8,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,63}$",
+        description="Stable idempotency key reused when the client retries this turn.",
     )
 
 
@@ -213,6 +223,9 @@ class MessageHarnessActivity(BaseModel):
     summary: str | None = None
     safe_details: dict = Field(default_factory=dict)
     timestamp: datetime.datetime | None = None
+    workflow_status: str | None = None
+    workflow_started_at: datetime.datetime | None = None
+    workflow_finished_at: datetime.datetime | None = None
 
 
 class MessageHarnessActionChoice(BaseModel):
@@ -221,8 +234,10 @@ class MessageHarnessActionChoice(BaseModel):
 
 
 class MessageHarnessPendingAction(BaseModel):
-    workflow_run_id: int
-    interrupt_id: int
+    conversation_id: int | None = None
+    workflow_run_id: int | None = None
+    interrupt_id: int | None = None
+    proposal_id: str | None = None
     expected_version: int
     kind: str
     prompt: str
@@ -251,6 +266,7 @@ class MessageResponse(BaseModel):
     turn_plan: dict[str, Any] | None = None
     structured_answer: dict[str, Any] | None = None
     harness_activities: list[MessageHarnessActivity] = Field(default_factory=list)
+    workflow_cards: list["WorkflowCard"] = Field(default_factory=list)
     pending_action: MessageHarnessPendingAction | None = None
     created_at: datetime.datetime
 
@@ -262,7 +278,17 @@ class MessageResponse(BaseModel):
     @field_validator("structured_answer", mode="before")
     @classmethod
     def normalize_structured_answer(cls, value: Any) -> dict[str, Any] | None:
-        return value if isinstance(value, dict) else None
+        if not isinstance(value, dict):
+            return None
+        if value.get("response_type") == "agent_response_v1":
+            from src.harness.response_synthesis import TypedAgentResponse
+
+            try:
+                TypedAgentResponse.model_validate(value)
+            except ValueError:
+                return None
+            return value
+        return value
 
 
 class ConversationResponse(BaseModel):
@@ -281,6 +307,38 @@ class ConversationDetailResponse(BaseModel):
     id: int
     title: str | None = None
     messages: list[MessageResponse]
+    agent_plan: "AgentPlanProjectionResponse | None" = None
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+
+class AgentPlanStepProjectionResponse(BaseModel):
+    key: str
+    objective: str
+    success_criteria: list[str]
+    capability_id: str | None = None
+    kind: str
+    depends_on: list[str]
+    requires_wait: bool
+    restart_sensitive: bool
+    status: str
+    effect_operation_id: str | None = None
+    capability_receipt_ref: dict | None = None
+    workflow_run_id: int | None = None
+    started_at: datetime.datetime | None = None
+    finished_at: datetime.datetime | None = None
+
+
+class AgentPlanProjectionResponse(BaseModel):
+    plan_id: str
+    goal: str
+    success_criteria: list[str]
+    constraints: list[str]
+    scoped_entities: list[str]
+    status: str
+    version: int
+    steps: list[AgentPlanStepProjectionResponse]
+    last_change_reason: str | None = None
     created_at: datetime.datetime
     updated_at: datetime.datetime
 

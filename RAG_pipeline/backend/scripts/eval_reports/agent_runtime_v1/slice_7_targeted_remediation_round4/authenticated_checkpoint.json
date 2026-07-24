@@ -1,0 +1,2308 @@
+[
+  {
+    "attempt_id": "rag.followup.jobs.001.informal:rag.followup.jobs.001.informal.turn-1:nonstream",
+    "scenario_id": "rag.followup.jobs.001.informal",
+    "family": "rag_followup",
+    "prompt_id": "rag.followup.jobs.001.informal",
+    "turn_id": "rag.followup.jobs.001.informal.turn-1",
+    "transport": "nonstream",
+    "status_code": 200,
+    "assistant_text": "Retrieved 10 evidence item(s).\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md.\n\nTitle: 01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md.\n\nTitle: 01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md.\n\nTitle: 01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md.\n\nGrounded in 10 evidence sources.",
+    "public_events": [],
+    "latency_ms": 10095.200292009395,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cost_usd": 0.0,
+    "run_id": null,
+    "persisted_message_id": null,
+    "error": null
+  },
+  {
+    "attempt_id": "rag.followup.jobs.001.keyword_collision:rag.followup.jobs.001.keyword_collision.turn-1:stream",
+    "scenario_id": "rag.followup.jobs.001.keyword_collision",
+    "family": "rag_followup",
+    "prompt_id": "rag.followup.jobs.001.keyword_collision",
+    "turn_id": "rag.followup.jobs.001.keyword_collision.turn-1",
+    "transport": "stream",
+    "status_code": 200,
+    "assistant_text": "Retrieved 10 evidence item(s).\n\nSource Type: Generated doc.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md.\n\nSummary: MD documentation file, 36027 bytes.\n\nObserved At: 2026-07-13T21:40:15.298821+00:00.\n\nProject: reverseEngineer.\n\nType: Md.\n\nSize Bytes: 36027.\n\nHas Pdf: True.\n\nModified At: 2026-07-13T21:40:15.298821+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md.\n\nSummary: MD documentation file, 46678 bytes.\n\nObserved At: 2026-07-13T21:41:23.655640+00:00.\n\nSize Bytes: 46678.\n\nModified At: 2026-07-13T21:41:23.655640+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md.\n\nSummary: MD documentation file, 33108 bytes.\n\nObserved At: 2026-07-13T21:40:05.383964+00:00.\n\nSize Bytes: 33108.\n\nModified At: 2026-07-13T21:40:05.383964+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md.\n\nSummary: MD documentation file, 38185 bytes.\n\nObserved At: 2026-07-13T21:41:02.949545+00:00.\n\nSize Bytes: 38185.\n\nModified At: 2026-07-13T21:41:02.949545+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md.\n\nSummary: MD documentation file, 30344 bytes.\n\nObserved At: 2026-07-13T21:44:27.062386+00:00.\n\nSize Bytes: 30344.\n\nModified At: 2026-07-13T21:44:27.062386+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md.\n\nSummary: MD documentation file, 35329 bytes.\n\nObserved At: 2026-07-13T21:44:44.422380+00:00.\n\nSize Bytes: 35329.\n\nModified At: 2026-07-13T21:44:44.422380+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md.\n\nSummary: MD documentation file, 34389 bytes.\n\nObserved At: 2026-07-13T21:45:23.619117+00:00.\n\nSize Bytes: 34389.\n\nModified At: 2026-07-13T21:45:23.619117+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md.\n\nSummary: MD documentation file, 31572 bytes.\n\nObserved At: 2026-07-13T21:44:07.075067+00:00.\n\nSize Bytes: 31572.\n\nModified At: 2026-07-13T21:44:07.075067+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md.\n\nSummary: MD documentation file, 47939 bytes.\n\nObserved At: 2026-07-13T21:49:24.568409+00:00.\n\nSize Bytes: 47939.\n\nModified At: 2026-07-13T21:49:24.568409+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md.\n\nSummary: MD documentation file, 46728 bytes.\n\nObserved At: 2026-07-13T21:49:15.998995+00:00.\n\nSize Bytes: 46728.\n\nModified At: 2026-07-13T21:49:15.998995+00:00.\n\nGrounded in 10 evidence sources.",
+    "public_events": [
+      {
+        "sequence": 1,
+        "iteration": 1,
+        "action": "call_capability",
+        "capability_id": "mcp.docs.list_project_docs",
+        "observation_status": "succeeded",
+        "workflow_ref": null,
+        "receipt_ref": null,
+        "stop_reason": null,
+        "elapsed_ms": 1657,
+        "tool_calls_used": 1,
+        "input_tokens": 10718,
+        "output_tokens": 36,
+        "cost_usd": 0.003237,
+        "type": "agent_trace"
+      },
+      {
+        "capability_id": "mcp.docs.list_project_docs",
+        "status": "succeeded",
+        "output_type": "evidence_items",
+        "summary": "Retrieved 10 evidence item(s).",
+        "data": {
+          "items": [
+            {
+              "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md",
+              "capability_id": "mcp.docs.list_project_docs",
+              "source_type": "generated_doc",
+              "title": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md",
+              "summary": "MD documentation file, 36027 bytes.",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md",
+              "observed_at": "2026-07-13T21:40:15.298821+00:00",
+              "metadata": {
+                "project_id": "reverseEngineer",
+                "type": "md",
+                "size_bytes": 36027,
+                "has_pdf": true,
+                "modified_at": "2026-07-13T21:40:15.298821+00:00"
+              }
+            },
+            {
+              "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md",
+              "capability_id": "mcp.docs.list_project_docs",
+              "source_type": "generated_doc",
+              "title": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md",
+              "summary": "MD documentation file, 46678 bytes.",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md",
+              "observed_at": "2026-07-13T21:41:23.655640+00:00",
+              "metadata": {
+                "project_id": "reverseEngineer",
+                "type": "md",
+                "size_bytes": 46678,
+                "has_pdf": true,
+                "modified_at": "2026-07-13T21:41:23.655640+00:00"
+              }
+            },
+            {
+              "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md",
+              "capability_id": "mcp.docs.list_project_docs",
+              "source_type": "generated_doc",
+              "title": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md",
+              "summary": "MD documentation file, 33108 bytes.",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md",
+              "observed_at": "2026-07-13T21:40:05.383964+00:00",
+              "metadata": {
+                "project_id": "reverseEngineer",
+                "type": "md",
+                "size_bytes": 33108,
+                "has_pdf": true,
+                "modified_at": "2026-07-13T21:40:05.383964+00:00"
+              }
+            },
+            {
+              "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md",
+              "capability_id": "mcp.docs.list_project_docs",
+              "source_type": "generated_doc",
+              "title": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md",
+              "summary": "MD documentation file, 38185 bytes.",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md",
+              "observed_at": "2026-07-13T21:41:02.949545+00:00",
+              "metadata": {
+                "project_id": "reverseEngineer",
+                "type": "md",
+                "size_bytes": 38185,
+                "has_pdf": true,
+                "modified_at": "2026-07-13T21:41:02.949545+00:00"
+              }
+            },
+            {
+              "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md",
+              "capability_id": "mcp.docs.list_project_docs",
+              "source_type": "generated_doc",
+              "title": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md",
+              "summary": "MD documentation file, 30344 bytes.",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md",
+              "observed_at": "2026-07-13T21:44:27.062386+00:00",
+              "metadata": {
+                "project_id": "reverseEngineer",
+                "type": "md",
+                "size_bytes": 30344,
+                "has_pdf": true,
+                "modified_at": "2026-07-13T21:44:27.062386+00:00"
+              }
+            },
+            {
+              "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+              "capability_id": "mcp.docs.list_project_docs",
+              "source_type": "generated_doc",
+              "title": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+              "summary": "MD documentation file, 35329 bytes.",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+              "observed_at": "2026-07-13T21:44:44.422380+00:00",
+              "metadata": {
+                "project_id": "reverseEngineer",
+                "type": "md",
+                "size_bytes": 35329,
+                "has_pdf": true,
+                "modified_at": "2026-07-13T21:44:44.422380+00:00"
+              }
+            },
+            {
+              "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md",
+              "capability_id": "mcp.docs.list_project_docs",
+              "source_type": "generated_doc",
+              "title": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md",
+              "summary": "MD documentation file, 34389 bytes.",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md",
+              "observed_at": "2026-07-13T21:45:23.619117+00:00",
+              "metadata": {
+                "project_id": "reverseEngineer",
+                "type": "md",
+                "size_bytes": 34389,
+                "has_pdf": true,
+                "modified_at": "2026-07-13T21:45:23.619117+00:00"
+              }
+            },
+            {
+              "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md",
+              "capability_id": "mcp.docs.list_project_docs",
+              "source_type": "generated_doc",
+              "title": "01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md",
+              "summary": "MD documentation file, 31572 bytes.",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md",
+              "observed_at": "2026-07-13T21:44:07.075067+00:00",
+              "metadata": {
+                "project_id": "reverseEngineer",
+                "type": "md",
+                "size_bytes": 31572,
+                "has_pdf": true,
+                "modified_at": "2026-07-13T21:44:07.075067+00:00"
+              }
+            },
+            {
+              "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md",
+              "capability_id": "mcp.docs.list_project_docs",
+              "source_type": "generated_doc",
+              "title": "01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md",
+              "summary": "MD documentation file, 47939 bytes.",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md",
+              "observed_at": "2026-07-13T21:49:24.568409+00:00",
+              "metadata": {
+                "project_id": "reverseEngineer",
+                "type": "md",
+                "size_bytes": 47939,
+                "has_pdf": true,
+                "modified_at": "2026-07-13T21:49:24.568409+00:00"
+              }
+            },
+            {
+              "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md",
+              "capability_id": "mcp.docs.list_project_docs",
+              "source_type": "generated_doc",
+              "title": "01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md",
+              "summary": "MD documentation file, 46728 bytes.",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md",
+              "observed_at": "2026-07-13T21:49:15.998995+00:00",
+              "metadata": {
+                "project_id": "reverseEngineer",
+                "type": "md",
+                "size_bytes": 46728,
+                "has_pdf": true,
+                "modified_at": "2026-07-13T21:49:15.998995+00:00"
+              }
+            }
+          ]
+        },
+        "artifact_links": [],
+        "evidence_refs": [
+          {
+            "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md",
+            "source_type": "generated_doc",
+            "project_id": "reverseEngineer",
+            "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md",
+            "observed_at": "2026-07-13T21:40:15.298821+00:00"
+          },
+          {
+            "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md",
+            "source_type": "generated_doc",
+            "project_id": "reverseEngineer",
+            "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md",
+            "observed_at": "2026-07-13T21:41:23.655640+00:00"
+          },
+          {
+            "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md",
+            "source_type": "generated_doc",
+            "project_id": "reverseEngineer",
+            "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md",
+            "observed_at": "2026-07-13T21:40:05.383964+00:00"
+          },
+          {
+            "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md",
+            "source_type": "generated_doc",
+            "project_id": "reverseEngineer",
+            "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md",
+            "observed_at": "2026-07-13T21:41:02.949545+00:00"
+          },
+          {
+            "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md",
+            "source_type": "generated_doc",
+            "project_id": "reverseEngineer",
+            "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md",
+            "observed_at": "2026-07-13T21:44:27.062386+00:00"
+          },
+          {
+            "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+            "source_type": "generated_doc",
+            "project_id": "reverseEngineer",
+            "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+            "observed_at": "2026-07-13T21:44:44.422380+00:00"
+          },
+          {
+            "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md",
+            "source_type": "generated_doc",
+            "project_id": "reverseEngineer",
+            "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md",
+            "observed_at": "2026-07-13T21:45:23.619117+00:00"
+          },
+          {
+            "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md",
+            "source_type": "generated_doc",
+            "project_id": "reverseEngineer",
+            "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md",
+            "observed_at": "2026-07-13T21:44:07.075067+00:00"
+          },
+          {
+            "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md",
+            "source_type": "generated_doc",
+            "project_id": "reverseEngineer",
+            "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md",
+            "observed_at": "2026-07-13T21:49:24.568409+00:00"
+          },
+          {
+            "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md",
+            "source_type": "generated_doc",
+            "project_id": "reverseEngineer",
+            "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md",
+            "observed_at": "2026-07-13T21:49:15.998995+00:00"
+          }
+        ],
+        "retryable": false,
+        "error_code": null,
+        "error_message": null,
+        "workflow_ref": null,
+        "receipt_ref": null,
+        "safe_details": {
+          "evidence_count": 10
+        },
+        "task_ref": null,
+        "type": "agent_observation"
+      },
+      {
+        "sequence": 2,
+        "iteration": 2,
+        "action": "answer",
+        "capability_id": null,
+        "observation_status": null,
+        "workflow_ref": null,
+        "receipt_ref": null,
+        "stop_reason": "answered",
+        "elapsed_ms": 27953,
+        "tool_calls_used": 1,
+        "input_tokens": 29544,
+        "output_tokens": 1235,
+        "cost_usd": 0.009604,
+        "type": "agent_trace"
+      },
+      {
+        "response_type": "agent_response_v1",
+        "kind": "answer",
+        "content": "Retrieved 10 evidence item(s).\n\nSource Type: Generated doc.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md.\n\nSummary: MD documentation file, 36027 bytes.\n\nObserved At: 2026-07-13T21:40:15.298821+00:00.\n\nProject: reverseEngineer.\n\nType: Md.\n\nSize Bytes: 36027.\n\nHas Pdf: True.\n\nModified At: 2026-07-13T21:40:15.298821+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md.\n\nSummary: MD documentation file, 46678 bytes.\n\nObserved At: 2026-07-13T21:41:23.655640+00:00.\n\nSize Bytes: 46678.\n\nModified At: 2026-07-13T21:41:23.655640+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md.\n\nSummary: MD documentation file, 33108 bytes.\n\nObserved At: 2026-07-13T21:40:05.383964+00:00.\n\nSize Bytes: 33108.\n\nModified At: 2026-07-13T21:40:05.383964+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md.\n\nSummary: MD documentation file, 38185 bytes.\n\nObserved At: 2026-07-13T21:41:02.949545+00:00.\n\nSize Bytes: 38185.\n\nModified At: 2026-07-13T21:41:02.949545+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md.\n\nSummary: MD documentation file, 30344 bytes.\n\nObserved At: 2026-07-13T21:44:27.062386+00:00.\n\nSize Bytes: 30344.\n\nModified At: 2026-07-13T21:44:27.062386+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md.\n\nSummary: MD documentation file, 35329 bytes.\n\nObserved At: 2026-07-13T21:44:44.422380+00:00.\n\nSize Bytes: 35329.\n\nModified At: 2026-07-13T21:44:44.422380+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md.\n\nSummary: MD documentation file, 34389 bytes.\n\nObserved At: 2026-07-13T21:45:23.619117+00:00.\n\nSize Bytes: 34389.\n\nModified At: 2026-07-13T21:45:23.619117+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md.\n\nSummary: MD documentation file, 31572 bytes.\n\nObserved At: 2026-07-13T21:44:07.075067+00:00.\n\nSize Bytes: 31572.\n\nModified At: 2026-07-13T21:44:07.075067+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md.\n\nSummary: MD documentation file, 47939 bytes.\n\nObserved At: 2026-07-13T21:49:24.568409+00:00.\n\nSize Bytes: 47939.\n\nModified At: 2026-07-13T21:49:24.568409+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md.\n\nSummary: MD documentation file, 46728 bytes.\n\nObserved At: 2026-07-13T21:49:15.998995+00:00.\n\nSize Bytes: 46728.\n\nModified At: 2026-07-13T21:49:15.998995+00:00.\n\nGrounded in 10 evidence sources.",
+        "synthesis_source": "agent_plan",
+        "facts": [
+          {
+            "fact_id": "observation:0:status",
+            "kind": "observation_status",
+            "label": "Capability result",
+            "value": "succeeded",
+            "mandatory": true,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:summary",
+            "kind": "summary",
+            "label": "Result",
+            "value": "Retrieved 10 evidence item(s).",
+            "mandatory": true,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.source_type",
+            "kind": "data",
+            "label": "Source Type",
+            "value": "generated_doc",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.title",
+            "kind": "data",
+            "label": "Title",
+            "value": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.summary",
+            "kind": "data",
+            "label": "Summary",
+            "value": "MD documentation file, 36027 bytes.",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.observed_at",
+            "kind": "data",
+            "label": "Observed At",
+            "value": "2026-07-13T21:40:15.298821+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.metadata.project_id",
+            "kind": "data",
+            "label": "Project Id",
+            "value": "reverseEngineer",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.metadata.type",
+            "kind": "data",
+            "label": "Type",
+            "value": "md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.metadata.size_bytes",
+            "kind": "data",
+            "label": "Size Bytes",
+            "value": "36027",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.metadata.has_pdf",
+            "kind": "data",
+            "label": "Has Pdf",
+            "value": "True",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.metadata.modified_at",
+            "kind": "data",
+            "label": "Modified At",
+            "value": "2026-07-13T21:40:15.298821+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.1.source_type",
+            "kind": "data",
+            "label": "Source Type",
+            "value": "generated_doc",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.1.title",
+            "kind": "data",
+            "label": "Title",
+            "value": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.1.summary",
+            "kind": "data",
+            "label": "Summary",
+            "value": "MD documentation file, 46678 bytes.",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.1.observed_at",
+            "kind": "data",
+            "label": "Observed At",
+            "value": "2026-07-13T21:41:23.655640+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.1.metadata.project_id",
+            "kind": "data",
+            "label": "Project Id",
+            "value": "reverseEngineer",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.1.metadata.type",
+            "kind": "data",
+            "label": "Type",
+            "value": "md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.1.metadata.size_bytes",
+            "kind": "data",
+            "label": "Size Bytes",
+            "value": "46678",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.1.metadata.has_pdf",
+            "kind": "data",
+            "label": "Has Pdf",
+            "value": "True",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.1.metadata.modified_at",
+            "kind": "data",
+            "label": "Modified At",
+            "value": "2026-07-13T21:41:23.655640+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.2.source_type",
+            "kind": "data",
+            "label": "Source Type",
+            "value": "generated_doc",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.2.title",
+            "kind": "data",
+            "label": "Title",
+            "value": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.2.summary",
+            "kind": "data",
+            "label": "Summary",
+            "value": "MD documentation file, 33108 bytes.",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.2.observed_at",
+            "kind": "data",
+            "label": "Observed At",
+            "value": "2026-07-13T21:40:05.383964+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.2.metadata.project_id",
+            "kind": "data",
+            "label": "Project Id",
+            "value": "reverseEngineer",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.2.metadata.type",
+            "kind": "data",
+            "label": "Type",
+            "value": "md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.2.metadata.size_bytes",
+            "kind": "data",
+            "label": "Size Bytes",
+            "value": "33108",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.2.metadata.has_pdf",
+            "kind": "data",
+            "label": "Has Pdf",
+            "value": "True",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.2.metadata.modified_at",
+            "kind": "data",
+            "label": "Modified At",
+            "value": "2026-07-13T21:40:05.383964+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.3.source_type",
+            "kind": "data",
+            "label": "Source Type",
+            "value": "generated_doc",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.3.title",
+            "kind": "data",
+            "label": "Title",
+            "value": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.3.summary",
+            "kind": "data",
+            "label": "Summary",
+            "value": "MD documentation file, 38185 bytes.",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.3.observed_at",
+            "kind": "data",
+            "label": "Observed At",
+            "value": "2026-07-13T21:41:02.949545+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.3.metadata.project_id",
+            "kind": "data",
+            "label": "Project Id",
+            "value": "reverseEngineer",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.3.metadata.type",
+            "kind": "data",
+            "label": "Type",
+            "value": "md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.3.metadata.size_bytes",
+            "kind": "data",
+            "label": "Size Bytes",
+            "value": "38185",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.3.metadata.has_pdf",
+            "kind": "data",
+            "label": "Has Pdf",
+            "value": "True",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.3.metadata.modified_at",
+            "kind": "data",
+            "label": "Modified At",
+            "value": "2026-07-13T21:41:02.949545+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.4.source_type",
+            "kind": "data",
+            "label": "Source Type",
+            "value": "generated_doc",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.4.title",
+            "kind": "data",
+            "label": "Title",
+            "value": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.4.summary",
+            "kind": "data",
+            "label": "Summary",
+            "value": "MD documentation file, 30344 bytes.",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.4.observed_at",
+            "kind": "data",
+            "label": "Observed At",
+            "value": "2026-07-13T21:44:27.062386+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.4.metadata.project_id",
+            "kind": "data",
+            "label": "Project Id",
+            "value": "reverseEngineer",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.4.metadata.type",
+            "kind": "data",
+            "label": "Type",
+            "value": "md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.4.metadata.size_bytes",
+            "kind": "data",
+            "label": "Size Bytes",
+            "value": "30344",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.4.metadata.has_pdf",
+            "kind": "data",
+            "label": "Has Pdf",
+            "value": "True",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.4.metadata.modified_at",
+            "kind": "data",
+            "label": "Modified At",
+            "value": "2026-07-13T21:44:27.062386+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.5.source_type",
+            "kind": "data",
+            "label": "Source Type",
+            "value": "generated_doc",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.5.title",
+            "kind": "data",
+            "label": "Title",
+            "value": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.5.summary",
+            "kind": "data",
+            "label": "Summary",
+            "value": "MD documentation file, 35329 bytes.",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.5.observed_at",
+            "kind": "data",
+            "label": "Observed At",
+            "value": "2026-07-13T21:44:44.422380+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.5.metadata.project_id",
+            "kind": "data",
+            "label": "Project Id",
+            "value": "reverseEngineer",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.5.metadata.type",
+            "kind": "data",
+            "label": "Type",
+            "value": "md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.5.metadata.size_bytes",
+            "kind": "data",
+            "label": "Size Bytes",
+            "value": "35329",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.5.metadata.has_pdf",
+            "kind": "data",
+            "label": "Has Pdf",
+            "value": "True",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.5.metadata.modified_at",
+            "kind": "data",
+            "label": "Modified At",
+            "value": "2026-07-13T21:44:44.422380+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.6.source_type",
+            "kind": "data",
+            "label": "Source Type",
+            "value": "generated_doc",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.6.title",
+            "kind": "data",
+            "label": "Title",
+            "value": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.6.summary",
+            "kind": "data",
+            "label": "Summary",
+            "value": "MD documentation file, 34389 bytes.",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.6.observed_at",
+            "kind": "data",
+            "label": "Observed At",
+            "value": "2026-07-13T21:45:23.619117+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.6.metadata.project_id",
+            "kind": "data",
+            "label": "Project Id",
+            "value": "reverseEngineer",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.6.metadata.type",
+            "kind": "data",
+            "label": "Type",
+            "value": "md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.6.metadata.size_bytes",
+            "kind": "data",
+            "label": "Size Bytes",
+            "value": "34389",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.6.metadata.has_pdf",
+            "kind": "data",
+            "label": "Has Pdf",
+            "value": "True",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.6.metadata.modified_at",
+            "kind": "data",
+            "label": "Modified At",
+            "value": "2026-07-13T21:45:23.619117+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.7.source_type",
+            "kind": "data",
+            "label": "Source Type",
+            "value": "generated_doc",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.7.title",
+            "kind": "data",
+            "label": "Title",
+            "value": "01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.7.summary",
+            "kind": "data",
+            "label": "Summary",
+            "value": "MD documentation file, 31572 bytes.",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.7.observed_at",
+            "kind": "data",
+            "label": "Observed At",
+            "value": "2026-07-13T21:44:07.075067+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.7.metadata.project_id",
+            "kind": "data",
+            "label": "Project Id",
+            "value": "reverseEngineer",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.7.metadata.type",
+            "kind": "data",
+            "label": "Type",
+            "value": "md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.7.metadata.size_bytes",
+            "kind": "data",
+            "label": "Size Bytes",
+            "value": "31572",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.7.metadata.has_pdf",
+            "kind": "data",
+            "label": "Has Pdf",
+            "value": "True",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.7.metadata.modified_at",
+            "kind": "data",
+            "label": "Modified At",
+            "value": "2026-07-13T21:44:07.075067+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.8.source_type",
+            "kind": "data",
+            "label": "Source Type",
+            "value": "generated_doc",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.8.title",
+            "kind": "data",
+            "label": "Title",
+            "value": "01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.8.summary",
+            "kind": "data",
+            "label": "Summary",
+            "value": "MD documentation file, 47939 bytes.",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.8.observed_at",
+            "kind": "data",
+            "label": "Observed At",
+            "value": "2026-07-13T21:49:24.568409+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.8.metadata.project_id",
+            "kind": "data",
+            "label": "Project Id",
+            "value": "reverseEngineer",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.8.metadata.type",
+            "kind": "data",
+            "label": "Type",
+            "value": "md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.8.metadata.size_bytes",
+            "kind": "data",
+            "label": "Size Bytes",
+            "value": "47939",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.8.metadata.has_pdf",
+            "kind": "data",
+            "label": "Has Pdf",
+            "value": "True",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.8.metadata.modified_at",
+            "kind": "data",
+            "label": "Modified At",
+            "value": "2026-07-13T21:49:24.568409+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.9.source_type",
+            "kind": "data",
+            "label": "Source Type",
+            "value": "generated_doc",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.9.title",
+            "kind": "data",
+            "label": "Title",
+            "value": "01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.9.summary",
+            "kind": "data",
+            "label": "Summary",
+            "value": "MD documentation file, 46728 bytes.",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.9.observed_at",
+            "kind": "data",
+            "label": "Observed At",
+            "value": "2026-07-13T21:49:15.998995+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.9.metadata.project_id",
+            "kind": "data",
+            "label": "Project Id",
+            "value": "reverseEngineer",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.9.metadata.type",
+            "kind": "data",
+            "label": "Type",
+            "value": "md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.9.metadata.size_bytes",
+            "kind": "data",
+            "label": "Size Bytes",
+            "value": "46728",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.9.metadata.has_pdf",
+            "kind": "data",
+            "label": "Has Pdf",
+            "value": "True",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.9.metadata.modified_at",
+            "kind": "data",
+            "label": "Modified At",
+            "value": "2026-07-13T21:49:15.998995+00:00",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:evidence",
+            "kind": "evidence_presence",
+            "label": "Evidence references",
+            "value": "10",
+            "mandatory": true,
+            "workflow_run_id": null
+          }
+        ],
+        "artifact_links": [],
+        "evidence_refs": [
+          {
+            "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md",
+            "label": "Evidence"
+          },
+          {
+            "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md",
+            "label": "Evidence"
+          },
+          {
+            "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md",
+            "label": "Evidence"
+          },
+          {
+            "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md",
+            "label": "Evidence"
+          },
+          {
+            "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md",
+            "label": "Evidence"
+          },
+          {
+            "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+            "label": "Evidence"
+          },
+          {
+            "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md",
+            "label": "Evidence"
+          },
+          {
+            "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md",
+            "label": "Evidence"
+          },
+          {
+            "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md",
+            "label": "Evidence"
+          },
+          {
+            "id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md",
+            "label": "Evidence"
+          }
+        ],
+        "workflow_cards": [],
+        "stop_reason": "answered",
+        "factual_fingerprint": "091725ad53c98ddab8f5187ea1621e2885c015d4e40ec051ee037fb985343602",
+        "type": "agent_response"
+      },
+      {
+        "action": "answer",
+        "stop_reason": "answered",
+        "state_version": "3028b6b492ad1de9ef35132b48d29028ee78509a66096a2a08ca8744a1017263",
+        "response_fingerprint": "091725ad53c98ddab8f5187ea1621e2885c015d4e40ec051ee037fb985343602",
+        "complete_objective": false,
+        "usage": {
+          "input_tokens": 29544,
+          "output_tokens": 1235,
+          "model_cost_usd": 0.009604,
+          "capability_cost_usd": 0.0
+        },
+        "type": "agent_final"
+      },
+      {
+        "message_id": 1289,
+        "latency_ms": 27970,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 27984.97662501177,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cost_usd": 0.0,
+    "run_id": null,
+    "persisted_message_id": 1289,
+    "error": null
+  },
+  {
+    "attempt_id": "rag.followup.jobs.001.negation:rag.followup.jobs.001.negation.turn-1:nonstream",
+    "scenario_id": "rag.followup.jobs.001.negation",
+    "family": "rag_followup",
+    "prompt_id": "rag.followup.jobs.001.negation",
+    "turn_id": "rag.followup.jobs.001.negation.turn-1",
+    "transport": "nonstream",
+    "status_code": 200,
+    "assistant_text": "Retrieved 5 evidence item(s).\n\nGrounded in 5 evidence sources.",
+    "public_events": [
+      {
+        "sequence": 1,
+        "iteration": 1,
+        "action": "call_capability",
+        "capability_id": "rag.docs.search_evidence",
+        "observation_status": "succeeded",
+        "workflow_ref": null,
+        "receipt_ref": null,
+        "stop_reason": null,
+        "elapsed_ms": 3339,
+        "tool_calls_used": 1,
+        "input_tokens": 10725,
+        "output_tokens": 56,
+        "cost_usd": 0.003251,
+        "type": "agent_trace"
+      },
+      {
+        "capability_id": "rag.docs.search_evidence",
+        "status": "succeeded",
+        "output_type": "evidence_items",
+        "summary": "Retrieved 5 evidence item(s).",
+        "data": {
+          "items": [
+            {
+              "id": "doc:456:32",
+              "capability_id": "rag.docs.search_evidence",
+              "source_type": "rag_document",
+              "title": "01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md (Project: reverseEngineer)",
+              "summary": "[01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder > 01 Interface Template Maximo2Assetcheck Maximo2Assetcheck Sendworkorder > Open Items For This Interface] Postman collection or test requests for the parent `MaximoAssetCheckInterface` endpoint be supplied? | integration | | 14 | What HTTP response does the parent return when this c...",
+              "score": 0.3952,
+              "metadata": {
+                "document_id": 456,
+                "chunk_index": 32,
+                "filename": "01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md",
+                "source_layer": "canonical_docs"
+              }
+            },
+            {
+              "id": "doc:456:33",
+              "capability_id": "rag.docs.search_evidence",
+              "source_type": "rag_document",
+              "title": "01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md (Project: reverseEngineer)",
+              "summary": "[01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder > 01 Interface Template Maximo2Assetcheck Maximo2Assetcheck Sendworkorder > Evidence Register] | Topic | Units / Scope | Evidence Source | Source Artifact / Path | Confidence | |-------|---------------|----------------|------------------------|------------| | Job identity, group, pat...",
+              "score": 0.416,
+              "metadata": {
+                "document_id": 456,
+                "chunk_index": 33,
+                "filename": "01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md",
+                "source_layer": "canonical_docs"
+              }
+            },
+            {
+              "id": "doc:456:34",
+              "capability_id": "rag.docs.search_evidence",
+              "source_type": "rag_document",
+              "title": "01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md (Project: reverseEngineer)",
+              "summary": "[01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder > 01 Interface Template Maximo2Assetcheck Maximo2Assetcheck Sendworkorder > Evidence Register] \u2192 log | `Maximo2AssetCheck_SendWorkOrder` | dependency map (FLOW connections), investigation evidence | `tStatCatcher_1` \u2192 `tMap_1` \u2192 `tMSSqlOutput_1` | HIGH (pipeline), MEDIUM (tMap expres...",
+              "score": 0.3952,
+              "metadata": {
+                "document_id": 456,
+                "chunk_index": 34,
+                "filename": "01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md",
+                "source_layer": "canonical_docs"
+              }
+            },
+            {
+              "id": "doc:456:9",
+              "capability_id": "rag.docs.search_evidence",
+              "source_type": "rag_document",
+              "title": "01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md (Project: reverseEngineer)",
+              "summary": "[01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder > 01 Interface Template Maximo2Assetcheck Maximo2Assetcheck Sendworkorder > Functional Requirements > Sequence Diagram (Happy Flow)] ```mermaid sequenceDiagram participant Parent as Maximo2AssetCheck_MainJob participant SW as Maximo2AssetCheck_SendWorkOrder participant DB as MSSQL (L...",
+              "score": 0.3934,
+              "metadata": {
+                "document_id": 456,
+                "chunk_index": 9,
+                "filename": "01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md",
+                "source_layer": "canonical_docs"
+              }
+            },
+            {
+              "id": "doc:456:10",
+              "capability_id": "rag.docs.search_evidence",
+              "source_type": "rag_document",
+              "title": "01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md (Project: reverseEngineer)",
+              "summary": "[01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder > 01 Interface Template Maximo2Assetcheck Maximo2Assetcheck Sendworkorder > Functional Requirements > Trigger Mechanism] - **Type**: Synchronous invocation from parent job `Maximo2AssetCheck_MainJob` via `tRunJob`. **[FACT]** (dependency map `Maximo2AssetCheck_MainJob`\u2192`Maximo2AssetC...",
+              "score": 0.4141,
+              "metadata": {
+                "document_id": 456,
+                "chunk_index": 10,
+                "filename": "01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md",
+                "source_layer": "canonical_docs"
+              }
+            }
+          ]
+        },
+        "artifact_links": [],
+        "evidence_refs": [
+          {
+            "evidence_id": "doc:456:32",
+            "source_type": "rag_document",
+            "document_id": 456,
+            "chunk_index": 32,
+            "score": 0.3952
+          },
+          {
+            "evidence_id": "doc:456:33",
+            "source_type": "rag_document",
+            "document_id": 456,
+            "chunk_index": 33,
+            "score": 0.416
+          },
+          {
+            "evidence_id": "doc:456:34",
+            "source_type": "rag_document",
+            "document_id": 456,
+            "chunk_index": 34,
+            "score": 0.3952
+          },
+          {
+            "evidence_id": "doc:456:9",
+            "source_type": "rag_document",
+            "document_id": 456,
+            "chunk_index": 9,
+            "score": 0.3934
+          },
+          {
+            "evidence_id": "doc:456:10",
+            "source_type": "rag_document",
+            "document_id": 456,
+            "chunk_index": 10,
+            "score": 0.4141
+          }
+        ],
+        "retryable": false,
+        "error_code": null,
+        "error_message": null,
+        "workflow_ref": null,
+        "receipt_ref": null,
+        "safe_details": {
+          "evidence_count": 5
+        },
+        "task_ref": null,
+        "type": "agent_observation"
+      },
+      {
+        "sequence": 2,
+        "iteration": 2,
+        "action": "answer",
+        "capability_id": null,
+        "observation_status": null,
+        "workflow_ref": null,
+        "receipt_ref": null,
+        "stop_reason": "answered",
+        "elapsed_ms": 6655,
+        "tool_calls_used": 1,
+        "input_tokens": 24969,
+        "output_tokens": 108,
+        "cost_usd": 0.007555,
+        "type": "agent_trace"
+      },
+      {
+        "response_type": "agent_response_v1",
+        "kind": "answer",
+        "content": "Retrieved 5 evidence item(s).\n\nGrounded in 5 evidence sources.",
+        "synthesis_source": "agent_plan",
+        "facts": [
+          {
+            "fact_id": "observation:0:status",
+            "kind": "observation_status",
+            "label": "Capability result",
+            "value": "succeeded",
+            "mandatory": true,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:summary",
+            "kind": "summary",
+            "label": "Result",
+            "value": "Retrieved 5 evidence item(s).",
+            "mandatory": true,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:evidence",
+            "kind": "evidence_presence",
+            "label": "Evidence references",
+            "value": "5",
+            "mandatory": true,
+            "workflow_run_id": null
+          }
+        ],
+        "artifact_links": [],
+        "evidence_refs": [
+          {
+            "id": "doc:456:32",
+            "label": "Evidence"
+          },
+          {
+            "id": "doc:456:33",
+            "label": "Evidence"
+          },
+          {
+            "id": "doc:456:34",
+            "label": "Evidence"
+          },
+          {
+            "id": "doc:456:9",
+            "label": "Evidence"
+          },
+          {
+            "id": "doc:456:10",
+            "label": "Evidence"
+          }
+        ],
+        "workflow_cards": [],
+        "stop_reason": "answered",
+        "factual_fingerprint": "ec5d2dbe2b680d70c10d328f5bae73242ba2349cb900fda71048a7c0186d7479",
+        "type": "agent_response"
+      },
+      {
+        "action": "answer",
+        "stop_reason": "answered",
+        "state_version": "76881869c9484637089774e32cd3085b6e103d14b31bcf2a5de37d420f016300",
+        "response_fingerprint": "ec5d2dbe2b680d70c10d328f5bae73242ba2349cb900fda71048a7c0186d7479",
+        "complete_objective": false,
+        "usage": {
+          "input_tokens": 24969,
+          "output_tokens": 108,
+          "model_cost_usd": 0.007554999999999999,
+          "capability_cost_usd": 0.0
+        },
+        "type": "agent_final"
+      },
+      {
+        "message_id": 1293,
+        "latency_ms": 6676,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 6714.6367079694755,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cost_usd": 0.0,
+    "run_id": null,
+    "persisted_message_id": 1293,
+    "error": null
+  },
+  {
+    "attempt_id": "capability.discussion.001.keyword_collision:capability.discussion.001.keyword_collision.turn-1:stream",
+    "scenario_id": "capability.discussion.001.keyword_collision",
+    "family": "discuss_versus_act",
+    "prompt_id": "capability.discussion.001.keyword_collision",
+    "turn_id": "capability.discussion.001.keyword_collision.turn-1",
+    "transport": "stream",
+    "status_code": 200,
+    "assistant_text": "Yes, Nexus can create Packs. You can create private Analysis Packs through a draft workflow that collects and refines the Pack definition. The available capabilities include:\n\n- **create_pack_draft** - Begin a new private Analysis Pack draft\n- **mutate_pack_draft** - Apply structured changes to an active draft\n- **validate_pack_draft** - Check if a draft can be saved\n- **save_pack_draft** - Save an immutable private Pack version\n- **abandon_pack_draft** - Abandon an existing draft\n- **read_pack_draft** - Inspect an active draft\n\nTo start creating a Pack, you would use the create_pack_draft capability. The workflow then guides you through defining the Pack's purpose, audience, analyses, evidence requirements, output documents, and other declarative fields.",
+    "public_events": [
+      {
+        "sequence": 1,
+        "iteration": 1,
+        "action": "answer",
+        "capability_id": null,
+        "observation_status": null,
+        "workflow_ref": null,
+        "receipt_ref": null,
+        "stop_reason": "answered",
+        "elapsed_ms": 5284,
+        "tool_calls_used": 0,
+        "input_tokens": 10701,
+        "output_tokens": 201,
+        "cost_usd": 0.003331,
+        "type": "agent_trace"
+      },
+      {
+        "response_type": "agent_response_v1",
+        "kind": "answer",
+        "content": "Yes, Nexus can create Packs. You can create private Analysis Packs through a draft workflow that collects and refines the Pack definition. The available capabilities include:\n\n- **create_pack_draft** - Begin a new private Analysis Pack draft\n- **mutate_pack_draft** - Apply structured changes to an active draft\n- **validate_pack_draft** - Check if a draft can be saved\n- **save_pack_draft** - Save an immutable private Pack version\n- **abandon_pack_draft** - Abandon an existing draft\n- **read_pack_draft** - Inspect an active draft\n\nTo start creating a Pack, you would use the create_pack_draft capability. The workflow then guides you through defining the Pack's purpose, audience, analyses, evidence requirements, output documents, and other declarative fields.",
+        "synthesis_source": "direct",
+        "facts": [],
+        "artifact_links": [],
+        "evidence_refs": [],
+        "workflow_cards": [],
+        "stop_reason": "answered",
+        "factual_fingerprint": "f4bd548ffc9f270895aa6135dfc071b5af001235d6d224a32ee2c8818649788b",
+        "type": "agent_response"
+      },
+      {
+        "action": "answer",
+        "stop_reason": "answered",
+        "state_version": "6371b60cc82d784a98a126bdcecd3ea0f079f524f1b806c67c55f76c6f4ba9ff",
+        "response_fingerprint": "c1816c9ce72a0dcaabf35833129812a2496bf8c715d5d2e2c9c0cfaa7cfc3d21",
+        "complete_objective": false,
+        "usage": {
+          "input_tokens": 10701,
+          "output_tokens": 201,
+          "model_cost_usd": 0.003331,
+          "capability_cost_usd": 0.0
+        },
+        "type": "agent_final"
+      },
+      {
+        "message_id": 1297,
+        "latency_ms": 5303,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 5318.04512499366,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cost_usd": 0.0,
+    "run_id": null,
+    "persisted_message_id": 1297,
+    "error": null
+  },
+  {
+    "attempt_id": "pack.create.001.negation:pack.create.001.negation.turn-1:nonstream",
+    "scenario_id": "pack.create.001.negation",
+    "family": "pack_write",
+    "prompt_id": "pack.create.001.negation",
+    "turn_id": "pack.create.001.negation.turn-1",
+    "transport": "nonstream",
+    "status_code": 200,
+    "assistant_text": "A private Analysis Pack draft is a declarative specification that defines how to analyze and document a specific type of project. Here's what a draft would contain:\n\n## Core Purpose\nThe purpose field describes what the Pack is designed to analyze and why it exists (up to 1000 characters).\n\n## Target Audience\n- **Label**: A descriptive name for the intended audience (e.g., \"Platform Engineering Teams\")\n- **Roles**: List of target roles (e.g., \"DevOps Engineer\", \"SRE\", \"Platform Architect\")\n- **Decision Needs**: What decisions this audience needs to make from the analysis\n- **Desired Outcome**: What successful use of this Pack achieves\n- **Render Preferences**: Optional settings for output detail level, domain familiarity, seniority level, and decision horizon\n\n## Evidence Requirements\nA list of required evidence types the Pack needs to gather, each with:\n- **ID**: Unique identifier (e.g., \"infrastructure\", \"dependencies\", \"security-config\")\n- **Label**: Human-readable name\n- **Required**: Whether this evidence is mandatory\n- **Weight**: Importance score (1-100)\n\n## Analyses\nThe analytical operations to perform on the evidence, each with:\n- **ID**: Unique identifier\n- **Label**: Display name for the analysis\n- **Purpose**: What this analysis determines or evaluates\n\n## Output Documents\nThe documentation the Pack generates, structured as:\n- **ID**: Document identifier\n- **Title**: Document name\n- **Sections**: Ordered list of sections, each with ID, heading, and display order\n\n## Scoring Dimensions (Optional)\nCriteria for evaluating project health or maturity, each with:\n- **ID**: Dimension identifier\n- **Label**: Display name\n- **Weight**: Relative importance (1-100)\n\n## Capability Requirements (Optional)\nTools or capabilities needed to execute the Pack, with purpose and whether each is required.\n\n## Compatibility (Optional)\n- **Supported Project Kinds**: What types of projects this Pack can analyze\n- **Required Domains**: Subject areas the Pack covers\n\nThe draft workflow helps you iteratively define these fields through structured mutations, and once complete, you can validate and save it as an immutable private Pack version for reuse across your projects.",
+    "public_events": [
+      {
+        "sequence": 1,
+        "iteration": 1,
+        "action": "answer",
+        "capability_id": null,
+        "observation_status": null,
+        "workflow_ref": null,
+        "receipt_ref": null,
+        "stop_reason": "answered",
+        "elapsed_ms": 14184,
+        "tool_calls_used": 0,
+        "input_tokens": 10691,
+        "output_tokens": 501,
+        "cost_usd": 0.003508,
+        "type": "agent_trace"
+      },
+      {
+        "response_type": "agent_response_v1",
+        "kind": "answer",
+        "content": "A private Analysis Pack draft is a declarative specification that defines how to analyze and document a specific type of project. Here's what a draft would contain:\n\n## Core Purpose\nThe purpose field describes what the Pack is designed to analyze and why it exists (up to 1000 characters).\n\n## Target Audience\n- **Label**: A descriptive name for the intended audience (e.g., \"Platform Engineering Teams\")\n- **Roles**: List of target roles (e.g., \"DevOps Engineer\", \"SRE\", \"Platform Architect\")\n- **Decision Needs**: What decisions this audience needs to make from the analysis\n- **Desired Outcome**: What successful use of this Pack achieves\n- **Render Preferences**: Optional settings for output detail level, domain familiarity, seniority level, and decision horizon\n\n## Evidence Requirements\nA list of required evidence types the Pack needs to gather, each with:\n- **ID**: Unique identifier (e.g., \"infrastructure\", \"dependencies\", \"security-config\")\n- **Label**: Human-readable name\n- **Required**: Whether this evidence is mandatory\n- **Weight**: Importance score (1-100)\n\n## Analyses\nThe analytical operations to perform on the evidence, each with:\n- **ID**: Unique identifier\n- **Label**: Display name for the analysis\n- **Purpose**: What this analysis determines or evaluates\n\n## Output Documents\nThe documentation the Pack generates, structured as:\n- **ID**: Document identifier\n- **Title**: Document name\n- **Sections**: Ordered list of sections, each with ID, heading, and display order\n\n## Scoring Dimensions (Optional)\nCriteria for evaluating project health or maturity, each with:\n- **ID**: Dimension identifier\n- **Label**: Display name\n- **Weight**: Relative importance (1-100)\n\n## Capability Requirements (Optional)\nTools or capabilities needed to execute the Pack, with purpose and whether each is required.\n\n## Compatibility (Optional)\n- **Supported Project Kinds**: What types of projects this Pack can analyze\n- **Required Domains**: Subject areas the Pack covers\n\nThe draft workflow helps you iteratively define these fields through structured mutations, and once complete, you can validate and save it as an immutable private Pack version for reuse across your projects.",
+        "synthesis_source": "direct",
+        "facts": [],
+        "artifact_links": [],
+        "evidence_refs": [],
+        "workflow_cards": [],
+        "stop_reason": "answered",
+        "factual_fingerprint": "704d68419ae518028b06904a31e083faa90c06b9d275b6ed0a346b802eb762e6",
+        "type": "agent_response"
+      },
+      {
+        "action": "answer",
+        "stop_reason": "answered",
+        "state_version": "639bbbc1af55565dc22e26caeb60ba0ad4dfc5ef052785e34438d7938b43cdb7",
+        "response_fingerprint": "429ebc31b167d6f86f4d6462c304df0d8fb96959f2f636528cb86dbba4600388",
+        "complete_objective": false,
+        "usage": {
+          "input_tokens": 10691,
+          "output_tokens": 501,
+          "model_cost_usd": 0.003508,
+          "capability_cost_usd": 0.0
+        },
+        "type": "agent_final"
+      },
+      {
+        "message_id": 1299,
+        "latency_ms": 14203,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 14241.245958022773,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cost_usd": 0.0,
+    "run_id": null,
+    "persisted_message_id": 1299,
+    "error": null
+  },
+  {
+    "attempt_id": "task.switch.001.informal:task.switch.001.informal.turn-1:nonstream",
+    "scenario_id": "task.switch.001.informal",
+    "family": "task_interruption",
+    "prompt_id": "task.switch.001.informal",
+    "turn_id": "task.switch.001.informal.turn-1",
+    "transport": "nonstream",
+    "status_code": 200,
+    "assistant_text": "Retrieved 1 evidence item(s).\n\nSource Type: Structured metadata.\n\nTitle: Project: reverseEngineer.\n\nSummary: **Project: reverseEngineer** - **ID**: reverseEngineer - **Platform**: talend - **Source type**: zip - **Status**: ready - **Integration jobs**: 10 - **Generated docs**: 10 - **Documents in RAG**: 21 - **Last scan**: 2026-07-13 20:07 - **Last doc generation**: 2026-07-13 21:49 - **Last RAG push**: 2026-07-13 21:49 - **Created**: 2026-07-13.\n\nObserved At: 2026-07-21T16:34:13.716054Z.\n\nProject: reverseEngineer.\n\nQuery Type: Project detail.\n\nScope: Authorized project scope.\n\nGrounded in 1 evidence source.",
+    "public_events": [
+      {
+        "sequence": 1,
+        "iteration": 1,
+        "action": "call_capability",
+        "capability_id": "nexus.metadata.query",
+        "observation_status": "succeeded",
+        "workflow_ref": null,
+        "receipt_ref": null,
+        "stop_reason": null,
+        "elapsed_ms": 2207,
+        "tool_calls_used": 1,
+        "input_tokens": 10719,
+        "output_tokens": 56,
+        "cost_usd": 0.003249,
+        "type": "agent_trace"
+      },
+      {
+        "capability_id": "nexus.metadata.query",
+        "status": "succeeded",
+        "output_type": "metadata_evidence",
+        "summary": "Retrieved 1 evidence item(s).",
+        "data": {
+          "items": [
+            {
+              "id": "metadata:project_detail:reverseEngineer",
+              "capability_id": "nexus.metadata.query",
+              "source_type": "structured_metadata",
+              "title": "Project: reverseEngineer",
+              "summary": "**Project: reverseEngineer** - **ID**: reverseEngineer - **Platform**: talend - **Source type**: zip - **Status**: ready - **Integration jobs**: 10 - **Generated docs**: 10 - **Documents in RAG**: 21 - **Last scan**: 2026-07-13 20:07 - **Last doc generation**: 2026-07-13 21:49 - **Last RAG push**: 2026-07-13 21:49 - **Created**: 2026-07-13",
+              "observed_at": "2026-07-21T16:34:13.716054Z",
+              "metadata": {
+                "project_id": "reverseEngineer",
+                "query_type": "project_detail",
+                "scope": "authorized_project_scope"
+              }
+            }
+          ]
+        },
+        "artifact_links": [],
+        "evidence_refs": [
+          {
+            "evidence_id": "metadata:project_detail:reverseEngineer",
+            "source_type": "structured_metadata",
+            "project_id": "reverseEngineer",
+            "observed_at": "2026-07-21T16:34:13.716054Z"
+          }
+        ],
+        "retryable": false,
+        "error_code": null,
+        "error_message": null,
+        "workflow_ref": null,
+        "receipt_ref": null,
+        "safe_details": {
+          "evidence_count": 1
+        },
+        "task_ref": null,
+        "type": "agent_observation"
+      },
+      {
+        "sequence": 2,
+        "iteration": 2,
+        "action": "answer",
+        "capability_id": null,
+        "observation_status": null,
+        "workflow_ref": null,
+        "receipt_ref": null,
+        "stop_reason": "answered",
+        "elapsed_ms": 6707,
+        "tool_calls_used": 1,
+        "input_tokens": 22411,
+        "output_tokens": 192,
+        "cost_usd": 0.006838,
+        "type": "agent_trace"
+      },
+      {
+        "response_type": "agent_response_v1",
+        "kind": "answer",
+        "content": "Retrieved 1 evidence item(s).\n\nSource Type: Structured metadata.\n\nTitle: Project: reverseEngineer.\n\nSummary: **Project: reverseEngineer** - **ID**: reverseEngineer - **Platform**: talend - **Source type**: zip - **Status**: ready - **Integration jobs**: 10 - **Generated docs**: 10 - **Documents in RAG**: 21 - **Last scan**: 2026-07-13 20:07 - **Last doc generation**: 2026-07-13 21:49 - **Last RAG push**: 2026-07-13 21:49 - **Created**: 2026-07-13.\n\nObserved At: 2026-07-21T16:34:13.716054Z.\n\nProject: reverseEngineer.\n\nQuery Type: Project detail.\n\nScope: Authorized project scope.\n\nGrounded in 1 evidence source.",
+        "synthesis_source": "agent_plan",
+        "facts": [
+          {
+            "fact_id": "observation:0:status",
+            "kind": "observation_status",
+            "label": "Capability result",
+            "value": "succeeded",
+            "mandatory": true,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:summary",
+            "kind": "summary",
+            "label": "Result",
+            "value": "Retrieved 1 evidence item(s).",
+            "mandatory": true,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.source_type",
+            "kind": "data",
+            "label": "Source Type",
+            "value": "structured_metadata",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.title",
+            "kind": "data",
+            "label": "Title",
+            "value": "Project: reverseEngineer",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.summary",
+            "kind": "data",
+            "label": "Summary",
+            "value": "**Project: reverseEngineer** - **ID**: reverseEngineer - **Platform**: talend - **Source type**: zip - **Status**: ready - **Integration jobs**: 10 - **Generated docs**: 10 - **Documents in RAG**: 21 - **Last scan**: 2026-07-13 20:07 - **Last doc generation**: 2026-07-13 21:49 - **Last RAG push**: 2026-07-13 21:49 - **Created**: 2026-07-13",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.observed_at",
+            "kind": "data",
+            "label": "Observed At",
+            "value": "2026-07-21T16:34:13.716054Z",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.metadata.project_id",
+            "kind": "data",
+            "label": "Project Id",
+            "value": "reverseEngineer",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.metadata.query_type",
+            "kind": "data",
+            "label": "Query Type",
+            "value": "project_detail",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.metadata.scope",
+            "kind": "data",
+            "label": "Scope",
+            "value": "authorized_project_scope",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:evidence",
+            "kind": "evidence_presence",
+            "label": "Evidence references",
+            "value": "1",
+            "mandatory": true,
+            "workflow_run_id": null
+          }
+        ],
+        "artifact_links": [],
+        "evidence_refs": [
+          {
+            "id": "metadata:project_detail:reverseEngineer",
+            "label": "Evidence"
+          }
+        ],
+        "workflow_cards": [],
+        "stop_reason": "answered",
+        "factual_fingerprint": "924fe82c5f055c010fc6802fa70bd1823ddbf1d05ddff986043c21f919d18b6d",
+        "type": "agent_response"
+      },
+      {
+        "action": "answer",
+        "stop_reason": "answered",
+        "state_version": "258d882d8bc6e860fb77f9832f913f0a4a91c130221bf9061a1b123ac2aebd3c",
+        "response_fingerprint": "924fe82c5f055c010fc6802fa70bd1823ddbf1d05ddff986043c21f919d18b6d",
+        "complete_objective": false,
+        "usage": {
+          "input_tokens": 22411,
+          "output_tokens": 192,
+          "model_cost_usd": 0.006838,
+          "capability_cost_usd": 0.0
+        },
+        "type": "agent_final"
+      },
+      {
+        "message_id": 1305,
+        "latency_ms": 6723,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 6758.011333993636,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cost_usd": 0.0,
+    "run_id": null,
+    "persisted_message_id": 1305,
+    "error": null
+  },
+  {
+    "attempt_id": "evidence.none.001.ambiguous:evidence.none.001.ambiguous.turn-1:stream",
+    "scenario_id": "evidence.none.001.ambiguous",
+    "family": "no_evidence",
+    "prompt_id": "evidence.none.001.ambiguous",
+    "turn_id": "evidence.none.001.ambiguous.turn-1",
+    "transport": "stream",
+    "status_code": 200,
+    "assistant_text": "Agent turn failed (invalid_model_output).",
+    "public_events": [
+      {
+        "sequence": 1,
+        "iteration": 1,
+        "action": null,
+        "capability_id": null,
+        "observation_status": null,
+        "workflow_ref": null,
+        "receipt_ref": null,
+        "stop_reason": "invalid_model_output",
+        "elapsed_ms": 6956,
+        "tool_calls_used": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost_usd": 0.0,
+        "type": "agent_trace"
+      },
+      {
+        "response_type": "agent_response_v1",
+        "kind": "answer",
+        "content": "Agent turn failed (invalid_model_output).",
+        "synthesis_source": "direct",
+        "facts": [],
+        "artifact_links": [],
+        "evidence_refs": [],
+        "workflow_cards": [],
+        "stop_reason": "invalid_model_output",
+        "factual_fingerprint": "eb0dc1f7a651a1cd397757f6bb60f05e711ee6475bada4fb43ae43b6e876016d",
+        "type": "agent_response"
+      },
+      {
+        "action": null,
+        "stop_reason": "invalid_model_output",
+        "state_version": "b1847c142561f9356df7978d2d145dec70ea2cb5c99f91a6d7b4e32f3c937838",
+        "response_fingerprint": null,
+        "complete_objective": false,
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "model_cost_usd": 0.0,
+          "capability_cost_usd": 0.0
+        },
+        "type": "agent_final"
+      },
+      {
+        "message_id": 1311,
+        "latency_ms": 6968,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 6980.982207984198,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cost_usd": 0.0,
+    "run_id": null,
+    "persisted_message_id": 1311,
+    "error": null
+  },
+  {
+    "attempt_id": "stream.grounding.001:stream.grounding.001.turn-1:stream",
+    "scenario_id": "stream.grounding.001",
+    "family": "grounding_safe_stream",
+    "prompt_id": "stream.grounding.001",
+    "turn_id": "stream.grounding.001.turn-1",
+    "transport": "stream",
+    "status_code": 200,
+    "assistant_text": "Retrieved 5 evidence item(s).\n\nSource Type: Rag document.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md (Project: reverseEngineer).\n\nSummary: [01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Table of Contents] database-integrations) - [SQL Scripts](#sql-scripts) - [Example CSVs](#example-csvs) 11. [Error Handling And Monitoring](#error-handling-and-monitoring) - [Error Scenarios (Error Flow)](#...\n\nScore: 0.809.\n\nFilename: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md.\n\nSource Layer: Canonical docs.\n\nSummary: [01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Scope And Interfaces In This Document] This document describes the Talend job **AssetCheck_SendServiceRequest** within the `AssetCheck_Interface` group. It is a child job that sends service request XML file...\n\nScore: 0.8516.\n\nSummary: [01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Business Context And Criticality > Scope of the Integration] The job transmits a service request (likely a work order or asset service request) from the AssetCheck system to IBM Maximo. Files are placed by...\n\nSummary: [01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Functional Requirements > Process Description (Preferably BPMN or Similar)] Response`. If present, success; else failure. **[FACT]** (scorecard, risk HIGH) 8. **Success handling**: Branches based on evaluat...\n\nScore: 0.8016.\n\nSummary: [01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Functional Requirements > Standard Scenarios (Happy Flow)] 1. A single valid XML file is placed in `ServiceRequestTemp` by the parent job. 2. The job copies the file to `ServiceRequestInprogress`. 3. The fi...\n\nScore: 0.8438.\n\nGrounded in 5 evidence sources.",
+    "public_events": [
+      {
+        "sequence": 1,
+        "iteration": 1,
+        "action": "call_capability",
+        "capability_id": "rag.docs.search_evidence",
+        "observation_status": "succeeded",
+        "workflow_ref": null,
+        "receipt_ref": null,
+        "stop_reason": null,
+        "elapsed_ms": 2778,
+        "tool_calls_used": 1,
+        "input_tokens": 10699,
+        "output_tokens": 42,
+        "cost_usd": 0.003235,
+        "type": "agent_trace"
+      },
+      {
+        "capability_id": "rag.docs.search_evidence",
+        "status": "succeeded",
+        "output_type": "evidence_items",
+        "summary": "Retrieved 5 evidence item(s).",
+        "data": {
+          "items": [
+            {
+              "id": "doc:452:2",
+              "capability_id": "rag.docs.search_evidence",
+              "source_type": "rag_document",
+              "title": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md (Project: reverseEngineer)",
+              "summary": "[01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Table of Contents] database-integrations) - [SQL Scripts](#sql-scripts) - [Example CSVs](#example-csvs) 11. [Error Handling And Monitoring](#error-handling-and-monitoring) - [Error Scenarios (Error Flow)](#...",
+              "score": 0.809,
+              "metadata": {
+                "document_id": 452,
+                "chunk_index": 2,
+                "filename": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+                "source_layer": "canonical_docs"
+              }
+            },
+            {
+              "id": "doc:452:3",
+              "capability_id": "rag.docs.search_evidence",
+              "source_type": "rag_document",
+              "title": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md (Project: reverseEngineer)",
+              "summary": "[01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Scope And Interfaces In This Document] This document describes the Talend job **AssetCheck_SendServiceRequest** within the `AssetCheck_Interface` group. It is a child job that sends service request XML file...",
+              "score": 0.8516,
+              "metadata": {
+                "document_id": 452,
+                "chunk_index": 3,
+                "filename": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+                "source_layer": "canonical_docs"
+              }
+            },
+            {
+              "id": "doc:452:4",
+              "capability_id": "rag.docs.search_evidence",
+              "source_type": "rag_document",
+              "title": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md (Project: reverseEngineer)",
+              "summary": "[01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Business Context And Criticality > Scope of the Integration] The job transmits a service request (likely a work order or asset service request) from the AssetCheck system to IBM Maximo. Files are placed by...",
+              "score": 0.809,
+              "metadata": {
+                "document_id": 452,
+                "chunk_index": 4,
+                "filename": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+                "source_layer": "canonical_docs"
+              }
+            },
+            {
+              "id": "doc:452:7",
+              "capability_id": "rag.docs.search_evidence",
+              "source_type": "rag_document",
+              "title": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md (Project: reverseEngineer)",
+              "summary": "[01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Functional Requirements > Process Description (Preferably BPMN or Similar)] Response`. If present, success; else failure. **[FACT]** (scorecard, risk HIGH) 8. **Success handling**: Branches based on evaluat...",
+              "score": 0.8016,
+              "metadata": {
+                "document_id": 452,
+                "chunk_index": 7,
+                "filename": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+                "source_layer": "canonical_docs"
+              }
+            },
+            {
+              "id": "doc:452:8",
+              "capability_id": "rag.docs.search_evidence",
+              "source_type": "rag_document",
+              "title": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md (Project: reverseEngineer)",
+              "summary": "[01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Functional Requirements > Standard Scenarios (Happy Flow)] 1. A single valid XML file is placed in `ServiceRequestTemp` by the parent job. 2. The job copies the file to `ServiceRequestInprogress`. 3. The fi...",
+              "score": 0.8438,
+              "metadata": {
+                "document_id": 452,
+                "chunk_index": 8,
+                "filename": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+                "source_layer": "canonical_docs"
+              }
+            }
+          ]
+        },
+        "artifact_links": [],
+        "evidence_refs": [
+          {
+            "evidence_id": "doc:452:2",
+            "source_type": "rag_document",
+            "document_id": 452,
+            "chunk_index": 2,
+            "score": 0.809
+          },
+          {
+            "evidence_id": "doc:452:3",
+            "source_type": "rag_document",
+            "document_id": 452,
+            "chunk_index": 3,
+            "score": 0.8516
+          },
+          {
+            "evidence_id": "doc:452:4",
+            "source_type": "rag_document",
+            "document_id": 452,
+            "chunk_index": 4,
+            "score": 0.809
+          },
+          {
+            "evidence_id": "doc:452:7",
+            "source_type": "rag_document",
+            "document_id": 452,
+            "chunk_index": 7,
+            "score": 0.8016
+          },
+          {
+            "evidence_id": "doc:452:8",
+            "source_type": "rag_document",
+            "document_id": 452,
+            "chunk_index": 8,
+            "score": 0.8438
+          }
+        ],
+        "retryable": false,
+        "error_code": null,
+        "error_message": null,
+        "workflow_ref": null,
+        "receipt_ref": null,
+        "safe_details": {
+          "evidence_count": 5
+        },
+        "task_ref": null,
+        "type": "agent_observation"
+      },
+      {
+        "sequence": 2,
+        "iteration": 2,
+        "action": "answer",
+        "capability_id": null,
+        "observation_status": null,
+        "workflow_ref": null,
+        "receipt_ref": null,
+        "stop_reason": "answered",
+        "elapsed_ms": 19915,
+        "tool_calls_used": 1,
+        "input_tokens": 24700,
+        "output_tokens": 444,
+        "cost_usd": 0.007676,
+        "type": "agent_trace"
+      },
+      {
+        "response_type": "agent_response_v1",
+        "kind": "answer",
+        "content": "Retrieved 5 evidence item(s).\n\nSource Type: Rag document.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md (Project: reverseEngineer).\n\nSummary: [01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Table of Contents] database-integrations) - [SQL Scripts](#sql-scripts) - [Example CSVs](#example-csvs) 11. [Error Handling And Monitoring](#error-handling-and-monitoring) - [Error Scenarios (Error Flow)](#...\n\nScore: 0.809.\n\nFilename: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md.\n\nSource Layer: Canonical docs.\n\nSummary: [01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Scope And Interfaces In This Document] This document describes the Talend job **AssetCheck_SendServiceRequest** within the `AssetCheck_Interface` group. It is a child job that sends service request XML file...\n\nScore: 0.8516.\n\nSummary: [01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Business Context And Criticality > Scope of the Integration] The job transmits a service request (likely a work order or asset service request) from the AssetCheck system to IBM Maximo. Files are placed by...\n\nSummary: [01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Functional Requirements > Process Description (Preferably BPMN or Similar)] Response`. If present, success; else failure. **[FACT]** (scorecard, risk HIGH) 8. **Success handling**: Branches based on evaluat...\n\nScore: 0.8016.\n\nSummary: [01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Functional Requirements > Standard Scenarios (Happy Flow)] 1. A single valid XML file is placed in `ServiceRequestTemp` by the parent job. 2. The job copies the file to `ServiceRequestInprogress`. 3. The fi...\n\nScore: 0.8438.\n\nGrounded in 5 evidence sources.",
+        "synthesis_source": "agent_plan",
+        "facts": [
+          {
+            "fact_id": "observation:0:status",
+            "kind": "observation_status",
+            "label": "Capability result",
+            "value": "succeeded",
+            "mandatory": true,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:summary",
+            "kind": "summary",
+            "label": "Result",
+            "value": "Retrieved 5 evidence item(s).",
+            "mandatory": true,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.source_type",
+            "kind": "data",
+            "label": "Source Type",
+            "value": "rag_document",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.title",
+            "kind": "data",
+            "label": "Title",
+            "value": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md (Project: reverseEngineer)",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.summary",
+            "kind": "data",
+            "label": "Summary",
+            "value": "[01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Table of Contents] database-integrations) - [SQL Scripts](#sql-scripts) - [Example CSVs](#example-csvs) 11. [Error Handling And Monitoring](#error-handling-and-monitoring) - [Error Scenarios (Error Flow)](#...",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.score",
+            "kind": "data",
+            "label": "Score",
+            "value": "0.809",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.metadata.filename",
+            "kind": "data",
+            "label": "Filename",
+            "value": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.0.metadata.source_layer",
+            "kind": "data",
+            "label": "Source Layer",
+            "value": "canonical_docs",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.1.source_type",
+            "kind": "data",
+            "label": "Source Type",
+            "value": "rag_document",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.1.title",
+            "kind": "data",
+            "label": "Title",
+            "value": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md (Project: reverseEngineer)",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.1.summary",
+            "kind": "data",
+            "label": "Summary",
+            "value": "[01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Scope And Interfaces In This Document] This document describes the Talend job **AssetCheck_SendServiceRequest** within the `AssetCheck_Interface` group. It is a child job that sends service request XML file...",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.1.score",
+            "kind": "data",
+            "label": "Score",
+            "value": "0.8516",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.1.metadata.filename",
+            "kind": "data",
+            "label": "Filename",
+            "value": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.1.metadata.source_layer",
+            "kind": "data",
+            "label": "Source Layer",
+            "value": "canonical_docs",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.2.source_type",
+            "kind": "data",
+            "label": "Source Type",
+            "value": "rag_document",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.2.title",
+            "kind": "data",
+            "label": "Title",
+            "value": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md (Project: reverseEngineer)",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.2.summary",
+            "kind": "data",
+            "label": "Summary",
+            "value": "[01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Business Context And Criticality > Scope of the Integration] The job transmits a service request (likely a work order or asset service request) from the AssetCheck system to IBM Maximo. Files are placed by...",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.2.score",
+            "kind": "data",
+            "label": "Score",
+            "value": "0.809",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.2.metadata.filename",
+            "kind": "data",
+            "label": "Filename",
+            "value": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.2.metadata.source_layer",
+            "kind": "data",
+            "label": "Source Layer",
+            "value": "canonical_docs",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.3.source_type",
+            "kind": "data",
+            "label": "Source Type",
+            "value": "rag_document",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.3.title",
+            "kind": "data",
+            "label": "Title",
+            "value": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md (Project: reverseEngineer)",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.3.summary",
+            "kind": "data",
+            "label": "Summary",
+            "value": "[01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Functional Requirements > Process Description (Preferably BPMN or Similar)] Response`. If present, success; else failure. **[FACT]** (scorecard, risk HIGH) 8. **Success handling**: Branches based on evaluat...",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.3.score",
+            "kind": "data",
+            "label": "Score",
+            "value": "0.8016",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.3.metadata.filename",
+            "kind": "data",
+            "label": "Filename",
+            "value": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.3.metadata.source_layer",
+            "kind": "data",
+            "label": "Source Layer",
+            "value": "canonical_docs",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.4.source_type",
+            "kind": "data",
+            "label": "Source Type",
+            "value": "rag_document",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.4.title",
+            "kind": "data",
+            "label": "Title",
+            "value": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md (Project: reverseEngineer)",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.4.summary",
+            "kind": "data",
+            "label": "Summary",
+            "value": "[01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Functional Requirements > Standard Scenarios (Happy Flow)] 1. A single valid XML file is placed in `ServiceRequestTemp` by the parent job. 2. The job copies the file to `ServiceRequestInprogress`. 3. The fi...",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.4.score",
+            "kind": "data",
+            "label": "Score",
+            "value": "0.8438",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.4.metadata.filename",
+            "kind": "data",
+            "label": "Filename",
+            "value": "01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:data:items.4.metadata.source_layer",
+            "kind": "data",
+            "label": "Source Layer",
+            "value": "canonical_docs",
+            "mandatory": false,
+            "workflow_run_id": null
+          },
+          {
+            "fact_id": "observation:0:evidence",
+            "kind": "evidence_presence",
+            "label": "Evidence references",
+            "value": "5",
+            "mandatory": true,
+            "workflow_run_id": null
+          }
+        ],
+        "artifact_links": [],
+        "evidence_refs": [
+          {
+            "id": "doc:452:2",
+            "label": "Evidence"
+          },
+          {
+            "id": "doc:452:3",
+            "label": "Evidence"
+          },
+          {
+            "id": "doc:452:4",
+            "label": "Evidence"
+          },
+          {
+            "id": "doc:452:7",
+            "label": "Evidence"
+          },
+          {
+            "id": "doc:452:8",
+            "label": "Evidence"
+          }
+        ],
+        "workflow_cards": [],
+        "stop_reason": "answered",
+        "factual_fingerprint": "986a4a4cd34081daa8e2320846cd90ee0b0a3534db184745b8532474590301e8",
+        "type": "agent_response"
+      },
+      {
+        "action": "answer",
+        "stop_reason": "answered",
+        "state_version": "5941a7dd552262b8b16cb7c69898f338eaa99df2a250fdf9925adbb018dbae2c",
+        "response_fingerprint": "986a4a4cd34081daa8e2320846cd90ee0b0a3534db184745b8532474590301e8",
+        "complete_objective": false,
+        "usage": {
+          "input_tokens": 24700,
+          "output_tokens": 444,
+          "model_cost_usd": 0.007676,
+          "capability_cost_usd": 0.0
+        },
+        "type": "agent_final"
+      },
+      {
+        "message_id": 1313,
+        "latency_ms": 19931,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 19942.55608401727,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cost_usd": 0.0,
+    "run_id": null,
+    "persisted_message_id": 1313,
+    "error": null
+  }
+]

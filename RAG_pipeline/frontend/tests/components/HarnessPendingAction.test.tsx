@@ -18,6 +18,7 @@ describe("HarnessPendingAction", () => {
         kind: "clarification",
         prompt: "Which project should I use?",
         choices: [{ label: "Customer API", value: "customer-api" }],
+        required_fields: [],
       }} />,
     );
 
@@ -47,6 +48,7 @@ describe("HarnessPendingAction", () => {
         kind: "approval",
         prompt: "Approve this documentation update?",
         choices: [],
+        required_fields: [],
       }} />,
     );
 
@@ -58,6 +60,36 @@ describe("HarnessPendingAction", () => {
       "/api/harness/workflows/run%2F7/cancel",
       expect.objectContaining({ method: "POST", body: JSON.stringify({ expected_version: 4 }) }),
     ));
+  });
+
+  it("submits generic effect approval to the exact proposal endpoint", async () => {
+    const fetchMock = vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ message: "Pack saved" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(
+      <HarnessPendingAction action={{
+        conversation_id: 17,
+        proposal_id: "apr-exact",
+        expected_version: 1,
+        kind: "approval",
+        prompt: "Approve saving this Pack?",
+        choices: [],
+        required_fields: [],
+      }} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/conversations/17/approvals/apr-exact/decision",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ expected_version: 1, decision: "approve" }),
+      }),
+    ));
+    expect(await screen.findByText("Pack saved")).toBeInTheDocument();
   });
 
   it("shows a safe error when an action fails", async () => {
@@ -76,6 +108,7 @@ describe("HarnessPendingAction", () => {
         kind: "approval",
         prompt: "Approve this update?",
         choices: [],
+        required_fields: [],
       }} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Decline" }));
@@ -101,6 +134,7 @@ describe("HarnessPendingAction", () => {
         kind: "clarification",
         prompt: "Which Git repository should I attach?",
         choices: [],
+        required_fields: [],
       }} />,
     );
 

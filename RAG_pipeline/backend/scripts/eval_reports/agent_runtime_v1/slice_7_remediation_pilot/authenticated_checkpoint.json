@@ -1,0 +1,3040 @@
+[
+  {
+    "attempt_id": "rag.followup.jobs.001:rag.followup.jobs.001.turn-1:nonstream",
+    "scenario_id": "rag.followup.jobs.001",
+    "family": "rag_followup",
+    "prompt_id": "rag.followup.jobs.001",
+    "turn_id": "rag.followup.jobs.001.turn-1",
+    "transport": "nonstream",
+    "status_code": 200,
+    "assistant_text": "Here are the ten generated job documents for the **reverseEngineer** project:\n\n| # | Document | Generated |\n|---|----------|-----------|\n| 1 | `AssetCheck_GetLocation` | 2026-07-13 21:40:15 |\n| 2 | `AssetCheck_GetLocations` | 2026-07-13 21:41:23 |\n| 3 | `AssetCheck_GetWorkOrder` | 2026-07-13 21:40:05 |\n| 4 | `AssetCheck_GetWorkOrders` | 2026-07-13 21:41:02 |\n| 5 | `AssetCheck_Main_Job` | 2026-07-13 21:44:27 |\n| 6 | `AssetCheck_SendServiceRequest` | 2026-07-13 21:44:44 |\n| 7 | `AssetCheck_SendWorkOrderUpdate` | 2026-07-13 21:45:23 |\n| 8 | `Maximo2AssetCheck_MainJob` | 2026-07-13 21:44:07 |\n| 9 | `Maximo2AssetCheck_SendLocation` | 2026-07-13 21:49:24 |\n| 10 | `Maximo2AssetCheck_SendWorkOrder` | 2026-07-13 21:49:15 |\n\n**Summary:**\n- **AssetCheck Interface jobs (7):** GetLocation, GetLocations, GetWorkOrder, GetWorkOrders, Main_Job, SendServiceRequest, SendWorkOrderUpdate\n- **Maximo2AssetCheck jobs (3):** MainJob, SendLocation, SendWorkOrder\n\nAll documents were generated on 2026-07-13 within a ~9-minute window.\n\n```json\nnexus-grounding\n{\n  \"answer_status\": \"complete\",\n  \"citations\": [\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md\",\n    \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md\"\n  ],\n  \"disclosures\": []\n}\n```",
+    "public_events": [
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000001",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 1,
+        "type": "run.started",
+        "created_at": "2026-07-21T15:52:36.187636Z",
+        "public_payload": {
+          "status": "running",
+          "cohort": "v2_effect_primary",
+          "transport": "nonstream",
+          "objective": "List those ten jobs."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000002",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 2,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T15:52:38.580188Z",
+        "public_payload": {
+          "tool_label": "list project documents",
+          "status": "proposed",
+          "call_ref": "list_project_documents_0"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000003",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 3,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T15:52:38.594094Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000004",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 4,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:52:38.597072Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000005",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 5,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:52:38.599487Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000006",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 6,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T15:52:38.614389Z",
+        "public_payload": {
+          "tool_label": "list project documents",
+          "status": "succeeded",
+          "summary": "Retrieved 10 evidence item(s).",
+          "evidence_refs": [
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md",
+              "observed_at": "2026-07-13T21:40:15.298821+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md",
+              "observed_at": "2026-07-13T21:41:23.655640+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md",
+              "observed_at": "2026-07-13T21:40:05.383964+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md",
+              "observed_at": "2026-07-13T21:41:02.949545+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md",
+              "observed_at": "2026-07-13T21:44:27.062386+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md",
+              "observed_at": "2026-07-13T21:44:44.422380+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md",
+              "observed_at": "2026-07-13T21:45:23.619117+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md",
+              "observed_at": "2026-07-13T21:44:07.075067+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md",
+              "observed_at": "2026-07-13T21:49:24.568409+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md"
+            },
+            {
+              "evidence_id": "mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md",
+              "observed_at": "2026-07-13T21:49:15.998995+00:00",
+              "project_id": "reverseEngineer",
+              "source_type": "generated_doc",
+              "uri": "/projects/reverseEngineer/docs/01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md"
+            }
+          ],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000007",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 7,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:52:38.617440Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000008",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 8,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:52:57.328917Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000009",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 9,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:52:57.336459Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000010",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 10,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:12.079120Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000011",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 11,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:12.086276Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000012",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 12,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.105985Z",
+        "public_payload": {
+          "content": "Here are the ten generated job documents for the **reverseEngineer** project: | # | Document |"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000013",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 13,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.107664Z",
+        "public_payload": {
+          "content": "Generated | |---|----------|-----------| | 1 | `AssetCheck_GetLocation` | 2026-07-13 21:40:15 |"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000014",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 14,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.109169Z",
+        "public_payload": {
+          "content": "| 2 | `AssetCheck_GetLocations` | 2026-07-13 21:41:23 | | 3 | `AssetCheck_GetWorkOrder` | 2026-0"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000015",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 15,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.110574Z",
+        "public_payload": {
+          "content": "7-13 21:40:05 | | 4 | `AssetCheck_GetWorkOrders` | 2026-07-13 21:41:02 | | 5 | `AssetCheck_Main_"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000016",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 16,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.112012Z",
+        "public_payload": {
+          "content": "Job` | 2026-07-13 21:44:27 | | 6 | `AssetCheck_SendServiceRequest` | 2026-07-13 21:44:44 | | 7 |"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000017",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 17,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.113377Z",
+        "public_payload": {
+          "content": "`AssetCheck_SendWorkOrderUpdate` | 2026-07-13 21:45:23 | | 8 | `Maximo2AssetCheck_MainJob` | 20"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000018",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 18,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.114544Z",
+        "public_payload": {
+          "content": "26-07-13 21:44:07 | | 9 | `Maximo2AssetCheck_SendLocation` | 2026-07-13 21:49:24 | | 10 | `Maxim"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000019",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 19,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.115930Z",
+        "public_payload": {
+          "content": "o2AssetCheck_SendWorkOrder` | 2026-07-13 21:49:15 | **Summary:** - **AssetCheck Interface jobs"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000020",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 20,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.117101Z",
+        "public_payload": {
+          "content": "(7):** GetLocation, GetLocations, GetWorkOrder, GetWorkOrders, Main_Job, SendServiceRequest, Sen"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000021",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 21,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.118419Z",
+        "public_payload": {
+          "content": "dWorkOrderUpdate - **Maximo2AssetCheck jobs (3):** MainJob, SendLocation, SendWorkOrder All doc"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000022",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 22,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.119662Z",
+        "public_payload": {
+          "content": "uments were generated on 2026-07-13 within a ~9-minute window. ```json nexus-grounding { \"ans"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000023",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 23,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.120735Z",
+        "public_payload": {
+          "content": "wer_status\": \"complete\", \"citations\": [ \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__As"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000024",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 24,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.121787Z",
+        "public_payload": {
+          "content": "setCheck_Interface__AssetCheck_GetLocation.md\", \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLA"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000025",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 25,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.122937Z",
+        "public_payload": {
+          "content": "TE__AssetCheck_Interface__AssetCheck_GetLocations.md\", \"mcp-doc:reverseEngineer:01_INTERFACE"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000026",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 26,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.124308Z",
+        "public_payload": {
+          "content": "_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md\", \"mcp-doc:reverseEngineer:01_IN"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000027",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 27,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.125594Z",
+        "public_payload": {
+          "content": "TERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md\", \"mcp-doc:reverseEngine"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000028",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 28,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.126834Z",
+        "public_payload": {
+          "content": "er:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md\", \"mcp-doc:reverseEng"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000029",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 29,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.128063Z",
+        "public_payload": {
+          "content": "ineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md\", \"mcp-d"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000030",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 30,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.129332Z",
+        "public_payload": {
+          "content": "oc:reverseEngineer:01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.m"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000031",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 31,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.130492Z",
+        "public_payload": {
+          "content": "d\", \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_Mai"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000032",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 32,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.131700Z",
+        "public_payload": {
+          "content": "nJob.md\", \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetChe"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000033",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 33,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.133148Z",
+        "public_payload": {
+          "content": "ck_SendLocation.md\", \"mcp-doc:reverseEngineer:01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maxi"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000034",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 34,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:12.134510Z",
+        "public_payload": {
+          "content": "mo2AssetCheck_SendWorkOrder.md\" ], \"disclosures\": [] } ```"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000035",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 35,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T15:53:12.135787Z",
+        "public_payload": {
+          "message_id": 1067,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run--I_UHMdM325N5Dg1mgKS1ANw:evt:000036",
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "sequence": 36,
+        "type": "run.completed",
+        "created_at": "2026-07-21T15:53:12.142120Z",
+        "public_payload": {
+          "status": "completed",
+          "stop_reason": "answered",
+          "usage": {
+            "input_tokens": 31987,
+            "output_tokens": 1367,
+            "model_cost_usd": 0.010416,
+            "capability_cost_usd": 0.0
+          },
+          "latency_ms": 35941
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1067,
+        "latency_ms": 35941,
+        "run_id": "run--I_UHMdM325N5Dg1mgKS1ANw",
+        "replayed": true,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 36010.83470904268,
+    "input_tokens": 31987,
+    "output_tokens": 1367,
+    "cost_usd": 0.010416,
+    "error": null
+  },
+  {
+    "attempt_id": "task.switch.001:task.switch.001.turn-1:nonstream",
+    "scenario_id": "task.switch.001",
+    "family": "task_interruption",
+    "prompt_id": "task.switch.001",
+    "turn_id": "task.switch.001.turn-1",
+    "transport": "nonstream",
+    "status_code": 200,
+    "assistant_text": "Based on the evidence retrieved, here is the information about the **reverseEngineer** project:\n\n| Attribute | Value | Evidence Source |\n|-----------|-------|-----------------|\n| **Project ID** | reverseEngineer | metadata:project_detail:reverseEngineer |\n| **Platform** | talend | metadata:project_detail:reverseEngineer |\n| **Source Type** | zip | metadata:project_detail:reverseEngineer |\n| **Status** | ready | metadata:project_detail:reverseEngineer |\n| **Integration Jobs** | 10 | metadata:project_detail:reverseEngineer |\n| **Generated Documents** | 10 | metadata:project_detail:reverseEngineer |\n| **Documents in RAG** | 21 | metadata:project_detail:reverseEngineer |\n| **Last Scan** | 2026-07-13 20:07 | metadata:project_detail:reverseEngineer |\n| **Last Doc Generation** | 2026-07-13 21:49 | metadata:project_detail:reverseEngineer |\n| **Last RAG Push** | 2026-07-13 21:49 | metadata:project_detail:reverseEngineer |\n| **Created** | 2026-07-13 | metadata:project_detail:reverseEngineer |\n\nAll factual claims in this response are derived from the single evidence item `metadata:project_detail:reverseEngineer`, which contains the complete project metadata summary.",
+    "public_events": [
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000001",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 1,
+        "type": "run.started",
+        "created_at": "2026-07-21T15:53:12.191362Z",
+        "public_payload": {
+          "status": "running",
+          "cohort": "v2_effect_primary",
+          "transport": "nonstream",
+          "objective": "Tell me about reverseEngineer instead."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000002",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 2,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T15:53:15.694369Z",
+        "public_payload": {
+          "tool_label": "query project metadata",
+          "status": "proposed",
+          "call_ref": "query_project_metadata_0"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000003",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 3,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T15:53:15.700422Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000004",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 4,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:15.837421Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000005",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 5,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:15.844962Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000006",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 6,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T15:53:15.856892Z",
+        "public_payload": {
+          "tool_label": "query project metadata",
+          "status": "succeeded",
+          "summary": "Retrieved 1 evidence item(s).",
+          "evidence_refs": [
+            {
+              "evidence_id": "metadata:project_detail:reverseEngineer",
+              "observed_at": "2026-07-21T15:53:15.854826Z",
+              "project_id": "reverseEngineer",
+              "source_type": "structured_metadata"
+            }
+          ],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000007",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 7,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:15.860623Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000008",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 8,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:22.635215Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000009",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 9,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:22.638578Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000010",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 10,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:30.667688Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000011",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 11,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:30.674042Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000012",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 12,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:30.685526Z",
+        "public_payload": {
+          "content": "Based on the evidence retrieved, here is the information about the **reverseEngineer** project:"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000013",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 13,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:30.687420Z",
+        "public_payload": {
+          "content": "| Attribute | Value | Evidence Source | |-----------|-------|-----------------| | **Project ID*"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000014",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 14,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:30.689036Z",
+        "public_payload": {
+          "content": "* | reverseEngineer | metadata:project_detail:reverseEngineer | | **Platform** | talend | metada"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000015",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 15,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:30.690483Z",
+        "public_payload": {
+          "content": "ta:project_detail:reverseEngineer | | **Source Type** | zip | metadata:project_detail:reverseEng"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000016",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 16,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:30.691837Z",
+        "public_payload": {
+          "content": "ineer | | **Status** | ready | metadata:project_detail:reverseEngineer | | **Integration Jobs**"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000017",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 17,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:30.694261Z",
+        "public_payload": {
+          "content": "| 10 | metadata:project_detail:reverseEngineer | | **Generated Documents** | 10 | metadata:proje"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000018",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 18,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:30.696456Z",
+        "public_payload": {
+          "content": "ct_detail:reverseEngineer | | **Documents in RAG** | 21 | metadata:project_detail:reverseEnginee"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000019",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 19,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:30.697919Z",
+        "public_payload": {
+          "content": "r | | **Last Scan** | 2026-07-13 20:07 | metadata:project_detail:reverseEngineer | | **Last Doc"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000020",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 20,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:30.699216Z",
+        "public_payload": {
+          "content": "Generation** | 2026-07-13 21:49 | metadata:project_detail:reverseEngineer | | **Last RAG Push**"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000021",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 21,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:30.700458Z",
+        "public_payload": {
+          "content": "| 2026-07-13 21:49 | metadata:project_detail:reverseEngineer | | **Created** | 2026-07-13 | meta"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000022",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 22,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:30.701652Z",
+        "public_payload": {
+          "content": "data:project_detail:reverseEngineer | All factual claims in this response are derived from the"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000023",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 23,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:30.703130Z",
+        "public_payload": {
+          "content": "single evidence item `metadata:project_detail:reverseEngineer`, which contains the complete proj"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000024",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 24,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:30.704288Z",
+        "public_payload": {
+          "content": "ect metadata summary."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000025",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 25,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T15:53:30.705440Z",
+        "public_payload": {
+          "message_id": 1072,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-7wBIIindyA84Fq100FtKUGCb:evt:000026",
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "sequence": 26,
+        "type": "run.completed",
+        "created_at": "2026-07-21T15:53:30.708424Z",
+        "public_payload": {
+          "status": "completed",
+          "stop_reason": "answered",
+          "usage": {
+            "input_tokens": 30274,
+            "output_tokens": 642,
+            "model_cost_usd": 0.009467,
+            "capability_cost_usd": 0.0
+          },
+          "latency_ms": 18497
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1072,
+        "latency_ms": 18497,
+        "run_id": "run-7wBIIindyA84Fq100FtKUGCb",
+        "replayed": true,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 18544.302207999863,
+    "input_tokens": 30274,
+    "output_tokens": 642,
+    "cost_usd": 0.009467,
+    "error": null
+  },
+  {
+    "attempt_id": "evidence.none.001:evidence.none.001.turn-1:nonstream",
+    "scenario_id": "evidence.none.001",
+    "family": "no_evidence",
+    "prompt_id": "evidence.none.001",
+    "turn_id": "evidence.none.001.turn-1",
+    "transport": "nonstream",
+    "status_code": 200,
+    "assistant_text": "**Honest Limitation:** The search for runtime logs and job executions returned no matching evidence. This could mean: (1) there are no invoice-sending jobs in the currently authorized project scope, (2) the job naming convention doesn't match the search terms used, (3) the logs may have been archived or are outside the retention window, or (4) the job may exist in a project that is not currently authorized for this conversation.\n\n---\n\nBased on my search of the runtime logs and job execution records, I found **no evidence of any job that sends invoices** in the currently authorized scope.\n\nI searched for:\n- Runtime logs containing terms like \"job sends invoices,\" \"invoice generation,\" and \"billing\"\n- Recent job executions across all accessible projects\n\nBoth searches returned empty results.\n\nTo help you find which job sends invoices, I would need:\n\n1. **A specific project ID** - Which project or system contains the invoice-sending job?\n2. **More context** - Are you asking about:\n   - A specific application or service you're working with?\n   - A scheduled/cron job?\n   - A workflow in a particular platform (e.g., Workato, Talend, custom application)?\n\nIf you can provide a project ID or more details about where this invoice job should exist, I can search the documentation or runtime evidence for that specific project.",
+    "public_events": [
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000001",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 1,
+        "type": "run.started",
+        "created_at": "2026-07-21T15:53:30.746155Z",
+        "public_payload": {
+          "status": "running",
+          "cohort": "v2_effect_primary",
+          "transport": "nonstream",
+          "objective": "Which job sends invoices?"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000002",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 2,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T15:53:32.376011Z",
+        "public_payload": {
+          "tool_label": "search runtime logs",
+          "status": "proposed",
+          "call_ref": "search_runtime_logs_0"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000003",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 3,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T15:53:32.382762Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000004",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 4,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:32.602548Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000005",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 5,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:32.606219Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000006",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 6,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T15:53:32.617679Z",
+        "public_payload": {
+          "tool_label": "search runtime logs",
+          "status": "succeeded",
+          "summary": "No evidence matched the authorized scope.",
+          "evidence_refs": [],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000007",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 7,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:32.620407Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000008",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 8,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T15:53:34.450596Z",
+        "public_payload": {
+          "tool_label": "read runtime evidence",
+          "status": "proposed",
+          "call_ref": "read_runtime_evidence_1"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000009",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 9,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T15:53:34.457782Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000010",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 10,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:34.578001Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000011",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 11,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:34.584038Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000012",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 12,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T15:53:34.595382Z",
+        "public_payload": {
+          "tool_label": "read runtime evidence",
+          "status": "succeeded",
+          "summary": "No evidence matched the authorized scope.",
+          "evidence_refs": [],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000013",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 13,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:34.598776Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000014",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 14,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:39.988825Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000015",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 15,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:39.994551Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000016",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 16,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:48.006903Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000017",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 17,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:48.013783Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000018",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 18,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:48.030439Z",
+        "public_payload": {
+          "content": "**Honest Limitation:** The search for runtime logs and job executions returned no matching evide"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000019",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 19,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:48.032015Z",
+        "public_payload": {
+          "content": "nce. This could mean: (1) there are no invoice-sending jobs in the currently authorized project"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000020",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 20,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:48.033443Z",
+        "public_payload": {
+          "content": "scope, (2) the job naming convention doesn't match the search terms used, (3) the logs may have"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000021",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 21,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:48.034640Z",
+        "public_payload": {
+          "content": "been archived or are outside the retention window, or (4) the job may exist in a project that is"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000022",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 22,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:48.035781Z",
+        "public_payload": {
+          "content": "not currently authorized for this conversation. --- Based on my search of the runtime logs an"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000023",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 23,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:48.037071Z",
+        "public_payload": {
+          "content": "d job execution records, I found **no evidence of any job that sends invoices** in the currently"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000024",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 24,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:48.038468Z",
+        "public_payload": {
+          "content": "authorized scope. I searched for: - Runtime logs containing terms like \"job sends invoices,\" \""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000025",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 25,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:48.039758Z",
+        "public_payload": {
+          "content": "invoice generation,\" and \"billing\" - Recent job executions across all accessible projects Both"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000026",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 26,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:48.040951Z",
+        "public_payload": {
+          "content": "searches returned empty results. To help you find which job sends invoices, I would need: 1. *"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000027",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 27,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:48.042169Z",
+        "public_payload": {
+          "content": "*A specific project ID** - Which project or system contains the invoice-sending job? 2. **More c"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000028",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 28,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:48.043274Z",
+        "public_payload": {
+          "content": "ontext** - Are you asking about: - A specific application or service you're working with?"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000029",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 29,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:48.044372Z",
+        "public_payload": {
+          "content": "- A scheduled/cron job? - A workflow in a particular platform (e.g., Workato, Talend, custom"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000030",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 30,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:48.045369Z",
+        "public_payload": {
+          "content": "application)? If you can provide a project ID or more details about where this invoice job shou"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000031",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 31,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:53:48.046427Z",
+        "public_payload": {
+          "content": "ld exist, I can search the documentation or runtime evidence for that specific project."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000032",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 32,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T15:53:48.047456Z",
+        "public_payload": {
+          "message_id": 1075,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-VvFS0X9aljX3EYUg_YIDo2zG:evt:000033",
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "sequence": 33,
+        "type": "run.completed",
+        "created_at": "2026-07-21T15:53:48.051989Z",
+        "public_payload": {
+          "status": "completed",
+          "stop_reason": "answered",
+          "usage": {
+            "input_tokens": 39775,
+            "output_tokens": 625,
+            "model_cost_usd": 0.012307,
+            "capability_cost_usd": 0.0
+          },
+          "latency_ms": 17287
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1075,
+        "latency_ms": 17287,
+        "run_id": "run-VvFS0X9aljX3EYUg_YIDo2zG",
+        "replayed": true,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 17339.21420801198,
+    "input_tokens": 39775,
+    "output_tokens": 625,
+    "cost_usd": 0.012307,
+    "error": null
+  },
+  {
+    "attempt_id": "policy.denial.001:policy.denial.001.turn-1:nonstream",
+    "scenario_id": "policy.denial.001",
+    "family": "denial_recovery",
+    "prompt_id": "policy.denial.001",
+    "turn_id": "policy.denial.001.turn-1",
+    "transport": "nonstream",
+    "status_code": 200,
+    "assistant_text": "You're right - I should have been more direct about the limitation. Let me restate:\n\n**Honest limitation:** I cannot save a Pack draft because you have not provided a specific `draft_id` and `expected_revision`, which are required parameters for the save operation. I attempted to check for available drafts, but found none. Without these exact identifiers, I cannot proceed with a save operation.\n\n**Full answer:**\n\nTo save a Pack draft, I need you to provide:\n1. **draft_id** - The exact identifier of the Pack draft you want to save\n2. **expected_revision** - The current revision number of that draft\n\nThese are required parameters that I cannot infer or assume. The save operation also requires explicit user approval and appropriate write permissions.\n\nIf you have a specific Pack draft you'd like to save, please provide:\n- The draft ID (a positive integer)\n- The expected revision number (a positive integer)\n\nAlternatively, if you don't have a draft yet, you would need to first create one using `create_pack_draft` before it can be saved.",
+    "public_events": [
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000001",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 1,
+        "type": "run.started",
+        "created_at": "2026-07-21T15:53:48.092631Z",
+        "public_payload": {
+          "status": "running",
+          "cohort": "v2_effect_primary",
+          "transport": "nonstream",
+          "objective": "Save a Pack even though I only have read access."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000002",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 2,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T15:53:51.249305Z",
+        "public_payload": {
+          "tool_label": "read pack draft",
+          "status": "proposed",
+          "call_ref": "read_pack_draft_0"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000003",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 3,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T15:53:51.259320Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000004",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 4,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:51.265552Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000005",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 5,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:51.269595Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000006",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 6,
+        "type": "tool.denied",
+        "created_at": "2026-07-21T15:53:51.278047Z",
+        "public_payload": {
+          "tool_label": "read pack draft",
+          "status": "denied",
+          "summary": "Pack draft not found"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000007",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 7,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:51.281502Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000008",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 8,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T15:53:53.227656Z",
+        "public_payload": {
+          "tool_label": "list documentation packs",
+          "status": "proposed",
+          "call_ref": "list_documentation_packs_1"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000009",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 9,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T15:53:53.239471Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000010",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 10,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:53.244522Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000011",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 11,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:53.248001Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000012",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 12,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T15:53:53.291422Z",
+        "public_payload": {
+          "tool_label": "list documentation packs",
+          "status": "succeeded",
+          "summary": "Found 0 documentation Pack(s).",
+          "evidence_refs": [],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000013",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 13,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:53.293847Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000014",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 14,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:59.310115Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000015",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 15,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:53:59.313699Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000016",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 16,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:06.383329Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000017",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 17,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:06.390369Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000018",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 18,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:06.411219Z",
+        "public_payload": {
+          "content": "You're right - I should have been more direct about the limitation. Let me restate: **Honest li"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000019",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 19,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:06.412632Z",
+        "public_payload": {
+          "content": "mitation:** I cannot save a Pack draft because you have not provided a specific `draft_id` and `"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000020",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 20,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:06.413875Z",
+        "public_payload": {
+          "content": "expected_revision`, which are required parameters for the save operation. I attempted to check f"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000021",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 21,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:06.415110Z",
+        "public_payload": {
+          "content": "or available drafts, but found none. Without these exact identifiers, I cannot proceed with a sa"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000022",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 22,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:06.416225Z",
+        "public_payload": {
+          "content": "ve operation. **Full answer:** To save a Pack draft, I need you to provide: 1. **draft_id** -"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000023",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 23,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:06.417292Z",
+        "public_payload": {
+          "content": "The exact identifier of the Pack draft you want to save 2. **expected_revision** - The current r"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000024",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 24,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:06.418347Z",
+        "public_payload": {
+          "content": "evision number of that draft These are required parameters that I cannot infer or assume. The s"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000025",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 25,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:06.419362Z",
+        "public_payload": {
+          "content": "ave operation also requires explicit user approval and appropriate write permissions. If you ha"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000026",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 26,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:06.420350Z",
+        "public_payload": {
+          "content": "ve a specific Pack draft you'd like to save, please provide: - The draft ID (a positive integer)"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000027",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 27,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:06.421330Z",
+        "public_payload": {
+          "content": "- The expected revision number (a positive integer) Alternatively, if you don't have a draft y"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000028",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 28,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:06.422289Z",
+        "public_payload": {
+          "content": "et, you would need to first create one using `create_pack_draft` before it can be saved."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000029",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 29,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T15:54:06.423257Z",
+        "public_payload": {
+          "message_id": 1078,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-4Ln28RZY6yEKZP1S1coDpq7L:evt:000030",
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "sequence": 30,
+        "type": "run.completed",
+        "created_at": "2026-07-21T15:54:06.426918Z",
+        "public_payload": {
+          "status": "completed",
+          "stop_reason": "answered",
+          "usage": {
+            "input_tokens": 36083,
+            "output_tokens": 597,
+            "model_cost_usd": 0.011183,
+            "capability_cost_usd": 0.0
+          },
+          "latency_ms": 18319
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1078,
+        "latency_ms": 18319,
+        "run_id": "run-4Ln28RZY6yEKZP1S1coDpq7L",
+        "replayed": true,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 18371.77845800761,
+    "input_tokens": 36083,
+    "output_tokens": 597,
+    "cost_usd": 0.011183,
+    "error": null
+  },
+  {
+    "attempt_id": "stream.reconnect.001:stream.reconnect.001.turn-1:stream",
+    "scenario_id": "stream.reconnect.001",
+    "family": "stream_reconnect",
+    "prompt_id": "stream.reconnect.001",
+    "turn_id": "stream.reconnect.001.turn-1",
+    "transport": "stream",
+    "status_code": 200,
+    "assistant_text": "You're right. Let me re-examine the evidence and provide properly cited claims. Based on the evidence retrieved: 1. **There is 1 message in this conversation** - from `conversation:298:message:1080` (evidence_id: `conversation:298:message:1080`), which is your message asking to \"Reconnect to the interrupted response without rerunning work.\" 2. **There are 0 active project workflows** - the `list_active_project_workflows` call returned `\"workflows\":[]` with no evidence items (no active workflows to cite). 3. **No conversation tasks are in scope** - the background state shows `\"conversation_tasks\": []`. 4. **No agent plan exists** - the background state shows `\"agent_plan\": null`. Since there is no evidence of any interrupted workflows, drafts, tasks, orplans in the available evidence, I cannot reconnect to interrupted work without additional information from you. --- **What I need from you:** To reconnect to interrupted work without rerunning it, please provide identifying information such as: - A **project ID** (if documentation generation or onboarding was interrupted) - A **workflow name or reference** - A **draft ID** (if you were working on a Pack draft) - A **plan ID** (if an Agent Plan was paused) Without thisinformation, I have no evidence-based way to identify what work should be reconnected to.",
+    "public_events": [
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000002",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 2,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T15:54:08.123134Z",
+        "public_payload": {
+          "tool_label": "read conversation summary",
+          "status": "proposed",
+          "call_ref": "read_conversation_summary_0"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000003",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 3,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T15:54:08.135674Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000004",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 4,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:08.141584Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000005",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 5,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:08.145475Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000006",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 6,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T15:54:08.151523Z",
+        "public_payload": {
+          "tool_label": "read conversation summary",
+          "status": "succeeded",
+          "summary": "Retrieved 1 evidence item(s).",
+          "evidence_refs": [
+            {
+              "evidence_id": "conversation:298:message:1080",
+              "source_type": "conversation_message"
+            }
+          ],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000007",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 7,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:08.154911Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000008",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 8,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T15:54:10.815953Z",
+        "public_payload": {
+          "tool_label": "list active project workflows",
+          "status": "proposed",
+          "call_ref": "list_active_project_workflows_1"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000009",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 9,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T15:54:10.820126Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000010",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 10,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:10.821977Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000011",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 11,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:10.823839Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000012",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 12,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T15:54:10.841490Z",
+        "public_payload": {
+          "tool_label": "list active project workflows",
+          "status": "succeeded",
+          "summary": "Found 0 active project workflow(s).",
+          "evidence_refs": [],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000013",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 13,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:10.844914Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000014",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 14,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:15.215657Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000015",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 15,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:15.220503Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000016",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 16,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:24.267810Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000017",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 17,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:24.274654Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000018",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 18,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:24.285747Z",
+        "public_payload": {
+          "content": "You're right. Let me re-examine the evidence and provide properly cited claims. Based on the ev"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000019",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 19,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:24.287937Z",
+        "public_payload": {
+          "content": "idence retrieved: 1. **There is 1 message in this conversation** - from `conversation:298:messa"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000020",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 20,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:24.289516Z",
+        "public_payload": {
+          "content": "ge:1080` (evidence_id: `conversation:298:message:1080`), which is your message asking to \"Reconn"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000021",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 21,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:24.290976Z",
+        "public_payload": {
+          "content": "ect to the interrupted response without rerunning work.\" 2. **There are 0 active project workfl"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000022",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 22,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:24.292406Z",
+        "public_payload": {
+          "content": "ows** - the `list_active_project_workflows` call returned `\"workflows\":[]` with no evidence item"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000023",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 23,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:24.293855Z",
+        "public_payload": {
+          "content": "s (no active workflows to cite). 3. **No conversation tasks are in scope** - the background sta"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000024",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 24,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:24.295208Z",
+        "public_payload": {
+          "content": "te shows `\"conversation_tasks\": []`. 4. **No agent plan exists** - the background state shows `"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000025",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 25,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:24.296500Z",
+        "public_payload": {
+          "content": "\"agent_plan\": null`. Since there is no evidence of any interrupted workflows, drafts, tasks, or"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000026",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 26,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:24.297763Z",
+        "public_payload": {
+          "content": "plans in the available evidence, I cannot reconnect to interrupted work without additional info"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000027",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 27,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:24.299107Z",
+        "public_payload": {
+          "content": "rmation from you. --- **What I need from you:** To reconnect to interrupted work without reru"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000028",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 28,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:24.300293Z",
+        "public_payload": {
+          "content": "nning it, please provide identifying information such as: - A **project ID** (if documentation g"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000029",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 29,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:24.301523Z",
+        "public_payload": {
+          "content": "eneration or onboarding was interrupted) - A **workflow name or reference** - A **draft ID** (i"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000030",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 30,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:24.302791Z",
+        "public_payload": {
+          "content": "f you were working on a Pack draft) - A **plan ID** (if an Agent Plan was paused) Without this"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000031",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 31,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:24.303964Z",
+        "public_payload": {
+          "content": "information, I have no evidence-based way to identify what work should be reconnected to."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000032",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 32,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T15:54:24.305257Z",
+        "public_payload": {
+          "message_id": 1081,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-A0wvae1VzY_f6VlJV4vsJt4_:evt:000033",
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "sequence": 33,
+        "type": "run.completed",
+        "created_at": "2026-07-21T15:54:24.309351Z",
+        "public_payload": {
+          "status": "completed",
+          "stop_reason": "answered",
+          "usage": {
+            "input_tokens": 39994,
+            "output_tokens": 646,
+            "model_cost_usd": 0.012386,
+            "capability_cost_usd": 0.0
+          },
+          "latency_ms": 17811
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1081,
+        "latency_ms": 17811,
+        "run_id": "run-A0wvae1VzY_f6VlJV4vsJt4_",
+        "replayed": true,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 17973.08487497503,
+    "input_tokens": 39994,
+    "output_tokens": 646,
+    "cost_usd": 0.012386,
+    "error": null
+  },
+  {
+    "attempt_id": "stream.grounding.001:stream.grounding.001.turn-1:stream",
+    "scenario_id": "stream.grounding.001",
+    "family": "grounding_safe_stream",
+    "prompt_id": "stream.grounding.001",
+    "turn_id": "stream.grounding.001.turn-1",
+    "transport": "stream",
+    "status_code": 200,
+    "assistant_text": "I need to be transparent: The tool I used (`list_active_project_workflows`) only reports workflows that are **actively running** at this moment. It does not show: - Completed workflows - Failed or interrupted workflows that have already terminated - Historical workflow history - Workflow status for specific projects unless they are currently in progress This is an honest limitation\u2014if you need information about past workflows, a specific project's workflow history, or workflows that may have failed and already stopped, this tool cannot provide that information. ---**Full Answer:** No active workflows are currently running. The workflow ledger shows zero active onboarding, scan, or documentation generation processes.",
+    "public_events": [
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000001",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 1,
+        "type": "run.started",
+        "created_at": "2026-07-21T15:54:24.462362Z",
+        "public_payload": {
+          "status": "running",
+          "cohort": "v2_effect_primary",
+          "transport": "stream",
+          "objective": "Stream progress, then return only grounded factual prose."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000002",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 2,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T15:54:25.973933Z",
+        "public_payload": {
+          "tool_label": "list active project workflows",
+          "status": "proposed",
+          "call_ref": "list_active_project_workflows_0"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000003",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 3,
+        "type": "tool.proposed",
+        "created_at": "2026-07-21T15:54:25.982871Z",
+        "public_payload": {
+          "tool_label": "Tool",
+          "status": "proposed",
+          "call_ref": ""
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000004",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 4,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:25.986666Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000005",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 5,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:25.989809Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000006",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 6,
+        "type": "tool.completed",
+        "created_at": "2026-07-21T15:54:26.021235Z",
+        "public_payload": {
+          "tool_label": "list active project workflows",
+          "status": "succeeded",
+          "summary": "Found 0 active project workflow(s).",
+          "evidence_refs": [],
+          "receipt_ref": null,
+          "workflow_ref": null
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000007",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 7,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:26.023911Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000008",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 8,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:28.070114Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000009",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 9,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:28.074957Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000010",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 10,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:34.045163Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000011",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 11,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:34.049159Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000012",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 12,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:34.059855Z",
+        "public_payload": {
+          "content": "I need to be transparent: The tool I used (`list_active_project_workflows`) only reports workflo"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000013",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 13,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:34.061210Z",
+        "public_payload": {
+          "content": "ws that are **actively running** at this moment. It does not show: - Completed workflows - Fail"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000014",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 14,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:34.062517Z",
+        "public_payload": {
+          "content": "ed or interrupted workflows that have already terminated - Historical workflow history - Workflo"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000015",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 15,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:34.063806Z",
+        "public_payload": {
+          "content": "w status for specific projects unless they are currently in progress This is an honest limitati"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000016",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 16,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:34.065055Z",
+        "public_payload": {
+          "content": "on\u2014if you need information about past workflows, a specific project's workflow history, or workf"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000017",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 17,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:34.067346Z",
+        "public_payload": {
+          "content": "lows that may have failed and already stopped, this tool cannot provide that information. ---"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000018",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 18,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:34.069657Z",
+        "public_payload": {
+          "content": "**Full Answer:** No active workflows are currently running. The workflow ledger shows zero acti"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000019",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 19,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:34.071479Z",
+        "public_payload": {
+          "content": "ve onboarding, scan, or documentation generation processes."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000020",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 20,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T15:54:34.073087Z",
+        "public_payload": {
+          "message_id": 1084,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-LiM5oRyF-8vOLQL7ewVfDTir:evt:000021",
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "sequence": 21,
+        "type": "run.completed",
+        "created_at": "2026-07-21T15:54:34.076366Z",
+        "public_payload": {
+          "status": "completed",
+          "stop_reason": "answered",
+          "usage": {
+            "input_tokens": 29479,
+            "output_tokens": 221,
+            "model_cost_usd": 0.008976,
+            "capability_cost_usd": 0.0
+          },
+          "latency_ms": 9603
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1084,
+        "latency_ms": 9603,
+        "run_id": "run-LiM5oRyF-8vOLQL7ewVfDTir",
+        "replayed": false,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 9736.898834002204,
+    "input_tokens": 29479,
+    "output_tokens": 221,
+    "cost_usd": 0.008976,
+    "error": null
+  },
+  {
+    "attempt_id": "turn.duplicate.001:turn.duplicate.001.turn-1:stream",
+    "scenario_id": "turn.duplicate.001",
+    "family": "rapid_duplicate_turn",
+    "prompt_id": "turn.duplicate.001",
+    "turn_id": "turn.duplicate.001.turn-1",
+    "transport": "stream",
+    "status_code": 200,
+    "assistant_text": "I can only execute one consequential tool per assistant response, and I don't have any pending proposals or workflows that need to be submitted. Could you clarify what you'd like me to do? For example: - Are you referring to a specific workflow, document update, or Pack draft that needs to be submitted/approved? - Do you want me to demonstrate how the system handles duplicate requests? - Is there a specific project or task you're working on that needs action? Please let meknow what specific action you'd like me to take, and I'll help you with it. ```json nexus-grounding { \"answer_status\": \"clarification_needed\", \"citations\": [], \"disclosures\": [] } ```",
+    "public_events": [
+      {
+        "event_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk:evt:000001",
+        "run_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk",
+        "sequence": 1,
+        "type": "run.started",
+        "created_at": "2026-07-21T15:54:34.215130Z",
+        "public_payload": {
+          "status": "running",
+          "cohort": "v2_effect_primary",
+          "transport": "stream",
+          "objective": "Submit this same client turn twice."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk:evt:000002",
+        "run_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk",
+        "sequence": 2,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:38.475481Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk:evt:000003",
+        "run_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk",
+        "sequence": 3,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:38.480232Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk:evt:000004",
+        "run_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk",
+        "sequence": 4,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:38.490768Z",
+        "public_payload": {
+          "content": "I can only execute one consequential tool per assistant response, and I don't have any pending p"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk:evt:000005",
+        "run_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk",
+        "sequence": 5,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:38.493326Z",
+        "public_payload": {
+          "content": "roposals or workflows that need to be submitted. Could you clarify what you'd like me to do? F"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk:evt:000006",
+        "run_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk",
+        "sequence": 6,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:38.495019Z",
+        "public_payload": {
+          "content": "or example: - Are you referring to a specific workflow, document update, or Pack draft that need"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk:evt:000007",
+        "run_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk",
+        "sequence": 7,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:38.497038Z",
+        "public_payload": {
+          "content": "s to be submitted/approved? - Do you want me to demonstrate how the system handles duplicate req"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk:evt:000008",
+        "run_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk",
+        "sequence": 8,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:38.499114Z",
+        "public_payload": {
+          "content": "uests? - Is there a specific project or task you're working on that needs action? Please let me"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk:evt:000009",
+        "run_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk",
+        "sequence": 9,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:38.501106Z",
+        "public_payload": {
+          "content": "know what specific action you'd like me to take, and I'll help you with it. ```json nexus-grou"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk:evt:000010",
+        "run_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk",
+        "sequence": 10,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:38.503792Z",
+        "public_payload": {
+          "content": "nding { \"answer_status\": \"clarification_needed\", \"citations\": [], \"disclosures\": [] } ```"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk:evt:000011",
+        "run_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk",
+        "sequence": 11,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T15:54:38.506122Z",
+        "public_payload": {
+          "message_id": 1086,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk:evt:000012",
+        "run_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk",
+        "sequence": 12,
+        "type": "run.completed",
+        "created_at": "2026-07-21T15:54:38.509682Z",
+        "public_payload": {
+          "status": "completed",
+          "stop_reason": "answered",
+          "usage": {
+            "input_tokens": 9742,
+            "output_tokens": 149,
+            "model_cost_usd": 0.003012,
+            "capability_cost_usd": 0.0
+          },
+          "latency_ms": 4283
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1086,
+        "latency_ms": 4283,
+        "run_id": "run-yYk-rJF8tE2IlLKnEkKMy5pk",
+        "replayed": true,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 4443.487000011373,
+    "input_tokens": 9742,
+    "output_tokens": 149,
+    "cost_usd": 0.003012,
+    "error": null
+  },
+  {
+    "attempt_id": "transport.parity.001:transport.parity.001.turn-1:stream",
+    "scenario_id": "transport.parity.001",
+    "family": "transport_parity",
+    "prompt_id": "transport.parity.001",
+    "turn_id": "transport.parity.001.turn-1",
+    "transport": "stream",
+    "status_code": 200,
+    "assistant_text": "I understand you're asking about transport-agnostic response consistency. However, I need more context about what you're trying to accomplish: 1. **Are you asking about API behavior?** - If you're asking about the Nexus API's behavior across different transport protocols (HTTP, WebSocket, etc.), I can explain the design principles, but I don't have a specific tool to query transport-layer configuration. 2. **Are you asking about a specific project or document?** - If there's a particular project where you've observed inconsistent behavior across transports, I can investigate that. 3. **Are you asking about documentation?** - I can search project documentation for information about transport protocols or API behavior if you specify a project. Could you clarify what you're looking for? For example: - A specific project ID where you've observed this behavior - Documentation about API transport behavior - Help with a particular integration or client implementation",
+    "public_events": [
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000001",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 1,
+        "type": "run.started",
+        "created_at": "2026-07-21T15:54:38.683139Z",
+        "public_payload": {
+          "status": "running",
+          "cohort": "v2_effect_primary",
+          "transport": "stream",
+          "objective": "Return the same answer and metadata over either transport."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000002",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 2,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:44.172395Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000003",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 3,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:44.179257Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000004",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 4,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.190410Z",
+        "public_payload": {
+          "content": "I understand you're asking about transport-agnostic response consistency. However, I need more c"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000005",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 5,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.192214Z",
+        "public_payload": {
+          "content": "ontext about what you're trying to accomplish: 1. **Are you asking about API behavior?** - If y"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000006",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 6,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.194454Z",
+        "public_payload": {
+          "content": "ou're asking about the Nexus API's behavior across different transport protocols (HTTP, WebSocke"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000007",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 7,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.196125Z",
+        "public_payload": {
+          "content": "t, etc.), I can explain the design principles, but I don't have a specific tool to query transpo"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000008",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 8,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.197659Z",
+        "public_payload": {
+          "content": "rt-layer configuration. 2. **Are you asking about a specific project or document?** - If there'"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000009",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 9,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.199256Z",
+        "public_payload": {
+          "content": "s a particular project where you've observed inconsistent behavior across transports, I can inve"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000010",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 10,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.200691Z",
+        "public_payload": {
+          "content": "stigate that. 3. **Are you asking about documentation?** - I can search project documentation f"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000011",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 11,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.201997Z",
+        "public_payload": {
+          "content": "or information about transport protocols or API behavior if you specify a project. Could you cl"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000012",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 12,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.203182Z",
+        "public_payload": {
+          "content": "arify what you're looking for? For example: - A specific project ID where you've observed this b"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000013",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 13,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.204451Z",
+        "public_payload": {
+          "content": "ehavior - Documentation about API transport behavior - Help with a particular integration or cli"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000014",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 14,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.205936Z",
+        "public_payload": {
+          "content": "ent implementation"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000015",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 15,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T15:54:44.207457Z",
+        "public_payload": {
+          "message_id": 1089,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000016",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 16,
+        "type": "run.completed",
+        "created_at": "2026-07-21T15:54:44.211011Z",
+        "public_payload": {
+          "status": "completed",
+          "stop_reason": "answered",
+          "usage": {
+            "input_tokens": 9745,
+            "output_tokens": 228,
+            "model_cost_usd": 0.00306,
+            "capability_cost_usd": 0.0
+          },
+          "latency_ms": 5521
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1089,
+        "latency_ms": 5521,
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "replayed": false,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 5658.277957991231,
+    "input_tokens": 9745,
+    "output_tokens": 228,
+    "cost_usd": 0.00306,
+    "error": null
+  },
+  {
+    "attempt_id": "transport.parity.001:transport.parity.001.turn-1:nonstream",
+    "scenario_id": "transport.parity.001",
+    "family": "transport_parity",
+    "prompt_id": "transport.parity.001",
+    "turn_id": "transport.parity.001.turn-1",
+    "transport": "nonstream",
+    "status_code": 200,
+    "assistant_text": "I understand you're asking about transport-agnostic response consistency. However, I need more context about what you're trying to accomplish:\n\n1. **Are you asking about API behavior?** - If you're asking about the Nexus API's behavior across different transport protocols (HTTP, WebSocket, etc.), I can explain the design principles, but I don't have a specific tool to query transport-layer configuration.\n\n2. **Are you asking about a specific project or document?** - If there's a particular project where you've observed inconsistent behavior across transports, I can investigate that.\n\n3. **Are you asking about documentation?** - I can search project documentation for information about transport protocols or API behavior if you specify a project.\n\nCould you clarify what you're looking for? For example:\n- A specific project ID where you've observed this behavior\n- Documentation about API transport behavior\n- Help with a particular integration or client implementation",
+    "public_events": [
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000001",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 1,
+        "type": "run.started",
+        "created_at": "2026-07-21T15:54:38.683139Z",
+        "public_payload": {
+          "status": "running",
+          "cohort": "v2_effect_primary",
+          "transport": "stream",
+          "objective": "Return the same answer and metadata over either transport."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000002",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 2,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:44.172395Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "model",
+          "summary": "Model step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000003",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 3,
+        "type": "runtime.update",
+        "created_at": "2026-07-21T15:54:44.179257Z",
+        "public_payload": {
+          "status": "running",
+          "phase": "tool",
+          "summary": "Tool step completed."
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000004",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 4,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.190410Z",
+        "public_payload": {
+          "content": "I understand you're asking about transport-agnostic response consistency. However, I need more c"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000005",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 5,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.192214Z",
+        "public_payload": {
+          "content": "ontext about what you're trying to accomplish: 1. **Are you asking about API behavior?** - If y"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000006",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 6,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.194454Z",
+        "public_payload": {
+          "content": "ou're asking about the Nexus API's behavior across different transport protocols (HTTP, WebSocke"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000007",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 7,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.196125Z",
+        "public_payload": {
+          "content": "t, etc.), I can explain the design principles, but I don't have a specific tool to query transpo"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000008",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 8,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.197659Z",
+        "public_payload": {
+          "content": "rt-layer configuration. 2. **Are you asking about a specific project or document?** - If there'"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000009",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 9,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.199256Z",
+        "public_payload": {
+          "content": "s a particular project where you've observed inconsistent behavior across transports, I can inve"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000010",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 10,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.200691Z",
+        "public_payload": {
+          "content": "stigate that. 3. **Are you asking about documentation?** - I can search project documentation f"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000011",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 11,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.201997Z",
+        "public_payload": {
+          "content": "or information about transport protocols or API behavior if you specify a project. Could you cl"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000012",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 12,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.203182Z",
+        "public_payload": {
+          "content": "arify what you're looking for? For example: - A specific project ID where you've observed this b"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000013",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 13,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.204451Z",
+        "public_payload": {
+          "content": "ehavior - Documentation about API transport behavior - Help with a particular integration or cli"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000014",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 14,
+        "type": "assistant.delta",
+        "created_at": "2026-07-21T15:54:44.205936Z",
+        "public_payload": {
+          "content": "ent implementation"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000015",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 15,
+        "type": "assistant.completed",
+        "created_at": "2026-07-21T15:54:44.207457Z",
+        "public_payload": {
+          "message_id": 1089,
+          "status": "completed"
+        },
+        "replayable": true
+      },
+      {
+        "event_id": "run-gko7LB3W0ci638uxvLUP5YAD:evt:000016",
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "sequence": 16,
+        "type": "run.completed",
+        "created_at": "2026-07-21T15:54:44.211011Z",
+        "public_payload": {
+          "status": "completed",
+          "stop_reason": "answered",
+          "usage": {
+            "input_tokens": 9745,
+            "output_tokens": 228,
+            "model_cost_usd": 0.00306,
+            "capability_cost_usd": 0.0
+          },
+          "latency_ms": 5521
+        },
+        "replayable": true
+      },
+      {
+        "message_id": 1089,
+        "latency_ms": 5521,
+        "run_id": "run-gko7LB3W0ci638uxvLUP5YAD",
+        "replayed": true,
+        "type": "done"
+      }
+    ],
+    "latency_ms": 34.03199999593198,
+    "input_tokens": 9745,
+    "output_tokens": 228,
+    "cost_usd": 0.00306,
+    "error": null
+  }
+]

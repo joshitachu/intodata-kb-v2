@@ -1,0 +1,355 @@
+{
+  "effects": 0,
+  "generated_at": "2026-07-21T08:09:06.256594+00:00",
+  "purpose": "Repeated-sample retest of specific Slice 3 authenticated attempts to separate a genuine model weakness from single-sample provider noise. Diagnostic evidence only; not a release-gate artifact and never overwrites slice_3_readonly_selection_v1.json.",
+  "repeats_per_scenario": 6,
+  "report_version": "1.0.0",
+  "results": {
+    "correction.docs_not_logs.001": {
+      "attempts": [
+        {
+          "expected": "tool_call:['list_documentation_packs', 'list_project_documents', 'query_project_metadata', 'search_documentation']",
+          "finish_reason": "tool_calls",
+          "passed": true,
+          "response_text": "Which log window should I inspect?",
+          "selected": [
+            "search_documentation",
+            "list_active_project_workflows"
+          ],
+          "tool_calls": [
+            {
+              "arguments": {
+                "query": "Fixture Project overnight issue problem error wrong",
+                "top_k": 10
+              },
+              "name": "search_documentation"
+            },
+            {
+              "arguments": {},
+              "name": "list_active_project_workflows"
+            }
+          ]
+        },
+        {
+          "expected": "tool_call:['list_documentation_packs', 'list_project_documents', 'query_project_metadata', 'search_documentation']",
+          "finish_reason": "tool_calls",
+          "passed": true,
+          "response_text": "I'll search the documentation for Fixture Project to see what might look wrong.",
+          "selected": [
+            "search_documentation"
+          ],
+          "tool_calls": [
+            {
+              "arguments": {
+                "project_id": "Fixture Project",
+                "query": "Fixture Project overnight issue problem wrong error failure"
+              },
+              "name": "search_documentation"
+            }
+          ]
+        },
+        {
+          "expected": "tool_call:['list_documentation_packs', 'list_project_documents', 'query_project_metadata', 'search_documentation']",
+          "finish_reason": "tool_calls",
+          "passed": true,
+          "response_text": "I'll search the documentation for Fixture Project to see what might look wrong.",
+          "selected": [
+            "search_documentation"
+          ],
+          "tool_calls": [
+            {
+              "arguments": {
+                "project_id": "Fixture Project",
+                "query": "Fixture Project overnight issues problems errors failures anomalies"
+              },
+              "name": "search_documentation"
+            }
+          ]
+        },
+        {
+          "expected": "tool_call:['list_documentation_packs', 'list_project_documents', 'query_project_metadata', 'search_documentation']",
+          "finish_reason": "tool_calls",
+          "passed": true,
+          "response_text": "Which log window should I inspect?",
+          "selected": [
+            "search_documentation"
+          ],
+          "tool_calls": [
+            {
+              "arguments": {
+                "query": "Fixture Project overnight issue problem wrong"
+              },
+              "name": "search_documentation"
+            }
+          ]
+        },
+        {
+          "expected": "tool_call:['list_documentation_packs', 'list_project_documents', 'query_project_metadata', 'search_documentation']",
+          "finish_reason": "tool_calls",
+          "passed": true,
+          "response_text": "I'll search the documentation for Fixture Project to see what might look wrong.",
+          "selected": [
+            "search_documentation"
+          ],
+          "tool_calls": [
+            {
+              "arguments": {
+                "project_id": "Fixture Project",
+                "query": "Fixture Project overnight issues problems errors anomalies failures"
+              },
+              "name": "search_documentation"
+            }
+          ]
+        },
+        {
+          "expected": "tool_call:['list_documentation_packs', 'list_project_documents', 'query_project_metadata', 'search_documentation']",
+          "finish_reason": "tool_calls",
+          "passed": true,
+          "response_text": "I'll search the documentation for Fixture Project to see what might look wrong.",
+          "selected": [
+            "search_documentation"
+          ],
+          "tool_calls": [
+            {
+              "arguments": {
+                "project_id": "Fixture Project",
+                "query": "Fixture Project overnight issues problems errors failures anomalies"
+              },
+              "name": "search_documentation"
+            }
+          ]
+        }
+      ],
+      "family": "correction",
+      "passed": 6,
+      "rate": 1.0,
+      "total": 6
+    },
+    "format.summary.001": {
+      "attempts": [
+        {
+          "expected": "tool_call:['query_project_metadata', 'search_documentation']",
+          "finish_reason": "tool_calls",
+          "passed": true,
+          "response_text": "I'll search for information about \"Fixture Project\" in the documentation.",
+          "selected": [
+            "search_documentation"
+          ],
+          "tool_calls": [
+            {
+              "arguments": {
+                "query": "Fixture Project overview summary description",
+                "top_k": 10
+              },
+              "name": "search_documentation"
+            }
+          ]
+        },
+        {
+          "expected": "tool_call:['query_project_metadata', 'search_documentation']",
+          "finish_reason": "tool_calls",
+          "passed": true,
+          "response_text": "I'll search for information about \"Fixture Project\" in the documentation.",
+          "selected": [
+            "search_documentation"
+          ],
+          "tool_calls": [
+            {
+              "arguments": {
+                "query": "Fixture Project",
+                "top_k": 10
+              },
+              "name": "search_documentation"
+            }
+          ]
+        },
+        {
+          "expected": "tool_call:['query_project_metadata', 'search_documentation']",
+          "finish_reason": "tool_calls",
+          "passed": true,
+          "response_text": "I'll search for information about Fixture Project to provide you with a summary.",
+          "selected": [
+            "search_documentation"
+          ],
+          "tool_calls": [
+            {
+              "arguments": {
+                "project_id": "Fixture Project",
+                "query": "Fixture Project overview summary description"
+              },
+              "name": "search_documentation"
+            }
+          ]
+        },
+        {
+          "expected": "tool_call:['query_project_metadata', 'search_documentation']",
+          "finish_reason": "tool_calls",
+          "passed": true,
+          "response_text": "Fixture Project is a data integration project with several documented jobs.",
+          "selected": [
+            "query_project_metadata"
+          ],
+          "tool_calls": [
+            {
+              "arguments": {
+                "query_type": "project_list"
+              },
+              "name": "query_project_metadata"
+            }
+          ]
+        },
+        {
+          "expected": "tool_call:['query_project_metadata', 'search_documentation']",
+          "finish_reason": "tool_calls",
+          "passed": true,
+          "response_text": "I'll search for information about Fixture Project to provide you with a summary.",
+          "selected": [
+            "search_documentation"
+          ],
+          "tool_calls": [
+            {
+              "arguments": {
+                "query": "Fixture Project overview summary description"
+              },
+              "name": "search_documentation"
+            }
+          ]
+        },
+        {
+          "expected": "tool_call:['query_project_metadata', 'search_documentation']",
+          "finish_reason": "tool_calls",
+          "passed": true,
+          "response_text": "I'll search for information about \"Fixture Project\" in the documentation to give you a summary.",
+          "selected": [
+            "search_documentation"
+          ],
+          "tool_calls": [
+            {
+              "arguments": {
+                "query": "Fixture Project overview summary description",
+                "top_k": 10
+              },
+              "name": "search_documentation"
+            }
+          ]
+        }
+      ],
+      "family": "user_format",
+      "passed": 6,
+      "rate": 1.0,
+      "total": 6
+    },
+    "rag.summary.001.keyword_collision": {
+      "attempts": [
+        {
+          "expected": "tool_call:['list_documentation_packs', 'list_project_documents', 'query_project_metadata', 'search_documentation']",
+          "finish_reason": "tool_calls",
+          "passed": true,
+          "response_text": "",
+          "selected": [
+            "search_documentation"
+          ],
+          "tool_calls": [
+            {
+              "arguments": {
+                "query": "Fixture Project Pack document what it does purpose functionality",
+                "top_k": 10
+              },
+              "name": "search_documentation"
+            }
+          ]
+        },
+        {
+          "expected": "tool_call:['list_documentation_packs', 'list_project_documents', 'query_project_metadata', 'search_documentation']",
+          "finish_reason": "tool_calls",
+          "passed": true,
+          "response_text": "",
+          "selected": [
+            "list_documentation_packs"
+          ],
+          "tool_calls": [
+            {
+              "arguments": {
+                "scope": "all"
+              },
+              "name": "list_documentation_packs"
+            }
+          ]
+        },
+        {
+          "expected": "tool_call:['list_documentation_packs', 'list_project_documents', 'query_project_metadata', 'search_documentation']",
+          "finish_reason": "tool_calls",
+          "passed": true,
+          "response_text": "I'll search the documentation for information about the Fixture Project Pack to explain what it does.",
+          "selected": [
+            "search_documentation"
+          ],
+          "tool_calls": [
+            {
+              "arguments": {
+                "query": "Fixture Project Pack purpose functionality what it does"
+              },
+              "name": "search_documentation"
+            }
+          ]
+        },
+        {
+          "expected": "tool_call:['list_documentation_packs', 'list_project_documents', 'query_project_metadata', 'search_documentation']",
+          "finish_reason": "tool_calls",
+          "passed": true,
+          "response_text": "I'll search the project documentation for information about the Fixture Project Pack document to explain what it does.",
+          "selected": [
+            "search_documentation"
+          ],
+          "tool_calls": [
+            {
+              "arguments": {
+                "query": "Fixture Project Pack document purpose functionality what it does"
+              },
+              "name": "search_documentation"
+            }
+          ]
+        },
+        {
+          "expected": "tool_call:['list_documentation_packs', 'list_project_documents', 'query_project_metadata', 'search_documentation']",
+          "finish_reason": "tool_calls",
+          "passed": true,
+          "response_text": "",
+          "selected": [
+            "search_documentation"
+          ],
+          "tool_calls": [
+            {
+              "arguments": {
+                "query": "Fixture Project Pack document what it does purpose functionality",
+                "top_k": 10
+              },
+              "name": "search_documentation"
+            }
+          ]
+        },
+        {
+          "expected": "tool_call:['list_documentation_packs', 'list_project_documents', 'query_project_metadata', 'search_documentation']",
+          "finish_reason": "tool_calls",
+          "passed": true,
+          "response_text": "I'll search the project documentation for information about the Fixture Project Pack.",
+          "selected": [
+            "search_documentation"
+          ],
+          "tool_calls": [
+            {
+              "arguments": {
+                "query": "Fixture Project Pack what it does purpose functionality"
+              },
+              "name": "search_documentation"
+            }
+          ]
+        }
+      ],
+      "family": "documentation_rag",
+      "passed": 6,
+      "rate": 1.0,
+      "total": 6
+    }
+  }
+}

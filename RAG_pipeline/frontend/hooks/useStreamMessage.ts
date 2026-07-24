@@ -1,60 +1,45 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { z } from "zod";
 import {
   type ConversationMessageRequest,
-  type DocumentSource,
-  type AgentStep,
-  type HarnessActivityEvent,
-  type HarnessPendingAction,
-  type UsageStats,
-  type RuntimeToolProgress,
-  type StructuredAnswer,
-  AgentStepSchema,
-  DocumentSourceSchema,
-  HarnessActivityEventSchema,
-  HarnessPendingActionSchema,
-  UsageStatsSchema,
+  type TypedAgentResponse,
   SseDoneSchema,
-  RuntimeToolCallEventSchema,
-  RuntimeToolResultEventSchema,
-  StructuredAnswerSchema,
+  TypedAgentResponseSchema,
+  PublicAgentEventSchema,
 } from "@/types";
 
 export interface StreamState {
   isStreaming: boolean;
   content: string;
-  sources: DocumentSource[];
   error: string | null;
   messageId: number | null;
   latencyMs: number | null;
-  usage: UsageStats | null;
-  steps: AgentStep[];
-  harnessActivities: HarnessActivityEvent[];
-  pendingAction: HarnessPendingAction | null;
-  runtimeTools: RuntimeToolProgress[];
-  structuredAnswer: StructuredAnswer | null;
+  typedResponse?: TypedAgentResponse | null;
+  runId?: string | null;
+  progress?: string | null;
+  lastSequence?: number;
 }
 
 const INITIAL_STATE: StreamState = {
   isStreaming: false,
   content: "",
-  sources: [],
   error: null,
   messageId: null,
   latencyMs: null,
-  usage: null,
-  steps: [],
-  harnessActivities: [],
-  pendingAction: null,
-  runtimeTools: [],
-  structuredAnswer: null,
+  typedResponse: null,
+  runId: null,
+  progress: null,
+  lastSequence: 0,
 };
 
 export function useStreamMessage(conversationId: number | null) {
   const [streamState, setStreamState] = useState<StreamState>(INITIAL_STATE);
   const abortRef = useRef<AbortController | null>(null);
+  const lastEventIdRef = useRef<string | null>(null);
+  const lastSequenceRef = useRef(0);
+  const clientTurnRef = useRef<string | null>(null);
+  const seenEventIdsRef = useRef(new Set<string>());
 
   useEffect(() => {
     return () => {
@@ -63,6 +48,10 @@ export function useStreamMessage(conversationId: number | null) {
   }, []);
 
   const reset = useCallback(() => {
+    lastEventIdRef.current = null;
+    lastSequenceRef.current = 0;
+    clientTurnRef.current = null;
+    seenEventIdsRef.current.clear();
     setStreamState(INITIAL_STATE);
   }, []);
 
@@ -76,27 +65,39 @@ export function useStreamMessage(conversationId: number | null) {
       const controller = new AbortController();
       abortRef.current = controller;
 
-      setStreamState({
+      const sameTurn = Boolean(
+        request.client_turn_id && request.client_turn_id === clientTurnRef.current,
+      );
+      if (!sameTurn) {
+        lastEventIdRef.current = null;
+        lastSequenceRef.current = 0;
+        seenEventIdsRef.current.clear();
+      }
+      clientTurnRef.current = request.client_turn_id ?? null;
+
+      setStreamState((prev) => ({
         isStreaming: true,
-        content: "",
-        sources: [],
+        content: sameTurn ? prev.content : "",
         error: null,
-        messageId: null,
-        latencyMs: null,
-        usage: null,
-        steps: [],
-        harnessActivities: [],
-        pendingAction: null,
-        runtimeTools: [],
-        structuredAnswer: null,
-      });
+        messageId: sameTurn ? prev.messageId : null,
+        latencyMs: sameTurn ? prev.latencyMs : null,
+        typedResponse: sameTurn ? prev.typedResponse : null,
+        runId: sameTurn ? prev.runId : null,
+        progress: sameTurn ? prev.progress : null,
+        lastSequence: lastSequenceRef.current,
+      }));
 
       try {
         const res = await fetch(
-          `/api/conversations/${targetId}/messages/stream`,
+          `/api/conversations/${targetId}/messages/stream?after_sequence=${lastSequenceRef.current}`,
           {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              ...(lastEventIdRef.current
+                ? { "Last-Event-ID": lastEventIdRef.current }
+                : {}),
+            },
             body: JSON.stringify(request),
             signal: controller.signal,
           },
@@ -134,139 +135,57 @@ export function useStreamMessage(conversationId: number | null) {
         let currentData: string[] = [];
 
         const dispatchEvent = (eventType: string, data: string) => {
-          if (eventType === "sources") {
+          if (
+            eventType === "assistant.delta" ||
+            eventType === "run.started" ||
+            eventType === "runtime.update" ||
+            eventType.startsWith("tool.") ||
+            eventType.startsWith("workflow.") ||
+            eventType.startsWith("plan.") ||
+            eventType === "assistant.completed" ||
+            eventType.startsWith("run.")
+          ) {
             try {
-              const sources = z.array(DocumentSourceSchema).parse(JSON.parse(data));
-              setStreamState((prev) => ({ ...prev, sources }));
-            } catch {
-              // ignore parse error
-            }
-          } else if (eventType === "token") {
-            try {
-              const token = z.string().parse(JSON.parse(data));
+              const event = PublicAgentEventSchema.parse(JSON.parse(data));
+              if (seenEventIdsRef.current.has(event.event_id)) return;
+              seenEventIdsRef.current.add(event.event_id);
+              lastEventIdRef.current = event.event_id;
+              lastSequenceRef.current = Math.max(
+                lastSequenceRef.current,
+                event.sequence,
+              );
+              const payload = event.public_payload;
               setStreamState((prev) => ({
                 ...prev,
-                content: prev.content + token,
+                runId: event.run_id,
+                lastSequence: lastSequenceRef.current,
+                content:
+                  eventType === "assistant.delta"
+                    ? prev.content + String(payload.content ?? "")
+                    : prev.content,
+                progress:
+                  eventType === "assistant.delta"
+                    ? prev.progress
+                    : String(payload.summary ?? payload.status ?? eventType),
+                isStreaming: ![
+                  "run.completed",
+                  "run.failed",
+                  "run.interrupted",
+                ].includes(eventType),
               }));
             } catch {
-              // ignore parse error
+              // Ignore malformed or non-public events.
             }
-          } else if (eventType === "usage") {
+          } else if (eventType === "agent_response") {
             try {
-              const usage = UsageStatsSchema.parse(JSON.parse(data));
-              setStreamState((prev) => ({ ...prev, usage }));
-            } catch {
-              // ignore parse error
-            }
-          } else if (eventType === "step") {
-            try {
-              const step = AgentStepSchema.parse(JSON.parse(data));
-              setStreamState((prev) => {
-                const existingIndex = prev.steps.findIndex((s) => s.id === step.id);
-                if (existingIndex === -1) {
-                  return { ...prev, steps: [...prev.steps, step] };
-                }
-                const nextSteps = [...prev.steps];
-                nextSteps[existingIndex] = step;
-                return { ...prev, steps: nextSteps };
-              });
-            } catch {
-              // ignore parse error
-            }
-          } else if (eventType === "runtime_tool_call") {
-            try {
-              const call = RuntimeToolCallEventSchema.parse(JSON.parse(data));
+              const typedResponse = TypedAgentResponseSchema.parse(JSON.parse(data));
               setStreamState((prev) => ({
                 ...prev,
-                runtimeTools: [
-                  ...prev.runtimeTools,
-                  {
-                    toolName: call.tool_name,
-                    status: "running",
-                    latencyMs: null,
-                    truncated: false,
-                    error: null,
-                  },
-                ],
+                content: typedResponse.content,
+                typedResponse,
               }));
             } catch {
-              // ignore parse error
-            }
-          } else if (eventType === "runtime_tool_result") {
-            try {
-              const result = RuntimeToolResultEventSchema.parse(JSON.parse(data));
-              setStreamState((prev) => {
-                const next: RuntimeToolProgress = {
-                  toolName: result.tool_name,
-                  status: result.success ? "completed" : "failed",
-                  latencyMs: result.latency_ms,
-                  truncated: result.truncated,
-                  error: result.error ?? null,
-                };
-                const matchIndex = prev.runtimeTools.findIndex(
-                  (t) => t.toolName === result.tool_name && t.status === "running",
-                );
-                if (matchIndex === -1) {
-                  return { ...prev, runtimeTools: [...prev.runtimeTools, next] };
-                }
-                const runtimeTools = [...prev.runtimeTools];
-                runtimeTools[matchIndex] = next;
-                return { ...prev, runtimeTools };
-              });
-            } catch {
-              // ignore parse error
-            }
-          } else if (eventType === "harness_activity" || eventType === "activity") {
-            try {
-              const activity = HarnessActivityEventSchema.parse(JSON.parse(data));
-              setStreamState((prev) => {
-                // Event records are progressive snapshots. Keep their position
-                // stable while an action moves from planned to complete.
-                const activityKey = [
-                  activity.workflow_run_id ?? "stream",
-                  activity.event_type,
-                  activity.label,
-                ].join(":");
-                const existingIndex = prev.harnessActivities.findIndex((item) =>
-                  [item.workflow_run_id ?? "stream", item.event_type, item.label].join(":") === activityKey,
-                );
-                if (existingIndex === -1) {
-                  return {
-                    ...prev,
-                    harnessActivities: [...prev.harnessActivities, activity],
-                  };
-                }
-                const harnessActivities = [...prev.harnessActivities];
-                harnessActivities[existingIndex] = {
-                  ...harnessActivities[existingIndex],
-                  ...activity,
-                  safe_details: {
-                    ...harnessActivities[existingIndex].safe_details,
-                    ...activity.safe_details,
-                  },
-                };
-                return { ...prev, harnessActivities };
-              });
-            } catch {
-              // ignore parse error
-            }
-          } else if (eventType === "final_answer") {
-            try {
-              const structuredAnswer = StructuredAnswerSchema.parse(JSON.parse(data));
-              setStreamState((prev) => ({ ...prev, structuredAnswer }));
-            } catch {
-              // Preserve token rendering when an older backend emits no typed answer.
-            }
-          } else if (eventType === "pending_action") {
-            try {
-              const pendingAction = HarnessPendingActionSchema.parse(JSON.parse(data));
-              setStreamState((prev) => ({
-                ...prev,
-                isStreaming: false,
-                pendingAction,
-              }));
-            } catch {
-              // Ignore malformed or overbroad action payloads.
+              // Malformed typed responses never replace validated stream content.
             }
           } else if (eventType === "error") {
             let message = data;
@@ -298,6 +217,7 @@ export function useStreamMessage(conversationId: number | null) {
                 isStreaming: false,
                 messageId: result.message_id,
                 latencyMs: result.latency_ms,
+                runId: result.run_id ?? prev.runId,
               }));
             } catch {
               // ignore parse error

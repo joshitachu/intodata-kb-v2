@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0.0",
+  "attempts": [
+    {
+      "attempt_id": "rag.followup.jobs.001.negation:rag.followup.jobs.001.negation.turn-1:nonstream",
+      "scenario_id": "rag.followup.jobs.001.negation",
+      "prompt_id": "rag.followup.jobs.001.negation",
+      "family": "rag_followup",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "trajectory",
+        "response"
+      ],
+      "taxonomy": [
+        "MODEL_TOOL",
+        "RESPONSE"
+      ],
+      "assistant_text": "I ran into a problem completing this request and could not produce a grounded answer. Please try again, and rephrase if the issue continues.",
+      "review_rationale": "Expected tools [['project_document_list']]; observed ['project_document_list', 'documentation_search', 'document_read']. Tool path ['project_document_list', 'documentation_search', 'document_read'] does not match the authored path. response does not contain any of ['yes', 'does name', 'names jobs'].",
+      "tool_trajectory": [
+        "project_document_list",
+        "documentation_search",
+        "document_read"
+      ],
+      "safe_arguments": [],
+      "latency_ms": 26224.731374997646,
+      "input_tokens": 54749,
+      "output_tokens": 551,
+      "cost_usd": 0.016755,
+      "clarification_expected": false,
+      "clarified": false,
+      "unsupported_claims": 0
+    }
+  ],
+  "total_attempts": 1,
+  "passed_attempts": 0,
+  "failed_attempts": 1
+}

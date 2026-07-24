@@ -49,8 +49,6 @@ def test_parse_xlsx():
 
 def test_parse_pptx():
     from pptx import Presentation
-    from pptx.util import Inches
-
     prs = Presentation()
     slide = prs.slides.add_slide(prs.slide_layouts[1])  # title + content
     slide.shapes.title.text = "Slide Title"
@@ -65,7 +63,7 @@ def test_parse_pptx():
 
 
 def test_parse_pdf():
-    from PyPDF2 import PdfWriter
+    from pypdf import PdfWriter
 
     writer = PdfWriter()
     # PdfWriter alone can't easily create text; use a blank page annotation approach

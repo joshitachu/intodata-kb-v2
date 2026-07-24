@@ -5,30 +5,54 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from qdrant_client import AsyncQdrantClient
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
-from src.generation.agent_loop import run_runtime_tool_loop
+from src.db.models.document import Document
 from src.harness.models import (
+    CONVERSATION_SUMMARY_FACTS_CAPABILITY,
     DOCUMENT_LIST_CAPABILITY,
+    DOCUMENT_READ_CAPABILITY,
     DOCUMENT_SEARCH_CAPABILITY,
-    EXTERNAL_CONNECTOR_READ_CAPABILITY,
+    DOCUMENTATION_ANSWER_CAPABILITY,
+    GENERATED_DOCUMENT_READ_CAPABILITY,
     LOG_SEARCH_EVIDENCE_CAPABILITY,
-    RUNTIME_EVIDENCE_CAPABILITY,
+    METADATA_QUERY_CAPABILITY,
+    STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY,
     EvidenceItem,
     EvidenceQueryResult,
 )
+from src.harness.capability_runtime import CapabilityExecutionContext
 from src.harness.providers.mcp_docs import McpDocumentationProvider, McpDocumentationProviderError
+from src.harness.trusted_answer import TrustedAnswerSink, TrustedRagAnswer
+from src.generation.rag_chain import _execute_search, run_rag_query
+from src.schemas import QueryRequest
 from src.retrieval.search import search_and_rerank, search_similar
-from src.runtime.source_registry import all_source_providers
-from src.runtime.store import RuntimeStoreRepository
+from src.retrieval.metadata_retriever import (
+    get_document_list,
+    get_document_stats,
+    get_project_detail,
+    get_project_list,
+    get_system_overview,
+    get_user_profile,
+)
 from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
 from src.runtime.providers.stored import StoredRuntimeProvider
 from src.runtime.registry import SearchLogsInput
 from src.runtime.insights.parser import redact_credentials
+from src.runtime.models import (
+    DetectFailuresInput,
+    ListExecutionsInput,
+    ListRuntimeHealthInput,
+    ListRuntimeInventoryInput,
+    ListRuntimeSyncStatusInput,
+    RuntimeExecutionState,
+)
 
 
 async def search_document_evidence(
@@ -42,26 +66,20 @@ async def search_document_evidence(
 ) -> EvidenceQueryResult:
     """Search indexed generated/RAG docs through the existing retriever."""
     min_score = settings.default_threshold if threshold is None else threshold
-    if settings.reranker_enabled:
-        sources = await search_and_rerank(
-            client=qdrant,
-            query=query,
-            user_groups=user_groups,
-            top_k=top_k,
-            threshold=min_score,
-            project_ids=project_ids,
-            document_roles=["source"],
-        )
-    else:
-        sources = await search_similar(
-            client=qdrant,
-            query=query,
-            user_groups=user_groups,
-            top_k=top_k,
-            threshold=min_score,
-            project_ids=project_ids,
-            document_roles=["source"],
-        )
+    # Use the same operator-configured retrieval selector as the established
+    # /query RAG path: query expansion, reranking, hybrid retrieval, or dense
+    # retrieval. The conversational capability is an agent boundary around the
+    # existing RAG pipeline, not a second reduced search implementation.
+    sources = await _execute_search(
+        query,
+        user_groups,
+        qdrant,
+        top_k,
+        min_score,
+        None,
+        project_ids,
+        document_roles=["source"],
+    )
 
     return EvidenceQueryResult(
         capability_id=DOCUMENT_SEARCH_CAPABILITY.id,
@@ -86,6 +104,382 @@ async def search_document_evidence(
             for source in sources[:top_k]
         ],
     )
+
+
+async def answer_document_question_evidence(
+    *,
+    qdrant: AsyncQdrantClient,
+    db: AsyncSession,
+    query: str,
+    user_groups: list[str],
+    user_id: int,
+    project_ids: list[str] | None,
+    top_k: int = 8,
+    trusted_answer_sink: TrustedAnswerSink,
+) -> EvidenceQueryResult:
+    """Answer one documentation question through the existing deterministic RAG pipeline.
+
+    Delegates to ``run_rag_query`` -- the same retrieval-and-generation path used
+    by the explicit ``/query`` REST endpoint -- so the answer and its sources are
+    produced without any model self-reported citation. The answer is additionally
+    handed to ``trusted_answer_sink`` so the read-only turn loop can adopt it
+    directly as the turn's final output, bypassing the grounding-validation step
+    for this capability only.
+    """
+    request = QueryRequest(query=query, top_k=top_k)
+    response = await run_rag_query(
+        request,
+        user_groups=user_groups,
+        user_id=user_id,
+        qdrant=qdrant,
+        db=db,
+        project_ids=project_ids,
+    )
+    trusted_answer_sink.answer = TrustedRagAnswer(
+        content=response.answer, document_sources=response.sources
+    )
+    return EvidenceQueryResult(
+        capability_id=DOCUMENTATION_ANSWER_CAPABILITY.id,
+        status="succeeded",
+        items=[
+            EvidenceItem(
+                id=f"doc:{source.document_id}:{'-'.join(str(i) for i in source.chunk_indexes)}",
+                capability_id=DOCUMENTATION_ANSWER_CAPABILITY.id,
+                source_type="rag_document",
+                title=source.display_name or source.filename,
+                summary=_preview(source.text),
+                uri=source.artifact_path or source.filename,
+                score=source.score,
+                metadata={
+                    "document_id": source.document_id,
+                    "filename": source.filename,
+                    "source_layer": source.source_layer,
+                    "project_id": source.project_id,
+                },
+            )
+            for source in response.sources[:top_k]
+        ],
+        answer_draft=response.answer[:8_000],
+    )
+
+
+async def read_document_evidence(
+    *,
+    qdrant: AsyncQdrantClient,
+    query: str,
+    user_groups: list[str],
+    project_id: str,
+    document_id: int,
+    max_chunks: int = 8,
+) -> EvidenceQueryResult:
+    """Read relevant passages from one already-identified authorized document.
+
+    The existing retriever owns embedding, hybrid/vector fallback, reranking,
+    document-group visibility, and project filtering. Both document and project
+    filters are mandatory so a model-supplied document ID cannot widen scope.
+    """
+
+    if settings.reranker_enabled:
+        sources = await search_and_rerank(
+            client=qdrant,
+            query=query,
+            user_groups=user_groups,
+            top_k=max_chunks,
+            threshold=0.0,
+            document_ids=[document_id],
+            project_ids=[project_id],
+        )
+    else:
+        sources = await search_similar(
+            client=qdrant,
+            query=query,
+            user_groups=user_groups,
+            top_k=max_chunks,
+            threshold=0.0,
+            document_ids=[document_id],
+            project_ids=[project_id],
+        )
+    return EvidenceQueryResult(
+        capability_id=DOCUMENT_READ_CAPABILITY.id,
+        status="succeeded",
+        items=[
+            EvidenceItem(
+                id=f"doc:{source.document_id}:{source.chunk_index}",
+                capability_id=DOCUMENT_READ_CAPABILITY.id,
+                source_type="rag_document_passage",
+                title=source.display_name or source.filename,
+                summary=_preview(source.text, limit=2_000),
+                uri=source.artifact_path or source.filename,
+                score=source.score,
+                metadata={
+                    "project_id": source.project_id or project_id,
+                    "document_id": source.document_id,
+                    "chunk_index": source.chunk_index,
+                    "filename": source.filename,
+                    "source_layer": source.source_layer,
+                },
+            )
+            for source in sources[:max_chunks]
+        ],
+    )
+
+
+async def query_metadata_evidence(
+    *,
+    db: AsyncSession,
+    query_type: str,
+    project_scope: list[str] | None,
+    user_id: int,
+    project_id: str | None = None,
+    limit: int = 20,
+) -> EvidenceQueryResult:
+    """Reuse structured metadata queries selected by an explicit tool argument."""
+
+    if query_type == "my_profile":
+        context = await get_user_profile(db, user_id)
+    elif query_type == "project_list":
+        context = await get_project_list(db, project_scope)
+    elif query_type == "project_detail" and project_id:
+        context = await get_project_detail(db, project_id, project_scope)
+    elif query_type == "document_stats":
+        context = await get_document_stats(db, project_scope, project_id)
+    elif query_type == "document_list":
+        context = await get_document_list(db, project_scope, project_id, limit=limit)
+    elif query_type == "system_overview":
+        context = await get_system_overview(db, project_scope)
+    else:
+        return EvidenceQueryResult(
+            capability_id=METADATA_QUERY_CAPABILITY.id,
+            status="failed",
+            error_message="The metadata query requires an authorized project selection.",
+        )
+    safe_text = _preview(redact_credentials(context.text), limit=8_000)
+    return EvidenceQueryResult(
+        capability_id=METADATA_QUERY_CAPABILITY.id,
+        status="succeeded",
+        items=[
+            EvidenceItem(
+                id=f"metadata:{context.query_type}:{project_id or 'authorized-scope'}",
+                capability_id=METADATA_QUERY_CAPABILITY.id,
+                source_type="structured_metadata",
+                title=context.source_label,
+                summary=safe_text,
+                uri=None,
+                observed_at=datetime.datetime.now(datetime.UTC),
+                metadata={
+                    "project_id": project_id,
+                    "query_type": context.query_type,
+                    "scope": "authorized_project_scope",
+                },
+            )
+        ],
+    )
+
+
+def conversation_summary_facts(
+    *,
+    history: list[dict[str, Any]],
+    conversation_id: int,
+    max_messages: int = 20,
+) -> EvidenceQueryResult:
+    """Return bounded, redacted dialogue facts; synthesis remains in the agent."""
+
+    bounded = history[-min(max_messages, 20) :]
+    items = []
+    for index, message in enumerate(bounded, start=1):
+        role = message.get("role")
+        content = message.get("content")
+        if role not in {"user", "assistant"} or not isinstance(content, str):
+            continue
+        message_id = message.get("message_id") or message.get("id")
+        identity = str(message_id) if message_id is not None else f"bounded-{index}"
+        items.append(
+            EvidenceItem(
+                id=f"conversation:{conversation_id}:message:{identity}",
+                capability_id=CONVERSATION_SUMMARY_FACTS_CAPABILITY.id,
+                source_type="conversation_message",
+                title=f"Conversation {role} message",
+                summary=_preview(redact_credentials(content), limit=1_000),
+                uri=None,
+                metadata={
+                    "conversation_id": conversation_id,
+                    "role": role,
+                    "ordinal": index,
+                    "message_id": message_id,
+                },
+            )
+        )
+    return EvidenceQueryResult(
+        capability_id=CONVERSATION_SUMMARY_FACTS_CAPABILITY.id,
+        status="succeeded",
+        items=items,
+    )
+
+
+def build_registered_read_adapters(
+    *,
+    qdrant: AsyncQdrantClient,
+    db: AsyncSession,
+    user_groups: list[str],
+    docs_provider: McpDocumentationProvider,
+    conversation_history: list[dict[str, Any]],
+    conversation_id: int,
+    trusted_answer_sink: TrustedAnswerSink,
+) -> dict[
+    str,
+    Callable[[dict[str, Any], CapabilityExecutionContext], Awaitable[EvidenceQueryResult]],
+]:
+    """Bind mature read services to one authenticated bounded-loop turn."""
+
+    async def search_adapter(arguments, context):  # noqa: ANN001
+        project_id = arguments.get("project_id")
+        selected = await _resolve_document_project_scope(
+            db=db,
+            project_reference=str(project_id) if project_id is not None else None,
+            authorized_scope=context.project_scope,
+        )
+        return await search_document_evidence(
+            qdrant=qdrant,
+            query=str(arguments["query"]),
+            user_groups=user_groups,
+            project_ids=selected,
+            top_k=int(arguments.get("top_k", 5)),
+        )
+
+    async def answer_adapter(arguments, context):  # noqa: ANN001
+        project_id = arguments.get("project_id")
+        selected = await _resolve_document_project_scope(
+            db=db,
+            project_reference=str(project_id) if project_id is not None else None,
+            authorized_scope=context.project_scope,
+        )
+        return await answer_document_question_evidence(
+            qdrant=qdrant,
+            db=db,
+            query=str(arguments["query"]),
+            user_groups=user_groups,
+            user_id=context.user_id,
+            project_ids=selected,
+            top_k=int(arguments.get("top_k", 8) or 8),
+            trusted_answer_sink=trusted_answer_sink,
+        )
+
+    async def read_adapter(arguments, context):  # noqa: ANN001
+        del context
+        return await read_document_evidence(
+            qdrant=qdrant,
+            query=str(arguments["query"]),
+            user_groups=user_groups,
+            project_id=str(arguments["project_id"]),
+            document_id=int(arguments["document_id"]),
+            max_chunks=int(arguments.get("max_chunks", 8)),
+        )
+
+    async def list_adapter(arguments, context):  # noqa: ANN001
+        return await list_generated_doc_evidence(
+            provider=docs_provider,
+            project_id=str(arguments["project_id"]),
+            access_token=context.access_token,
+        )
+
+    async def generated_read_adapter(arguments, context):  # noqa: ANN001
+        return await read_generated_doc_evidence(
+            provider=docs_provider,
+            project_id=str(arguments["project_id"]),
+            filename=str(arguments["filename"]),
+            access_token=context.access_token,
+        )
+
+    async def metadata_adapter(arguments, context):  # noqa: ANN001
+        return await query_metadata_evidence(
+            db=db,
+            query_type=str(arguments["query_type"]),
+            project_scope=context.project_scope,
+            user_id=context.user_id,
+            project_id=(
+                str(arguments["project_id"])
+                if arguments.get("project_id") is not None
+                else None
+            ),
+            limit=int(arguments.get("limit", 20)),
+        )
+
+    async def runtime_adapter(arguments, context):  # noqa: ANN001
+        return await query_structured_runtime_evidence(
+            operation=str(arguments["operation"]),
+            project_id=(
+                str(arguments["project_id"])
+                if arguments.get("project_id") is not None
+                else None
+            ),
+            project_scope=context.project_scope,
+            db=db,
+            source_key=(
+                str(arguments["source_key"])
+                if arguments.get("source_key") is not None
+                else None
+            ),
+            job_name=(
+                str(arguments["job_name"])
+                if arguments.get("job_name") is not None
+                else None
+            ),
+            state=(
+                str(arguments["state"])
+                if arguments.get("state") is not None
+                else None
+            ),
+            since=_parse_datetime(arguments.get("since")),
+            until=_parse_datetime(arguments.get("until")),
+            limit=int(arguments.get("limit", 20)),
+        )
+
+    async def logs_adapter(arguments, context):  # noqa: ANN001
+        return await search_runtime_log_evidence(
+            question=str(arguments["question"]),
+            project_scope=context.project_scope,
+            db=db,
+            qdrant=qdrant,
+            project_id=(
+                str(arguments["project_id"])
+                if arguments.get("project_id") is not None
+                else None
+            ),
+            project_ids=arguments.get("project_ids"),
+            execution_id=(
+                str(arguments["execution_id"])
+                if arguments.get("execution_id") is not None
+                else None
+            ),
+            since=_parse_datetime(arguments.get("since")),
+            until=_parse_datetime(arguments.get("until")),
+            limit=int(arguments.get("limit", 10)),
+        )
+
+    async def summary_adapter(arguments, context):  # noqa: ANN001
+        if context.conversation_id != conversation_id:
+            return EvidenceQueryResult(
+                capability_id=CONVERSATION_SUMMARY_FACTS_CAPABILITY.id,
+                status="failed",
+                error_message="Conversation scope does not match the authorized turn.",
+            )
+        return conversation_summary_facts(
+            history=conversation_history,
+            conversation_id=conversation_id,
+            max_messages=int(arguments.get("max_messages", 20)),
+        )
+
+    return {
+        DOCUMENT_SEARCH_CAPABILITY.id: search_adapter,
+        DOCUMENTATION_ANSWER_CAPABILITY.id: answer_adapter,
+        DOCUMENT_READ_CAPABILITY.id: read_adapter,
+        DOCUMENT_LIST_CAPABILITY.id: list_adapter,
+        GENERATED_DOCUMENT_READ_CAPABILITY.id: generated_read_adapter,
+        METADATA_QUERY_CAPABILITY.id: metadata_adapter,
+        STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY.id: runtime_adapter,
+        LOG_SEARCH_EVIDENCE_CAPABILITY.id: logs_adapter,
+        CONVERSATION_SUMMARY_FACTS_CAPABILITY.id: summary_adapter,
+    }
 
 
 async def list_generated_doc_evidence(
@@ -132,95 +526,134 @@ async def list_generated_doc_evidence(
     )
 
 
-async def query_runtime_evidence(
+async def read_generated_doc_evidence(
     *,
-    question: str,
-    project_id: str | None,
+    provider: McpDocumentationProvider,
+    project_id: str,
+    filename: str,
+    access_token: str | None,
+) -> EvidenceQueryResult:
+    """Read one exact authorized generated Markdown document through MCP."""
+    try:
+        content = await provider.read_project_doc(
+            project_id=project_id,
+            filename=filename,
+            access_token=access_token,
+        )
+    except McpDocumentationProviderError as exc:
+        return EvidenceQueryResult(
+            capability_id=GENERATED_DOCUMENT_READ_CAPABILITY.id,
+            status="failed",
+            error_message=exc.safe_message,
+        )
+
+    uri = f"/projects/{project_id}/docs/{filename}"
+    return EvidenceQueryResult(
+        capability_id=GENERATED_DOCUMENT_READ_CAPABILITY.id,
+        status="succeeded",
+        items=[
+            EvidenceItem(
+                id=f"mcp-doc-content:{project_id}:{filename}",
+                capability_id=GENERATED_DOCUMENT_READ_CAPABILITY.id,
+                source_type="generated_doc_content",
+                title=filename,
+                summary=content[:4_000],
+                uri=uri,
+                metadata={"project_id": project_id, "filename": filename},
+            )
+        ],
+        answer_draft=content[:8_000],
+    )
+
+
+async def query_structured_runtime_evidence(
+    *,
+    operation: str,
     project_scope: list[str] | None,
     db: AsyncSession,
-    project_ids: list[str] | None = None,
+    project_id: str | None = None,
     source_key: str | None = None,
+    job_name: str | None = None,
+    state: str | None = None,
     since: datetime.datetime | None = None,
     until: datetime.datetime | None = None,
+    limit: int = 20,
 ) -> EvidenceQueryResult:
-    """Run the existing bounded runtime agent loop and normalize its receipts."""
-    scope_lines = []
-    effective_scope = _intersect_project_scopes(project_scope, project_ids)
-    if project_id:
-        scope_lines.append(
-            f"The selected project is {project_id}. Include this project_id in tools that accept it."
-        )
-    elif project_ids:
-        scope_lines.append(
-            "The selected projects are "
-            f"{', '.join(project_ids)}. Restrict every runtime tool call to those projects."
-        )
-    if source_key:
-        scope_lines.append(f"The selected runtime source is {source_key}.")
-    if since or until:
-        scope_lines.append(
-            "Apply this UTC time window to tools that support it: "
-            f"since={since.isoformat() if since else 'unbounded'}, "
-            f"until={until.isoformat() if until else 'unbounded'}."
-        )
-    messages = []
-    if scope_lines:
-        messages.append({"role": "system", "content": " ".join(scope_lines)})
-    messages.append({"role": "user", "content": question})
+    """Execute one deterministic typed runtime read without a nested agent."""
 
-    outcome = await run_runtime_tool_loop(
-        messages,
-        project_scope=effective_scope,
-        db=db,
-    )
-    items: list[EvidenceItem] = []
-    errors: list[str] = []
-    tool_names: list[str] = []
-    for event in outcome.progress_events:
-        if event.event_type != "runtime_tool_result":
-            continue
-        payload = event.payload
-        tool_name = str(payload.get("tool_name") or "runtime tool")
-        tool_names.append(tool_name)
-        if not payload.get("success"):
-            error = payload.get("error")
-            if isinstance(error, dict) and error.get("message"):
-                errors.append(f"{tool_name}: {error['message']}")
-            continue
-        data = payload.get("data")
-        normalized = _runtime_items(tool_name, data, project_id or "all")
-        if not normalized:
-            normalized = _generic_runtime_items(tool_name, data, project_id)
-        items.extend(_within_time_window(normalized, since=since, until=until))
-
-    final_answer = (outcome.final_answer or "").strip()
-    if outcome.used_runtime_data and final_answer:
-        items.insert(
-            0,
-            EvidenceItem(
-                id=f"runtime-answer:{datetime.datetime.now(datetime.UTC).isoformat()}",
-                capability_id=RUNTIME_EVIDENCE_CAPABILITY.id,
-                source_type="runtime_answer",
-                title="Runtime evidence answer",
-                summary=_preview(final_answer, limit=4000),
-                observed_at=datetime.datetime.now(datetime.UTC),
-                metadata={
-                    "project_id": project_id,
-                    "runtime_answer": _preview(final_answer, limit=4000),
-                    "tools_used": list(dict.fromkeys(tool_names)),
-                },
-            ),
+    selected_scope = _intersect_scope(project_scope, project_id)
+    provider = StoredRuntimeProvider()
+    provider_context = RuntimeProviderContext(project_scope=selected_scope, db=db)
+    try:
+        if operation == "list_executions":
+            values = await provider.list_executions(
+                ListExecutionsInput(
+                    job_name=job_name,
+                    state=RuntimeExecutionState(state) if state else None,
+                    since=since,
+                    until=until,
+                    limit=limit,
+                ),
+                provider_context,
+            )
+        elif operation == "detect_failures":
+            values = await provider.detect_failures(
+                DetectFailuresInput(since=since, until=until, limit=limit),
+                provider_context,
+            )
+        elif operation == "list_runtime_health":
+            values = await provider.list_runtime_health(
+                ListRuntimeHealthInput(
+                    source_key=source_key,
+                    project_id=project_id,
+                    limit=limit,
+                ),
+                provider_context,
+            )
+        elif operation == "list_runtime_sync_status":
+            values = await provider.list_runtime_sync_status(
+                ListRuntimeSyncStatusInput(
+                    source_key=source_key,
+                    project_id=project_id,
+                    limit=limit,
+                ),
+                provider_context,
+            )
+        elif operation == "list_runtime_sources":
+            values = await provider.list_runtime_sources(
+                ListRuntimeInventoryInput(
+                    source_key=source_key,
+                    project_id=project_id,
+                    limit=limit,
+                ),
+                provider_context,
+            )
+        else:
+            return EvidenceQueryResult(
+                capability_id=STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY.id,
+                status="failed",
+                error_message="The requested runtime operation is not available.",
+            )
+    except (RuntimeProviderError, ValueError) as exc:
+        return EvidenceQueryResult(
+            capability_id=STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY.id,
+            status="failed",
+            error_message=str(exc)[:500],
         )
-
-    if not outcome.used_runtime_data and not errors:
-        errors.append("The runtime agent did not execute a runtime tool.")
-    status = "succeeded" if items else "failed"
+    serialized = [
+        value.model_dump(mode="json") if hasattr(value, "model_dump") else dict(value)
+        for value in values
+        if hasattr(value, "model_dump") or isinstance(value, dict)
+    ]
     return EvidenceQueryResult(
-        capability_id=RUNTIME_EVIDENCE_CAPABILITY.id,
-        status=status,
-        items=items,
-        error_message="; ".join(errors)[:500] if errors and not items else None,
-        answer_draft=final_answer[:12_000] if outcome.used_runtime_data and final_answer else None,
+        capability_id=STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY.id,
+        status="succeeded",
+        items=_generic_runtime_items(
+            operation,
+            serialized[:limit],
+            project_id,
+            capability_id=STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY.id,
+        ),
     )
 
 
@@ -372,7 +805,11 @@ def _log_search_answer(question: str, items: list[EvidenceItem]) -> str:
 
 
 def _generic_runtime_items(
-    tool_name: str, data: Any, project_id: str | None
+    tool_name: str,
+    data: Any,
+    project_id: str | None,
+    *,
+    capability_id: str = STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY.id,
 ) -> list[EvidenceItem]:
     """Normalize arbitrary safe runtime-tool output without knowing its intent."""
     if isinstance(data, list):
@@ -424,13 +861,29 @@ def _generic_runtime_items(
             ),
             None,
         )
+        record_ref = next(
+            (
+                str(value[key])
+                for key in (
+                    "execution_id",
+                    "incident_id",
+                    "source_key",
+                    "job_id",
+                    "engine_id",
+                    "plan_id",
+                    "id",
+                )
+                if value.get(key) is not None
+            ),
+            fingerprint,
+        )
         result.append(
             EvidenceItem(
                 id=(
                     f"runtime:{tool_name}:"
                     f"{value.get('id') or value.get('engine_id') or value.get('execution_id') or fingerprint}"
                 ),
-                capability_id=RUNTIME_EVIDENCE_CAPABILITY.id,
+                capability_id=capability_id,
                 source_type=f"runtime_{tool_name}",
                 title=title[:500],
                 summary=_runtime_record_summary(value),
@@ -438,6 +891,9 @@ def _generic_runtime_items(
                 metadata={
                     "project_id": value.get("project_id") or project_id,
                     "tool_name": tool_name,
+                    "record_ref": record_ref,
+                    "execution_ref": value.get("execution_id"),
+                    "source_key": value.get("source_key"),
                 },
             )
         )
@@ -497,125 +953,6 @@ def _as_utc(value: datetime.datetime) -> datetime.datetime:
     return value.astimezone(datetime.UTC)
 
 
-async def read_connector_evidence(
-    *,
-    db: AsyncSession,
-    project_scope: list[str] | None,
-    project_id: str | None = None,
-) -> EvidenceQueryResult:
-    """Read connector/source metadata via the existing runtime source store."""
-    repo = RuntimeStoreRepository(db)
-    scope = _intersect_scope(project_scope, project_id)
-    sources = await repo.list_source_configs(scope, project_id=project_id, limit=50)
-    provider_labels = {
-        provider.provider_key(): provider.provider_label()
-        for provider in all_source_providers()
-    }
-    items = [
-        EvidenceItem(
-            id=f"connector:{source.id}",
-            capability_id=EXTERNAL_CONNECTOR_READ_CAPABILITY.id,
-            source_type="connector_metadata",
-            title=source.label,
-            summary=(
-                f"{provider_labels.get(source.source_type, source.source_type)} "
-                f"source is {source.status}."
-            ),
-            uri=f"/admin/runtime?source_id={source.id}",
-            observed_at=source.last_seen_at or source.last_synced_at or source.ingested_at,
-            metadata={
-                "source_id": source.id,
-                "project_id": source.project_id,
-                "source_key": source.source_key,
-                "source_type": source.source_type,
-                "status": source.status,
-                "enabled": source.enabled,
-                "is_demo": source.is_demo,
-            },
-        )
-        for source in sources
-    ]
-    return EvidenceQueryResult(
-        capability_id=EXTERNAL_CONNECTOR_READ_CAPABILITY.id,
-        status="succeeded",
-        items=items,
-    )
-
-
-def latest_evidence_timestamp(items: list[EvidenceItem]) -> datetime.datetime | None:
-    parsed = [_parse_datetime(item.observed_at) for item in items]
-    parsed = [value for value in parsed if value is not None]
-    return max(parsed) if parsed else None
-
-
-def evidence_refs(items: list[EvidenceItem], limit: int = 8) -> list[str]:
-    return [item.id for item in items[:limit]]
-
-
-def _runtime_items(tool_name: str, data: Any, project_id: str) -> list[EvidenceItem]:
-    if not isinstance(data, list):
-        return []
-    if tool_name == "detect_failures":
-        return [
-            EvidenceItem(
-                id=f"runtime-failure:{item.get('execution_id') or index}",
-                capability_id=RUNTIME_EVIDENCE_CAPABILITY.id,
-                source_type="runtime_failure",
-                title=f"Runtime failure: {item.get('job_name') or 'unknown job'}",
-                summary=str(item.get("error_summary") or "Runtime failure detected."),
-                observed_at=item.get("failed_at"),
-                metadata={
-                    "project_id": project_id,
-                    "execution_id": item.get("execution_id"),
-                    "job_name": item.get("job_name"),
-                    "failed_at": item.get("failed_at"),
-                },
-            )
-            for index, item in enumerate(data[:5], 1)
-            if isinstance(item, dict)
-        ]
-    if tool_name == "list_runtime_sync_status":
-        return [
-            EvidenceItem(
-                id=f"runtime-sync:{item.get('source_key') or index}:{item.get('project_id') or project_id}",
-                capability_id=RUNTIME_EVIDENCE_CAPABILITY.id,
-                source_type="runtime_sync_status",
-                title=f"Runtime sync: {item.get('source_key') or 'source'}",
-                summary=f"Sync status is {item.get('status') or 'unknown'}.",
-                observed_at=item.get("last_synced_at") or item.get("updated_at"),
-                metadata={
-                    "project_id": item.get("project_id") or project_id,
-                    "source_key": item.get("source_key"),
-                    "status": item.get("status"),
-                    "last_synced_at": item.get("last_synced_at"),
-                },
-            )
-            for index, item in enumerate(data[:5], 1)
-            if isinstance(item, dict)
-        ]
-    if tool_name == "list_runtime_health":
-        return [
-            EvidenceItem(
-                id=f"runtime-health:{item.get('job_name') or item.get('source_key') or index}",
-                capability_id=RUNTIME_EVIDENCE_CAPABILITY.id,
-                source_type="runtime_health",
-                title=f"Runtime health: {item.get('job_name') or item.get('source_key') or 'source'}",
-                summary=_runtime_health_summary(item),
-                observed_at=item.get("last_failure_at") or item.get("last_seen_at"),
-                metadata={
-                    "project_id": item.get("project_id") or project_id,
-                    "source_key": item.get("source_key"),
-                    "job_name": item.get("job_name"),
-                    "failure_rate": item.get("failure_rate"),
-                    "current_failure_streak": item.get("current_failure_streak"),
-                },
-            )
-            for index, item in enumerate(data[:5], 1)
-            if isinstance(item, dict)
-        ]
-    return []
-
-
 def _runtime_health_summary(item: dict[str, Any]) -> str:
     parts = []
     if item.get("failure_rate") is not None:
@@ -635,6 +972,64 @@ def _intersect_scope(scope: list[str] | None, project_id: str | None) -> list[st
     if project_id in scope:
         return [project_id]
     return []
+
+
+async def _resolve_document_project_scope(
+    *,
+    db: AsyncSession,
+    project_reference: str | None,
+    authorized_scope: list[str] | None,
+) -> list[str] | None:
+    """Resolve one case-insensitive reference to the exact indexed project ID.
+
+    A selected UI project already arrives as an exact authorized identifier and
+    takes the zero-query path. Model-authored references are matched only
+    against the caller's authorized IDs, or for unrestricted callers against
+    distinct project IDs that actually exist in the document index. No match or
+    a case-fold collision fails closed as an empty scope.
+    """
+
+    if project_reference is None:
+        return authorized_scope
+    reference = project_reference.strip()
+    if not reference or authorized_scope == []:
+        return []
+
+    if authorized_scope is not None:
+        if reference in authorized_scope:
+            return [reference]
+        matches = {
+            candidate
+            for candidate in authorized_scope
+            if candidate.casefold() == reference.casefold()
+        }
+        return [matches.pop()] if len(matches) == 1 else []
+
+    exact = await db.execute(
+        select(Document.project_id)
+        .where(
+            Document.deleted_at.is_(None),
+            Document.project_id == reference,
+        )
+        .distinct()
+        .limit(2)
+    )
+    exact_matches = {value for value in exact.scalars().all() if value}
+    if len(exact_matches) == 1:
+        return [exact_matches.pop()]
+
+    folded = await db.execute(
+        select(Document.project_id)
+        .where(
+            Document.deleted_at.is_(None),
+            Document.project_id.is_not(None),
+            func.lower(Document.project_id) == reference.lower(),
+        )
+        .distinct()
+        .limit(2)
+    )
+    folded_matches = {value for value in folded.scalars().all() if value}
+    return [folded_matches.pop()] if len(folded_matches) == 1 else []
 
 
 def _intersect_project_scopes(

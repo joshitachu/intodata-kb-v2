@@ -1,0 +1,240 @@
+{
+  "schema_version": "1.0.0",
+  "attempts": [
+    {
+      "attempt_id": "rag.followup.jobs.001.informal:rag.followup.jobs.001.informal.turn-1:nonstream",
+      "scenario_id": "rag.followup.jobs.001.informal",
+      "prompt_id": "rag.followup.jobs.001.informal",
+      "family": "rag_followup",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "checkpoint_serialization",
+        "runtime_protocol",
+        "trajectory",
+        "grounding"
+      ],
+      "taxonomy": [
+        "EVALUATOR",
+        "RUNTIME_PROTOCOL",
+        "MODEL_TOOL",
+        "GROUNDING"
+      ],
+      "assistant_text": "Retrieved 10 evidence item(s).\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md.\n\nTitle: 01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md.\n\nTitle: 01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md.\n\nTitle: 01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md.\n\nGrounded in 10 evidence sources.",
+      "review_rationale": "Expected tools [['project_document_list']]; observed []. Public event evidence is missing. Terminal status 'missing' (HTTP 200) is outside ['completed']. Tool path [] does not match the authored path. Only 0 public evidence reference(s) were retained; 1 required.",
+      "tool_trajectory": [],
+      "safe_arguments": [],
+      "latency_ms": 10095.200292009395,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "clarification_expected": false,
+      "clarified": false,
+      "unsupported_claims": 0
+    },
+    {
+      "attempt_id": "rag.followup.jobs.001.keyword_collision:rag.followup.jobs.001.keyword_collision.turn-1:stream",
+      "scenario_id": "rag.followup.jobs.001.keyword_collision",
+      "prompt_id": "rag.followup.jobs.001.keyword_collision",
+      "family": "rag_followup",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "runtime_protocol",
+        "trajectory",
+        "grounding"
+      ],
+      "taxonomy": [
+        "RUNTIME_PROTOCOL",
+        "MODEL_TOOL",
+        "GROUNDING"
+      ],
+      "assistant_text": "Retrieved 10 evidence item(s).\n\nSource Type: Generated doc.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md.\n\nSummary: MD documentation file, 36027 bytes.\n\nObserved At: 2026-07-13T21:40:15.298821+00:00.\n\nProject: reverseEngineer.\n\nType: Md.\n\nSize Bytes: 36027.\n\nHas Pdf: True.\n\nModified At: 2026-07-13T21:40:15.298821+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md.\n\nSummary: MD documentation file, 46678 bytes.\n\nObserved At: 2026-07-13T21:41:23.655640+00:00.\n\nSize Bytes: 46678.\n\nModified At: 2026-07-13T21:41:23.655640+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md.\n\nSummary: MD documentation file, 33108 bytes.\n\nObserved At: 2026-07-13T21:40:05.383964+00:00.\n\nSize Bytes: 33108.\n\nModified At: 2026-07-13T21:40:05.383964+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md.\n\nSummary: MD documentation file, 38185 bytes.\n\nObserved At: 2026-07-13T21:41:02.949545+00:00.\n\nSize Bytes: 38185.\n\nModified At: 2026-07-13T21:41:02.949545+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md.\n\nSummary: MD documentation file, 30344 bytes.\n\nObserved At: 2026-07-13T21:44:27.062386+00:00.\n\nSize Bytes: 30344.\n\nModified At: 2026-07-13T21:44:27.062386+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md.\n\nSummary: MD documentation file, 35329 bytes.\n\nObserved At: 2026-07-13T21:44:44.422380+00:00.\n\nSize Bytes: 35329.\n\nModified At: 2026-07-13T21:44:44.422380+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md.\n\nSummary: MD documentation file, 34389 bytes.\n\nObserved At: 2026-07-13T21:45:23.619117+00:00.\n\nSize Bytes: 34389.\n\nModified At: 2026-07-13T21:45:23.619117+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md.\n\nSummary: MD documentation file, 31572 bytes.\n\nObserved At: 2026-07-13T21:44:07.075067+00:00.\n\nSize Bytes: 31572.\n\nModified At: 2026-07-13T21:44:07.075067+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md.\n\nSummary: MD documentation file, 47939 bytes.\n\nObserved At: 2026-07-13T21:49:24.568409+00:00.\n\nSize Bytes: 47939.\n\nModified At: 2026-07-13T21:49:24.568409+00:00.\n\nTitle: 01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md.\n\nSummary: MD documentation file, 46728 bytes.\n\nObserved At: 2026-07-13T21:49:15.998995+00:00.\n\nSize Bytes: 46728.\n\nModified At: 2026-07-13T21:49:15.998995+00:00.\n\nGrounded in 10 evidence sources.",
+      "review_rationale": "Expected tools [['project_document_list']]; observed []. Terminal status 'missing' (HTTP 200) is outside ['completed']. Tool path [] does not match the authored path. Only 0 public evidence reference(s) were retained; 1 required.",
+      "tool_trajectory": [],
+      "safe_arguments": [],
+      "latency_ms": 27984.97662501177,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "clarification_expected": false,
+      "clarified": false,
+      "unsupported_claims": 0
+    },
+    {
+      "attempt_id": "rag.followup.jobs.001.negation:rag.followup.jobs.001.negation.turn-1:nonstream",
+      "scenario_id": "rag.followup.jobs.001.negation",
+      "prompt_id": "rag.followup.jobs.001.negation",
+      "family": "rag_followup",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "runtime_protocol",
+        "trajectory",
+        "grounding"
+      ],
+      "taxonomy": [
+        "RUNTIME_PROTOCOL",
+        "MODEL_TOOL",
+        "GROUNDING"
+      ],
+      "assistant_text": "Retrieved 5 evidence item(s).\n\nGrounded in 5 evidence sources.",
+      "review_rationale": "Expected tools [['documentation_search'], ['documentation_search', 'document_read'], ['documentation_search', 'document_read', 'documentation_search', 'document_read']]; observed []. Terminal status 'missing' (HTTP 200) is outside ['completed']. Tool path [] does not match the authored path. Only 0 public evidence reference(s) were retained; 1 required.",
+      "tool_trajectory": [],
+      "safe_arguments": [],
+      "latency_ms": 6714.6367079694755,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "clarification_expected": false,
+      "clarified": false,
+      "unsupported_claims": 0
+    },
+    {
+      "attempt_id": "capability.discussion.001.keyword_collision:capability.discussion.001.keyword_collision.turn-1:stream",
+      "scenario_id": "capability.discussion.001.keyword_collision",
+      "prompt_id": "capability.discussion.001.keyword_collision",
+      "family": "discuss_versus_act",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "runtime_protocol"
+      ],
+      "taxonomy": [
+        "RUNTIME_PROTOCOL"
+      ],
+      "assistant_text": "Yes, Nexus can create Packs. You can create private Analysis Packs through a draft workflow that collects and refines the Pack definition. The available capabilities include:\n\n- **create_pack_draft** - Begin a new private Analysis Pack draft\n- **mutate_pack_draft** - Apply structured changes to an active draft\n- **validate_pack_draft** - Check if a draft can be saved\n- **save_pack_draft** - Save an immutable private Pack version\n- **abandon_pack_draft** - Abandon an existing draft\n- **read_pack_draft** - Inspect an active draft\n\nTo start creating a Pack, you would use the create_pack_draft capability. The workflow then guides you through defining the Pack's purpose, audience, analyses, evidence requirements, output documents, and other declarative fields.",
+      "review_rationale": "Expected tools [[]]; observed []. Terminal status 'missing' (HTTP 200) is outside ['completed'].",
+      "tool_trajectory": [],
+      "safe_arguments": [],
+      "latency_ms": 5318.04512499366,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "clarification_expected": false,
+      "clarified": false,
+      "unsupported_claims": 0
+    },
+    {
+      "attempt_id": "pack.create.001.negation:pack.create.001.negation.turn-1:nonstream",
+      "scenario_id": "pack.create.001.negation",
+      "prompt_id": "pack.create.001.negation",
+      "family": "pack_write",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "runtime_protocol"
+      ],
+      "taxonomy": [
+        "RUNTIME_PROTOCOL"
+      ],
+      "assistant_text": "A private Analysis Pack draft is a declarative specification that defines how to analyze and document a specific type of project. Here's what a draft would contain:\n\n## Core Purpose\nThe purpose field describes what the Pack is designed to analyze and why it exists (up to 1000 characters).\n\n## Target Audience\n- **Label**: A descriptive name for the intended audience (e.g., \"Platform Engineering Teams\")\n- **Roles**: List of target roles (e.g., \"DevOps Engineer\", \"SRE\", \"Platform Architect\")\n- **Decision Needs**: What decisions this audience needs to make from the analysis\n- **Desired Outcome**: What successful use of this Pack achieves\n- **Render Preferences**: Optional settings for output detail level, domain familiarity, seniority level, and decision horizon\n\n## Evidence Requirements\nA list of required evidence types the Pack needs to gather, each with:\n- **ID**: Unique identifier (e.g., \"infrastructure\", \"dependencies\", \"security-config\")\n- **Label**: Human-readable name\n- **Required**: Whether this evidence is mandatory\n- **Weight**: Importance score (1-100)\n\n## Analyses\nThe analytical operations to perform on the evidence, each with:\n- **ID**: Unique identifier\n- **Label**: Display name for the analysis\n- **Purpose**: What this analysis determines or evaluates\n\n## Output Documents\nThe documentation the Pack generates, structured as:\n- **ID**: Document identifier\n- **Title**: Document name\n- **Sections**: Ordered list of sections, each with ID, heading, and display order\n\n## Scoring Dimensions (Optional)\nCriteria for evaluating project health or maturity, each with:\n- **ID**: Dimension identifier\n- **Label**: Display name\n- **Weight**: Relative importance (1-100)\n\n## Capability Requirements (Optional)\nTools or capabilities needed to execute the Pack, with purpose and whether each is required.\n\n## Compatibility (Optional)\n- **Supported Project Kinds**: What types of projects this Pack can analyze\n- **Required Domains**: Subject areas the Pack covers\n\nThe draft workflow helps you iteratively define these fields through structured mutations, and once complete, you can validate and save it as an immutable private Pack version for reuse across your projects.",
+      "review_rationale": "Expected tools [[]]; observed []. Terminal status 'missing' (HTTP 200) is outside ['completed'].",
+      "tool_trajectory": [],
+      "safe_arguments": [],
+      "latency_ms": 14241.245958022773,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "clarification_expected": false,
+      "clarified": false,
+      "unsupported_claims": 0
+    },
+    {
+      "attempt_id": "task.switch.001.informal:task.switch.001.informal.turn-1:nonstream",
+      "scenario_id": "task.switch.001.informal",
+      "prompt_id": "task.switch.001.informal",
+      "family": "task_interruption",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "runtime_protocol",
+        "trajectory",
+        "grounding"
+      ],
+      "taxonomy": [
+        "RUNTIME_PROTOCOL",
+        "MODEL_TOOL",
+        "GROUNDING"
+      ],
+      "assistant_text": "Retrieved 1 evidence item(s).\n\nSource Type: Structured metadata.\n\nTitle: Project: reverseEngineer.\n\nSummary: **Project: reverseEngineer** - **ID**: reverseEngineer - **Platform**: talend - **Source type**: zip - **Status**: ready - **Integration jobs**: 10 - **Generated docs**: 10 - **Documents in RAG**: 21 - **Last scan**: 2026-07-13 20:07 - **Last doc generation**: 2026-07-13 21:49 - **Last RAG push**: 2026-07-13 21:49 - **Created**: 2026-07-13.\n\nObserved At: 2026-07-21T16:34:13.716054Z.\n\nProject: reverseEngineer.\n\nQuery Type: Project detail.\n\nScope: Authorized project scope.\n\nGrounded in 1 evidence source.",
+      "review_rationale": "Expected tools [['documentation_search'], ['project_metadata_search'], ['documentation_search', 'project_document_list', 'documentation_search']]; observed []. Terminal status 'missing' (HTTP 200) is outside ['completed']. Tool path [] does not match the authored path. Only 0 public evidence reference(s) were retained; 1 required.",
+      "tool_trajectory": [],
+      "safe_arguments": [],
+      "latency_ms": 6758.011333993636,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "clarification_expected": false,
+      "clarified": false,
+      "unsupported_claims": 0
+    },
+    {
+      "attempt_id": "evidence.none.001.ambiguous:evidence.none.001.ambiguous.turn-1:stream",
+      "scenario_id": "evidence.none.001.ambiguous",
+      "prompt_id": "evidence.none.001.ambiguous",
+      "family": "no_evidence",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "runtime_protocol",
+        "response"
+      ],
+      "taxonomy": [
+        "RUNTIME_PROTOCOL",
+        "RESPONSE"
+      ],
+      "assistant_text": "Agent turn failed (invalid_model_output).",
+      "review_rationale": "Expected tools [[]]; observed []. Terminal status 'missing' (HTTP 200) is outside ['completed']. response does not ask a bounded clarification.",
+      "tool_trajectory": [],
+      "safe_arguments": [],
+      "latency_ms": 6980.982207984198,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "clarification_expected": true,
+      "clarified": false,
+      "unsupported_claims": 0
+    },
+    {
+      "attempt_id": "stream.grounding.001:stream.grounding.001.turn-1:stream",
+      "scenario_id": "stream.grounding.001",
+      "prompt_id": "stream.grounding.001",
+      "family": "grounding_safe_stream",
+      "authenticated": true,
+      "target": "authenticated-public-api",
+      "passed": false,
+      "deterministic_failures": [
+        "runtime_protocol",
+        "trajectory",
+        "grounding"
+      ],
+      "taxonomy": [
+        "RUNTIME_PROTOCOL",
+        "MODEL_TOOL",
+        "GROUNDING"
+      ],
+      "assistant_text": "Retrieved 5 evidence item(s).\n\nSource Type: Rag document.\n\nTitle: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md (Project: reverseEngineer).\n\nSummary: [01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Table of Contents] database-integrations) - [SQL Scripts](#sql-scripts) - [Example CSVs](#example-csvs) 11. [Error Handling And Monitoring](#error-handling-and-monitoring) - [Error Scenarios (Error Flow)](#...\n\nScore: 0.809.\n\nFilename: 01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md.\n\nSource Layer: Canonical docs.\n\nSummary: [01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Scope And Interfaces In This Document] This document describes the Talend job **AssetCheck_SendServiceRequest** within the `AssetCheck_Interface` group. It is a child job that sends service request XML file...\n\nScore: 0.8516.\n\nSummary: [01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Business Context And Criticality > Scope of the Integration] The job transmits a service request (likely a work order or asset service request) from the AssetCheck system to IBM Maximo. Files are placed by...\n\nSummary: [01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Functional Requirements > Process Description (Preferably BPMN or Similar)] Response`. If present, success; else failure. **[FACT]** (scorecard, risk HIGH) 8. **Success handling**: Branches based on evaluat...\n\nScore: 0.8016.\n\nSummary: [01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest > 01 Interface Template Assetcheck Interface Assetcheck Sendservicerequest > Functional Requirements > Standard Scenarios (Happy Flow)] 1. A single valid XML file is placed in `ServiceRequestTemp` by the parent job. 2. The job copies the file to `ServiceRequestInprogress`. 3. The fi...\n\nScore: 0.8438.\n\nGrounded in 5 evidence sources.",
+      "review_rationale": "Expected tools [['documentation_search']]; observed []. Terminal status 'missing' (HTTP 200) is outside ['completed']. Tool path [] does not match the authored path. Only 0 public evidence reference(s) were retained; 1 required.",
+      "tool_trajectory": [],
+      "safe_arguments": [],
+      "latency_ms": 19942.55608401727,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "clarification_expected": false,
+      "clarified": false,
+      "unsupported_claims": 0
+    }
+  ],
+  "total_attempts": 8,
+  "passed_attempts": 0,
+  "failed_attempts": 8
+}

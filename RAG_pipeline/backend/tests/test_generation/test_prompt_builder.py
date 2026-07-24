@@ -9,6 +9,7 @@ from src.generation.prompt_builder import (
     should_use_code_assistant,
 )
 from src.schemas import Source
+from src.harness.packs.models import StyleAudience, StylePresentation, StyleTone
 
 
 def _make_source(text: str = "Some chunk text", chunk_index: int = 0, document_id: int = 1) -> Source:
@@ -36,6 +37,24 @@ def test_build_messages_no_sources():
     messages = build_messages("What is X?", [])
     assert len(messages) == 2
     assert "What is X?" in messages[1]["content"]
+
+
+def test_style_presentation_changes_only_the_rendering_instruction() -> None:
+    sources = [_make_source("A cited project fact")]
+    base = build_messages("What is X?", sources)
+    styled = build_messages(
+        "What is X?",
+        sources,
+        presentation=StylePresentation(
+            audience=StyleAudience.ENGINEERING,
+            tone=StyleTone.CONCISE,
+        ),
+    )
+
+    assert styled[-1] == base[-1]
+    assert "Presentation overlay" in styled[1]["content"]
+    assert "cannot suppress or weaken required evidence" in styled[1]["content"]
+    assert "Presentation overlay" not in base[0]["content"]
 
 
 def test_build_messages_with_reference_numbers():

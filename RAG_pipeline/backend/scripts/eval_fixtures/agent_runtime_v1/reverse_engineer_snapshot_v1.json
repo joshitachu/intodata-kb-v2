@@ -1,0 +1,18 @@
+{
+  "snapshot_version": "reverse-engineer-generated-docs-v1",
+  "project_id": "reverseEngineer",
+  "source_root": "../../../../../knowledge_base/output/reverseEngineer/docs",
+  "inventory_sha256": "3a1aebbb5d372dd485c071cf120da0feeb43f314aff5a66869e123da0f20c41a",
+  "documents": [
+    {"document":"01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocation.md","group":"AssetCheck_Interface","job":"AssetCheck_GetLocation","sha256":"7bc6b9e56ce1ea1c2fcd2e09bf96f7a62f905df07c75465351a5cb7a1d2d0a04","size_bytes":36027},
+    {"document":"01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetLocations.md","group":"AssetCheck_Interface","job":"AssetCheck_GetLocations","sha256":"68cffe193fabb7396c93a36b0009c4b3786232e0cc1da332de674a60c81bbcc4","size_bytes":46678},
+    {"document":"01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrder.md","group":"AssetCheck_Interface","job":"AssetCheck_GetWorkOrder","sha256":"0f2f68f0ab364027417d2e38a5890cf021c3aecb6997d78df526da17a91f73de","size_bytes":33108},
+    {"document":"01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_GetWorkOrders.md","group":"AssetCheck_Interface","job":"AssetCheck_GetWorkOrders","sha256":"3b32cd4bc63b50257684d4638fca48482ccb17252f0b5e88fa052e70bf22b749","size_bytes":38185},
+    {"document":"01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_Main_Job.md","group":"AssetCheck_Interface","job":"AssetCheck_Main_Job","sha256":"1404a7b4ce4981f29701afef7b3c462a89ade463b0a3f8e48757a92cbdb5af2d","size_bytes":30344},
+    {"document":"01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendServiceRequest.md","group":"AssetCheck_Interface","job":"AssetCheck_SendServiceRequest","sha256":"9938670ff1f8cbec44da5b6630e7d8598f196336af6885e1f4634c7570dc8e18","size_bytes":35329},
+    {"document":"01_INTERFACE_TEMPLATE__AssetCheck_Interface__AssetCheck_SendWorkOrderUpdate.md","group":"AssetCheck_Interface","job":"AssetCheck_SendWorkOrderUpdate","sha256":"ec546da24514b07542396cad3ca0129141eee397e8db473850003ad6a1a87c56","size_bytes":34389},
+    {"document":"01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_MainJob.md","group":"Maximo2AssetCheck","job":"Maximo2AssetCheck_MainJob","sha256":"6376710a5d7f8467f3df5eb8f9618c9bc7df8ed51c8bd73408d40e986be87ed7","size_bytes":31572},
+    {"document":"01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendLocation.md","group":"Maximo2AssetCheck","job":"Maximo2AssetCheck_SendLocation","sha256":"4ba44c8ecaa9fb16e125cd933820e089ba88a4aece9cddc2fd6265cc983b8c4c","size_bytes":47939},
+    {"document":"01_INTERFACE_TEMPLATE__Maximo2AssetCheck__Maximo2AssetCheck_SendWorkOrder.md","group":"Maximo2AssetCheck","job":"Maximo2AssetCheck_SendWorkOrder","sha256":"8dde873b1207cc4ea7dfa2dd85b33b707d0df29acc09438003bb3d1f7d5ec00e","size_bytes":46728}
+  ]
+}

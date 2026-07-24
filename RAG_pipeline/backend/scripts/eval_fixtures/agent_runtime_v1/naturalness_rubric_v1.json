@@ -1,0 +1,22 @@
+{
+  "rubric_version": "naturalness-v1",
+  "scale": {
+    "1": "Incorrect, unusable, or internally shaped",
+    "2": "Major omissions or difficult to understand",
+    "3": "Basically useful with noticeable relevance or clarity problems",
+    "4": "Useful, clear, natural, and transparent with minor issues",
+    "5": "Fully relevant, complete, readable, conversational, and action-transparent"
+  },
+  "dimensions": [
+    "relevance",
+    "completeness",
+    "readability",
+    "conversational_naturalness",
+    "action_transparency"
+  ],
+  "instructions": [
+    "Rate the final assistant answer without seeing the other rater's score.",
+    "Record a holistic score only after considering every dimension.",
+    "Deterministic authorization, effect, grounding, and transport gates take precedence."
+  ]
+}

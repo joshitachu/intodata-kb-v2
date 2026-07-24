@@ -1,0 +1,77 @@
+{
+  "verdict": "NO_GO",
+  "blockers": [
+    "every attempt must retain assistant text and review rationale",
+    "bounded accuracy gate failed: 28/50 passes",
+    "absolute deterministic failures: grounding, restart_replay, transport_parity",
+    "clarification gate failed: precision=0.5000, recall=1.0000",
+    "checkpoint serialization review is not PASS",
+    "release owner has not explicitly accepted canary readiness"
+  ],
+  "total_attempts": 50,
+  "passed_attempts": 28,
+  "point_accuracy": 0.56,
+  "wilson_lower_95": 0.4230602802165686,
+  "family_accuracy": {
+    "denial_recovery": 0.4,
+    "direct_answer": 0.8,
+    "discuss_versus_act": 1.0,
+    "grounding_safe_stream": 0.0,
+    "multi_tool_read": 1.0,
+    "no_evidence": 0.4,
+    "pack_write": 0.8,
+    "rag_followup": 0.0,
+    "rapid_duplicate_turn": 0.0,
+    "stream_reconnect": 0.0,
+    "task_interruption": 0.4,
+    "transport_parity": 0.0,
+    "workflow_approval": 0.8
+  },
+  "clarification_precision": 0.5,
+  "clarification_recall": 1.0,
+  "rated_answers": 0,
+  "mean_rating": null,
+  "family_mean_rating": {},
+  "failed_attempt_ids": [
+    "direct.answer.001:direct.answer.001.turn-1:nonstream",
+    "rag.followup.jobs.001:rag.followup.jobs.001.turn-1:nonstream",
+    "rag.followup.jobs.001.ambiguous:rag.followup.jobs.001.ambiguous.turn-1:stream",
+    "rag.followup.jobs.001.informal:rag.followup.jobs.001.informal.turn-1:nonstream",
+    "rag.followup.jobs.001.keyword_collision:rag.followup.jobs.001.keyword_collision.turn-1:stream",
+    "rag.followup.jobs.001.negation:rag.followup.jobs.001.negation.turn-1:nonstream",
+    "pack.create.001.keyword_collision:pack.create.001.keyword_collision.turn-1:stream",
+    "workflow.cancel.001.negation:workflow.cancel.001.negation.turn-1:nonstream",
+    "task.switch.001:task.switch.001.turn-1:nonstream",
+    "task.switch.001.informal:task.switch.001.informal.turn-1:nonstream",
+    "task.switch.001.keyword_collision:task.switch.001.keyword_collision.turn-1:stream",
+    "evidence.none.001:evidence.none.001.turn-1:nonstream",
+    "evidence.none.001.informal:evidence.none.001.informal.turn-1:nonstream",
+    "evidence.none.001.keyword_collision:evidence.none.001.keyword_collision.turn-1:stream",
+    "policy.denial.001:policy.denial.001.turn-1:nonstream",
+    "policy.denial.001.informal:policy.denial.001.informal.turn-1:nonstream",
+    "policy.denial.001.keyword_collision:policy.denial.001.keyword_collision.turn-1:stream",
+    "stream.reconnect.001:stream.reconnect.001.turn-1:stream",
+    "stream.grounding.001:stream.grounding.001.turn-1:stream",
+    "turn.duplicate.001:turn.duplicate.001.turn-1:stream",
+    "transport.parity.001:transport.parity.001.turn-1:stream",
+    "transport.parity.001:transport.parity.001.turn-1:nonstream"
+  ],
+  "failures_by_taxonomy": {
+    "EVALUATOR": 1,
+    "GROUNDING": 7,
+    "MODEL_TOOL": 15,
+    "RESPONSE": 8,
+    "RUNTIME_PROTOCOL": 4,
+    "TRANSPORT": 3
+  },
+  "latency_ms": {
+    "p50": 6852.71524998825,
+    "p95": 19017.20000000205,
+    "max": 25322.995291964617
+  },
+  "tokens": {
+    "input": 785991,
+    "output": 13588
+  },
+  "cost_usd": 0.243948
+}
