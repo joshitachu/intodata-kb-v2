@@ -15,6 +15,19 @@ from mcp_server.providers.custom.providers import ClaudeCliModelProvider
 from mcp_server.services.claude_service import DocGenerationCoordinator as ClaudeService
 
 
+def test_format_chunk_markdown_uses_composite_job_identity():
+    class Scanner:
+        def read_chunk_data(self, _output_dir, _chunk_id):
+            return {"jobs": [{"name": "Shared", "job_id": "root_a_Shared-123", "source_root": "exports/A", "components": []}]}
+
+    parts, count = ClaudeService._format_chunk_markdown(Scanner(), "/tmp", [{"chunk_id": "one"}])
+    rendered = "".join(parts)
+    assert count == 1
+    assert "## Job: root_a_Shared-123" in rendered
+    assert "Display name: `Shared`" in rendered
+    assert "Source root: `exports/A`" in rendered
+
+
 @pytest.fixture
 def claude_svc(log_manager):
     return ClaudeService(log_manager=log_manager)

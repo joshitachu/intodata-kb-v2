@@ -90,6 +90,8 @@ class TRunJobRef(BaseModel):
     child_job: str
     child_job_xmi_id: str = ""
     context_params: list[ComponentParam] = Field(default_factory=list)
+    resolved_job_id: str = ""
+    resolution: str = "unresolved"  # same_root | global | ambiguous | unresolved
 
 
 class Connection(BaseModel):
@@ -113,6 +115,11 @@ class ContextGroup(BaseModel):
 
 class ParsedJob(BaseModel):
     name: str
+    # Stable identity for composite source bundles.  Empty for historic scan
+    # results; for a normal one-root project it is equal to ``name``.
+    job_id: str = ""
+    source_root: str = ""
+    source_design: str = ""  # Talend process | routes; needed for same-path collisions
     path: str
     purpose: str = ""
     author: str = ""
@@ -167,6 +174,12 @@ class ProjectManifest(BaseModel):
     routines_used_by: dict[str, list[str]] = Field(default_factory=dict)
     job_groups: dict[str, str] = Field(default_factory=dict)
     job_external_systems: dict[str, list[str]] = Field(default_factory=dict)
+    # Additive composite-bundle metadata.  Existing consumers can keep using
+    # job_groups and the name-keyed maps above.
+    source_roots: list[dict[str, str]] = Field(default_factory=list)
+    job_source_roots: dict[str, str] = Field(default_factory=dict)
+    job_files: dict[str, str] = Field(default_factory=dict)
+    unresolved_job_calls: dict[str, list[dict[str, str]]] = Field(default_factory=dict)
 
 
 # ── Scan Result ──────────────────────────────────────────────────────

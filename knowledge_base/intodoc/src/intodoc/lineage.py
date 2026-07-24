@@ -69,6 +69,11 @@ _LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 _IDENTIFIER_FIELD_RE = re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b")
 
 
+def _job_identity(job: ParsedJob) -> str:
+    """Canonical job identity, preserving historic plain-name scans."""
+    return job.job_id or job.name
+
+
 def strip_comments_and_literals(expression: str) -> str:
     """Remove string literals and comments from a tMap expression.
 
@@ -291,6 +296,7 @@ def _build_job_entries(
     unmapped_columns: list[dict],
 ) -> list[LineageEntry]:
     entries: list[LineageEntry] = []
+    job_id = _job_identity(job)
 
     for tmap in job.tmap_data:
         input_tables = set(tmap.input_tables)
@@ -312,7 +318,7 @@ def _build_job_entries(
             target_component = target_resolution.component_unique_name if target_resolution else ""
             if target_resolution is None:
                 unmapped_columns.append({
-                    "job_name": job.name,
+                    "job_name": job_id,
                     "table": out_entry.table_name,
                     "column": out_entry.column_name,
                     "reason": "no matching connection for output row name",
@@ -327,7 +333,7 @@ def _build_job_entries(
                     transformations=transformations,
                     target_table=out_entry.table_name,
                     target_column=out_entry.column_name,
-                    job_name=job.name,
+                    job_name=job_id,
                     confidence=confidence,
                     source_component="",
                     target_component=target_component,
@@ -342,7 +348,7 @@ def _build_job_entries(
                 source_system = source_resolution.metadata_connection_ref if source_resolution else ""
                 if source_resolution is None:
                     unmapped_columns.append({
-                        "job_name": job.name,
+                        "job_name": job_id,
                         "table": identifier,
                         "column": fld,
                         "reason": "no matching connection for input row name",
@@ -354,7 +360,7 @@ def _build_job_entries(
                     transformations=transformations,
                     target_table=out_entry.table_name,
                     target_column=out_entry.column_name,
-                    job_name=job.name,
+                    job_name=job_id,
                     confidence=confidence,
                     source_component=source_component,
                     target_component=target_component,
@@ -406,7 +412,7 @@ def _stitch_trunjob_context_params(
     present in this same scan -- an unresolvable child is surfaced via
     `unmapped_columns`, never guessed.
     """
-    jobs_by_name = {job.name: job for job in scan_result.jobs}
+    jobs_by_id = {_job_identity(job): job for job in scan_result.jobs}
     stitched: list[LineageEntry] = []
 
     for parent in scan_result.jobs:
@@ -414,17 +420,24 @@ def _stitch_trunjob_context_params(
         for ref in parent.trunjob_refs:
             if not ref.context_params:
                 continue
-            child = jobs_by_name.get(ref.child_job)
+            # Only a confirmed resolved ID may cross a composite-project
+            # boundary.  Historic scans have no resolved_job_id, so retain the
+            # old child-name lookup only when it maps uniquely.
+            child_id = ref.resolved_job_id
+            if not child_id:
+                legacy = [job for job in scan_result.jobs if job.name == ref.child_job]
+                child_id = _job_identity(legacy[0]) if len(legacy) == 1 else ""
+            child = jobs_by_id.get(child_id)
             if child is None:
                 unmapped_columns.append({
-                    "job_name": parent.name,
+                    "job_name": _job_identity(parent),
                     "table": ref.child_job,
                     "column": "",
                     "reason": "trunjob child job not found in scan for context-param stitching",
                 })
                 continue
 
-            child_entries = entries_by_job.get(child.name, [])
+            child_entries = entries_by_job.get(_job_identity(child), [])
             for param in ref.context_params:
                 context_ref = _context_ref(param.name)
                 matches = [e for e in child_entries if context_ref in e.dynamic_refs]
@@ -440,12 +453,12 @@ def _stitch_trunjob_context_params(
                         source_column=param.name,
                         transformations=[ColumnTransformation(
                             transformation_type=_CONTEXT_PARAM_TRANSFORM_TYPE,
-                            expression=f"{parent.name}:tRunJob({child.name}) context.{param.name} = {value_expr}",
+                            expression=f"{_job_identity(parent)}:tRunJob({_job_identity(child)}) context.{param.name} = {value_expr}",
                         )],
                         target_table=match.target_table,
                         target_column=match.target_column,
-                        job_name=child.name,
-                        source_job_name=parent.name,
+                        job_name=_job_identity(child),
+                        source_job_name=_job_identity(parent),
                         confidence=LineageConfidence.INFERRED,
                         source_component="",
                         target_component=match.target_component,
@@ -502,7 +515,7 @@ def _table_endpoints(scan_result: ScanResult, direction: str) -> list[_TableEndp
             # component in the project.
             if not connection_ref or not table:
                 continue
-            endpoints.append(_TableEndpoint(job.name, component.unique_name, connection_ref, table))
+            endpoints.append(_TableEndpoint(_job_identity(job), component.unique_name, connection_ref, table))
     return endpoints
 
 
@@ -559,7 +572,7 @@ def build_lineage_matrix(scan_result: ScanResult, cred_filter: CredentialFilter)
     for job in scan_result.jobs:
         tmap_components_processed += len(job.tmap_data)
         job_entries = _build_job_entries(job, cred_filter, unmapped_columns)
-        entries_by_job[job.name] = job_entries
+        entries_by_job[_job_identity(job)] = job_entries
         entries.extend(job_entries)
 
     cross_job_entries = _stitch_trunjob_context_params(

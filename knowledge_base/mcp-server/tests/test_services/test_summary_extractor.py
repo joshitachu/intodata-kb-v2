@@ -379,3 +379,23 @@ async def test_phase2_prose_populates_every_job_in_group(project_layout):
     # Both should be Phase 2 prose, not heuristic.
     assert "CRM" in summaries["extract_customers"] or "staging" in summaries["extract_customers"]
     assert "warehouse" in summaries["load_warehouse"].lower()
+
+
+async def test_composite_summary_paths_use_manifest_job_files_and_physical_phase2_group(project_layout):
+    project_id, scan_dir = project_layout
+    job_id = "root_a_Shared-123"
+    physical_group = "root_a_Jobs-abcdef"
+    job_path = scan_dir / "jobs" / physical_group / "root_a_Shared-123.json"
+    job_path.parent.mkdir(parents=True)
+    job_path.write_text(json.dumps({"purpose": "Loads the composite customer feed", "components": []}))
+    (scan_dir / "manifest.json").write_text(json.dumps({
+        "job_groups": {job_id: "exports/A/Jobs"},
+        "job_external_systems": {job_id: []},
+        "job_files": {job_id: f"jobs/{physical_group}/root_a_Shared-123.json"},
+    }))
+    from mcp_server.config import config
+    phase2 = config.project_root / "output" / project_id / "docs" / "_rag_support" / "phase2_analysis"
+    (phase2 / f"{physical_group}.md").write_text(f"## {job_id}\nComposite source explanation.")
+
+    summaries = await build_component_summaries_async(project_id)
+    assert job_id in summaries

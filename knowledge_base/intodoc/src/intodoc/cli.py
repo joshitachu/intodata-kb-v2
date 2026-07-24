@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import time
 from pathlib import Path
@@ -15,6 +16,13 @@ from intodoc.config import IntodocConfig, RedactionLevel
 from intodoc.platforms.registry import get_platform, list_platforms
 
 console = Console()
+
+
+def _bounded_segment(value: str, fallback: str) -> str:
+    """Filesystem-safe segment with a digest to prevent sanitization collisions."""
+    normalized = re.sub(r'[/\\:*?"<>|]+', "_", value).strip("_") or fallback
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    return f"{normalized[:64].rstrip('_') or fallback}-{digest}"
 
 
 @click.group()
@@ -184,9 +192,9 @@ def _save_scan_result(scan_result, output_dir: Path) -> None:
     """Save scan result as monolithic JSON + segmented files."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Monolithic file (backward compat)
+    # Monolithic file (backward compat).  It is written after segmented jobs
+    # so its manifest includes the completed job_files index.
     path = output_dir / "scan_result.json"
-    path.write_text(scan_result.model_dump_json(indent=2), encoding="utf-8")
 
     # ── Segmented output ─────────────────────────────────────────
     scan_dir = output_dir / "scan"
@@ -199,11 +207,6 @@ def _save_scan_result(scan_result, output_dir: Path) -> None:
         "scanned_at": str(scan_result.scanned_at),
         "stats": scan_result.stats,
     }, indent=2, default=str), encoding="utf-8")
-
-    # manifest.json
-    (scan_dir / "manifest.json").write_text(
-        scan_result.manifest.model_dump_json(indent=2), encoding="utf-8"
-    )
 
     # connections.json
     (scan_dir / "connections.json").write_text(json.dumps(
@@ -233,9 +236,28 @@ def _save_scan_result(scan_result, output_dir: Path) -> None:
     jobs_dir = scan_dir / "jobs"
     for job in scan_result.jobs:
         group = job.group or "Global"
-        job_group_dir = jobs_dir / group
+        # A composite source bundle can contain identical names and groups.
+        # Keep the legacy layout for ordinary scans; use manifest.job_files as
+        # the authoritative additive lookup when an identity needs escaping.
+        qualified = bool(job.job_id and job.job_id != job.name)
+        composite = len(scan_result.manifest.source_roots) > 1
+        if job.source_root and composite:
+            group = f"{job.source_root}__{group}"
+        safe_group = _bounded_segment(group, "Global") if composite else (re.sub(r'[/\\:*?"<>|]+', "_", group).strip("_") or "Global")
+        job_group_dir = jobs_dir / safe_group
         job_group_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = re.sub(r'[/\\:*?"<>|]+', "_", job.name).strip("_") or "unnamed"
-        (job_group_dir / f"{safe_name}.json").write_text(
+        job_key = job.job_id or job.name
+        safe_name = _bounded_segment(job_key, "unnamed") if qualified or composite else (re.sub(r'[/\\:*?"<>|]+', "_", job_key).strip("_") or "unnamed")
+        filename = f"{safe_name}.json"
+        (job_group_dir / filename).write_text(
             job.model_dump_json(indent=2), encoding="utf-8"
         )
+        scan_result.manifest.job_files[job_key] = f"jobs/{safe_group}/{filename}"
+
+    # job_files is populated while segmented output is written.
+    (scan_dir / "manifest.json").write_text(
+        scan_result.manifest.model_dump_json(indent=2), encoding="utf-8"
+    )
+    # Keep both persisted representations in lockstep.  job_files is filled
+    # only after every segmented job payload has a physical location.
+    path.write_text(scan_result.model_dump_json(indent=2), encoding="utf-8")

@@ -149,6 +149,13 @@ export interface ManifestData {
   job_groups: Record<string, string>;
   routines_used_by?: Record<string, string[]>;
   job_contexts_used?: Record<string, string[]>;
+  /** Composite Talend bundles keep one scan while exposing root clusters. */
+  job_source_roots?: Record<string, string>;
+  source_roots?: Array<{ id: string; path: string; platform?: string }>;
+}
+
+export function topologyGroupForJob(manifest: ManifestData, job: string): string {
+  return manifest.job_source_roots?.[job] || manifest.job_groups?.[job] || "Ungrouped";
 }
 
 export interface FlowResult {
@@ -226,7 +233,7 @@ export function manifestToFlow(
   }
 
   // Build group -> color mapping
-  const groups = [...new Set(Object.values(manifest.job_groups || {}))].sort();
+  const groups = [...new Set([...jobNames].map((name) => topologyGroupForJob(manifest, name)))].sort();
   const groupColorMap: Record<string, typeof GROUP_COLORS[0]> = {};
   for (const group of groups) {
     groupColorMap[group] = GROUP_COLORS[hashString(group) % GROUP_COLORS.length];
@@ -257,7 +264,7 @@ export function manifestToFlow(
   // groupCommonPrefix) — the full name stays in `label` for identity/search.
   const jobsByGroup = new Map<string, string[]>();
   for (const name of jobNames) {
-    const g = (manifest.job_groups || {})[name] || "Ungrouped";
+    const g = topologyGroupForJob(manifest, name);
     const list = jobsByGroup.get(g) ?? [];
     list.push(name);
     jobsByGroup.set(g, list);
@@ -272,7 +279,7 @@ export function manifestToFlow(
 
   const nodes: Node[] = [];
   for (const name of jobNames) {
-    const group = (manifest.job_groups || {})[name] || "Ungrouped";
+    const group = topologyGroupForJob(manifest, name);
     const color = groupColorMap[group] || GROUP_COLORS[0];
     const meta = jobMetadata?.[name];
     nodes.push({
@@ -600,7 +607,7 @@ export function manifestToCollapsedFlow(
   // ── Build group → jobs map ───────────────────────────────────────
   const groupJobMap = new Map<string, string[]>();
   for (const name of jobNames) {
-    const group = (manifest.job_groups || {})[name] || "Ungrouped";
+    const group = topologyGroupForJob(manifest, name);
     if (!groupJobMap.has(group)) groupJobMap.set(group, []);
     groupJobMap.get(group)!.push(name);
   }

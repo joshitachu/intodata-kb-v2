@@ -311,7 +311,15 @@ class DocGenerationCoordinator:
 
             for job in chunk_data.get("jobs", []):
                 job_count += 1
-                parts.append(f"\n---\n## Job: {job.get('name', 'unknown')}\n")
+                job_id = job.get("job_id") or job.get("name", "unknown")
+                display_name = job.get("name", "unknown")
+                source_root = job.get("source_root", "")
+                heading = f"\n---\n## Job: {job_id}\n"
+                if job_id != display_name or source_root:
+                    heading += f"\n- Display name: `{display_name}`\n"
+                    if source_root:
+                        heading += f"- Source root: `{source_root}`\n"
+                parts.append(heading)
 
                 components = job.get("components", [])
                 if components:

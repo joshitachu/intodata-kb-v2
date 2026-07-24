@@ -1,9 +1,12 @@
 """Tests for Talend parser against real vaxxinova-talend project."""
 
+import json
+
 import pytest
 
 from intodoc.scanner.credential_filter import CredentialFilter
 from intodoc.platforms.talend.parser import TalendParser
+from intodoc.models import Component, MetadataConnection, ParsedJob, ScanResult
 
 
 @pytest.fixture
@@ -148,6 +151,171 @@ class TestVersionDedup:
         assert parser._version_sort_key("0.10") > parser._version_sort_key("0.9")
         assert parser._version_sort_key("3.3") > parser._version_sort_key("0.1")
         assert parser._version_sort_key("") == ()
+
+
+class TestCompositeTalendBundles:
+    def test_multiple_roots_are_one_scan_with_qualified_duplicate_ids(self, parser, tmp_path):
+        first = _synthetic_project(tmp_path / "exports" / "first")
+        second = _synthetic_project(tmp_path / "exports" / "second")
+        _write_job(first, "Jobs", "Shared", "0.1")
+        _write_job(second, "Jobs", "Shared", "0.1")
+        _write_job(second, "Jobs", "SecondOnly", "0.1")
+
+        result = parser.parse(tmp_path)
+
+        assert result.stats["total_roots"] == 2
+        assert {job.source_root for job in result.jobs} == {
+            "exports/first/SYNTH", "exports/second/SYNTH",
+        }
+        shared = [job for job in result.jobs if job.name == "Shared"]
+        assert all(job.job_id != job.name and "/" not in job.job_id and ".." not in job.job_id for job in shared)
+        assert len({job.job_id for job in shared}) == 2
+        assert len(result.manifest.source_roots) == 2
+        assert len(result.manifest.job_groups) == 3
+
+    def test_cross_root_runjob_resolves_unique_target(self, parser, tmp_path):
+        first = _synthetic_project(tmp_path / "one")
+        second = _synthetic_project(tmp_path / "two")
+        run_job = (
+            '<node componentName="tRunJob"><elementParameter name="UNIQUE_NAME" value="run"/>'
+            '<elementParameter name="PROCESS" value="Child"/></node>'
+        )
+        _write_job(first, "Jobs", "Parent", "0.1", run_job)
+        _write_job(second, "Jobs", "Child", "0.1")
+
+        result = parser.parse(tmp_path)
+        parent = next(job for job in result.jobs if job.name == "Parent")
+        assert parent.trunjob_refs[0].resolution == "global"
+        assert result.manifest.job_calls[parent.job_id] == ["Child"]
+
+    def test_ambiguous_cross_root_runjob_is_not_invented(self, parser, tmp_path):
+        caller = _synthetic_project(tmp_path / "caller")
+        one = _synthetic_project(tmp_path / "one")
+        two = _synthetic_project(tmp_path / "two")
+        run_job = (
+            '<node componentName="tRunJob"><elementParameter name="UNIQUE_NAME" value="run"/>'
+            '<elementParameter name="PROCESS" value="Child"/></node>'
+        )
+        _write_job(caller, "Jobs", "Parent", "0.1", run_job)
+        _write_job(one, "Jobs", "Child", "0.1")
+        _write_job(two, "Jobs", "Child", "0.1")
+
+        result = parser.parse(tmp_path)
+        parent = next(job for job in result.jobs if job.name == "Parent")
+        assert parent.trunjob_refs[0].resolution == "ambiguous"
+        assert parent.trunjob_refs[0].resolved_job_id == ""
+        assert parent.job_id not in result.manifest.job_calls
+        assert result.manifest.unresolved_job_calls[parent.job_id][0]["child_job"] == "Child"
+
+    def test_same_root_duplicate_names_have_distinct_ids_and_ambiguous_call(self, parser, tmp_path):
+        root = _synthetic_project(tmp_path / "bundle")
+        other = _synthetic_project(tmp_path / "other")
+        _write_job(root, "A", "Child", "0.1")
+        _write_job(root, "B", "Child", "0.1")
+        run_job = ('<node componentName="tRunJob"><elementParameter name="UNIQUE_NAME" value="run"/>'
+                   '<elementParameter name="PROCESS" value="Child"/></node>')
+        _write_job(root, "A", "Parent", "0.1", run_job)
+        _write_job(other, "Jobs", "Other", "0.1")
+
+        result = parser.parse(tmp_path)
+        children = [job for job in result.jobs if job.name == "Child"]
+        assert len({job.job_id for job in children}) == 2
+        parent = next(job for job in result.jobs if job.name == "Parent")
+        assert parent.trunjob_refs[0].resolution == "ambiguous"
+        assert parent.job_id not in result.manifest.job_calls
+
+    def test_process_and_routes_same_relative_path_do_not_collide(self, parser, tmp_path):
+        root = _synthetic_project(tmp_path)
+        (root / "routes").mkdir()
+        _write_job(root, "A", "Shared", "0.1")
+        # _write_job is process-only; copy the minimal design pair to routes.
+        source = root / "process" / "A"
+        target = root / "routes" / "A"
+        target.mkdir(parents=True)
+        for file in source.iterdir():
+            (target / file.name).write_text(file.read_text())
+
+        result = parser.parse(tmp_path)
+        shared = [job for job in result.jobs if job.name == "Shared"]
+        assert len(shared) == 2
+        assert {job.source_design for job in shared} == {"process", "routes"}
+        assert len({job.job_id for job in shared}) == 2
+
+    def test_macos_noise_root_is_not_discovered(self, parser, tmp_path):
+        real = _synthetic_project(tmp_path / "real")
+        noise = _synthetic_project(tmp_path / "__MACOSX" / "noise")
+        _write_job(real, "Jobs", "Real", "0.1")
+        _write_job(noise, "Jobs", "Noise", "0.1")
+        result = parser.parse(tmp_path)
+        assert result.stats["total_roots"] == 1
+        assert [job.name for job in result.jobs] == ["Real"]
+
+    def test_generated_process_trees_are_not_independent_roots(self, parser, tmp_path):
+        root = _synthetic_project(tmp_path)
+        _write_job(root, "Jobs", "Real", "0.1")
+        generated = root / "poms" / "jobs"
+        _write_job(generated, "Jobs", "GeneratedCopy", "0.1")
+
+        result = parser.parse(tmp_path)
+
+        assert result.stats["total_roots"] == 1
+        assert [job.name for job in result.jobs] == ["Real"]
+
+    def test_marked_project_nested_below_project_remains_independent(self, parser, tmp_path):
+        outer = _synthetic_project(tmp_path)
+        nested = _synthetic_project(outer / "nested")
+        (nested / "talend.project").write_text("", encoding="utf-8")
+        _write_job(outer, "Jobs", "Outer", "0.1")
+        _write_job(nested, "Jobs", "Nested", "0.1")
+
+        result = parser.parse(tmp_path)
+
+        assert result.stats["total_roots"] == 2
+        assert {job.name for job in result.jobs} == {"Outer", "Nested"}
+
+    def test_segmented_and_monolithic_manifest_share_job_file_index(self, parser, tmp_path):
+        from intodoc.cli import _save_scan_result
+
+        one = _synthetic_project(tmp_path / "one")
+        two = _synthetic_project(tmp_path / "two")
+        _write_job(one, "Jobs", "Shared", "0.1")
+        _write_job(two, "Jobs", "Shared", "0.1")
+        result = parser.parse(tmp_path)
+        output = tmp_path / "out"
+        _save_scan_result(result, output)
+
+        segmented = json.loads((output / "scan" / "manifest.json").read_text())
+        monolithic = json.loads((output / "scan_result.json").read_text())["manifest"]
+        assert segmented["job_files"] == monolithic["job_files"]
+        assert set(segmented["job_files"]) == {job.job_id for job in result.jobs}
+
+    def test_segmented_paths_digest_qualified_ids_without_collision(self, tmp_path):
+        from intodoc.cli import _save_scan_result
+
+        jobs = [
+            ParsedJob(name="one", path="one", job_id="a::b", source_root="root-a", group="Jobs"),
+            ParsedJob(name="two", path="two", job_id="a__b", source_root="root-b", group="Jobs"),
+        ]
+        result = ScanResult(
+            platform="talend", repo_root="/synthetic", jobs=jobs,
+            manifest={"source_roots": [{"id": "root-a", "path": "root-a"}, {"id": "root-b", "path": "root-b"}]},
+        )
+        _save_scan_result(result, tmp_path)
+        paths = result.manifest.job_files
+        assert len(set(paths.values())) == 2
+        assert all(len(part) <= 80 for path in paths.values() for part in path.split("/"))
+
+    def test_empty_same_name_connections_are_not_merged_across_roots(self):
+        first = ParsedJob(name="One", path="one", source_root="one", components=[Component(unique_name="c1", component_type="tDBInput", metadata_connection_ref="Shared")])
+        second = ParsedJob(name="Two", path="two", source_root="two", components=[Component(unique_name="c2", component_type="tDBInput", metadata_connection_ref="Shared")])
+        connections = [
+            MetadataConnection(xmi_id="1", name="Shared", connection_type="DB", additional_params={"source_root": "one"}),
+            MetadataConnection(xmi_id="2", name="Shared", connection_type="DB", additional_params={"source_root": "two"}),
+        ]
+        retained = TalendParser._qualify_composite_connections([first, second], connections, True)
+        assert {connection.name for connection in retained} == {"one::Shared", "two::Shared"}
+        assert first.components[0].metadata_connection_ref == "one::Shared"
+        assert second.components[0].metadata_connection_ref == "two::Shared"
 
 
 class TestTMapExtraction:

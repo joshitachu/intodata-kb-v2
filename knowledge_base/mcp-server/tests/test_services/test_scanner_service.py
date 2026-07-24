@@ -51,6 +51,30 @@ async def test_run_scan_success(scanner, monkeypatch, tmp_path):
     assert result["job_count"] == 2
 
 
+async def test_run_scan_rejects_zero_job_talend_result(scanner, monkeypatch, tmp_path):
+    from mcp_server.config import config
+    monkeypatch.setattr(config, "project_root", tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    out_dir = tmp_path / "output"
+    out_dir.mkdir()
+    mock_proc = MagicMock()
+    mock_proc.stdout.readline = MagicMock(return_value="")
+    mock_proc.stderr.readline = MagicMock(return_value="")
+    def _write_zero_result():
+        (out_dir / "scan_result.json").write_text(
+            json.dumps({"jobs": [], "warnings": [{"message": "No Talend project structure found"}]})
+        )
+        return 0
+    mock_proc.wait.side_effect = _write_zero_result
+
+    with patch("shutil.which", return_value="/usr/bin/intodoc"), patch("subprocess.Popen", return_value=mock_proc):
+        result = await scanner.run_scan("proj", str(repo), platform="talend", output_dir=str(out_dir))
+
+    assert result["success"] is False
+    assert "zero jobs" in result["error"]
+
+
 async def test_run_scan_clears_stale_scan_and_fails_when_new_output_missing(scanner, monkeypatch, tmp_path):
     from mcp_server.config import config
     monkeypatch.setattr(config, "project_root", tmp_path)
@@ -124,6 +148,46 @@ def test_read_scan_json_monolithic(scanner, tmp_path):
 def test_read_scan_json_missing(scanner, tmp_path):
     result = scanner.read_scan_json(str(tmp_path / "nonexistent"), section="all")
     assert "error" in result
+
+
+def test_composite_segmented_chunk_round_trip_preserves_canonical_ids(scanner, tmp_path):
+    scan = tmp_path / "scan"
+    first = scan / "jobs" / "one__Jobs"
+    second = scan / "jobs" / "two__Jobs"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    parent_id = "one::Parent"
+    child_id = "two::Child"
+    (first / "one__Parent.json").write_text(json.dumps({
+        "name": "Parent", "job_id": parent_id, "source_root": "one", "group": "Jobs",
+        "components": [], "raw_routines": [],
+    }))
+    (second / "two__Child.json").write_text(json.dumps({
+        "name": "Child", "job_id": child_id, "source_root": "two", "group": "Jobs",
+        "components": [], "raw_routines": [],
+    }))
+    manifest = {
+        "job_calls": {parent_id: [child_id]},
+        "job_called_by": {child_id: [parent_id]},
+        "job_connections_used": {}, "connection_used_by": {},
+        "job_contexts_used": {}, "routines_used_by": {},
+        "job_groups": {parent_id: "one/Jobs", child_id: "two/Jobs"},
+        "source_roots": [{"id": "one", "path": "one"}, {"id": "two", "path": "two"}],
+        "job_source_roots": {parent_id: "one", child_id: "two"},
+        "job_files": {
+            parent_id: "jobs/one__Jobs/one__Parent.json",
+            child_id: "jobs/two__Jobs/two__Child.json",
+        },
+    }
+    (scan / "manifest.json").write_text(json.dumps(manifest))
+
+    definitions = scanner.get_chunk_definitions(str(tmp_path))
+    assert {name for chunk in definitions["chunks"] for name in chunk["job_names"]} == {parent_id, child_id}
+    parent_chunk = next(chunk for chunk in definitions["chunks"] if parent_id in chunk["job_names"])
+    data = scanner.read_chunk_data(str(tmp_path), parent_chunk["chunk_id"])
+    assert [job["job_id"] for job in data["jobs"]] == [parent_id]
+    assert data["manifest"]["job_calls"] == {parent_id: [child_id]}
+    assert data["manifest"]["job_source_roots"] == {parent_id: "one"}
 
 
 def test_get_chunk_definitions(scanner, tmp_path):

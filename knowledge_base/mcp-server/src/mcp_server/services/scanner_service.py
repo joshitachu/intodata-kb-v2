@@ -188,6 +188,24 @@ class ScannerService:
                 if not isinstance(data, dict) or not isinstance(data.get("jobs", []), list):
                     raise ValueError("scan_result.json must be an object with a jobs list")
                 job_count = len(data.get("jobs", []))
+                # A Talend scan with no discovered roots/jobs is never a useful
+                # successful scan.  Previously this silently moved projects to
+                # ready with job_count=0, hiding nested-bundle failures.
+                if platform.lower() == "talend" and job_count == 0:
+                    warnings = data.get("warnings", []) or []
+                    discovery = [w.get("message", "") for w in warnings if isinstance(w, dict)]
+                    detail = "; ".join(discovery) or "No Talend jobs were discovered"
+                    msg = f"Talend scan produced zero jobs: {detail}"
+                    logger.error(msg)
+                    if self.log_manager:
+                        await self.log_manager.emit(project_id, msg, level="error")
+                    return {
+                        "success": False,
+                        "error": msg,
+                        "job_count": 0,
+                        "scan_result_path": str(scan_result_path),
+                        "output_dir": str(out_dir),
+                    }
             except Exception as exc:
                 msg = f"Scan produced invalid scan_result.json: {exc}"
                 logger.error(msg)
@@ -358,7 +376,8 @@ class ScannerService:
         scan_dir = Path(output_dir) / "scan"
         base_dir = Path(output_dir)
 
-        # Collect per-group job info: {group: [(filename, size_bytes), ...]}
+        # Collect per-group job info using the canonical identity in the JSON,
+        # never the escaped segmented filename.
         group_jobs: dict[str, list[tuple[str, int]]] = {}
 
         if scan_dir.exists() and (scan_dir / "jobs").exists():
@@ -370,7 +389,11 @@ class ScannerService:
                 jobs_in_group = []
                 for f in sorted(group_dir.glob("*.json")):
                     size = f.stat().st_size
-                    job_name = f.stem
+                    try:
+                        job = json.loads(f.read_text(encoding="utf-8"))
+                    except (json.JSONDecodeError, OSError):
+                        continue
+                    job_name = str(job.get("job_id") or job.get("name") or "unknown")
                     jobs_in_group.append((job_name, size))
                 if jobs_in_group:
                     group_jobs[group] = jobs_in_group
@@ -382,7 +405,7 @@ class ScannerService:
             data = json.loads(mono.read_text(encoding="utf-8"))
             for job in data.get("jobs", []):
                 group = job.get("group") or "Global"
-                name = job.get("name", "unknown")
+                name = job.get("job_id") or job.get("name", "unknown")
                 size = len(json.dumps(job))
                 group_jobs.setdefault(group, []).append((name, size))
 
@@ -478,19 +501,38 @@ class ScannerService:
         scan_dir = Path(output_dir) / "scan"
         base_dir = Path(output_dir)
 
-        # Load job data
+        # Load job data.  manifest.job_files is authoritative for composite
+        # outputs; the directory scan is retained for pre-composite scans.
         jobs: list[dict] = []
-        if scan_dir.exists() and (scan_dir / "jobs" / group).exists():
-            jobs_dir = scan_dir / "jobs" / group
-            for f in sorted(jobs_dir.glob("*.json")):
-                if f.stem in job_names:
-                    jobs.append(json.loads(f.read_text(encoding="utf-8")))
+        if scan_dir.exists():
+            manifest_data = self._read_manifest(output_dir)
+            job_files = manifest_data.get("job_files", {}) if isinstance(manifest_data, dict) else {}
+            for job_name in sorted(job_names):
+                relative = job_files.get(job_name) if isinstance(job_files, dict) else None
+                if not isinstance(relative, str):
+                    continue
+                candidate = scan_dir / relative
+                try:
+                    job = json.loads(candidate.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    continue
+                if str(job.get("job_id") or job.get("name") or "") == job_name:
+                    jobs.append(job)
+            if not jobs and (scan_dir / "jobs" / group).exists():
+                jobs_dir = scan_dir / "jobs" / group
+                for f in sorted(jobs_dir.glob("*.json")):
+                    try:
+                        job = json.loads(f.read_text(encoding="utf-8"))
+                    except (json.JSONDecodeError, OSError):
+                        continue
+                    if str(job.get("job_id") or job.get("name") or "") in job_names:
+                        jobs.append(job)
         else:
             mono = base_dir / "scan_result.json"
             if mono.exists():
                 data = json.loads(mono.read_text(encoding="utf-8"))
                 for job in data.get("jobs", []):
-                    if job.get("name") in job_names:
+                    if str(job.get("job_id") or job.get("name") or "") in job_names:
                         jobs.append(job)
 
         # Load related connections (match via component metadata_connection_ref)
@@ -684,20 +726,7 @@ class ScannerService:
         self, output_dir: str, job_names: set[str],
     ) -> dict:
         """Load manifest and filter to only edges involving given jobs."""
-        scan_dir = Path(output_dir) / "scan"
-        manifest: dict = {}
-        try:
-            if (scan_dir / "manifest.json").exists():
-                manifest = json.loads(
-                    (scan_dir / "manifest.json").read_text(encoding="utf-8")
-                )
-            else:
-                mono = Path(output_dir) / "scan_result.json"
-                if mono.exists():
-                    data = json.loads(mono.read_text(encoding="utf-8"))
-                    manifest = data.get("manifest", {})
-        except (json.JSONDecodeError, OSError):
-            return {}
+        manifest = self._read_manifest(output_dir)
 
         if not manifest:
             return {}
@@ -731,7 +760,34 @@ class ScannerService:
                 k: v for k, v in manifest.get("job_groups", {}).items()
                 if k in job_names
             },
+            "source_roots": manifest.get("source_roots", []),
+            "job_source_roots": {
+                k: v for k, v in manifest.get("job_source_roots", {}).items()
+                if k in job_names
+            },
+            "job_files": {
+                k: v for k, v in manifest.get("job_files", {}).items()
+                if k in job_names
+            },
+            "unresolved_job_calls": {
+                k: v for k, v in manifest.get("unresolved_job_calls", {}).items()
+                if k in job_names
+            },
         }
+
+    @staticmethod
+    def _read_manifest(output_dir: str) -> dict:
+        """Read either persisted manifest representation."""
+        scan_dir = Path(output_dir) / "scan"
+        try:
+            if (scan_dir / "manifest.json").exists():
+                return json.loads((scan_dir / "manifest.json").read_text(encoding="utf-8"))
+            mono = Path(output_dir) / "scan_result.json"
+            if mono.exists():
+                return json.loads(mono.read_text(encoding="utf-8")).get("manifest", {})
+        except (json.JSONDecodeError, OSError):
+            pass
+        return {}
 
     def _group_jobs_summary(self, jobs: list[dict]) -> list[dict]:
         """Group jobs by their group field, return summary."""

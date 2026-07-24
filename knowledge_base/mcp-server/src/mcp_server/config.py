@@ -308,6 +308,9 @@ class MCPServerConfig(BaseSettings):
     max_upload_zip_bytes: int = 500 * 1024 * 1024  # MCP_MAX_UPLOAD_ZIP_BYTES — 500 MB default
     max_upload_zip_entries: int = 20_000  # MCP_MAX_UPLOAD_ZIP_ENTRIES
     max_upload_zip_uncompressed_bytes: int = 2 * 1024 * 1024 * 1024  # MCP_MAX_UPLOAD_ZIP_UNCOMPRESSED_BYTES
+    # Nested source bundles are common for Talend exports.  These limits apply
+    # cumulatively across the outer archive and every nested archive.
+    max_upload_zip_nesting_depth: int = 4  # MCP_MAX_UPLOAD_ZIP_NESTING_DEPTH
     upload_receipt_ttl_seconds: int = 24 * 60 * 60  # MCP_UPLOAD_RECEIPT_TTL_SECONDS
 
     # Local path security — comma-separated allowed roots; empty = no restriction

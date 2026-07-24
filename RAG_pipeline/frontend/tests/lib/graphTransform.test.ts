@@ -680,4 +680,21 @@ describe("applyCompoundDagreLayout positions the in-group call-graph hub structu
       expect(hubXY(laidLR).x).toBeLessThan(leafXY(laidLR, j).x);
     }
   });
+
+  it("clusters a composite bundle by source root while retaining cross-root calls", () => {
+    const manifest: ManifestData = {
+      job_calls: { "one::Parent": ["two::Child"] },
+      job_called_by: { "two::Child": ["one::Parent"] },
+      job_connections_used: {},
+      connection_used_by: {},
+      job_groups: { "one::Parent": "one/Jobs", "two::Child": "two/Jobs" },
+      job_source_roots: { "one::Parent": "one", "two::Child": "two" },
+      source_roots: [{ id: "one", path: "one" }, { id: "two", path: "two" }],
+    };
+
+    const flow = manifestToFlow(manifest, []);
+    expect(flow.groups).toEqual(["one", "two"]);
+    expect(flow.nodes.find((node) => node.id === "job:one::Parent")?.data.group).toBe("one");
+    expect(flow.edges.some((edge) => edge.source === "job:one::Parent" && edge.target === "job:two::Child")).toBe(true);
+  });
 });

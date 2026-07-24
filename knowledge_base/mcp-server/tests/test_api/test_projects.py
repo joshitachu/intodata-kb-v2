@@ -9,6 +9,7 @@ import subprocess
 import zipfile
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from sqlalchemy import select
 
 
@@ -240,6 +241,143 @@ async def test_upload_zip_rejects_unsafe_member_path(client):
 
     assert resp.status_code == 400
     assert "unsafe" in resp.json()["detail"].lower()
+
+
+def test_nested_zip_bundle_expands_deterministically(tmp_path):
+    """Nested export archives are retained and expanded without flattening."""
+    from mcp_server.api.routes.projects import _extract_zip_bundle
+
+    nested = io.BytesIO()
+    with zipfile.ZipFile(nested, "w") as zf:
+        zf.writestr("PROJECT/process/Job_0.1.item", "synthetic")
+        zf.writestr("__MACOSX/._ignored", "noise")
+    outer = tmp_path / "outer.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.writestr("exports/project.zip", nested.getvalue())
+
+    target = tmp_path / "expanded"
+    target.mkdir()
+    _extract_zip_bundle(outer, target)
+
+    assert (target / "exports" / "project.zip").exists()
+    assert (target / "exports" / "project.__intodoc_zip__" / "PROJECT" / "process" / "Job_0.1.item").exists()
+    assert not (target / "exports" / "project.__intodoc_zip__" / "__MACOSX").exists()
+
+
+def test_nested_zip_bundle_enforces_cumulative_entry_limit(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    from mcp_server.api.routes.projects import _extract_zip_bundle
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "max_upload_zip_entries", 2)
+    nested = io.BytesIO()
+    with zipfile.ZipFile(nested, "w") as zf:
+        zf.writestr("one.txt", "1")
+        zf.writestr("two.txt", "2")
+    outer = tmp_path / "outer.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.writestr("nested.zip", nested.getvalue())
+    target = tmp_path / "expanded"
+    target.mkdir()
+
+    with pytest.raises(HTTPException, match="too many"):
+        _extract_zip_bundle(outer, target)
+
+
+def test_nested_zip_bundle_enforces_depth_and_cumulative_bytes(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    from mcp_server.api.routes.projects import _extract_zip_bundle
+    from mcp_server.config import config
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as zf:
+        zf.writestr("payload.txt", "x" * 32)
+    outer = tmp_path / "outer.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.writestr("nested.zip", payload.getvalue())
+    target = tmp_path / "expanded"
+    target.mkdir()
+    # Outer member (the nested ZIP bytes) is permitted; its extracted member
+    # pushes the cumulative total over the limit.
+    monkeypatch.setattr(config, "max_upload_zip_uncompressed_bytes", len(payload.getvalue()) + 31)
+    with pytest.raises(HTTPException, match="expands"):
+        _extract_zip_bundle(outer, target)
+
+    # Build a two-level nested archive and make a single nested level illegal.
+    innermost = io.BytesIO()
+    with zipfile.ZipFile(innermost, "w") as zf:
+        zf.writestr("ok.txt", "ok")
+    middle = io.BytesIO()
+    with zipfile.ZipFile(middle, "w") as zf:
+        zf.writestr("inner.zip", innermost.getvalue())
+    depth_outer = tmp_path / "depth.zip"
+    with zipfile.ZipFile(depth_outer, "w") as zf:
+        zf.writestr("middle.zip", middle.getvalue())
+    monkeypatch.setattr(config, "max_upload_zip_uncompressed_bytes", 1_000_000)
+    monkeypatch.setattr(config, "max_upload_zip_nesting_depth", 1)
+    with pytest.raises(HTTPException, match="depth"):
+        _extract_zip_bundle(depth_outer, tmp_path / "depth-expanded")
+
+
+def test_nested_zip_bundle_rejects_unsafe_nested_windows_path(tmp_path):
+    from fastapi import HTTPException
+    from mcp_server.api.routes.projects import _extract_zip_bundle
+
+    nested = io.BytesIO()
+    with zipfile.ZipFile(nested, "w") as zf:
+        zf.writestr("..\\escape.txt", "unsafe")
+    outer = tmp_path / "outer.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.writestr("nested.zip", nested.getvalue())
+    target = tmp_path / "expanded"
+    target.mkdir()
+    with pytest.raises(HTTPException, match="unsafe"):
+        _extract_zip_bundle(outer, target)
+
+
+def test_nested_zip_marker_collision_uses_deterministic_fallback(tmp_path):
+    from mcp_server.api.routes.projects import _extract_zip_bundle
+
+    nested = io.BytesIO()
+    with zipfile.ZipFile(nested, "w") as zf:
+        zf.writestr("PROJECT/process/Job_0.1.item", "synthetic")
+    outer = tmp_path / "outer.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.writestr("exports/project.zip", nested.getvalue())
+        zf.writestr("exports/project.__intodoc_zip__/user-file.txt", "keep")
+    target = tmp_path / "expanded"
+    target.mkdir()
+    _extract_zip_bundle(outer, target)
+
+    fallback = next((target / "exports").glob("project.__intodoc_zip__-*"))
+    assert (fallback / "PROJECT" / "process" / "Job_0.1.item").exists()
+    assert (target / "exports" / "project.__intodoc_zip__" / "user-file.txt").exists()
+
+
+def test_qualified_composite_job_id_round_trips_through_job_loader(tmp_path, monkeypatch):
+    from mcp_server.api.routes.projects import _load_job_scan
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "intodoc_output_dir", tmp_path)
+    job_id = "exports_first_SYNTH_Shared-0123456789ab"
+    relative = "jobs/exports_first-abcdef/Shared-0123456789ab.json"
+    scan_dir = tmp_path / "composite" / "scan"
+    job_path = scan_dir / relative
+    job_path.parent.mkdir(parents=True)
+    job_path.write_text(json.dumps({"name": "Shared", "job_id": job_id}), encoding="utf-8")
+    (scan_dir / "manifest.json").write_text(
+        json.dumps({
+            "job_groups": {job_id: "exports/first/SYNTH/Jobs"},
+            "job_files": {job_id: relative},
+        }),
+        encoding="utf-8",
+    )
+
+    group, scan_data, resolved_path = _load_job_scan("composite", job_id)
+
+    assert group == "exports/first/SYNTH/Jobs"
+    assert scan_data["job_id"] == job_id
+    assert resolved_path == job_path
 
 
 # --- Project List ---

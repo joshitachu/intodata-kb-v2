@@ -556,9 +556,7 @@ async def upload_zip(
         zip_path = Path(handle.name)
     extract_dir = Path(tempfile.mkdtemp(prefix=f".{project_id}-", dir=config.repos_dir))
     try:
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            _validate_zip_members(zf.infolist())
-            zf.extractall(extract_dir)
+        _extract_zip_bundle(zip_path, extract_dir)
     except zipfile.BadZipFile as exc:
         shutil.rmtree(extract_dir, ignore_errors=True)
         raise HTTPException(status_code=400, detail="Invalid ZIP file") from exc
@@ -641,23 +639,97 @@ async def verify_uploaded_zip_source(req: VerifyZipUploadRequest, request: Reque
     )
 
 
-def _validate_zip_members(members: list[zipfile.ZipInfo]) -> None:
+class _ZipExpansionBudget:
+    """Cumulative limits for an uploaded archive bundle."""
+
+    def __init__(self) -> None:
+        self.entries = 0
+        self.uncompressed_bytes = 0
+
+    def consume(self, members: list[zipfile.ZipInfo]) -> None:
+        self.entries += len(members)
+        if self.entries > config.max_upload_zip_entries:
+            raise HTTPException(status_code=400, detail="ZIP bundle contains too many files")
+        self.uncompressed_bytes += sum(member.file_size for member in members)
+        if self.uncompressed_bytes > config.max_upload_zip_uncompressed_bytes:
+            raise HTTPException(status_code=400, detail="ZIP bundle expands beyond the allowed size")
+
+
+def _validate_zip_members(members: list[zipfile.ZipInfo], budget: _ZipExpansionBudget | None = None) -> None:
     if len(members) > config.max_upload_zip_entries:
         raise HTTPException(status_code=400, detail="ZIP contains too many files")
     total_size = 0
     for member in members:
-        member_path = Path(member.filename)
+        # ZIP paths always use forward slashes, but hostile archives can use
+        # backslashes which become traversal separators on Windows.
+        normalized_name = member.filename.replace("\\", "/")
+        member_path = Path(normalized_name)
         if (
             not member.filename
-            or member.filename.startswith(("/", "\\"))
+            or normalized_name.startswith("/")
             or ".." in member_path.parts
             or member_path.drive
+            or bool(re.match(r"^[A-Za-z]:", normalized_name))
             or (member.external_attr >> 16) & 0o170000 == 0o120000
         ):
             raise HTTPException(status_code=400, detail="ZIP contains an unsafe path")
         total_size += member.file_size
         if total_size > config.max_upload_zip_uncompressed_bytes:
             raise HTTPException(status_code=400, detail="ZIP expands beyond the allowed size")
+    if budget is not None:
+        budget.consume(members)
+
+
+def _is_macos_noise(member: zipfile.ZipInfo) -> bool:
+    path = Path(member.filename)
+    return "__MACOSX" in path.parts or path.name.startswith("._")
+
+
+def _extract_zip_bundle(zip_path: Path, extract_dir: Path) -> None:
+    """Safely and deterministically expand an outer ZIP and nested ZIPs.
+
+    Nested archives remain beside an explicitly named extraction directory,
+    avoiding filename flattening and preserving source provenance for scanners.
+    """
+    budget = _ZipExpansionBudget()
+
+    def extract_one(archive: Path, destination: Path, depth: int) -> None:
+        if depth > config.max_upload_zip_nesting_depth:
+            raise HTTPException(status_code=400, detail="ZIP nesting depth exceeds the allowed limit")
+        with zipfile.ZipFile(archive, "r") as zf:
+            members = zf.infolist()
+            _validate_zip_members(members, budget)
+            for member in members:
+                if _is_macos_noise(member):
+                    continue
+                # Validation above rejects traversal, absolute paths and links.
+                zf.extract(member, destination)
+
+        nested = sorted(
+            (p for p in destination.rglob("*") if p.is_file() and p.suffix.lower() == ".zip"),
+            key=lambda p: p.relative_to(extract_dir).as_posix(),
+        )
+        for child in nested:
+            # A nested archive found during a previous iteration will already
+            # have its marker directory.  This also makes retries deterministic.
+            marker = child.with_name(f"{child.stem}.__intodoc_zip__")
+            if marker.exists():
+                digest = hashlib.sha256(child.relative_to(extract_dir).as_posix().encode()).hexdigest()[:10]
+                marker = child.with_name(f"{child.stem}.__intodoc_zip__-{digest}")
+                suffix = 1
+                while marker.exists() and suffix <= 100:
+                    marker = child.with_name(f"{child.stem}.__intodoc_zip__-{digest}-{suffix}")
+                    suffix += 1
+                if marker.exists():
+                    raise HTTPException(status_code=400, detail="Unable to allocate nested ZIP extraction directory")
+            marker.mkdir(parents=True, exist_ok=False)
+            try:
+                extract_one(child, marker, depth + 1)
+            except Exception:
+                shutil.rmtree(marker, ignore_errors=True)
+                raise
+
+    extract_one(zip_path, extract_dir, 0)
 
 
 def _issue_zip_upload_receipt(
@@ -3176,7 +3248,9 @@ async def get_project_graph(project_id: str, request: Request):
         modification_date = ""
         job_data: dict | None = None
 
-        job_path = jobs_dir / group / f"{job_name}.json"
+        job_files: dict[str, str] = manifest.get("job_files", {}) or {}
+        relative_job_file = job_files.get(job_name, "")
+        job_path = scan_dir / relative_job_file if relative_job_file else jobs_dir / group / f"{job_name}.json"
         if job_path.exists():
             try:
                 job_data = json.loads(job_path.read_text(encoding="utf-8"))
@@ -3272,7 +3346,9 @@ def _load_job_scan(project_id: str, job_name: str) -> tuple[str, dict, Path]:
     if not group:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_name}")
 
-    job_path = scan_dir / "jobs" / group / f"{job_name}.json"
+    job_files: dict[str, str] = manifest.get("job_files", {}) or {}
+    relative_job_file = job_files.get(job_name, "")
+    job_path = scan_dir / relative_job_file if relative_job_file else scan_dir / "jobs" / group / f"{job_name}.json"
     scan_data: dict = {}
     if job_path.exists():
         try:

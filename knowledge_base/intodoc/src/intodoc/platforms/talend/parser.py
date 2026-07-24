@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable
 from pathlib import Path
@@ -196,7 +197,7 @@ class TalendParser(BaseParser):
         self._superseded_versions = 0
 
     def parse(self, repo_root: Path) -> ScanResult:
-        """Parse the entire Talend project."""
+        """Parse every Talend root in a source bundle as one logical project."""
         from intodoc.platforms.talend import TalendPlugin
 
         plugin = TalendPlugin()
@@ -205,9 +206,8 @@ class TalendParser(BaseParser):
         self._warn_root = repo_root
         self._superseded_versions = 0
 
-        # Find the actual Talend project root (may be nested)
-        talend_root = _find_talend_root(repo_root)
-        if talend_root is None:
+        talend_roots = _find_talend_roots(repo_root)
+        if not talend_roots:
             console.print(f"[yellow]Warning: No Talend project structure found under {repo_root}[/yellow]")
             return ScanResult(
                 platform="talend",
@@ -222,42 +222,51 @@ class TalendParser(BaseParser):
                 ],
             )
 
-        console.print(f"  Talend project root: [cyan]{talend_root}[/cyan]")
-
         # Walk and classify files — exclude UNKNOWN to shrink scan output
         all_files = walk_repo(repo_root, plugin)
         files = [f for f in all_files if f.file_type != FileType.UNKNOWN]
+        for scanned_file in files:
+            matching_roots = [root for root in talend_roots if scanned_file.path.is_relative_to(root)]
+            if matching_roots:
+                source_root = max(matching_roots, key=lambda root: len(root.parts))
+                scanned_file.platform_metadata["source_root"] = source_root.relative_to(repo_root).as_posix() or "."
         console.print(f"  Files walked: {len(all_files)}, indexed (non-UNKNOWN): {len(files)}")
+        jobs: list[ParsedJob] = []
+        connections: list[MetadataConnection] = []
+        context_groups: list[ContextGroup] = []
+        routines: list[Routine] = []
+        root_descriptors: list[dict[str, str]] = []
+        superseded_versions = 0
+        all_warnings: list[ScanWarning] = []
+        for talend_root in talend_roots:
+            source_root = talend_root.relative_to(repo_root).as_posix() or "."
+            console.print(f"  Talend project root: [cyan]{source_root}[/cyan]")
+            # XMI identifiers are project-local. Reset all parser indexes between
+            # roots so an identifier from one export cannot resolve another.
+            self._xmi_id_index = {}
+            self._job_id_index = {}
+            self._superseded_versions = 0
+            self._warnings = []
+            self._build_metadata_index(talend_root)
+            self._build_job_id_index(talend_root)
+            root_jobs = self._parse_all_jobs(talend_root)
+            for job in root_jobs:
+                job.source_root = source_root
+            jobs.extend(root_jobs)
+            root_connections = list(self._xmi_id_index.values())
+            for connection in root_connections:
+                connection.additional_params["source_root"] = source_root
+            connections.extend(root_connections)
+            context_groups.extend(self._parse_all_contexts(talend_root))
+            routines.extend(self._parse_routines(talend_root))
+            superseded_versions += self._superseded_versions
+            all_warnings.extend(self._warnings)
+            root_descriptors.append({"id": source_root, "path": source_root, "platform": "talend"})
 
-        # Step 1a: Build xmi:id index from metadata connections
-        self._build_metadata_index(talend_root)
-        console.print(f"  Metadata connections indexed: {len(self._xmi_id_index)}")
-
-        # Step 1b: Build job ID index for resolving tRunJob XMI refs
-        self._build_job_id_index(talend_root)
-        console.print(f"  Job ID index built: {len(self._job_id_index)} entries")
-
-        # Step 2: Parse context files
-        context_groups = self._parse_all_contexts(talend_root)
-        console.print(f"  Context groups parsed: {len(context_groups)}")
-
-        # Step 3: Parse job files (.item + .properties sidecars)
-        jobs = self._parse_all_jobs(talend_root)
-        console.print(
-            f"  Jobs parsed: {len(jobs)}"
-            + (
-                f" (superseded versions skipped: {self._superseded_versions})"
-                if self._superseded_versions
-                else ""
-            )
-        )
-
-        # Step 4: Collect routines
-        routines = self._parse_routines(talend_root)
-        console.print(f"  Routines found: {len(routines)}")
-
-        # Step 5: Build cross-reference manifest
-        manifest = self._build_manifest(jobs, routines)
+        composite = len(talend_roots) > 1
+        connections = self._qualify_composite_connections(jobs, connections, composite)
+        self._qualify_composite_jobs(jobs, composite)
+        manifest = self._build_manifest(jobs, routines, root_descriptors)
         console.print(f"  Manifest built: {len(manifest.job_calls)} job-call edges")
 
         return ScanResult(
@@ -265,7 +274,7 @@ class TalendParser(BaseParser):
             repo_root=str(repo_root),
             files=files,
             jobs=jobs,
-            metadata_connections=list(self._xmi_id_index.values()),
+            metadata_connections=connections,
             context_groups=context_groups,
             routines=routines,
             manifest=manifest,
@@ -273,13 +282,15 @@ class TalendParser(BaseParser):
                 "total_files_walked": len(all_files),
                 "total_files_indexed": len(files),
                 "total_jobs": len(jobs),
-                "superseded_job_versions": self._superseded_versions,
-                "total_connections": len(self._xmi_id_index),
+                "talend_roots": root_descriptors,
+                "total_roots": len(talend_roots),
+                "superseded_job_versions": superseded_versions,
+                "total_connections": len(connections),
                 "total_contexts": len(context_groups),
                 "total_routines": len(routines),
-                "total_warnings": len(self._warnings),
+                "total_warnings": len(all_warnings),
             },
-            warnings=list(self._warnings),
+            warnings=all_warnings,
         )
 
     # ── Metadata Index ───────────────────────────────────────────────
@@ -448,6 +459,7 @@ class TalendParser(BaseParser):
                 try:
                     job = self._parse_job(item_file, base_dir)
                     if job:
+                        job.source_design = dir_name
                         jobs.append(job)
                 except ET.ParseError as e:
                     console.print(f"  [yellow]XML parse error in {item_file.name}: {e}[/yellow]")
@@ -773,21 +785,109 @@ class TalendParser(BaseParser):
     # ── Manifest ─────────────────────────────────────────────────────
 
     @staticmethod
-    def _build_manifest(jobs: list[ParsedJob], routines: list[Routine]) -> ProjectManifest:
+    def _qualify_composite_connections(
+        jobs: list[ParsedJob], connections: list[MetadataConnection], composite: bool,
+    ) -> list[MetadataConnection]:
+        """Deduplicate genuine shared connections; namespace conflicting names."""
+        if not composite:
+            return connections
+        by_name: dict[str, list[MetadataConnection]] = {}
+        for connection in connections:
+            by_name.setdefault(connection.name, []).append(connection)
+        remapped: dict[tuple[str, str], str] = {}
+        retained: list[MetadataConnection] = []
+        for name, candidates in by_name.items():
+            fingerprint = {
+                (c.connection_type, c.host, c.port, c.database, c.schema_name, c.file_path)
+                for c in candidates
+            }
+            has_endpoint_evidence = any(
+                c.host or c.port or c.database or c.schema_name or c.file_path
+                for c in candidates
+            )
+            if len(fingerprint) == 1 and has_endpoint_evidence:
+                # Same materialized connection used by several exports: retain
+                # one shared topology node, with provenance on the connection.
+                retained.append(candidates[0])
+                continue
+            for connection in candidates:
+                root = str(connection.additional_params.get("source_root") or "")
+                qualified = f"{root}::{name}"
+                remapped[(root, name)] = qualified
+                connection.name = qualified
+                retained.append(connection)
+        for job in jobs:
+            for component in job.components:
+                key = (job.source_root, component.metadata_connection_ref)
+                if key in remapped:
+                    component.metadata_connection_ref = remapped[key]
+        return retained
+
+    @staticmethod
+    def _qualify_composite_jobs(jobs: list[ParsedJob], composite: bool) -> None:
+        """Assign stable IDs and resolve tRunJob refs after all roots exist."""
+        by_name: dict[str, list[ParsedJob]] = {}
+        by_root_name: dict[tuple[str, str], list[ParsedJob]] = {}
+        for job in jobs:
+            by_name.setdefault(job.name, []).append(job)
+            by_root_name.setdefault((job.source_root, job.name), []).append(job)
+        for job in jobs:
+            duplicate = len(by_name[job.name]) > 1
+            same_root = by_root_name[(job.source_root, job.name)]
+            if duplicate:
+                # Cross-root duplicates remain readable; duplicates inside one
+                # root require their path/group to remain collision-free.
+                job.job_id = _qualified_job_id(
+                    job.source_root,
+                    job.name if composite and len(same_root) == 1
+                    else f"{job.source_design or 'process'}::{job.path}",
+                )
+            else:
+                job.job_id = job.name
+        for job in jobs:
+            for ref in job.trunjob_refs:
+                same_root = by_root_name.get((job.source_root, ref.child_job), [])
+                global_matches = by_name.get(ref.child_job, [])
+                if len(same_root) == 1:
+                    ref.resolved_job_id = same_root[0].job_id
+                    ref.resolution = "same_root"
+                elif len(same_root) > 1:
+                    ref.resolution = "ambiguous"
+                elif len(global_matches) == 1:
+                    ref.resolved_job_id = global_matches[0].job_id
+                    ref.resolution = "global"
+                elif len(global_matches) > 1:
+                    ref.resolution = "ambiguous"
+
+    @staticmethod
+    def _build_manifest(
+        jobs: list[ParsedJob], routines: list[Routine], source_roots: list[dict[str, str]],
+    ) -> ProjectManifest:
         """Build cross-reference manifest from parsed jobs."""
         m = ProjectManifest()
 
+        m.source_roots = source_roots
+        composite = len(source_roots) > 1
         for job in jobs:
+            job_key = job.job_id or job.name
+            m.job_source_roots[job_key] = job.source_root
             # job_groups
-            if job.group:
-                m.job_groups[job.name] = job.group
+            group = job.group or "Global"
+            m.job_groups[job_key] = f"{job.source_root}/{group}" if composite else group
 
             # job_calls / job_called_by (from tRunJob refs)
             if job.trunjob_refs:
-                children = [r.child_job for r in job.trunjob_refs]
-                m.job_calls[job.name] = children
-                for child in children:
-                    m.job_called_by.setdefault(child, []).append(job.name)
+                children = [r.resolved_job_id for r in job.trunjob_refs if r.resolved_job_id]
+                unresolved = [
+                    {"child_job": r.child_job, "resolution": r.resolution}
+                    for r in job.trunjob_refs if not r.resolved_job_id
+                ]
+                if unresolved:
+                    m.unresolved_job_calls[job_key] = unresolved
+                if children:
+                    m.job_calls[job_key] = children
+                    for child in children:
+                        m.job_called_by.setdefault(child, []).append(job_key)
 
             # job_connections_used / connection_used_by (from component refs)
             conn_names: set[str] = set()
@@ -795,18 +895,18 @@ class TalendParser(BaseParser):
                 if comp.metadata_connection_ref:
                     conn_names.add(comp.metadata_connection_ref)
             if conn_names:
-                m.job_connections_used[job.name] = sorted(conn_names)
+                m.job_connections_used[job_key] = sorted(conn_names)
                 for cn in conn_names:
-                    m.connection_used_by.setdefault(cn, []).append(job.name)
+                    m.connection_used_by.setdefault(cn, []).append(job_key)
 
             # job_contexts_used (from context groups)
             ctx_names = [cg.name for cg in job.context_groups if cg.name != "inline"]
             if ctx_names:
-                m.job_contexts_used[job.name] = ctx_names
+                m.job_contexts_used[job_key] = ctx_names
 
             # routines_used_by
             for rname in job.raw_routines:
-                m.routines_used_by.setdefault(rname, []).append(job.name)
+                m.routines_used_by.setdefault(rname, []).append(job_key)
 
             # job_external_systems (derived from component types)
             systems: set[str] = set()
@@ -815,7 +915,7 @@ class TalendParser(BaseParser):
                 if system:
                     systems.add(system)
             if systems:
-                m.job_external_systems[job.name] = sorted(systems)
+                m.job_external_systems[job_key] = sorted(systems)
 
         return m
 
@@ -831,29 +931,48 @@ class TalendParser(BaseParser):
 
 
 def _is_talend_root(candidate: Path) -> bool:
-    """A Talend project root has a process/ (Job Designs) and/or routes/ (Route Designs) dir."""
+    """A Talend root has a process/ (Job Designs) and/or routes/ (Route Designs) dir."""
     return (candidate / "process").is_dir() or (candidate / "routes").is_dir()
 
 
+def _find_talend_roots(repo_root: Path) -> list[Path]:
+    """Find all independent Talend roots below an arbitrary source bundle."""
+    candidates = [repo_root] if _is_talend_root(repo_root) else []
+    candidates.extend(
+        p for p in repo_root.rglob("*")
+        if p.is_dir()
+        and "__MACOSX" not in p.relative_to(repo_root).parts
+        and not any(part.startswith("._") for part in p.relative_to(repo_root).parts)
+        and _is_talend_root(p)
+    )
+    candidates.sort(key=lambda p: p.relative_to(repo_root).as_posix())
+    selected: list[Path] = []
+    for candidate in candidates:
+        # process/routes descendants are part of their containing root, not a
+        # second project. Other generated trees (poms/jobs, tests, Maps) can
+        # also contain process/routes-like directories; only a nested export
+        # carrying a real Talend/Eclipse project marker is independent.
+        if any(candidate.is_relative_to(root / "process") or candidate.is_relative_to(root / "routes") for root in selected):
+            continue
+        if any(candidate.is_relative_to(root) for root in selected) and not (
+            (candidate / "talend.project").is_file() or (candidate / ".project").is_file()
+        ):
+            continue
+        selected.append(candidate)
+    return selected
+
+
+def _qualified_job_id(source_root: str, discriminator: str) -> str:
+    """URL-safe bounded identity for a colliding Talend job."""
+    raw = f"{source_root}::{discriminator}"
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_") or "job"
+    return f"{slug[:56].rstrip('_') or 'job'}-{hashlib.sha256(raw.encode()).hexdigest()[:12]}"
+
+
 def _find_talend_root(repo_root: Path) -> Path | None:
-    """Find the actual Talend project root (the dir containing process/ and/or routes/)."""
-    # Check if repo_root itself is a Talend project
-    if _is_talend_root(repo_root):
-        return repo_root
-
-    # Check one level deep
-    for child in repo_root.iterdir():
-        if child.is_dir() and _is_talend_root(child):
-            return child
-
-    # Check two levels deep
-    for child in repo_root.iterdir():
-        if child.is_dir():
-            for grandchild in child.iterdir():
-                if grandchild.is_dir() and _is_talend_root(grandchild):
-                    return grandchild
-
-    return None
+    """Backward-compatible single-root helper for external callers."""
+    roots = _find_talend_roots(repo_root)
+    return roots[0] if roots else None
 
 
 def _local_tag(tag: str) -> str:

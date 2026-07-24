@@ -53,6 +53,7 @@ import {
   applyCompoundDagreLayout,
   computeGroupBoundingBoxes,
   applyConnectionVisibility,
+  topologyGroupForJob,
   getDimensionsForId,
   type ManifestData,
   type GraphConnectionInfo,
@@ -300,7 +301,8 @@ function TopologyContent() {
     const map = new Map<string, EffectiveStatus>();
     if (!graphData) return map;
     const membersByGroup = new Map<string, string[]>();
-    for (const [job, group] of Object.entries(graphData.manifest.job_groups || {})) {
+    for (const job of Object.keys(graphData.manifest.job_groups || {})) {
+      const group = topologyGroupForJob(graphData.manifest, job);
       const list = membersByGroup.get(group) ?? [];
       list.push(job);
       membersByGroup.set(group, list);
@@ -491,7 +493,8 @@ function TopologyContent() {
     const map = new Map<string, string>();
     if (!graphData) return map;
     const jobGroups = graphData.manifest.job_groups || {};
-    for (const [job, group] of Object.entries(jobGroups)) {
+    for (const job of Object.keys(jobGroups)) {
+      const group = topologyGroupForJob(graphData.manifest, job);
       map.set(`job:${job}`, group);
     }
     return map;
@@ -845,7 +848,8 @@ function TopologyContent() {
     // In collapsed mode, also search within collapsed group job names
     if (isCollapsed && graphData) {
       const jobGroups = graphData.manifest.job_groups || {};
-      for (const [job, group] of Object.entries(jobGroups)) {
+      for (const job of Object.keys(jobGroups)) {
+        const group = topologyGroupForJob(graphData.manifest, job);
         if (job.toLowerCase().includes(q) && !expandedGroups.has(group)) {
           // The group summary node matches
           matches.add(`group:${group}`);

@@ -98,6 +98,38 @@ class TestTrunjobContextParamStitching:
         assert all(e.source_job_name == "" for e in matrix.entries)
         assert matrix.summary["cross_job_entries"] == 0
 
+    def test_composite_resolved_id_stitches_the_intended_cross_root_child(self):
+        child = _child_job_referencing_context("SourceFileName", name="ChildJob")
+        child.job_id = "root_b_ChildJob-abcdef123456"
+        child.source_root = "root-b"
+        parent = _parent_job(
+            "ChildJob",
+            context_params=[ComponentParam(name="SourceFileName", value="value")],
+        )
+        parent.job_id = "root_a_ParentJob-fedcba654321"
+        parent.source_root = "root-a"
+        parent.trunjob_refs[0].resolved_job_id = child.job_id
+        parent.trunjob_refs[0].resolution = "global"
+
+        matrix = _matrix(parent, child)
+        edges = [edge for edge in matrix.entries if edge.source_job_name == parent.job_id]
+        assert len(edges) == 1
+        assert edges[0].job_name == child.job_id
+
+    def test_ambiguous_composite_reference_does_not_stitch(self):
+        one = _child_job_referencing_context("SourceFileName")
+        one.job_id = "one::ChildJob"
+        two = _child_job_referencing_context("SourceFileName")
+        two.job_id = "two::ChildJob"
+        parent = _parent_job(
+            "ChildJob",
+            context_params=[ComponentParam(name="SourceFileName", value="value")],
+        )
+        parent.trunjob_refs[0].resolution = "ambiguous"
+
+        matrix = _matrix(parent, one, two)
+        assert not [edge for edge in matrix.entries if edge.source_job_name == "ParentJob"]
+
     def test_context_param_not_referenced_in_child_no_edge(self):
         child = _child_job_referencing_context("SomeOtherParam")
         parent = _parent_job(

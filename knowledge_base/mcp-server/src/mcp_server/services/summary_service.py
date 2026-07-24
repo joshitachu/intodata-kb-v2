@@ -16,6 +16,20 @@ from mcp_server.config import config
 
 logger = logging.getLogger(__name__)
 
+
+def _manifest_job_path(scan_dir: Path, job_name: str, group: str, job_files: dict[str, str] | None = None) -> Path:
+    """Resolve the authoritative segmented job path with legacy fallback."""
+    relative = (job_files or {}).get(job_name)
+    if relative:
+        return scan_dir / relative
+    return scan_dir / "jobs" / group / f"{job_name}.json"
+
+
+def _phase2_group(job_name: str, group: str, job_files: dict[str, str] | None = None) -> str:
+    """Physical chunk group encoded by job_files, or the historic manifest group."""
+    relative = (job_files or {}).get(job_name)
+    return Path(relative).parent.name if relative else group
+
 # ---------------------------------------------------------------------------
 # Lazy singleton Ollama client (mirrors RAG_pipeline pattern)
 # ---------------------------------------------------------------------------
@@ -266,16 +280,16 @@ class SummaryService:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         job_groups: dict[str, str] = manifest.get("job_groups", {})
         job_external_systems: dict[str, list[str]] = manifest.get("job_external_systems", {})
+        job_files: dict[str, str] = manifest.get("job_files", {})
 
         if not job_groups:
             return {"status": "no_scan", "summary_count": 0, "error_count": 0, "errors": []}
 
-        jobs_dir = scan_dir / "jobs"
         semaphore = asyncio.Semaphore(config.ollama_summary_concurrency)
         tasks: list[asyncio.Task] = []
 
         for job_name, group in job_groups.items():
-            job_path = jobs_dir / group / f"{job_name}.json"
+            job_path = _manifest_job_path(scan_dir, job_name, group, job_files)
             if not job_path.exists():
                 continue
 
@@ -654,12 +668,12 @@ def _write_summaries_file(project_id: str, summaries: dict[str, str], source: st
     tmp_path.replace(summaries_path)
 
 
-def _scan_data_summary(project_id: str, job_groups: dict[str, str]) -> dict[str, str]:
+def _scan_data_summary(project_id: str, job_groups: dict[str, str], job_files: dict[str, str] | None = None) -> dict[str, str]:
     """Fall back to scan_data.purpose strings for each job."""
     out: dict[str, str] = {}
-    jobs_dir = config.intodoc_output_dir / project_id / "scan" / "jobs"
+    scan_dir = config.intodoc_output_dir / project_id / "scan"
     for job_name, group in job_groups.items():
-        job_path = jobs_dir / group / f"{job_name}.json"
+        job_path = _manifest_job_path(scan_dir, job_name, group, job_files)
         if not job_path.exists():
             continue
         try:
@@ -674,12 +688,12 @@ def _scan_data_summary(project_id: str, job_groups: dict[str, str]) -> dict[str,
     return out
 
 
-def _heuristic_summaries(project_id: str, job_groups: dict[str, str], job_external_systems: dict[str, list[str]]) -> dict[str, str]:
+def _heuristic_summaries(project_id: str, job_groups: dict[str, str], job_external_systems: dict[str, list[str]], job_files: dict[str, str] | None = None) -> dict[str, str]:
     """Generate heuristic summaries for jobs that the prose + scan paths missed."""
     out: dict[str, str] = {}
-    jobs_dir = config.intodoc_output_dir / project_id / "scan" / "jobs"
+    scan_dir = config.intodoc_output_dir / project_id / "scan"
     for job_name, group in job_groups.items():
-        job_path = jobs_dir / group / f"{job_name}.json"
+        job_path = _manifest_job_path(scan_dir, job_name, group, job_files)
         direction = SummaryService._derive_direction(str(job_path), job_name)
         ext = job_external_systems.get(job_name, [])
         comp_types: list[str] = []
@@ -700,7 +714,7 @@ def _heuristic_summaries(project_id: str, job_groups: dict[str, str], job_extern
     return out
 
 
-def _phase2_prose_summaries(project_id: str, job_groups: dict[str, str]) -> dict[str, str]:
+def _phase2_prose_summaries(project_id: str, job_groups: dict[str, str], job_files: dict[str, str] | None = None) -> dict[str, str]:
     """Pull per-job 1-2 sentence summaries from the persisted Phase 2 prose.
 
     Phase 2 group analyses are packaged into ``output/<project>/docs/_rag_support/phase2_analysis/``
@@ -731,7 +745,7 @@ def _phase2_prose_summaries(project_id: str, job_groups: dict[str, str]) -> dict
     out: dict[str, str] = {}
     jobs_by_group: dict[str, list[str]] = {}
     for job_name, group in job_groups.items():
-        jobs_by_group.setdefault(group, []).append(job_name)
+        jobs_by_group.setdefault(_phase2_group(job_name, group, job_files), []).append(job_name)
 
     for group, jobs in jobs_by_group.items():
         group_md_path = rag_dir / f"{group}.md"
@@ -772,26 +786,27 @@ async def build_component_summaries_async(
 
     job_groups: dict[str, str] = manifest.get("job_groups", {}) or {}
     job_external_systems: dict[str, list[str]] = manifest.get("job_external_systems", {}) or {}
+    job_files: dict[str, str] = manifest.get("job_files", {}) or {}
     if not job_groups:
         return {}
 
     summaries: dict[str, str] = {}
     source = "none"
 
-    phase2 = _phase2_prose_summaries(project_id, job_groups)
+    phase2 = _phase2_prose_summaries(project_id, job_groups, job_files)
     if phase2:
         summaries.update(phase2)
         source = "phase2_prose"
 
     if len(summaries) < len(job_groups):
-        scan_purpose = _scan_data_summary(project_id, job_groups)
+        scan_purpose = _scan_data_summary(project_id, job_groups, job_files)
         for name, sentence in scan_purpose.items():
             summaries.setdefault(name, sentence)
         if scan_purpose and source == "none":
             source = "scan_data.purpose"
 
     if len(summaries) < len(job_groups):
-        heuristic = _heuristic_summaries(project_id, job_groups, job_external_systems)
+        heuristic = _heuristic_summaries(project_id, job_groups, job_external_systems, job_files)
         for name, sentence in heuristic.items():
             summaries.setdefault(name, sentence)
         if heuristic and source == "none":
