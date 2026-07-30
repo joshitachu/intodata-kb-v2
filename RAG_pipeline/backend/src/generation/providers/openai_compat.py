@@ -63,7 +63,7 @@ class OpenAICompatibleProvider(ChatProvider):
         api_key: str,
         timeout: float = 300.0,
         temperature: float = 0.6,
-        max_tokens: int = 2048,
+        max_tokens: int = 4096,
         extra_body: dict | None = None,
     ) -> None:
         self.provider_id = provider_id

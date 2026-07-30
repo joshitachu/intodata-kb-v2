@@ -29,6 +29,7 @@ vi.mock("../api/client", () => ({
     getPackWorkspace: vi.fn(),
     updatePackWorkspace: vi.fn(),
     generate: vi.fn(),
+    generateOpenCodeCandidate: vi.fn(),
   },
 }));
 
@@ -93,6 +94,23 @@ const runs = {
     },
   ],
   total: 2,
+};
+
+const openCodeModels = {
+  models: [{
+    id: "provider-neutral-test/model-neutral-test",
+    provider: "provider-neutral-test",
+    label: "Neutral Test Model",
+    supports_analysis: true,
+    supports_writing: true,
+    is_default_analysis: true,
+    is_default_investigation: true,
+    is_default_writing: true,
+    is_local: false,
+    available: true,
+    unavailable_reason: null,
+    rag_capable: true,
+  }],
 };
 
 const workspaceProject: Project = {
@@ -234,7 +252,7 @@ describe("EP-000 dashboard panels", () => {
       updated_at: null,
     };
     vi.mocked(api.listPlatforms).mockResolvedValue({ platforms: [] });
-    vi.mocked(api.listModels).mockResolvedValue({ models: [] });
+    vi.mocked(api.listModels).mockResolvedValue(openCodeModels);
     vi.mocked(api.listPluginPacks).mockResolvedValue([]);
     vi.mocked(api.getProjectUsage).mockResolvedValue({
       project_id: "p1",
@@ -263,7 +281,7 @@ describe("EP-000 dashboard panels", () => {
     expect(screen.getByText("phase2_preamble (7 chars)")).toBeInTheDocument();
   });
 
-  it("renders the project pack workspace and saves unified selections", async () => {
+  it("renders only plugin packs (no analysis add-ons) and saves the selection", async () => {
     const workspace = {
       project_id: "p1",
       organization_packs: [
@@ -290,16 +308,19 @@ describe("EP-000 dashboard panels", () => {
 
     renderWithClient(<PluginPacksPage isSuperadmin={false} />);
 
-    expect(await screen.findByText("Documentation Packs")).toBeInTheDocument();
+    expect(await screen.findByText("Plugin Packs")).toBeInTheDocument();
     expect(await screen.findByText("Swap Pack v2.0")).toBeInTheDocument();
-    expect(screen.getByText("Quality Pack v1.0")).toBeInTheDocument();
+    // Analysis (personal) packs are managed in the Nexus Workbench, not here.
+    expect(screen.queryByText("Quality Pack v1.0")).not.toBeInTheDocument();
+    expect(screen.queryByText("My add-ons")).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     expect(screen.queryByText(/Advanced\/admin/)).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.click(screen.getByRole("button", { name: "Save pack selection" }));
 
     await waitFor(() => {
-      expect(api.updatePackWorkspace).toHaveBeenCalledWith("p1", 10, [21]);
+      // Existing private selections are preserved untouched (empty here).
+      expect(api.updatePackWorkspace).toHaveBeenCalledWith("p1", 10, []);
     });
   });
 
@@ -329,5 +350,104 @@ describe("EP-000 dashboard panels", () => {
     await waitFor(() => {
       expect(api.generate).toHaveBeenCalledWith("p1", true, null, null, null, 10, [21]);
     });
+  });
+
+  it("starts an isolated single-agent OpenCode candidate from the normal Generate Docs dialog", async () => {
+    vi.mocked(api.listModels).mockResolvedValue(openCodeModels);
+    vi.mocked(api.getPackWorkspace).mockResolvedValue({
+      project_id: "p1",
+      organization_packs: [],
+      personal_packs: [],
+      selected_organization_pack_id: null,
+      selected_private_version_ids: [],
+    });
+    vi.mocked(api.generateOpenCodeCandidate).mockResolvedValue({} as never);
+
+    renderWithClient(
+      <GenerateDialog project={workspaceProject} open onClose={vi.fn()} />,
+    );
+
+    fireEvent.click(screen.getByText("OpenCode single-agent"));
+    expect(await screen.findByText(/Neutral Test Model/)).toBeInTheDocument();
+    expect(screen.getAllByText(/never publishes or enters RAG/i)).toHaveLength(3);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Start Single-Agent Candidate" }),
+    );
+
+    await waitFor(() => {
+      expect(api.generateOpenCodeCandidate).toHaveBeenCalledWith(
+        "p1",
+        "single_agent",
+        "provider-neutral-test",
+        "provider-neutral-test/model-neutral-test",
+      );
+    });
+    expect(api.generate).not.toHaveBeenCalled();
+  });
+
+  it("starts the orchestrated OpenCode candidate with specialist subagents", async () => {
+    vi.mocked(api.listModels).mockResolvedValue(openCodeModels);
+    vi.mocked(api.getPackWorkspace).mockResolvedValue({
+      project_id: "p1",
+      organization_packs: [],
+      personal_packs: [],
+      selected_organization_pack_id: null,
+      selected_private_version_ids: [],
+    });
+    vi.mocked(api.generateOpenCodeCandidate).mockResolvedValue({} as never);
+
+    renderWithClient(
+      <GenerateDialog project={workspaceProject} open onClose={vi.fn()} />,
+    );
+
+    fireEvent.click(screen.getByText("OpenCode orchestrated"));
+    expect(await screen.findByText(/Neutral Test Model/)).toBeInTheDocument();
+    expect(screen.getAllByText(/bounded specialist subagents/i)).toHaveLength(2);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Start Orchestrated Candidate" }),
+    );
+
+    await waitFor(() => {
+      expect(api.generateOpenCodeCandidate).toHaveBeenCalledWith(
+        "p1",
+        "orchestrated",
+        "provider-neutral-test",
+        "provider-neutral-test/model-neutral-test",
+      );
+    });
+    expect(api.generate).not.toHaveBeenCalled();
+  });
+
+  it("starts the recommended fact-grounded OpenCode candidate", async () => {
+    vi.mocked(api.listModels).mockResolvedValue(openCodeModels);
+    vi.mocked(api.getPackWorkspace).mockResolvedValue({
+      project_id: "p1",
+      organization_packs: [],
+      personal_packs: [],
+      selected_organization_pack_id: null,
+      selected_private_version_ids: [],
+    });
+    vi.mocked(api.generateOpenCodeCandidate).mockResolvedValue({} as never);
+
+    renderWithClient(
+      <GenerateDialog project={workspaceProject} open onClose={vi.fn()} />,
+    );
+
+    fireEvent.click(screen.getByText("OpenCode grounded"));
+    expect(await screen.findByText(/Neutral Test Model/)).toBeInTheDocument();
+    expect(screen.getByText(/Nexus to schedule a fact-grounded sequence/i)).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Start Grounded Candidate" }),
+    );
+
+    await waitFor(() => {
+      expect(api.generateOpenCodeCandidate).toHaveBeenCalledWith(
+        "p1",
+        "grounded",
+        "provider-neutral-test",
+        "provider-neutral-test/model-neutral-test",
+      );
+    });
+    expect(api.generate).not.toHaveBeenCalled();
   });
 });

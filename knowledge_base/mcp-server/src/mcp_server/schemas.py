@@ -1093,6 +1093,117 @@ class ProjectGraphResponse(BaseModel):
     artifact_counts: dict[str, int] = Field(default_factory=dict)
 
 
+# --- Project Landscape (L1/L2 topology rollup) ---
+
+class LandscapeSystemEvidenceResponse(BaseModel):
+    signal_type: str
+    label: str
+    detail: dict = Field(default_factory=dict)
+
+
+class LandscapeSystemResponse(BaseModel):
+    id: str
+    name: str
+    kind: str = "unknown"
+    evidence: list[LandscapeSystemEvidenceResponse] = Field(default_factory=list)
+    source_roots: list[str] = Field(default_factory=list)
+
+
+class LandscapeApplicationResponse(BaseModel):
+    id: str
+    source_root: str
+    source_roots: list[str] = Field(default_factory=list)
+    project_id: str = ""
+    label: str = ""
+    description: str = ""
+    role: str = "execution"
+    artifact_count: int = 0
+    kinds_breakdown: dict[str, int] = Field(default_factory=dict)
+
+
+class LandscapeProvenanceResponse(BaseModel):
+    artifact_id: str
+    qualified_artifact_id: str
+    source_root: str
+    component_name: str = ""
+    fact_type: str
+
+
+class LandscapeRedactionDescriptorResponse(BaseModel):
+    """Safe structural context retained for a masked URI or endpoint."""
+
+    scheme: str | None = None
+    category: str | None = None
+    auth_present: bool | None = None
+    auth_type: Literal[
+        "none", "basic", "bearer", "api_key", "oauth", "unknown"
+    ] | None = None
+    tls: bool | None = None
+    host_present: bool | None = None
+
+
+class LandscapeEdgeResponse(BaseModel):
+    source: str
+    target: str
+    source_kind: str
+    target_kind: str
+    dependency_type: str
+    mechanism: str = "unknown"
+    direction: str = "unknown"
+    reliability: str = "unknown"
+    confidence: str = "unknown"
+    evidence_count: int = 0
+    provenance: list[LandscapeProvenanceResponse] = Field(default_factory=list)
+
+
+class LandscapeChannelResponse(BaseModel):
+    channel_type: str
+    channel: str
+    direction: str
+    artifact_id: str
+    qualified_artifact_id: str
+    source_root: str
+    component_name: str = ""
+    fact_type: str = "artifact_channel"
+    redaction_descriptor: LandscapeRedactionDescriptorResponse | None = None
+
+
+class LandscapeInterfaceResponse(BaseModel):
+    endpoint_type: str
+    direction: str
+    artifact_id: str
+    qualified_artifact_id: str
+    source_root: str
+    component_name: str = ""
+    fact_type: str = "artifact_endpoint"
+    redaction_descriptor: LandscapeRedactionDescriptorResponse | None = None
+
+
+class LandscapeDiagnosticResponse(BaseModel):
+    kind: str
+    description: str
+    evidence: list[str] = Field(default_factory=list)
+    severity: str = "info"
+
+
+class ProjectLandscapeResponse(BaseModel):
+    """Read-only scanner-computed landscape artifact.
+
+    This mirrors ``intodoc.models.Landscape`` without importing the scanner
+    package into the MCP API process. Keeping an explicit response contract
+    makes schema drift fail loudly instead of serving an arbitrary JSON file.
+    """
+
+    systems: list[LandscapeSystemResponse] = Field(default_factory=list)
+    applications: list[LandscapeApplicationResponse] = Field(default_factory=list)
+    edges: list[LandscapeEdgeResponse] = Field(default_factory=list)
+    channels: list[LandscapeChannelResponse] = Field(default_factory=list)
+    interfaces: list[LandscapeInterfaceResponse] = Field(default_factory=list)
+    diagnostics: list[LandscapeDiagnosticResponse] = Field(default_factory=list)
+    unmapped: list[dict] = Field(default_factory=list)
+    summary: dict = Field(default_factory=dict)
+
+
 class JobDocSection(BaseModel):
     heading: str
     content: str
@@ -1112,7 +1223,11 @@ class JobDetailResponse(BaseModel):
 
 class JobGraphNode(BaseModel):
     unique_name: str
+    # Talend's author-assigned LABEL parameter. The technical UNIQUE_NAME
+    # remains the stable identity used for graph edges and drill-down.
+    display_label: str = ""
     component_type: str
+    type_explanation: str = ""
     role: str  # "input" | "transform" | "output" | "orchestration" | "logging"
     has_subgraph: bool = False       # true when a deeper level exists (tMap today)
     subjob_target: str | None = None  # tRunJob child job name (portal node)
@@ -1134,6 +1249,8 @@ class JobGraphEdge(BaseModel):
     # Trigger links (COMPONENT_OK / RUN_IF / SUBJOB_OK, line_style != 0) are
     # control flow; FLOW/LOOKUP rows are data flow. Frontend styles them apart.
     is_control_flow: bool = False
+    # Deterministic explanation of the Talend connector semantics.
+    explanation: str = ""
 
 
 class TMapTableSummary(BaseModel):

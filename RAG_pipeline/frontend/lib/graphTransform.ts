@@ -287,6 +287,23 @@ export function filterManifestByGroup(
   return filterManifestToArtifacts(manifest, keep);
 }
 
+/**
+ * Keep the legacy design graph scoped to one scanner source root. This is used
+ * only after an L1 application is selected; identity remains the scanner's
+ * exact source-root value, never a label-based approximation.
+ */
+export function filterManifestBySourceRoot(
+  manifest: ManifestData,
+  sourceRoot: string,
+): ManifestData {
+  const keep = new Set(
+    Object.entries(manifest.job_source_roots || {})
+      .filter(([, root]) => root === sourceRoot)
+      .map(([artifact]) => artifact),
+  );
+  return filterManifestToArtifacts(manifest, keep);
+}
+
 export function topologyGroupForJob(manifest: ManifestData, job: string): string {
   // Functional group first.  Source root is provenance, not the architecture
   // view's primary cluster (otherwise a composite bundle is one mega-node).

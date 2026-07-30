@@ -1,0 +1,3 @@
+shipment_id,status,origin,destination,amount
+SHP-100,dispatched,AMS,BER,42
+SHP-101,"=HYPERLINK(""https://example.invalid"",""delivered"")",RTM,PAR,7

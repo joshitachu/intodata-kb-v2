@@ -137,7 +137,7 @@ def test_workato_parser_captures_malformed_recipe(tmp_path: Path):
     bad.write_text("{not valid json", encoding="utf-8")
 
     parser = WorkatoParser(CredentialFilter())
-    result = parser.parse(tmp_path)
+    parser.parse(tmp_path)
 
     # The broken recipe may not be classified because _build_asset_registry
     # skips files whose JSON doesn't parse. Force-inject it into the registry

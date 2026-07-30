@@ -18,7 +18,6 @@ import {
 import type {
   NexusPackCatalogItem,
   NexusPackWorkspace,
-  NexusPersonalPack,
   PluginPack,
   PluginPackBranch,
   Project,
@@ -45,7 +44,12 @@ function packSubtitle(pack: PluginPack): string {
   if (pack.repo_branch) {
     parts.push(pack.repo_branch);
   }
-  return parts.join("  ");
+  parts.push(
+    pack.certification_status === "certified"
+      ? "certified"
+      : `not certified${pack.blocked_reason ? `: ${pack.blocked_reason}` : ""}`,
+  );
+  return parts.join("  ·  ");
 }
 
 function branchCloneCommand(branch: PluginPackBranch): string {
@@ -86,14 +90,6 @@ export default function PluginPacksPage({ isSuperadmin = false }: Props) {
   const selectedProject = projects.find((project) => project.id === projectId) ?? null;
   const workspace = workspaceQuery.data;
 
-  function togglePrivatePack(packId: number) {
-    setPrivateVersionIds((current) =>
-      current.includes(packId)
-        ? current.filter((id) => id !== packId)
-        : [...current, packId],
-    );
-  }
-
   function saveWorkspace() {
     if (!projectId) return;
     updateWorkspace.mutate({
@@ -108,9 +104,9 @@ export default function PluginPacksPage({ isSuperadmin = false }: Props) {
       <section className="border-b border-white/[0.08] pb-5">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold text-slate-100">Documentation Packs</h1>
+            <h1 className="text-xl font-semibold text-slate-100">Plugin Packs</h1>
             <p className="mt-1 text-sm text-slate-500">
-              Choose the organization baseline and any personal add-ons for one project.
+              Choose the plugin pack that defines this project's documentation behavior.
             </p>
           </div>
           <div className="w-full sm:w-80">
@@ -148,9 +144,7 @@ export default function PluginPacksPage({ isSuperadmin = false }: Props) {
           isLoading={workspaceQuery.isLoading}
           error={workspaceQuery.error}
           organizationPackId={organizationPackId}
-          privateVersionIds={privateVersionIds}
           onOrganizationPackChange={setOrganizationPackId}
-          onTogglePrivatePack={togglePrivatePack}
           onSave={saveWorkspace}
           isSaving={updateWorkspace.isPending}
           saveError={updateWorkspace.error}
@@ -177,9 +171,7 @@ function PackWorkspacePanel({
   isLoading,
   error,
   organizationPackId,
-  privateVersionIds,
   onOrganizationPackChange,
-  onTogglePrivatePack,
   onSave,
   isSaving,
   saveError,
@@ -189,9 +181,7 @@ function PackWorkspacePanel({
   isLoading: boolean;
   error: unknown;
   organizationPackId: number | null;
-  privateVersionIds: number[];
   onOrganizationPackChange: (id: number | null) => void;
-  onTogglePrivatePack: (id: number) => void;
   onSave: () => void;
   isSaving: boolean;
   saveError: unknown;
@@ -226,18 +216,13 @@ function PackWorkspacePanel({
         </button>
       </div>
 
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+      <div className="max-w-2xl">
         <PackSelectionList
-          title="Organization Pack"
-          description="One organization pack provides the project's base documentation behavior."
+          title="Plugin Pack"
+          description="Select the certified plugin pack that shapes this project's documentation, or use the organization default."
           packs={workspace.organization_packs}
           selectedId={organizationPackId}
           onSelect={onOrganizationPackChange}
-        />
-        <PersonalPackSelection
-          packs={workspace.personal_packs}
-          selectedIds={privateVersionIds}
-          onToggle={onTogglePrivatePack}
         />
       </div>
 
@@ -300,48 +285,6 @@ function PackSelectionList({
           </label>
         ))}
         {packs.length === 0 && <p className="text-xs text-slate-600">No organization packs available.</p>}
-      </div>
-    </div>
-  );
-}
-
-function PersonalPackSelection({
-  packs,
-  selectedIds,
-  onToggle,
-}: {
-  packs: NexusPersonalPack[];
-  selectedIds: number[];
-  onToggle: (id: number) => void;
-}) {
-  return (
-    <div>
-      <h3 className="text-sm font-mono text-slate-400">My add-ons</h3>
-      <p className="mt-1 text-xs text-slate-600">Add saved analysis and output preferences without replacing the organization baseline.</p>
-      <div className="mt-3 space-y-2">
-        {packs.map((pack) => (
-          <label
-            key={pack.id}
-            className="flex cursor-pointer items-start gap-3 rounded border border-white/[0.08] px-3 py-2.5 hover:bg-white/[0.04]"
-          >
-            <input
-              type="checkbox"
-              checked={selectedIds.includes(pack.id)}
-              onChange={() => onToggle(pack.id)}
-              className="mt-1 h-4 w-4 accent-accent-primary"
-            />
-            <span className="min-w-0">
-              <span className="block text-sm text-slate-200">{pack.name} v{pack.version}</span>
-              {pack.description && <span className="mt-1 block text-xs text-slate-500">{pack.description}</span>}
-              {pack.output_documents.length > 0 && (
-                <span className="mt-1 block text-xs text-slate-600">
-                  Outputs: {pack.output_documents.join(", ")}
-                </span>
-              )}
-            </span>
-          </label>
-        ))}
-        {packs.length === 0 && <p className="text-xs text-slate-600">No personal additive packs available.</p>}
       </div>
     </div>
   );

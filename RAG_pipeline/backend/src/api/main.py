@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -57,6 +58,13 @@ async def lifespan(app: FastAPI):
     if settings.reranker_enabled:
         from src.retrieval.reranker import warmup as warmup_reranker
         warmup_reranker()
+
+    # Preload the tiktoken BPE vocabulary at boot so the first user query does
+    # not pay the ~30s cold-load cost inside the request path. Run off the event
+    # loop so other startup work is not blocked while the vocab loads.
+    from src.generation.prompt_builder import warmup as warmup_token_encoder
+    await asyncio.to_thread(warmup_token_encoder)
+    logger.info("Token encoder warmed")
 
     # Seed a convenience admin for development only. In production we intentionally
     # leave the users table empty so the onboarding wizard's POST /auth/bootstrap-admin

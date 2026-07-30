@@ -13,7 +13,9 @@ vi.mock("@xyflow/react", () => ({
 function makeData(overrides: Partial<ComponentNodeData> = {}): ComponentNodeData {
   return {
     label: "tMap_1",
+    technicalName: "tMap_1",
     componentType: "tMap",
+    typeExplanation: "",
     role: "transform",
     color: ROLE_COLORS.transform,
     connectionRef: "",

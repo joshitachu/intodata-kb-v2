@@ -13,6 +13,8 @@
 | 7 | Hand-written recursive descent parser (no grammar library) | Grammar is small (~15 productions), 85% handled by regex fast path, avoids dependency | 2026-02-18 |
 | 8 | IR models in separate ir/models.py (not in shared models.py) | IR is platform-agnostic and decoupled from Talend-specific scan models | 2026-02-18 |
 | 9 | MCP-based doc generation replaces CLI analyzer for documentation | Claude Code agent via MCP is more flexible, produces higher quality docs, eliminates API key management and budget tracking overhead. CLI analyzer + Jinja2 templates retained as legacy path. | 2026-02-19 |
+| 10 | Landscape facts are deterministic, provenance-backed scanner output | L1/L2 rollup must preserve exact source-root/artifact/component evidence and separate control-flow, data, integration, and config dependencies. Redacted/dynamic identities never prove that two systems or channels are the same. | 2026-07-29 |
+| 11 | Redaction captures safe structure without retaining sensitive values | URI filtering may retain scheme/category/auth mechanism/TLS/host-presence only. Opaque transport markers are parser-internal, must be consumed before persistence, and the verifier rejects any residual marker or sensitive value. | 2026-07-29 |
 
 ## Lessons Learned / Gotchas
 
@@ -29,6 +31,8 @@
 | 2026-02-18 | tMap internal flows don't use Talend connection model | JOIN steps from tMap get orphaned_step warnings -- expected, not a bug |
 | 2026-02-18 | ConnectionDefinition uses connection_id not name | Test fixtures must use the actual field name -- always check model definitions |
 | 2026-02-19 | Always update .agent/ and .claude/ docs after architecture changes | Docs had drifted significantly -- still described old LiteLLM/Jinja2 pipeline after MCP agent was in use |
+| 2026-07-29 | A `str`-backed Enum must be handled before `str` in recursive Pydantic walks | Otherwise `FileType` is silently coerced to plain strings and Pydantic serialization emits one warning per scanned file |
+| 2026-07-29 | Context-driven endpoint descriptors require parser-time marker consumption | Post-filter normalization is too late to recover URI structure; attach descriptors per environment while parsing and propagate them only through exact `context.Variable` references with agreeing facts |
 
 ## Completed Tasks
 
@@ -50,3 +54,14 @@
 | Phase 1: Docs quality + migration readiness | P1 | 2026-02-18 |
 | Phase 2: Universal IR (9 modules, 62 tests, 99.4% parse rate) | P2 | 2026-02-18 |
 | Document 25: Preventive Analysis + architecture doc updates | Post-P2 | 2026-02-19 |
+### Talend topology identity invariants (2026-07-30)
+
+- Use the XMI project ID in `talend.project` as the stable imported-project
+  identity. A ZIP/source-root path is provenance and drill-down scope, not an
+  application identity.
+- Talend `LABEL` is human presentation; `UNIQUE_NAME` remains the stable
+  component identity for connections, lineage, and drill-down.
+- A component category or transport such as Hash, REST API, JMS Broker, or File
+  endpoint does not prove a peer system identity. Keep it as L2 mechanism or
+  interface evidence until an endpoint, repository connection, context identity,
+  supplied business registry, or other explicit fact establishes the peer.

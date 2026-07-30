@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from mcp_server.services.scanner_service import ScannerService
+from mcp_server.services.scan_output_lock import acquire_scan_output_lock
 
 
 @pytest.fixture
@@ -22,6 +23,19 @@ async def test_run_scan_command_not_found(scanner, monkeypatch, tmp_path):
     result = await scanner.run_scan("proj", "/tmp/repo", output_dir=str(tmp_path))
     assert result["success"] is False
     assert "not found" in result["error"]
+
+
+async def test_run_scan_refuses_output_directory_owned_by_another_process(scanner, tmp_path):
+    output_dir = tmp_path / "output"
+    lock = acquire_scan_output_lock(output_dir)
+    assert lock is not None
+    try:
+        result = await scanner.run_scan("proj", str(tmp_path), output_dir=str(output_dir))
+    finally:
+        lock.release()
+
+    assert result["success"] is False
+    assert "already in use" in result["error"]
 
 
 async def test_run_scan_success(scanner, monkeypatch, tmp_path):
@@ -94,6 +108,7 @@ async def test_run_scan_clears_stale_scan_and_fails_when_new_output_missing(scan
     out_dir = tmp_path / "output"
     out_dir.mkdir()
     (out_dir / "scan_result.json").write_text(json.dumps({"jobs": [{"name": "stale"}]}))
+    (out_dir / "publication_approval.json").write_text(json.dumps({"approved": True}))
 
     mock_proc = MagicMock()
     mock_proc.stdout.readline = MagicMock(return_value="")
@@ -106,6 +121,7 @@ async def test_run_scan_clears_stale_scan_and_fails_when_new_output_missing(scan
 
     assert result["success"] is False
     assert "did not produce" in result["error"]
+    assert not (out_dir / "publication_approval.json").exists()
 
 
 async def test_run_scan_nonzero_exit(scanner, monkeypatch, tmp_path):

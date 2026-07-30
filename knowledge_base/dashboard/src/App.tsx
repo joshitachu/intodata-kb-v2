@@ -15,6 +15,7 @@ import HelpPanel from "./components/HelpPanel";
 import PluginPacksPage from "./components/PluginPacksPage";
 import FleetPage from "./components/FleetPage";
 import ModelsPage from "./components/ModelsPage";
+import AgenticExperimentsPage from "./components/AgenticExperimentsPage";
 import { useLogStream } from "./hooks/useLogStream";
 import { useProjects } from "./hooks/useProjects";
 import { useAuth, getLoginUrl } from "./hooks/useAuth";
@@ -23,8 +24,9 @@ import type { AuthUser } from "./hooks/useAuth";
 import type { GenerateRun } from "./types";
 
 const FLEET_ENABLED = import.meta.env.VITE_FLEET_ENABLED === "true";
+const AGENTIC_EXPERIMENTS_ENABLED = import.meta.env.VITE_AGENTIC_EXPERIMENTS_ENABLED === "true";
 
-type TopNav = "projects" | "docs" | "packs" | "fleet" | "models";
+type TopNav = "projects" | "docs" | "packs" | "fleet" | "models" | "experiments";
 
 export default function App() {
   const auth = useAuth();
@@ -160,6 +162,18 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
                   Models
                 </button>
               )}
+              {AGENTIC_EXPERIMENTS_ENABLED && (
+                <button
+                  className={`px-3 py-1.5 text-sm rounded transition-all ${
+                    topNav === "experiments"
+                      ? "text-slate-200 bg-white/[0.06]"
+                      : "text-slate-500 hover:text-slate-300"
+                  }`}
+                  onClick={() => setTopNav("experiments")}
+                >
+                  Experiments
+                </button>
+              )}
             </nav>
           </div>
           <div className="flex items-center gap-3">
@@ -263,6 +277,9 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
 
           {/* Models — per-VPS default model overrides (superadmin only) */}
           {topNav === "models" && user?.is_superadmin && <ModelsPage />}
+
+          {/* Isolated OpenCode experiment workspace; omitted unless deliberately enabled. */}
+          {topNav === "experiments" && AGENTIC_EXPERIMENTS_ENABLED && <AgenticExperimentsPage />}
         </div>
       </main>
 

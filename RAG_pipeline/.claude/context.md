@@ -1,5 +1,34 @@
 # Current State
 
+**Status (2026-07-30, L1/L2 topology frontend implemented and locally deployed):** `/topology` now opens on the scanner-computed application/system landscape when a project exposes `landscape.json`, with an evidence-preserving L2 relationship drill-down before existing Job/Route and mapping/lineage levels. The legacy Talend functional-group canvas stays available only for pre-landscape rescans and as an application's Designs view. The contract is typed end-to-end through the BFF and does not merge labels or use redacted channel values to infer peers.
+
+**Last completed:** 440 frontend tests and production build pass; frontend and MCP Docker containers are healthy. The real composite `topology` payload is 14 applications, 123 systems, 185 edges, 1,115 channels, 146 interfaces, 38 diagnostics, and 15 unmapped records.
+
+**Immediate next:** authenticate locally and manually inspect `http://localhost:3000/topology`: select an L1 application/system/edge, choose an L2 relationship, open its implementing Job/Route, and continue to mapping lineage. Keep the scanner output as the sole relationship authority; source-root-aware Job API lookup remains a future backend enhancement if duplicate artifact names must be disambiguated at the endpoint boundary.
+
+**Status (2026-07-29, static/runtime correlation implemented, uncommitted):**
+Runtime now ingests immutable, bounded scanner snapshots through
+`POST /api/v1/ingest/runtime-static-topology`, validates explicit job mappings
+through `/runtime/job-scan-maps`, and serves exact evidence through
+`GET /runtime/executions/{execution_id}/correlation`. Latest snapshots are chosen
+by monotonic scanner `source_sequence`, so delayed older uploads cannot displace
+newer evidence; pinned mappings remain reproducible. The result separates
+control-flow and data-lineage impacts and never claims that an upstream API
+specification changed without contract evidence.
+
+**Last completed:** 331 runtime tests passed; scoped Ruff/compile clean; Alembic
+has single head `078_runtime_static_correlation`; the real topology payload
+validated with 429 jobs, 224 dependencies, and 2,145 lineage facts.
+
+**Immediate next:** frontend visualization/health overlay is still separate and
+deferred. Operators must create explicit job mappings where runtime task names
+do not equal scanner IDs. Production/staging machine ingest requires
+`MCP_INGEST_API_KEY`.
+
+**Resolved blockers:** immutable static evidence storage, out-of-order snapshot
+selection, explicit runtime/static identity mapping, and mapping-level failure
+correlation.
+
 **Status (2026-07-23, Pack Workbench 4,000-char instruction cap removed and locally deployed):** User reported the Pack workbench composer failing with a raw `String should have at most 4000 characters` banner and confirmed they were intentionally typing/sending more than 4,000 characters. `PackDraftAssistRequest.instruction` in `RAG_pipeline/backend/src/api/routes/harness_packs.py` no longer has a `max_length`, matching the ordinary chat `QueryRequest.query` field, which was never bounded. Also added `maxLength={500}` to the three reference-purpose inputs in `PackWorkbench.tsx` to match their existing `PackAttachmentPurposeRequest.purpose` backend contract. Focused Pack suite **31 passed**; full harness+API suite **615 passed, 2 unrelated pre-existing live-Kimi Pack failures**. Backend and frontend rebuilt/recreated and healthy; live check inside the container confirms a 10,000-character instruction now validates. Confirmed (via existing passing test `test_builder_context_marks_bounded_references_as_untrusted`) that uploaded reference-file content is genuinely injected into the Pack builder's LLM prompt as context — that path was already working and was not part of the reported bug.
 
 **Immediate next:** Live browser check of the Pack workbench composer with a >4,000-character message was not performed this session (no interactive browser tool available in this environment) — recommend a quick manual UI pass before considering this closed. No commit was made; this sits inside the same pre-existing broad uncommitted Pack builder/workbench work.
@@ -306,3 +335,19 @@ See `PROJECT_MEMORY.md` for architecture decisions and `PROGRESS_LOG.md` for ses
 - **Live proof**: Conversation 112 produced a complete ESB_PROD runtime report under workflow 72. Its "show me the results then?" follow-up returned the same report in 12 ms with workflow 72, no new workflow, and no runtime tool calls. Migration 057 is applied and the backend is healthy with zero restarts.
 - **Resolved blockers**: Runtime entities are no longer treated as project IDs; slot replies no longer replace the original objective; runtime plans are execution obligations; duplicate evidence/continuation rows no longer produce 500s; and the model can no longer claim a runtime capability was unavailable after Nexus already executed it.
 - **Immediate next steps**: Define and implement the contract for global/cross-project runtime queries; add production connector adapters and persistent LangGraph checkpointing/asynchronous workflow reconciliation; run the complete backend suite in an environment where tokenizer assets are cached or network access is available; review and commit the uncommitted harness batch without including unrelated working-tree changes.
+## Latest completed (2026-07-30 topology readability)
+
+- L1 defaults to connected data/integration flow rather than all configuration.
+- L2 and evidence panels render entity names instead of internal graph IDs.
+- Job nodes show Talend human labels, technical identity second, and concise
+  deterministic explanations; lookup/control/logging are visually distinct.
+- Frontend production image rebuilt successfully and container is healthy.
+
+## Immediate next
+
+- Perform an authenticated visual acceptance pass in the user's browser.
+- Treat semantic business enrichment/curation as a separate later layer.
+
+## Resolved blockers
+
+- Unbounded orphan nodes, raw L2 IDs, and unexplained Talend graph vocabulary.

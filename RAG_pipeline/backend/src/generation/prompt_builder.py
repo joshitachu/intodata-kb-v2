@@ -10,6 +10,27 @@ logger = logging.getLogger(__name__)
 
 MAX_CONTEXT_TOKENS = 16000
 ENCODING_NAME = "cl100k_base"
+
+_ENCODING_CACHE: dict[str, tiktoken.Encoding] = {}
+
+
+def get_encoding(name: str = ENCODING_NAME) -> tiktoken.Encoding:
+    """Return a process-cached tiktoken encoding.
+
+    The first construction of an encoding downloads/loads the BPE vocabulary,
+    which can cost ~30s cold. Callers on the request path use this accessor and
+    startup calls ``warmup`` so no user request ever pays that first-load cost.
+    """
+    enc = _ENCODING_CACHE.get(name)
+    if enc is None:
+        enc = tiktoken.get_encoding(name)
+        _ENCODING_CACHE[name] = enc
+    return enc
+
+
+def warmup() -> None:
+    """Preload the default encoding so the first request avoids the cold load."""
+    get_encoding()
 CONTEXT_FOOTER = (
     "\n\n---\n"
     "The above is ALL available information. Do NOT add details beyond what is shown."
@@ -279,7 +300,7 @@ def _build_context(
     that would overflow is truncated to fit the remaining budget (with ``[...]``
     appended).  This ensures all retrieved sources are represented in the context.
     """
-    enc = tiktoken.get_encoding(ENCODING_NAME)
+    enc = get_encoding()
     parts: list[str] = []
     total_tokens = 0
     truncated_sources = 0

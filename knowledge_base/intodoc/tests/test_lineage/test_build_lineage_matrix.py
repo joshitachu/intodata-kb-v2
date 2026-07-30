@@ -11,8 +11,15 @@ from intodoc.models import (
     LineageConfidence,
     ParsedJob,
     ScanResult,
+    LineageMatrix,
     TMapData,
     TMapEntry,
+    TXMLMapData,
+    TXMLMapField,
+    TXMLMapTree,
+    TdmMap,
+    TdmMapField,
+    TdmMapTree,
 )
 from intodoc.lineage import build_lineage_matrix
 from intodoc.scanner.credential_filter import CredentialFilter
@@ -213,6 +220,179 @@ class TestRowComponentResolution:
         reasons = {u["reason"] for u in matrix.unmapped_columns}
         assert "no matching connection for input row name" in reasons
         assert "no matching connection for output row name" in reasons
+
+
+# ── tXMLMap / TDM completeness (L4) ─────────────────────────────────────
+
+
+def _txmlmap_job(txmap: TXMLMapData, *, name: str = "XmlJob") -> ParsedJob:
+    return ParsedJob(name=name, path="p", txmlmap_data=[txmap])
+
+
+class TestTXMLMapLineage:
+    def test_nested_captured_input_path_resolves_without_component_guessing(self):
+        txmap = TXMLMapData(
+            input_trees=[TXMLMapTree(name="row1", fields=[
+                TXMLMapField(name="GUID", xpath="row1/Envelope/GUID"),
+            ])],
+            output_trees=[TXMLMapTree(name="Output", fields=[
+                TXMLMapField(name="id", xpath="Output/Body/id", expression="row1.GUID"),
+            ])],
+            raw_connections=["//@node.0/@inputTrees.0/@nodes.0 -> //@node.0/@outputTrees.0/@nodes.0"],
+            component_name="tXMLMap_1",
+        )
+        matrix = _matrix(_txmlmap_job(txmap))
+
+        assert len(matrix.entries) == 1
+        entry = matrix.entries[0]
+        assert (entry.source_table, entry.source_column) == ("row1", "row1/Envelope/GUID")
+        assert (entry.target_table, entry.target_column) == ("Output", "Output/Body/id")
+        assert entry.confidence == LineageConfidence.CERTAIN
+        assert entry.transformations[0].transformation_type == "direct_map"
+        assert entry.source_component == ""
+        assert entry.target_component == "tXMLMap_1"
+        assert matrix.summary["txmlmap_components_processed"] == 1
+        assert any("positional" in item["reason"] for item in matrix.unmapped_columns)
+
+    def test_mixed_and_unknown_input_references_remain_likely_with_dynamic_evidence(self):
+        txmap = TXMLMapData(
+            input_trees=[TXMLMapTree(name="row1", fields=[
+                TXMLMapField(name="GUID", xpath="row1/GUID"),
+            ])],
+            output_trees=[TXMLMapTree(name="Output", fields=[
+                TXMLMapField(name="id", xpath="Output/id", expression="row1.GUID + external.Missing"),
+            ])],
+        )
+        matrix = _matrix(_txmlmap_job(txmap))
+
+        entry = matrix.entries[0]
+        assert entry.resolved is True
+        assert entry.confidence == LineageConfidence.LIKELY
+        assert entry.dynamic_refs == ["external.Missing"]
+        assert any(item.get("reference") == "external.Missing" for item in matrix.unmapped_columns)
+
+    def test_ambiguous_nested_input_reference_is_not_selected(self):
+        txmap = TXMLMapData(
+            input_trees=[TXMLMapTree(name="row1", fields=[
+                TXMLMapField(name="ID", xpath="row1/Header/ID"),
+                TXMLMapField(name="ID", xpath="row1/Body/ID"),
+            ])],
+            output_trees=[TXMLMapTree(name="Output", fields=[
+                TXMLMapField(name="id", xpath="Output/id", expression="row1.ID"),
+            ])],
+        )
+        matrix = _matrix(_txmlmap_job(txmap))
+
+        entry = matrix.entries[0]
+        assert entry.resolved is False
+        assert entry.confidence == LineageConfidence.DYNAMIC
+        assert entry.dynamic_refs == ["row1.ID"]
+        assert any("ambiguous" in item["reason"] for item in matrix.unmapped_columns)
+
+    def test_constant_and_unmapped_output_fields_are_emitted_not_dropped(self):
+        txmap = TXMLMapData(output_trees=[TXMLMapTree(name="Output", fields=[
+            TXMLMapField(name="constant", xpath="Output/constant", expression='"fixed"'),
+            TXMLMapField(name="unmapped", xpath="Output/unmapped"),
+        ])])
+        matrix = _matrix(_txmlmap_job(txmap))
+
+        assert len(matrix.entries) == 2
+        constant, unmapped = matrix.entries
+        assert constant.confidence == LineageConfidence.CERTAIN
+        assert constant.transformations[0].transformation_type == "constant"
+        assert unmapped.confidence == LineageConfidence.DYNAMIC
+        assert "tXMLMap:output_field_without_expression" in unmapped.dynamic_refs
+
+    def test_txmlmap_expression_is_filtered_again_when_written_to_lineage(self):
+        secret = "abcdEFGH12345678ijklMNOPqrst"
+        txmap = TXMLMapData(
+            input_trees=[TXMLMapTree(name="row1", fields=[
+                TXMLMapField(name="GUID", xpath="row1/GUID"),
+            ])],
+            output_trees=[TXMLMapTree(name="Output", fields=[
+                TXMLMapField(
+                    name="id", xpath="Output/id",
+                    expression=f'row1.GUID + "Bearer {secret}"',
+                ),
+            ])],
+        )
+        matrix = _matrix(_txmlmap_job(txmap), CredentialFilter())
+
+        dumped = matrix.model_dump_json()
+        assert secret not in dumped
+        assert "[BEARER_TOKEN_REDACTED]" in dumped
+
+
+def _tdm_map(
+    *,
+    association: str = "directory_jobs",
+    owning_artifact: str = "TdmJob",
+    input_fields: list[TdmMapField] | None = None,
+    output_fields: list[TdmMapField] | None = None,
+) -> TdmMap:
+    return TdmMap(
+        name="orders-map",
+        association=association,
+        owning_artifact=owning_artifact,
+        input_tree=TdmMapTree(
+            name="In",
+            fields=input_fields or [TdmMapField(name="field1", path="Order/field1")],
+        ),
+        output_tree=TdmMapTree(
+            name="Out",
+            fields=output_fields or [TdmMapField(
+                name="requiredField", path="AssetCheck/requiredField", expression="in$/Order/field1",
+            )],
+        ),
+    )
+
+
+def _tdm_matrix(tdm: TdmMap) -> LineageMatrix:
+    job = ParsedJob(name="TdmJob", path="p")
+    return build_lineage_matrix(
+        ScanResult(platform="talend", repo_root="/fake", jobs=[job], tdm_maps=[tdm]),
+        CredentialFilter(),
+    )
+
+
+class TestTdmLineage:
+    def test_exact_directory_owned_tdm_map_resolves_nested_input_path(self):
+        matrix = _tdm_matrix(_tdm_map())
+
+        assert len(matrix.entries) == 1
+        entry = matrix.entries[0]
+        assert (entry.source_table, entry.source_column) == ("In", "Order/field1")
+        assert (entry.target_table, entry.target_column) == ("Out", "AssetCheck/requiredField")
+        assert entry.confidence == LineageConfidence.CERTAIN
+        assert entry.transformations[0].transformation_type == "direct_map"
+        assert matrix.summary["tdm_maps_processed"] == 1
+        assert matrix.summary["tdm_entries"] == 1
+
+    def test_ambiguous_and_missing_tdm_paths_are_dynamic_and_recorded(self):
+        matrix = _tdm_matrix(_tdm_map(
+            input_fields=[
+                TdmMapField(name="id", path="Order/id"),
+                TdmMapField(name="id_duplicate", path="Order/id"),
+            ],
+            output_fields=[
+                TdmMapField(name="ambiguous", path="Out/ambiguous", expression="in$/Order/id"),
+                TdmMapField(name="missing", path="Out/missing", expression="in$/Order/notThere"),
+            ],
+        ))
+
+        assert all(entry.resolved is False for entry in matrix.entries)
+        assert all(entry.confidence == LineageConfidence.DYNAMIC for entry in matrix.entries)
+        refs = {ref for entry in matrix.entries for ref in entry.dynamic_refs}
+        assert refs == {"in$/Order/id", "in$/Order/notThere"}
+        reasons = {item["reason"] for item in matrix.unmapped_columns}
+        assert "TDM input path is ambiguous in the captured input tree" in reasons
+        assert "TDM input path is not present in the captured input tree" in reasons
+
+    def test_unresolved_tdm_ownership_is_reported_without_name_guessing(self):
+        matrix = _tdm_matrix(_tdm_map(association="unresolved", owning_artifact=""))
+
+        assert matrix.entries == []
+        assert any("ownership is not an exact" in item["reason"] for item in matrix.unmapped_columns)
 
 
 # ── Credential filtering (D6) ────────────────────────────────────────────

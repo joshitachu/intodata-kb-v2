@@ -1,0 +1,28 @@
+services:
+  opencode-experiment-task:
+    build:
+      context: .
+      args:
+        OPENCODE_VERSION: "1.18.4"
+    environment:
+      NEXUS_EXPECTED_OPENCODE_VERSION: "1.18.4"
+      NEXUS_EXPERIMENT_TASK_TOKEN: "${NEXUS_EXPERIMENT_TASK_TOKEN:?required}"
+      OPENCODE_CONFIG_CONTENT: "${OPENCODE_CONFIG_CONTENT:?required}"
+      OPENCODE_SERVER_PASSWORD: "${OPENCODE_SERVER_PASSWORD:?required}"
+      OPENCODE_SERVER_USERNAME: "${OPENCODE_SERVER_USERNAME:-opencode}"
+    cap_drop:
+      - ALL
+    networks:
+      - kb-internal
+    read_only: true
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /runtime:uid=10001,gid=10001,mode=0700
+      - /tmp:uid=10001,gid=10001,mode=0700
+      - /var/lib/opencode:uid=10001,gid=10001,mode=0700
+
+networks:
+  kb-internal:
+    external: true

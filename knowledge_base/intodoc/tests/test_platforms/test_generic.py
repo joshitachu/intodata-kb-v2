@@ -9,6 +9,7 @@ import pytest
 from intodoc.models import FileType, ScanResult
 from intodoc.platforms.generic import GenericPlugin
 from intodoc.platforms.registry import get_platform, list_platforms
+from intodoc.scanner.credential_filter import CredentialFilter
 
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "generic_sample"
@@ -384,6 +385,127 @@ static bool validateInput(int x) {
     # Control-flow keywords must not appear
     assert "if" not in funcs
     assert "for" not in funcs
+
+
+# ── Topology facts (artifact_kinds / relations / endpoints / resources) ──
+
+
+class TestGenericTopologyFacts:
+    """Generic-scanner population of the cross-platform manifest topology
+    fields Talend already populates: artifact_kinds/relations/endpoints/
+    resources. Uses a small synthetic project so every signal (entry point,
+    resolved import call, HTTP route, Web.config connection, external-system
+    import) is deliberate and traceable to a specific assertion."""
+
+    @pytest.fixture
+    def cred_filter(self):
+        from intodoc.scanner.credential_filter import CredentialFilter
+        return CredentialFilter()
+
+    @pytest.fixture
+    def scan_result(self, cred_filter, tmp_path) -> ScanResult:
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.py").write_text(
+            "from .helper import do_thing\n\n"
+            "@app.get(\"/api/orders\")\n"
+            "def list_orders():\n"
+            "    return do_thing()\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "src" / "helper.py").write_text(
+            "import boto3\n\n"
+            "def do_thing():\n"
+            "    return boto3.client('s3')\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "Web.config").write_text(
+            """<configuration>
+  <connectionStrings>
+    <add name="MainDb" connectionString="Server=sql01;Database=Main;Password=secret" providerName="System.Data.SqlClient" />
+  </connectionStrings>
+</configuration>
+""",
+            encoding="utf-8",
+        )
+
+        plugin = GenericPlugin()
+        return plugin.parse_project(tmp_path, cred_filter)
+
+    def test_entry_point_and_module_kinds(self, scan_result):
+        """Entry-point files and directory-grouped files get distinct,
+        structurally-derived kinds (never a fabricated Talend job/route
+        label)."""
+        kinds = scan_result.manifest.artifact_kinds
+        assert kinds["main"] == "entry_point"
+        assert kinds["helper"] == "module"
+        assert kinds["Web"] == "module"
+
+    def test_resolved_import_becomes_relation(self, scan_result):
+        """main.py's relative import of helper.py is a resolvable call --
+        mirrors Talend's tRunJob shape (job_calls_job/resolved)."""
+        assert {
+            "source": "main", "target": "helper",
+            "relation_type": "job_calls_job", "resolution": "resolved",
+            "provenance": "import_reference",
+        } in scan_result.manifest.artifact_relations
+
+    def test_http_route_becomes_inbound_endpoint(self, scan_result):
+        """A regex-detected route decorator is a real inbound HTTP surface;
+        the literal path is not disclosed, same redaction posture as
+        Talend's route endpoint records."""
+        endpoints = [
+            e for e in scan_result.manifest.artifact_endpoints
+            if e["artifact"] == "main"
+        ]
+        assert len(endpoints) == 1
+        assert endpoints[0]["endpoint_type"] == "http_route"
+        assert endpoints[0]["direction"] == "input"
+        for endpoint in scan_result.manifest.artifact_endpoints:
+            assert "/api/orders" not in str(endpoint.values())
+
+    def test_config_connection_becomes_resource(self, scan_result):
+        """The Web.config connection string is attributed as a resource to
+        the component that actually carries the file_path match."""
+        resources = [
+            r for r in scan_result.manifest.artifact_resources
+            if r["artifact"] == "Web"
+        ]
+        assert len(resources) == 1
+        assert resources[0]["resource"] == "MainDb"
+        assert resources[0]["resource_type"] == "SQL Server"
+        assert resources[0]["direction"] == "unknown"
+
+    def test_import_detected_external_system_becomes_resource(self, scan_result):
+        """boto3 usage is a real, already-parsed signal -- surfaced as an
+        external_system resource, direction 'unknown' since Generic has no
+        input/output naming convention to key off."""
+        resources = [
+            r for r in scan_result.manifest.artifact_resources
+            if r["artifact"] == "helper" and r["resource_type"] == "external_system"
+        ]
+        assert len(resources) == 1
+        assert resources[0]["resource"] == "AWS"
+        assert resources[0]["direction"] == "unknown"
+
+    def test_duplicate_display_names_get_distinct_source_relative_ids(self, tmp_path):
+        for folder in ("service_a", "service_b"):
+            target = tmp_path / folder
+            target.mkdir()
+            (target / "main.py").write_text(
+                "def main():\n    return 1\n", encoding="utf-8",
+            )
+
+        result = GenericPlugin().parse_project(tmp_path, CredentialFilter())
+
+        main_jobs = [job for job in result.jobs if job.name == "main"]
+        assert len(main_jobs) == 2
+        assert {job.job_id for job in main_jobs} == {
+            ".::service_a/main.py", ".::service_b/main.py",
+        }
+        assert set(result.manifest.artifact_kinds) == {
+            ".::service_a/main.py", ".::service_b/main.py",
+        }
+        assert set(result.manifest.job_source_roots) == set(result.manifest.artifact_kinds)
 
 
 # ── Best Practices ───────────────────────────────────────────────────

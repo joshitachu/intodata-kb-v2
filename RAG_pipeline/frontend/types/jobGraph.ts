@@ -25,7 +25,9 @@ export type ParamValue = z.infer<typeof ParamValueSchema>;
 
 export const JobGraphNodeSchema = z.object({
   unique_name: z.string(),
+  display_label: z.string().optional().default(""),
   component_type: z.string(),
+  type_explanation: z.string().optional().default(""),
   role: ComponentRoleSchema,
   has_subgraph: z.boolean(),
   subjob_target: z.string().nullable().optional().default(null),
@@ -47,6 +49,7 @@ export const JobGraphEdgeSchema = z.object({
   target: z.string(),
   connector_name: z.string(),
   line_style: z.number(),
+  explanation: z.string().optional().default(""),
 });
 export type JobGraphEdge = z.infer<typeof JobGraphEdgeSchema>;
 

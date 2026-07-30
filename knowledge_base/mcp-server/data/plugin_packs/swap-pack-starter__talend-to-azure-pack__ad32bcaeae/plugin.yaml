@@ -69,3 +69,6 @@ quality_gates:
 steps:
   - id: generate_docs
     type: harness
+
+certification:
+  provenance: swap-pack-starter

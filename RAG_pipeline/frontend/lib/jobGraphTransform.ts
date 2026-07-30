@@ -37,7 +37,9 @@ export function isControlFlowEdge(connectorName: string, lineStyle: number): boo
 
 export interface ComponentNodeData {
   label: string;
+  technicalName: string;
   componentType: string;
+  typeExplanation: string;
   role: ComponentRole;
   color: RoleColor;
   connectionRef: string;
@@ -61,6 +63,7 @@ export interface JobFlowResult {
   stats: {
     componentCount: number;
     dataFlowEdgeCount: number;
+    lookupFlowEdgeCount: number;
     controlFlowEdgeCount: number;
   };
 }
@@ -81,8 +84,10 @@ export function jobGraphToFlow(graph: JobGraphResponse): JobFlowResult {
     }
 
     const data: ComponentNodeData = {
-      label: comp.unique_name,
+      label: comp.display_label || comp.unique_name,
+      technicalName: comp.unique_name,
       componentType: comp.component_type,
+      typeExplanation: comp.type_explanation ?? "",
       role: comp.role,
       color: ROLE_COLORS[comp.role],
       connectionRef: comp.connection_ref ?? "",
@@ -105,6 +110,7 @@ export function jobGraphToFlow(graph: JobGraphResponse): JobFlowResult {
 
   const knownIds = new Set(nodes.map((n) => n.id));
   let dataFlowEdgeCount = 0;
+  let lookupFlowEdgeCount = 0;
   let controlFlowEdgeCount = 0;
 
   for (const conn of graph.edges) {
@@ -119,7 +125,17 @@ export function jobGraphToFlow(graph: JobGraphResponse): JobFlowResult {
       controlFlowEdgeCount++;
     } else {
       dataFlowEdgeCount++;
+      if (conn.connector_name.toUpperCase() === "LOOKUP") {
+        lookupFlowEdgeCount++;
+      }
     }
+    const isLookup = conn.connector_name.toUpperCase() === "LOOKUP";
+    const friendlyLabel = connectorDisplayLabel(conn.connector_name, isControl);
+    const edgeColor = isLookup
+      ? "#0d9488"
+      : isControl
+        ? CONTROL_EDGE_COLOR
+        : DATA_EDGE_COLOR;
 
     edges.push({
       id: `flow:${conn.name}:${conn.source}:${conn.target}`,
@@ -127,23 +143,28 @@ export function jobGraphToFlow(graph: JobGraphResponse): JobFlowResult {
       target: targetId,
       type: "default",
       animated: false,
-      label: isControl ? conn.connector_name : undefined,
-      labelStyle: isControl
-        ? { fill: "#64748b", fontSize: 9, fontWeight: 600 }
+      label: isControl || isLookup ? friendlyLabel : undefined,
+      labelStyle: isControl || isLookup
+        ? { fill: isLookup ? "#0f766e" : "#64748b", fontSize: 9, fontWeight: 600 }
         : undefined,
-      labelBgStyle: isControl ? { fill: "#f8fafc", fillOpacity: 0.85 } : undefined,
+      labelBgStyle: isControl || isLookup
+        ? { fill: "#f8fafc", fillOpacity: 0.9 }
+        : undefined,
       style: isControl
         ? { stroke: CONTROL_EDGE_COLOR, strokeWidth: 1.2, strokeDasharray: "6 3" }
+        : isLookup
+          ? { stroke: edgeColor, strokeWidth: 1.3, strokeDasharray: "2 3" }
         : { stroke: DATA_EDGE_COLOR, strokeWidth: 1.5 },
       markerEnd: {
         type: "arrowclosed" as const,
-        color: isControl ? CONTROL_EDGE_COLOR : DATA_EDGE_COLOR,
+        color: edgeColor,
         width: 16,
         height: 16,
       },
       data: {
-        edgeType: isControl ? "control" : "data",
+        edgeType: isControl ? "control" : isLookup ? "lookup" : "data",
         connectorName: conn.connector_name,
+        explanation: conn.explanation ?? "",
         lineStyle: conn.line_style,
         rowName: conn.name,
       },
@@ -156,9 +177,31 @@ export function jobGraphToFlow(graph: JobGraphResponse): JobFlowResult {
     stats: {
       componentCount: nodes.length,
       dataFlowEdgeCount,
+      lookupFlowEdgeCount,
       controlFlowEdgeCount,
     },
   };
+}
+
+export function connectorDisplayLabel(
+  connectorName: string,
+  isControl: boolean,
+): string {
+  const normalized = connectorName.toUpperCase();
+  const labels: Record<string, string> = {
+    LOOKUP: "Lookup data",
+    ITERATE: "For each item",
+    SUBJOB_OK: "After subjob succeeds",
+    SUBJOB_ERROR: "After subjob fails",
+    COMPONENT_OK: "After component succeeds",
+    COMPONENT_ERROR: "After component fails",
+    ON_COMPONENT_OK: "After component succeeds",
+    ON_COMPONENT_ERROR: "After component fails",
+    ON_SUBJOB_OK: "After subjob succeeds",
+    ON_SUBJOB_ERROR: "After subjob fails",
+    RUN_IF: "If condition is true",
+  };
+  return labels[normalized] ?? (isControl ? "Control trigger" : "Data flow");
 }
 
 // ── Double-click dispatch (S2) ──────────────────────────────────────
@@ -232,7 +275,7 @@ export function componentConnectors(
 // ── Layout ──────────────────────────────────────────────────────────
 
 export const COMPONENT_NODE_WIDTH = 220;
-export const COMPONENT_NODE_HEIGHT = 68;
+export const COMPONENT_NODE_HEIGHT = 92;
 
 export function applyJobGraphLayout(
   nodes: Node[],

@@ -110,6 +110,36 @@ def test_amqp_url_redacted():
     assert "[URL_REDACTED]" in result
 
 
+def test_jms_uri_with_query_password_is_redacted_and_detectable():
+    """JMS is a supported URI scheme, not an exception to URL redaction.
+
+    The verifier delegates to the same matcher, so this protects both the
+    initial scan filter and its independent residual-secret sweep.
+    """
+    f = CredentialFilter()
+    raw = "jms://broker.internal:61616/orders?password=FakeBrokerSecret42"
+    result = f.filter_text(raw)
+    assert result == "[URL_REDACTED]"
+    assert "FakeBrokerSecret42" not in result
+    assert f.detect(raw)["url"] == 1
+
+
+def test_preparse_uri_descriptor_marker_contains_no_raw_uri():
+    f = CredentialFilter()
+    raw = "https://api.example.com/orders?api_key=FakeApiSecret42"
+    marker = f.filter_text(raw, capture_uri_descriptors=True)
+    descriptor = f.descriptor_from_redaction_token(marker)
+    assert marker.startswith("[INTODOC_URI_DESCRIPTOR_")
+    assert "api.example.com" not in marker
+    assert "FakeApiSecret42" not in marker
+    assert descriptor is not None
+    assert descriptor.model_dump(exclude_none=True) == {
+        "scheme": "https", "category": "rest", "auth_present": True,
+        "auth_type": "api_key", "tls": True, "host_present": True,
+    }
+    assert f.normalize_redaction_tokens(marker) == "[URL_REDACTED]"
+
+
 # ── New patterns: FQDN ──────────────────────────────────────────────
 
 
@@ -202,6 +232,16 @@ def test_safe_domain_url_preserved():
     text = 'xmlns="http://www.w3.org/2001/XMLSchema"'
     result = f.filter_text(text)
     assert result == text
+
+
+def test_safe_domain_data_url_with_credentials_is_still_redacted():
+    """Safe-domain exemption is only for non-auth structural URLs.
+
+    XML namespace declarations remain protected separately by the XMLNS mask.
+    """
+    f = CredentialFilter()
+    raw = "https://talend.org/api?token=FakeNamespaceSecret42"
+    assert f.filter_text(raw) == "[URL_REDACTED]"
 
 
 def test_xmlns_declarations_preserved_in_xml():
@@ -716,3 +756,169 @@ def test_detect_reports_categories_without_mutating():
 def test_detect_clean_text_empty():
     f = CredentialFilter()
     assert f.detect("SELECT ProcessID from Processes where x = 1") == {}
+
+
+# ── describe_value() -- "mask-and-CAPTURE" redaction descriptor ────
+#
+# describe_value() runs on the ORIGINAL value before it is discarded by
+# redaction and must return ONLY provably-non-sensitive structural facts.
+# These tests cover the representative cases called out in the design
+# (https+basic, jms, jdbc, sftp, plain host, no-auth), and separately prove
+# no secret substring ever survives into the returned descriptor.
+
+
+def test_describe_value_https_basic_auth():
+    secret = "S3cr3tPassw0rd!"
+    value = f"https://svc:{secret}@api.example.com:443/v1/resource"
+    d = CredentialFilter.describe_value(value)
+    assert d is not None
+    assert d.scheme == "https"
+    assert d.category == "rest"
+    assert d.tls is True
+    assert d.auth_present is True
+    assert d.auth_type == "basic"
+    assert d.host_present is True
+    # No secret substring anywhere in the descriptor
+    dumped = d.model_dump_json()
+    assert secret not in dumped
+    assert "api.example.com" not in dumped
+    assert "svc" not in dumped
+
+
+def test_describe_value_jms_no_auth():
+    value = "jms://broker.internal:61616/queue/orders"
+    d = CredentialFilter.describe_value(value)
+    assert d is not None
+    assert d.scheme == "jms"
+    assert d.category == "jms"
+    assert d.tls is False
+    assert d.auth_present is False
+    assert d.auth_type == "none"
+    assert d.host_present is True
+    assert "broker.internal" not in d.model_dump_json()
+
+
+def test_describe_value_jdbc_with_password_param():
+    secret = "Sup3rSecret"
+    value = f"jdbc:mysql://dbhost.internal:3306/proddb?user=svc_acct&password={secret}"
+    d = CredentialFilter.describe_value(value)
+    assert d is not None
+    assert d.scheme == "jdbc"
+    assert d.category == "db"
+    assert d.auth_present is True
+    assert d.auth_type == "basic"
+    assert d.host_present is True
+    dumped = d.model_dump_json()
+    assert secret not in dumped
+    assert "dbhost.internal" not in dumped
+    assert "svc_acct" not in dumped
+    assert "proddb" not in dumped
+
+
+def test_describe_value_jdbc_encrypt_flag_sets_tls():
+    value = "jdbc:sqlserver://dbhost;databaseName=Prod;user=svc;password=Secret1;encrypt=true"
+    d = CredentialFilter.describe_value(value)
+    assert d is not None
+    assert d.scheme == "jdbc"
+    assert d.tls is True
+    assert d.auth_present is True
+    assert d.auth_type == "basic"
+    assert "Secret1" not in d.model_dump_json()
+
+
+def test_describe_value_sftp_bare_username():
+    value = "sftp://svcuser@sftp.example.com/incoming/orders.csv"
+    d = CredentialFilter.describe_value(value)
+    assert d is not None
+    assert d.scheme == "sftp"
+    assert d.category == "file"
+    assert d.tls is True
+    assert d.auth_present is True
+    assert d.auth_type == "unknown"  # bare username, no password visible
+    assert d.host_present is True
+    dumped = d.model_dump_json()
+    assert "svcuser" not in dumped
+    assert "sftp.example.com" not in dumped
+
+
+def test_describe_value_plain_host():
+    """A bare hostname (no scheme) only yields host_present -- nothing else
+    can be safely determined, so scheme/auth/tls must stay None. Without
+    the caller asserting `is_host`, an un-schemed value with no other
+    signal is not guessed at all (see test below)."""
+    value = "db-prod-01.internal.corp"
+    d = CredentialFilter.describe_value(value, is_host=True)
+    assert d is not None
+    assert d.host_present is True
+    assert d.scheme is None
+    assert d.category is None
+    assert d.auth_present is None
+    assert d.auth_type is None
+    assert d.tls is None
+    assert "db-prod-01" not in d.model_dump_json()
+
+
+def test_describe_value_without_is_host_hint_does_not_guess():
+    """The same bare-hostname-shaped string returns None when the caller
+    does NOT assert is_host -- an arbitrary opaque secret can look
+    hostname-shaped too, so this must never be inferred from characters
+    alone."""
+    assert CredentialFilter.describe_value("db-prod-01.internal.corp") is None
+    assert CredentialFilter.describe_value("opaquetoken12345") is None
+
+
+def test_describe_value_explicit_no_auth():
+    value = "https://api.example.com/public/health"
+    d = CredentialFilter.describe_value(value)
+    assert d is not None
+    assert d.auth_present is False
+    assert d.auth_type == "none"
+    assert d.tls is True
+    assert "api.example.com" not in d.model_dump_json()
+
+
+def test_describe_value_bearer_token():
+    secret = "xyz123abcdefghijklmno"
+    value = f"Bearer {secret}"
+    d = CredentialFilter.describe_value(value)
+    assert d is not None
+    assert d.auth_present is True
+    assert d.auth_type == "bearer"
+    assert secret not in d.model_dump_json()
+
+
+def test_describe_value_basic_auth_header():
+    value = "Basic dXNlcjpwYXNzd29yZA=="
+    d = CredentialFilter.describe_value(value)
+    assert d is not None
+    assert d.auth_present is True
+    assert d.auth_type == "basic"
+    assert "dXNlcjpwYXNzd29yZA" not in d.model_dump_json()
+
+
+def test_describe_value_unknown_scheme_prefix_not_reported():
+    """A value with an unrecognized colon-prefixed token (not a real URI
+    scheme) must NEVER have that token echoed back as `scheme` -- only
+    known protocol tokens are recognized. The legitimate auth signal
+    elsewhere in the value is still captured."""
+    value = "faketoken1234:xyz?password=Secret123"
+    d = CredentialFilter.describe_value(value)
+    assert d is not None
+    assert d.scheme is None
+    assert d.auth_present is True
+    assert d.auth_type == "basic"
+    dumped = d.model_dump_json()
+    assert "faketoken1234" not in dumped
+    assert "Secret123" not in dumped
+
+
+def test_describe_value_empty_and_non_string_returns_none():
+    assert CredentialFilter.describe_value("") is None
+    assert CredentialFilter.describe_value("   ") is None
+    assert CredentialFilter.describe_value(None) is None  # type: ignore[arg-type]
+
+
+def test_describe_value_plain_text_returns_none():
+    """Ordinary non-connection text yields nothing determinable."""
+    assert CredentialFilter.describe_value("batch_size=1000") is None
+    assert CredentialFilter.describe_value("just some ordinary text value") is None

@@ -17,6 +17,17 @@ describe("useTopologyNavigation", () => {
     expect(result.current.current).toEqual({ kind: "job", jobName: "jobA" });
   });
 
+  it("preserves an opaque landscape relationship selection before opening a job", () => {
+    const { result } = renderHook(() => useTopologyNavigation());
+    act(() => result.current.descendToIntegration({ kind: "edge", edgeKey: "system\u001fmaximo" }));
+    act(() => result.current.descendToJob("FetchMaximo", "ZIP/ASSETCHECK"));
+    expect(result.current.stack).toEqual([
+      { kind: "project" },
+      { kind: "integration", selection: { kind: "edge", edgeKey: "system\u001fmaximo" } },
+      { kind: "job", jobName: "FetchMaximo", sourceRoot: "ZIP/ASSETCHECK" },
+    ]);
+  });
+
   it("keeps the group in the path while exploring one of its designs", () => {
     const { result } = renderHook(() => useTopologyNavigation());
     act(() => result.current.descendToGroup("Root/Project/ITEM"));

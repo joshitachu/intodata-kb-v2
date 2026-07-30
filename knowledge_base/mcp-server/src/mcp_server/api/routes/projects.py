@@ -75,6 +75,7 @@ from mcp_server.schemas import (
     NexusPresentation,
     PdfGenerateResponse,
     ProjectGraphResponse,
+    ProjectLandscapeResponse,
     ProjectListResponse,
     ProjectResponse,
     VerifyZipUploadRequest,
@@ -126,6 +127,7 @@ from mcp_server.services.component_description_service import (
 )
 from mcp_server.services.job_graph_service import build_job_graph
 from mcp_server.services.lineage_service import LineageDataUnavailableError, build_field_lineage
+from mcp_server.services.static_topology_publisher import StaticTopologyPublisher
 from mcp_server.services.pack_loader import PackLoader
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.project_paths import repair_project_repo_path
@@ -133,6 +135,7 @@ from mcp_server.services.rag_bridge import RagBridge
 from mcp_server.services.rag_support_package import replace_analysis_cache_from_rag_support
 from mcp_server.utils.error_sanitizer import sanitize_git_error
 from mcp_server.services.scanner_service import ScannerService
+from mcp_server.services.scan_output_lock import ScanOutputLock, acquire_scan_output_lock
 from mcp_server.services.summary_service import (
     SummaryService,
     build_component_summaries_async,
@@ -678,7 +681,8 @@ class _ZipExpansionBudget:
 
 
 def _validate_zip_members(members: list[zipfile.ZipInfo], budget: _ZipExpansionBudget | None = None) -> None:
-    if len(members) > config.max_upload_zip_entries:
+    extracted_members = [member for member in members if not _is_macos_noise(member)]
+    if len(extracted_members) > config.max_upload_zip_entries:
         raise HTTPException(status_code=400, detail="ZIP contains too many files")
     total_size = 0
     for member in members:
@@ -695,11 +699,12 @@ def _validate_zip_members(members: list[zipfile.ZipInfo], budget: _ZipExpansionB
             or (member.external_attr >> 16) & 0o170000 == 0o120000
         ):
             raise HTTPException(status_code=400, detail="ZIP contains an unsafe path")
-        total_size += member.file_size
-        if total_size > config.max_upload_zip_uncompressed_bytes:
-            raise HTTPException(status_code=400, detail="ZIP expands beyond the allowed size")
+        if not _is_macos_noise(member):
+            total_size += member.file_size
+            if total_size > config.max_upload_zip_uncompressed_bytes:
+                raise HTTPException(status_code=400, detail="ZIP expands beyond the allowed size")
     if budget is not None:
-        budget.consume(members)
+        budget.consume(extracted_members)
 
 
 def _is_macos_noise(member: zipfile.ZipInfo) -> bool:
@@ -792,29 +797,47 @@ async def scan_project(req: ScanRequest, request: Request, background_tasks: Bac
     """Trigger an `intodoc scan` for a project (runs in background)."""
     await require_project_access(request, req.project_id)
     log_mgr = request.app.state.log_manager
-
-    async with async_session_factory() as db:
-        registry = ProjectRegistry(db)
-        project = await registry.get_project(req.project_id)
-        if not project:
-            raise HTTPException(status_code=404, detail=f"Project not found: {req.project_id}")
-
-        repaired_path = await repair_project_repo_path(project)
-        if repaired_path:
-            await db.flush()
-
-        await registry.update_status(req.project_id, "scanning")
-        run = await registry.create_scan_run(req.project_id, triggered_by="api")
-        await db.commit()
-
-        local_path = project.local_path
-        platform = project.platform
-        run_id = run.id
-
     output_dir = str(config.intodoc_output_dir / req.project_id)
-    background_tasks.add_task(
-        _run_scan_background, req.project_id, local_path, platform, run_id, log_mgr, output_dir
-    )
+    scan_lock = acquire_scan_output_lock(output_dir)
+    if scan_lock is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A scan is already running for project {req.project_id!r}. "
+            "Wait for it to complete before starting another scan.",
+        )
+
+    try:
+        async with async_session_factory() as db:
+            registry = ProjectRegistry(db)
+            project = await registry.get_project(req.project_id)
+            if not project:
+                raise HTTPException(status_code=404, detail=f"Project not found: {req.project_id}")
+
+            repaired_path = await repair_project_repo_path(project)
+            if repaired_path:
+                await db.flush()
+
+            await registry.update_status(req.project_id, "scanning")
+            run = await registry.create_scan_run(req.project_id, triggered_by="api")
+            await db.commit()
+
+            local_path = project.local_path
+            platform = project.platform
+            run_id = run.id
+
+        background_tasks.add_task(
+            _run_scan_background,
+            req.project_id,
+            local_path,
+            platform,
+            run_id,
+            log_mgr,
+            output_dir,
+            scan_lock,
+        )
+    except BaseException:
+        scan_lock.release()
+        raise
 
     return StatusResponse(status="scan_triggered", message=f"Scan started for {req.project_id}")
 
@@ -826,8 +849,28 @@ async def _run_scan_background(
     run_id: int,
     log_mgr,
     output_dir: str,
+    scan_lock: ScanOutputLock | None = None,
 ):
-    """Background task: run scan and update DB."""
+    """Background task with guaranteed release of the output-directory claim."""
+    try:
+        await _run_scan_background_inner(
+            project_id, local_path, platform, run_id, log_mgr, output_dir, scan_lock
+        )
+    finally:
+        if scan_lock is not None:
+            scan_lock.release()
+
+
+async def _run_scan_background_inner(
+    project_id: str,
+    local_path: str,
+    platform: str,
+    run_id: int,
+    log_mgr,
+    output_dir: str,
+    scan_lock: ScanOutputLock | None = None,
+):
+    """Run a scan, persist its status, then advisory-publish its exact snapshot."""
     scanner = ScannerService(log_manager=log_mgr)
     log_mgr.reset_log_file(project_id)
 
@@ -836,6 +879,7 @@ async def _run_scan_background(
         repo_path=local_path,
         platform=platform,
         output_dir=output_dir,
+        scan_lock=scan_lock,
     )
 
     async with async_session_factory() as db:
@@ -864,6 +908,42 @@ async def _run_scan_background(
             )
             await registry.complete_scan_run(run_id, status="failed")
         await db.commit()
+
+    # Runtime correlation consumes a deliberately bounded, scanner-redaction-
+    # approved fact snapshot.  It is advisory: scanner success and its DB state
+    # are already durable above, so an unavailable Runtime service must never
+    # retroactively fail or invalidate the completed scan.
+    if result["success"]:
+        try:
+            receipt = await StaticTopologyPublisher().publish(
+                project_id=project_id,
+                output_dir=result["output_dir"],
+                source_sequence=run_id,
+            )
+            logger.info(
+                "Published runtime static topology for %s (revision=%s)",
+                project_id,
+                receipt.get("scan_revision", "unknown"),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Static topology publication failed for completed scan %s: %s",
+                project_id,
+                exc,
+            )
+            try:
+                await log_mgr.emit(
+                    project_id,
+                    "WARNING: static topology correlation publication failed; "
+                    "the completed scan remains valid.",
+                    level="warning",
+                )
+            except Exception:
+                logger.warning(
+                    "Could not write static topology publication warning for %s",
+                    project_id,
+                    exc_info=True,
+                )
 
 
 @router.post("/generate", response_model=StatusResponse)
@@ -3470,6 +3550,44 @@ async def get_project_graph(project_id: str, request: Request):
         job_metadata=job_metadata,
         artifact_counts=artifact_counts,
     )
+
+
+@router.get(
+    "/projects/{project_id}/landscape",
+    response_model=ProjectLandscapeResponse,
+)
+async def get_project_landscape(project_id: str, request: Request):
+    """Return the deterministic L1/L2 landscape computed during scanning.
+
+    The endpoint is deliberately read-only: it never rebuilds a scan, derives
+    identities at request time, or mutates curation state. Every returned edge
+    therefore retains the scanner-produced provenance used to drill back to
+    job/component/lineage evidence.
+    """
+    await require_project_access(request, project_id)
+
+    landscape_path = (
+        config.intodoc_output_dir / project_id / "scan" / "landscape.json"
+    )
+    if not landscape_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"No landscape data for project: {project_id}",
+        )
+
+    try:
+        payload = json.loads(landscape_path.read_text(encoding="utf-8"))
+        return ProjectLandscapeResponse.model_validate(payload)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        logger.error(
+            "Invalid landscape artifact for project %s: %s",
+            project_id,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Landscape data is invalid; rescan the project",
+        ) from exc
 
 
 def _load_job_scan(project_id: str, job_name: str) -> tuple[str, dict, Path]:

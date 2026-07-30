@@ -54,9 +54,11 @@ const nodeTypes = {
 
 function EdgeStyleLegend({
   dataCount,
+  lookupCount,
   controlCount,
 }: {
   dataCount: number;
+  lookupCount: number;
   controlCount: number;
 }) {
   return (
@@ -66,6 +68,12 @@ function EdgeStyleLegend({
           <line x1="0" y1="3" x2="24" y2="3" stroke="#64748b" strokeWidth="2" />
         </svg>
         <span>Data flow ({dataCount})</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <svg width="24" height="6" aria-hidden="true">
+          <line x1="0" y1="3" x2="24" y2="3" stroke="#0d9488" strokeWidth="2" strokeDasharray="2 3" />
+        </svg>
+        <span>Lookup flow ({lookupCount})</span>
       </div>
       <div className="flex items-center gap-2">
         <svg width="24" height="6" aria-hidden="true">
@@ -168,10 +176,10 @@ function JobGraphCanvasInner({
           onOpenJob(action.jobName);
           break;
         case "openComponent":
-          onOpenComponent(nodeData.label);
+          onOpenComponent(nodeData.technicalName);
           break;
         case "inspect":
-          setInspectorComponent(nodeData.label);
+          setInspectorComponent(nodeData.technicalName);
           break;
       }
     },
@@ -206,7 +214,7 @@ function JobGraphCanvasInner({
   const inspectorDescription = useMemo(() => {
     if (!data || !inspectorComponent) return "";
     const node = data.nodes.find((n) => n.unique_name === inspectorComponent);
-    return node?.description ?? "";
+    return node?.description || node?.type_explanation || "";
   }, [data, inspectorComponent]);
 
   return (
@@ -291,6 +299,7 @@ function JobGraphCanvasInner({
       {flowResult && (
         <EdgeStyleLegend
           dataCount={flowResult.stats.dataFlowEdgeCount}
+          lookupCount={flowResult.stats.lookupFlowEdgeCount}
           controlCount={flowResult.stats.controlFlowEdgeCount}
         />
       )}

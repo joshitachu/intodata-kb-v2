@@ -22,12 +22,14 @@ const ROLE_LABEL: Record<string, string> = {
 
 function ComponentNodeComponent({ data }: { data: ComponentNodeData }) {
   const drillable = data.hasSubgraph || data.subjobTarget !== null;
+  const technicalName = data.technicalName || data.label;
 
   // Prefer the plain-English description as the hover tooltip when the
   // generated docs supplied one; otherwise keep the prior behaviour (the
   // drill hint for drillable nodes, else the raw component id).
-  const tooltip = data.description
-    ? `${data.label}: ${data.description}`
+  const explanation = data.description || data.typeExplanation;
+  const tooltip = explanation
+    ? `${data.label}: ${explanation}`
     : drillable
       ? "Double-click to open"
       : data.label;
@@ -44,6 +46,7 @@ function ComponentNodeComponent({ data }: { data: ComponentNodeData }) {
         width: 220,
         padding: "8px 10px 8px 12px",
         ...(data.dimmed ? DIMMED_STYLE : { opacity: 1 }),
+        ...(data.role === "logging" && !data.highlighted ? { filter: "saturate(0.65)" } : {}),
       }}
       title={tooltip}
     >
@@ -86,8 +89,17 @@ function ComponentNodeComponent({ data }: { data: ComponentNodeData }) {
       </div>
 
       <div className="flex items-center gap-1.5 mt-1">
-        <span className="text-[9px] text-slate-500 truncate" title={data.componentType}>
-          {data.componentType}
+        <span
+          className="text-[9px] text-slate-500 truncate"
+          title={`${technicalName} · ${data.componentType}`}
+        >
+          {technicalName !== data.label && (
+            <>
+              <span>{technicalName}</span>
+              <span aria-hidden="true"> · </span>
+            </>
+          )}
+          <span>{data.componentType}</span>
         </span>
         {data.connectionRef && (
           <span
@@ -109,13 +121,13 @@ function ComponentNodeComponent({ data }: { data: ComponentNodeData }) {
         )}
       </div>
 
-      {data.description && (
+      {explanation && (
         <p
           className="mt-1 text-[9px] leading-snug text-slate-500 line-clamp-2"
-          title={data.description}
+          title={explanation}
           data-testid="component-description"
         >
-          {data.description}
+          {explanation}
         </p>
       )}
 

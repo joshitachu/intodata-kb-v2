@@ -75,6 +75,38 @@ _MAX_SUMMARY_VALUE_LEN = 120
 _TMAP_TYPE = "tMap"
 _TRUNJOB_TYPE = "tRunJob"
 
+_COMPONENT_EXPLANATIONS = {
+    "tMap": "Maps, joins, filters, and transforms rows of data.",
+    "tXMLMap": "Maps hierarchical XML data.",
+    "tRunJob": "Starts another Talend Job.",
+    "tSetGlobalVar": "Stores a value for later components in this Job.",
+    "tStatCatcher": "Captures execution statistics for monitoring or logging.",
+    "tLogCatcher": "Captures errors and warnings for logging.",
+    "tLogRow": "Writes row values to the execution log.",
+    "tFlowToIterate": "Runs the next branch once for every incoming row.",
+    "tIterateToFlow": "Converts iteration values back into rows of data.",
+    "tFixedFlowInput": "Creates rows from configured values.",
+    "tAdvancedFileOutputXML": "Writes hierarchical XML data to a file.",
+    "tFileInputXML": "Reads hierarchical XML data from a file.",
+    "tFileOutputXML": "Writes hierarchical XML data to a file.",
+}
+
+_CONNECTOR_EXPLANATIONS = {
+    "FLOW": "Transfers rows of data.",
+    "LOOKUP": "Supplies lookup rows to a mapping or join.",
+    "MERGE": "Merges rows into the following component.",
+    "ITERATE": "Starts the next component once for each incoming item; carries iteration values rather than a row flow.",
+    "SUBJOB_OK": "Starts after the preceding subjob succeeds; carries no data.",
+    "SUBJOB_ERROR": "Starts after the preceding subjob fails; carries no data.",
+    "COMPONENT_OK": "Starts after the preceding component succeeds; carries no data.",
+    "COMPONENT_ERROR": "Starts after the preceding component fails; carries no data.",
+    "RUN_IF": "Starts only when its configured condition is true; carries no data.",
+    "ON_COMPONENT_OK": "Starts after the preceding component succeeds; carries no data.",
+    "ON_COMPONENT_ERROR": "Starts after the preceding component fails; carries no data.",
+    "ON_SUBJOB_OK": "Starts after the preceding subjob succeeds; carries no data.",
+    "ON_SUBJOB_ERROR": "Starts after the preceding subjob fails; carries no data.",
+}
+
 
 def derive_component_role(component_type: str) -> str:
     """Classify a Talend component type as input|transform|output|orchestration|logging."""
@@ -87,6 +119,41 @@ def derive_component_role(component_type: str) -> str:
     if "Output" in component_type:
         return "output"
     return "transform"
+
+
+def component_display_label(component: dict[str, Any]) -> str:
+    """Return Talend's human label without changing the technical identity."""
+    label = param_map(component).get("LABEL", "").strip()
+    if len(label) >= 2 and label[0] == label[-1] and label[0] in {'"', "'"}:
+        label = label[1:-1].strip()
+    if not label or label == str(component.get("unique_name") or ""):
+        return ""
+    return re.sub(r"\s+", " ", label)[:120]
+
+
+def explain_component_type(component_type: str) -> str:
+    """Plain-language Talend component meaning, derived from its type only."""
+    if component_type in _COMPONENT_EXPLANATIONS:
+        return _COMPONENT_EXPLANATIONS[component_type]
+    lowered = component_type.lower()
+    technology = component_type.removeprefix("t") or "configured technology"
+    if "connection" in lowered:
+        return f"Opens or closes a {technology} connection."
+    if "input" in lowered:
+        return f"Reads data using the Talend {component_type} component."
+    if "output" in lowered:
+        return f"Writes data using the Talend {component_type} component."
+    return f"Processes data using the Talend {component_type} component."
+
+
+def explain_connector(connector_name: str, is_control_flow: bool) -> str:
+    """Explain Talend's connection vocabulary without inferring business intent."""
+    normalized = connector_name.upper()
+    if normalized in _CONNECTOR_EXPLANATIONS:
+        return _CONNECTOR_EXPLANATIONS[normalized]
+    if is_control_flow:
+        return "Controls when the following component starts; carries no row data."
+    return "Transfers rows of data between components."
 
 
 def _sanitize_param_value(value: str) -> str:
@@ -152,7 +219,9 @@ def _build_nodes(
             trunjob_seen += 1
         nodes.append(JobGraphNode(
             unique_name=unique_name,
+            display_label=component_display_label(comp),
             component_type=component_type,
+            type_explanation=explain_component_type(component_type),
             role=derive_component_role(component_type),
             has_subgraph=component_type == _TMAP_TYPE,
             subjob_target=subjob_target,
@@ -173,15 +242,17 @@ def _build_edges(job_data: dict[str, Any]) -> list[JobGraphEdge]:
         connector_name = str(conn.get("connector_name") or "")
         raw_style = conn.get("line_style")
         line_style = int(raw_style) if isinstance(raw_style, (int, float)) else 0
+        is_control_flow = (
+            line_style != 0 or bool(_TRIGGER_CONNECTOR_PATTERN.match(connector_name))
+        )
         edges.append(JobGraphEdge(
             name=str(conn.get("name") or ""),
             source=str(conn.get("source") or ""),
             target=str(conn.get("target") or ""),
             connector_name=connector_name,
             line_style=line_style,
-            is_control_flow=(
-                line_style != 0 or bool(_TRIGGER_CONNECTOR_PATTERN.match(connector_name))
-            ),
+            is_control_flow=is_control_flow,
+            explanation=explain_connector(connector_name, is_control_flow),
         ))
     return edges
 

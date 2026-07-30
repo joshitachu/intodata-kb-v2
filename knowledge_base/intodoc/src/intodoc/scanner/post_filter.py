@@ -7,6 +7,10 @@ just pattern matching.
 
 from __future__ import annotations
 
+from enum import Enum
+
+from pydantic import BaseModel
+
 from intodoc.config import RedactionLevel
 from intodoc.models import (
     ComponentParam,
@@ -38,7 +42,42 @@ def filter_scan_result(
     for job in result.jobs:
         _filter_job(job, cred_filter, level)
 
+    # URI descriptor markers are a private Layer-1-to-parser transport, not
+    # a public redaction shape.  Most exact component parameters consume them
+    # while parsing and attach a descriptor; this final recursive sweep covers
+    # tMap/tXMLMap expressions, context values, metadata and any future model
+    # field that carries a larger string around a marker.
+    _normalize_internal_descriptor_tokens(result, cred_filter)
     return result
+
+
+def _normalize_internal_descriptor_tokens(value: object, cred_filter: CredentialFilter) -> object:
+    """Mutate a Pydantic/list/dict tree so no internal URI token can persist."""
+    # Str-backed enums (for example FileType) satisfy isinstance(value, str).
+    # Preserve their model type instead of turning them into plain strings.
+    if isinstance(value, Enum):
+        return value
+    if isinstance(value, str):
+        return cred_filter.normalize_redaction_tokens(value)
+    if isinstance(value, BaseModel):
+        for field_name in type(value).model_fields:
+            setattr(
+                value,
+                field_name,
+                _normalize_internal_descriptor_tokens(
+                    getattr(value, field_name), cred_filter,
+                ),
+            )
+        return value
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            value[index] = _normalize_internal_descriptor_tokens(item, cred_filter)
+        return value
+    if isinstance(value, dict):
+        for key, item in list(value.items()):
+            value[key] = _normalize_internal_descriptor_tokens(item, cred_filter)
+        return value
+    return value
 
 
 def _filter_metadata_connection(
@@ -49,8 +88,11 @@ def _filter_metadata_connection(
     """Redact sensitive fields on a MetadataConnection."""
     # Host is always sensitive (contains server names / IPs)
     if conn.host:
+        descriptor = cred_filter.describe_value(conn.host, is_host=True)
         cred_filter._record_redaction("connection_host", conn.host)
         conn.host = "[HOST_REDACTED]"
+        if descriptor is not None:
+            conn.host_redaction = descriptor
 
     # Port is fine -- it's structural, not identifying
 
@@ -74,7 +116,10 @@ def _filter_metadata_connection(
         if isinstance(val, str):
             filtered = cred_filter.filter_text(val)
             if filtered != val:
+                descriptor = cred_filter.describe_value(val)
                 conn.additional_params[key] = filtered
+                if descriptor is not None:
+                    conn.additional_params_redactions[key] = descriptor
 
 
 def _filter_context_group(
@@ -97,24 +142,33 @@ def _filter_context_variable(
     if level == RedactionLevel.PARANOID:
         for env in list(var.values.keys()):
             if var.values[env]:
+                descriptor = cred_filter.describe_value(var.values[env])
                 cred_filter._record_redaction("context_var_paranoid", var.values[env])
                 var.values[env] = "[REDACTED]"
+                if descriptor is not None:
+                    var.redaction_descriptors[env] = descriptor
         return
 
     # id_Password type: always redact regardless of level
     if var.type and var.type.lower() in ("id_password", "password"):
         for env in list(var.values.keys()):
             if var.values[env]:
+                descriptor = cred_filter.describe_value(var.values[env])
                 cred_filter._record_redaction("context_var_password", var.values[env])
                 var.values[env] = "[PASSWORD_REDACTED]"
+                if descriptor is not None:
+                    var.redaction_descriptors[env] = descriptor
         return
 
     # Check variable name for sensitivity
     if cred_filter.is_sensitive_var_name(var.name):
         for env in list(var.values.keys()):
             if var.values[env]:
+                descriptor = cred_filter.describe_value(var.values[env])
                 cred_filter._record_redaction("context_var_sensitive", var.values[env])
                 var.values[env] = "[REDACTED]"
+                if descriptor is not None:
+                    var.redaction_descriptors[env] = descriptor
         return
 
     # Catch-all: re-run text filter on all values
@@ -123,7 +177,10 @@ def _filter_context_variable(
         if isinstance(val, str):
             filtered = cred_filter.filter_text(val)
             if filtered != val:
+                descriptor = cred_filter.describe_value(val)
                 var.values[env] = filtered
+                if descriptor is not None:
+                    var.redaction_descriptors[env] = descriptor
 
 
 def _filter_job(
@@ -159,9 +216,16 @@ def _filter_component_params(
         if not param.value:
             continue
         if cred_filter.is_sensitive_var_name(param.name):
+            descriptor = cred_filter.describe_value(param.value)
             cred_filter._record_redaction("component_param_sensitive", param.value)
             param.value = "[REDACTED]"
+            if descriptor is not None:
+                param.redaction_descriptor = descriptor
             continue
-        filtered = cred_filter.filter_text(param.value)
-        if filtered != param.value:
+        original = param.value
+        filtered = cred_filter.filter_text(original)
+        if filtered != original:
+            descriptor = cred_filter.describe_value(original)
             param.value = filtered
+            if descriptor is not None:
+                param.redaction_descriptor = descriptor

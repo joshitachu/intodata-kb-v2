@@ -1,5 +1,31 @@
 # Current Context
 
+## Status (2026-07-29) -- topology evidence and landscape backend complete
+
+The scanner now emits an approved four-artifact fact set:
+`scan_result.json`, `scan/manifest.json`, `scan/lineage.json`, and
+`scan/landscape.json`. Talend joblets/routelets, tXMLMap, and exactly-associated
+TDM maps are represented; unsupported/partial evidence is warned or marked
+unmapped. Workato, Lobster, and Generic parsers emit the same topology-fact
+families, currently with one source root per upload.
+
+Redaction is capture-not-discard: raw endpoints and credentials remain removed,
+while safe scheme/category/auth-type/TLS/host-present descriptors survive on
+component and context evidence. Descriptor transport markers cannot persist.
+Landscape rollup is deterministic, root-scoped, provenance-backed, and keeps
+control-flow, data, integration, and configuration dependency types separate.
+
+**Last completed**: full scanner validation (588 passed, 8 skipped) plus a real
+six-ZIP scan (429 designs, 2,145 lineage entries, 14 applications, 137 system
+candidates, 185 edges) and publication/runtime contract verification.
+
+**Immediate next**: frontend illustration/semantic zoom and application/system
+curation remain separate product work. Do not add fuzzy system merging or infer
+peers from endpoint declarations. Chat-over-topology remains deferred.
+
+**Resolved blockers**: silent Talend artifact omissions, missing tXMLMap/TDM
+lineage, topology-fact platform coupling, and redaction signal loss.
+
 ## Status
 Documentation generation now runs via Claude Code agent + MCP server (not CLI analyzer).
 Phase 2 (Universal IR) complete. Phase 3 (Migration Generator) not yet started.
@@ -70,3 +96,21 @@ None.
 - `.agent/tasks/phase3-migration-generator.md` -- Full Phase 3 FRD
 - `src/intodoc/ir/` -- IR package (9 modules)
 - `tests/test_ir/` -- IR test suite (62 tests)
+## Latest completed (2026-07-30)
+
+- Talend L1 application identity now uses the stable XMI project ID from
+  `talend.project`; repeated ZIP roots remain provenance, not duplicate nodes.
+- Unknown Talend utility components no longer become external systems.
+- The topology fixture was rescanned: 429 designs, 2,145 lineage entries,
+  8 project identities, 43 evidence-backed/configuration identities, 32 edges.
+
+## Immediate next
+
+- Review the live default L1 with an authenticated user and curate only genuine
+  business aliases/boundaries; do not reintroduce filename-based identity.
+- A later enrichment layer may propose business purpose/ownership, but must cite
+  scan or supplied business evidence and retain unresolved facts.
+
+## Resolved blockers
+
+- False component-derived systems and repeated-project root duplication.

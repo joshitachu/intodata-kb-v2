@@ -323,6 +323,9 @@ async def _upsert_enriched_event(
     row.database_name = parsed.database_name
     row.table_name = parsed.table_name
     row.queue_name = parsed.queue_name
+    row.field_name = parsed.field_name
+    row.field_violation_kind = parsed.field_violation_kind
+    row.expected_type = parsed.expected_type
     row.message_family = parsed.message_family
     row.confidence = parsed.confidence
     await session.flush()

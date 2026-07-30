@@ -231,7 +231,10 @@ class GenericParser(BaseParser):
 
         self._apply_component_connection_refs(jobs, connections)
 
-        manifest = self._build_manifest(jobs, connections)
+        source_roots = self._prepare_single_root_topology_identities(
+            jobs, repo_root, "generic",
+        )
+        manifest = self._build_manifest(jobs, connections, source_roots)
         schema_definitions = self._extract_schema_definitions(files, repo_root)
 
         stats = {
@@ -364,6 +367,7 @@ class GenericParser(BaseParser):
             group=group,
             components=[comp],
             connections=[],
+            artifact_kind="entry_point",
         )
 
     def _build_group_job(
@@ -400,6 +404,7 @@ class GenericParser(BaseParser):
             group=group,
             components=components,
             connections=job_connections,
+            artifact_kind="module",
         )
 
     @staticmethod
@@ -885,26 +890,39 @@ class GenericParser(BaseParser):
     def _build_manifest(
         jobs: list[ParsedJob],
         connections: list[MetadataConnection],
+        source_roots: list[dict[str, str]],
     ) -> ProjectManifest:
         """Build manifest from job groups, imports, and detected connections."""
-        job_groups: dict[str, str] = {j.name: j.group for j in jobs}
+        job_groups: dict[str, str] = {j.job_id or j.name: j.group for j in jobs}
 
-        # Index: lowercase stem → job name (for call-graph matching)
-        stem_to_job: dict[str, str] = {j.name.lower(): j.name for j in jobs}
+        # Index source-derived aliases to stable job ids. An ambiguous alias
+        # is deliberately not resolved into a topology edge.
+        stem_to_jobs: dict[str, list[str]] = {}
         # Also index by path stem (handles ./relative imports)
         for j in jobs:
+            job_key = j.job_id or j.name
+            stem_to_jobs.setdefault(j.name.lower(), []).append(job_key)
             stem = Path(j.path).stem.lower()
-            stem_to_job.setdefault(stem, j.name)
+            if job_key not in stem_to_jobs.setdefault(stem, []):
+                stem_to_jobs[stem].append(job_key)
 
         job_calls: dict[str, list[str]] = {}
         job_called_by: dict[str, list[str]] = {}
         job_external_systems: dict[str, list[str]] = {}
         job_connections_used: dict[str, list[str]] = {}
         connection_used_by: dict[str, list[str]] = {}
+        artifact_kinds: dict[str, str] = {}
+        artifact_relations: list[dict] = []
+        artifact_endpoints: list[dict] = []
+        artifact_resources: list[dict] = []
 
         conn_names = {c.name for c in connections}
+        conn_type_by_name = {c.name: c.connection_type for c in connections}
 
         for job in jobs:
+            job_key = job.job_id or job.name
+            artifact_kinds[job_key] = job.artifact_kind
+
             # Collect all imports/usings text from this job's components
             all_imports: list[str] = []
             all_conn_strings: list[str] = []
@@ -915,6 +933,59 @@ class GenericParser(BaseParser):
                         all_imports.append(str(p.value))
                     if p.name == "connection_string" and p.value:
                         all_conn_strings.append(str(p.value))
+
+                # -- artifact_resources: file-scoped connections (Web.config /
+                # appsettings-style) attributed directly to their component --
+                if comp.metadata_connection_ref:
+                    for conn_name in comp.metadata_connection_ref.split(","):
+                        conn_name = conn_name.strip()
+                        if not conn_name:
+                            continue
+                        artifact_resources.append({
+                            "artifact": job_key,
+                            "resource_type": conn_type_by_name.get(conn_name, "connection"),
+                            "resource": conn_name,
+                            # Generic has no input/output naming convention to
+                            # key off (unlike Talend's tXxxInput/tXxxOutput or
+                            # Workato's verb-shaped action names) -- honest
+                            # "unknown" rather than a guess.
+                            "direction": "unknown",
+                            "component_name": comp.unique_name,
+                            "provenance": comp.component_type,
+                        })
+
+                # -- artifact_resources: import-detected external systems,
+                # attributed to the component whose imports matched --
+                comp_imports = "\n".join(
+                    str(p.value) for p in comp.params
+                    if p.name in ("imports", "usings") and p.value
+                )
+                if comp_imports:
+                    for pkg_prefix, system in _IMPORT_TO_SYSTEM.items():
+                        if pkg_prefix.lower() in comp_imports.lower():
+                            artifact_resources.append({
+                                "artifact": job_key,
+                                "resource_type": "external_system",
+                                "resource": system,
+                                "direction": "unknown",
+                                "component_name": comp.unique_name,
+                                "provenance": comp.component_type,
+                            })
+
+                # -- artifact_endpoints: regex-detected HTTP routes. Kind only
+                # -- literal paths are not carried, same redaction posture as
+                # Talend's route endpoint records (no raw URI/path values). --
+                routes_val = next(
+                    (p.value for p in comp.params if p.name == "routes" and p.value), "",
+                )
+                if routes_val:
+                    artifact_endpoints.append({
+                        "artifact": job_key,
+                        "endpoint_type": "http_route",
+                        "direction": "input",
+                        "component_name": comp.unique_name,
+                        "provenance": comp.component_type,
+                    })
 
             imports_text = "\n".join(all_imports)
 
@@ -932,16 +1003,29 @@ class GenericParser(BaseParser):
                 )
                 for tup in stems:
                     for candidate in tup:
-                        if candidate and candidate.lower() in stem_to_job:
-                            target = stem_to_job[candidate.lower()]
-                            if target != job.name and target not in called:
+                        targets = stem_to_jobs.get(candidate.lower(), []) if candidate else []
+                        if len(targets) == 1:
+                            target = targets[0]
+                            if target != job_key and target not in called:
                                 called.append(target)
             if called:
-                job_calls[job.name] = called
+                job_calls[job_key] = called
                 for target in called:
                     job_called_by.setdefault(target, [])
-                    if job.name not in job_called_by[target]:
-                        job_called_by[target].append(job.name)
+                    if job_key not in job_called_by[target]:
+                        job_called_by[target].append(job_key)
+                    # Resolution is not a separate step here: `called` only
+                    # ever contains stem_to_job hits, i.e. targets that are
+                    # already known ParsedJob names, so every entry mirrors
+                    # Talend's "resolved" tRunJob case; there is no generic
+                    # analog of an unresolved-but-named reference to record.
+                    artifact_relations.append({
+                        "source": job_key,
+                        "target": target,
+                        "relation_type": "job_calls_job",
+                        "resolution": "resolved",
+                        "provenance": "import_reference",
+                    })
 
             # -- job_external_systems from imports --
             systems: list[str] = []
@@ -950,7 +1034,7 @@ class GenericParser(BaseParser):
                     if system not in systems:
                         systems.append(system)
             if systems:
-                job_external_systems[job.name] = sorted(systems)
+                job_external_systems[job_key] = sorted(systems)
 
             # -- job_connections_used from connection_string params --
             used_conns: list[str] = []
@@ -960,15 +1044,15 @@ class GenericParser(BaseParser):
                     if cname.lower() in cs.lower() and cname not in used_conns:
                         used_conns.append(cname)
                         connection_used_by.setdefault(cname, [])
-                        if job.name not in connection_used_by[cname]:
-                            connection_used_by[cname].append(job.name)
+                        if job_key not in connection_used_by[cname]:
+                            connection_used_by[cname].append(job_key)
                 # If no match but we have a real connection string, synthesise a name
                 if not used_conns and cs and len(cs) > 5:
                     synth = "detected_connection"
                     if synth not in used_conns:
                         used_conns.append(synth)
             if used_conns:
-                job_connections_used[job.name] = used_conns
+                job_connections_used[job_key] = used_conns
 
         return ProjectManifest(
             job_groups=job_groups,
@@ -977,6 +1061,12 @@ class GenericParser(BaseParser):
             job_external_systems=job_external_systems,
             job_connections_used=job_connections_used,
             connection_used_by=connection_used_by,
+            artifact_kinds=artifact_kinds,
+            artifact_relations=artifact_relations,
+            artifact_endpoints=artifact_endpoints,
+            artifact_resources=artifact_resources,
+            source_roots=source_roots,
+            job_source_roots={j.job_id or j.name: j.source_root for j in jobs},
         )
 
 

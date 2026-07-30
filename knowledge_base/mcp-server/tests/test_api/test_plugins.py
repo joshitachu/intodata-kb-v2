@@ -5,7 +5,8 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
-from sqlalchemy import select
+from fastapi import Request
+from sqlalchemy import select, text
 
 from mcp_server.api.routes import plugins as plugins_mod
 from mcp_server.db.models import PluginPack
@@ -376,6 +377,51 @@ async def test_untrusted_pack_edit_remains_untrusted(client, tmp_path):
         pack = (await db.execute(select(PluginPack).where(PluginPack.id == pack_id))).scalar_one()
     assert pack.origin == "edited"
     assert pack.certification_status == "untrusted"
+
+
+async def test_project_member_with_access_can_select_pack_and_outsider_cannot(client):
+    """Selecting a project's plugin pack requires project access, not ownership.
+
+    A non-owner user assigned to the project may set the selection (plugin_pack_id
+    is None here so the certification gate is not exercised); a user with no
+    assignment is still rejected with 403.
+    """
+    await _add_project(client, "member-select")
+
+    async with plugins_mod.async_session_factory() as db:
+        await db.execute(text(
+            "INSERT INTO users (id, username, is_superadmin) VALUES (2, 'member', 0)"
+        ))
+        await db.execute(text(
+            "INSERT INTO users (id, username, is_superadmin) VALUES (3, 'outsider', 0)"
+        ))
+        await db.execute(text(
+            "INSERT INTO project_assignments (user_id, project_id, is_owner) "
+            "VALUES (2, 'member-select', 0)"
+        ))
+        await db.commit()
+
+    from mcp_server.api.app import app, require_auth
+
+    def _as(user_id: str, username: str):
+        async def _mock(request: Request) -> dict:
+            request.state.auth_payload = {"sub": user_id, "type": "access", "username": username}
+            return request.state.auth_payload
+        return _mock
+
+    app.dependency_overrides[require_auth] = _as("2", "member")
+    member_resp = await client.patch(
+        "/mcp/projects/member-select/plugin", json={"plugin_pack_id": None}
+    )
+
+    app.dependency_overrides[require_auth] = _as("3", "outsider")
+    outsider_resp = await client.patch(
+        "/mcp/projects/member-select/plugin", json={"plugin_pack_id": None}
+    )
+
+    assert member_resp.status_code == 200, member_resp.text
+    assert member_resp.json() == {"project_id": "member-select", "plugin_pack_id": None}
+    assert outsider_resp.status_code == 403
 
 
 async def test_patch_untrusted_pack_is_rejected_and_delete_is_retired(client, tmp_path):

@@ -21,7 +21,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from src.api.dependencies import CurrentUser, DBSession
+from src.api.dependencies import CurrentUser, DBSession, RuntimeSourceReader, RuntimeSourceWriter
 from src.rbac.permissions import get_user_project_ids
 from src.runtime.insights.models import (
     RuntimeAlertReadyMetadata,
@@ -72,6 +72,16 @@ from src.runtime.models import (
 )
 from src.runtime.status import get_runtime_status
 from src.runtime.store import ProjectScope, RuntimeRecordNotFoundError, RuntimeStoreRepository
+from src.runtime.topology.correlation import RuntimeCorrelationService
+from src.runtime.topology.models import (
+    RuntimeExecutionCorrelation,
+    RuntimeJobScanMap,
+    RuntimeJobScanMapCreate,
+)
+from src.runtime.topology.repository import (
+    RuntimeJobScanMapValidationError,
+    RuntimeTopologyRepository,
+)
 
 router = APIRouter(prefix="/runtime", tags=["runtime"])
 
@@ -150,6 +160,15 @@ class RuntimeDependencyListResponse(BaseModel):
     total: int
 
 
+class RuntimeJobScanMapListResponse(BaseModel):
+    mappings: list[RuntimeJobScanMap]
+    total: int
+
+
+class RuntimeJobScanMapResponse(BaseModel):
+    mapping: RuntimeJobScanMap
+
+
 class RuntimeDependencySummaryResponse(BaseModel):
     summary: RuntimeDependencySummary
 
@@ -206,6 +225,57 @@ async def get_status(_user: CurrentUser) -> RuntimeStatusResponse:
     return await get_runtime_status()
 
 
+@router.get("/job-scan-maps", response_model=RuntimeJobScanMapListResponse)
+async def list_runtime_job_scan_maps(
+    project_id: str,
+    user: RuntimeSourceReader,
+    db: DBSession,
+) -> RuntimeJobScanMapListResponse:
+    scope = await get_user_project_ids(user, db)
+    if _intersect_scope(scope, project_id) == []:
+        raise HTTPException(status_code=404, detail="Project not found")
+    mappings = await RuntimeTopologyRepository(db).list_job_scan_maps(project_id)
+    return RuntimeJobScanMapListResponse(mappings=mappings, total=len(mappings))
+
+
+@router.post("/job-scan-maps", response_model=RuntimeJobScanMapResponse)
+async def upsert_runtime_job_scan_map(
+    body: RuntimeJobScanMapCreate,
+    user: RuntimeSourceWriter,
+    db: DBSession,
+) -> RuntimeJobScanMapResponse:
+    scope = await get_user_project_ids(user, db)
+    if _intersect_scope(scope, body.project_id) == []:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        mapping = await RuntimeTopologyRepository(db).upsert_job_scan_map(
+            body, created_by=str(user.id)
+        )
+    except RuntimeJobScanMapValidationError as exc:
+        raise HTTPException(status_code=409, detail="Static job mapping cannot be validated") from exc
+    await db.commit()
+    return RuntimeJobScanMapResponse(mapping=mapping)
+
+
+@router.delete("/job-scan-maps/{project_id}/{source_key}/{runtime_job_id}", status_code=204)
+async def delete_runtime_job_scan_map(
+    project_id: str,
+    source_key: str,
+    runtime_job_id: str,
+    user: RuntimeSourceWriter,
+    db: DBSession,
+) -> None:
+    scope = await get_user_project_ids(user, db)
+    if _intersect_scope(scope, project_id) == []:
+        raise HTTPException(status_code=404, detail="Project not found")
+    deleted = await RuntimeTopologyRepository(db).delete_job_scan_map(
+        project_id, source_key, runtime_job_id
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Runtime job mapping not found")
+    await db.commit()
+
+
 @router.get("/executions", response_model=ExecutionListResponse, summary="List runtime executions")
 async def list_executions(
     user: CurrentUser,
@@ -247,6 +317,24 @@ async def get_execution(
     except RuntimeRecordNotFoundError:
         raise HTTPException(status_code=404, detail="Execution not found")
     return ExecutionDetailResponse(execution=execution)
+
+
+@router.get(
+    "/executions/{execution_id}/correlation",
+    response_model=RuntimeExecutionCorrelation,
+    summary="Correlate a runtime execution with explicit static topology evidence",
+)
+async def get_execution_correlation(
+    execution_id: str,
+    user: CurrentUser,
+    db: DBSession,
+) -> RuntimeExecutionCorrelation:
+    try:
+        return await RuntimeCorrelationService(db).correlate_execution(
+            await get_user_project_ids(user, db), execution_id
+        )
+    except RuntimeRecordNotFoundError:
+        raise HTTPException(status_code=404, detail="Execution not found")
 
 
 @router.get(

@@ -1,6 +1,89 @@
 # KB Sub-project Context
 
-## Current State (2026-07-19) -- governed Packs plus unified Nexus agent path, locally deployed
+## Current State (2026-07-29) -- topology roadmap backend complete
+
+IntoDoc now produces approved scan, manifest, L4 lineage, and deterministic
+landscape artifacts. MCP serves the landscape through the RBAC-scoped
+`GET /mcp/projects/{project_id}/landscape` endpoint and publishes only
+hash-approved bounded static topology snapshots to Runtime. Scan output is
+cross-process locked through publication; bypassed or tampered artifacts fail
+closed.
+
+**Last completed**: the six-project topology bundle validated end to end:
+429 artifacts, 224 published dependencies, 2,145 lineage facts, 14 applications,
+137 system candidates, 185 landscape edges, and no private redaction markers.
+
+**Immediate next**: illustration/semantic zoom in the frontend and a human
+application/system curation workflow are deferred product slices. A crashed
+process can leave the fail-closed scan lock, which currently requires explicit
+operator cleanup after verifying no scanner is active. Chat-over-topology remains
+out of scope.
+
+**Resolved blockers**: Slice 3b backend endpoint, scan/publication integrity,
+composite landscape rollup, and Runtime static-snapshot handoff.
+
+## Current State (2026-07-29) -- Nexus-staged Grounded OpenCode v2 deployed
+
+Generate Docs still offers four independent paths: unchanged legacy generation,
+single-agent OpenCode, the original OpenCode-parent orchestrated Candidate C, and
+the recommended `OpenCode grounded` candidate. Grounded no longer relies on a
+parent model to dispatch or finalize. Nexus compiles the selected recipe into a
+strict role DAG, creates one physically separate OpenCode workspace/session per
+role, schedules ready roles up to the pack concurrency limit, and copies only
+validated upstream artifacts into downstream packets. Task/subagent dispatch is
+disabled for every Grounded session.
+
+Before OpenCode health or session creation, Nexus checks frozen source item/byte
+budgets, requires the approved scanner redaction receipt, rejects credential-shaped
+source values without echoing them, compiles `FACT_LEDGER.json` from logical source
+paths (frozen payloads are physically `.bin`), and fails closed on missing scanner
+jobs, manifest/unit reconciliation errors, or incomplete component inventories.
+Intermediate and final artifacts pass exact ownership, non-empty/JSON, secret,
+reproduced-secret, evidence-locator, and deterministic protected-claim gates.
+Unaccepted files are never propagated. Each role has one bounded repair attempt;
+finalization is based on Nexus-owned files and state, not an agent final message.
+
+The AlitaLand legacy-equivalence pack instantiates seven roles and preserves the
+same Phase 2/scorecard/Phase 3 prompt and context files. A separate logistics recipe
+instantiates four roles and two documents, proving the runner and pack compiler are
+not tied to Talend, one job, or ten outputs. The quick Generate Docs route currently
+freezes the approved IntoDoc source set; generic directory, tabular, mapping, and
+runtime sources remain available through the experiment compose/compile surface.
+Legacy publication and RAG remain untouched; every candidate stays isolated.
+
+A strict no-provider recovery endpoint was added for already completed failed
+orchestrated sessions. It verifies exact session ID/title/directory/runtime/model,
+idle state, child completions, workspace outputs, and secret isolation before
+indexing. Candidate C could not be recovered after deployment because rebuilding
+OpenCode cleared its ephemeral session store; the guard rejected recovery before
+copying/indexing artifacts. Its original workspace remains intact and the experiment
+remains failed with zero indexed candidate artifacts.
+
+Verification: 292 experiment/API tests passed; 21 dashboard tests passed; Ruff,
+Python compile, scoped diff checks, Compose config, and production Vite build passed.
+The delegated full MCP run reached 1611 passed with three unrelated existing
+environment/catalogue failures. OpenCode 1.18.4, MCP, dashboard, backend, and
+mission-control are healthy; all required Grounded agents and both reference packs
+are visible in the live runtime. No model prompt was submitted during validation.
+
+**Immediate next:** create a new approved/redacted AlitaLand scan: the current
+snapshot is rejected by the fail-closed trust gate for credential-shaped values in
+scanner JSON, before any provider request. Then choose Generate Docs → `OpenCode
+grounded` → select the connected DeepSeek route → `Start Grounded Candidate`. Judge
+the same ten outputs against the latest legacy baseline using
+factual accuracy/coverage first, then latency, aggregate role tokens/cache reads,
+and billed cost. No paid Grounded run was started during implementation.
+
+## Previous State (2026-07-27) -- second OpenCode candidate with bounded subagents
+
+Candidate C introduced a broad multi-session OpenCode orchestrator with evidence,
+analysis, referee, per-document writer, and reviewer agents. It generated all ten
+AlitaLand documents but failed final indexing because the validator expected array
+shapes for two execution-plan fields that the contract had not typed. The validator
+now accepts non-empty arrays or objects, but the generated run was not trusted after
+its runtime session provenance disappeared.
+
+## Previous State (2026-07-19) -- governed Packs plus unified Nexus agent path, locally deployed
 
 The shared branch contains the certified Swap-Pack governance boundary and the
 Nexus single-agent chat cleanup. MCP remains the final IntoDoc Pack authority:
@@ -436,3 +519,18 @@ Enterprise documentation quality gates and verdicts: enterprise mode is now the 
 - Updates require the expected base SHA, return version/reconciliation receipts, and restore the prior file when RAG indexing fails. Revert validates the receipt against the document/version and is itself rollback-protected.
 - Focused update/revert/RBAC tests: 78 passed. Full MCP suite: 1098 passed with one unrelated catalogue assertion for `route33/z-ai/glm-4.7-flash`.
 - Live update/revert restored `final_agentic_e2e/00_AGENT_BRIEF.md` to its exact original SHA. No temporary evidence marker remains.
+## Latest completed (2026-07-30 topology readability)
+
+- Job graph API exposes Talend author labels, stable technical IDs, component
+  explanations, and data-versus-trigger connector explanations.
+- Landscape response exposes canonical project identity plus all imported roots.
+- MCP server and frontend were rebuilt and are healthy.
+
+## Immediate next
+
+- Authenticated product review of the regenerated topology.
+- Business alias/ownership enrichment remains later work and must be additive.
+
+## Resolved blockers
+
+- Opaque component labels and unexplained FLOW/SUBJOB_OK semantics.

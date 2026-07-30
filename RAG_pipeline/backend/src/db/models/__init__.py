@@ -84,6 +84,10 @@ from src.db.models.runtime_insights import (
     RuntimeIncidentRow,
     RuntimeIncidentEvidenceRow,
 )
+from src.db.models.runtime_topology import (
+    RuntimeJobScanMapRow,
+    RuntimeStaticTopologySnapshotRow,
+)
 
 __all__ = [
     "User",
@@ -165,4 +169,6 @@ __all__ = [
     "RuntimeExecutionSummaryRow",
     "RuntimeIncidentRow",
     "RuntimeIncidentEvidenceRow",
+    "RuntimeStaticTopologySnapshotRow",
+    "RuntimeJobScanMapRow",
 ]

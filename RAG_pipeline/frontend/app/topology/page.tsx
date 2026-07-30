@@ -28,9 +28,12 @@ import { GraphToolbar } from "@/components/graph/GraphToolbar";
 import { JobDetailPanel } from "@/components/graph/JobDetailPanel";
 import { JobGraphCanvas } from "@/components/graph/JobGraphCanvas";
 import { ComponentGraphCanvas } from "@/components/graph/ComponentGraphCanvas";
+import { LandscapeCanvas, type LandscapeSelection } from "@/components/graph/LandscapeCanvas";
+import { IntegrationDetailCanvas, IntegrationRelationshipChooser } from "@/components/graph/IntegrationDetailCanvas";
 import { TopologyBreadcrumb } from "@/components/graph/TopologyBreadcrumb";
 import { LineagePathBanner } from "@/components/graph/LineagePathBanner";
 import { useTopologyNavigation } from "@/hooks/useTopologyNavigation";
+import { useProjectLandscape, LandscapeUnavailableError } from "@/hooks/useProjectLandscape";
 import { useFieldLineage } from "@/hooks/useFieldLineage";
 import { useJobHealth } from "@/hooks/useJobHealth";
 import {
@@ -56,6 +59,7 @@ import {
   applyConnectionVisibility,
   filterManifestByArtifactKind,
   filterManifestByGroup,
+  filterManifestBySourceRoot,
   topologyGroupForJob,
   getDimensionsForId,
   type ManifestData,
@@ -68,6 +72,8 @@ import { computeFailureFocusSet, isFocusDimmableNode, isFocusDimmableEdge } from
 import { computeFocus, type FocusResult } from "@/lib/focusMode";
 import { FocusInteractionContext, type FocusInteraction } from "@/components/graph/focusInteraction";
 import { CALL_EDGE_COLOR } from "@/lib/nodeStyles";
+import { findLandscapeEdge, landscapeEdgeKey } from "@/lib/landscapeTransform";
+import type { LandscapeEdge, LandscapeProvenance } from "@/types/landscape";
 
 // Default focus-mode horizon: focal job ± this many dependency hops.
 const DEFAULT_FOCUS_HOPS = 2;
@@ -195,6 +201,7 @@ function TopologyContent() {
     stack: navStack,
     current: navCurrent,
     depth: navDepth,
+    descendToIntegration,
     descendToGroup,
     descendToJob,
     descendToComponent,
@@ -202,12 +209,27 @@ function TopologyContent() {
     jumpTo,
     reset: resetNavigation,
   } = useTopologyNavigation();
-  const focusedGroup =
-    navStack.find((level) => level.kind === "group")?.groupName ?? null;
+  const focusedGroupLevel = navStack.find((level) => level.kind === "group");
+  const focusedGroup = focusedGroupLevel?.kind === "group" ? focusedGroupLevel.groupName : null;
+  const focusedSourceRoot = focusedGroupLevel?.kind === "group" ? focusedGroupLevel.sourceRoot : undefined;
   const currentJobName = navCurrent.kind === "job" ? navCurrent.jobName : null;
   const currentComponent = navCurrent.kind === "component" ? navCurrent : null;
   const atProjectLevel =
     navCurrent.kind === "project" || navCurrent.kind === "group";
+  const landscapeQuery = useProjectLandscape(selectedProject);
+  // The scanner-computed landscape supersedes the legacy group roll-up at the
+  // root only. Group detail remains available as the existing Designs path.
+  const showLandscapeRoot = navCurrent.kind === "project" && landscapeQuery.isSuccess;
+  const landscapeUnavailable = landscapeQuery.error instanceof LandscapeUnavailableError;
+  const landscapeFailure = Boolean(
+    selectedProject && navCurrent.kind === "project" && landscapeQuery.isError && !landscapeUnavailable,
+  );
+  const showLegacyCanvas = navCurrent.kind === "group" || (navCurrent.kind === "project" && landscapeUnavailable);
+  const integrationSelection = navCurrent.kind === "integration" ? navCurrent.selection : null;
+  const selectedLandscapeEdge = useMemo<LandscapeEdge | undefined>(() => {
+    if (!landscapeQuery.data || integrationSelection?.kind !== "edge") return undefined;
+    return findLandscapeEdge(landscapeQuery.data, integrationSelection.edgeKey);
+  }, [landscapeQuery.data, integrationSelection]);
 
   // S5 field lineage ("heritage mode") - a single selection lives here so it
   // survives ascending/descending between drill-down levels (each level's
@@ -495,13 +517,14 @@ function TopologyContent() {
   const activeManifest = useMemo(
     () => {
       if (!graphData) return null;
-      const scoped =
-        showArtifactTaxonomy && focusedGroup
+      const scoped = showArtifactTaxonomy && focusedSourceRoot
+        ? filterManifestBySourceRoot(graphData.manifest, focusedSourceRoot)
+        : showArtifactTaxonomy && focusedGroup
           ? filterManifestByGroup(graphData.manifest, focusedGroup)
           : graphData.manifest;
       return filterManifestByArtifactKind(scoped, artifactFilter);
     },
-    [graphData, showArtifactTaxonomy, focusedGroup, artifactFilter],
+    [graphData, showArtifactTaxonomy, focusedGroup, focusedSourceRoot, artifactFilter],
   );
 
   // Build the flow result based on mode
@@ -1201,6 +1224,34 @@ function TopologyContent() {
     fitView({ padding: 0.1, duration: 300, minZoom: FIT_MIN_ZOOM });
   }, [fitView]);
 
+  const handleExploreLandscape = useCallback((selection: LandscapeSelection) => {
+    setSelectedJob(null);
+    setFocusJobId(null);
+    setLineageQuery(null);
+    if (selection.kind === "edge") {
+      descendToIntegration({ kind: "edge", edgeKey: landscapeEdgeKey(selection.item) });
+    } else if (selection.kind === "application") {
+      descendToIntegration({ kind: "application", applicationId: selection.item.id });
+    } else {
+      descendToIntegration({ kind: "system", systemId: selection.item.id });
+    }
+  }, [descendToIntegration]);
+
+  const handleOpenLandscapeArtifact = useCallback((record: LandscapeProvenance) => {
+    setSelectedJob(null);
+    // `artifact_id` is the scanner's exact design identity. `sourceRoot` is
+    // retained in navigation for evidence/breadcrumb continuity even when the
+    // legacy job endpoint itself has only a job-name path parameter.
+    descendToJob(record.artifact_id, record.source_root);
+  }, [descendToJob]);
+
+  const handleViewApplicationDesigns = useCallback((sourceRoot: string) => {
+    // The legacy functional-group canvas is intentionally retained as an
+    // application-internals/design view. Source-root filtering is represented
+    // in navigation now; the legacy graph remains its established fallback.
+    descendToGroup(sourceRoot, sourceRoot);
+  }, [descendToGroup]);
+
   // ── Focus mode gestures ──────────────────────────────────────────────────
   // Enter/re-centre focus on a job, or toggle it off if it is already focal.
   // Entering focus closes any open detail panel and clears an active S5 lineage
@@ -1488,7 +1539,7 @@ function TopologyContent() {
       </div>
 
       {/* Toolbar (level 0/1 only) */}
-      {flowResult && atProjectLevel && (
+      {flowResult && atProjectLevel && showLegacyCanvas && (
         <GraphToolbar
           direction={direction}
           showConnections={showConnections}
@@ -1530,7 +1581,12 @@ function TopologyContent() {
       <div className="flex-1 relative min-h-[500px]">
         {/* Level 0/1 canvas: kept mounted (hidden) during drill-down so
             ascending restores the prior viewport and expand state. */}
-        <div className={atProjectLevel ? "absolute inset-0" : "absolute inset-0 hidden"}>
+        <div className={showLegacyCanvas ? "absolute inset-0" : "absolute inset-0 hidden"}>
+        {landscapeUnavailable && navCurrent.kind === "project" && (
+          <div className="absolute inset-x-4 top-3 z-30 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900 shadow-sm">
+            This project needs a rescan for the organization landscape. Showing the existing project-design topology instead.
+          </div>
+        )}
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-20">
             <div className="flex items-center gap-2 text-muted-foreground">
@@ -1654,10 +1710,38 @@ function TopologyContent() {
         )}
         </div>
 
+        {navCurrent.kind === "project" && landscapeQuery.isLoading && selectedProject && (
+          <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-20">
+            <div className="flex items-center gap-2 text-muted-foreground"><div className="h-4 w-4 border-2 border-current border-t-transparent rounded-full animate-spin" />Loading organization landscape...</div>
+          </div>
+        )}
+
+        {landscapeFailure && navCurrent.kind === "project" && (
+          <div className="absolute inset-0 flex items-center justify-center p-6">
+            <div className="max-w-md rounded-xl border border-rose-200 bg-rose-50 p-5 text-center text-sm text-rose-900"><p className="font-semibold">The organization landscape could not be loaded.</p><p className="mt-1 text-xs">{landscapeQuery.error instanceof Error ? landscapeQuery.error.message : "Retry or rescan the project."}</p><button type="button" onClick={() => landscapeQuery.refetch()} className="mt-3 rounded border border-rose-300 bg-white px-3 py-1.5 text-xs font-semibold hover:bg-rose-100">Retry</button></div>
+          </div>
+        )}
+
+        {showLandscapeRoot && landscapeQuery.data && (
+          <LandscapeCanvas landscape={landscapeQuery.data} onExplore={handleExploreLandscape} onViewDesigns={handleViewApplicationDesigns} />
+        )}
+
+        {navCurrent.kind === "integration" && landscapeQuery.data && (
+          selectedLandscapeEdge ? (
+            <IntegrationDetailCanvas landscape={landscapeQuery.data} edge={selectedLandscapeEdge} onBack={ascend} onOpenArtifact={handleOpenLandscapeArtifact} />
+          ) : integrationSelection?.kind === "application" ? (
+            <IntegrationRelationshipChooser landscape={landscapeQuery.data} entityId={integrationSelection.applicationId} title={landscapeQuery.data.applications.find((item) => item.id === integrationSelection.applicationId)?.label || integrationSelection.applicationId} onBack={ascend} onChoose={(edge) => descendToIntegration({ kind: "edge", edgeKey: landscapeEdgeKey(edge) })} />
+          ) : integrationSelection?.kind === "system" ? (
+            <IntegrationRelationshipChooser landscape={landscapeQuery.data} entityId={integrationSelection.systemId} title={landscapeQuery.data.systems.find((item) => item.id === integrationSelection.systemId)?.name || integrationSelection.systemId} onBack={ascend} onChoose={(edge) => descendToIntegration({ kind: "edge", edgeKey: landscapeEdgeKey(edge) })} />
+          ) : (
+            <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">This integration is no longer present in the current scan. Return to the landscape and select it again.</div>
+          )
+        )}
+
         {/* Level 2 canvas: a fresh React Flow instance per descent. The key
             forces a remount (new layout + animated fitView) for every level,
             including tRunJob portal hops between sibling jobs. */}
-        {!atProjectLevel && currentJobName && selectedProject && (
+        {navCurrent.kind === "job" && currentJobName && selectedProject && (
           <JobGraphCanvas
             key={`${navDepth}:${currentJobName}`}
             projectId={selectedProject}
@@ -1672,7 +1756,7 @@ function TopologyContent() {
         {/* Level 3 canvas: one component's table graph (tMap) - or, on the
             documented 404 fallback, the inspector rendered in this same
             slot. Also remounts fresh per descent. */}
-        {!atProjectLevel && currentComponent && selectedProject && (
+        {navCurrent.kind === "component" && currentComponent && selectedProject && (
           <ComponentGraphCanvas
             key={`${navDepth}:${currentComponent.jobName}:${currentComponent.componentName}`}
             projectId={selectedProject}

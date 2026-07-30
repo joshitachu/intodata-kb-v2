@@ -5,9 +5,47 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field, field_validator
+
+
+# ── Redaction Descriptor ──────────────────────────────────────────────
+#
+# "Mask-and-CAPTURE" instead of "mask-and-DISCARD": whenever the scanner
+# redacts a sensitive value (a URL, connection string, endpoint, etc.), this
+# model captures ONLY provably-non-sensitive structural facts about the
+# ORIGINAL value so downstream doc generation keeps some signal instead of
+# losing it entirely to a bare placeholder like "[URL_REDACTED]".
+#
+# HARD invariant: every field here must be an enum/bool/known-scheme-token.
+# Never a host, path, query string, username, or credential value. When a
+# fact cannot be safely determined, the field is left None -- guessing is
+# not acceptable (see intodoc.scanner.credential_filter.CredentialFilter
+# .describe_value, the single place this model is constructed from raw
+# text).
+
+
+class RedactionDescriptor(BaseModel):
+    """Safe, structural facts captured about a value before it was redacted."""
+
+    # URI scheme token from a small fixed vocabulary, e.g. "https", "http",
+    # "jdbc", "jms", "sftp", "smtp", "ldap", "amqp". Never an arbitrary
+    # regex-captured prefix -- only recognized, known scheme tokens.
+    scheme: str | None = None
+    # Coarse connection/resource category, e.g. "db", "rest", "jms", "file",
+    # "smtp", "directory".
+    category: str | None = None
+    # Whether the value carried any auth signal (userinfo, auth header,
+    # password/token/secret param name). None means undeterminable.
+    auth_present: bool | None = None
+    # Auth mechanism TYPE only -- never the credential value itself.
+    auth_type: Literal["none", "basic", "bearer", "api_key", "oauth", "unknown"] | None = None
+    # TLS/SSL on-off flag, where determinable from scheme or an explicit
+    # ssl/tls/encrypt=true|false flag.
+    tls: bool | None = None
+    # Whether a host/authority component was present. Never the host value.
+    host_present: bool | None = None
 
 
 # ── File Classification ──────────────────────────────────────────────
@@ -43,6 +81,10 @@ class ComponentParam(BaseModel):
     name: str
     value: str
     field_type: str = ""
+    # Additive: populated only when `value` was redacted (see post_filter.py
+    # ._filter_component_params). Captures structural facts about the
+    # original value that the redaction placeholder alone would discard.
+    redaction_descriptor: RedactionDescriptor | None = None
 
 
 class Component(BaseModel):
@@ -86,6 +128,50 @@ class TMapData(BaseModel):
     var_entries: list[TMapEntry] = Field(default_factory=list)
 
 
+class TXMLMapField(BaseModel):
+    """One field node in a tXMLMap (TalendXMLMap) input or output tree."""
+    name: str
+    xpath: str = ""
+    field_type: str = ""
+    # Mapping formula, present on output-tree fields only (e.g.
+    # "row7.GUIDElement" or "TalendDate.getDate(...)"). Already textually
+    # names its upstream source field(s) -- no index resolution required to
+    # read the lineage-relevant content.
+    expression: str = ""
+    loop: bool = False
+
+
+class TXMLMapTree(BaseModel):
+    name: str
+    fields: list[TXMLMapField] = Field(default_factory=list)
+
+
+class TXMLMapData(BaseModel):
+    """Structural + expression capture for tXMLMap (TalendXMLMap) -- an
+    XML-tree-shaped mapper distinct from classic tMap (``TMapData`` above).
+    Talend stores it as a nested ``inputTrees``/``outputTrees`` XML tree
+    (xpath-addressed) rather than flat table columns; ``fields`` flattens
+    that tree depth-first, preserving each field's own xpath.
+
+    Output field ``expression`` values already textually reference their
+    upstream input field (see ``TXMLMapField``), so the lineage-relevant
+    content is captured directly. The component's positional ``connections``
+    list uses EMF proxy refs (e.g.
+    ``//@node.2/@nodeData/@inputTrees.0/@nodes.1``) that Talend Studio uses
+    only to redraw the wiring diagram; those are preserved verbatim in
+    ``raw_connections`` but are NOT resolved into typed source/target pairs.
+    This is a partial parse -- see the ``ScanWarning`` emitted alongside it.
+    """
+    input_trees: list[TXMLMapTree] = Field(default_factory=list)
+    output_trees: list[TXMLMapTree] = Field(default_factory=list)
+    var_entries: list[TMapEntry] = Field(default_factory=list)
+    raw_connections: list[str] = Field(default_factory=list)
+    # The tXMLMap component's Talend UNIQUE_NAME. This is known directly from
+    # the enclosing node even when its XML-tree proxy wires cannot be resolved
+    # into upstream/downstream components; it is safe L3/L4 runtime evidence.
+    component_name: str = ""
+
+
 class TRunJobRef(BaseModel):
     child_job: str
     child_job_xmi_id: str = ""
@@ -103,7 +189,7 @@ class ArtifactReference(BaseModel):
     """
     target_name: str
     target_xmi_id: str = ""
-    relation_type: str  # job_calls_job | route_invokes_job
+    relation_type: str  # job_calls_job | route_invokes_job | job_uses_joblet
     component_name: str = ""
     resolved_artifact_id: str = ""
     resolution: str = "unresolved"  # same_root | global | ambiguous | unresolved
@@ -124,6 +210,9 @@ class ContextVariable(BaseModel):
     # Talend repository context reference carried by inline job contexts.
     # This is a stable project artifact ID, not a folder/name heuristic.
     repository_context_id: str = ""
+    # Additive: env_name -> descriptor, populated only for envs whose value
+    # was redacted (see post_filter.py._filter_context_variable).
+    redaction_descriptors: dict[str, RedactionDescriptor] = Field(default_factory=dict)
 
 
 class ContextGroup(BaseModel):
@@ -157,6 +246,7 @@ class ParsedJob(BaseModel):
     connections: list[Connection] = Field(default_factory=list)
     context_groups: list[ContextGroup] = Field(default_factory=list)
     tmap_data: list[TMapData] = Field(default_factory=list)
+    txmlmap_data: list[TXMLMapData] = Field(default_factory=list)
     trunjob_refs: list[TRunJobRef] = Field(default_factory=list)
     artifact_refs: list[ArtifactReference] = Field(default_factory=list)
     raw_routines: list[str] = Field(default_factory=list)
@@ -185,6 +275,12 @@ class MetadataConnection(BaseModel):
     schema_name: str = ""
     file_path: str = ""
     additional_params: dict = Field(default_factory=dict)
+    # Additive: populated when `host` was redacted (see
+    # post_filter.py._filter_metadata_connection).
+    host_redaction: RedactionDescriptor | None = None
+    # Additive: key -> descriptor, populated only for additional_params
+    # entries whose value was rewritten by the text-level catch-all filter.
+    additional_params_redactions: dict[str, RedactionDescriptor] = Field(default_factory=dict)
 
 
 # ── Routine ──────────────────────────────────────────────────────────
@@ -230,6 +326,52 @@ class ProjectManifest(BaseModel):
     artifact_resources: list[dict] = Field(default_factory=list)
 
 
+# ── Talend Data Mapper (TDM) Maps ───────────────────────────────────
+#
+# A THIRD, separate Talend mapping format (distinct from tMap and tXMLMap
+# above), used by ESB/API Services projects to define request/response
+# transformations as standalone `Maps/*.xml` artifacts rather than an inline
+# job component.
+
+
+class TdmMapField(BaseModel):
+    """One flattened field in a TDM input or output map tree."""
+    name: str
+    path: str = ""  # dotted ancestor path within the tree, e.g. "KTA/Attributes/GUID"
+    # Mapping formula, present on output-tree fields only. Already a
+    # human-readable path reference into the input tree (e.g.
+    # "in$/KTA/WID/Attributes/WID") -- no positional index resolution
+    # needed, unlike TXMLMapData.raw_connections.
+    expression: str = ""
+
+
+class TdmMapTree(BaseModel):
+    name: str
+    fields: list[TdmMapField] = Field(default_factory=list)
+    truncated: bool = False  # True when the field cap was hit (see ScanWarning)
+
+
+class TdmMap(BaseModel):
+    """A Talend Data Mapper (TDM) map definition from ``Maps/*.xml``.
+
+    Talend Studio exports these under ``Maps/Jobs/<job_name>/`` or
+    ``Maps/Routes/<route_name>/`` when the map is scoped to one artifact;
+    ``owning_artifact``/``association`` reflect that directory convention.
+    Maps directly under ``Maps/`` (no Jobs/Routes subfolder) carry no
+    reliable ownership signal in the export and are reported unresolved --
+    never guessed from name similarity.
+    """
+    name: str = ""
+    path: str = ""  # relative path under the owning Talend root
+    source_root: str = ""
+    input_struct: str = ""
+    output_struct: str = ""
+    owning_artifact: str = ""  # resolved job_id/name, when association succeeds
+    association: str = "unresolved"  # directory_jobs | directory_routes | unresolved
+    input_tree: TdmMapTree | None = None
+    output_tree: TdmMapTree | None = None
+
+
 # ── Scan Result ──────────────────────────────────────────────────────
 
 
@@ -254,6 +396,7 @@ class ScanResult(BaseModel):
     context_groups: list[ContextGroup] = Field(default_factory=list)
     routines: list[Routine] = Field(default_factory=list)
     manifest: ProjectManifest = Field(default_factory=ProjectManifest)
+    tdm_maps: list[TdmMap] = Field(default_factory=list)
     schema_definitions: list[dict] = Field(default_factory=list)
     stats: dict = Field(default_factory=dict)
     warnings: list[ScanWarning] = Field(default_factory=list)
@@ -699,7 +842,7 @@ class MigrationAssessment(BaseModel):
 # nothing referenced these models until the S4 lineage pass, see
 # RAG_pipeline/docs/topology-lineage-runtime-architecture.md sec 2.2/D5).
 # `intodoc/src/intodoc/lineage.py` now populates these deterministically from
-# tMap expressions; no LLM involved.
+# tMap, tXMLMap and associated TDM map expressions; no LLM involved.
 
 
 class LineageConfidence(str, Enum):
@@ -710,9 +853,9 @@ class LineageConfidence(str, Enum):
                 join, or a mix of resolved and dynamic references.
     DYNAMIC  -- no static reference could be resolved (globalMap/context/
                 routine calls only); never fabricated as if it were known.
-    OPAQUE   -- reserved for component types that carry no structured
-                expression data at all (tXMLMap, tJavaRow, ...); the S4 tMap
-                pass never emits this today (see architecture doc D4).
+    OPAQUE   -- reserved for components/artifacts that carry no safely
+                resolvable structured mapping expression (e.g. tJavaRow or
+                a partially parsed mapper); never used to fabricate lineage.
     INFERRED -- a job-boundary edge stitched by the S5 cross-job pass from
                 circumstantial evidence (trunjob context-param passing, or
                 output/input table identity) rather than a parsed
@@ -772,8 +915,8 @@ class LineageEntry(BaseModel):
 
 
 class LineageMatrix(BaseModel):
-    """Column-level lineage tracing. Populated by `intodoc.lineage` (S4,
-    deterministic tokenizer over tMap expressions) rather than the
+    """Column-level lineage tracing. Populated by `intodoc.lineage` through
+    deterministic tMap, tXMLMap and TDM expression parsing rather than the
     abandoned LLM Pass 20 this schema originally shipped for."""
     entries: list[LineageEntry] = Field(default_factory=list)
     unmapped_columns: list[dict] = Field(default_factory=list)
@@ -823,3 +966,156 @@ class CostReport(BaseModel):
     total_cost_usd: float = 0.0
     budget_limit_usd: float = 5.0
     calls: list[LLMCallRecord] = Field(default_factory=list)
+
+
+# ── Landscape Rollup (deterministic scanner pass, sibling of lineage.py) ──
+#
+# Rolls job/route-level scan facts (ProjectManifest + LineageMatrix) up into
+# an L1/L2 systems-and-connections graph: which systems exist (databases,
+# message brokers, SaaS APIs, ...), which applications (source_roots) the
+# scan covers, and how they depend on each other -- both control flow
+# ("what won't run if X is down") and data dependency ("if X writes bad
+# data, who downstream consumes it"). See `intodoc.landscape` for the
+# builder. Same philosophy as `LineageMatrix`: pure Python, no LLM, never
+# fabricate an identity merge, never silently drop a fact that couldn't be
+# rolled up (see `Landscape.unmapped`).
+
+
+class LandscapeSystemEvidence(BaseModel):
+    """One raw signal that contributed to a `LandscapeSystem` identity.
+
+    `signal_type` is one of "context_group" | "metadata_connection" |
+    "job_external_system" -- the three identity sources described in
+    `intodoc.landscape`. `detail` carries only already-safe, non-secret
+    facts (e.g. connection_type, source_root) -- never a raw host/URL.
+    """
+    signal_type: str
+    label: str
+    detail: dict = Field(default_factory=dict)
+
+
+class LandscapeSystem(BaseModel):
+    """A deduplicated system / external-node identity (database, message
+    broker, SaaS API, file endpoint, ...)."""
+    id: str
+    name: str
+    # database | messaging_broker | external_saas | file_endpoint |
+    # rest_api | soap_api | internal | unknown
+    kind: str = "unknown"
+    evidence: list[LandscapeSystemEvidence] = Field(default_factory=list)
+    source_roots: list[str] = Field(default_factory=list)
+
+
+class LandscapeApplication(BaseModel):
+    """One scanned Talend project identity represented at landscape level.
+
+    ``source_root`` remains the canonical drill-down root for compatibility;
+    ``source_roots`` records every physical copy when the same stable Talend
+    project was bundled in more than one uploaded archive.
+    """
+    id: str
+    source_root: str
+    source_roots: list[str] = Field(default_factory=list)
+    project_id: str = ""
+    label: str = ""
+    description: str = ""
+    role: str = "execution"  # execution | support | shared_project
+    artifact_count: int = 0
+    kinds_breakdown: dict[str, int] = Field(default_factory=dict)
+
+
+class LandscapeProvenance(BaseModel):
+    """One drill-down-safe fact supporting a rolled-up landscape edge.
+
+    The artifact is recorded both as its parser identity and as a qualified
+    ``source_root::artifact_id`` identity so an L1/L2 answer can always be
+    navigated back to the exact L3 artifact/component that supplied it.
+    """
+    artifact_id: str
+    qualified_artifact_id: str
+    source_root: str
+    component_name: str = ""
+    fact_type: str
+
+
+class LandscapeEdge(BaseModel):
+    """A rolled-up connection between two landscape nodes (application or
+    system). Every edge MUST carry provenance so an L1 edge can be drilled
+    down to the L3/L4 jobs/artifacts/lineage entries backing it -- an edge
+    with empty `provenance` is a builder bug, never emitted intentionally."""
+    source: str
+    target: str
+    source_kind: str  # application | system
+    target_kind: str  # application | system
+    dependency_type: str  # control_flow | data | integration | config
+    mechanism: str = "unknown"  # jms|direct|direct-vm|rest|soap|file|db|unknown
+    direction: str = "unknown"  # in|out|both|unknown
+    reliability: str = "unknown"  # buffered|synchronous|unknown
+    confidence: str = "unknown"  # certain|likely|inferred|unknown
+    evidence_count: int = 0
+    provenance: list[LandscapeProvenance] = Field(default_factory=list)
+
+
+class LandscapeChannel(BaseModel):
+    """An exact named channel available for L2 inspection.
+
+    Placeholder/redacted channel values are intentionally excluded: they are
+    insufficient to correlate a producer and consumer safely.
+    """
+    channel_type: str
+    channel: str
+    direction: str
+    artifact_id: str
+    qualified_artifact_id: str
+    source_root: str
+    component_name: str = ""
+    fact_type: str = "artifact_channel"
+    # Safe protocol/auth/TLS facts retained when a URI channel value itself
+    # was redacted. Never contains a host, URI path, or credential.
+    redaction_descriptor: RedactionDescriptor | None = None
+
+
+class LandscapeInterface(BaseModel):
+    """An exposed inbound/outbound interface surface for L2 inspection.
+
+    Interface evidence intentionally does not create a peer relationship: an
+    endpoint declaration alone cannot identify who calls it.
+    """
+    endpoint_type: str
+    direction: str
+    artifact_id: str
+    qualified_artifact_id: str
+    source_root: str
+    component_name: str = ""
+    fact_type: str = "artifact_endpoint"
+    # Same safe descriptor contract as LandscapeChannel for URI-backed
+    # REST/SOAP/file interfaces.
+    redaction_descriptor: RedactionDescriptor | None = None
+
+
+class LandscapeDiagnostic(BaseModel):
+    """A computed finding surfaced alongside the graph (unread channels,
+    unresolved cross-system refs, ...). `severity` is additive beyond the
+    minimum {kind, description, evidence} shape -- "info" unless the
+    builder can cheaply justify "warning" (e.g. a dead-letter-named
+    write-only channel)."""
+    kind: str
+    description: str
+    evidence: list[str] = Field(default_factory=list)
+    severity: str = "info"  # info | warning
+
+
+class Landscape(BaseModel):
+    """Output of `intodoc.landscape.build_landscape`, persisted as
+    `scan/landscape.json` by `save_landscape` (mirrors
+    `lineage.save_lineage_matrix`)."""
+    systems: list[LandscapeSystem] = Field(default_factory=list)
+    applications: list[LandscapeApplication] = Field(default_factory=list)
+    edges: list[LandscapeEdge] = Field(default_factory=list)
+    channels: list[LandscapeChannel] = Field(default_factory=list)
+    interfaces: list[LandscapeInterface] = Field(default_factory=list)
+    diagnostics: list[LandscapeDiagnostic] = Field(default_factory=list)
+    # Anything that could not be rolled up cleanly -- never silently
+    # dropped, matching `LineageMatrix.unmapped_columns`.
+    unmapped: list[dict] = Field(default_factory=list)
+    summary: dict = Field(default_factory=dict)

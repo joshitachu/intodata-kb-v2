@@ -1,4 +1,26 @@
 services:
+  opencode-runtime:
+    pull_policy: build
+    build:
+      context: ./knowledge_base/opencode-runtime
+      dockerfile: Dockerfile
+    environment:
+      DEEPSEEK_API_KEY: ${MCP_DOC_GENERATION_DEEPSEEK_API_KEY:-}
+      OPENCODE_SERVER_USERNAME: ${MCP_AGENTIC_OPENCODE_USERNAME:-opencode}
+      OPENCODE_SERVER_PASSWORD: ${MCP_AGENTIC_OPENCODE_PASSWORD:-nexus-opencode-local-only}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /var/lib/opencode:uid=10001,gid=10001,mode=0700
+    volumes:
+      - ./knowledge_base/agentic-workspaces:/runtime/workspaces
+    mem_limit: 1g
+    cpus: 1.0
+    restart: unless-stopped
+
   postgres:
     image: postgres:16-alpine
     ports:
@@ -290,6 +312,19 @@ services:
       MCP_DOC_GENERATION_ROUTE33_API_KEY: ${MCP_DOC_GENERATION_ROUTE33_API_KEY:-}
       MCP_DOC_GENERATION_ROUTE33_BASE_URL: ${MCP_DOC_GENERATION_ROUTE33_BASE_URL:-https://api.route33.ai/v1}
       MCP_MODEL_PRICING_JSON: ${MCP_MODEL_PRICING_JSON:-}
+      # Additive A/B documentation experiments. Both gates default off; enabling
+      # paid execution also requires task/runtime secrets and a positive ceiling.
+      MCP_AGENTIC_EXPERIMENTS_ENABLED: ${MCP_AGENTIC_EXPERIMENTS_ENABLED:-false}
+      MCP_AGENTIC_PAID_EXECUTION_ENABLED: ${MCP_AGENTIC_PAID_EXECUTION_ENABLED:-false}
+      MCP_AGENTIC_OPENCODE_BASE_URL: ${MCP_AGENTIC_OPENCODE_BASE_URL:-http://opencode-runtime:4096}
+      MCP_AGENTIC_OPENCODE_USERNAME: ${MCP_AGENTIC_OPENCODE_USERNAME:-opencode}
+      MCP_AGENTIC_OPENCODE_PASSWORD: ${MCP_AGENTIC_OPENCODE_PASSWORD:-nexus-opencode-local-only}
+      MCP_AGENTIC_OPENCODE_VERSION: ${MCP_AGENTIC_OPENCODE_VERSION:-1.18.4}
+      MCP_AGENTIC_RECIPE_ROOT: ${MCP_AGENTIC_RECIPE_ROOT:-/app/data/agentic_recipes}
+      MCP_AGENTIC_WORKSPACE_ROOT: ${MCP_AGENTIC_WORKSPACE_ROOT:-/app/agentic-workspaces}
+      MCP_AGENTIC_TASK_TOKEN_SECRET: ${MCP_AGENTIC_TASK_TOKEN_SECRET:-}
+      MCP_AGENTIC_MAX_COST_USD: ${MCP_AGENTIC_MAX_COST_USD:-0}
+      MCP_AGENTIC_GOVERNED_SOURCE_ROOTS_JSON: ${MCP_AGENTIC_GOVERNED_SOURCE_ROOTS_JSON:-[]}
       MCP_AGENT_PHASE1_AGENTIC: "true"
       MCP_DEEP_DIVE_ENGINE: ${MCP_DEEP_DIVE_ENGINE:-repo_agent}
       MCP_DEEP_DIVE_MODEL: ${MCP_DEEP_DIVE_MODEL:-anthropic/claude-sonnet-4-6}
@@ -310,6 +345,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
+      - ./knowledge_base/agentic-workspaces:/app/agentic-workspaces
       - ./knowledge_base/mcp-server/data:/app/data
       - ./knowledge_base/intodoc-output:/app/intodoc-output
       - ./knowledge_base/output:/app/workspace/output
@@ -326,6 +362,8 @@ services:
       backend:
         condition: service_healthy
       hindsight:
+        condition: service_healthy
+      opencode-runtime:
         condition: service_healthy
     mem_limit: 1g
     cpus: 2.0
@@ -361,6 +399,7 @@ services:
       args:
         VITE_LOGIN_URL: ${VITE_LOGIN_URL:-${PUBLIC_APP_URL:-http://localhost:3000}/login}
         VITE_FLEET_ENABLED: ${FLEET_ENABLED:-true}
+        VITE_AGENTIC_EXPERIMENTS_ENABLED: ${VITE_AGENTIC_EXPERIMENTS_ENABLED:-false}
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-8001}:8001"
     environment:

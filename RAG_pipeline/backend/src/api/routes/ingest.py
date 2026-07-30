@@ -13,13 +13,21 @@ from src.db.models.entity_alias import EntityAlias
 from src.db.models.user import ProjectAssignment
 from src.document_roles import DEFAULT_DOCUMENT_ROLE, DocumentRole, normalize_document_role
 from src.ingestion.pipeline import ingest_document, ingest_text
-from src.rbac.permissions import get_user_groups, get_user_project_ids
+from src.rbac.permissions import get_user_project_ids
 from src.retrieval.vector_store import delete_document_points
 from src.schemas import (
     EntityAliasReplaceRequest,
     EntityAliasReplaceResponse,
     IngestResponse,
     MarkdownIngestRequest,
+)
+from src.runtime.topology.models import (
+    RuntimeStaticTopologySnapshotIn,
+    RuntimeStaticTopologySnapshotReceipt,
+)
+from src.runtime.topology.repository import (
+    RuntimeTopologyRepository,
+    StaticTopologySnapshotConflictError,
 )
 
 # Internal support-layer docs are scoped as "{project_id}/_internal/...". The
@@ -45,10 +53,66 @@ async def verify_ingest_api_key(
     if scheme.lower() != "bearer" or token != settings.mcp_ingest_api_key:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
+
+def _allows_keyless_machine_topology_ingest() -> bool:
+    """Permit an intentionally keyless local/test/dev setup only.
+
+    Production startup already rejects an empty ``MCP_INGEST_API_KEY`` in
+    ``Settings.validate_production_secrets``.  This narrower request-time gate
+    also fails closed for staging or any other non-local deployment, where
+    startup does not apply the production-only validation.
+    """
+    return settings.app_env.strip().casefold() in {
+        "development",
+        "dev",
+        "local",
+        "test",
+        "testing",
+    }
+
+
+async def verify_machine_topology_ingest_api_key(
+    authorization: str | None = Header(default=None),
+) -> None:
+    """Authenticate topology machine ingest or disable it without a key.
+
+    Unlike legacy document-ingest endpoints, static topology becomes runtime
+    correlation evidence and must not be anonymously writable outside an
+    explicit local/test/dev environment.
+    """
+    if settings.mcp_ingest_api_key:
+        await verify_ingest_api_key(authorization)
+        return
+    if _allows_keyless_machine_topology_ingest():
+        return
+    raise HTTPException(
+        status_code=503,
+        detail="Machine topology ingest is disabled until MCP_INGEST_API_KEY is configured",
+    )
+
 router = APIRouter(tags=["ingest"])
 
 ALLOWED_EXTENSIONS = {"pdf", "docx", "pptx", "xlsx"}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+
+
+@router.post(
+    "/ingest/runtime-static-topology",
+    response_model=RuntimeStaticTopologySnapshotReceipt,
+    dependencies=[Depends(verify_machine_topology_ingest_api_key)],
+    summary="Ingest a bounded scanner-derived runtime topology snapshot",
+)
+async def ingest_runtime_static_topology(
+    snapshot: RuntimeStaticTopologySnapshotIn,
+    db: DBSession,
+) -> RuntimeStaticTopologySnapshotReceipt:
+    """Store scanner-redacted topology facts outside the document/vector path."""
+    try:
+        receipt = await RuntimeTopologyRepository(db).upsert_snapshot(snapshot)
+    except StaticTopologySnapshotConflictError as exc:
+        raise HTTPException(status_code=409, detail="Conflicting scan revision") from exc
+    await db.commit()
+    return receipt
 
 
 @router.post("/ingest", response_model=IngestResponse, summary="Ingest a document into Qdrant")

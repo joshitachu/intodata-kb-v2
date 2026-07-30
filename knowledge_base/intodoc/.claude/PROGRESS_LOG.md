@@ -280,3 +280,25 @@
 - Phase 3: Migration Code Generator
 - Optional: LLM enrichment implementation (stub ready)
 - Optional: Reduce orphaned step warnings for tMap internal flows
+
+## Session: 2026-07-29
+
+### [Feature]: Complete the static topology evidence, landscape, and L4 lineage roadmap
+
+- **Files changed**: `src/intodoc/{cli.py,landscape.py,lineage.py,models.py}`; `src/intodoc/platforms/{base_distiller.py,base_parser.py,generic/parser.py,lobster/parser.py,talend/parser.py,workato/parser.py}`; `src/intodoc/scanner/{credential_filter.py,post_filter.py,redaction_verifier.py}`; `tests/test_landscape/*`; `tests/test_lineage/test_build_lineage_matrix.py`; `tests/test_platforms/{test_generic.py,test_lobster.py,test_parser_warnings.py,test_talend_esb_classification.py,test_talend_parser.py,test_workato.py}`; `tests/test_scanner/{test_credential_filter.py,test_post_filter.py}`.
+- **Problem**: Composite topology scans omitted Talend joblets, routelets, tXMLMap, and TDM maps; unsupported categories were silent; redaction discarded safe protocol/auth/TLS facts; only Talend emitted useful topology facts; and no deterministic organization landscape existed above job level.
+- **Root cause**: The scanner walked only `process/` and `routes/`, modeled only classic tMap, treated redaction as a string replacement, and had no common topology-fact or landscape contract across platform parsers.
+- **Change**: Added reusable-artifact and mapping parsers with explicit partial/unmapped warnings; exact-only L4 lineage for tMap/tXMLMap/TDM; safe `RedactionDescriptor` capture including context environments; platform-neutral relations/resources/channels/endpoints for Talend, Workato, Lobster, and Generic; deterministic application/system rollup with typed provenance and dependency classes; and atomic four-artifact publication approval for scan, manifest, lineage, and landscape.
+- **Why this approach**: Static extraction stays deterministic and auditable. Ambiguous mappings, contexts, connections, and peers remain unresolved instead of being guessed; redaction preserves only safe structure, never original endpoint or credential values.
+- **Verification**: full scanner suite **588 passed, 8 skipped**; Ruff and compileall clean. A fresh six-ZIP Talend scan completed with 429 designs, 2,145 lineage entries, 14 applications, 137 system candidates, 185 landscape edges, 2,332 safe context descriptors, one exact interface descriptor, zero private descriptor markers, and a valid four-hash publication receipt.
+
+## Session: 2026-07-30
+
+### [Fix]: Make Talend landscape identities evidence-backed and stable
+
+- **Files changed**: `src/intodoc/{landscape.py,models.py}`; `src/intodoc/platforms/talend/parser.py`; `tests/test_landscape/test_build_landscape.py`; `tests/test_platforms/test_talend_parser.py`.
+- **Problem**: The L1 graph promoted arbitrary unknown component names such as Hash, ContextDump, and AdvancedFileOutputXML to external systems, and represented repeated copies of the same Talend project as separate applications.
+- **Root cause**: Unknown component names were normalized by a generic suffix-stripping fallback, while application identity defaulted to the physical ZIP/source-root path rather than Talend's stable project XMI identity.
+- **Change**: Removed the unknown-component system fallback; retained generic REST/JMS/file mechanisms as L2 evidence without inventing peer identities; captured Talend project ID, label, technical label, and description from `talend.project`; grouped repeated roots by project ID; retained every physical root as provenance; deduplicated identical artifacts; and remapped/merged landscape edges onto canonical project identities.
+- **Why this approach**: A component kind or transport proves implementation mechanics, not a peer system. Talend's XMI project ID is exported platform evidence and remains stable across nested or repeated ZIP imports.
+- **Verification**: focused scanner/landscape suite **81 passed, 7 skipped**; Ruff and compileall passed. The six-ZIP topology rescan completed with 429 designs and 2,145 lineage entries; landscape reduced from 14 to 8 project identities, 123 to 43 system/configuration identities, and 185 to 32 supported edges. Hash, ContextDump, and AdvancedFileOutputXML are absent. References is one project with six-copy provenance and seven deduplicated designs.

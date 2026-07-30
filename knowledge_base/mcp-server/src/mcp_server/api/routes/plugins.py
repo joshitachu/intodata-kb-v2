@@ -48,7 +48,7 @@ from mcp_server.services.pack_governance import (
     PackGovernanceDenied,
     pack_governance,
 )
-from mcp_server.api.permissions import require_pack_management, require_project_management
+from mcp_server.api.permissions import require_pack_management, require_project_access
 
 logger = logging.getLogger(__name__)
 
@@ -850,7 +850,11 @@ async def save_plugin_file(pack_id: int, file_path: str, body: SaveFileRequest, 
 
 @router.patch("/projects/{project_id}/plugin")
 async def assign_plugin_to_project(project_id: str, body: AssignPluginRequest, request: Request):
-    await require_project_management(request, project_id)
+    # Any user with access to the project may select/run its documentation
+    # (plugin) pack. Authoring/registering Packs stays superadmin+admin via
+    # require_pack_management, and require_generation_authority below keeps the
+    # certification boundary intact for the selected Pack.
+    await require_project_access(request, project_id)
     async with async_session_factory() as db:
         project = (
             await db.execute(select(Project).where(Project.id == project_id))

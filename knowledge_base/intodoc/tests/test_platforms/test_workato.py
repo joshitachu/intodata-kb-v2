@@ -896,6 +896,148 @@ class TestDirectoryClassification:
         assert plugin.classify_file(path) == FileType.JOB
 
 
+# ── Topology facts (artifact_kinds / relations / endpoints / resources) ──
+
+
+class TestWorkatoTopologyFactsOldFormat:
+    """Old-format (code/block/keyword) recipe JSON."""
+
+    @pytest.fixture
+    def cred_filter(self):
+        from intodoc.scanner.credential_filter import CredentialFilter
+        return CredentialFilter()
+
+    @pytest.fixture
+    def scan_result(self, cred_filter) -> ScanResult:
+        if not FIXTURES_DIR.exists():
+            pytest.skip("workato_sample fixture not found")
+        plugin = WorkatoPlugin()
+        return plugin.parse_project(FIXTURES_DIR, cred_filter)
+
+    def _find_job(self, scan_result: ScanResult, name_part: str) -> ParsedJob:
+        for j in scan_result.jobs:
+            if name_part.lower() in j.name.lower():
+                return j
+        pytest.fail(f"Job containing '{name_part}' not found")
+
+    def test_artifact_kinds_reflect_asset_type(self, scan_result):
+        kinds = scan_result.manifest.artifact_kinds
+        assert kinds["Sync Customers to NetSuite"] == "recipe"
+        assert kinds["Orchestrator Recipe"] == "recipe"
+
+    def test_call_recipe_calls_resolve_to_relations(self, scan_result):
+        """Both of Orchestrator's call_recipe targets exist as real parsed
+        recipes (ids 12345/12346) so both resolve -- same job_calls_job
+        shape Talend emits for a resolved tRunJob."""
+        relations = [
+            r for r in scan_result.manifest.artifact_relations
+            if r["source"] == "Orchestrator Recipe"
+        ]
+        targets = {r["target"] for r in relations}
+        assert targets == {"Sync Customers to NetSuite", "HTTP Sync with Error Handling"}
+        for r in relations:
+            assert r["relation_type"] == "job_calls_job"
+            assert r["resolution"] == "resolved"
+            assert r["provenance"] == "call_recipe"
+
+    def test_internal_call_recipe_action_is_not_a_resource(self, scan_result):
+        """The 'workato' provider that carries call_recipe/table-lookup
+        actions is Workato control-flow, not an external connector -- it
+        must not leak into artifact_resources for the orchestrator."""
+        resources = [
+            r for r in scan_result.manifest.artifact_resources
+            if r["artifact"] == "Orchestrator Recipe"
+        ]
+        assert resources == []
+
+    def test_trigger_becomes_inbound_endpoint(self, scan_result):
+        job = self._find_job(scan_result, "Sync Customers")
+        endpoints = [e for e in scan_result.manifest.artifact_endpoints if e["artifact"] == job.name]
+        assert len(endpoints) == 1
+        assert endpoints[0]["endpoint_type"] == "Salesforce"
+        assert endpoints[0]["direction"] == "input"
+        assert endpoints[0]["component_name"] == "salesforce_trigger"
+        assert endpoints[0]["provenance"] == "workato_trigger:salesforce"
+
+    def test_action_steps_become_resources_with_direction_hints(self, scan_result):
+        job = self._find_job(scan_result, "Sync Customers")
+        resources = {
+            r["component_name"]: r
+            for r in scan_result.manifest.artifact_resources
+            if r["artifact"] == job.name
+        }
+        assert resources["netsuite_create"]["resource"] == "NetSuite"
+        assert resources["netsuite_create"]["direction"] == "output"
+        # "post_message" (action id) hints output regardless of the as-label
+        assert resources["slack_notify"]["resource"] == "Slack"
+        assert resources["slack_notify"]["direction"] == "output"
+        assert resources["slack_no_phone"]["direction"] == "output"
+
+
+class TestWorkatoTopologyFactsNewFormat:
+    """New-format (standalone trigger dict + steps list) recipe JSON."""
+
+    @pytest.fixture
+    def cred_filter(self):
+        from intodoc.scanner.credential_filter import CredentialFilter
+        return CredentialFilter()
+
+    @pytest.fixture
+    def scan_result(self, cred_filter) -> ScanResult:
+        if not NEW_FORMAT_FIXTURES.exists():
+            pytest.skip("workato_new_format fixture not found")
+        plugin = WorkatoPlugin()
+        return plugin.parse_project(NEW_FORMAT_FIXTURES, cred_filter)
+
+    def _find_job(self, scan_result: ScanResult, name_part: str) -> ParsedJob:
+        for j in scan_result.jobs:
+            if name_part.lower() in j.name.lower():
+                return j
+        pytest.fail(f"Job containing '{name_part}' not found")
+
+    def test_recipe_function_artifact_kind(self, scan_result):
+        func_jobs = [j for j in scan_result.jobs if "func_" in j.name]
+        assert func_jobs
+        assert scan_result.manifest.artifact_kinds[func_jobs[0].name] == "recipe_function"
+
+    def test_unresolved_call_recipe_target_is_preserved_as_relation(self, scan_result):
+        """call_recipe references recipe_id 50002, which is not present in
+        this scan. It must stay visible as an unresolved fact rather than a
+        fabricated edge or a silently discarded reference."""
+        job = self._find_job(scan_result, "sync leads")
+        relations = [r for r in scan_result.manifest.artifact_relations if r["source"] == job.name]
+        assert relations == [{
+            "source": job.name,
+            "target": "",
+            "target_name": "recipe_50002",
+            "relation_type": "job_calls_job",
+            "resolution": "unresolved",
+            "provenance": "call_recipe",
+        }]
+
+    def test_standalone_trigger_dict_becomes_endpoint(self, scan_result):
+        job = self._find_job(scan_result, "sync leads")
+        endpoints = [e for e in scan_result.manifest.artifact_endpoints if e["artifact"] == job.name]
+        assert len(endpoints) == 1
+        assert endpoints[0]["endpoint_type"] == "Salesforce"
+        assert endpoints[0]["direction"] == "input"
+
+    def test_action_direction_from_canonical_action_name(self, scan_result):
+        """Direction is keyed off the connector's own action id, not the
+        human label, so e.g. 'get_contact' reads as input even though nested
+        deep inside a 'monitor' block with a friendly label."""
+        job = self._find_job(scan_result, "sync leads")
+        resources = [r for r in scan_result.manifest.artifact_resources if r["artifact"] == job.name]
+        by_component = {r["component_name"]: r for r in resources}
+
+        assert by_component["Create HubSpot Contact"]["direction"] == "output"
+        assert by_component["Update Country Code"]["direction"] == "output"
+        assert by_component["Verify Contact Created"]["direction"] == "input"
+        # workato-provider lookup_table_lookup and call_recipe are internal
+        # control-flow, not connector resources
+        assert "workato" not in {r["resource"].lower() for r in resources}
+
+
 # ── Best Practices ───────────────────────────────────────────────────
 
 

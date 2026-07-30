@@ -45,6 +45,21 @@ _CREDENTIAL_RE = re.compile(
 # Inline URL/JDBC userinfo: scheme://user:pass@host or jdbc:...user/pass@host.
 # Requires a trailing "@host" so plain "host:port" (no userinfo) is never touched.
 _USERINFO_RE = re.compile(r"[^\s:/@]+[:/][^\s:/@]+@(?=/*[^\s/@])")
+# Field violations are intentionally conservative: a field name must be
+# explicitly labelled by the emitting runtime.  Capturing arbitrary quoted text
+# would turn values/payload data into invented lineage evidence.
+_NULL_FIELD_RE = re.compile(
+    r"(?i)\b(?:field|column|attribute)\s+['\"`]?([A-Za-z_][A-Za-z0-9_.-]*)['\"`]?\s+(?:is|was|cannot be)\s+null\b"
+)
+_REQUIRED_FIELD_RE = re.compile(
+    r"(?i)\b(?:required\s+)?(?:field|column|attribute)\s+['\"`]?([A-Za-z_][A-Za-z0-9_.-]*)['\"`]?\s+(?:is\s+)?(?:missing|required)\b"
+)
+_SQL_NULL_COLUMN_RE = re.compile(
+    r"(?i)\bcannot insert (?:the value )?null into column ['\"`]?([A-Za-z_][A-Za-z0-9_.-]*)['\"`]?"
+)
+_TYPE_FIELD_RE = re.compile(
+    r"(?i)\b(?:field|column|attribute)\s+['\"`]?([A-Za-z_][A-Za-z0-9_.-]*)['\"`]?\s+(?:expected|expects|must be)\s+([A-Za-z][A-Za-z0-9_ <>\[\]-]{0,100})"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +153,11 @@ class ParsedRuntimeLog:
     database_name: str | None = None
     table_name: str | None = None
     queue_name: str | None = None
+    field_name: str | None = None
+    # null_rejected | missing_required | type_mismatch.  None means no
+    # explicit field-level diagnostic was present in the log line.
+    field_violation_kind: str | None = None
+    expected_type: str | None = None
     message_family: str | None = None
     confidence: str | None = None
     # The deepest causal line (root of a "Caused by:" chain, or the
@@ -210,6 +230,27 @@ def parse_runtime_log_message(message: str) -> ParsedRuntimeLog:
     if sel_m:
         result.table_name = sel_m.group(1)
 
+    # Exact, labelled field/column diagnostics.  Ordering matters: a target
+    # database's "cannot insert NULL" is stronger than generic prose, and a
+    # type expectation is distinct from absence/nullability.
+    sql_null_m = _SQL_NULL_COLUMN_RE.search(message)
+    null_m = _NULL_FIELD_RE.search(message)
+    required_m = _REQUIRED_FIELD_RE.search(message)
+    type_m = _TYPE_FIELD_RE.search(message)
+    if sql_null_m:
+        result.field_name = sql_null_m.group(1)
+        result.field_violation_kind = "null_rejected"
+    elif null_m:
+        result.field_name = null_m.group(1)
+        result.field_violation_kind = "null_rejected"
+    elif required_m:
+        result.field_name = required_m.group(1)
+        result.field_violation_kind = "missing_required"
+    elif type_m:
+        result.field_name = type_m.group(1)
+        result.field_violation_kind = "type_mismatch"
+        result.expected_type = type_m.group(2).strip()
+
     # Message family inference
     if result.endpoint or result.host or result.database_name:
         result.message_family = "jdbc"
@@ -229,6 +270,7 @@ def parse_runtime_log_message(message: str) -> ParsedRuntimeLog:
             result.timeout_ms,
             result.host,
             result.queue_name,
+            result.field_name,
         )
     )
     if strong >= 2:

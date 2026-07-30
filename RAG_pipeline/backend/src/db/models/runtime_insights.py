@@ -41,6 +41,12 @@ class RuntimeEnrichedEventRow(Base):
     database_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     table_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     queue_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Conservative structured field-error evidence.  These are only populated
+    # when a log line explicitly names the field/column; no payload values are
+    # retained and no upstream API-change conclusion is inferred here.
+    field_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    field_violation_kind: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    expected_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
     message_family: Mapped[str | None] = mapped_column(String(50), nullable=True)
     confidence: Mapped[str | None] = mapped_column(String(20), nullable=True)
 

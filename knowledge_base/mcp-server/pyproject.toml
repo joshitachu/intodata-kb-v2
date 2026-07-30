@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "intodoc MCP Server + REST API for code intelligence orchestration"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2.0.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "sqlalchemy[asyncio]>=2.0.0",

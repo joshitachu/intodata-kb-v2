@@ -52,7 +52,9 @@ from intodoc.models import (
     LineageMatrix,
     ParsedJob,
     ScanResult,
+    TXMLMapData,
     TMapEntry,
+    TdmMap,
     TRunJobRef,
 )
 from intodoc.scanner.credential_filter import CredentialFilter
@@ -67,6 +69,22 @@ _STRING_LITERAL_RE = re.compile(r'"(?:\\.|[^"\\])*"')
 _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 _LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 _IDENTIFIER_FIELD_RE = re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b")
+# tXMLMap expressions can use either Talend's ``tree.field`` spelling or a
+# captured XPath-like ``tree/path`` spelling.  Do not turn arbitrary slash
+# text into a source reference: a candidate must exactly match a captured
+# input-tree xpath below.
+_TXMLMAP_PATH_REF_RE = re.compile(
+    r"(?<![\w./])([A-Za-z_][\w.-]*(?:/[A-Za-z_][\w.-]*)+)(?![\w./])"
+)
+# TDM's parsed export evidence currently exposes input references in this
+# form.  Additional syntaxes must be added only after parser evidence exists.
+_TDM_INPUT_REF_RE = re.compile(
+    r"(?<![\w$])(in\$/[A-Za-z_][\w.-]*(?:/[A-Za-z_][\w.-]*)*)"
+)
+_CONSTANT_EXPRESSION_RE = re.compile(
+    r"^\s*(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|-?\d+(?:\.\d+)?|true|false|null)\s*$",
+    re.IGNORECASE,
+)
 
 
 def _job_identity(job: ParsedJob) -> str:
@@ -288,6 +306,347 @@ def _redact_transformations(
             )
         )
     return redacted
+
+
+def _redacted_dynamic_refs(refs: set[str], cred_filter: CredentialFilter) -> list[str]:
+    """Apply the same defense-in-depth filter to non-expression refs."""
+    return sorted(cred_filter.filter_text(ref) for ref in refs)
+
+
+@dataclass(frozen=True)
+class _TreeFieldReference:
+    tree_name: str
+    path: str
+    name: str
+
+
+def _add_unique_reference(
+    index: dict[str, list[_TreeFieldReference]],
+    reference: str,
+    candidate: _TreeFieldReference,
+) -> None:
+    if reference:
+        # Keep duplicate captures too: identical-looking field nodes are still
+        # two possible sources, so their spelling is ambiguous rather than
+        # silently collapsed by set semantics.
+        index.setdefault(reference, []).append(candidate)
+
+
+def _txmlmap_input_reference_index(txmap: TXMLMapData) -> dict[str, list[_TreeFieldReference]]:
+    """Index only source spellings actually represented in captured trees.
+
+    A duplicate field name or xpath intentionally makes that spelling
+    ambiguous.  We retain it in ``dynamic_refs``/``unmapped_columns`` instead
+    of selecting an arbitrary branch of a nested XML tree.
+    """
+    index: dict[str, list[_TreeFieldReference]] = {}
+    for tree in txmap.input_trees:
+        for tree_field in tree.fields:
+            path = tree_field.xpath.strip().strip("/") or tree_field.name
+            candidate = _TreeFieldReference(tree.name, path, tree_field.name)
+            if tree.name and tree_field.name:
+                _add_unique_reference(index, f"{tree.name}.{tree_field.name}", candidate)
+            if tree_field.xpath:
+                _add_unique_reference(index, tree_field.xpath.strip().strip("/"), candidate)
+    return index
+
+
+def _expression_is_constant(expression: str) -> bool:
+    return bool(_CONSTANT_EXPRESSION_RE.match(expression))
+
+
+def _mapping_shape(
+    expression: str,
+    resolved_count: int,
+    dynamic_refs: set[str],
+    resolved_tokens: set[str],
+) -> tuple[str, LineageConfidence]:
+    """Classify a non-tMap mapping without pretending unknown syntax is data."""
+    if not resolved_count:
+        if not dynamic_refs and _expression_is_constant(expression):
+            return "constant", LineageConfidence.CERTAIN
+        return "dynamic", LineageConfidence.DYNAMIC
+    if not dynamic_refs and len(resolved_tokens) == 1 and expression.strip() in resolved_tokens:
+        return "direct_map", LineageConfidence.CERTAIN
+    return "expression", LineageConfidence.LIKELY
+
+
+def _unmapped_mapping_field(
+    unmapped_columns: list[dict],
+    *,
+    job_name: str,
+    table: str,
+    column: str,
+    reason: str,
+    reference: str = "",
+    mapping_type: str,
+) -> None:
+    item = {
+        "job_name": job_name,
+        "table": table,
+        "column": column,
+        "reason": reason,
+        "mapping_type": mapping_type,
+    }
+    if reference:
+        item["reference"] = reference
+    unmapped_columns.append(item)
+
+
+def _build_txmlmap_entries(
+    job: ParsedJob,
+    cred_filter: CredentialFilter,
+    unmapped_columns: list[dict],
+) -> list[LineageEntry]:
+    """Emit conservative lineage from captured tXMLMap tree expressions.
+
+    The parser preserves positional ``raw_connections`` but cannot safely turn
+    those EMF proxies into source-component wiring. The enclosing node's
+    ``UNIQUE_NAME`` is separately captured, so it is retained as the exact
+    target component while the unresolved upstream side remains explicit in
+    ``unmapped_columns``.
+    """
+    entries: list[LineageEntry] = []
+    job_id = _job_identity(job)
+    for txmap in job.txmlmap_data:
+        input_index = _txmlmap_input_reference_index(txmap)
+        wiring_reason = (
+            "tXMLMap raw connections are positional and upstream component wiring cannot be resolved"
+            if txmap.raw_connections
+            else "tXMLMap does not contain resolved upstream component wiring"
+        )
+        _unmapped_mapping_field(
+            unmapped_columns,
+            job_name=job_id,
+            table="",
+            column="",
+            reason=wiring_reason,
+            mapping_type="tXMLMap",
+        )
+        for output_tree in txmap.output_trees:
+            for output_field in output_tree.fields:
+                expression = output_field.expression
+                target_column = output_field.xpath or output_field.name
+                tokens = set(_IDENTIFIER_FIELD_RE.findall(strip_comments_and_literals(expression)))
+                ref_tokens = {f"{identifier}.{field}" for identifier, field in tokens}
+                ref_tokens |= set(_TXMLMAP_PATH_REF_RE.findall(strip_comments_and_literals(expression)))
+
+                resolved: set[_TreeFieldReference] = set()
+                dynamic: set[str] = set()
+                resolved_tokens: set[str] = set()
+                for ref in sorted(ref_tokens):
+                    candidates = input_index.get(ref, [])
+                    if len(candidates) == 1:
+                        resolved.update(candidates)
+                        resolved_tokens.add(ref)
+                    else:
+                        dynamic.add(ref)
+                        _unmapped_mapping_field(
+                            unmapped_columns,
+                            job_name=job_id,
+                            table=output_tree.name,
+                            column=target_column,
+                            reason=(
+                                "tXMLMap expression reference is ambiguous across captured input-tree paths"
+                                if candidates else "tXMLMap expression reference is not a captured input-tree path"
+                            ),
+                            reference=ref,
+                            mapping_type="tXMLMap",
+                        )
+                if not expression:
+                    dynamic.add("tXMLMap:output_field_without_expression")
+                    _unmapped_mapping_field(
+                        unmapped_columns,
+                        job_name=job_id,
+                        table=output_tree.name,
+                        column=target_column,
+                        reason="tXMLMap output field has no captured expression",
+                        mapping_type="tXMLMap",
+                    )
+
+                transformation_type, confidence = _mapping_shape(
+                    expression, len(resolved), dynamic, resolved_tokens,
+                )
+                transformations = _redact_transformations([
+                    ColumnTransformation(
+                        transformation_type=transformation_type,
+                        expression=expression,
+                    )
+                ], cred_filter)
+                dynamic_refs = _redacted_dynamic_refs(dynamic, cred_filter)
+                if not resolved:
+                    entries.append(LineageEntry(
+                        transformations=transformations,
+                        target_table=output_tree.name,
+                        target_column=target_column,
+                        job_name=job_id,
+                        confidence=confidence,
+                        target_component=txmap.component_name,
+                        resolved=False,
+                        dynamic_refs=dynamic_refs,
+                    ))
+                    continue
+                for source in sorted(resolved, key=lambda item: (item.tree_name, item.path, item.name)):
+                    entries.append(LineageEntry(
+                        source_table=source.tree_name,
+                        source_column=source.path,
+                        transformations=transformations,
+                        target_table=output_tree.name,
+                        target_column=target_column,
+                        job_name=job_id,
+                        confidence=confidence,
+                        target_component=txmap.component_name,
+                        resolved=True,
+                        dynamic_refs=dynamic_refs,
+                    ))
+    return entries
+
+
+def _tdm_input_reference_index(tdm: TdmMap) -> dict[str, list[_TreeFieldReference]]:
+    index: dict[str, list[_TreeFieldReference]] = {}
+    if tdm.input_tree is None:
+        return index
+    for tree_field in tdm.input_tree.fields:
+        path = tree_field.path.strip().strip("/")
+        if path:
+            index.setdefault(path, []).append(
+                _TreeFieldReference(tdm.input_tree.name, path, tree_field.name)
+            )
+    return index
+
+
+def _build_tdm_entries(
+    scan_result: ScanResult,
+    cred_filter: CredentialFilter,
+    unmapped_columns: list[dict],
+) -> list[LineageEntry]:
+    """Emit TDM lineage only where its directory ownership is exact.
+
+    TDM's ``in$/...`` references are the only source syntax currently
+    evidenced by the parser.  A missing/duplicate input path is surfaced; it
+    never falls back to map-name or component-name similarity.
+    """
+    entries: list[LineageEntry] = []
+    jobs_by_id = {_job_identity(job): job for job in scan_result.jobs}
+    for tdm in scan_result.tdm_maps:
+        if tdm.association not in {"directory_jobs", "directory_routes"} or not tdm.owning_artifact:
+            _unmapped_mapping_field(
+                unmapped_columns,
+                job_name=tdm.owning_artifact,
+                table=tdm.name,
+                column="",
+                reason="TDM map ownership is not an exact Maps/Jobs or Maps/Routes association",
+                mapping_type="TDM",
+            )
+            continue
+        owner = jobs_by_id.get(tdm.owning_artifact)
+        if owner is None:
+            _unmapped_mapping_field(
+                unmapped_columns,
+                job_name=tdm.owning_artifact,
+                table=tdm.name,
+                column="",
+                reason="TDM owning artifact is not present in this scan",
+                mapping_type="TDM",
+            )
+            continue
+        if tdm.input_tree is None or tdm.output_tree is None:
+            _unmapped_mapping_field(
+                unmapped_columns,
+                job_name=tdm.owning_artifact,
+                table=tdm.name,
+                column="",
+                reason="TDM map is missing a captured input or output tree",
+                mapping_type="TDM",
+            )
+            continue
+
+        input_index = _tdm_input_reference_index(tdm)
+        _unmapped_mapping_field(
+            unmapped_columns,
+            job_name=tdm.owning_artifact,
+            table=tdm.name,
+            column="",
+            reason="TDM map does not expose resolved component wiring",
+            mapping_type="TDM",
+        )
+        for output_field in tdm.output_tree.fields:
+            expression = output_field.expression
+            target_column = output_field.path or output_field.name
+            refs = set(_TDM_INPUT_REF_RE.findall(expression))
+            resolved: set[_TreeFieldReference] = set()
+            dynamic: set[str] = set()
+            resolved_tokens: set[str] = set()
+            for ref in sorted(refs):
+                path = ref.removeprefix("in$/")
+                candidates = input_index.get(path, [])
+                if len(candidates) == 1:
+                    resolved.update(candidates)
+                    resolved_tokens.add(ref)
+                else:
+                    dynamic.add(ref)
+                    _unmapped_mapping_field(
+                        unmapped_columns,
+                        job_name=tdm.owning_artifact,
+                        table=tdm.output_tree.name,
+                        column=target_column,
+                        reason=(
+                            "TDM input path is ambiguous in the captured input tree"
+                            if candidates else "TDM input path is not present in the captured input tree"
+                        ),
+                        reference=ref,
+                        mapping_type="TDM",
+                    )
+            if not expression:
+                dynamic.add("TDM:output_field_without_expression")
+                _unmapped_mapping_field(
+                    unmapped_columns,
+                    job_name=tdm.owning_artifact,
+                    table=tdm.output_tree.name,
+                    column=target_column,
+                    reason="TDM output field has no captured expression",
+                    mapping_type="TDM",
+                )
+            elif not refs and not _expression_is_constant(expression):
+                # The parser does not establish any alternate TDM input-ref
+                # grammar. Retain the redacted expression as dynamic evidence
+                # rather than parsing or guessing a different syntax.
+                dynamic.add(f"TDM:unrecognized_expression:{expression}")
+
+            transformation_type, confidence = _mapping_shape(
+                expression, len(resolved), dynamic, resolved_tokens,
+            )
+            transformations = _redact_transformations([
+                ColumnTransformation(
+                    transformation_type=transformation_type,
+                    expression=expression,
+                )
+            ], cred_filter)
+            dynamic_refs = _redacted_dynamic_refs(dynamic, cred_filter)
+            if not resolved:
+                entries.append(LineageEntry(
+                    transformations=transformations,
+                    target_table=tdm.output_tree.name,
+                    target_column=target_column,
+                    job_name=_job_identity(owner),
+                    confidence=confidence,
+                    resolved=False,
+                    dynamic_refs=dynamic_refs,
+                ))
+                continue
+            for source in sorted(resolved, key=lambda item: (item.path, item.name)):
+                entries.append(LineageEntry(
+                    source_table=tdm.input_tree.name,
+                    source_column=source.path or source.name,
+                    transformations=transformations,
+                    target_table=tdm.output_tree.name,
+                    target_column=target_column,
+                    job_name=_job_identity(owner),
+                    confidence=confidence,
+                    resolved=True,
+                    dynamic_refs=dynamic_refs,
+                ))
+    return entries
 
 
 def _build_job_entries(
@@ -568,12 +927,20 @@ def build_lineage_matrix(scan_result: ScanResult, cred_filter: CredentialFilter)
     entries_by_job: dict[str, list[LineageEntry]] = {}
     unmapped_columns: list[dict] = []
     tmap_components_processed = 0
+    txmlmap_components_processed = 0
 
     for job in scan_result.jobs:
         tmap_components_processed += len(job.tmap_data)
+        txmlmap_components_processed += len(job.txmlmap_data)
         job_entries = _build_job_entries(job, cred_filter, unmapped_columns)
+        job_entries.extend(_build_txmlmap_entries(job, cred_filter, unmapped_columns))
         entries_by_job[_job_identity(job)] = job_entries
         entries.extend(job_entries)
+
+    tdm_entries = _build_tdm_entries(scan_result, cred_filter, unmapped_columns)
+    entries.extend(tdm_entries)
+    for entry in tdm_entries:
+        entries_by_job.setdefault(entry.job_name, []).append(entry)
 
     cross_job_entries = _stitch_trunjob_context_params(
         scan_result, entries_by_job, cred_filter, unmapped_columns,
@@ -591,6 +958,10 @@ def build_lineage_matrix(scan_result: ScanResult, cred_filter: CredentialFilter)
         "unresolved_entries": sum(1 for e in entries if not e.resolved),
         "tmap_components_processed": tmap_components_processed,
         "jobs_with_tmap": sum(1 for job in scan_result.jobs if job.tmap_data),
+        "txmlmap_components_processed": txmlmap_components_processed,
+        "jobs_with_txmlmap": sum(1 for job in scan_result.jobs if job.txmlmap_data),
+        "tdm_maps_processed": len(scan_result.tdm_maps),
+        "tdm_entries": len(tdm_entries),
         "confidence_counts": confidence_counts,
         "cross_job_entries": len(cross_job_entries),
     }

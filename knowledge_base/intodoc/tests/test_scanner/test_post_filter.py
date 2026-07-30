@@ -1,14 +1,20 @@
 """Tests for post-parse structural filter."""
 
+from pathlib import Path
+
 from intodoc.config import RedactionLevel
 from intodoc.models import (
     ComponentParam,
     Component,
     ContextGroup,
     ContextVariable,
+    FileType,
     MetadataConnection,
     ParsedJob,
     ScanResult,
+    ScannedFile,
+    TMapData,
+    TMapEntry,
 )
 from intodoc.scanner.credential_filter import CredentialFilter
 from intodoc.scanner.post_filter import filter_scan_result
@@ -22,6 +28,27 @@ def _make_scan_result(**kwargs) -> ScanResult:
     }
     defaults.update(kwargs)
     return ScanResult(**defaults)
+
+
+def test_post_filter_normalizes_internal_uri_tokens_in_unstructured_mapper_fields():
+    """Descriptor markers may occur in XML mapper text without a matching
+    ComponentParam descriptor slot; they must never reach scan_result.json."""
+    cf = CredentialFilter()
+    marker = cf.filter_text(
+        "https://api.example.com/orders?token=FakeMapperSecret42",
+        capture_uri_descriptors=True,
+    )
+    result = _make_scan_result(jobs=[ParsedJob(
+        name="MapJob", path="process/MapJob",
+        tmap_data=[TMapData(entries=[TMapEntry(
+            table_name="out", column_name="value", expression=f'"{marker}"',
+        )])],
+    )])
+
+    filter_scan_result(result, cf)
+
+    assert marker not in result.model_dump_json()
+    assert "[URL_REDACTED]" in result.jobs[0].tmap_data[0].entries[0].expression
 
 
 # ── MetadataConnection redaction ────────────────────────────────────
@@ -365,6 +392,179 @@ def test_component_param_bearer_value_redacted_by_pattern():
     param = result.jobs[0].components[0].params[0]
     assert "xyz123abcdefghijklmno" not in param.value
     assert "[BEARER_TOKEN_REDACTED]" in param.value
+
+
+# ── Redaction descriptors ("mask-and-CAPTURE") ─────────────────────
+#
+# post_filter must keep redacting exactly as before (placeholder text
+# unchanged) while ADDITIONALLY attaching a RedactionDescriptor capturing
+# safe structural facts about the original value. These tests prove both:
+# (a) the descriptor is populated with the right facts, and (b) no secret
+# substring ever survives into the descriptor.
+
+
+def test_component_param_url_redaction_attaches_descriptor():
+    cf = CredentialFilter(level=RedactionLevel.STANDARD)
+    result = _make_scan_result(jobs=[
+        ParsedJob(
+            name="test_job", path="/jobs/test",
+            components=[
+                Component(
+                    unique_name="tRest_1", component_type="tRESTClient",
+                    params=[
+                        ComponentParam(
+                            name="URL",
+                            value="https://svc:S3cr3tPass@internal.server.com:8443/api",
+                            field_type="TEXT",
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    ])
+    filter_scan_result(result, cf)
+
+    param = result.jobs[0].components[0].params[0]
+    # Existing redaction behavior is unchanged (the generic user:pass@
+    # connection-string pattern fires before URL redaction for this shape)
+    assert "internal.server.com" not in param.value
+    assert "S3cr3tPass" not in param.value
+    assert "[CONNECTION_STRING_REDACTED]" in param.value
+    # New: descriptor captures safe structural facts
+    d = param.redaction_descriptor
+    assert d is not None
+    assert d.scheme == "https"
+    assert d.tls is True
+    assert d.auth_present is True
+    assert d.auth_type == "basic"
+    assert d.host_present is True
+    dumped = d.model_dump_json()
+    assert "S3cr3tPass" not in dumped
+    assert "internal.server.com" not in dumped
+
+
+def test_component_param_sensitive_name_redaction_attaches_descriptor():
+    """Params redacted purely by sensitive NAME (e.g. api_key) still get a
+    descriptor extracted from the original value where possible."""
+    cf = CredentialFilter(level=RedactionLevel.STANDARD)
+    result = _make_scan_result(jobs=[
+        ParsedJob(
+            name="test_job", path="/jobs/test",
+            components=[
+                Component(
+                    unique_name="tRest_1", component_type="tRESTClient",
+                    params=[
+                        ComponentParam(
+                            name="api_key",
+                            value="jms://broker.internal:61616/queue",
+                            field_type="TEXT",
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    ])
+    filter_scan_result(result, cf)
+
+    param = result.jobs[0].components[0].params[0]
+    assert param.value == "[REDACTED]"
+    d = param.redaction_descriptor
+    assert d is not None
+    assert d.scheme == "jms"
+    assert d.category == "jms"
+    assert "broker.internal" not in d.model_dump_json()
+
+
+def test_connection_host_redaction_attaches_descriptor():
+    cf = CredentialFilter(level=RedactionLevel.STANDARD)
+    result = _make_scan_result(metadata_connections=[
+        MetadataConnection(
+            xmi_id="c1", name="MSSQL_prod", connection_type="MSSQL",
+            host="079talend02.keune.com", port="1433", database="BioDB",
+        ),
+    ])
+    filter_scan_result(result, cf)
+
+    conn = result.metadata_connections[0]
+    # Existing redaction behavior is unchanged
+    assert conn.host == "[HOST_REDACTED]"
+    # New: bare host only yields host_present -- nothing else guessable
+    d = conn.host_redaction
+    assert d is not None
+    assert d.host_present is True
+    assert d.scheme is None
+    assert "079talend02" not in d.model_dump_json()
+    assert "keune.com" not in d.model_dump_json()
+
+
+def test_context_variable_password_redaction_attaches_descriptor():
+    cf = CredentialFilter(level=RedactionLevel.STANDARD)
+    result = _make_scan_result(context_groups=[
+        ContextGroup(name="Default", variables=[
+            ContextVariable(
+                name="db_conn", type="id_Password",
+                values={"Default": "jdbc:mysql://dbhost:3306/db?password=Secr3t99"},
+            ),
+        ]),
+    ])
+    filter_scan_result(result, cf)
+
+    var = result.context_groups[0].variables[0]
+    # Existing redaction behavior is unchanged
+    assert var.values["Default"] == "[PASSWORD_REDACTED]"
+    d = var.redaction_descriptors["Default"]
+    assert d is not None
+    assert d.scheme == "jdbc"
+    assert d.category == "db"
+    assert d.auth_present is True
+    assert d.auth_type == "basic"
+    assert "Secr3t99" not in d.model_dump_json()
+    assert "dbhost" not in d.model_dump_json()
+
+
+def test_no_descriptor_when_nothing_derivable():
+    """A sensitive param with a value that carries no structural signal at
+    all (e.g. a bare opaque token) gets redacted but no descriptor -- a
+    dropped field beats a fabricated one."""
+    cf = CredentialFilter(level=RedactionLevel.STANDARD)
+    result = _make_scan_result(jobs=[
+        ParsedJob(
+            name="test_job", path="/jobs/test",
+            components=[
+                Component(
+                    unique_name="tRest_1", component_type="tRESTClient",
+                    params=[
+                        ComponentParam(name="api_key", value="opaquetoken12345", field_type="TEXT"),
+                    ],
+                ),
+            ],
+        ),
+    ])
+    filter_scan_result(result, cf)
+
+    param = result.jobs[0].components[0].params[0]
+    assert param.value == "[REDACTED]"
+    assert param.redaction_descriptor is None
+
+
+def test_recursive_token_normalization_preserves_string_enums():
+    """The final marker sweep must not coerce FileType (a str Enum) to str."""
+    cf = CredentialFilter(level=RedactionLevel.STANDARD)
+    result = _make_scan_result(files=[
+        ScannedFile(
+            path=Path("/test/job.item"),
+            relative_path="job.item",
+            file_type=FileType.JOB,
+            sha256="0" * 64,
+            size_bytes=1,
+        ),
+    ])
+    original_type = result.files[0].file_type
+
+    filter_scan_result(result, cf)
+
+    assert result.files[0].file_type is original_type
+    assert type(result.files[0].file_type) is type(original_type)
 
 
 def test_component_param_nonsensitive_name_preserved():

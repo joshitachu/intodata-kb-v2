@@ -22,6 +22,10 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
   const [runInvestigationModel, setRunInvestigationModel] = useState("");
   const [runAnalysisModel, setRunAnalysisModel] = useState("");
   const [runWriteModel, setRunWriteModel] = useState("");
+  const [openCodeRoute, setOpenCodeRoute] = useState("");
+  const [executionEngine, setExecutionEngine] = useState<
+    "legacy" | "opencode" | "opencode_orchestrated" | "opencode_grounded"
+  >("legacy");
 
   useEffect(() => {
     if (open) {
@@ -31,6 +35,8 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
       setRunInvestigationModel("");
       setRunAnalysisModel("");
       setRunWriteModel("");
+      setOpenCodeRoute("");
+      setExecutionEngine("legacy");
     }
   }, [open, project.id]);
 
@@ -74,14 +80,26 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
       : null;
   const analysisModels = models.filter((m) => m.supports_analysis);
   const writingModels = models.filter((m) => m.supports_writing);
+  const openCodeModels = models.filter(
+    (m) => m.available && m.supports_analysis && m.supports_writing,
+  );
+  const selectedOpenCodeModel =
+    openCodeModels.find(
+      (m) => `${m.provider}::${m.id}` === openCodeRoute,
+    ) ??
+    openCodeModels.find((m) => m.is_default_analysis) ??
+    openCodeModels[0];
 
   if (!open) return null;
 
   function submit() {
     if (
-      workspaceQuery.isLoading ||
-      workspaceQuery.isError ||
-      workspaceQuery.data?.project_id !== project.id
+      executionEngine === "legacy" &&
+      (
+        workspaceQuery.isLoading ||
+        workspaceQuery.isError ||
+        workspaceQuery.data?.project_id !== project.id
+      )
     ) {
       return;
     }
@@ -94,6 +112,9 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
         writeModel: runWriteModel || savedWrite,
         organizationPackId,
         privateVersionIds,
+        executionEngine,
+        openCodeProvider: selectedOpenCodeModel?.provider,
+        openCodeModel: selectedOpenCodeModel?.id,
       },
       {
         onSuccess: () => {
@@ -141,6 +162,40 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
         </div>
 
         <div className="flex-1 overflow-y-auto px-7 py-5 space-y-6">
+        <section className="space-y-3">
+          <h4 className="font-mono uppercase tracking-wider text-xs text-accent-primary/80">
+            Execution engine
+          </h4>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <PackOption
+              checked={executionEngine === "legacy"}
+              onCheck={() => setExecutionEngine("legacy")}
+              title="Current documentation workflow"
+              subtitle="Uses the existing three-phase models and publishes through the normal workflow."
+            />
+            <PackOption
+              checked={executionEngine === "opencode"}
+              onCheck={() => setExecutionEngine("opencode")}
+              title="OpenCode single-agent"
+              subtitle="One OpenCode agent uses read, glob, grep, edit, and write across the frozen AlitaLand scan and exact legacy prompts/evidence. Isolated; never publishes or enters RAG."
+            />
+            <PackOption
+              checked={executionEngine === "opencode_orchestrated"}
+              onCheck={() => setExecutionEngine("opencode_orchestrated")}
+              title="OpenCode orchestrated"
+              subtitle="A primary agent plans and delegates evidence, analysis, writing, and review to bounded specialist subagents. Isolated; never publishes or enters RAG."
+            />
+            <PackOption
+              checked={executionEngine === "opencode_grounded"}
+              onCheck={() => setExecutionEngine("opencode_grounded")}
+              title="OpenCode grounded"
+              subtitle="Recommended candidate: deterministic scanner facts, seven isolated Nexus-scheduled roles, cross-document review, and bounded fact repair. Isolated; never publishes or enters RAG."
+            />
+          </div>
+        </section>
+
+        {executionEngine === "legacy" ? (
+          <>
         <section className="space-y-3">
           <h4 className="font-mono uppercase tracking-wider text-xs text-accent-primary/80">
             Nexus Documentation Pack
@@ -267,6 +322,50 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
           />
           Resume from staging checkpoint
         </label>
+          </>
+        ) : (
+          <section className="space-y-4 rounded border border-amber-400/30 bg-amber-400/[0.06] px-4 py-3">
+            <h4 className="text-sm font-medium text-amber-200">Isolated OpenCode candidate</h4>
+            <p className="mt-1 text-xs leading-5 text-slate-300">
+              Nexus freezes the current approved IntoDoc scan and, when available, the latest
+              completed legacy baseline for comparison. It then asks {executionEngine === "opencode_grounded"
+                ? "Nexus to schedule a fact-grounded sequence of isolated OpenCode specialists"
+                : executionEngine === "opencode_orchestrated"
+                  ? "an OpenCode orchestrator and its bounded specialist subagents"
+                  : "one OpenCode agent"} to create the same ten documentation outputs. Results
+              and usage appear in Experiments. Existing documentation remains unchanged.
+            </p>
+            <label className="block space-y-1.5">
+              <span className="text-xs font-medium text-slate-300">
+                OpenCode provider and model
+              </span>
+              <select
+                aria-label="OpenCode provider and model"
+                value={
+                  selectedOpenCodeModel
+                    ? `${selectedOpenCodeModel.provider}::${selectedOpenCodeModel.id}`
+                    : ""
+                }
+                onChange={(event) => setOpenCodeRoute(event.target.value)}
+                className="input-dark w-full"
+              >
+                {openCodeModels.map((model) => (
+                  <option
+                    key={`${model.provider}:${model.id}`}
+                    value={`${model.provider}::${model.id}`}
+                  >
+                    {model.provider} · {model.label} ({model.id})
+                  </option>
+                ))}
+              </select>
+              {openCodeModels.length === 0 && (
+                <span className="text-xs text-red-300">
+                  No available model supports both analysis and writing.
+                </span>
+              )}
+            </label>
+          </section>
+        )}
 
         {generate.isError && (
           <p className="text-sm text-red-400 font-mono break-all">
@@ -290,16 +389,25 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
             onClick={submit}
             disabled={
               generate.isPending ||
-              workspaceQuery.isLoading ||
-              workspaceQuery.isError ||
-              workspaceQuery.data?.project_id !== project.id
+              (executionEngine !== "legacy" && !selectedOpenCodeModel) ||
+              (executionEngine === "legacy" && (
+                workspaceQuery.isLoading ||
+                workspaceQuery.isError ||
+                workspaceQuery.data?.project_id !== project.id
+              ))
             }
           >
-            {workspaceQuery.isLoading
+            {executionEngine === "legacy" && workspaceQuery.isLoading
               ? "Loading Packs..."
               : generate.isPending
                 ? "Starting..."
-                : "Generate"}
+                : executionEngine === "opencode"
+                  ? "Start Single-Agent Candidate"
+                  : executionEngine === "opencode_orchestrated"
+                    ? "Start Orchestrated Candidate"
+                    : executionEngine === "opencode_grounded"
+                      ? "Start Grounded Candidate"
+                  : "Generate"}
           </button>
         </div>
       </div>

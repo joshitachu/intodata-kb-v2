@@ -9,6 +9,9 @@ ENV VITE_LOGIN_URL=$VITE_LOGIN_URL
 # Customer VPS instances must NOT set this to true.
 ARG VITE_FLEET_ENABLED=false
 ENV VITE_FLEET_ENABLED=$VITE_FLEET_ENABLED
+# Isolated OpenCode A/B workspace. Default-off independently from Fleet.
+ARG VITE_AGENTIC_EXPERIMENTS_ENABLED=false
+ENV VITE_AGENTIC_EXPERIMENTS_ENABLED=$VITE_AGENTIC_EXPERIMENTS_ENABLED
 RUN npm run build
 
 FROM nginx:alpine

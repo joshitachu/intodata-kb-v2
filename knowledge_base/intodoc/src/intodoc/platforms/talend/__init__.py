@@ -43,7 +43,6 @@ class TalendPlugin(PlatformPlugin):
     def classify_file(self, path: Path) -> FileType:
         """Classify a file based on Talend file rules."""
         posix = path.as_posix()
-        name = path.name
         suffix = path.suffix.lower()
 
         # Screenshot / images — skip

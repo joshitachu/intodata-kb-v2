@@ -66,6 +66,11 @@ def scan(
     allow_redaction_failures: bool,
 ) -> None:
     """Scan a repository and produce structured scan results."""
+    # A receipt is an authorization for Runtime publication, not just another
+    # scan artifact.  Remove any older authorization before work begins so a
+    # failed or explicitly-bypassed run can never reuse it.
+    _publication_approval_path(output_dir).unlink(missing_ok=True)
+
     # Auto-discover .intodoc-redact.yaml in repo root if not explicitly set
     if redaction_config is None:
         candidate = repo_path / ".intodoc-redact.yaml"
@@ -156,6 +161,55 @@ def scan(
         f"({lineage_matrix.summary['total_entries']} entries)"
     )
 
+    # Deterministic landscape rollup pass (sibling of the lineage pass
+    # above): rolls the manifest + lineage matrix up into an L1/L2
+    # systems-and-connections graph. Same gate pattern -- built after the
+    # main scan + lineage gates so it only ever sees already-filtered
+    # data, and independently verified before being written.
+    from intodoc.landscape import build_landscape, save_landscape
+    from intodoc.scanner.redaction_verifier import verify_landscape
+
+    landscape = build_landscape(scan_result, lineage_matrix, cred_filter)
+    landscape_verification = verify_landscape(landscape, cred_filter)
+
+    if not landscape_verification["passed"]:
+        n_residual = sum(landscape_verification["residual_pattern_counts"].values())
+        summary = (
+            f"Landscape redaction verification FAILED: {n_residual} residual "
+            f"pattern match(es) in scan/landscape.json."
+        )
+        if config.allow_redaction_failures:
+            console.print(f"[red]WARNING: {summary} Proceeding due to --allow-redaction-failures.[/red]")
+        else:
+            console.print(f"[red]{summary}[/red]")
+            console.print("[red]scan/landscape.json NOT written. Fix redaction rules or re-run with --allow-redaction-failures.[/red]")
+            raise click.exceptions.Exit(2)
+
+    landscape_path = save_landscape(landscape, config.output_dir)
+    console.print(
+        f"[green]Landscape saved to {landscape_path}[/green] "
+        f"({landscape.summary['system_count']} systems, "
+        f"{landscape.summary['application_count']} applications, "
+        f"{landscape.summary['edge_count']} edges)"
+    )
+
+    # This is deliberately stricter than the CLI escape hatch.  Operators may
+    # choose to retain local artifacts after a redaction failure for diagnosis,
+    # but those artifacts must never become eligible for Runtime publication.
+    if not config.allow_redaction_failures:
+        approval_path = _save_publication_approval(
+            config.output_dir,
+            scan_verification=verification,
+            lineage_verification=lineage_verification,
+            landscape_verification=landscape_verification,
+        )
+        console.print(f"  Publication approval: {approval_path}")
+    else:
+        console.print(
+            "[yellow]Publication approval withheld: "
+            "--allow-redaction-failures was used.[/yellow]"
+        )
+
 
 # ── Pipeline Steps ───────────────────────────────────────────────────
 
@@ -201,6 +255,80 @@ def _save_redaction_report(cred_filter, output_dir: Path, verification: dict | N
     path = output_dir / "redaction_report.json"
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     console.print(f"  Total redactions: [yellow]{report['total_redactions']}[/yellow]")
+
+
+_PUBLICATION_APPROVAL_FILENAME = "publication_approval.json"
+_PUBLICATION_ARTIFACTS = (
+    "scan_result.json",
+    "scan/manifest.json",
+    "scan/lineage.json",
+    "scan/landscape.json",
+)
+
+
+def _publication_approval_path(output_dir: Path) -> Path:
+    return output_dir / _PUBLICATION_APPROVAL_FILENAME
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as artifact:
+        for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _save_publication_approval(
+    output_dir: Path,
+    *,
+    scan_verification: dict,
+    lineage_verification: dict,
+    landscape_verification: dict,
+) -> Path:
+    """Atomically authorize Runtime publication of this exact completed scan.
+
+    The receipt is intentionally written only after every published artifact
+    exists and its final verification passed.  It binds that authorization to
+    the exact bytes Runtime's publisher is allowed to consume.
+    """
+
+    verification_by_artifact = {
+        "scan_result.json": scan_verification,
+        "scan/manifest.json": scan_verification,
+        "scan/lineage.json": lineage_verification,
+        "scan/landscape.json": landscape_verification,
+    }
+    if any(result.get("passed") is not True for result in verification_by_artifact.values()):
+        raise RuntimeError("publication approval requires every final verification to pass")
+
+    artifact_hashes: dict[str, str] = {}
+    for relative_path in _PUBLICATION_ARTIFACTS:
+        path = output_dir / relative_path
+        if not path.is_file():
+            raise RuntimeError(f"publication approval artifact is missing: {relative_path}")
+        artifact_hashes[relative_path] = _sha256_file(path)
+
+    receipt = {
+        "schema_version": 1,
+        "approved": True,
+        "allow_redaction_failures": False,
+        "artifacts": artifact_hashes,
+        "verifications": {
+            path: {"passed": result["passed"]}
+            for path, result in verification_by_artifact.items()
+        },
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    target = _publication_approval_path(output_dir)
+    temporary = target.with_name(f".{target.name}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(receipt, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return target
 
 
 def _save_scan_result(scan_result, output_dir: Path) -> None:

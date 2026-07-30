@@ -4,7 +4,6 @@ import asyncio
 import logging
 import time
 
-import tiktoken
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -119,26 +118,32 @@ async def _execute_role_aware_search(
     qdrant: AsyncQdrantClient,
     project_ids: list[str] | None,
 ) -> tuple[list[Source], list[Source]]:
-    """Run source-first retrieval plus bounded auxiliary/template context."""
-    source_sources = await _execute_search(
-        query,
-        user_groups,
-        qdrant,
-        request.top_k,
-        request.threshold,
-        request.document_ids,
-        project_ids,
-        document_roles=["source"],
-    )
-    auxiliary_sources = await _execute_search(
-        query,
-        user_groups,
-        qdrant,
-        max(1, min(4, request.top_k)),
-        request.threshold,
-        request.document_ids,
-        project_ids,
-        document_roles=list(AUXILIARY_DOCUMENT_ROLES),
+    """Run source-first retrieval plus bounded auxiliary/template context.
+
+    The source and auxiliary searches are independent, so they run concurrently
+    rather than sequentially to halve the retrieval wall-clock.
+    """
+    source_sources, auxiliary_sources = await asyncio.gather(
+        _execute_search(
+            query,
+            user_groups,
+            qdrant,
+            request.top_k,
+            request.threshold,
+            request.document_ids,
+            project_ids,
+            document_roles=["source"],
+        ),
+        _execute_search(
+            query,
+            user_groups,
+            qdrant,
+            max(1, min(4, request.top_k)),
+            request.threshold,
+            request.document_ids,
+            project_ids,
+            document_roles=list(AUXILIARY_DOCUMENT_ROLES),
+        ),
     )
     return source_sources, auxiliary_sources
 
@@ -234,13 +239,6 @@ async def run_rag_query(
 
     if sources or auxiliary_sources:
         logger.info("Document search returned %d source chunks", len(sources))
-        enc = tiktoken.get_encoding("cl100k_base")
-        total_context_tokens = sum(len(enc.encode(source.text)) for source in sources)
-        logger.info(
-            "Document query retrieved %d chunks and ~%d context tokens",
-            len(sources),
-            total_context_tokens,
-        )
         document_sources = merge_sources_by_document([*sources, *auxiliary_sources])
         ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
         messages = build_messages(

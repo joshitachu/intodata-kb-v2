@@ -3,21 +3,28 @@
 import { useCallback, useMemo, useState } from "react";
 
 // Breadcrumb navigation stack for the topology drill-down
-// (Project > Group > Job > Component).
+// (Landscape > Integration/legacy Group > Job > Component).
 // Each entry is one rendered React Flow canvas level.
+
+export type IntegrationSelection =
+  | { kind: "application"; applicationId: string }
+  | { kind: "system"; systemId: string }
+  | { kind: "edge"; edgeKey: string };
 
 export type TopologyLevel =
   | { kind: "project" }
-  | { kind: "group"; groupName: string }
-  | { kind: "job"; jobName: string }
-  | { kind: "component"; jobName: string; componentName: string };
+  | { kind: "integration"; selection: IntegrationSelection }
+  | { kind: "group"; groupName: string; sourceRoot?: string }
+  | { kind: "job"; jobName: string; sourceRoot?: string }
+  | { kind: "component"; jobName: string; componentName: string; sourceRoot?: string };
 
 export interface TopologyNavigation {
   stack: TopologyLevel[];
   current: TopologyLevel;
   depth: number;
-  descendToGroup: (groupName: string) => void;
-  descendToJob: (jobName: string) => void;
+  descendToIntegration: (selection: IntegrationSelection) => void;
+  descendToGroup: (groupName: string, sourceRoot?: string) => void;
+  descendToJob: (jobName: string, sourceRoot?: string) => void;
   descendToComponent: (componentName: string) => void;
   ascend: () => void;
   jumpTo: (index: number) => void;
@@ -29,23 +36,31 @@ const ROOT: TopologyLevel[] = [{ kind: "project" }];
 export function useTopologyNavigation(): TopologyNavigation {
   const [stack, setStack] = useState<TopologyLevel[]>(ROOT);
 
-  const descendToGroup = useCallback((groupName: string) => {
+  const descendToIntegration = useCallback((selection: IntegrationSelection) => {
     setStack((prev) => {
       const top = prev[prev.length - 1];
-      if (top.kind === "group" && top.groupName === groupName) return prev;
-      // A group is always a direct child of the landscape. Replacing any
-      // deeper path avoids stale Job/Component crumbs when switching groups.
-      return [{ kind: "project" }, { kind: "group", groupName }];
+      if (top.kind === "integration" && JSON.stringify(top.selection) === JSON.stringify(selection)) return prev;
+      return [{ kind: "project" }, { kind: "integration", selection }];
     });
   }, []);
 
-  const descendToJob = useCallback((jobName: string) => {
+  const descendToGroup = useCallback((groupName: string, sourceRoot?: string) => {
+    setStack((prev) => {
+      const top = prev[prev.length - 1];
+      if (top.kind === "group" && top.groupName === groupName && top.sourceRoot === sourceRoot) return prev;
+      // A group is always a direct child of the landscape. Replacing any
+      // deeper path avoids stale Job/Component crumbs when switching groups.
+      return [{ kind: "project" }, { kind: "group", groupName, sourceRoot }];
+    });
+  }, []);
+
+  const descendToJob = useCallback((jobName: string, sourceRoot?: string) => {
     setStack((prev) => {
       const top = prev[prev.length - 1];
       // Re-descending into the level already on top is a no-op
       // (e.g. a tRunJob portal pointing at the job currently shown).
-      if (top.kind === "job" && top.jobName === jobName) return prev;
-      return [...prev, { kind: "job", jobName }];
+      if (top.kind === "job" && top.jobName === jobName && top.sourceRoot === sourceRoot) return prev;
+      return [...prev, { kind: "job", jobName, sourceRoot }];
     });
   }, []);
 
@@ -58,11 +73,13 @@ export function useTopologyNavigation(): TopologyNavigation {
       const top = prev[prev.length - 1];
       const jobName =
         top.kind === "job" || top.kind === "component" ? top.jobName : null;
+      const sourceRoot =
+        top.kind === "job" || top.kind === "component" ? top.sourceRoot : undefined;
       if (jobName === null) return prev;
       if (top.kind === "component" && top.componentName === componentName) {
         return prev;
       }
-      return [...prev, { kind: "component", jobName, componentName }];
+      return [...prev, { kind: "component", jobName, componentName, sourceRoot }];
     });
   }, []);
 
@@ -88,6 +105,7 @@ export function useTopologyNavigation(): TopologyNavigation {
       stack,
       current,
       depth,
+      descendToIntegration,
       descendToGroup,
       descendToJob,
       descendToComponent,
@@ -99,6 +117,7 @@ export function useTopologyNavigation(): TopologyNavigation {
       stack,
       current,
       depth,
+      descendToIntegration,
       descendToGroup,
       descendToJob,
       descendToComponent,

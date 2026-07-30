@@ -13,6 +13,11 @@ function levelLabel(level: TopologyLevel, projectLabel: string): string {
   switch (level.kind) {
     case "project":
       return projectLabel;
+    case "integration":
+      // IDs are intentionally opaque. The detail canvas renders a human label
+      // from the authoritative landscape record; this crumb simply names its
+      // level without exposing or reconstructing that identity.
+      return "Integration";
     case "group":
       return level.groupName.split("/").filter(Boolean).at(-1) || level.groupName;
     case "job":

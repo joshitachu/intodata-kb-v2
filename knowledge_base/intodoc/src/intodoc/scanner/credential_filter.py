@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from intodoc.config import RedactionLevel
+from intodoc.models import RedactionDescriptor
 
 
 class CredentialFilter:
@@ -187,8 +188,15 @@ class CredentialFilter:
     ]
 
     # URL pattern (applied separately for safe-domain exclusion)
+    # Every URI scheme that `describe_value()` can safely characterise must
+    # also be redacted as a complete URI.  Keeping this smaller than a generic
+    # ``word://`` matcher is intentional: an arbitrary token that happens to
+    # contain a colon must never be treated as a protocol fact.  The previous
+    # expression omitted JMS, which both leaked query-string credentials and
+    # made the verification gate blind to them.
     _URL_RE = re.compile(
-        r"(?:https?|amqps?|s?ftp|tcp)://[^\s\"'<>]+",
+        r"(?:https?|wss?|jdbc(?::[A-Za-z][A-Za-z0-9+.\-]*)?|jms|amqps?|"
+        r"s?ftp|ftpes|tcp|smtps?|ldaps?|mqtt|stomp|file)://[^\s\"'<>]+",
         re.IGNORECASE,
     )
     _URL_HOST_RE = re.compile(
@@ -257,6 +265,171 @@ class CredentialFilter:
         r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])"
     )
 
+    # ── Redaction descriptor extraction ("mask-and-CAPTURE") ─────────
+    #
+    # `describe_value` runs on a value BEFORE it is redacted and returns a
+    # RedactionDescriptor holding ONLY provably-non-sensitive structural
+    # facts. It never returns the host, path, query string, username, or
+    # any credential value -- only enums/booleans/known scheme tokens. Any
+    # fact that cannot be safely determined is left None.
+
+    # Scheme must come from this fixed vocabulary. This is the key safety
+    # guard: an arbitrary "word:" prefix on an unrelated secret string
+    # (e.g. a token that happens to contain a colon) is NEVER reported as a
+    # scheme -- only recognized protocol tokens are.
+    _KNOWN_SCHEMES: frozenset[str] = frozenset({
+        "https", "http", "ws", "wss", "jdbc", "jms", "ftp", "ftps", "ftpes",
+        "sftp", "smtp", "smtps", "ldap", "ldaps", "amqp", "amqps", "mqtt",
+        "stomp", "file", "mailto", "tcp",
+    })
+    _TLS_SCHEMES: frozenset[str] = frozenset({
+        "https", "ftps", "ftpes", "smtps", "ldaps", "amqps", "wss", "sftp",
+    })
+    _NO_TLS_SCHEMES: frozenset[str] = frozenset({
+        "http", "ftp", "jms", "ldap", "smtp", "ws", "tcp", "mqtt",
+    })
+    _CATEGORY_BY_SCHEME: dict[str, str] = {
+        "https": "rest", "http": "rest", "ws": "rest", "wss": "rest",
+        "jdbc": "db",
+        "jms": "jms", "amqp": "jms", "amqps": "jms", "mqtt": "jms", "stomp": "jms",
+        "smtp": "smtp", "smtps": "smtp", "mailto": "smtp",
+        "sftp": "file", "ftp": "file", "ftps": "file", "ftpes": "file", "file": "file",
+        "ldap": "directory", "ldaps": "directory",
+    }
+
+    _SCHEME_PREFIX_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]{0,15}):")
+    _AUTHORITY_RE = re.compile(
+        r"^//(?:(?P<userinfo>[^@/?#\s]+)@)?(?P<host>[^/:?#\s]+)"
+    )
+    # Query/param key names that indicate an auth credential is present.
+    # Only the KEY NAME is inspected here, never the value on the right of
+    # "=" -- that value is exactly the credential we must not leak.
+    _AUTH_PARAM_NAME_RE = re.compile(
+        r"(?i)(?:^|[;&?])\s*"
+        r"(password|pwd|pass|secret|token|api[_-]?key|apikey|"
+        r"access[_-]?token|client[_-]?secret|oauth|bearer)\s*="
+    )
+    # ssl/tls/encrypt flags are structural booleans, not secrets -- reading
+    # their literal true/false value is safe, unlike a credential value.
+    _TLS_FLAG_RE = re.compile(
+        r"(?i)(?:^|[;&?])\s*(ssl|usessl|use_ssl|tls|encrypt)\s*=\s*(true|false)\b"
+    )
+    _BEARER_HEADER_RE = re.compile(r"(?i)\bBearer\s+\S+")
+    _BASIC_HEADER_RE = re.compile(r"(?i)\bBasic\s+[A-Za-z0-9+/=]+\b")
+
+    # An opaque, process-local marker transports a *safe descriptor* across
+    # Layer 1's required-before-parse redaction boundary.  Parser code turns
+    # the marker back into the ordinary URL placeholder before anything is
+    # persisted.  It is deliberately not derived from the original value.
+    _DESCRIPTOR_TOKEN_RE = re.compile(r"\[INTODOC_URI_DESCRIPTOR_(\d+)\]")
+    _URI_USERINFO_RE = re.compile(r"://[^/@\s]+:[^/@\s]+@")
+
+    @classmethod
+    def describe_value(cls, value: str, *, is_host: bool = False) -> RedactionDescriptor | None:
+        """Extract safe structural facts from `value` BEFORE it is redacted.
+
+        Returns None when nothing can be safely determined. Every returned
+        field is an enum/bool/known-scheme-token -- never a host, path,
+        query string, username, or credential value.
+
+        `is_host` must only be set by a caller that already knows -- from
+        the field's own semantics, not from guessing at the value's shape
+        -- that this value is a bare host/IP (e.g. MetadataConnection.host).
+        An arbitrary opaque secret can easily look hostname-shaped (plain
+        alphanumerics), so this is never inferred automatically from the
+        value's characters alone; without this flag an un-schemed value
+        with no other signal returns None.
+        """
+        if not isinstance(value, str):
+            return None
+        text = value.strip()
+        if not text:
+            return None
+
+        scheme: str | None = None
+        category: str | None = None
+        auth_present: bool | None = None
+        auth_type: str | None = None
+        tls: bool | None = None
+        host_present: bool | None = None
+
+        scheme_match = cls._SCHEME_PREFIX_RE.match(text)
+        if scheme_match and scheme_match.group(1).lower() in cls._KNOWN_SCHEMES:
+            scheme = scheme_match.group(1).lower()
+            remainder = text[scheme_match.end():]
+            if scheme == "jdbc":
+                # jdbc:<subprotocol>://... -- locate the authority section
+                # after the subprotocol token, which is discarded (not
+                # reported) since it is not part of the known vocabulary.
+                sub_scheme_match = cls._SCHEME_PREFIX_RE.match(remainder)
+                if sub_scheme_match:
+                    remainder = remainder[sub_scheme_match.end():]
+            authority_match = cls._AUTHORITY_RE.match(remainder)
+            if authority_match:
+                host_present = bool(authority_match.group("host"))
+                userinfo = authority_match.group("userinfo")
+                if userinfo:
+                    auth_present = True
+                    auth_type = "basic" if ":" in userinfo else "unknown"
+            category = cls._CATEGORY_BY_SCHEME.get(scheme)
+            if scheme in cls._TLS_SCHEMES:
+                tls = True
+            elif scheme in cls._NO_TLS_SCHEMES:
+                tls = False
+
+        if auth_present is not True:
+            name_match = cls._AUTH_PARAM_NAME_RE.search(text)
+            if name_match:
+                auth_present = True
+                key = name_match.group(1).lower()
+                if "api" in key:
+                    auth_type = "api_key"
+                elif "oauth" in key or "bearer" in key:
+                    auth_type = "oauth"
+                elif key in ("password", "pwd", "pass"):
+                    auth_type = "basic"
+                else:
+                    auth_type = auth_type or "unknown"
+
+        if cls._BEARER_HEADER_RE.search(text):
+            auth_present = True
+            auth_type = "bearer"
+        elif auth_type != "bearer" and cls._BASIC_HEADER_RE.search(text):
+            auth_present = True
+            auth_type = "basic"
+
+        if auth_present is None and scheme is not None:
+            # A well-formed, recognized connection value with no credential
+            # signal at all -- explicit "no auth detected", not a guess.
+            auth_present = False
+            auth_type = "none"
+
+        tls_flag_match = cls._TLS_FLAG_RE.search(text)
+        if tls_flag_match:
+            tls = tls_flag_match.group(2).lower() == "true"
+
+        if is_host and scheme is None and host_present is None:
+            # Caller already knows (by field semantics) that this whole
+            # value IS a host -- e.g. MetadataConnection.host. Only
+            # host_present can be safely reported; nothing else is
+            # determinable from a bare host string.
+            host_present = True
+
+        if (
+            scheme is None and category is None and auth_present is None
+            and tls is None and host_present is None
+        ):
+            return None
+
+        return RedactionDescriptor(
+            scheme=scheme,
+            category=category,
+            auth_present=auth_present,
+            auth_type=auth_type,
+            tls=tls,
+            host_present=host_present,
+        )
+
     def __init__(
         self,
         level: RedactionLevel = RedactionLevel.STANDARD,
@@ -264,6 +437,9 @@ class CredentialFilter:
     ) -> None:
         self._level = level
         self._audit: dict[str, list[str]] = defaultdict(list)  # category -> [sha256 hashes]
+        self._redaction_descriptors: dict[str, RedactionDescriptor] = {}
+        self._redaction_token_placeholders: dict[str, str] = {}
+        self._next_descriptor_token = 1
         self._custom_patterns: list[tuple[re.Pattern[str], str, RedactionLevel]] = []
         self._custom_safe_domains: set[str] = set()
         self._custom_sensitive_vars: list[str] = []
@@ -345,14 +521,63 @@ class CredentialFilter:
             return "[HOSTNAME]"
         return self._FQDN_RE.sub(_replace_fqdn, text)
 
-    def _filter_urls(self, text: str) -> str:
-        """Replace URLs with [URL_REDACTED], preserving safe-domain hosts."""
+    def _descriptor_token(self, descriptor: RedactionDescriptor, placeholder: str) -> str:
+        token = f"[INTODOC_URI_DESCRIPTOR_{self._next_descriptor_token}]"
+        self._next_descriptor_token += 1
+        self._redaction_descriptors[token] = descriptor
+        self._redaction_token_placeholders[token] = placeholder
+        return token
+
+    def descriptor_from_redaction_token(self, value: str) -> RedactionDescriptor | None:
+        """Return a Layer-1 URI descriptor for one exact opaque marker.
+
+        The raw URI has already been discarded.  Callers must not attempt to
+        infer a descriptor from a substring or a redacted placeholder: only
+        an exact marker created during this scan is authoritative.
+        """
+        if not isinstance(value, str):
+            return None
+        return self._redaction_descriptors.get(value.strip())
+
+    def normalize_redaction_tokens(self, value: str) -> str:
+        """Replace internal descriptor markers with the public URL placeholder."""
+        def replacement(match: re.Match[str]) -> str:
+            token = match.group(0)
+            return self._redaction_token_placeholders.get(token, "[URL_REDACTED]")
+        return self._DESCRIPTOR_TOKEN_RE.sub(replacement, value)
+
+    def _filter_urls(self, text: str, *, capture_descriptors: bool = False) -> str:
+        """Replace known-scheme URIs with a descriptor marker or URL placeholder.
+
+        This runs before general text patterns so a complete URI (including
+        userinfo/query credentials) is handled as one unit rather than being
+        partially mangled by a connection-string regex.
+        """
         def _replace_url(m: re.Match[str]) -> str:
             url = m.group(0)
             host_match = self._URL_HOST_RE.match(url)
-            if host_match and self._is_safe_domain(host_match.group(1)):
+            descriptor = self.describe_value(url)
+            # XML namespace URLs are safely protected before this method is
+            # reached.  A safe-domain *data* URL must still be redacted when
+            # it carries userinfo or a credential-shaped query parameter.
+            if (
+                host_match
+                and self._is_safe_domain(host_match.group(1))
+                and (descriptor is None or descriptor.auth_present is not True)
+            ):
                 return url
             self._record_redaction("url_redacted", url)
+            if capture_descriptors and descriptor is not None:
+                # Retain the established output redaction shape after the
+                # parser consumes the token.  A URL with user:password@ was
+                # historically represented by CONNECTION_STRING_REDACTED;
+                # query-auth URIs stay URL_REDACTED.
+                placeholder = (
+                    "[CONNECTION_STRING_REDACTED]"
+                    if self._URI_USERINFO_RE.search(url)
+                    else "[URL_REDACTED]"
+                )
+                return self._descriptor_token(descriptor, placeholder)
             return "[URL_REDACTED]"
         return self._URL_RE.sub(_replace_url, text)
 
@@ -388,15 +613,34 @@ class CredentialFilter:
             text = text.replace(f'"__INTODOC_XMLNS_{i}__"', value)
         return text
 
-    def filter_text(self, text: str, filename: str = "") -> str:
+    def filter_text(
+        self,
+        text: str,
+        filename: str = "",
+        *,
+        capture_uri_descriptors: bool = False,
+    ) -> str:
         """Apply all redaction patterns to raw text. Returns cleaned text."""
         stripped = text.lstrip()
+        # Internal markers are only allowed between Layer 1 and the Talend
+        # parser's exact-field descriptor attachment. Any later filtering pass
+        # must erase them, including values embedded in expressions or model
+        # fields that do not have a descriptor slot.
+        if not capture_uri_descriptors:
+            text = self.normalize_redaction_tokens(text)
         is_xml = filename.lower().endswith(".xml") or (
             stripped.startswith("<?xml") or stripped.startswith("<")
         )
         xmlns_values: list[str] = []
         if is_xml:
             text, xmlns_values = self._mask_xmlns_decls(text)
+        # A source parser can opt into this private, pre-parse transport of
+        # descriptors.  Public/default filtering retains the established
+        # placeholder shapes and performs URL cleanup after generic patterns.
+        # Either path covers the full URI before it can be persisted.
+        if capture_uri_descriptors and self._level_includes(RedactionLevel.STANDARD):
+            text = self._filter_urls(text, capture_descriptors=True)
+
         for pattern, replacement in self._active_patterns:
             if pattern is self._LOBSTER_BASE64_RE and not is_xml:
                 continue
@@ -422,9 +666,13 @@ class CredentialFilter:
 
         text = self._SENSITIVE_KV.sub(_kv_repl, text)
 
-        # URL, FQDN and UNC-host filtering (standard+), safe domains preserved
+        # FQDN and UNC-host filtering (standard+), safe domains preserved.
+        # In descriptor-capture mode URLs were already replaced as a complete
+        # unit before generic patterns; otherwise preserve the historic
+        # ordering and emit the public URL placeholder here.
         if self._level_includes(RedactionLevel.STANDARD):
-            text = self._filter_urls(text)
+            if not capture_uri_descriptors:
+                text = self._filter_urls(text)
             text = self._filter_fqdns(text)
             text = self._filter_unc_hosts(text)
 
@@ -518,6 +766,7 @@ class CredentialFilter:
             for m in self._UNC_HOST_RE.finditer(text):
                 if not self._is_safe_domain(m.group(2)):
                     _bump("unc_host")
+        _bump("internal_descriptor_token", len(self._DESCRIPTOR_TOKEN_RE.findall(text)))
         return findings
 
     def get_audit_report(self) -> dict[str, Any]:

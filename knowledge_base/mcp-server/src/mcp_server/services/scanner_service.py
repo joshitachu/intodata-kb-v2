@@ -13,6 +13,7 @@ from pathlib import Path
 
 from mcp_server.config import config
 from mcp_server.services.log_manager import LogManager
+from mcp_server.services.scan_output_lock import ScanOutputLock, acquire_scan_output_lock
 from mcp_server.utils.error_sanitizer import sanitize_git_error, sanitize_multiline_git_error
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ class ScannerService:
         repo_path: str,
         platform: str = "talend",
         output_dir: str | None = None,
+        scan_lock: ScanOutputLock | None = None,
     ) -> dict:
         """Run `intodoc scan` subprocess.
 
@@ -37,8 +39,47 @@ class ScannerService:
             dict with keys: success, job_count, scan_result_path, output_dir
         """
         out_dir = Path(output_dir) if output_dir else config.intodoc_output_dir
+        owned_lock = scan_lock is None
+        active_lock = scan_lock or acquire_scan_output_lock(out_dir)
+        if active_lock is None:
+            return {
+                "success": False,
+                "error": "Scan output directory is already in use by another scan",
+                "job_count": 0,
+                "scan_result_path": None,
+                "output_dir": str(out_dir),
+            }
+        try:
+            return await self._run_scan_locked(
+                project_id=project_id,
+                repo_path=repo_path,
+                platform=platform,
+                out_dir=out_dir,
+            )
+        finally:
+            if owned_lock:
+                active_lock.release()
+
+    async def _run_scan_locked(
+        self,
+        *,
+        project_id: str,
+        repo_path: str,
+        platform: str,
+        out_dir: Path,
+    ) -> dict:
+        """Run a scan while the caller exclusively owns ``out_dir``."""
         out_dir.mkdir(parents=True, exist_ok=True)
-        for stale in (out_dir / "scan_result.json", out_dir / "scan"):
+        # Do not leave an authorization or audit report from a prior scan next
+        # to mutable new artifacts.  The CLI writes a fresh approval only after
+        # every final gate passes; removing it here makes a failed rerun fail
+        # closed even if it never reaches that final step.
+        for stale in (
+            out_dir / "scan_result.json",
+            out_dir / "scan",
+            out_dir / "redaction_report.json",
+            out_dir / "publication_approval.json",
+        ):
             if stale.is_dir():
                 shutil.rmtree(stale, ignore_errors=True)
             else:

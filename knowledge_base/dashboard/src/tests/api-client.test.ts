@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { api } from "../api/client";
+import { api, openCodeRuntimeModelId } from "../api/client";
 
 describe("API client", () => {
   beforeEach(() => {
@@ -118,6 +118,18 @@ describe("API client", () => {
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "/mcp/models",
       expect.objectContaining({ credentials: "include" })
+    );
+  });
+
+  it("splits canonical catalogue routes into OpenCode provider-local model IDs", () => {
+    expect(
+      openCodeRuntimeModelId("deepseek", "deepseek/deepseek-v4-pro"),
+    ).toBe("deepseek-v4-pro");
+    expect(
+      openCodeRuntimeModelId("route33", "route33/z-ai/glm-5.2"),
+    ).toBe("z-ai/glm-5.2");
+    expect(openCodeRuntimeModelId("provider", "already-local")).toBe(
+      "already-local",
     );
   });
 

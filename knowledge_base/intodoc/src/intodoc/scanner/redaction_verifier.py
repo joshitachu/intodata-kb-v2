@@ -16,7 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from intodoc.models import LineageMatrix, ScanResult
+from intodoc.models import Landscape, LineageMatrix, ScanResult
 from intodoc.scanner.credential_filter import CredentialFilter
 
 
@@ -198,6 +198,30 @@ def verify_lineage_matrix(
     business text). Raw values never appear in the report.
     """
     leaf_report = verify_model_leaves(lineage, cred_filter)
+    residual = leaf_report["residual_pattern_counts"]
+    return {
+        "passed": not residual,
+        "checked_string_leaves": leaf_report["checked_string_leaves"],
+        "findings": [],
+        "residual_pattern_counts": residual,
+        "residual_locations": leaf_report["residual_locations"],
+    }
+
+
+def verify_landscape(
+    landscape: Landscape,
+    cred_filter: CredentialFilter,
+) -> dict[str, Any]:
+    """Verify a `Landscape` (scan/landscape.json) carries no residual secrets.
+
+    Same layer-3 gate as `verify_lineage_matrix`: `intodoc.landscape` only
+    ever copies through names/kinds/context-group labels (never a raw
+    host/URL/credential -- see module docstring), but the landscape
+    document is a new assembled artifact and must independently pass the
+    same leaf-string sweep before being written. Raw values never appear
+    in the report.
+    """
+    leaf_report = verify_model_leaves(landscape, cred_filter)
     residual = leaf_report["residual_pattern_counts"]
     return {
         "passed": not residual,

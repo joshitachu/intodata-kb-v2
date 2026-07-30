@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -105,6 +106,41 @@ class MCPServerConfig(BaseSettings):
 
     # App env (development | staging | production) — toggles hard-fail secret validation
     app_env: str = "development"
+
+    # Additive agentic documentation experiments. These settings are isolated
+    # from the legacy scanner and /mcp/generate workflow. The experiment surface
+    # remains unavailable unless explicitly enabled.
+    agentic_experiments_enabled: bool = False
+    agentic_paid_execution_enabled: bool = False
+    agentic_opencode_base_url: str = "http://opencode-runtime:4096"
+    agentic_opencode_username: str = "opencode"
+    agentic_opencode_password: str = ""
+    agentic_opencode_version: str = "1.18.4"
+    agentic_recipe_root: Path = Path("data/agentic_recipes")
+    # Shared only between Nexus and the isolated OpenCode runtime. Each
+    # experiment receives one directory containing frozen sources and a
+    # candidate-only output directory.
+    agentic_workspace_root: Path = Path("agentic-workspaces")
+    # A separate secret signs short-lived, task-scoped MCP tokens. It must never
+    # reuse a provider key or the dashboard JWT secret.
+    agentic_task_token_secret: str = ""
+    agentic_task_token_ttl_seconds: int = 900
+    agentic_max_concurrent_experiments: int = 1
+    agentic_max_concurrent_tasks: int = 3
+    agentic_max_task_attempts: int = 2
+    agentic_max_tool_calls: int = 80
+    agentic_max_tool_bytes: int = 1_000_000
+    agentic_max_tool_result_bytes: int = 100_000
+    agentic_max_input_tokens: int = 1_500_000
+    agentic_max_output_tokens: int = 200_000
+    agentic_max_wall_seconds: int = 7_200
+    # Zero means paid execution is unavailable until an operator supplies a
+    # non-zero run-specific ceiling and a frozen price-card receipt.
+    agentic_max_cost_usd: float = 0.0
+    agentic_retention_days: int = 30
+    # Optional JSON array of administrator-governed directory roots for
+    # non-scanner evidence adapters. Empty trusts no extra directory.
+    agentic_governed_source_roots_json: str = ""
 
     # Doc generation
     doc_generation_provider: str = "custom"
@@ -305,7 +341,7 @@ class MCPServerConfig(BaseSettings):
     instruction_pack_dir: str = "packs/default"  # MCP_INSTRUCTION_PACK_DIR
 
     # Upload limits
-    max_upload_zip_bytes: int = 500 * 1024 * 1024  # MCP_MAX_UPLOAD_ZIP_BYTES — 500 MB default
+    max_upload_zip_bytes: int = 1024 * 1024 * 1024  # MCP_MAX_UPLOAD_ZIP_BYTES — 1 GB default
     max_upload_zip_entries: int = 20_000  # MCP_MAX_UPLOAD_ZIP_ENTRIES
     max_upload_zip_uncompressed_bytes: int = 2 * 1024 * 1024 * 1024  # MCP_MAX_UPLOAD_ZIP_UNCOMPRESSED_BYTES
     # Nested source bundles are common for Talend exports.  These limits apply
@@ -407,6 +443,47 @@ def check_provider_credentials() -> list[str]:
     return warnings_out
 
 
+def check_agentic_configuration(
+    settings: MCPServerConfig | None = None,
+) -> list[str]:
+    """Return fail-closed configuration warnings for the additive experiment path."""
+
+    current = settings or config
+    warnings_out: list[str] = []
+    if current.agentic_paid_execution_enabled and not current.agentic_experiments_enabled:
+        warnings_out.append(
+            "agentic paid execution requires MCP_AGENTIC_EXPERIMENTS_ENABLED=true"
+        )
+    if not current.agentic_experiments_enabled:
+        return warnings_out
+    if len(current.agentic_task_token_secret.encode("utf-8")) < 32:
+        warnings_out.append(
+            "agentic experiments require a dedicated task-token secret of at least 32 bytes"
+        )
+    if not current.agentic_opencode_password:
+        warnings_out.append(
+            "agentic experiments require authenticated OpenCode access"
+        )
+    if not current.agentic_opencode_base_url or not current.agentic_opencode_username:
+        warnings_out.append(
+            "agentic experiments require an OpenCode URL and username"
+        )
+    if not current.agentic_opencode_version:
+        warnings_out.append("agentic experiments require a pinned OpenCode version")
+    if current.agentic_task_token_ttl_seconds <= 0:
+        warnings_out.append(
+            "agentic experiments require a positive task-token TTL"
+        )
+    if current.agentic_paid_execution_enabled and (
+        not math.isfinite(current.agentic_max_cost_usd)
+        or current.agentic_max_cost_usd <= 0
+    ):
+        warnings_out.append(
+            "agentic paid execution requires a positive operator cost ceiling"
+        )
+    return warnings_out
+
+
 def validate_production_secrets() -> None:
     """Hard-fail if secrets are left at defaults in production mode."""
     if config.app_env != "production":
@@ -420,6 +497,12 @@ def validate_production_secrets() -> None:
         raise ValueError(
             "CRITICAL: MCP_INGEST_API_KEY is empty. "
             "Set a strong random key in production (used to push generated docs to RAG)."
+        )
+    agentic_warnings = check_agentic_configuration(config)
+    if agentic_warnings:
+        raise ValueError(
+            "CRITICAL: invalid agentic experiment configuration: "
+            + "; ".join(agentic_warnings)
         )
     # GitHub App is optional (PAT fallback exists), but a PARTIAL configuration is a
     # latent failure: the install redirect or token minting will break at runtime.

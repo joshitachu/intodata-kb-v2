@@ -119,3 +119,39 @@ class TestTalendParserEsbIntegration:
         assert result.stats["total_artifacts"] == 2
         assert result.stats["job_count"] == 1
         assert result.stats["route_count"] == 1
+
+    def test_context_uri_descriptor_reaches_exact_route_endpoint(self, tmp_path):
+        route_dir = tmp_path / "routes" / "Service"
+        route_dir.mkdir(parents=True)
+        (route_dir / "ContextEndpoint_0.1.item").write_text(
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <ProcessType>
+              <context name="DEV">
+                <contextParameter name="ApiUrl" type="id_String"
+                  value="https://api.example.test/v1?api_key=not-a-real-key"/>
+              </context>
+              <node componentName="cREST">
+                <elementParameter name="UNIQUE_NAME" value="cREST_1"/>
+                <elementParameter name="URI" value="context.ApiUrl"/>
+              </node>
+            </ProcessType>
+            """,
+            encoding="utf-8",
+        )
+
+        result = self.parser.parse(tmp_path)
+
+        route = result.jobs[0]
+        variable = route.context_groups[0].variables[0]
+        assert variable.values["DEV"] == "[URL_REDACTED]"
+        assert variable.redaction_descriptors["DEV"].scheme == "https"
+        endpoint = result.manifest.artifact_endpoints[0]
+        assert endpoint["endpoint_descriptor"] == {
+            "scheme": "https",
+            "category": "rest",
+            "auth_present": True,
+            "auth_type": "api_key",
+            "tls": True,
+            "host_present": True,
+        }
+        assert "example.test" not in result.model_dump_json()

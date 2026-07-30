@@ -308,6 +308,35 @@ def test_nested_zip_bundle_enforces_cumulative_entry_limit(tmp_path, monkeypatch
         _extract_zip_bundle(outer, target)
 
 
+def test_nested_zip_bundle_excludes_macos_noise_from_cumulative_limits(tmp_path, monkeypatch):
+    from mcp_server.api.routes.projects import _extract_zip_bundle
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "max_upload_zip_entries", 2)
+    nested = io.BytesIO()
+    with zipfile.ZipFile(nested, "w") as zf:
+        zf.writestr("PROJECT/process/Job_0.1.item", "synthetic")
+        zf.writestr("__MACOSX/._PROJECT", "x" * 256)
+        zf.writestr("__MACOSX/PROJECT/process/._Job_0.1.item", "x" * 256)
+    nested_payload = nested.getvalue()
+    monkeypatch.setattr(
+        config,
+        "max_upload_zip_uncompressed_bytes",
+        len(nested_payload) + len("synthetic"),
+    )
+    outer = tmp_path / "outer.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.writestr("project.zip", nested_payload)
+    target = tmp_path / "expanded"
+    target.mkdir()
+
+    _extract_zip_bundle(outer, target)
+
+    expanded = target / "project.__intodoc_zip__"
+    assert (expanded / "PROJECT" / "process" / "Job_0.1.item").exists()
+    assert not (expanded / "__MACOSX").exists()
+
+
 def test_nested_zip_bundle_enforces_depth_and_cumulative_bytes(tmp_path, monkeypatch):
     from fastapi import HTTPException
     from mcp_server.api.routes.projects import _extract_zip_bundle
@@ -541,6 +570,30 @@ async def test_scan_repairs_stale_managed_repo_path(client, session_factory, tmp
         project = await registry.get_project("nexus")
         assert project is not None
         assert project.local_path == str(repo)
+
+
+async def test_scan_rejects_second_request_while_output_claimed(client, session_factory, tmp_path):
+    """The API rejects a second scan before it can touch the shared output path."""
+    from mcp_server.config import config
+    from mcp_server.services.project_registry import ProjectRegistry
+    from mcp_server.services.scan_output_lock import acquire_scan_output_lock
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    async with session_factory() as session:
+        registry = ProjectRegistry(session)
+        await registry.add_project("locked-scan", str(repo), platform="talend")
+        await session.commit()
+
+    lock = acquire_scan_output_lock(config.intodoc_output_dir / "locked-scan")
+    assert lock is not None
+    try:
+        response = await client.post("/mcp/scan", json={"project_id": "locked-scan"})
+    finally:
+        lock.release()
+
+    assert response.status_code == 409
+    assert "already running" in response.json()["detail"]
 
 
 async def test_reingestion_readiness_repair_cleans_remote_without_workflow_side_effects(

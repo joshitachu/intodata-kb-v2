@@ -489,6 +489,103 @@ class TestCredentialFilter:
         assert "OBF:" not in json_str
 
 
+# ── Topology facts (artifact_kinds / relations / endpoints / resources) ──
+
+
+class TestLobsterTopologyFacts:
+    @pytest.fixture
+    def cred_filter(self):
+        return CredentialFilter()
+
+    @pytest.fixture
+    def parser(self, cred_filter):
+        return LobsterParser(cred_filter)
+
+    @pytest.fixture
+    def scan_result(self, cred_filter) -> ScanResult:
+        if not FIXTURES_DIR.exists():
+            pytest.skip("lobster_sample fixture not found")
+        plugin = LobsterPlugin()
+        return plugin.parse_project(FIXTURES_DIR, cred_filter)
+
+    def test_artifact_kinds_are_profile(self, scan_result):
+        """Every Lobster ParsedJob is a DataWizard profile -- one uniform kind."""
+        assert scan_result.manifest.artifact_kinds
+        assert set(scan_result.manifest.artifact_kinds.values()) == {"profile"}
+        assert scan_result.manifest.artifact_kinds["Sync_Orders_FTP"] == "profile"
+
+    def test_agent_becomes_inbound_endpoint(self, scan_result):
+        """The Cron/FTP Agent is the profile's trigger -- an inbound endpoint."""
+        endpoints = [
+            e for e in scan_result.manifest.artifact_endpoints
+            if e["artifact"] == "Sync_Orders_FTP"
+        ]
+        assert len(endpoints) == 1
+        assert endpoints[0]["endpoint_type"] == "ftp_cron"
+        assert endpoints[0]["direction"] == "input"
+        assert endpoints[0]["component_name"] == "agent"
+        assert endpoints[0]["provenance"] == "LobsterInputAgent_FTP_Cron"
+
+    def test_response_unit_becomes_outbound_resource(self, scan_result):
+        """A response unit with a resolvable comm channel is an outbound resource."""
+        resources = [
+            r for r in scan_result.manifest.artifact_resources
+            if r["artifact"] == "Sync_Orders_FTP"
+        ]
+        assert len(resources) == 1
+        assert resources[0]["resource_type"] == "ftp"
+        assert resources[0]["resource"] == "ACME Corp:FTP"
+        assert resources[0]["direction"] == "output"
+        assert resources[0]["provenance"] == "LobsterResponse_FTP"
+
+    def test_unresolved_cross_profile_refs_are_preserved(self, scan_result):
+        """profile_after_run/exception_profile targets absent from the scan
+        stay unresolved, with no fabricated target edge."""
+        relations = scan_result.manifest.artifact_relations
+        unresolved = {r["target_name"] for r in relations if not r["target"]}
+        assert unresolved == {"Confirm_Order_Receipt", "Error_Notification_Handler"}
+
+    def test_partner_channel_becomes_topology_channel(self, scan_result):
+        channels = [
+            channel for channel in scan_result.manifest.artifact_channels
+            if channel["artifact"] == "Sync_Orders_FTP"
+        ]
+        assert {channel["channel"] for channel in channels} == {"ACME Corp:FTP"}
+        assert {channel["direction"] for channel in channels} == {"input", "output"}
+        assert {channel["provenance"] for channel in channels} == {
+            "LobsterInputAgent_FTP_Cron", "LobsterResponse_FTP",
+        }
+
+    def test_resolved_cross_profile_ref_becomes_relation(self, parser, tmp_path):
+        """A profile_after_run pointing at another profile in the same scan
+        resolves to a job_calls_job edge, same shape as Talend's tRunJob."""
+        (tmp_path / "caller.xml").write_text(
+            "<datawizardprofile name=\"Caller\">\n"
+            "  <type>Man. upload</type>\n"
+            "  <path_of_group>Root</path_of_group>\n"
+            "  <agent><profile_after_run>Callee</profile_after_run></agent>\n"
+            "  <dataproperties><filetype>10</filetype></dataproperties>\n"
+            "</datawizardprofile>\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "callee.xml").write_text(
+            "<datawizardprofile name=\"Callee\">\n"
+            "  <type>Man. upload</type>\n"
+            "  <path_of_group>Root</path_of_group>\n"
+            "  <dataproperties><filetype>10</filetype></dataproperties>\n"
+            "</datawizardprofile>\n",
+            encoding="utf-8",
+        )
+
+        result = parser.parse(tmp_path)
+
+        assert result.manifest.artifact_relations == [{
+            "source": "Caller", "target": "Callee",
+            "relation_type": "job_calls_job", "resolution": "resolved",
+            "provenance": "lobster_profile_reference",
+        }]
+
+
 # ── Best Practices ───────────────────────────────────────────────────
 
 

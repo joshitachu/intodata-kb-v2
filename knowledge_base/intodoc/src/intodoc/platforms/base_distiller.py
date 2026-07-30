@@ -100,8 +100,8 @@ class BaseDistiller:
 
         # ── Phase 3.3: Filter manifest per-chunk ─────────────────────
         for chunk in chunks:
-            job_names = {j.name for j in chunk.jobs}
-            chunk.manifest = self._filter_manifest(scan_result.manifest, job_names)
+            job_ids = {j.job_id or j.name for j in chunk.jobs}
+            chunk.manifest = self._filter_manifest(scan_result.manifest, job_ids)
 
         # Deduplicate inline contexts that duplicate chunk-level contexts
         for chunk in chunks:
@@ -209,6 +209,34 @@ class BaseDistiller:
             routines_used_by={k: v for k, v in manifest.routines_used_by.items()
                               if any(j in job_names for j in v)},
             job_groups={k: v for k, v in manifest.job_groups.items() if k in job_names},
+            job_external_systems={k: v for k, v in manifest.job_external_systems.items() if k in job_names},
+            source_roots=manifest.source_roots,
+            job_source_roots={k: v for k, v in manifest.job_source_roots.items() if k in job_names},
+            job_files={k: v for k, v in manifest.job_files.items() if k in job_names},
+            unresolved_job_calls={k: v for k, v in manifest.unresolved_job_calls.items() if k in job_names},
+            context_used_by={k: [j for j in v if j in job_names] for k, v in manifest.context_used_by.items()
+                             if any(j in job_names for j in v)},
+            context_metadata=manifest.context_metadata,
+            job_context_links={k: v for k, v in manifest.job_context_links.items() if k in job_names},
+            unresolved_context_refs={k: v for k, v in manifest.unresolved_context_refs.items() if k in job_names},
+            job_support_roots={k: v for k, v in manifest.job_support_roots.items() if k in job_names},
+            artifact_kinds={k: v for k, v in manifest.artifact_kinds.items() if k in job_names},
+            artifact_relations=[
+                relation for relation in manifest.artifact_relations
+                if relation.get("source") in job_names or relation.get("target") in job_names
+            ],
+            artifact_channels=[
+                channel for channel in manifest.artifact_channels
+                if channel.get("artifact") in job_names
+            ],
+            artifact_endpoints=[
+                endpoint for endpoint in manifest.artifact_endpoints
+                if endpoint.get("artifact") in job_names
+            ],
+            artifact_resources=[
+                resource for resource in manifest.artifact_resources
+                if resource.get("artifact") in job_names
+            ],
         )
 
     # ── Connection matching ──────────────────────────────────────────

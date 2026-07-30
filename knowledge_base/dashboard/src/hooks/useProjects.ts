@@ -42,7 +42,7 @@ export function useScan() {
 export function useGenerate() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
+    mutationFn: async ({
       projectId,
       resume = true,
       investigationModel,
@@ -50,6 +50,9 @@ export function useGenerate() {
       writeModel,
       organizationPackId = null,
       privateVersionIds = [],
+      executionEngine = "legacy",
+      openCodeProvider,
+      openCodeModel,
     }: {
       projectId: string;
       resume?: boolean;
@@ -58,16 +61,37 @@ export function useGenerate() {
       writeModel?: string | null;
       organizationPackId?: number | null;
       privateVersionIds?: number[];
-    }) => api.generate(
-      projectId,
-      resume,
-      investigationModel,
-      model,
-      writeModel,
-      organizationPackId,
-      privateVersionIds,
-    ),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
+      executionEngine?: "legacy" | "opencode" | "opencode_orchestrated" | "opencode_grounded";
+      openCodeProvider?: string;
+      openCodeModel?: string;
+    }): Promise<
+      import("../types").StatusResponse | import("../types").AgenticExperiment
+    > => executionEngine === "opencode" ||
+      executionEngine === "opencode_orchestrated" ||
+      executionEngine === "opencode_grounded"
+      ? await api.generateOpenCodeCandidate(
+          projectId,
+          executionEngine === "opencode_grounded"
+            ? "grounded"
+            : executionEngine === "opencode_orchestrated"
+              ? "orchestrated"
+              : "single_agent",
+          openCodeProvider,
+          openCodeModel,
+        )
+      : await api.generate(
+          projectId,
+          resume,
+          investigationModel,
+          model,
+          writeModel,
+          organizationPackId,
+          privateVersionIds,
+        ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["agentic-experiments"] });
+    },
   });
 }
 

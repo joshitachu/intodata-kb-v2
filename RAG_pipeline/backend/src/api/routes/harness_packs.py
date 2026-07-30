@@ -621,7 +621,9 @@ async def set_documentation_pack_selection(
     db: DBSession,
 ) -> DocumentationPackSelectionResponse:
     """Set the MCP plugin-pack default used by subsequent document generation."""
-    await _require_project_management(user, db, project_id)
+    # Selecting/running a documentation (plugin) pack is allowed for any user
+    # with access to the project. Pack authoring/certification is unaffected.
+    await _require_project_access(user, db, project_id)
     provider = McpDocumentationProvider()
     try:
         selected_plugin_pack_id = await provider.set_project_documentation_pack(
@@ -687,7 +689,10 @@ async def set_documentation_pack_workspace(
     db: DBSession,
 ) -> DocumentationPackWorkspaceResponse:
     """Select one organization baseline and additive personal Pack versions."""
-    await _require_project_management(user, db, project_id)
+    # Selecting a documentation (plugin) pack + personal Pack versions is
+    # allowed for any user with access to the project. Personal Pack versions
+    # remain owner-scoped inside _replace_private_documentation_packs.
+    await _require_project_access(user, db, project_id)
     provider = McpDocumentationProvider()
     try:
         organization_packs = await provider.list_documentation_packs(
@@ -735,7 +740,10 @@ async def generate_with_documentation_packs(
     db: DBSession,
 ) -> DocumentationPackGenerationResponse:
     """Persist the visible selection and generate through the governed Nexus bridge."""
-    await _require_project_management(user, db, project_id)
+    # Running documentation generation with the selected pack is allowed for any
+    # user with access to the project. Governed/certification checks still run in
+    # the executor and the MCP bridge.
+    await _require_project_access(user, db, project_id)
     provider = McpDocumentationProvider()
     try:
         organization_packs = await provider.list_documentation_packs(

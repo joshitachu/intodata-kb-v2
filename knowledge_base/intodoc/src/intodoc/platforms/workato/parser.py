@@ -74,6 +74,84 @@ _PROVIDER_TYPE_MAP: dict[str, str] = {
     "servicenow": "ServiceNow",
 }
 
+# Action-name substrings that hint at read-only vs write-ish connector usage.
+# Workato has no structural "input"/"output" marker on an action step the way
+# a Talend component name does (tXxxInput / tXxxOutput); the action's own
+# verb-shaped name is the only available signal, so this stays a best-effort
+# heuristic -- unmatched names fall back to "unknown" rather than a guess.
+_WORKATO_INPUT_ACTION_HINTS: tuple[str, ...] = (
+    "get", "search", "find", "list", "lookup", "read", "fetch", "query", "export",
+)
+_WORKATO_OUTPUT_ACTION_HINTS: tuple[str, ...] = (
+    "create", "update", "delete", "insert", "upsert", "post", "put",
+    "remove", "write", "send", "notify", "import",
+)
+
+
+def _workato_display_system(provider: str) -> str:
+    """Map a Workato provider slug to a display name, same table as connections."""
+    return _PROVIDER_TYPE_MAP.get(provider, provider.replace("_", " ").title())
+
+
+def _workato_action_direction(name: str) -> str:
+    """Best-effort read/write classification from a Workato action's own name."""
+    normalized = name.lower()
+    if any(hint in normalized for hint in _WORKATO_OUTPUT_ACTION_HINTS):
+        return "output"
+    if any(hint in normalized for hint in _WORKATO_INPUT_ACTION_HINTS):
+        return "input"
+    return "unknown"
+
+
+def _workato_extract_trigger(data: dict) -> dict | None:
+    """Return the trigger step dict, handling both recipe JSON shapes.
+
+    New-format exports carry a standalone ``trigger`` dict; legacy exports
+    nest the trigger inside ``code`` with ``keyword: "trigger"``.
+    """
+    trigger = data.get("trigger")
+    if isinstance(trigger, dict) and isinstance(trigger.get("provider"), str) and trigger.get("provider"):
+        return trigger
+    code = data.get("code")
+    if (
+        isinstance(code, dict)
+        and code.get("keyword") == "trigger"
+        and isinstance(code.get("provider"), str)
+        and code.get("provider")
+    ):
+        return code
+    return None
+
+
+def _workato_collect_action_steps(obj: object, actions: list[dict]) -> None:
+    """Recursively collect action-step dicts regardless of nesting container.
+
+    Both recipe JSON shapes nest actions under different container keys
+    (``block`` / ``steps`` / ``steps_on_true`` / ``steps_on_false``); rather
+    than special-casing each container name, this walks every value like the
+    existing ``_scan_connection_refs`` / ``_collect_providers`` helpers do.
+    """
+    if isinstance(obj, dict):
+        keyword = obj.get("keyword") or obj.get("type")
+        provider = obj.get("provider")
+        if keyword == "action" and isinstance(provider, str) and provider:
+            # "name" is the connector's own canonical action id (e.g.
+            # "create_record", "get_contact") and is what carries the
+            # read/write hint; "as"/"label" are human-facing display
+            # names only and stay separate so a friendly label never
+            # silently steers the direction heuristic.
+            action_name = obj.get("name") if isinstance(obj.get("name"), str) else ""
+            actions.append({
+                "provider": provider,
+                "action_name": action_name,
+                "component_name": obj.get("as") or obj.get("label") or action_name or provider,
+            })
+        for val in obj.values():
+            _workato_collect_action_steps(val, actions)
+    elif isinstance(obj, list):
+        for item in obj:
+            _workato_collect_action_steps(item, actions)
+
 
 class WorkatoParser(BaseParser):
     """Parse a Workato export into structured scan results.
@@ -289,6 +367,7 @@ class WorkatoParser(BaseParser):
         # Reset warning collection for this scan.
         self._warnings = []
         self._warn_root = repo_root
+        self._parsed_recipe_data = {}
 
         workato_root = self._find_workato_root(repo_root)
 
@@ -323,8 +402,13 @@ class WorkatoParser(BaseParser):
         routines = self._parse_custom_adapters(workato_root)
         self._parse_schemas(workato_root)
 
-        # Phase 8: Build manifest
-        project_manifest = self._build_manifest(jobs, routines)
+        # Phase 8: establish artifact/source-root identity before creating
+        # topology facts. Recipe names are display labels and are not unique
+        # enough to be graph identities in a composite upload.
+        source_roots = self._prepare_single_root_topology_identities(
+            jobs, repo_root, "workato",
+        )
+        project_manifest = self._build_manifest(jobs, routines, source_roots)
 
         # Merge all connections
         all_connections = (
@@ -629,8 +713,6 @@ class WorkatoParser(BaseParser):
                 trunjob_refs = self._find_call_recipe_refs(data)
 
                 full_name = f"func_{name}"
-                self._parsed_recipe_data[full_name] = data
-
                 params = self._dict_to_params(data)
                 comp = Component(
                     unique_name=re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_").lower() or "func",
@@ -638,14 +720,17 @@ class WorkatoParser(BaseParser):
                     params=params,
                 )
 
-                jobs.append(ParsedJob(
+                job = ParsedJob(
                     name=full_name,
                     path=str(func_path.relative_to(root)) if root in func_path.parents or root == func_path.parent else func_path.name,
                     purpose=data.get("description", ""),
                     components=[comp],
                     trunjob_refs=trunjob_refs,
                     group=group,
-                ))
+                    artifact_kind="recipe_function",
+                )
+                self._parsed_recipe_data[job.path] = data
+                jobs.append(job)
             except (json.JSONDecodeError, OSError) as e:
                 console.print(f"  [yellow]Warning: Failed to parse {func_path}: {e}[/yellow]")
                 self._warn(kind="parse_error", file=func_path, message=str(e), phase="function")
@@ -695,9 +780,6 @@ class WorkatoParser(BaseParser):
         # Detect call_recipe references from raw JSON
         trunjob_refs = self._find_call_recipe_refs(data)
 
-        # Store cleaned data for manifest connection scanning
-        self._parsed_recipe_data[name] = data
-
         # Build single component with all cleaned recipe keys as params
         params = self._dict_to_params(data)
         conns_used: set[str] = set()
@@ -709,7 +791,7 @@ class WorkatoParser(BaseParser):
             metadata_connection_ref=",".join(sorted(conns_used)),
         )
 
-        return ParsedJob(
+        job = ParsedJob(
             name=name,
             path=str(recipe_path.relative_to(root)) if root in recipe_path.parents or root == recipe_path.parent else recipe_path.name,
             purpose=data.get("description", ""),
@@ -717,7 +799,12 @@ class WorkatoParser(BaseParser):
             components=[comp],
             trunjob_refs=trunjob_refs,
             group=group,
+            artifact_kind="recipe",
         )
+        # Path is unique within the exported project whereas display recipe
+        # names are not necessarily unique.
+        self._parsed_recipe_data[job.path] = data
+        return job
 
     # ── Phase 6 continued: API and LCAP assets ──────────────────────
 
@@ -755,6 +842,7 @@ class WorkatoParser(BaseParser):
                     purpose=data.get("description", ""),
                     components=[comp],
                     group=group,
+                    artifact_kind="api_endpoint",
                 ))
             except (json.JSONDecodeError, OSError):
                 continue
@@ -793,6 +881,7 @@ class WorkatoParser(BaseParser):
                         purpose=ep.get("description", ""),
                         components=[comp],
                         group=group,
+                        artifact_kind="api_endpoint",
                     ))
             except (json.JSONDecodeError, OSError):
                 continue
@@ -838,6 +927,7 @@ class WorkatoParser(BaseParser):
                     purpose=data.get("description", ""),
                     components=[comp],
                     group=group,
+                    artifact_kind="lcap_app",
                 ))
             except (json.JSONDecodeError, OSError):
                 continue
@@ -959,6 +1049,7 @@ class WorkatoParser(BaseParser):
 
     def _build_manifest(
         self, jobs: list[ParsedJob], routines: list[Routine],
+        source_roots: list[dict[str, str]],
     ) -> ProjectManifest:
         """Build cross-reference manifest from parsed data."""
         job_calls: dict[str, list[str]] = {}
@@ -969,32 +1060,110 @@ class WorkatoParser(BaseParser):
         routines_used_by: dict[str, list[str]] = {}
         job_groups: dict[str, str] = {}
         job_external_systems: dict[str, list[str]] = {}
+        artifact_kinds: dict[str, str] = {}
+        artifact_relations: list[dict] = []
+        artifact_endpoints: list[dict] = []
+        artifact_resources: list[dict] = []
+
+        job_ids_by_name: dict[str, list[str]] = {}
+        for job in jobs:
+            job_ids_by_name.setdefault(job.name, []).append(job.job_id or job.name)
 
         for job in jobs:
-            job_groups[job.name] = job.group
+            job_key = job.job_id or job.name
+            job_groups[job_key] = job.group
+            artifact_kinds[job_key] = job.artifact_kind
 
             # Recipe calls (from TRunJobRef)
             calls = [ref.child_job for ref in job.trunjob_refs]
             if calls:
-                job_calls[job.name] = calls
+                job_calls[job_key] = calls
                 for called in calls:
-                    job_called_by.setdefault(called, []).append(job.name)
+                    candidates = job_ids_by_name.get(called, [])
+                    if len(candidates) == 1:
+                        target = candidates[0]
+                        job_called_by.setdefault(target, []).append(job_key)
+                        artifact_relations.append({
+                            "source": job_key,
+                            "target": target,
+                            "relation_type": "job_calls_job",
+                            "resolution": "resolved",
+                            "provenance": "call_recipe",
+                        })
+                    else:
+                        resolution = "ambiguous" if candidates else "unresolved"
+                        project_manifest_entry = {
+                            "source": job_key,
+                            "target": "",
+                            "target_name": called,
+                            "relation_type": "job_calls_job",
+                            "resolution": resolution,
+                            "provenance": "call_recipe",
+                        }
+                        artifact_relations.append(project_manifest_entry)
 
             # Connection usage -- scan raw recipe data
             conns_used: set[str] = set()
-            raw = self._parsed_recipe_data.get(job.name, {})
+            raw = self._parsed_recipe_data.get(job.path, {})
             if raw:
                 self._scan_connection_refs(raw, conns_used)
             if conns_used:
-                job_connections_used[job.name] = sorted(conns_used)
+                job_connections_used[job_key] = sorted(conns_used)
                 for conn in conns_used:
-                    connection_used_by.setdefault(conn, []).append(job.name)
+                    connection_used_by.setdefault(conn, []).append(job_key)
 
             # External systems (derived from provider fields)
             if raw:
                 ext_systems = self._extract_external_systems(raw)
                 if ext_systems:
-                    job_external_systems[job.name] = ext_systems
+                    job_external_systems[job_key] = ext_systems
+
+            # Trigger -> inbound endpoint. Action steps -> outbound/lookup
+            # connector resources. Both walk the raw recipe/function JSON
+            # already captured for connection scanning above; no new parse.
+            if raw:
+                trigger = _workato_extract_trigger(raw)
+                if trigger:
+                    provider = trigger["provider"]
+                    artifact_endpoints.append({
+                        "artifact": job_key,
+                        "endpoint_type": _workato_display_system(provider),
+                        "direction": "input",
+                        "component_name": trigger.get("as") or trigger.get("name") or "trigger",
+                        "provenance": f"workato_trigger:{provider}",
+                    })
+
+                actions: list[dict] = []
+                _workato_collect_action_steps(raw, actions)
+                for action in actions:
+                    provider = action["provider"]
+                    if provider in self._INTERNAL_PROVIDERS:
+                        # call_recipe, table lookups, clock/logger actions are
+                        # Workato control-flow, not an external connector --
+                        # call_recipe is already captured as artifact_relations.
+                        continue
+                    artifact_resources.append({
+                        "artifact": job_key,
+                        "resource_type": "connector_action",
+                        "resource": _workato_display_system(provider),
+                        "direction": _workato_action_direction(action["action_name"] or action["component_name"]),
+                        "component_name": action["component_name"],
+                        "provenance": f"workato_action:{provider}",
+                    })
+
+            # Exposed API endpoints (Workato API Platform assets) are
+            # structurally inbound surfaces, same as Talend's cREST/cSOAP
+            # route endpoints. Method/URL stay out of the record -- same
+            # redaction posture as the Talend route endpoint records.
+            for comp in job.components:
+                if comp.component_type == "WorkatoAPIEndpoint":
+                    artifact_endpoints.append({
+                        "artifact": job_key,
+                        "endpoint_type": "api_endpoint",
+                        "direction": "input",
+                        "component_name": comp.unique_name,
+                        "provenance": comp.component_type,
+                    })
 
         return ProjectManifest(
             job_calls=job_calls,
@@ -1005,6 +1174,12 @@ class WorkatoParser(BaseParser):
             routines_used_by=routines_used_by,
             job_groups=job_groups,
             job_external_systems=job_external_systems,
+            artifact_kinds=artifact_kinds,
+            artifact_relations=artifact_relations,
+            artifact_endpoints=artifact_endpoints,
+            artifact_resources=artifact_resources,
+            source_roots=source_roots,
+            job_source_roots={j.job_id or j.name: j.source_root for j in jobs},
         )
 
     # ── Raw JSON Helpers ─────────────────────────────────────────────

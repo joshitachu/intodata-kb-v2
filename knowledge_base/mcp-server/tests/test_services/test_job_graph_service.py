@@ -3,7 +3,10 @@
 from mcp_server.services.job_graph_service import (
     build_job_graph,
     build_param_summary,
+    component_display_label,
     derive_component_role,
+    explain_component_type,
+    explain_connector,
 )
 
 
@@ -21,6 +24,35 @@ def test_role_derivation_by_type_pattern():
     assert derive_component_role("tLogRow") == "logging"
     assert derive_component_role("tStatCatcher") == "logging"
     assert derive_component_role("tDie") == "logging"
+
+
+def test_human_label_and_talend_term_explanations_are_deterministic():
+    component = {
+        "unique_name": "tXMLMap_1",
+        "component_type": "tXMLMap",
+        "params": [{"name": "LABEL", "value": '"LogMap"', "field_type": "TEXT"}],
+    }
+    assert component_display_label(component) == "LogMap"
+    assert explain_component_type("tXMLMap") == "Maps hierarchical XML data."
+    assert explain_connector("FLOW", False) == "Transfers rows of data."
+    assert explain_connector("SUBJOB_OK", True) == (
+        "Starts after the preceding subjob succeeds; carries no data."
+    )
+
+
+def test_job_graph_keeps_technical_identity_beside_human_label():
+    job = {
+        "components": [{
+            "unique_name": "tXMLMap_1",
+            "component_type": "tXMLMap",
+            "params": [{"name": "LABEL", "value": "UpdateSendToMaximo"}],
+        }],
+        "connections": [],
+    }
+    node = build_job_graph("p1", "job", "grp", job).nodes[0]
+    assert node.unique_name == "tXMLMap_1"
+    assert node.display_label == "UpdateSendToMaximo"
+    assert node.type_explanation == "Maps hierarchical XML data."
 
 
 def test_param_summary_is_bounded_and_credential_free():
@@ -120,6 +152,10 @@ def test_edges_built_from_connections_not_component_fields():
     assert flow.is_control_flow is False
     assert trigger.is_control_flow is True
     assert trigger.connector_name == "SUBJOB_OK"
+    assert flow.explanation == "Transfers rows of data."
+    assert trigger.explanation == (
+        "Starts after the preceding subjob succeeds; carries no data."
+    )
 
 
 def test_empty_job_produces_empty_graph():

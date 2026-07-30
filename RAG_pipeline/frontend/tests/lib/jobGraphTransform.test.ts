@@ -193,11 +193,14 @@ describe("jobGraphToFlow", () => {
     const result = jobGraphToFlow(fixture());
     expect(result.edges).toHaveLength(5);
     expect(result.stats.dataFlowEdgeCount).toBe(3);
+    expect(result.stats.lookupFlowEdgeCount).toBe(1);
     expect(result.stats.controlFlowEdgeCount).toBe(2);
 
     const dataEdges = result.edges.filter((e) => e.data?.edgeType === "data");
+    const lookupEdges = result.edges.filter((e) => e.data?.edgeType === "lookup");
     const controlEdges = result.edges.filter((e) => e.data?.edgeType === "control");
-    expect(dataEdges).toHaveLength(3);
+    expect(dataEdges).toHaveLength(2);
+    expect(lookupEdges).toHaveLength(1);
     expect(controlEdges).toHaveLength(2);
 
     for (const edge of dataEdges) {
@@ -208,7 +211,7 @@ describe("jobGraphToFlow", () => {
     for (const edge of controlEdges) {
       expect(edge.style?.strokeDasharray).toBe("6 3");
       expect(edge.animated).toBe(false);
-      expect(edge.label).toBe(edge.data?.connectorName);
+      expect(edge.label).not.toBe(edge.data?.connectorName);
     }
   });
 
@@ -227,6 +230,7 @@ describe("jobGraphToFlow", () => {
       target: "tMap_1",
       connector_name: "FLOW",
       line_style: 0,
+      explanation: "",
     });
     const result = jobGraphToFlow(graph);
     expect(result.edges.some((e) => e.data?.rowName === "ghost")).toBe(false);
@@ -285,9 +289,11 @@ describe("jobGraphToFlow", () => {
 
 describe("classifyComponentDoubleClick", () => {
   function makeData(overrides: Partial<ComponentNodeData> = {}): ComponentNodeData {
-    return {
+    const base: ComponentNodeData = {
       label: "tMap_1",
+      technicalName: "tMap_1",
       componentType: "tMap",
+      typeExplanation: "",
       role: "transform",
       color: ROLE_COLORS.transform,
       connectionRef: "",
@@ -298,7 +304,12 @@ describe("classifyComponentDoubleClick", () => {
       paramSummary: {},
       inputTableCount: 0,
       outputTableCount: 0,
+    };
+    return {
+      ...base,
       ...overrides,
+      technicalName: overrides.technicalName ?? base.technicalName,
+      typeExplanation: overrides.typeExplanation ?? base.typeExplanation,
     };
   }
 

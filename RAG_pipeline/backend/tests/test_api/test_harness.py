@@ -171,11 +171,13 @@ async def test_project_members_can_browse_pack_recommendations_but_cannot_change
     assert mutate.status_code == 403
 
 
-async def test_documentation_pack_api_returns_safe_mcp_metadata_and_requires_project_management(db_session, monkeypatch) -> None:
+async def test_documentation_pack_api_returns_safe_mcp_metadata_and_allows_project_members(db_session, monkeypatch) -> None:
     from src.api.routes import harness_packs as harness_packs_mod
 
+    # Non-owner member with project access, plus an outsider with none.
     user = User(username="documentation-pack-member", email="documentation-pack-member@example.com", roles=[])
-    db_session.add(user)
+    outsider = User(username="documentation-pack-outsider", email="documentation-pack-outsider@example.com", roles=[])
+    db_session.add_all([user, outsider])
     await db_session.flush()
     db_session.add(ProjectAssignment(user_id=user.id, project_id="project-docs", is_owner=False))
     await db_session.flush()
@@ -210,7 +212,15 @@ async def test_documentation_pack_api_returns_safe_mcp_metadata_and_requires_pro
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             browse = await client.get("/api/v1/harness/packs/projects/project-docs/documentation-pack")
+            # A project member (non-owner) may now select the documentation pack.
             mutate = await client.put(
+                "/api/v1/harness/packs/projects/project-docs/documentation-pack",
+                json={"plugin_pack_id": 7},
+                headers=CSRF_HEADERS,
+            )
+            # A user with no access to the project still cannot (404 info-hiding).
+            app.dependency_overrides[get_current_user] = lambda: outsider
+            denied = await client.put(
                 "/api/v1/harness/packs/projects/project-docs/documentation-pack",
                 json={"plugin_pack_id": 7},
                 headers=CSRF_HEADERS,
@@ -225,8 +235,11 @@ async def test_documentation_pack_api_returns_safe_mcp_metadata_and_requires_pro
         "packs": [{"id": 7, "name": "Talend migration", "version": "2.1.0", "description": "Migration-specific documentation instructions."}],
     }
     assert "path" not in browse.text
-    assert mutate.status_code == 403
-    assert "set" not in calls
+    assert mutate.status_code == 200
+    assert mutate.json()["selected_plugin_pack_id"] == 7
+    assert calls["set"]["project_id"] == "project-docs"
+    assert calls["set"]["plugin_pack_id"] == 7
+    assert denied.status_code == 404
 
 
 async def test_documentation_pack_api_sets_the_mcp_project_default(db_session, monkeypatch) -> None:

@@ -146,7 +146,7 @@ class LobsterParser(BaseParser):
         jobs: list[ParsedJob] = []
         all_connections: dict[str, MetadataConnection] = {}
         all_context_groups: list[ContextGroup] = []
-        cross_refs: dict[str, list[str]] = {}  # job_name -> [called profiles]
+        cross_refs: dict[str, list[str]] = {}  # relative profile path -> called profiles
 
         for profile_path in sorted(profiles):
             try:
@@ -159,12 +159,15 @@ class LobsterParser(BaseParser):
                         all_connections[conn_key] = conn
                 all_context_groups.extend(ctx_groups)
                 if refs:
-                    cross_refs[job.name] = refs
+                    cross_refs[job.path] = refs
             except (ET.ParseError, OSError) as e:
                 console.print(f"  [yellow]Warning: Failed to parse {profile_path}: {e}[/yellow]")
                 self._warn(kind="parse_error", file=profile_path, message=str(e), phase="profile")
 
-        manifest = self._build_manifest(jobs, cross_refs)
+        source_roots = self._prepare_single_root_topology_identities(
+            jobs, repo_root, "lobster",
+        )
+        manifest = self._build_manifest(jobs, cross_refs, source_roots)
 
         stats = {
             "total_files": len(all_files),
@@ -330,6 +333,7 @@ class LobsterParser(BaseParser):
             trunjob_refs=trunjob_refs,
             group=group,
             active=active.strip().lower() == "true",
+            artifact_kind="profile",
         )
 
         return job, connections, context_groups, cross_refs
@@ -617,7 +621,6 @@ class LobsterParser(BaseParser):
             if not key:
                 continue
 
-            description = self._text(var_el, "description") or ""
             vtype = self._text(var_el, "type") or "0"
             value = self._text(var_el, "value") or ""
 
@@ -806,6 +809,7 @@ class LobsterParser(BaseParser):
     def _build_manifest(
         jobs: list[ParsedJob],
         cross_refs: dict[str, list[str]],
+        source_roots: list[dict[str, str]],
     ) -> ProjectManifest:
         """Build cross-reference manifest from parsed profiles."""
         job_calls: dict[str, list[str]] = {}
@@ -814,16 +818,46 @@ class LobsterParser(BaseParser):
         connection_used_by: dict[str, list[str]] = defaultdict(list)
         job_groups: dict[str, str] = {}
         job_external_systems: dict[str, list[str]] = {}
+        artifact_kinds: dict[str, str] = {}
+        artifact_relations: list[dict] = []
+        artifact_channels: list[dict] = []
+        artifact_endpoints: list[dict] = []
+        artifact_resources: list[dict] = []
+
+        job_ids_by_name: dict[str, list[str]] = {}
+        for job in jobs:
+            job_ids_by_name.setdefault(job.name, []).append(job.job_id or job.name)
 
         for job in jobs:
-            job_groups[job.name] = job.group
+            job_key = job.job_id or job.name
+            job_groups[job_key] = job.group
+            artifact_kinds[job_key] = job.artifact_kind
 
             # Cross-profile calls
-            calls = cross_refs.get(job.name, [])
+            calls = cross_refs.get(job.path, [])
             if calls:
-                job_calls[job.name] = calls
+                job_calls[job_key] = calls
                 for called in calls:
-                    job_called_by[called].append(job.name)
+                    candidates = job_ids_by_name.get(called, [])
+                    if len(candidates) == 1:
+                        target = candidates[0]
+                        job_called_by[target].append(job_key)
+                        artifact_relations.append({
+                            "source": job_key,
+                            "target": target,
+                            "relation_type": "job_calls_job",
+                            "resolution": "resolved",
+                            "provenance": "lobster_profile_reference",
+                        })
+                    else:
+                        artifact_relations.append({
+                            "source": job_key,
+                            "target": "",
+                            "target_name": called,
+                            "relation_type": "job_calls_job",
+                            "resolution": "ambiguous" if candidates else "unresolved",
+                            "provenance": "lobster_profile_reference",
+                        })
 
             # Connection usage from components
             conn_names: set[str] = set()
@@ -832,8 +866,27 @@ class LobsterParser(BaseParser):
                 ctype = comp.component_type
                 if ctype.startswith("LobsterInputAgent_"):
                     ext_systems.add(ctype.replace("LobsterInputAgent_", ""))
+                    # The Agent is the profile's trigger/transport -- always
+                    # a first-class inbound endpoint, regardless of whether
+                    # a comm channel could be resolved to a redacted name.
+                    artifact_endpoints.append({
+                        "artifact": job_key,
+                        "endpoint_type": ctype.removeprefix("LobsterInputAgent_").lower(),
+                        "direction": "input",
+                        "component_name": comp.unique_name,
+                        "provenance": ctype,
+                    })
                 elif ctype.startswith("LobsterResponse_"):
                     ext_systems.add(ctype.replace("LobsterResponse_", ""))
+                    if comp.metadata_connection_ref:
+                        artifact_resources.append({
+                            "artifact": job_key,
+                            "resource_type": ctype.removeprefix("LobsterResponse_").lower(),
+                            "resource": comp.metadata_connection_ref,
+                            "direction": "output",
+                            "component_name": comp.unique_name,
+                            "provenance": ctype,
+                        })
                 # Extract partner:channel from params
                 partner = ""
                 channel = ""
@@ -844,13 +897,27 @@ class LobsterParser(BaseParser):
                         channel = p.value
                 if partner:
                     conn_names.add(f"{partner}:{channel}")
+                    if ctype.startswith("LobsterInputAgent_"):
+                        direction = "input"
+                    elif ctype.startswith("LobsterResponse_"):
+                        direction = "output"
+                    else:
+                        direction = "unknown"
+                    artifact_channels.append({
+                        "artifact": job_key,
+                        "channel_type": "lobster_comm",
+                        "channel": f"{partner}:{channel}",
+                        "direction": direction,
+                        "component_name": comp.unique_name,
+                        "provenance": ctype,
+                    })
 
             if conn_names:
-                job_connections_used[job.name] = sorted(conn_names)
+                job_connections_used[job_key] = sorted(conn_names)
                 for cn in conn_names:
-                    connection_used_by[cn].append(job.name)
+                    connection_used_by[cn].append(job_key)
             if ext_systems:
-                job_external_systems[job.name] = sorted(ext_systems)
+                job_external_systems[job_key] = sorted(ext_systems)
 
         return ProjectManifest(
             job_calls=job_calls,
@@ -859,6 +926,13 @@ class LobsterParser(BaseParser):
             connection_used_by=dict(connection_used_by),
             job_groups=job_groups,
             job_external_systems=job_external_systems,
+            artifact_kinds=artifact_kinds,
+            artifact_relations=artifact_relations,
+            artifact_channels=artifact_channels,
+            artifact_endpoints=artifact_endpoints,
+            artifact_resources=artifact_resources,
+            source_roots=source_roots,
+            job_source_roots={j.job_id or j.name: j.source_root for j in jobs},
         )
 
     # ── Helpers ──────────────────────────────────────────────────────

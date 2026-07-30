@@ -1,0 +1,3 @@
+source_status,canonical_status,owner
+dispatched,in_transit,transport-ops
+delivered,completed,warehouse-ops

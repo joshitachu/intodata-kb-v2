@@ -4,6 +4,26 @@
 
 ## Architecture Decisions
 
+- **Static topology publication is an all-or-nothing approved boundary.** MCP may
+  publish only when `publication_approval.json` approves and hash-binds
+  `scan_result.json`, manifest, lineage, and landscape; redaction-bypass scans,
+  stale receipts, hash mismatches, and malformed resolved references fail
+  closed. The per-output O_EXCL lock spans scan through publish. Added 2026-07-29.
+
+- **The landscape API is a read-only evidence surface, not a curation or UI
+  implementation.** `GET /mcp/projects/{id}/landscape` is RBAC-scoped and
+  explicitly typed. Frontend illustration, application boundary curation, and
+  chat are separate future work and must not be smuggled into the scanner
+  aggregation layer. Added 2026-07-29.
+
+- **OpenCode generation is an isolated candidate engine, never a legacy provider alias.** The normal Generate Docs dialog may select `OpenCode candidate`, but that action must create a `GenerationExperiment`, freeze the latest completed legacy baseline plus approved source/recipe snapshots, and write only to `output/{project}/experiments/{experiment}/candidate`. It must never call the legacy atomic publication swap, replace `output/{project}/docs`, or enter RAG. The default `Current documentation workflow` continues through the existing Nexus/IntoDoc generation endpoint unchanged. OpenCode stays behind the Nexus-owned runtime/provider boundary; recipes and source roles remain platform/domain neutral. Added 2026-07-27.
+
+- **Grounded OpenCode separates deterministic source truth from agent interpretation and fails before paid traffic.** Resolve media type from each frozen item's logical identity, not its opaque physical `.bin` suffix. Before OpenCode health/session creation, require approved redaction provenance, scan credential-shaped source values without echoing them, compile immutable `FACT_LEDGER.json`, and reject missing scanner units, manifest mismatches, or incomplete component totals. Treat canonical-unit, component, call-graph, connection, inactive-component, and static-unknown ledger fields as authoritative and reject unresolved protected document claims. Updated 2026-07-29.
+
+- **Nexus owns Grounded scheduling; OpenCode roles never own orchestration authority.** Compile a strict provider-neutral role DAG from recipe metadata, create a physically isolated workspace/session per role, disable Task for every role, copy raw frozen sources only to evidence packets, and propagate an upstream artifact only after exact ownership, content/JSON, secret, and reproduced-secret acceptance. Nexus enforces pack concurrency, role context bytes, aggregate token/tool budgets, bounded repair, and file/state-based finalization. The AlitaLand seven-role graph is one recipe instance; logistics proves the same executor supports a different domain and output set. Updated 2026-07-29.
+
+- **Failed OpenCode recovery must prove live session provenance and perform zero prompt submissions.** Recovery is allowed only for a failed, candidate-artifact-free orchestrated experiment whose OpenCode session exactly matches the experiment ID, title, runtime workspace, provider/model, version, idle state, and completed child set. Leftover workspace files alone are insufficient. OpenCode session storage is currently ephemeral across runtime rebuilds, so recovery must happen before restart or deliberately remain unavailable. Added 2026-07-28.
+
 - **Reingestion scan MUST target the per-project output dir, or the fingerprint reads a stale scan.** `ScannerService.run_scan` defaults `output_dir` to the ROOT `config.intodoc_output_dir`, but the scan fingerprint, delta classifier, and generation all read `intodoc_output_dir/{project_id}/scan/...`. `run_git_reingestion` must call `run_scan(..., output_dir=str(config.intodoc_output_dir / project_id))` (mirroring `_run_scan_background`). Omitting it writes the fresh scan to the root dir while the per-project dir stays stale -> the fingerprint sees "no change" -> reingestion silently skips generation for real code changes. This was a live-only bug (unit tests stub the scanner). Added 2026-07-02.
 
 - **A scoped reingestion arrives with incremental staging pre-restored; `generate_docs` must not wipe it.** When `scoped_docs` is set, `setup_incremental_staging` has already restored the UNCHANGED groups' analyses into `docs_staging/_analysis/` and deleted only the CHANGED groups'. `generate_docs` wipes `docs_staging` whenever `resume_state` is None — so the wipe is guarded by `and scoped_docs is None`. Consequently, in the harness a present `_analysis/{group}.md` on a scoped run == an unchanged group: Phase 1 investigation and Phase 2 analysis both reuse it (gated on `ctx.scoped_docs is not None`, not the fragile resume-state detection) and skip regeneration. Phase 3 doc preservation is separate (`_apply_scoped_docs`). Without these, "incremental" reingestion cost ~= full. Added 2026-07-02.
@@ -414,3 +434,27 @@ knowledge_base/
 - MCP/IntoDoc remains the final authority for documentation Pack provenance, digest, certification, project assignment, and generation. Nexus's unified agent may select the registered capability and supply a validated snapshot, but it must not recreate or bypass MCP governance.
 - Agent observations must retain safe provenance and artifact references; ZIP bytes, credentials, raw provider payloads, and hidden reasoning never enter Conversation State or workflow receipts.
 - Topology/lineage and evidence-integrity artifacts are concurrent work in the dirty branch. Split them from the chat-router retirement before commit or deployment.
+
+### OpenCode legacy replay boundary (2026-07-27)
+
+- **A fair executor A/B uses frozen per-call model inputs, not a newly summarized generic recipe.** For AlitaLand, replay `_debug/model_inputs/{phase}/{call}/prompt.md` plus the ordered frozen context content, with model routes taken from each `request.json`.
+- **Phase decisions are part of the baseline.** AlitaLand Phase 1 was explicitly skipped, so the candidate must skip it too. The replay comprises 2 Phase 2 calls, 1 scorecard call, and 10 Phase 3 calls.
+- **Keep frozen calls independent for strict input parity.** Phase 3 receives the preserved baseline context bundle rather than newly generated candidate Phase 2 output. Chaining candidate intermediates would create a different experiment and belongs in a later end-to-end agentic benchmark.
+- **Do not silently claim wire-level identity.** The forensic run preserves exact rendered prompts and context contents, not the provider SDK's final serialized HTTP request. OpenCode 1.18.4 also does not expose the recorded per-prompt `max_tokens=32000` and `temperature=0.1`; retain these values and the limitation in the replay receipt.
+- **Extra OpenCode tools invalidate this controlled replay.** The legacy calls made no observed tool calls; the replay submits no filesystem/tool capabilities. Autonomous source exploration remains a separate benchmark.
+
+### OpenCode agentic parity candidate (2026-07-27)
+
+- **The normal UI candidate is now the autonomous-source-exploration benchmark, not the fixed 13-call replay.** One OpenCode session receives immutable scanner sources plus the exact legacy prompt/context snapshots as files and may use `read`, `glob`, `grep`, `edit`, and `write`.
+- **One OpenCode session does not mean one provider request.** Tool use naturally creates multiple model turns inside the same session. The number and order of turns are agent-selected rather than a hardcoded 13-call loop.
+- **Candidate intermediates must be real inputs to candidate synthesis.** The agent writes two Phase 2 analyses and one scorecard beneath `candidate/intermediates/`, then uses them with preserved evidence for the ten Phase 3 documents. This is intentionally different from strict frozen-call replay.
+- **All inputs remain immutable and receipted.** Scanner files and preserved `prompt.md`, `context_bundle.md`, `request.json`, and `manifest.json` files are copied read-only with SHA-256 receipts. The agent writes only beneath `candidate/`.
+- **Keep both experiments conceptually distinct.** Strict replay answers “does the executor wrapper change identical calls?” Agentic parity answers “can OpenCode use the same source material and requirements more effectively through autonomous file navigation?” The Generate Docs UI selects the latter.
+
+### OpenCode orchestrated candidate boundary (2026-07-27)
+
+- **Orchestration is a separate candidate, not a mutation of legacy or the single-agent benchmark.** The UI and API distinguish `single_agent` from `orchestrated`; Candidate C records runtime `opencode-orchestrated`.
+- **Subagent authority stays allowlisted and shallow.** Global Task permission is denied. Only `nexus-doc-orchestrator` may call `nexus-doc-*`; every child denies Task and OpenCode `subagent_depth` is one.
+- **Agents plan and author; Nexus validates acceptance.** The orchestrator chooses partitions and specialist assignments, while deterministic code requires canonical-unit coverage, exact document ownership, evidence claim fields, review sections, immutable input hashes, and no reproduction of sensitive source values.
+- **Usage must include child sessions.** Aggregate tokens, cache reads, billed cost, and tool calls across the parent and all direct OpenCode child sessions; retain sanitized per-child receipts so a fast parent response cannot hide expensive delegated work.
+- **A claimed orchestrated run must prove delegation.** Reject the candidate when OpenCode creates fewer than the minimum child sessions or omits the orchestration artifacts; never label a stronger prompt in one session as multi-agent execution.
