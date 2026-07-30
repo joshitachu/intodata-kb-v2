@@ -88,6 +88,57 @@ export const LandscapeDiagnosticSchema = z.object({
   severity: z.string().default("info"),
 }).strict();
 
+export const SemanticTopologyEvidenceSchema = z.object({
+  signal_type: z.string(),
+  label: z.string(),
+  artifact_id: z.string().default(""),
+  qualified_artifact_id: z.string().default(""),
+  source_root: z.string().default(""),
+  component_name: z.string().default(""),
+}).strict();
+
+export const SemanticSystemSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  kind: z.string().default("software_system"),
+  status: z.string().default("proposed"),
+  confidence: z.string().default("unknown"),
+  aliases: z.array(z.string()).default([]),
+  evidence: z.array(SemanticTopologyEvidenceSchema).default([]),
+}).strict();
+
+export const IntegrationSolutionSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  platform: z.string().default(""),
+  role: z.string().default("execution"),
+  source_roots: z.array(z.string()).default([]),
+  artifact_count: z.number().int().nonnegative().default(0),
+}).strict();
+
+export const SemanticExchangeSchema = z.object({
+  id: z.string(),
+  source_system_id: z.string(),
+  target_system_id: z.string(),
+  label: z.string(),
+  payloads: z.array(z.string()).default([]),
+  mechanisms: z.array(z.string()).default([]),
+  reliability: z.string().default("unknown"),
+  status: z.string().default("proposed"),
+  confidence: z.string().default("unknown"),
+  implementation_solution_ids: z.array(z.string()).default([]),
+  artifact_ids: z.array(z.string()).default([]),
+  evidence: z.array(SemanticTopologyEvidenceSchema).default([]),
+}).strict();
+
+export const SemanticTopologySchema = z.object({
+  systems: z.array(SemanticSystemSchema).default([]),
+  integration_solutions: z.array(IntegrationSolutionSchema).default([]),
+  exchanges: z.array(SemanticExchangeSchema).default([]),
+  unresolved: z.array(z.record(z.unknown())).default([]),
+  summary: z.record(z.unknown()).default({}),
+}).strict();
+
 export const ProjectLandscapeResponseSchema = z.object({
   systems: z.array(LandscapeSystemSchema).default([]),
   applications: z.array(LandscapeApplicationSchema).default([]),
@@ -95,6 +146,7 @@ export const ProjectLandscapeResponseSchema = z.object({
   channels: z.array(LandscapeChannelSchema).default([]),
   interfaces: z.array(LandscapeInterfaceSchema).default([]),
   diagnostics: z.array(LandscapeDiagnosticSchema).default([]),
+  semantic_topology: SemanticTopologySchema.optional(),
   unmapped: z.array(z.record(z.unknown())).default([]),
   summary: z.record(z.unknown()).default({}),
 }).strict();
@@ -108,4 +160,9 @@ export type LandscapeEdge = z.infer<typeof LandscapeEdgeSchema>;
 export type LandscapeChannel = z.infer<typeof LandscapeChannelSchema>;
 export type LandscapeInterface = z.infer<typeof LandscapeInterfaceSchema>;
 export type LandscapeDiagnostic = z.infer<typeof LandscapeDiagnosticSchema>;
+export type SemanticTopologyEvidence = z.infer<typeof SemanticTopologyEvidenceSchema>;
+export type SemanticSystem = z.infer<typeof SemanticSystemSchema>;
+export type IntegrationSolution = z.infer<typeof IntegrationSolutionSchema>;
+export type SemanticExchange = z.infer<typeof SemanticExchangeSchema>;
+export type SemanticTopology = z.infer<typeof SemanticTopologySchema>;
 export type ProjectLandscapeResponse = z.infer<typeof ProjectLandscapeResponseSchema>;

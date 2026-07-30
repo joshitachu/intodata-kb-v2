@@ -335,19 +335,23 @@ See `PROJECT_MEMORY.md` for architecture decisions and `PROGRESS_LOG.md` for ses
 - **Live proof**: Conversation 112 produced a complete ESB_PROD runtime report under workflow 72. Its "show me the results then?" follow-up returned the same report in 12 ms with workflow 72, no new workflow, and no runtime tool calls. Migration 057 is applied and the backend is healthy with zero restarts.
 - **Resolved blockers**: Runtime entities are no longer treated as project IDs; slot replies no longer replace the original objective; runtime plans are execution obligations; duplicate evidence/continuation rows no longer produce 500s; and the model can no longer claim a runtime capability was unavailable after Nexus already executed it.
 - **Immediate next steps**: Define and implement the contract for global/cross-project runtime queries; add production connector adapters and persistent LangGraph checkpointing/asynchronous workflow reconciliation; run the complete backend suite in an environment where tokenizer assets are cached or network access is available; review and commit the uncommitted harness batch without including unrelated working-tree changes.
-## Latest completed (2026-07-30 topology readability)
+## Latest completed (2026-07-30 semantic topology)
 
-- L1 defaults to connected data/integration flow rather than all configuration.
-- L2 and evidence panels render entity names instead of internal graph IDs.
-- Job nodes show Talend human labels, technical identity second, and concise
-  deterministic explanations; lookup/control/logging are visually distinct.
-- Frontend production image rebuilt successfully and container is healthy.
+- L1 now renders evidence-backed organization systems and named data exchanges,
+  not Talend projects, source roots, or configuration utilities.
+- Proposed semantic facts are visually distinct and remain traceable to exact
+  scanner evidence; Talend projects are retained as implementing solutions.
+- L2 explains one exchange in terms of source, target, payloads, observed
+  transports, reliability, implementing designs, confidence, and limitations.
+- Full frontend: 445 passed; production build passed; container healthy.
 
 ## Immediate next
 
 - Perform an authenticated visual acceptance pass in the user's browser.
-- Treat semantic business enrichment/curation as a separate later layer.
+- Add the supplied-business-data curation/confirmation registry later; never
+  silently promote a scanner proposal to confirmed organization truth.
 
 ## Resolved blockers
 
-- Unbounded orphan nodes, raw L2 IDs, and unexplained Talend graph vocabulary.
+- Unbounded orphan nodes, raw L2 IDs, unexplained Talend graph vocabulary, and
+  Talend-project-as-business-application presentation.

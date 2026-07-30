@@ -2,15 +2,15 @@ import type { Edge, Node } from "@xyflow/react";
 import type {
   LandscapeChannel,
   LandscapeDiagnostic,
-  LandscapeEdge,
   LandscapeInterface,
   LandscapeProvenance,
   ProjectLandscapeResponse,
+  SemanticTopologyEvidence,
 } from "@/types/landscape";
-import { landscapeEntityLabel } from "@/lib/landscapeTransform";
+import { landscapeEntityLabel, type TopologyEdge } from "@/lib/landscapeTransform";
 
 export interface IntegrationDetail {
-  edge: LandscapeEdge;
+  edge: TopologyEdge;
   provenance: LandscapeProvenance[];
   channels: LandscapeChannel[];
   interfaces: LandscapeInterface[];
@@ -34,7 +34,7 @@ function evidenceMatches(
  */
 export function integrationDetailForEdge(
   landscape: ProjectLandscapeResponse,
-  edge: LandscapeEdge,
+  edge: TopologyEdge,
 ): IntegrationDetail {
   const provenance = edge.provenance;
   const channels = landscape.channels.filter((channel) => evidenceMatches(channel, provenance));
@@ -51,13 +51,31 @@ export function integrationDetailForEdge(
     id: "boundary:target", type: "integrationBoundary", position: { x: 740, y: 160 },
     data: { label: landscapeEntityLabel(landscape, edge.target), side: "target", edge }, width: 220, height: 96,
   };
-  const artifactNodes: Node[] = provenance.map((record, index) => ({
+  const semanticEvidence = edge.semanticExchange?.evidence ?? [];
+  const evidenceByArtifact = new Map<string, SemanticTopologyEvidence[]>();
+  for (const evidence of semanticEvidence) {
+    if (!evidence.qualified_artifact_id) continue;
+    evidenceByArtifact.set(
+      evidence.qualified_artifact_id,
+      [...(evidenceByArtifact.get(evidence.qualified_artifact_id) ?? []), evidence],
+    );
+  }
+  const uniqueProvenance = new Map<string, LandscapeProvenance>();
+  for (const record of provenance) {
+    uniqueProvenance.set(record.qualified_artifact_id, record);
+  }
+  const artifactNodes: Node[] = [...uniqueProvenance.values()].map((record, index) => ({
     id: `artifact:${record.qualified_artifact_id}`,
     type: "integrationArtifact",
     position: { x: 350, y: 36 + index * 126 },
-    data: { record }, width: 260, height: 92,
+    data: {
+      record,
+      semanticEvidence: evidenceByArtifact.get(record.qualified_artifact_id) ?? [],
+    },
+    width: 280,
+    height: 106,
   }));
-  const flowEdges: Edge[] = provenance.flatMap((record) => [
+  const flowEdges: Edge[] = [...uniqueProvenance.values()].flatMap((record) => [
     { id: `source:${record.qualified_artifact_id}`, source: "boundary:source", target: `artifact:${record.qualified_artifact_id}`, type: "smoothstep", markerEnd: { type: "arrowclosed" as const } },
     { id: `target:${record.qualified_artifact_id}`, source: `artifact:${record.qualified_artifact_id}`, target: "boundary:target", type: "smoothstep", markerEnd: { type: "arrowclosed" as const } },
   ]);

@@ -10,7 +10,13 @@ from intodoc.platforms.talend.parser import (
     TalendParser,
     _extract_talend_external_system,
 )
-from intodoc.models import Component, MetadataConnection, ParsedJob, ScanResult
+from intodoc.models import (
+    Component,
+    ComponentParam,
+    MetadataConnection,
+    ParsedJob,
+    ScanResult,
+)
 
 
 @pytest.fixture
@@ -686,6 +692,81 @@ class TestCompositeTalendBundles:
                 "provenance": "tPostgresqlOutput",
             },
         ]
+
+    def test_existing_connection_reference_inherits_repository_identity_and_direction(self):
+        job = ParsedJob(
+            name="Transfer",
+            path="process/Transfer.item",
+            job_id="Transfer",
+            components=[
+                Component(
+                    unique_name="tMSSqlConnection_1",
+                    component_type="tMSSqlConnection",
+                    metadata_connection_ref="SharedDB",
+                ),
+                Component(
+                    unique_name="tMSSqlInput_1",
+                    component_type="tMSSqlInput",
+                    params=[
+                        ComponentParam(name="USE_EXISTING_CONNECTION", value="true"),
+                        ComponentParam(name="CONNECTION", value="tMSSqlConnection_1"),
+                    ],
+                ),
+                Component(
+                    unique_name="tMSSqlOutput_1",
+                    component_type="tMSSqlOutput",
+                    params=[
+                        ComponentParam(name="USE_EXISTING_CONNECTION", value="true"),
+                        ComponentParam(name="CONNECTION", value="tMSSqlConnection_1"),
+                    ],
+                ),
+            ],
+        )
+
+        manifest = TalendParser._build_manifest([job], [], [])
+
+        assert job.components[1].metadata_connection_ref == "SharedDB"
+        assert job.components[2].metadata_connection_ref == "SharedDB"
+        assert manifest.artifact_resources == [
+            {
+                "artifact": "Transfer",
+                "resource_type": "repository_connection",
+                "resource": "SharedDB",
+                "direction": "input",
+                "component_name": "tMSSqlInput_1",
+                "provenance": "tMSSqlInput",
+            },
+            {
+                "artifact": "Transfer",
+                "resource_type": "repository_connection",
+                "resource": "SharedDB",
+                "direction": "output",
+                "component_name": "tMSSqlOutput_1",
+                "provenance": "tMSSqlOutput",
+            },
+        ]
+
+    def test_unresolved_existing_connection_reference_does_not_invent_resource(self):
+        job = ParsedJob(
+            name="BrokenReference",
+            path="process/BrokenReference.item",
+            job_id="BrokenReference",
+            components=[
+                Component(
+                    unique_name="tMSSqlInput_1",
+                    component_type="tMSSqlInput",
+                    params=[
+                        ComponentParam(name="USE_EXISTING_CONNECTION", value="true"),
+                        ComponentParam(name="CONNECTION", value="missingConnection"),
+                    ],
+                ),
+            ],
+        )
+
+        manifest = TalendParser._build_manifest([job], [], [])
+
+        assert job.components[0].metadata_connection_ref == ""
+        assert manifest.artifact_resources == []
 
 
 class TestTMapExtraction:

@@ -96,21 +96,24 @@ None.
 - `.agent/tasks/phase3-migration-generator.md` -- Full Phase 3 FRD
 - `src/intodoc/ir/` -- IR package (9 modules)
 - `tests/test_ir/` -- IR test suite (62 tests)
-## Latest completed (2026-07-30)
+## Latest completed (2026-07-30 semantic topology)
 
-- Talend L1 application identity now uses the stable XMI project ID from
-  `talend.project`; repeated ZIP roots remain provenance, not duplicate nodes.
-- Unknown Talend utility components no longer become external systems.
-- The topology fixture was rescanned: 429 designs, 2,145 lineage entries,
-  8 project identities, 43 evidence-backed/configuration identities, 32 edges.
+- The scanner preserves its technical landscape and adds an evidence-backed
+  semantic proposal layer: systems, integration solutions, and exchanges.
+- Direct/direct-vm route addresses cannot invent cross-project edges; quoted
+  empty channels are ignored; JMS evidence counts unique records.
+- Exact Talend existing-connection references now preserve database identity
+  and input/output direction for landscape and documentation consumers.
+- Fresh topology scan: 429 designs, 43 technical systems, 8 integration
+  solutions, 25 technical edges, 11 semantic systems, 14 semantic exchanges.
 
 ## Immediate next
 
-- Review the live default L1 with an authenticated user and curate only genuine
-  business aliases/boundaries; do not reintroduce filename-based identity.
-- A later enrichment layer may propose business purpose/ownership, but must cite
-  scan or supplied business evidence and retain unresolved facts.
+- Review the live L1/L2 with an authenticated user.
+- Add a persistent alias/confirmation registry when supplied business metadata
+  becomes available; preserve decisions across rescans by stable IDs.
 
 ## Resolved blockers
 
-- False component-derived systems and repeated-project root duplication.
+- False component-derived systems, repeated-project root duplication, fabricated
+  direct-channel relationships, and missing existing-connection direction.

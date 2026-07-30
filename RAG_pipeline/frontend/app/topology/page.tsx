@@ -72,8 +72,8 @@ import { computeFailureFocusSet, isFocusDimmableNode, isFocusDimmableEdge } from
 import { computeFocus, type FocusResult } from "@/lib/focusMode";
 import { FocusInteractionContext, type FocusInteraction } from "@/components/graph/focusInteraction";
 import { CALL_EDGE_COLOR } from "@/lib/nodeStyles";
-import { findLandscapeEdge, landscapeEdgeKey } from "@/lib/landscapeTransform";
-import type { LandscapeEdge, LandscapeProvenance } from "@/types/landscape";
+import { findLandscapeEdge, landscapeEdgeKey, type TopologyEdge } from "@/lib/landscapeTransform";
+import type { LandscapeProvenance } from "@/types/landscape";
 
 // Default focus-mode horizon: focal job ± this many dependency hops.
 const DEFAULT_FOCUS_HOPS = 2;
@@ -226,7 +226,7 @@ function TopologyContent() {
   );
   const showLegacyCanvas = navCurrent.kind === "group" || (navCurrent.kind === "project" && landscapeUnavailable);
   const integrationSelection = navCurrent.kind === "integration" ? navCurrent.selection : null;
-  const selectedLandscapeEdge = useMemo<LandscapeEdge | undefined>(() => {
+  const selectedLandscapeEdge = useMemo<TopologyEdge | undefined>(() => {
     if (!landscapeQuery.data || integrationSelection?.kind !== "edge") return undefined;
     return findLandscapeEdge(landscapeQuery.data, integrationSelection.edgeKey);
   }, [landscapeQuery.data, integrationSelection]);
@@ -1732,7 +1732,7 @@ function TopologyContent() {
           ) : integrationSelection?.kind === "application" ? (
             <IntegrationRelationshipChooser landscape={landscapeQuery.data} entityId={integrationSelection.applicationId} title={landscapeQuery.data.applications.find((item) => item.id === integrationSelection.applicationId)?.label || integrationSelection.applicationId} onBack={ascend} onChoose={(edge) => descendToIntegration({ kind: "edge", edgeKey: landscapeEdgeKey(edge) })} />
           ) : integrationSelection?.kind === "system" ? (
-            <IntegrationRelationshipChooser landscape={landscapeQuery.data} entityId={integrationSelection.systemId} title={landscapeQuery.data.systems.find((item) => item.id === integrationSelection.systemId)?.name || integrationSelection.systemId} onBack={ascend} onChoose={(edge) => descendToIntegration({ kind: "edge", edgeKey: landscapeEdgeKey(edge) })} />
+            <IntegrationRelationshipChooser landscape={landscapeQuery.data} entityId={integrationSelection.systemId} title={landscapeQuery.data.semantic_topology?.systems.find((item) => item.id === integrationSelection.systemId)?.name || landscapeQuery.data.systems.find((item) => item.id === integrationSelection.systemId)?.name || integrationSelection.systemId} onBack={ascend} onChoose={(edge) => descendToIntegration({ kind: "edge", edgeKey: landscapeEdgeKey(edge) })} />
           ) : (
             <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">This integration is no longer present in the current scan. Return to the landscape and select it again.</div>
           )

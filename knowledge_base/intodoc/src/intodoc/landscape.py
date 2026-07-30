@@ -148,6 +148,7 @@ _DIRECTION_MAP = {"input": "in", "output": "out", "both": "both", "unknown": "un
 
 _EXACT_CHANNEL_TYPES = frozenset({"jms", "direct", "direct-vm", "lobster_comm"})
 _PLACEHOLDER_CHANNEL_VALUES = frozenset({"", "configured channel", "configured endpoint"})
+_CROSS_APPLICATION_CHANNEL_TYPES = frozenset({"jms", "lobster_comm"})
 
 
 def _qualified_artifact_id(source_root: str, artifact_id: str) -> str:
@@ -188,6 +189,34 @@ def _safe_descriptor(value: object) -> RedactionDescriptor | None:
         return RedactionDescriptor.model_validate(value)
     except (TypeError, ValueError):
         return None
+
+
+def _normalized_channel_identity(value: object) -> str | None:
+    """Return a usable exact channel identity or ``None``.
+
+    Talend exports can serialize an unset string parameter as the literal
+    values ``""`` or ``''``. Those are not empty Python strings, so direct
+    membership checks previously treated every unset route as one shared
+    organization-wide channel. Normalize only placeholder syntax here; real
+    channel identities remain case-sensitive and otherwise verbatim.
+    """
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    unquoted = stripped
+    while (
+        len(unquoted) >= 2
+        and unquoted[0] == unquoted[-1]
+        and unquoted[0] in {'"', "'"}
+    ):
+        unquoted = unquoted[1:-1].strip()
+    if not unquoted:
+        return None
+    if unquoted.casefold() in _PLACEHOLDER_CHANNEL_VALUES:
+        return None
+    return stripped
 
 
 # ── System-kind classification ────────────────────────────────────────
@@ -1027,6 +1056,7 @@ def _build_channel_records_and_edges(
     for channel in scan_result.manifest.artifact_channels:
         channel_type = channel.get("channel_type", "")
         channel_name = channel.get("channel", "")
+        channel_identity = _normalized_channel_identity(channel_name)
         artifact = channel.get("artifact", "")
         source_root = job_source_roots.get(artifact)
         if channel_type not in _EXACT_CHANNEL_TYPES:
@@ -1038,36 +1068,64 @@ def _build_channel_records_and_edges(
             })
             continue
         descriptor = _safe_descriptor(channel.get("channel_descriptor"))
-        channels.append(LandscapeChannel(
-            channel_type=channel_type,
-            channel=channel_name,
-            direction=channel.get("direction", "unknown"),
-            artifact_id=artifact,
-            qualified_artifact_id=_qualified_artifact_id(source_root, artifact),
-            source_root=source_root,
-            component_name=channel.get("component_name", ""),
-            redaction_descriptor=descriptor,
-        ))
+        if channel_identity is not None or descriptor is not None:
+            channels.append(LandscapeChannel(
+                channel_type=channel_type,
+                channel=channel_identity or "configured endpoint",
+                direction=channel.get("direction", "unknown"),
+                artifact_id=artifact,
+                qualified_artifact_id=_qualified_artifact_id(source_root, artifact),
+                source_root=source_root,
+                component_name=channel.get("component_name", ""),
+                redaction_descriptor=descriptor,
+            ))
         # A redacted/unnamed channel remains meaningful L2 evidence when it
         # has a structural descriptor, but must never be used to correlate
         # producer/consumer records into a fabricated peer edge.
-        if channel_name not in _PLACEHOLDER_CHANNEL_VALUES:
-            groups[(channel_type, channel_name)].append({**channel, "source_root": source_root})
+        if channel_identity is not None:
+            groups[(channel_type, channel_identity)].append({
+                **channel,
+                "channel": channel_identity,
+                "source_root": source_root,
+            })
 
     acc = _EdgeAccumulator()
     for (channel_type, _channel_name), records in groups.items():
+        # Camel direct/direct-vm names are route-internal implementation
+        # addresses. Even identical names in separately imported projects do
+        # not establish a business-system exchange.
+        if channel_type not in _CROSS_APPLICATION_CHANNEL_TYPES:
+            continue
         producers = [record for record in records if record.get("direction") in {"output", "both"}]
         consumers = [record for record in records if record.get("direction") in {"input", "both"}]
+        producers_by_root: dict[str, list[dict]] = defaultdict(list)
+        consumers_by_root: dict[str, list[dict]] = defaultdict(list)
         for producer in producers:
-            for consumer in consumers:
-                producer_artifact = producer.get("artifact", "")
-                consumer_artifact = consumer.get("artifact", "")
-                producer_root = producer["source_root"]
-                consumer_root = consumer["source_root"]
+            producers_by_root[producer["source_root"]].append(producer)
+        for consumer in consumers:
+            consumers_by_root[consumer["source_root"]].append(consumer)
+
+        for producer_root, root_producers in producers_by_root.items():
+            for consumer_root, root_consumers in consumers_by_root.items():
                 if producer_root == consumer_root:
-                    # Preserve both exact L2 channel records, but do not
-                    # render an application self-loop for an internal flow.
                     continue
+                provenance = [
+                    _provenance(
+                        artifact_id=record.get("artifact", ""),
+                        source_root=producer_root,
+                        component_name=record.get("component_name", ""),
+                        fact_type="artifact_channel_producer",
+                    )
+                    for record in root_producers
+                ] + [
+                    _provenance(
+                        artifact_id=record.get("artifact", ""),
+                        source_root=consumer_root,
+                        component_name=record.get("component_name", ""),
+                        fact_type="artifact_channel_consumer",
+                    )
+                    for record in root_consumers
+                ]
                 acc.add(
                     source=producer_root,
                     target=consumer_root,
@@ -1077,20 +1135,8 @@ def _build_channel_records_and_edges(
                     mechanism=_CHANNEL_TYPE_TO_MECHANISM.get(channel_type, "unknown"),
                     direction="out",
                     confidence="certain",
-                    provenance=[
-                        _provenance(
-                            artifact_id=producer_artifact,
-                            source_root=producer_root,
-                            component_name=producer.get("component_name", ""),
-                            fact_type="artifact_channel_producer",
-                        ),
-                        _provenance(
-                            artifact_id=consumer_artifact,
-                            source_root=consumer_root,
-                            component_name=consumer.get("component_name", ""),
-                            fact_type="artifact_channel_consumer",
-                        ),
-                    ],
+                    provenance=provenance,
+                    evidence_count=len(provenance),
                 )
     return sorted(channels, key=lambda item: (item.channel_type, item.channel, item.qualified_artifact_id)), acc.edges()
 
@@ -1229,8 +1275,8 @@ def _unread_channel_diagnostics(scan_result: ScanResult) -> list[LandscapeDiagno
     manifest = scan_result.manifest
     groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for ch in manifest.artifact_channels:
-        channel = ch.get("channel", "")
-        if channel in _PLACEHOLDER_CHANNEL_VALUES:
+        channel = _normalized_channel_identity(ch.get("channel", ""))
+        if channel is None:
             # No distinguishing identity to dedupe / correlate readers on.
             continue
         groups[(ch.get("channel_type", ""), channel)].append(ch)
@@ -1360,7 +1406,7 @@ def build_landscape(
         "unmapped_count": len(unmapped),
     }
 
-    return Landscape(
+    landscape = Landscape(
         systems=systems,
         applications=applications,
         edges=edges,
@@ -1370,6 +1416,15 @@ def build_landscape(
         unmapped=unmapped,
         summary=summary,
     )
+    # The semantic proposal layer is deliberately additive. The technical
+    # applications/systems/edges above remain the complete deterministic
+    # evidence graph used for auditing, documentation, and fallback clients.
+    # Import locally so the semantic projector can depend on the Landscape
+    # model without creating a module-initialization cycle.
+    from intodoc.semantic_topology import build_semantic_topology
+
+    landscape.semantic_topology = build_semantic_topology(scan_result, landscape)
+    return landscape
 
 
 def save_landscape(landscape: Landscape, output_dir: Path) -> Path:

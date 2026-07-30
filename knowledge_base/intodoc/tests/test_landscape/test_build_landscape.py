@@ -535,14 +535,54 @@ class TestDiagnostics:
     def test_placeholder_channel_value_is_not_flagged(self):
         """'configured channel' carries no distinguishing identity to
         correlate readers on -- never a false-positive diagnostic."""
-        manifest = _manifest(artifact_channels=[{
-            "artifact": "Route1", "channel_type": "direct", "channel": "configured channel",
-            "direction": "output", "component_name": "cDirect_1", "provenance": "cDirect",
-        }])
+        manifest = _manifest(
+            job_source_roots={"Route1": "root/A"},
+            artifact_channels=[{
+                "artifact": "Route1", "channel_type": "direct", "channel": "configured channel",
+                "direction": "output", "component_name": "cDirect_1", "provenance": "cDirect",
+            }],
+        )
         scan_result = _scan(manifest=manifest)
         landscape = _build(scan_result)
         assert [d for d in landscape.diagnostics if d.kind == "unread_channel"] == []
         assert landscape.channels == []
+        assert [edge for edge in landscape.edges if edge.dependency_type == "integration"] == []
+
+    def test_quoted_empty_channel_does_not_correlate_unrelated_projects(self):
+        manifest = _manifest(
+            job_source_roots={"Producer": "root/A", "Consumer": "root/B"},
+            artifact_channels=[
+                {
+                    "artifact": "Producer", "channel_type": "direct", "channel": '""',
+                    "direction": "output", "component_name": "send", "provenance": "cDirect",
+                },
+                {
+                    "artifact": "Consumer", "channel_type": "direct", "channel": '""',
+                    "direction": "input", "component_name": "receive", "provenance": "cDirect",
+                },
+            ],
+        )
+        landscape = _build(_scan(manifest=manifest))
+        assert landscape.channels == []
+        assert [edge for edge in landscape.edges if edge.dependency_type == "integration"] == []
+        assert [d for d in landscape.diagnostics if d.kind == "unread_channel"] == []
+
+    def test_direct_channel_name_never_creates_cross_project_l1_edge(self):
+        manifest = _manifest(
+            job_source_roots={"Producer": "root/A", "Consumer": "root/B"},
+            artifact_channels=[
+                {
+                    "artifact": "Producer", "channel_type": "direct", "channel": "Authorized",
+                    "direction": "output", "component_name": "send", "provenance": "cDirect",
+                },
+                {
+                    "artifact": "Consumer", "channel_type": "direct", "channel": "Authorized",
+                    "direction": "input", "component_name": "receive", "provenance": "cDirect",
+                },
+            ],
+        )
+        landscape = _build(_scan(manifest=manifest))
+        assert len(landscape.channels) == 2
         assert [edge for edge in landscape.edges if edge.dependency_type == "integration"] == []
 
     def test_exact_channel_producer_consumer_creates_typed_integration_edge(self):
@@ -566,6 +606,45 @@ class TestDiagnostics:
         assert {record.fact_type for record in edge.provenance} == {
             "artifact_channel_producer", "artifact_channel_consumer",
         }
+
+    def test_shared_channel_counts_unique_evidence_not_cartesian_pairs(self):
+        manifest = _manifest(
+            job_source_roots={
+                "Producer1": "root/A",
+                "Producer2": "root/A",
+                "Producer3": "root/A",
+                "Consumer1": "root/B",
+                "Consumer2": "root/B",
+            },
+            artifact_channels=[
+                *[
+                    {
+                        "artifact": artifact,
+                        "channel_type": "jms",
+                        "channel": "orders.queue",
+                        "direction": "output",
+                        "component_name": "send",
+                        "provenance": "cJMS",
+                    }
+                    for artifact in ("Producer1", "Producer2", "Producer3")
+                ],
+                *[
+                    {
+                        "artifact": artifact,
+                        "channel_type": "jms",
+                        "channel": "orders.queue",
+                        "direction": "input",
+                        "component_name": "receive",
+                        "provenance": "cJMS",
+                    }
+                    for artifact in ("Consumer1", "Consumer2")
+                ],
+            ],
+        )
+        landscape = _build(_scan(manifest=manifest))
+        edge = next(edge for edge in landscape.edges if edge.dependency_type == "integration")
+        assert edge.evidence_count == 5
+        assert len(edge.provenance) == 5
 
     def test_same_root_channel_is_retained_for_l2_without_l1_self_loop(self):
         manifest = _manifest(

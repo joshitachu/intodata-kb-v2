@@ -1105,6 +1105,67 @@ class LandscapeDiagnostic(BaseModel):
     severity: str = "info"  # info | warning
 
 
+class SemanticTopologyEvidence(BaseModel):
+    """One safe, exact fact supporting a semantic topology proposal."""
+    signal_type: str
+    label: str
+    artifact_id: str = ""
+    qualified_artifact_id: str = ""
+    source_root: str = ""
+    component_name: str = ""
+
+
+class SemanticSystem(BaseModel):
+    """A proposed or confirmed organization-level software/data system."""
+    id: str
+    name: str
+    kind: str = "software_system"
+    status: str = "proposed"  # proposed | confirmed | unresolved | rejected
+    confidence: str = "unknown"
+    aliases: list[str] = Field(default_factory=list)
+    evidence: list[SemanticTopologyEvidence] = Field(default_factory=list)
+
+
+class IntegrationSolution(BaseModel):
+    """A scanned deployable project that implements one or more exchanges."""
+    id: str
+    name: str
+    platform: str = ""
+    role: str = "execution"
+    source_roots: list[str] = Field(default_factory=list)
+    artifact_count: int = 0
+
+
+class SemanticExchange(BaseModel):
+    """One evidence-backed directional exchange between organization systems."""
+    id: str
+    source_system_id: str
+    target_system_id: str
+    label: str
+    payloads: list[str] = Field(default_factory=list)
+    mechanisms: list[str] = Field(default_factory=list)
+    reliability: str = "unknown"
+    status: str = "proposed"
+    confidence: str = "unknown"
+    implementation_solution_ids: list[str] = Field(default_factory=list)
+    artifact_ids: list[str] = Field(default_factory=list)
+    evidence: list[SemanticTopologyEvidence] = Field(default_factory=list)
+
+
+class SemanticTopology(BaseModel):
+    """Semantic proposal layer used to project readable L1/L2 views.
+
+    It never replaces scanner facts. Every system/exchange remains explicitly
+    proposed until confirmed through deterministic external business data or
+    the persistent curation registry.
+    """
+    systems: list[SemanticSystem] = Field(default_factory=list)
+    integration_solutions: list[IntegrationSolution] = Field(default_factory=list)
+    exchanges: list[SemanticExchange] = Field(default_factory=list)
+    unresolved: list[dict] = Field(default_factory=list)
+    summary: dict = Field(default_factory=dict)
+
+
 class Landscape(BaseModel):
     """Output of `intodoc.landscape.build_landscape`, persisted as
     `scan/landscape.json` by `save_landscape` (mirrors
@@ -1115,6 +1176,9 @@ class Landscape(BaseModel):
     channels: list[LandscapeChannel] = Field(default_factory=list)
     interfaces: list[LandscapeInterface] = Field(default_factory=list)
     diagnostics: list[LandscapeDiagnostic] = Field(default_factory=list)
+    # Additive proposal layer for human-readable L1/L2 projection. Raw
+    # applications/systems/edges remain the deterministic technical evidence.
+    semantic_topology: SemanticTopology = Field(default_factory=SemanticTopology)
     # Anything that could not be rolled up cleanly -- never silently
     # dropped, matching `LineageMatrix.unmapped_columns`.
     unmapped: list[dict] = Field(default_factory=list)

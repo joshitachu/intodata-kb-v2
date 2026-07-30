@@ -448,3 +448,9 @@ intodata-kb/
   unconnected/configuration evidence remains searchable and available through
   “All technical dependencies.” Human labels never replace the technical IDs
   used for navigation and lineage.
+- **Semantic topology is a projection, not scanner authority (2026-07-30):**
+  Organization systems and exchanges may be proposed only from bounded,
+  cited scan evidence. L1 renders the semantic projection when it exists;
+  Talend projects remain implementation solutions. Raw technical nodes, edges,
+  stable IDs, provenance, and L3/L4 drill-down remain intact. A proposal stays
+  visibly proposed until confirmed by supplied business data or human curation.

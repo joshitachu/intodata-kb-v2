@@ -16,8 +16,75 @@ const landscape: ProjectLandscapeResponse = {
 };
 
 describe("landscapeToFlow", () => {
+  it("uses semantic systems and payload-labelled exchanges instead of Talend projects", () => {
+    const result = landscapeToFlow({
+      ...landscape,
+      semantic_topology: {
+        systems: [
+          { id: "semantic:maximo", name: "Maximo", kind: "software_system", status: "proposed", confidence: "likely", aliases: [], evidence: [] },
+          { id: "semantic:assetcheck", name: "AssetCheck", kind: "software_system", status: "proposed", confidence: "likely", aliases: [], evidence: [] },
+        ],
+        integration_solutions: [
+          { id: "application:one", name: "AssetCheck Talend", platform: "talend", role: "execution", source_roots: ["ZIP/A"], artifact_count: 2 },
+        ],
+        exchanges: [{
+          id: "exchange:workorders",
+          source_system_id: "semantic:maximo",
+          target_system_id: "semantic:assetcheck",
+          label: "Locations, work orders",
+          payloads: ["Locations", "Work orders"],
+          mechanisms: ["rest"],
+          reliability: "synchronous",
+          status: "proposed",
+          confidence: "likely",
+          implementation_solution_ids: ["application:one"],
+          artifact_ids: ["Fetch"],
+          evidence: [{
+            signal_type: "directional_artifact_name",
+            label: "Maximo2AssetCheck_SendWorkOrder",
+            artifact_id: "Fetch",
+            qualified_artifact_id: "ZIP/A::Fetch",
+            source_root: "ZIP/A",
+            component_name: "",
+          }],
+        }],
+        unresolved: [],
+        summary: {},
+      },
+    });
+
+    expect(result.nodes.map((node) => node.id)).toEqual([
+      "semantic:maximo",
+      "semantic:assetcheck",
+    ]);
+    expect(result.nodes.every((node) => node.data.entityType === "semanticSystem")).toBe(true);
+    expect(result.nodes.map((node) => node.id)).not.toContain("application:one");
+    expect(result.edges).toHaveLength(1);
+    expect(result.edges[0].label).toBe("Locations, work orders");
+    expect(result.edges[0].data?.landscapeEdge.semanticExchange?.id).toBe("exchange:workorders");
+    expect(result.edges[0].style).toMatchObject({ strokeDasharray: "7 4" });
+  });
+
   it("keeps identically labelled applications distinct by scanner ID", () => {
-    const result = landscapeToFlow(landscape);
+    const result = landscapeToFlow({
+      ...landscape,
+      edges: [
+        ...landscape.edges,
+        {
+          source: "application:one",
+          target: "application:two",
+          source_kind: "application",
+          target_kind: "application",
+          dependency_type: "control_flow",
+          mechanism: "direct",
+          direction: "out",
+          reliability: "synchronous",
+          confidence: "certain",
+          evidence_count: 1,
+          provenance: [],
+        },
+      ],
+    });
     expect(result.nodes.map((node) => node.id)).toEqual(expect.arrayContaining(["application:one", "application:two"]));
     expect(result.nodes.filter((node) => node.data.entityType === "application")).toHaveLength(2);
   });
@@ -54,6 +121,20 @@ describe("landscapeToFlow", () => {
       ],
     });
     expect(result.nodes.map((node) => node.id)).not.toContain("system:orphan");
+  });
+
+  it("does not retain unrelated applications when relationships are visible", () => {
+    const result = landscapeToFlow(landscape);
+    expect(result.nodes.map((node) => node.id)).toContain("application:one");
+    expect(result.nodes.map((node) => node.id)).not.toContain("application:two");
+  });
+
+  it("shows no unrelated applications when an edge filter has no matches", () => {
+    const result = landscapeToFlow(landscape, {
+      dependencyTypes: new Set(["integration"]),
+    });
+    expect(result.nodes).toHaveLength(0);
+    expect(result.edges).toHaveLength(0);
   });
 
   it("searches by label while retaining only direct scanner-computed context", () => {

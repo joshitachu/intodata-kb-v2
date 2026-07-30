@@ -519,18 +519,19 @@ Enterprise documentation quality gates and verdicts: enterprise mode is now the 
 - Updates require the expected base SHA, return version/reconciliation receipts, and restore the prior file when RAG indexing fails. Revert validates the receipt against the document/version and is itself rollback-protected.
 - Focused update/revert/RBAC tests: 78 passed. Full MCP suite: 1098 passed with one unrelated catalogue assertion for `route33/z-ai/glm-4.7-flash`.
 - Live update/revert restored `final_agentic_e2e/00_AGENT_BRIEF.md` to its exact original SHA. No temporary evidence marker remains.
-## Latest completed (2026-07-30 topology readability)
+## Latest completed (2026-07-30 semantic topology)
 
-- Job graph API exposes Talend author labels, stable technical IDs, component
-  explanations, and data-versus-trigger connector explanations.
-- Landscape response exposes canonical project identity plus all imported roots.
-- MCP server and frontend were rebuilt and are healthy.
+- MCP now explicitly serves semantic systems, integration solutions, exchanges,
+  proposal status/confidence, payloads, mechanisms, and exact provenance.
+- The API does not discard the additive scanner semantic layer.
+- Landscape API tests pass; rebuilt MCP/frontend containers are healthy.
 
 ## Immediate next
 
-- Authenticated product review of the regenerated topology.
-- Business alias/ownership enrichment remains later work and must be additive.
+- Authenticated product review of the regenerated L1/L2.
+- Business alias/ownership confirmation remains later work and must be additive.
 
 ## Resolved blockers
 
-- Opaque component labels and unexplained FLOW/SUBJOB_OK semantics.
+- Opaque component labels, unexplained FLOW/SUBJOB_OK semantics, and semantic
+  topology being stripped at the MCP response boundary.

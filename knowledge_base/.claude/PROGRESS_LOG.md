@@ -2709,3 +2709,12 @@ Check: `wc -l output/localESBCHECK/docs_staging/_analysis/*.md`
 - **Change**: Prepared one branch checkpoint containing all source deliverables while explicitly excluding generated `agentic-workspaces` scan copies and the confidential nested VW reverse-engineering repository from Git.
 - **Why this approach**: The spike is already an ancestor of the topology branch, so a validated checkpoint allows `master` to advance through both histories without conflict while keeping customer-derived runtime evidence out of source control.
 - **Verification**: `git diff --cached --check` and high-confidence credential-pattern scans passed. IntoDoc focused suite: 226 passed, 7 skipped. MCP agentic/topology suite: 318 passed. Runtime static-correlation suite: 17 passed. RAG topology frontend: 50 passed plus production build. Dashboard: 21 passed plus production build.
+
+### [Feature]: Serve the semantic topology contract through MCP
+
+- **Files changed**: `mcp-server/src/mcp_server/schemas.py`; `mcp-server/tests/test_api/test_project_landscape.py`.
+- **Problem**: The scanner could persist semantic systems and exchanges, but MCP's explicit response model discarded the additive field before the frontend received it.
+- **Root cause**: The API intentionally mirrors the scanner contract through strict local Pydantic models; the new semantic models had not yet been added to that boundary.
+- **Change**: Added explicit response models for semantic evidence, systems, integration solutions, exchanges, and summary; included them in `ProjectLandscapeResponse`; added API coverage for payload labels, implementing solutions, and drill-down provenance.
+- **Why this approach**: Schema drift should fail loudly at the API boundary. Explicit models preserve backwards-compatible defaults while preventing arbitrary JSON from becoming a frontend topology authority.
+- **Verification**: Landscape API tests **5 passed**. Full MCP suite **1,634 passed, 3 failed**: one pre-existing model-catalogue assertion and two local-environment failures because the MCP virtualenv lacks the sibling `intodoc` package. The rebuilt container has the package installed, validates the real 11-system/14-exchange artifact, and both MCP/frontend services are healthy.

@@ -1186,6 +1186,57 @@ class LandscapeDiagnosticResponse(BaseModel):
     severity: str = "info"
 
 
+class SemanticTopologyEvidenceResponse(BaseModel):
+    signal_type: str
+    label: str
+    artifact_id: str = ""
+    qualified_artifact_id: str = ""
+    source_root: str = ""
+    component_name: str = ""
+
+
+class SemanticSystemResponse(BaseModel):
+    id: str
+    name: str
+    kind: str = "software_system"
+    status: str = "proposed"
+    confidence: str = "unknown"
+    aliases: list[str] = Field(default_factory=list)
+    evidence: list[SemanticTopologyEvidenceResponse] = Field(default_factory=list)
+
+
+class IntegrationSolutionResponse(BaseModel):
+    id: str
+    name: str
+    platform: str = ""
+    role: str = "execution"
+    source_roots: list[str] = Field(default_factory=list)
+    artifact_count: int = 0
+
+
+class SemanticExchangeResponse(BaseModel):
+    id: str
+    source_system_id: str
+    target_system_id: str
+    label: str
+    payloads: list[str] = Field(default_factory=list)
+    mechanisms: list[str] = Field(default_factory=list)
+    reliability: str = "unknown"
+    status: str = "proposed"
+    confidence: str = "unknown"
+    implementation_solution_ids: list[str] = Field(default_factory=list)
+    artifact_ids: list[str] = Field(default_factory=list)
+    evidence: list[SemanticTopologyEvidenceResponse] = Field(default_factory=list)
+
+
+class SemanticTopologyResponse(BaseModel):
+    systems: list[SemanticSystemResponse] = Field(default_factory=list)
+    integration_solutions: list[IntegrationSolutionResponse] = Field(default_factory=list)
+    exchanges: list[SemanticExchangeResponse] = Field(default_factory=list)
+    unresolved: list[dict] = Field(default_factory=list)
+    summary: dict = Field(default_factory=dict)
+
+
 class ProjectLandscapeResponse(BaseModel):
     """Read-only scanner-computed landscape artifact.
 
@@ -1200,6 +1251,9 @@ class ProjectLandscapeResponse(BaseModel):
     channels: list[LandscapeChannelResponse] = Field(default_factory=list)
     interfaces: list[LandscapeInterfaceResponse] = Field(default_factory=list)
     diagnostics: list[LandscapeDiagnosticResponse] = Field(default_factory=list)
+    semantic_topology: SemanticTopologyResponse = Field(
+        default_factory=SemanticTopologyResponse
+    )
     unmapped: list[dict] = Field(default_factory=list)
     summary: dict = Field(default_factory=dict)
 

@@ -458,3 +458,14 @@ knowledge_base/
 - **Agents plan and author; Nexus validates acceptance.** The orchestrator chooses partitions and specialist assignments, while deterministic code requires canonical-unit coverage, exact document ownership, evidence claim fields, review sections, immutable input hashes, and no reproduction of sensitive source values.
 - **Usage must include child sessions.** Aggregate tokens, cache reads, billed cost, and tool calls across the parent and all direct OpenCode child sessions; retain sanitized per-child receipts so a fast parent response cannot hide expensive delegated work.
 - **A claimed orchestrated run must prove delegation.** Reject the candidate when OpenCode creates fewer than the minimum child sessions or omits the orchestration artifacts; never label a stronger prompt in one session as multi-agent execution.
+
+### Semantic topology boundary (2026-07-30)
+
+- MCP mirrors the scanner semantic contract explicitly; unknown fields must not
+  be silently relied on across the scanner/API/frontend boundary.
+- Scanner technical facts remain authoritative. Semantic systems and exchanges
+  are proposals with status, confidence, and exact evidence. Talend project
+  identities are integration solutions, not automatically business systems.
+- Supplied organization data may later confirm aliases, ownership, boundaries,
+  purpose, and criticality through a durable registry keyed by stable IDs; it
+  must not erase the underlying scan evidence or mutate history across rescans.

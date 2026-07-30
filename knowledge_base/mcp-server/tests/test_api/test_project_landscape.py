@@ -109,6 +109,70 @@ LANDSCAPE = {
             "severity": "warning",
         }
     ],
+    "semantic_topology": {
+        "systems": [
+            {
+                "id": "semantic-system:maximo",
+                "name": "Maximo",
+                "kind": "software_system",
+                "status": "proposed",
+                "confidence": "likely",
+                "aliases": ["Maximo"],
+                "evidence": [],
+            },
+            {
+                "id": "semantic-system:assetcheck",
+                "name": "AssetCheck",
+                "kind": "software_system",
+                "status": "proposed",
+                "confidence": "likely",
+                "aliases": ["AssetCheck"],
+                "evidence": [],
+            },
+        ],
+        "integration_solutions": [
+            {
+                "id": "application:assetcheck",
+                "name": "Assetcheck",
+                "platform": "talend",
+                "role": "execution",
+                "source_roots": ["ASSETCHECK"],
+                "artifact_count": 4,
+            }
+        ],
+        "exchanges": [
+            {
+                "id": "exchange:maximo-assetcheck",
+                "source_system_id": "semantic-system:maximo",
+                "target_system_id": "semantic-system:assetcheck",
+                "label": "Work orders",
+                "payloads": ["Work orders"],
+                "mechanisms": ["rest"],
+                "reliability": "synchronous",
+                "status": "proposed",
+                "confidence": "likely",
+                "implementation_solution_ids": ["application:assetcheck"],
+                "artifact_ids": ["FetchMaximo"],
+                "evidence": [
+                    {
+                        "signal_type": "directional_artifact_name",
+                        "label": "Maximo2AssetCheck_SendWorkOrder",
+                        "artifact_id": "FetchMaximo",
+                        "qualified_artifact_id": "MAXIMO_INTEGRATION::FetchMaximo",
+                        "source_root": "MAXIMO_INTEGRATION",
+                        "component_name": "",
+                    }
+                ],
+            }
+        ],
+        "unresolved": [],
+        "summary": {
+            "system_count": 2,
+            "integration_solution_count": 1,
+            "exchange_count": 1,
+            "proposal_count": 3,
+        },
+    },
     "unmapped": [],
     "summary": {
         "system_count": 1,
@@ -166,6 +230,14 @@ async def test_project_landscape_preserves_edge_provenance(
     assert response.json()["channels"][0]["redaction_descriptor"]["tls"] is False
     assert response.json()["interfaces"][0]["endpoint_type"] == "rest"
     assert response.json()["interfaces"][0]["redaction_descriptor"]["auth_type"] == "api_key"
+    semantic_exchange = response.json()["semantic_topology"]["exchanges"][0]
+    assert semantic_exchange["label"] == "Work orders"
+    assert semantic_exchange["implementation_solution_ids"] == [
+        "application:assetcheck"
+    ]
+    assert semantic_exchange["evidence"][0]["qualified_artifact_id"] == (
+        "MAXIMO_INTEGRATION::FetchMaximo"
+    )
 
 
 async def test_project_landscape_missing_artifact_returns_404(client):
