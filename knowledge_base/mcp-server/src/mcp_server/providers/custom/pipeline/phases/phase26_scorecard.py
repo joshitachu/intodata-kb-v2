@@ -120,14 +120,51 @@ class Phase26Scorecard(Phase):
             result = task_result.result
             scorecard_task_output_path = task_result.output_path
         if not result.success:
-            raise RuntimeError(f"Scorecard generation failed: {result.raw_error}")
+            # Salvage-first (P0.2): the scorecard is an enrichment, not a
+            # publish precondition. A failed scorecard (verified: ETTM died
+            # here after Phase 2 consumed the mis-sized call budget) writes an
+            # explicit unavailability scorecard and the run continues; docs
+            # that reference scorecard dimensions mark them unavailable.
+            reason = result.raw_error or "scorecard generation failed"
+            await log_cb(
+                ctx.project_id,
+                f"[custom] Scorecard generation failed ({reason}); writing "
+                "unavailability scorecard and continuing -- resume retries it",
+                "warning",
+            )
+            state.warnings.append(f"Scorecard unavailable in this run: {reason[:200]}")
+            (assessment_dir / "scorecard.md").write_text(
+                "# Assessment Scorecard\n\n"
+                f"Canonical inventory: {state.facts_manifest.unit_count} "
+                f"{state.facts_manifest.canonical_unit_label}.\n\n"
+                "> **SCORECARD UNAVAILABLE:** scorecard generation did not "
+                "complete in this run. Documents must mark scorecard-derived "
+                "dimensions as unavailable rather than inventing scores.\n\n"
+                f"Failure: {reason}\n",
+                encoding="utf-8",
+            )
+            return PhaseResult(
+                phase_name=self.name,
+                success=True,
+                metadata={"scorecard": "unavailable"},
+            )
         if int(result.metadata.get("slices") or 0) > 1:
-            result = await self._helpers.reduce_split_scorecard(ctx, state, result.text, scorecard_pack, log_cb)
-            if not result.success:
-                raise RuntimeError(f"Scorecard reducer failed: {result.raw_error}")
-            if scorecard_task_output_path:
-                from pathlib import Path as _Path
-                _Path(scorecard_task_output_path).write_text(result.text.strip(), encoding="utf-8")
+            reduced = await self._helpers.reduce_split_scorecard(ctx, state, result.text, scorecard_pack, log_cb)
+            if not reduced.success:
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] Scorecard reducer failed ({reduced.raw_error}); "
+                    "keeping the unreduced sliced scorecard",
+                    "warning",
+                )
+                state.warnings.append(
+                    f"Scorecard reducer failed: {str(reduced.raw_error)[:200]}"
+                )
+            else:
+                result = reduced
+                if scorecard_task_output_path:
+                    from pathlib import Path as _Path
+                    _Path(scorecard_task_output_path).write_text(result.text.strip(), encoding="utf-8")
 
         if not self._helpers.plugin_mode:
             sc_check = validate_scorecard_contract(result.text)
@@ -161,8 +198,12 @@ class Phase26Scorecard(Phase):
     ) -> PhaseResult:
         scorecard = ctx.staging_dir / "_assessment" / "scorecard.md"
         if scorecard.exists() and scorecard.stat().st_size > 0:
-            await log_cb(ctx.project_id, "[custom] RESUME: Phase 2.6 scorecard cached", "info")
-            return PhaseResult(phase_name=self.name, success=True, was_cached=True)
+            # An unavailability scorecard (salvage path) is a resume marker,
+            # not a cached result -- retry it.
+            text = scorecard.read_text(encoding="utf-8", errors="replace")
+            if "SCORECARD UNAVAILABLE" not in text:
+                await log_cb(ctx.project_id, "[custom] RESUME: Phase 2.6 scorecard cached", "info")
+                return PhaseResult(phase_name=self.name, success=True, was_cached=True)
         return await self.run(ctx, state, log_cb)
 
     def estimate(self, groups: list[str], docs: list[str], facts_unit_count: int) -> PhaseEstimate:

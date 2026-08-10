@@ -15,7 +15,10 @@ from mcp_server.providers.custom.doc_catalog import load_doc_catalog as _load_ca
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES, REQUIRED_SECTION_NAMES
 
 _catalog = _load_catalog()
-REQUIRED_DOCS = _catalog.required_docs
+# Fallback doc set (used when a caller supplies no explicit required_docs).
+# Per-unit catalog entries expand at run start into one doc per scanned unit;
+# the base entry name never exists as a file, so it is excluded here.
+REQUIRED_DOCS = [d.name for d in _catalog.docs if not d.per_unit]
 DOC_SECTION_REQUIREMENTS = _catalog.section_requirements
 
 EVIDENCE_REGISTER_SECTION_RE = re.compile(
@@ -47,10 +50,17 @@ def _load_scan_result(scan_output_dir: Path) -> dict[str, Any]:
     files_path = scan_dir / "files_index.json"
     if files_path.exists():
         files = json.loads(files_path.read_text(encoding="utf-8"))
+    manifest: dict[str, Any] = {}
+    manifest_path = scan_dir / "manifest.json"
+    if manifest_path.exists():
+        loaded_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if isinstance(loaded_manifest, dict):
+            manifest = loaded_manifest
     return {
         **meta,
         "jobs": jobs,
         "files": files,
+        "manifest": manifest,
         "warnings": meta.get("warnings", []),
     }
 
@@ -108,6 +118,39 @@ def _raw_source_audit(scan: dict[str, Any], jobs: list[dict[str, Any]], platform
         return get_platform_strategy("generic").raw_source_audit(scan, jobs)
 
 
+def _canonical_analysis_group(job: dict[str, Any]) -> str:
+    """Return the analysis group identity for a scanner unit.
+
+    This MUST be the same identity that every preprocess stage keys on. All
+    preprocess paths derive their group from the clean ``job.group`` field:
+    ``services.scanner_service.get_chunk_definitions`` buckets segmented job
+    JSONs by their canonical ``job.group`` (never the escaped/hashed physical
+    ``scan/jobs/<dir>`` name), the direct-redacted path
+    ``source_context.materialize_direct_redacted_source`` writes one
+    ``_preprocess/{group}.md`` per clean ``job.group``, Phase 2 writes one
+    ``_analysis/{group}.md`` per group, ``_group_units`` resolves units by
+    ``unit.group == group``, and coverage/early-stop iterate the same
+    ``_preprocess`` groups.
+
+    Deriving group identity from the hashed ``jobs/<physical_dir>`` name emitted
+    by the composite-ZIP scanner produced a *second*, disjoint key space: on the
+    werkorder scan the physical scheme yielded 87 directories while the units
+    actually segment into 61 clean functional groups, so every preprocess group
+    was absent from the facts manifest, ``_group_units`` mapped every group to
+    ``[]``, and the Phase 2 "scanner contract mismatch" check failed. On
+    single-root scans the physical dir name happened to equal the clean group,
+    which is why the divergence was latent until composite-ZIP scans.
+
+    Each unit's composite origin is preserved independently in ``source_root``
+    (and ``manifest.job_source_roots``), so collapsing to the clean group loses
+    no per-root information while keeping the facts manifest consistent with the
+    preprocess artifacts on disk. Unit-level collision safety is preserved by the
+    unit identity (``group:path:name``), not the group key.
+    """
+
+    return str(job.get("group") or "Global")
+
+
 def build_facts_manifest(project_id: str, scan_output_dir: Path) -> FactsManifest:
     scan = _load_scan_result(scan_output_dir)
     platform = str(scan.get("platform") or "generic").lower()
@@ -122,8 +165,12 @@ def build_facts_manifest(project_id: str, scan_output_dir: Path) -> FactsManifes
     external_by_job = manifest.get("job_external_systems", {}) if isinstance(manifest, dict) else {}
 
     for job in jobs:
-        name = str(job.get("name") or Path(str(job.get("path", "unknown"))).stem)
-        group = str(job.get("group") or "Global")
+        display_name = str(
+            job.get("name") or Path(str(job.get("path", "unknown"))).stem
+        )
+        name = str(job.get("job_id") or display_name)
+        group = _canonical_analysis_group(job)
+        logical_group = group
         components = job.get("components", []) or []
         job = {**job, "manifest_external_systems": external_by_job.get(name, [])}
         comp_counts = _component_counts(components)
@@ -134,9 +181,12 @@ def build_facts_manifest(project_id: str, scan_output_dir: Path) -> FactsManifes
         groups[group] = groups.get(group, 0) + 1
         units.append(UnitFact(
             name=name,
+            display_name=display_name,
             path=str(job.get("path", "")),
             unit_type=unit_type_for(platform, job),
             group=group,
+            logical_group=logical_group,
+            source_root=str(job.get("source_root") or ""),
             component_count=len(components),
             component_types=comp_counts,
             key_systems=systems,
@@ -1192,12 +1242,155 @@ def validate_pack_quality(staging_dir: Path, manifest: Any) -> dict[str, Any]:
     }
 
 
-_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"\b(?:password|passwd|pwd|secret|api[_-]?key|token)\s*[:=]\s*['\"]?[A-Za-z0-9_./+=-]{8,}", re.I),
+# High-confidence secret FORMATS: always a leak, no context needed.
+_SECRET_FORMAT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9]{16,}\b"),
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
 )
+
+# A credential keyword followed (within a short window) by a candidate VALUE:
+# a backtick/quote-delimited literal, or a bare token after ``:``/``=``.
+# The candidate is then classified by _is_secret_literal -- the keyword alone
+# never flags. This is what separates a leaked literal from ordinary code like
+# ``String password = decoded.substring(...)`` (run-74 false positives on
+# docs 02/03/04) while still catching prose leaks like
+# "The FTP password `<literal>` appears ..." (run-74 miss on doc 05).
+_SECRET_KEY_CONTEXT_RE = re.compile(
+    r"\b(?:password|passwd|pwd|secret|api[_-]?key|apikey|token|credential|"
+    r"connection[_-]?string|passphrase|client[_-]?secret)\b"
+    r"(?:[^`'\"\n]{0,40}[`'\"](?P<quoted>[^`'\"\n]{6,120})[`'\"]"
+    r"|\s*[:=]\s*(?P<bare>[^\s`'\",;|]{8,120}))",
+    re.IGNORECASE,
+)
+
+_PLACEHOLDER_VALUE_RE = re.compile(
+    r"^(?:\[[A-Z0-9_ .-]+\]|\$\{[^}]*\}|\{\{[^}]*\}\}|<[^>]*>|%s|\*{3,}|x{4,}|\.{3,})$",
+    re.IGNORECASE,
+)
+# Identifier / member-access / call expressions with code-like arguments:
+# ``decoded.substring(0, spaceIndex)``, ``context.MailPassword``,
+# ``globalMap.get("key")`` -- references to a value, not the value itself.
+_CODE_EXPRESSION_RE = re.compile(
+    r"^\(?\s*(?:\((?:String|int|Object)\)\s*)?"
+    r"[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*"
+    r"(?:\((?:[\w\s,.'\"+()\[\]-]*)\))?;?$"
+)
+_COMMON_NON_SECRET_VALUES = frozenset({
+    "true", "false", "null", "none", "redacted", "unknown", "value", "values",
+    "password", "changeme", "placeholder", "encrypted", "hidden", "masked",
+})
+
+
+def _char_classes(value: str) -> int:
+    return sum((
+        any(c.islower() for c in value),
+        any(c.isupper() for c in value),
+        any(c.isdigit() for c in value),
+        any(not c.isalnum() for c in value),
+    ))
+
+
+# Camel/URI RAW() literal wrapper: RAW() exists precisely to mark a literal
+# (usually secret) value, so `password=RAW(...)` with unredacted content is a
+# leak by definition — even though its shape parses as a call expression.
+_RAW_WRAPPER_VALUE_RE = re.compile(r"^RAW\(.+\)$", re.IGNORECASE)
+
+
+def _is_secret_literal(value: str) -> bool:
+    """True when a candidate value looks like an actual secret LITERAL.
+
+    Deliberately favors literal shape over keyword proximity: redaction
+    placeholders, template refs, code expressions, and plain dictionary words
+    are values ABOUT credentials, not credentials.
+    """
+    value = value.strip().rstrip(".,;:")
+    if len(value) < 6:
+        return False
+    if value.casefold() in _COMMON_NON_SECRET_VALUES:
+        return False
+    if _PLACEHOLDER_VALUE_RE.fullmatch(value):
+        return False
+    if "REDACTED" in value.upper():
+        return False
+    if _RAW_WRAPPER_VALUE_RE.fullmatch(value):
+        # Checked BEFORE the code-expression rule: RAW(x) is shaped like a
+        # call expression but is a literal-value wrapper (run-74 leak shape).
+        return True
+    if _CODE_EXPRESSION_RE.fullmatch(value):
+        return False
+    classes = _char_classes(value)
+    if classes >= 3:
+        return True
+    return classes >= 2 and len(value) >= 12 and not re.fullmatch(r"[A-Za-z_][\w.-]*", value)
+
+
+def secret_leak_findings(text: str) -> list[str]:
+    """Return short, value-free descriptions of likely secret leaks in text."""
+    findings: list[str] = []
+    for pattern in _SECRET_FORMAT_PATTERNS:
+        if pattern.search(text):
+            findings.append(f"secret-format match: {pattern.pattern[:40]}")
+    for match in _SECRET_KEY_CONTEXT_RE.finditer(text):
+        candidate = match.group("quoted") or match.group("bare") or ""
+        if _is_secret_literal(candidate):
+            # Never echo the value; report the keyword context position only.
+            findings.append(
+                f"credential keyword followed by a secret-shaped literal near offset {match.start()}"
+            )
+        if len(findings) >= 10:
+            break
+    # Tabular leak shape (run-74 doc 05): a credential-named table COLUMN whose
+    # data cells carry secret-shaped literals. Column detection reuses the
+    # non-code redaction's header logic; each candidate cell is then classified
+    # by _is_secret_literal so schema docs that legitimately describe a
+    # password COLUMN (`| ftp_pw | varchar(50) |`) never flag.
+    if len(findings) < 10:
+        leaked = _tabular_secret_cell_count(text)
+        if leaked:
+            findings.append(
+                f"credential-named table column with {leaked} secret-shaped value cell(s)"
+            )
+    return findings
+
+
+def _tabular_secret_cell_count(text: str) -> int:
+    """Count secret-shaped literals sitting under credential-named table columns."""
+    from mcp_server.providers.custom.noncode_evidence import (
+        _TABLE_DELIMITERS,
+        _is_credential_header,
+        _looks_like_header_row,
+    )
+
+    count = 0
+    active: dict[str, tuple[int, tuple[int, ...]]] = {}
+    for line in text.split("\n"):
+        if not line.strip():
+            active.clear()
+            continue
+        for delimiter in _TABLE_DELIMITERS:
+            if delimiter not in line:
+                active.pop(delimiter, None)
+                continue
+            cells = [cell.strip() for cell in line.split(delimiter)]
+            if len(cells) < 2:
+                continue
+            cred_cols = tuple(
+                i for i, cell in enumerate(cells) if _is_credential_header(cell)
+            )
+            if cred_cols and _looks_like_header_row(cells):
+                active[delimiter] = (len(cells), cred_cols)
+                continue
+            header = active.get(delimiter)
+            if header is None:
+                continue
+            column_count, columns = header
+            if len(cells) != column_count:
+                continue
+            count += sum(
+                1 for col in columns if cells[col] and _is_secret_literal(cells[col])
+            )
+    return count
 
 
 def validate_final_redaction(staging_dir: Path) -> CoverageReport:
@@ -1216,10 +1409,9 @@ def validate_final_redaction(staging_dir: Path) -> CoverageReport:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for pattern in _SECRET_PATTERNS:
-            if pattern.search(text):
-                errors.append(f"Potential unredacted secret in {rel}")
-                break
+        findings = secret_leak_findings(text)
+        if findings:
+            errors.append(f"Potential unredacted secret in {rel} ({findings[0]})")
         if len(errors) >= 20:
             break
     return CoverageReport(

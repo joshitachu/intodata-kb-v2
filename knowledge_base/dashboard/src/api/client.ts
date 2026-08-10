@@ -455,7 +455,6 @@ export const api = {
       {
         method: "POST",
         body: JSON.stringify({
-          project_id: projectId,
           resume,
           investigation_model: investigationModel ?? null,
           model: model ?? null,
@@ -472,6 +471,9 @@ export const api = {
     candidateMode: "single_agent" | "orchestrated" | "grounded" = "single_agent",
     providerId?: string,
     modelId?: string,
+    groundedRuntimeId?: "opencode" | "openai-agents",
+    acknowledgePaidExecution?: true,
+    resumeFromExperimentId?: string,
   ) => {
     // Discovery exposes canonical routes as ``provider/model`` while the
     // OpenCode HTTP API accepts providerID and the provider-local modelID as
@@ -488,8 +490,11 @@ export const api = {
           provider_id: providerId,
           model_id: runtimeModelId,
           candidate_mode: candidateMode,
+          grounded_runtime_id: groundedRuntimeId,
+          acknowledge_paid_execution: acknowledgePaidExecution,
           acknowledge_non_publishing: true,
           idempotency_key: `generate-ui:${projectId}:${globalThis.crypto.randomUUID()}`,
+          resume_from_experiment_id: resumeFromExperimentId || undefined,
         }),
       },
       AgenticExperimentSchema,

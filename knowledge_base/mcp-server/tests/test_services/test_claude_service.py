@@ -20,7 +20,7 @@ from mcp_server.services.claude_service import (
 
 def test_format_chunk_markdown_uses_composite_job_identity():
     class Scanner:
-        def read_chunk_data(self, _output_dir, _chunk_id):
+        def read_chunk_data(self, _output_dir, _chunk_id, unit_allowlist=None):
             return {"jobs": [{"name": "Shared", "job_id": "root_a_Shared-123", "source_root": "exports/A", "components": []}]}
 
     parts, count = ClaudeService._format_chunk_markdown(Scanner(), "/tmp", [{"chunk_id": "one"}])
@@ -33,7 +33,7 @@ def test_format_chunk_markdown_uses_composite_job_identity():
 
 def test_format_chunk_markdown_keeps_talend_routes_distinct_from_jobs():
     class Scanner:
-        def read_chunk_data(self, _output_dir, _chunk_id):
+        def read_chunk_data(self, _output_dir, _chunk_id, unit_allowlist=None):
             return {
                 "jobs": [{
                     "name": "Inbound",
@@ -356,3 +356,146 @@ async def test_claude_cli_model_provider_returns_text(monkeypatch):
     assert captured["cmd"][0:5] == ["/usr/bin/claude", "-p", "-", "--model", "sonnet"]
     assert "claude-cli" not in captured["cmd"]
     assert captured["input"] == "Write docs"
+
+
+async def test_generate_docs_partition_routes_output_and_scopes_preprocess(
+    claude_svc, monkeypatch, tmp_path,
+):
+    """Composite sub-project run: output routes to output/{pid}/{sub}/ and the
+    preprocess sees ONLY that partition's units (shared-name jobs stay local)."""
+    from mcp_server.config import config
+    from mcp_server.providers.base import AgentResult
+    from mcp_server.providers.custom.validators import build_facts_manifest
+    from mcp_server.providers.custom.partition_planner import plan_partitions
+    from mcp_server.services.scanner_service import ScannerService
+
+    monkeypatch.setattr(config, "project_root", tmp_path)
+    monkeypatch.setattr(config, "intodoc_output_dir", tmp_path / "intodoc-output")
+    scan_dir = config.intodoc_output_dir / "proj"
+    scan_dir.mkdir(parents=True)
+    zip_a = "B/Alpha.__intodoc_zip__/ALPHA"
+    zip_a_refs = "B/Alpha.__intodoc_zip__/REFERENCES"
+    zip_b = "B/Beta.__intodoc_zip__/BETA"
+    zip_b_refs = "B/Beta.__intodoc_zip__/REFERENCES"
+    (scan_dir / "scan_result.json").write_text(json.dumps({
+        "platform": "talend",
+        "jobs": [
+            {"name": "A_Main", "job_id": "A_Main-h1", "group": "Flows",
+             "source_root": zip_a, "path": "process/A_Main.item", "components": []},
+            {"name": "LogInfo", "job_id": "LogInfo-ha", "group": "Logging",
+             "source_root": zip_a_refs, "path": "process/LogInfo.item", "components": []},
+            {"name": "B_Main", "job_id": "B_Main-h2", "group": "Flows",
+             "source_root": zip_b, "path": "process/B_Main.item", "components": []},
+            {"name": "LogInfo", "job_id": "LogInfo-hb", "group": "Logging",
+             "source_root": zip_b_refs, "path": "process/LogInfo.item", "components": []},
+        ],
+        "files": [], "manifest": {}, "warnings": [],
+    }), encoding="utf-8")
+
+    facts = build_facts_manifest("proj", scan_dir)
+    plan = plan_partitions(facts)
+    alpha = next(p for p in plan.partitions if p.name == "Alpha")
+
+    project = SimpleNamespace(platform="talend")
+    captured: dict = {}
+
+    class _FakeProvider:
+        async def run(self, ctx, log_cb):
+            captured["ctx"] = ctx
+            return AgentResult(success=True)
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+    # Keep the preprocess off the intodoc package (not installed in tests).
+    monkeypatch.setattr(
+        ScannerService, "get_analysis_prompts",
+        lambda self, platform: {"prompts": {"ANALYSIS_GUIDE.md": "guide"}, "consolidated": True},
+    )
+    monkeypatch.setattr(
+        ScannerService, "get_phase3_guide",
+        lambda self, platform: {"content": "phase3 guide"},
+    )
+
+    with patch("mcp_server.db.session.async_session_factory", lambda: _FakeSession()), \
+         patch("mcp_server.services.project_registry.ProjectRegistry.get_project", return_value=project), \
+         patch("mcp_server.services.claude_service.get_provider", return_value=_FakeProvider()), \
+         patch("mcp_server.services.claude_service.instance_settings_service.get_value", return_value=None):
+        result = await claude_svc.generate_docs(
+            "proj", doc_generation_provider="custom", partition=alpha,
+        )
+
+    assert result.get("success") is True
+    ctx = captured["ctx"]
+    # Output routed to the sub-project directory.
+    part_output = tmp_path / "output" / "proj" / "Alpha"
+    assert ctx.staging_dir == part_output / "docs_staging"
+    assert ctx.partition is alpha
+    # Preprocess contains only Alpha's units: its own shared-name LogInfo copy
+    # is present, Beta's copy and Beta's units are not.
+    preprocess = ctx.staging_dir / "_preprocess"
+    logging_md = (preprocess / "Logging.md").read_text(encoding="utf-8")
+    assert "LogInfo-ha" in logging_md
+    assert "LogInfo-hb" not in logging_md
+    flows_md = (preprocess / "Flows.md").read_text(encoding="utf-8")
+    assert "A_Main-h1" in flows_md
+    assert "B_Main-h2" not in flows_md
+    assert sorted(ctx.preprocess_groups) == ["Flows", "Logging"]
+    assert ctx.total_jobs == 2
+
+
+async def test_preprocess_disambiguates_case_colliding_groups(claude_svc, monkeypatch, tmp_path):
+    """Case-insensitive filesystems must not clobber groups differing only in
+    case (verified on werkorder: VISE2AssetCheck vs Vise2AssetCheck). The later
+    collider gets a `{group}_part_ci{k}` slice name, which the existing
+    slice->group resolvers already map back to the right group."""
+    from mcp_server.config import config
+    from mcp_server.services.scanner_service import ScannerService
+
+    monkeypatch.setattr(config, "intodoc_output_dir", tmp_path / "intodoc-output")
+    scan_dir = config.intodoc_output_dir / "proj"
+    scan_dir.mkdir(parents=True)
+    (scan_dir / "scan_result.json").write_text(json.dumps({
+        "platform": "talend",
+        "jobs": [
+            {"name": "UpperJob", "job_id": "UpperJob", "group": "VISE2AssetCheck",
+             "path": "process/UpperJob.item", "components": []},
+            {"name": "LowerJob", "job_id": "LowerJob", "group": "Vise2AssetCheck",
+             "path": "process/LowerJob.item", "components": []},
+        ],
+        "files": [], "manifest": {}, "warnings": [],
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        ScannerService, "get_analysis_prompts",
+        lambda self, platform: {"prompts": {"g": "guide"}, "consolidated": True},
+    )
+    monkeypatch.setattr(
+        ScannerService, "get_phase3_guide", lambda self, platform: {"content": "p3"},
+    )
+
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    groups = await claude_svc._preprocess_scan_data("proj", staging, "talend")
+
+    assert sorted(groups) == ["VISE2AssetCheck", "Vise2AssetCheck_part_ci1"]
+    preprocess = staging / "_preprocess"
+    upper = (preprocess / "VISE2AssetCheck.md").read_text(encoding="utf-8")
+    lower = (preprocess / "Vise2AssetCheck_part_ci1.md").read_text(encoding="utf-8")
+    # Each group keeps its OWN units; nothing clobbered or cross-wired.
+    assert "UpperJob" in upper and "LowerJob" not in upper
+    assert "LowerJob" in lower and "UpperJob" not in lower
+
+    # The existing slice->group resolvers map the suffixed slice back correctly.
+    from types import SimpleNamespace
+
+    from mcp_server.providers.custom.harness import CustomHarnessProvider
+    from mcp_server.providers.custom.validators import build_facts_manifest
+
+    facts = build_facts_manifest("proj", scan_dir)
+    state = SimpleNamespace(facts_manifest=facts)
+    assert CustomHarnessProvider._group_units(state, "Vise2AssetCheck_part_ci1") == ["LowerJob"]
+    assert CustomHarnessProvider._group_units(state, "VISE2AssetCheck") == ["UpperJob"]

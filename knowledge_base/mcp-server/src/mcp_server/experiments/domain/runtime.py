@@ -49,6 +49,9 @@ class RuntimeEventCategory(StrEnum):
 
 
 _SECRET_TOKENS = frozenset({"authorization", "credential", "password", "secret", "token", "api_key"})
+_SAFE_TOKEN_METRIC_KEYS = frozenset(
+    {"input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"}
+)
 
 
 def redact_payload(value: Any) -> Any:
@@ -64,7 +67,13 @@ def redact_payload(value: Any) -> Any:
         for key, nested in value.items():
             key_text = str(key)
             normalized = key_text.lower().replace("-", "_")
-            if any(token in normalized for token in _SECRET_TOKENS):
+            if (
+                normalized in _SAFE_TOKEN_METRIC_KEYS
+                and isinstance(nested, (int, float))
+                and not isinstance(nested, bool)
+            ):
+                redacted[key_text] = nested
+            elif any(token in normalized for token in _SECRET_TOKENS):
                 redacted[key_text] = "[REDACTED]"
             else:
                 redacted[key_text] = redact_payload(nested)
@@ -276,6 +285,17 @@ class AgentRuntime(Protocol):
         *,
         after_sequence: int = 0,
     ) -> AsyncIterator[RuntimeTaskEvent]: ...
+
+    async def poll_status(self, handle: RuntimeTaskHandle) -> RuntimeTaskStatus:
+        """Cheap, frequent liveness check -- must not read a full transcript.
+
+        Callers poll this in a tight loop for the entire life of a task, so an
+        implementation backed by a growing conversation must answer from a
+        constant-size status signal, not by re-fetching and re-parsing
+        everything said so far. Reserve that expensive work for ``result()``,
+        which is called once, on completion.
+        """
+        ...
 
     async def result(self, handle: RuntimeTaskHandle) -> RuntimeTaskResult: ...
 

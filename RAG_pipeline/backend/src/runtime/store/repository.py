@@ -556,6 +556,35 @@ class RuntimeStoreRepository:
         }
         return [_to_source_read(row, health_rows.get(row.id)) for row in rows]
 
+    async def list_pollable_sources(self) -> list[RuntimeSourceRead]:
+        """Return enabled source configs that have stored credentials (system scope).
+
+        This is the set the automatic polling scheduler is allowed to sync. It
+        deliberately excludes discovered/mirror source rows written by sync
+        batches (via ``upsert_source``): those live in the same table but carry
+        no credentials row, so polling them would only produce FAILED cycles and
+        eventually auto-disable them.
+        """
+        credentialed = select(RuntimeSourceCredentialsRow.source_id)
+        stmt = (
+            select(RuntimeSourceRow)
+            .where(RuntimeSourceRow.enabled.is_(True))
+            .where(RuntimeSourceRow.id.in_(credentialed))
+            .order_by(RuntimeSourceRow.id)
+        )
+        rows = list((await self._session.execute(stmt)).scalars().all())
+        health_rows = {
+            row.source_id: row
+            for row in (
+                await self._session.execute(
+                    select(RuntimeSourceHealthRow).where(
+                        RuntimeSourceHealthRow.source_id.in_([row.id for row in rows] or [-1])
+                    )
+                )
+            ).scalars().all()
+        }
+        return [_to_source_read(row, health_rows.get(row.id)) for row in rows]
+
     async def update_source_config(
         self,
         source_id: int,

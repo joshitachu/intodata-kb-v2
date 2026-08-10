@@ -16,52 +16,61 @@ const landscape: ProjectLandscapeResponse = {
 };
 
 describe("landscapeToFlow", () => {
-  it("uses semantic systems and payload-labelled exchanges instead of Talend projects", () => {
+  it("uses validated business systems and readable data streams instead of technical projects", () => {
     const result = landscapeToFlow({
       ...landscape,
-      semantic_topology: {
+      edges: [{
+        ...landscape.edges[0],
+        provenance: [{ artifact_id: "Fetch", qualified_artifact_id: "ZIP/A::Fetch", source_root: "ZIP/A", component_name: "tRESTClient_1", fact_type: "interface" }],
+      }],
+      topology_state: { available: true, validated: true, stale: false, source: "agent" },
+      topology_evidence: {
+        artifacts: [{ id: "artifact:fetch", name: "Fetch", job_id: "Fetch", source_root: "ZIP/A", artifact_kind: "job", artifact_role: "implementation" }],
+        components: [], lineage: [],
+      },
+      business_topology: {
+        schema_version: "1.0",
+        scan_fingerprint: "fingerprint",
+        metadata: { project_id: "project", scan_fingerprint: "fingerprint", generated_by: "test", model_name: "test" },
         systems: [
-          { id: "semantic:maximo", name: "Maximo", kind: "software_system", status: "proposed", confidence: "likely", aliases: [], evidence: [] },
-          { id: "semantic:assetcheck", name: "AssetCheck", kind: "software_system", status: "proposed", confidence: "likely", aliases: [], evidence: [] },
+          { id: "business:maximo", name: "Maximo", kind: "software_system", description: "", status: "proposed", confidence: 0.9, aliases: [], evidence_ids: [] },
+          { id: "business:assetcheck", name: "AssetCheck", kind: "software_system", description: "", status: "proposed", confidence: 0.9, aliases: [], evidence_ids: [] },
         ],
         integration_solutions: [
-          { id: "application:one", name: "AssetCheck Talend", platform: "talend", role: "execution", source_roots: ["ZIP/A"], artifact_count: 2 },
+          { id: "integration:one", name: "AssetCheck integration", description: "", platform: "talend", role: "execution", status: "proposed", confidence: 0.9, artifact_ids: ["Fetch"], evidence_ids: [] },
         ],
-        exchanges: [{
-          id: "exchange:workorders",
-          source_system_id: "semantic:maximo",
-          target_system_id: "semantic:assetcheck",
-          label: "Locations, work orders",
-          payloads: ["Locations", "Work orders"],
-          mechanisms: ["rest"],
-          reliability: "synchronous",
+        business_objects: [{ id: "object:workorder", name: "Work orders", description: "", status: "proposed", confidence: 0.9, aliases: [], evidence_ids: [] }],
+        data_streams: [{
+          id: "stream:workorders",
+          source_system_id: "business:maximo",
+          destination_system_id: "business:assetcheck",
+          name: "Work-order synchronization",
+          description: "",
+          business_object_ids: ["object:workorder"],
+          business_summary: "Supplies inspectors with work orders.",
+          integration_solution_ids: ["integration:one"],
+          delivery_path_id: "path:workorders",
           status: "proposed",
-          confidence: "likely",
-          implementation_solution_ids: ["application:one"],
-          artifact_ids: ["Fetch"],
-          evidence: [{
-            signal_type: "directional_artifact_name",
-            label: "Maximo2AssetCheck_SendWorkOrder",
-            artifact_id: "Fetch",
-            qualified_artifact_id: "ZIP/A::Fetch",
-            source_root: "ZIP/A",
-            component_name: "",
-          }],
+          confidence: 0.9,
+          control_ids: [], risk_ids: [],
+          artifact_ids: ["artifact:fetch"],
+          unknown_ids: [], evidence_ids: [],
         }],
-        unresolved: [],
-        summary: {},
+        delivery_paths: [{ id: "path:workorders", name: "Work order delivery", description: "", stream_id: "stream:workorders", status: "proposed", confidence: 0.9, evidence_ids: [], segments: [{ id: "segment:one", name: "REST delivery", description: "", sequence: 1, source_ref: "business:maximo", destination_ref: "business:assetcheck", mechanism: "rest", mode: "direct", status: "proposed", confidence: 0.9, evidence_ids: [] }] }],
+        controls: [], risks: [], unknowns: [], artifact_annotations: [], component_annotations: [], lineage_annotations: [], coverage: { total_artifacts: 1, cited_artifacts: 1, total_evidence: 1, cited_evidence: 1, coverage_ratio: 1, notes: [] },
       },
     });
 
     expect(result.nodes.map((node) => node.id)).toEqual([
-      "semantic:maximo",
-      "semantic:assetcheck",
+      "business:maximo",
+      "business:assetcheck",
     ]);
-    expect(result.nodes.every((node) => node.data.entityType === "semanticSystem")).toBe(true);
+    expect(result.nodes.every((node) => node.data.entityType === "businessSystem")).toBe(true);
     expect(result.nodes.map((node) => node.id)).not.toContain("application:one");
     expect(result.edges).toHaveLength(1);
-    expect(result.edges[0].label).toBe("Locations, work orders");
-    expect(result.edges[0].data?.landscapeEdge.semanticExchange?.id).toBe("exchange:workorders");
+    expect(result.edges[0].label).toBe("Work orders");
+    expect(result.edges[0].data?.landscapeEdge.businessStream?.id).toBe("stream:workorders");
+    expect(result.edges[0].data?.landscapeEdge.provenance).toHaveLength(1);
     expect(result.edges[0].style).toMatchObject({ strokeDasharray: "7 4" });
   });
 

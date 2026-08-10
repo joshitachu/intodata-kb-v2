@@ -36,6 +36,7 @@
           "nexus-doc-evidence": "allow",
           "nexus-doc-analyst": "allow",
           "nexus-doc-pack-writer": "allow",
+          "nexus-doc-topology": "allow",
           "nexus-doc-reviewer": "allow"
         }
       }
@@ -85,6 +86,16 @@
       "mode": "subagent",
       "hidden": true,
     "prompt": "Read only the assigned role packet and accepted dependency artifacts. Write only the packet's owned document family using its applicable recipe or preserved prompts, approved evidence, and immutable FACT_LEDGER.json. Keep protected facts exact, cover every required section, preserve scoped detail, mark runtime unknowns, and never expose secrets or edit another role's files.",
+      "permission": {
+        "edit": "allow",
+        "task": "deny"
+      }
+    },
+    "nexus-doc-topology": {
+      "description": "Produces one evidence-backed business topology contract from accepted grounded documentation and immutable scanner facts.",
+      "mode": "subagent",
+      "hidden": true,
+      "prompt": "Write only the assigned business topology JSON artifact. Treat immutable scanner evidence and accepted dependency artifacts as authoritative. Use business-readable system, stream, object, delivery, control, risk, and unknown descriptions without inventing application boundaries, ownership, purpose, or runtime behavior. Every factual claim must retain supplied evidence identifiers, uncertain conclusions must remain proposed or unknown, and no secret value may be reproduced.",
       "permission": {
         "edit": "allow",
         "task": "deny"

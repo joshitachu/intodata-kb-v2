@@ -175,8 +175,8 @@ class HarnessHelpersImpl:  # noqa: PLR0904 — intentionally wide delegation sur
     def merge_investigation_reports(self, group: str, reports: list) -> object:
         return self._p._merge_investigation_reports(group, reports)  # type: ignore[attr-defined]
 
-    def provider_options(self, provider: "ModelProvider") -> dict:
-        return self._p._provider_options(provider)  # type: ignore[attr-defined]
+    def provider_options(self, provider: "ModelProvider", *, phase: str = "extraction") -> dict:
+        return self._p._provider_options(provider, phase=phase)  # type: ignore[attr-defined]
 
     def log_call_metrics(self, ctx: "DocGenContext", target: str, result: object, log_cb: "LogCallback"):
         return self._p._log_call_metrics(ctx, target, result, log_cb)  # type: ignore[attr-defined]

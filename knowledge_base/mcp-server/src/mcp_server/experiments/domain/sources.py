@@ -56,7 +56,9 @@ class SourceDescriptor:
             raise ValueError("source capabilities must contain non-blank values")
         if any(not isinstance(path, Path) for path in self.additional_paths):
             raise ValueError("additional_paths must contain pathlib.Path values")
-        if self.redaction_receipt_path is not None and not isinstance(self.redaction_receipt_path, Path):
+        if self.redaction_receipt_path is not None and not isinstance(
+            self.redaction_receipt_path, Path
+        ):
             raise ValueError("redaction_receipt_path must be a pathlib.Path or None")
 
 
@@ -82,8 +84,16 @@ class SourceSnapshotItem:
 
     def __post_init__(self) -> None:
         for field_name in (
-            "id", "source_descriptor_id", "logical_identity", "source_kind", "source_role",
-            "locator", "media_type", "trust_level", "adapter_id", "adapter_version",
+            "id",
+            "source_descriptor_id",
+            "logical_identity",
+            "source_kind",
+            "source_role",
+            "locator",
+            "media_type",
+            "trust_level",
+            "adapter_id",
+            "adapter_version",
         ):
             if not str(getattr(self, field_name)).strip():
                 raise ValueError(f"{field_name} must not be blank")
@@ -127,6 +137,8 @@ class SourceSnapshotContent:
     def __post_init__(self) -> None:
         if not self.item_id.strip() or not self.media_type.strip():
             raise ValueError("source snapshot content identifiers must not be blank")
+        if not isinstance(self.extracted_bytes, bytes):
+            raise ValueError("source snapshot content must be immutable bytes")
         _sha(self.extracted_sha256, "content extracted_sha256")
         if self.size_bytes != len(self.extracted_bytes):
             raise ValueError("content size_bytes must match extracted bytes")
@@ -145,7 +157,10 @@ class SourceSnapshot:
 
     @classmethod
     def build(
-        cls, *, snapshot_id: str, items: tuple[SourceSnapshotItem, ...],
+        cls,
+        *,
+        snapshot_id: str,
+        items: tuple[SourceSnapshotItem, ...],
         contents: tuple[SourceSnapshotContent, ...],
     ) -> "SourceSnapshot":
         if not items:
@@ -160,7 +175,9 @@ class SourceSnapshot:
         if len(content_ids) != len(set(content_ids)):
             raise ValueError("source snapshot has duplicate content item ids")
         if set(item_ids) != set(content_ids):
-            raise ValueError("source snapshot items and contents must have a one-to-one identity mapping")
+            raise ValueError(
+                "source snapshot items and contents must have a one-to-one identity mapping"
+            )
         content_by_id = {content.item_id: content for content in contents}
         for item in items:
             content = content_by_id[item.id]
@@ -171,11 +188,17 @@ class SourceSnapshot:
             ):
                 raise ValueError("source snapshot item and approved content metadata differ")
             if item.redaction_state is not RedactionState.APPROVED:
-                raise ValueError("source snapshot cannot include content without approved redaction")
-        entries = [item.manifest_entry() for item in sorted(items, key=lambda item: item.logical_identity)]
-        state = RedactionState.APPROVED if all(
-            item.redaction_state is RedactionState.APPROVED for item in items
-        ) else RedactionState.REJECTED
+                raise ValueError(
+                    "source snapshot cannot include content without approved redaction"
+                )
+        entries = [
+            item.manifest_entry() for item in sorted(items, key=lambda item: item.logical_identity)
+        ]
+        state = (
+            RedactionState.APPROVED
+            if all(item.redaction_state is RedactionState.APPROVED for item in items)
+            else RedactionState.REJECTED
+        )
         manifest = {"items": entries, "schema_version": 1, "security_state": state.value}
         canonical = json.dumps(
             manifest, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True

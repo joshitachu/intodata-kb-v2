@@ -22,7 +22,13 @@ def normalize_usage(payload: Mapping[str, Any]) -> RuntimeUsage:
     finish = _step_finish(payload)
     usage = _mapping(info.get("usage")) or _mapping(payload.get("usage")) or {}
     tokens = _mapping(finish.get("tokens")) if finish else None
-    tokens = tokens or _mapping(usage.get("tokens")) or _mapping(payload.get("tokens")) or usage
+    tokens = (
+        tokens
+        or _mapping(usage.get("tokens"))
+        or _mapping(info.get("tokens"))
+        or _mapping(payload.get("tokens"))
+        or usage
+    )
     cache = _mapping(tokens.get("cache")) or {}
     cost = (
         _first(finish, "cost", "cost_usd")
@@ -66,7 +72,6 @@ class OpenCodeEventNormalizer:
         self._next_sequence = 1
 
     def normalize(self, payload: Mapping[str, Any], *, received_at: datetime | None = None) -> RuntimeTaskEvent | None:
-        payload = redact_payload(payload)
         properties = _mapping(payload.get("properties")) or _mapping(payload.get("payload")) or {}
         event_id = str(
             payload.get("id")
@@ -82,11 +87,30 @@ class OpenCodeEventNormalizer:
             return None
         self._seen_event_ids.add(event_id)
         event_type = str(payload.get("type") or payload.get("event") or "lifecycle")
-        body = _mapping(payload.get("properties")) or _mapping(payload.get("payload")) or payload
+        raw_body = _mapping(payload.get("properties")) or _mapping(payload.get("payload")) or payload
+        category = _event_category(event_type)
+        if category == RuntimeEventCategory.USAGE:
+            # Normalize known numeric telemetry before generic secret redaction:
+            # raw OpenCode envelopes commonly nest it under a key named
+            # ``tokens``, which is deliberately treated as sensitive elsewhere.
+            usage = normalize_usage(raw_body)
+            body = {
+                key: value
+                for key, value in {
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cache_read_tokens": usage.cache_read_tokens,
+                    "cache_write_tokens": usage.cache_write_tokens,
+                    "billed_cost_usd": usage.billed_cost_usd,
+                }.items()
+                if value is not None
+            }
+        else:
+            body = redact_payload(raw_body)
         event = RuntimeTaskEvent(
             event_id=event_id,
             sequence=self._next_sequence,
-            category=_event_category(event_type),
+            category=category,
             occurred_at=_timestamp(payload.get("time") or payload.get("timestamp"), received_at),
             task_status=_event_status(event_type, body),
             payload=body,

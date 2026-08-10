@@ -6,17 +6,17 @@ import type {
   LandscapeEdge,
   LandscapeSystem,
   ProjectLandscapeResponse,
-  SemanticExchange,
-  SemanticSystem,
+  BusinessDataStream,
+  BusinessSystem,
 } from "@/types/landscape";
 
 export type LandscapeNodeData =
   | { entityType: "application"; application: LandscapeApplication }
   | { entityType: "system"; system: LandscapeSystem }
-  | { entityType: "semanticSystem"; system: SemanticSystem };
+  | { entityType: "businessSystem"; system: BusinessSystem };
 
 export type TopologyEdge = LandscapeEdge & {
-  semanticExchange?: SemanticExchange;
+  businessStream?: BusinessDataStream;
 };
 
 export interface LandscapeFilters {
@@ -35,8 +35,8 @@ export interface LandscapeFlow {
 
 /** Stable identity for an aggregated fact; labels and array position are never identity. */
 export function landscapeEdgeKey(edge: LandscapeEdge): string {
-  const semanticId = (edge as TopologyEdge).semanticExchange?.id;
-  if (semanticId) return `semantic-exchange\u001f${semanticId}`;
+  const streamId = (edge as TopologyEdge).businessStream?.id;
+  if (streamId) return `business-stream\u001f${streamId}`;
   return [
     edge.source_kind,
     edge.source,
@@ -61,7 +61,9 @@ export function landscapeEntityLabel(
   if (application) return application.label || application.source_root;
   const system = landscape.systems.find((item) => item.id === entityId);
   if (system) return system.name;
-  return landscape.semantic_topology?.systems.find((item) => item.id === entityId)?.name || entityId;
+  return landscape.business_topology?.systems.find((item) => item.id === entityId)?.name
+    || landscape.business_topology?.integration_solutions.find((item) => item.id === entityId)?.name
+    || entityId;
 }
 
 export function topologyTerm(value: string): string {
@@ -97,45 +99,51 @@ function edgeMatches(edge: LandscapeEdge, filters: LandscapeFilters): boolean {
   return true;
 }
 
-function semanticExchangeAsEdge(exchange: SemanticExchange): TopologyEdge {
-  const mechanism = exchange.mechanisms.length === 1
-    ? exchange.mechanisms[0]
-    : exchange.mechanisms.length > 1
-      ? "mixed"
-      : "unknown";
+function businessStreamAsEdge(
+  landscape: ProjectLandscapeResponse,
+  stream: BusinessDataStream,
+): TopologyEdge {
+  const path = stream.delivery_path_id
+    ? landscape.business_topology?.delivery_paths.find((item) => item.id === stream.delivery_path_id)
+    : undefined;
+  const mechanisms = [...new Set(path?.segments.map((segment) => segment.mechanism).filter(Boolean) ?? [])];
+  const mechanism = mechanisms.length === 1 ? mechanisms[0] : mechanisms.length > 1 ? "mixed" : "unknown";
+  // Business claims use opaque evidence IDs. Resolve those IDs through the
+  // API's identity-only catalogue before looking at scanner provenance; never
+  // compare a claim ID with a display name.
+  const claimedArtifacts = (landscape.topology_evidence?.artifacts ?? [])
+    .filter((artifact) => stream.artifact_ids.includes(artifact.id));
+  const artifactNames = new Set(claimedArtifacts.flatMap((artifact) => [artifact.name, artifact.job_id]));
+  const provenance = landscape.edges.flatMap((edge) => edge.provenance)
+    .filter((record) => artifactNames.has(record.artifact_id) || artifactNames.has(record.qualified_artifact_id));
   return {
-    source: exchange.source_system_id,
-    target: exchange.target_system_id,
-    source_kind: "semantic_system",
-    target_kind: "semantic_system",
+    source: stream.source_system_id,
+    target: stream.destination_system_id,
+    source_kind: "business_system",
+    target_kind: "business_system",
     dependency_type: "data",
     mechanism,
     direction: "out",
-    reliability: exchange.reliability,
-    confidence: exchange.confidence,
-    evidence_count: exchange.evidence.length,
-    provenance: exchange.evidence
-      .filter((record) => record.artifact_id && record.qualified_artifact_id)
-      .map((record) => ({
-        artifact_id: record.artifact_id,
-        qualified_artifact_id: record.qualified_artifact_id,
-        source_root: record.source_root,
-        component_name: record.component_name,
-        fact_type: record.signal_type,
-      })),
-    semanticExchange: exchange,
+    reliability: path?.segments.some((segment) => /queue|jms|buffer/i.test(`${segment.mode} ${segment.mechanism}`)) ? "buffered" : "unknown",
+    confidence: `${Math.round(stream.confidence * 100)}%`,
+    evidence_count: stream.evidence_ids.length,
+    provenance,
+    businessStream: stream,
   };
 }
 
-function semanticExchangeMatches(
-  exchange: SemanticExchange,
+function businessStreamMatches(
+  landscape: ProjectLandscapeResponse,
+  stream: BusinessDataStream,
   filters: LandscapeFilters,
 ): boolean {
   if (filters.dependencyTypes?.size && !filters.dependencyTypes.has("data")) return false;
-  if (
-    filters.mechanisms?.size
-    && !exchange.mechanisms.some((item) => filters.mechanisms!.has(item))
-  ) return false;
+  if (filters.mechanisms?.size) {
+    const path = stream.delivery_path_id
+      ? landscape.business_topology?.delivery_paths.find((item) => item.id === stream.delivery_path_id)
+      : undefined;
+    if (!path?.segments.some((item) => filters.mechanisms!.has(item.mechanism))) return false;
+  }
   return true;
 }
 
@@ -151,8 +159,8 @@ export function landscapeToFlow(
   landscape: ProjectLandscapeResponse,
   filters: LandscapeFilters = {},
 ): LandscapeFlow {
-  if (landscape.semantic_topology?.exchanges.length) {
-    return semanticLandscapeToFlow(landscape, filters);
+  if (landscape.business_topology && landscape.topology_state?.validated && !landscape.topology_state.stale) {
+    return businessLandscapeToFlow(landscape, filters);
   }
   const candidateEdges = landscape.edges.filter((edge) => edgeMatches(edge, filters));
   const hasQuery = Boolean(filters.query?.trim());
@@ -231,24 +239,20 @@ export function landscapeToFlow(
   return { nodes: layoutLandscape(nodes, edges), edges, diagnostics };
 }
 
-/** Project the evidence-backed semantic layer into the organization L1 view.
- *
- * Talend projects remain available in `integration_solutions` for L2/L3, but
- * are intentionally not drawn as organization systems. L1 shows only the
- * proposed/confirmed business systems and meaningful exchanges between them.
- */
-function semanticLandscapeToFlow(
+/** Project the agent-produced business contract into the organization L1
+ * view. Scanner facts stay available for the technical fallback and L3/L4. */
+function businessLandscapeToFlow(
   landscape: ProjectLandscapeResponse,
   filters: LandscapeFilters,
 ): LandscapeFlow {
-  const semantic = landscape.semantic_topology!;
+  const business = landscape.business_topology!;
   const query = filters.query?.trim().toLocaleLowerCase() || "";
-  const candidateExchanges = semantic.exchanges.filter((exchange) =>
-    semanticExchangeMatches(exchange, filters),
+  const candidateStreams = business.data_streams.filter((stream) =>
+    businessStreamMatches(landscape, stream, filters),
   );
-  const systemsById = new Map(semantic.systems.map((system) => [system.id, system]));
+  const systemsById = new Map(business.systems.map((system) => [system.id, system]));
   const queryMatches = new Set(
-    semantic.systems
+    business.systems
       .filter((system) =>
         !query
         || system.name.toLocaleLowerCase().includes(query)
@@ -256,45 +260,49 @@ function semanticLandscapeToFlow(
       )
       .map((system) => system.id),
   );
-  const visibleExchanges = query
-    ? candidateExchanges.filter((exchange) =>
-      queryMatches.has(exchange.source_system_id)
-      || queryMatches.has(exchange.target_system_id)
-      || exchange.label.toLocaleLowerCase().includes(query)
-      || exchange.payloads.some((payload) => payload.toLocaleLowerCase().includes(query)),
+  const objectsById = new Map(business.business_objects.map((item) => [item.id, item]));
+  const visibleStreams = query
+    ? candidateStreams.filter((stream) =>
+      queryMatches.has(stream.source_system_id)
+      || queryMatches.has(stream.destination_system_id)
+      || stream.name.toLocaleLowerCase().includes(query)
+      || stream.business_object_ids.some((id) => objectsById.get(id)?.name.toLocaleLowerCase().includes(query)),
     )
-    : candidateExchanges;
+    : candidateStreams;
   const connectedIds = new Set(
-    visibleExchanges.flatMap((exchange) => [
-      exchange.source_system_id,
-      exchange.target_system_id,
+    visibleStreams.flatMap((stream) => [
+      stream.source_system_id,
+      stream.destination_system_id,
     ]),
   );
-  const systems = semantic.systems.filter((system) => connectedIds.has(system.id));
+  const systems = business.systems.filter((system) => connectedIds.has(system.id));
   const nodes: Node<LandscapeNodeData>[] = systems.map((system) => ({
     id: system.id,
-    type: "semanticSystem",
+    type: "businessSystem",
     position: { x: 0, y: 0 },
-    data: { entityType: "semanticSystem" as const, system },
+    data: { entityType: "businessSystem" as const, system },
     ...SYSTEM_SIZE,
   }));
   const visibleIds = new Set(nodes.map((node) => node.id));
-  const edges: Edge<{ landscapeEdge: TopologyEdge }>[] = visibleExchanges
-    .filter((exchange) =>
-      visibleIds.has(exchange.source_system_id)
-      && visibleIds.has(exchange.target_system_id)
-      && systemsById.has(exchange.source_system_id)
-      && systemsById.has(exchange.target_system_id),
+  const edges: Edge<{ landscapeEdge: TopologyEdge }>[] = visibleStreams
+    .filter((stream) =>
+      visibleIds.has(stream.source_system_id)
+      && visibleIds.has(stream.destination_system_id)
+      && systemsById.has(stream.source_system_id)
+      && systemsById.has(stream.destination_system_id),
     )
-    .map((exchange) => {
-      const landscapeEdge = semanticExchangeAsEdge(exchange);
+    .map((stream) => {
+      const landscapeEdge = businessStreamAsEdge(landscape, stream);
+      const objectNames = stream.business_object_ids
+        .map((id) => objectsById.get(id)?.name)
+        .filter(Boolean);
       return {
         id: landscapeEdgeKey(landscapeEdge),
-        source: exchange.source_system_id,
-        target: exchange.target_system_id,
+        source: stream.source_system_id,
+        target: stream.destination_system_id,
         type: "smoothstep",
-        animated: exchange.reliability === "buffered",
-        label: exchange.label,
+        animated: landscapeEdge.reliability === "buffered",
+        label: objectNames.join(", ") || stream.name,
         labelStyle: { fill: "#334155", fontSize: 11, fontWeight: 650 },
         labelBgStyle: { fill: "#ffffff", fillOpacity: 0.96 },
         labelBgPadding: [6, 3] as [number, number],
@@ -307,7 +315,7 @@ function semanticLandscapeToFlow(
         style: {
           stroke: edgeColor(landscapeEdge),
           strokeWidth: 2,
-          strokeDasharray: exchange.status === "confirmed" ? undefined : "7 4",
+          strokeDasharray: stream.status === "confirmed" || stream.status === "observed" ? undefined : "7 4",
         },
         data: { landscapeEdge },
       };
@@ -344,10 +352,10 @@ export function findLandscapeEdge(
   landscape: ProjectLandscapeResponse,
   key: string,
 ): TopologyEdge | undefined {
-  const semantic = landscape.semantic_topology?.exchanges.find(
-    (exchange) => `semantic-exchange\u001f${exchange.id}` === key,
+  const business = landscape.business_topology?.data_streams.find(
+    (stream) => `business-stream\u001f${stream.id}` === key,
   );
-  if (semantic) return semanticExchangeAsEdge(semantic);
+  if (business) return businessStreamAsEdge(landscape, business);
   return landscape.edges.find((edge) => landscapeEdgeKey(edge) === key);
 }
 
@@ -355,12 +363,12 @@ export function connectedEdges(
   landscape: ProjectLandscapeResponse,
   entityId: string,
 ): TopologyEdge[] {
-  if (landscape.semantic_topology?.exchanges.length) {
-    return landscape.semantic_topology.exchanges
-      .filter((edge) =>
-        edge.source_system_id === entityId || edge.target_system_id === entityId,
+  if (landscape.business_topology && landscape.topology_state?.validated && !landscape.topology_state.stale) {
+    return landscape.business_topology.data_streams
+      .filter((stream) =>
+        stream.source_system_id === entityId || stream.destination_system_id === entityId,
       )
-      .map(semanticExchangeAsEdge);
+      .map((stream) => businessStreamAsEdge(landscape, stream));
   }
   return landscape.edges.filter((edge) => edge.source === entityId || edge.target === entityId);
 }

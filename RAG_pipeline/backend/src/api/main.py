@@ -122,42 +122,27 @@ async def lifespan(app: FastAPI):
 
     if settings.runtime_sync_scheduler_enabled:
         from src.db.session import async_session_factory
-        from src.runtime.sync import RuntimeSyncScheduler, parse_project_ids
+        from src.runtime.sync import RuntimeSourcePollingScheduler
 
-        project_ids = parse_project_ids(settings.runtime_sync_project_ids)
         semantic_indexer = None
         if settings.runtime_semantic_enabled:
             from src.runtime.semantic.service import RuntimeSemanticService
 
             semantic_indexer = RuntimeSemanticService(qdrant)
-        if settings.runtime_sync_source_key == "talend_tmc" and project_ids:
-            from src.runtime.providers.talend_tmc import provider as talend_tmc_provider
 
-            runtime_scheduler = RuntimeSyncScheduler(
-                session_factory=async_session_factory,
-                adapter_factory=lambda: talend_tmc_provider,
-                source_key="talend_tmc",
-                project_ids=project_ids,
-                interval_seconds=settings.runtime_sync_interval_seconds,
-                semantic_indexer=semantic_indexer,
-            )
-            runtime_scheduler.start_background()
-            logger.info("Runtime sync scheduler started for source=talend_tmc")
-        elif settings.runtime_sync_source_key == "mock" and project_ids:
-            from src.runtime.providers.mock import provider as mock_runtime_provider
-
-            runtime_scheduler = RuntimeSyncScheduler(
-                session_factory=async_session_factory,
-                adapter_factory=lambda: mock_runtime_provider,
-                source_key="mock",
-                project_ids=project_ids,
-                interval_seconds=settings.runtime_sync_interval_seconds,
-                semantic_indexer=semantic_indexer,
-            )
-            runtime_scheduler.start_background()
-            logger.info("Runtime sync scheduler started for source=mock")
-        else:
-            logger.info("Runtime sync scheduler enabled but no supported source/projects configured")
+        # Source-driven: polls every enabled registered source on its own
+        # configured interval using that source's stored credentials, so the
+        # automatic path matches the manual "Sync now" action and honours the
+        # per-source enable/disable toggle set from the UI.
+        runtime_scheduler = RuntimeSourcePollingScheduler(
+            session_factory=async_session_factory,
+            tick_seconds=settings.runtime_sync_interval_seconds,
+            semantic_indexer=semantic_indexer,
+        )
+        runtime_scheduler.start_background()
+        logger.info("Runtime source polling scheduler started")
+    else:
+        logger.info("Runtime source polling scheduler disabled (RUNTIME_SYNC_SCHEDULER_ENABLED=false)")
 
     service_token = settings.mcp_docs_reconciliation_service_token
     if service_token is not None and service_token.get_secret_value().strip():

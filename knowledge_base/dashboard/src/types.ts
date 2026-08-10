@@ -149,6 +149,7 @@ export interface GenerateRun {
   id: number;
   project_id: string;
   triggered_by: string;
+  partition_name?: string | null;
   status: string;
   started_at: string;
   completed_at: string | null;
@@ -415,6 +416,19 @@ export interface AgenticExperimentCapabilities {
   candidate_dispatch_available: boolean;
   paid_execution_enabled: boolean;
   opencode_version: string;
+  grounded_runtimes: {
+    runtime_id: "opencode" | "openai-agents";
+    available: boolean;
+    routes: {
+      provider_id: string;
+      model_id: string;
+      display_name: string;
+    }[];
+    provider_id?: string;
+    model_ids?: string[];
+    paid_execution_confirmation_required: boolean;
+    blockers: string[];
+  }[];
   supported_source_kinds: string[];
   recipes: AgenticRecipeCapability[];
   execution_blockers: string[];

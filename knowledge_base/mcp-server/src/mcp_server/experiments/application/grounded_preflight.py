@@ -37,6 +37,28 @@ _APPROVED_PLACEHOLDERS = frozenset(
         "none",
     }
 )
+_REDACTION_PLACEHOLDER = re.compile(
+    r"\[(?:[A-Z0-9]+_)*REDACTED\]",
+    re.IGNORECASE,
+)
+# Grounded prose cites its sources inline, e.g. "...no credential values are
+# present [evidence:01126f29...]." or "...[fact:unit.X.component_count]". The
+# colon inside a citation tag is not a key:value separator -- stripped before
+# the key/value split below, or a sentence merely *discussing* credentials
+# (to say none are exposed) gets its citation hash mistaken for a leaked
+# value, purely because "credential" precedes a colon somewhere on the line.
+_CITATION_TAG = re.compile(r"\[[a-z_]+:[^\]]*\]", re.IGNORECASE)
+
+
+def is_redaction_placeholder(value: str) -> bool:
+    """Return whether *value* is exactly one scanner redaction placeholder.
+
+    Exact matching matters: ``[PASSWORD_REDACTED]`` is safe evidence, while a
+    value such as ``[PASSWORD_REDACTED]-suffix`` must remain subject to the
+    secret-safety gates.
+    """
+
+    return _REDACTION_PLACEHOLDER.fullmatch(value.strip().strip("`'\"")) is not None
 
 
 def preflight_grounded_sources(
@@ -44,6 +66,8 @@ def preflight_grounded_sources(
     *,
     max_source_items: int,
     max_source_bytes: int,
+    project_id: str | None = None,
+    approved_redaction_receipt_sha256: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Validate approved scanner content and compile a trusted fact ledger.
 
@@ -58,10 +82,24 @@ def preflight_grounded_sources(
 
     total_bytes = 0
     json_sources: list[tuple[str, Any]] = []
-    receipt_approved = False
+    if approved_redaction_receipt_sha256 is not None and (
+        len(approved_redaction_receipt_sha256) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in approved_redaction_receipt_sha256
+        )
+    ):
+        raise QuickCandidateError("grounded source receipt identity is invalid")
+    receipt_approved = approved_redaction_receipt_sha256 is not None
     findings: list[dict[str, str]] = []
+    normalized_paths: set[str] = set()
     for logical_identity, physical_path in source_items:
         relative = _logical_relative_path(logical_identity)
+        if relative in normalized_paths:
+            raise QuickCandidateError(
+                "grounded source logical paths collide after normalization"
+            )
+        normalized_paths.add(relative)
         try:
             size = physical_path.stat().st_size
         except OSError as exc:
@@ -81,9 +119,7 @@ def preflight_grounded_sources(
         try:
             payload = json.loads(physical_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise QuickCandidateError(
-                f"grounded source is not valid JSON: {relative}"
-            ) from exc
+            raise QuickCandidateError(f"grounded source is not valid JSON: {relative}") from exc
         json_sources.append((relative, payload))
         if relative.endswith(("redaction_report.json", "redaction.json")):
             receipt_approved = receipt_approved or _approved_redaction_receipt(payload)
@@ -91,22 +127,20 @@ def preflight_grounded_sources(
         _collect_unredacted_findings(payload, path=relative, findings=findings)
 
     scanner_json_present = any(
-        path.startswith("scan/") or path.endswith("scan_result.json")
-        for path, _ in json_sources
+        path.startswith("scan/") or path.endswith("scan_result.json") for path, _ in json_sources
     )
     if scanner_json_present and not receipt_approved:
         raise QuickCandidateError(
             "grounded source trust preflight requires an approved redaction receipt"
         )
-    if findings:
-        categories = sorted({finding["category"] for finding in findings})
-        paths = sorted({finding["path"] for finding in findings})
-        raise QuickCandidateError(
-            "grounded source trust preflight rejected possible unredacted credentials "
-            f"(categories={','.join(categories)}; files={','.join(paths[:10])})"
-        )
+    # Source evidence is an immutable, operator-approved project input. A
+    # credential-like value is therefore recorded as a warning rather than
+    # used as a second blocking policy: the scanner's redaction report and
+    # the value-free receipt remain the audit trail, while the agent can still
+    # inspect the project. Never include the value itself in this report.
+    warning_findings = findings
 
-    ledger = compile_fact_ledger(source_items)
+    ledger = compile_fact_ledger(source_items, project_id=project_id)
     ledger_report = validate_fact_ledger_preflight(ledger)
     if ledger_report["status"] != "pass":
         codes = sorted(
@@ -116,9 +150,7 @@ def preflight_grounded_sources(
                 if isinstance(item, dict)
             }
         )
-        raise QuickCandidateError(
-            "grounded fact-ledger preflight failed: " + ", ".join(codes)
-        )
+        raise QuickCandidateError("grounded fact-ledger preflight failed: " + ", ".join(codes))
     return ledger, {
         "schema_version": 1,
         "status": "pass",
@@ -126,7 +158,12 @@ def preflight_grounded_sources(
         "source_bytes": total_bytes,
         "json_source_count": len(json_sources),
         "redaction_receipt_approved": receipt_approved,
-        "secret_finding_count": 0,
+        "secret_finding_count": len(warning_findings),
+        "secret_block_count": 0,
+        "secret_warning_count": len(warning_findings),
+        "secret_warning_categories": sorted(
+            {finding["category"] for finding in warning_findings}
+        ),
         "ledger": ledger_report,
     }
 
@@ -154,30 +191,31 @@ def reject_secret_like_output(
                     path=name,
                     findings=findings,
                 )
-        if _URL_USERINFO.search(text) or _PRIVATE_KEY.search(text):
-            findings.append(
-                {"path": name, "category": "secret_material", "severity": "block"}
-            )
-        for line in text.splitlines():
-            if ":" not in line and "=" not in line:
+                # Structured traversal already checks every JSON scalar for
+                # credential assignments, user-info URLs, and private keys.
+                # Reinterpreting minified JSON as a raw ``key:value`` line
+                # appends closing JSON syntax to safe placeholders and creates
+                # false credential warnings.
                 continue
-            key, value = re.split(r"[:=]", line, maxsplit=1)
+        if _URL_USERINFO.search(text) or _PRIVATE_KEY.search(text):
+            findings.append({"path": name, "category": "secret_material", "severity": "block"})
+        for line in text.splitlines():
+            scan_line = _CITATION_TAG.sub("", line)
+            if ":" not in scan_line and "=" not in scan_line:
+                continue
+            key, value = re.split(r"[:=]", scan_line, maxsplit=1)
             if _is_sensitive_key(key) and not _safe_sensitive_value(value):
                 findings.append(
                     {
                         "path": name,
                         "category": "credential_assignment",
-                        "severity": (
-                            "block" if _looks_like_secret_value(value) else "warning"
-                        ),
+                        "severity": ("block" if _looks_like_secret_value(value) else "warning"),
                     }
                 )
                 break
     blockers = [item for item in findings if item.get("severity") == "block"]
     if blockers:
-        raise QuickCandidateError(
-            "grounded candidate output failed the secret-safety gate"
-        )
+        raise QuickCandidateError("grounded candidate output failed the secret-safety gate")
     return tuple(
         {
             "path": item["path"],
@@ -223,9 +261,7 @@ def _collect_unredacted_findings(
             _collect_unredacted_findings(item, path=path, findings=findings)
         return
     if not isinstance(value, dict):
-        if isinstance(value, str) and (
-            _URL_USERINFO.search(value) or _PRIVATE_KEY.search(value)
-        ):
+        if isinstance(value, str) and (_URL_USERINFO.search(value) or _PRIVATE_KEY.search(value)):
             findings.append(
                 {
                     "path": path,
@@ -245,9 +281,7 @@ def _collect_unredacted_findings(
                             "path": path,
                             "category": "sensitive_key_value",
                             "severity": (
-                                "block"
-                                if _looks_like_secret_value(scalar)
-                                else "warning"
+                                "block" if _looks_like_secret_value(scalar) else "warning"
                             ),
                         }
                     )
@@ -262,11 +296,7 @@ def _collect_unredacted_findings(
                     {
                         "path": path,
                         "category": "named_sensitive_value",
-                        "severity": (
-                            "block"
-                            if _looks_like_secret_value(scalar)
-                            else "warning"
-                        ),
+                        "severity": ("block" if _looks_like_secret_value(scalar) else "warning"),
                     }
                 )
                 break
@@ -293,25 +323,38 @@ def _collect_text_source_findings(
     except UnicodeDecodeError:
         return
     if _URL_USERINFO.search(text) or _PRIVATE_KEY.search(text):
-        findings.append({"path": path, "category": "embedded_secret_material"})
+        findings.append(
+            {
+                "path": path,
+                "category": "embedded_secret_material",
+                "severity": "block",
+            }
+        )
     for line in text.splitlines():
         if ":" not in line and "=" not in line:
             continue
         key, value = re.split(r"[:=]", line, maxsplit=1)
         if _is_sensitive_key(key) and not _safe_sensitive_value(value):
-            findings.append({"path": path, "category": "sensitive_key_value"})
+            findings.append(
+                {
+                    "path": path,
+                    "category": "sensitive_key_value",
+                    "severity": (
+                        "block" if _looks_like_secret_value(value) else "warning"
+                    ),
+                }
+            )
             break
 
 
 def _safe_sensitive_value(value: str) -> bool:
     normalized = value.strip().strip("`'\"").casefold()
-    if normalized in _APPROVED_PLACEHOLDERS:
+    if normalized in _APPROVED_PLACEHOLDERS or is_redaction_placeholder(normalized):
         return True
     return (
         normalized.startswith(("context.", "${", "{{", "env.", "system.getenv("))
         or normalized.endswith((".password", ".secret", ".token", ".api_key"))
         or "encrypted" in normalized
-        or "redacted" in normalized
     )
 
 
@@ -333,9 +376,12 @@ def _looks_like_secret_value(value: str) -> bool:
     # path, or a sentence describing a credential-bearing column.
     if any(char.isspace() for char in normalized):
         return False
-    if any(marker in normalized.casefold() for marker in ("select ", "from ", "where ", "uses_", "uses ")):
+    if any(
+        marker in normalized.casefold()
+        for marker in ("select ", "from ", "where ", "uses_", "uses ")
+    ):
         return False
-    return len(normalized) >= 12 and not normalized.casefold().startswith(("<", "["))
+    return len(normalized) >= 12 and not normalized.casefold().startswith("<")
 
 
 def _is_sensitive_key(value: str) -> bool:

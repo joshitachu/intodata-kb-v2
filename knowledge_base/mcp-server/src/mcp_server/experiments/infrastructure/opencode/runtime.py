@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from typing import Any
 
+from mcp_server.experiments.application.grounded_runtime import (
+    BOUNDED_BUDGET_MONITORING_CAPABILITY,
+    GroundedRoleRuntimeContext,
+)
 from mcp_server.experiments.domain.runtime import (
     AgentRuntime,
+    ArtifactReference,
     CancelRequest,
     CancelResult,
     ModelCapability,
@@ -21,6 +28,8 @@ from mcp_server.experiments.domain.runtime import (
     RuntimeTaskResult,
     RuntimeTaskStatus,
     RuntimeTimings,
+    OutputContract,
+    RuntimeBudgets,
     redact_payload,
 )
 from mcp_server.experiments.infrastructure.opencode.client import (
@@ -44,6 +53,67 @@ from mcp_server.experiments.infrastructure.opencode.provider_mapping import to_o
 
 PINNED_OPENCODE_VERSION = "1.18.4"
 
+# Cap on how many recent events _TaskState retains for observe()'s
+# reconnect-replay. This adapter's own long-running tasks are the ones that
+# blew memory: every distinct OpenCode event (redacted, but still carrying
+# real payload content -- tool output, message text) was kept for the whole
+# life of a role with no limit. A live-measured run climbed ~250-300MB every
+# 10 seconds this way, hitting a 3GB container ceiling in under two minutes
+# regardless of project size. Replay only ever needs to catch a reconnecting
+# subscriber up on *recent* history, not the entire run -- 200 events is
+# generous for that and keeps this bounded no matter how long a role runs.
+_EVENT_REPLAY_LIMIT = 200
+
+
+class OpenCodeGroundedTaskBuilder:
+    """Bind a Grounded role packet to the pinned OpenCode workspace/tool surface."""
+
+    def build(self, context: GroundedRoleRuntimeContext) -> RuntimeTaskRequest:
+        packet_path = context.packet_root / "PACKET.json"
+        packet_bytes = packet_path.read_bytes()
+        return RuntimeTaskRequest(
+            experiment_id=context.experiment_id,
+            task_id=f"grounded-role:{context.role_id}:attempt:{context.attempt}",
+            idempotency_key=(
+                f"{context.experiment_id}:grounded-role:{context.role_id}:{context.attempt}"
+            ),
+            provider_id=context.provider_id,
+            model_id=context.model_id,
+            semantic_prompt=context.prompt,
+            semantic_prompt_sha256=sha256(context.prompt.encode("utf-8")).hexdigest(),
+            context_refs=(
+                ArtifactReference(
+                    logical_name=f"roles/{context.role_id}/PACKET.json",
+                    sha256=sha256(packet_bytes).hexdigest(),
+                    media_type="application/json",
+                    byte_size=len(packet_bytes),
+                ),
+            ),
+            output_contract=OutputContract(
+                artifact_name=f"roles/{context.role_id}/candidate-bundle",
+                media_type="application/vnd.nexus.grounded-role-bundle",
+                max_bytes=context.max_context_bytes,
+            ),
+            allowed_tool_names=("read", "glob", "grep", "edit", "write"),
+            budgets=RuntimeBudgets(
+                max_input_tokens=context.max_input_tokens,
+                max_tool_calls=context.max_tool_calls,
+                max_elapsed_ms=max(1, int(context.timeout_seconds * 1000)),
+            ),
+            deadline_at=datetime.now(timezone.utc)
+            + timedelta(seconds=context.timeout_seconds),
+            agent_id=context.agent_id,
+            runtime_options={
+                "workspace_directory": str(context.runtime_directory),
+                "session_title": (
+                    f"Nexus grounded role {context.role_id} {context.experiment_id} "
+                    f"attempt {context.attempt}"
+                ),
+                "disabled_tool_names": ("task",),
+                "return_failed_handle": True,
+            },
+        )
+
 
 @dataclass(slots=True)
 class _TaskState:
@@ -51,8 +121,15 @@ class _TaskState:
     handle: RuntimeTaskHandle
     started_at: datetime
     normalizer: OpenCodeEventNormalizer
-    events: list[RuntimeTaskEvent]
+    events: "deque[RuntimeTaskEvent]"
+    # Running counters, updated as events arrive -- the actual source of
+    # truth for tool_calls/tool_bytes fallbacks below. Independent of the
+    # bounded `events` replay buffer, so trimming that buffer never loses
+    # count accuracy.
+    tool_call_count: int = 0
+    tool_byte_total: int = 0
     cancelled: bool = False
+    submission_failure: OpenCodeClientError | None = None
 
 
 class OpenCodeAgentRuntime(AgentRuntime):
@@ -99,7 +176,12 @@ class OpenCodeAgentRuntime(AgentRuntime):
     async def capabilities(self) -> RuntimeCapabilities:
         payload = await self._client.providers()
         models = tuple(_models_from_provider_payload(payload))
-        supported = frozenset(capability for model in models for capability in model.capabilities)
+        supported = frozenset(
+            {
+                BOUNDED_BUDGET_MONITORING_CAPABILITY,
+                *(capability for model in models for capability in model.capabilities),
+            }
+        )
         return RuntimeCapabilities(
             runtime_id=self.runtime_id,
             runtime_version=self._runtime_version,
@@ -126,36 +208,64 @@ class OpenCodeAgentRuntime(AgentRuntime):
 
         capabilities = await self.capabilities()
         _ensure_route_is_available(request, capabilities.models)
-        session = await self._client.create_session(title=_session_title(request))
+        _ensure_budgets_are_monitorable(request)
+        session = await self._client.create_session(
+            title=_session_title(request),
+            directory=_workspace_directory(request),
+        )
         route = to_opencode_model_route(request.provider_id, request.model_id)
         payload: dict[str, Any] = {
             "model": route.as_payload(),
             "parts": [{"type": "text", "text": request.semantic_prompt}],
             "tools": {tool_name: True for tool_name in request.allowed_tool_names},
         }
+        for tool_name in _disabled_tool_names(request):
+            payload["tools"][tool_name] = False
         if request.agent_id:
             payload["agent"] = request.agent_id
-        prompt_response = await self._client.prompt_async(
-            session.session_id,
-            payload=payload,
-            idempotency_key=request.idempotency_key,
-        )
         handle = RuntimeTaskHandle(
             runtime_id=self.runtime_id,
             session_id=session.session_id,
-            message_id=_message_id(prompt_response),
+            message_id=None,
             experiment_id=request.experiment_id,
             task_id=request.task_id,
             idempotency_key=request.idempotency_key,
         )
-        self._tasks[handle.session_id] = _TaskState(
+        state = _TaskState(
             request=request,
             handle=handle,
             started_at=self._now(),
             normalizer=OpenCodeEventNormalizer(),
-            events=[],
+            events=deque(maxlen=_EVENT_REPLAY_LIMIT),
         )
+        self._tasks[handle.session_id] = state
         self._idempotency_sessions[request.idempotency_key] = handle.session_id
+        try:
+            prompt_response = await self._client.prompt_async(
+                session.session_id,
+                payload=payload,
+                idempotency_key=request.idempotency_key,
+            )
+        except OpenCodeClientError as exc:
+            # A session was successfully allocated even though its prompt was
+            # rejected. Preserve that identity as a terminal protocol task so
+            # orchestration can cancel/audit an optional role without reaching
+            # back into the provider client.
+            if not _return_failed_handle(request):
+                self._tasks.pop(handle.session_id, None)
+                self._idempotency_sessions.pop(request.idempotency_key, None)
+                raise
+            state.submission_failure = exc
+            return handle
+        state.handle = RuntimeTaskHandle(
+            runtime_id=handle.runtime_id,
+            session_id=handle.session_id,
+            message_id=_message_id(prompt_response),
+            experiment_id=handle.experiment_id,
+            task_id=handle.task_id,
+            idempotency_key=handle.idempotency_key,
+        )
+        handle = state.handle
         return handle
 
     def observe(
@@ -173,23 +283,75 @@ class OpenCodeAgentRuntime(AgentRuntime):
         after_sequence: int,
     ) -> AsyncIterator[RuntimeTaskEvent]:
         state = self._state(handle)
+        cursor = after_sequence
+        for event in tuple(state.events):
+            if event.sequence > cursor:
+                cursor = event.sequence
+                yield event
+        event_stream = self._client.events(handle.session_id)
         try:
-            async for raw_event in self._client.events(handle.session_id):
+            async for raw_event in event_stream:
                 if event_session_id(raw_event) == handle.session_id:
-                    self._append_normalized(state, raw_event)
+                    event = self._append_normalized(state, raw_event)
+                    if event is not None and event.sequence > cursor:
+                        cursor = event.sequence
+                        yield event
         except OpenCodeClientError:
             # Event delivery is not proof a task failed.  Reconcile with the
             # idempotent message-read endpoint instead of resubmitting a prompt.
             for message in await self._client.messages(handle.session_id):
-                self._append_normalized(state, message)
-        for event in state.events:
-            if event.sequence > after_sequence:
-                yield event
+                event = self._append_normalized(state, message)
+                if event is not None and event.sequence > cursor:
+                    cursor = event.sequence
+                    yield event
+        finally:
+            await event_stream.aclose()
+
+    async def poll_status(self, handle: RuntimeTaskHandle) -> RuntimeTaskStatus:
+        """Answer from the O(1) session-status endpoint, not the full transcript.
+
+        ``result()`` fetches ``GET /session/{id}/message`` -- the entire
+        conversation from the start of the session, no cursor. This adapter is
+        polled every ~50ms for a role's whole lifetime (`_wait()` in
+        run_staged_grounded_candidate.py), so calling ``result()`` there was
+        re-fetching and re-parsing an ever-growing transcript ~20 times a
+        second; over a long tool-heavy role that transcript reaches tens of
+        megabytes, and the repeated full re-parses are what drove mcp-server's
+        RSS to the container memory ceiling (confirmed via dmesg cgroup-oom
+        traces scaling to whatever limit it was given: ~976MB @ 1g, ~2.97GB @
+        3g -- a growth-over-time signature, not a fixed footprint).
+
+        ``session_status()`` is a single lightweight lookup in OpenCode's
+        active-session map and is enough to resolve running/failed/cancelled
+        without ever touching the transcript. It only falls through to the
+        full ``result()`` fetch for the one genuinely ambiguous case: a
+        session absent from that map, which OpenCode uses for both "still
+        idle, never started" and "finished" -- and that happens once, right
+        at completion, not on every tick.
+        """
+
+        state = self._state(handle)
+        if state.cancelled:
+            return RuntimeTaskStatus.CANCELLED
+        if state.submission_failure is not None:
+            return RuntimeTaskStatus.FAILED
+        try:
+            status_payload = await self._client.session_status(handle.session_id)
+        except OpenCodeClientError:
+            # A status-endpoint hiccup is not proof of anything either way;
+            # fall back to the authoritative (if expensive) reconciliation.
+            return (await self.result(handle)).status
+        status, _ = _result_status(status_payload, None)
+        if status == RuntimeTaskStatus.UNKNOWN:
+            return (await self.result(handle)).status
+        return status
 
     async def result(self, handle: RuntimeTaskHandle) -> RuntimeTaskResult:
         state = self._state(handle)
         if state.cancelled:
             return self._cancelled_result(state)
+        if state.submission_failure is not None:
+            return self._submission_failed_result(state, state.submission_failure)
         try:
             messages = await self._client.messages(handle.session_id)
             status_payload = await self._client.session_status(handle.session_id)
@@ -211,6 +373,17 @@ class OpenCodeAgentRuntime(AgentRuntime):
             if completed_at is not None
             else None
         )
+        tool_calls = _tool_calls(messages, state.tool_call_count)
+        tool_bytes = _tool_bytes_from_messages(messages, state.tool_byte_total)
+        budget_failure = _budget_failure(
+            state.request,
+            usage=usage,
+            tool_calls=tool_calls,
+            elapsed_ms=elapsed_ms,
+        )
+        if budget_failure is not None:
+            status = RuntimeTaskStatus.FAILED
+            failure_detail = {"budget": budget_failure}
         return RuntimeTaskResult(
             status=status,
             runtime_id=self.runtime_id,
@@ -226,9 +399,15 @@ class OpenCodeAgentRuntime(AgentRuntime):
                 elapsed_ms=elapsed_ms,
                 provider_latency_ms=_latency_ms(telemetry_source),
             ),
-            tool_calls=_tool_calls(messages, state.events),
-            tool_bytes=_tool_bytes_from_messages(messages, state.events),
-            failure_category=("runtime_reported_failure" if status == RuntimeTaskStatus.FAILED else None),
+            tool_calls=tool_calls,
+            tool_bytes=tool_bytes,
+            failure_category=(
+                "budget_exceeded"
+                if budget_failure is not None
+                else "runtime_reported_failure"
+                if status == RuntimeTaskStatus.FAILED
+                else None
+            ),
             failure_detail=failure_detail,
         )
 
@@ -263,10 +442,18 @@ class OpenCodeAgentRuntime(AgentRuntime):
             requested_at=self._now(),
         )
 
-    def _append_normalized(self, state: _TaskState, payload: Mapping[str, Any]) -> None:
+    def _append_normalized(
+        self,
+        state: _TaskState,
+        payload: Mapping[str, Any],
+    ) -> RuntimeTaskEvent | None:
         event = state.normalizer.normalize(payload, received_at=self._now())
         if event is not None:
             state.events.append(event)
+            if event.category == "tool":
+                state.tool_call_count += 1
+                state.tool_byte_total += _tool_bytes(event.payload)
+        return event
 
     def _state(self, handle: RuntimeTaskHandle) -> _TaskState:
         state = self._tasks.get(handle.session_id)
@@ -296,8 +483,8 @@ class OpenCodeAgentRuntime(AgentRuntime):
                 completed_at=completed_at,
                 elapsed_ms=int((completed_at - state.started_at).total_seconds() * 1000),
             ),
-            tool_calls=sum(1 for event in state.events if event.category == "tool"),
-            tool_bytes=sum(_tool_bytes(event.payload) for event in state.events if event.category == "tool"),
+            tool_calls=state.tool_call_count,
+            tool_bytes=state.tool_byte_total,
             failure_category="cancelled",
         )
 
@@ -323,6 +510,29 @@ class OpenCodeAgentRuntime(AgentRuntime):
             ),
             failure_category=category,
             failure_detail=detail,
+        )
+
+    def _submission_failed_result(
+        self,
+        state: _TaskState,
+        failure: OpenCodeClientError,
+    ) -> RuntimeTaskResult:
+        completed_at = self._now()
+        return RuntimeTaskResult(
+            status=RuntimeTaskStatus.FAILED,
+            runtime_id=self.runtime_id,
+            runtime_version=self._runtime_version,
+            provider_id=state.request.provider_id,
+            model_id=state.request.model_id,
+            session_id=state.handle.session_id,
+            message_id=state.handle.message_id,
+            timings=RuntimeTimings(
+                started_at=state.started_at,
+                completed_at=completed_at,
+                elapsed_ms=int((completed_at - state.started_at).total_seconds() * 1000),
+            ),
+            failure_category=failure.category,
+            failure_detail=failure.detail,
         )
 
 
@@ -392,8 +602,66 @@ def _ensure_route_is_available(request: RuntimeTaskRequest, models: tuple[ModelC
     )
 
 
+def _ensure_budgets_are_monitorable(request: RuntimeTaskRequest) -> None:
+    values = (
+        request.budgets.max_input_tokens,
+        request.budgets.max_output_tokens,
+        request.budgets.max_tool_calls,
+        request.budgets.max_tool_bytes,
+        request.budgets.max_elapsed_ms,
+    )
+    if any(value is not None and value < 0 for value in values):
+        raise ValueError("runtime task budgets must be non-negative")
+    if request.deadline_at.tzinfo is None:
+        raise ValueError("runtime task deadline must be timezone-aware")
+
+
+def _budget_failure(
+    request: RuntimeTaskRequest,
+    *,
+    usage: Any,
+    tool_calls: int,
+    elapsed_ms: int | None,
+) -> str | None:
+    checks = (
+        (usage.input_tokens, request.budgets.max_input_tokens, "input_tokens"),
+        (usage.output_tokens, request.budgets.max_output_tokens, "output_tokens"),
+        (tool_calls, request.budgets.max_tool_calls, "tool_calls"),
+        (elapsed_ms, request.budgets.max_elapsed_ms, "elapsed_ms"),
+    )
+    for actual, maximum, name in checks:
+        if actual is not None and maximum is not None and actual > maximum:
+            return name
+    return None
+
+
 def _session_title(request: RuntimeTaskRequest) -> str:
+    configured = request.runtime_options.get("session_title")
+    if isinstance(configured, str) and configured.strip():
+        return configured
     return f"Nexus experiment {request.experiment_id} task {request.task_id}"
+
+
+def _workspace_directory(request: RuntimeTaskRequest) -> str | None:
+    """Read the adapter-specific session directory without leaking it into the port."""
+
+    configured = request.runtime_options.get("workspace_directory")
+    return configured if isinstance(configured, str) and configured.strip() else None
+
+
+def _disabled_tool_names(request: RuntimeTaskRequest) -> tuple[str, ...]:
+    configured = request.runtime_options.get("disabled_tool_names")
+    if not isinstance(configured, (list, tuple)):
+        return ()
+    return tuple(
+        tool_name
+        for tool_name in configured
+        if isinstance(tool_name, str) and tool_name and tool_name not in request.allowed_tool_names
+    )
+
+
+def _return_failed_handle(request: RuntimeTaskRequest) -> bool:
+    return request.runtime_options.get("return_failed_handle") is True
 
 
 def _message_id(payload: Mapping[str, Any]) -> str | None:
@@ -508,18 +776,18 @@ def _result_status(
     return RuntimeTaskStatus.UNKNOWN, {"reason": "idle_without_completed_assistant_message"}
 
 
-def _tool_calls(messages: list[Mapping[str, Any]], events: list[RuntimeTaskEvent]) -> int:
+def _tool_calls(messages: list[Mapping[str, Any]], observed_tool_calls: int) -> int:
     message_parts_count = sum(
         1 for message in messages for part in message_parts(message) if part.get("type") == "tool"
     )
-    return max(message_parts_count, sum(1 for event in events if event.category == "tool"))
+    return max(message_parts_count, observed_tool_calls)
 
 
-def _tool_bytes_from_messages(messages: list[Mapping[str, Any]], events: list[RuntimeTaskEvent]) -> int:
+def _tool_bytes_from_messages(messages: list[Mapping[str, Any]], observed_tool_bytes: int) -> int:
     values = [
         _tool_bytes(part)
         for message in messages
         for part in message_parts(message)
         if part.get("type") == "tool"
     ]
-    return sum(values) if values else sum(_tool_bytes(event.payload) for event in events if event.category == "tool")
+    return sum(values) if values else observed_tool_bytes

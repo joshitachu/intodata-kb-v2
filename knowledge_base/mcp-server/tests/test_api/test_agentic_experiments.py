@@ -13,6 +13,9 @@ from sqlalchemy import func, select
 
 from mcp_server.api.routes import agentic_experiments
 from mcp_server.config import config
+from mcp_server.experiments.application.grounded_preflight import (
+    preflight_grounded_sources,
+)
 from mcp_server.db.models import (
     GenerateRun,
     GenerationExperiment,
@@ -75,6 +78,27 @@ async def _seed_legacy_baseline(db_session, tmp_path) -> tuple[Project, Generate
         for path in sorted(docs.glob("*.md"))
     }
     return project, run, hashes
+
+
+def _write_bound_redaction_receipt(path, sources) -> None:
+    entries = sorted(
+        (
+            {
+                "raw_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "size_bytes": source.stat().st_size,
+            }
+            for source in sources
+        ),
+        key=lambda value: (value["raw_sha256"], value["size_bytes"]),
+    )
+    path.write_text(
+        json.dumps(
+            {"schema_version": 1, "source_files": entries, "status": "approved"},
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
 
 
 @pytest.mark.asyncio
@@ -179,6 +203,9 @@ async def test_capabilities_are_provider_neutral_safe_and_report_dispatch_blocke
     monkeypatch.setattr(config, "agentic_experiments_enabled", True)
     monkeypatch.setattr(config, "agentic_paid_execution_enabled", False)
     monkeypatch.setattr(config, "agentic_max_cost_usd", 0.0)
+    monkeypatch.setattr(config, "agentic_openai_agents_enabled", False)
+    monkeypatch.setattr(config, "agentic_openai_agents_model_ids", "")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     response = await client.get("/mcp/agentic-experiments/capabilities")
 
@@ -190,6 +217,30 @@ async def test_capabilities_are_provider_neutral_safe_and_report_dispatch_blocke
     assert body["candidate_dispatch_available"] is False
     assert body["paid_execution_enabled"] is False
     assert body["opencode_version"] == "1.18.4"
+    assert body["grounded_runtimes"] == [
+        {
+            "runtime_id": "opencode",
+            "available": False,
+            "provider_id": "",
+            "model_ids": [],
+            "paid_execution_confirmation_required": False,
+            "routes": [],
+            "blockers": ["OpenCode runtime authentication is unavailable"],
+        },
+        {
+            "runtime_id": "openai-agents",
+            "available": False,
+            "provider_id": "",
+            "model_ids": [],
+            "paid_execution_confirmation_required": True,
+            "routes": [],
+            "blockers": [
+                "OpenAI Agents Grounded runtime is disabled",
+                "OpenAI Agents paid execution is disabled",
+                "OpenAI Agents model allowlist is empty",
+            ],
+        },
+    ]
     assert {recipe["recipe_id"] for recipe in body["recipes"]} == {
         "alitalend-legacy-equivalence",
         "codebase-documentation",
@@ -349,6 +400,77 @@ async def test_create_allows_standalone_candidate_without_legacy_baseline(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("provider_override", "model_override", "expected_provider", "expected_model"),
+    [
+        (None, None, "deepseek", "deepseek-v4-pro"),
+        ("provider-neutral-test", "model-neutral-test", "provider-neutral-test", "model-neutral-test"),
+    ],
+)
+async def test_quick_grounded_run_defaults_model_to_pro_and_honours_override(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+    provider_override,
+    model_override,
+    expected_provider,
+    expected_model,
+) -> None:
+    """Grounded runs default to the server ``deepseek-v4-pro`` knob; explicit wins.
+
+    The failing werkorder run used the weaker ``deepseek-v4-flash``. The
+    default is now a server config knob (``deepseek-v4-pro``) applied when the
+    caller omits the provider/model, and an explicit caller value still wins.
+    """
+
+    project, run, _original_hashes = await _seed_legacy_baseline(db_session, tmp_path)
+    scan_root = config.intodoc_output_dir / project.id
+    scan_root.mkdir(parents=True)
+    (scan_root / "scan_result.json").write_text(
+        json.dumps({"jobs": [{"name": "JobA", "platform": "any"}]}),
+        encoding="utf-8",
+    )
+    (scan_root / "redaction_report.json").write_text(
+        json.dumps({"redaction_level": "standard", "total_redactions": 0, "summary": {}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "agentic_experiments_enabled", True)
+    monkeypatch.setattr(config, "agentic_opencode_password", "test-only-password")
+    monkeypatch.setattr(config, "doc_generation_deepseek_api_key", "test-only-key")
+    monkeypatch.setattr(config, "agentic_grounded_default_provider_id", "deepseek")
+    monkeypatch.setattr(config, "agentic_grounded_default_model_id", "deepseek-v4-pro")
+    dispatched: list[dict[str, object]] = []
+
+    async def fake_dispatch(**kwargs: object) -> None:
+        dispatched.append(kwargs)
+
+    monkeypatch.setattr(agentic_experiments, "_run_quick_opencode_candidate", fake_dispatch)
+
+    payload: dict[str, object] = {
+        "project_id": project.id,
+        "baseline_run_id": run.id,
+        "candidate_mode": "grounded",
+        "acknowledge_non_publishing": True,
+        "idempotency_key": "generate-dialog-grounded-default-model",
+    }
+    if provider_override is not None:
+        payload["provider_id"] = provider_override
+    if model_override is not None:
+        payload["model_id"] = model_override
+
+    response = await client.post("/mcp/agentic-experiments/quick-run", json=payload)
+
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["provider_id"] == expected_provider
+    assert body["model_id"] == expected_model
+    assert len(dispatched) == 1
+    assert dispatched[0]["provider_id"] == expected_provider
+    assert dispatched[0]["model_id"] == expected_model
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("candidate_mode", "expected_runtime"),
     [
         ("single_agent", "opencode"),
@@ -371,6 +493,9 @@ async def test_quick_run_freezes_generic_inputs_and_queues_isolated_opencode_can
         json.dumps({"jobs": [{"name": "JobA", "platform": "any"}]}),
         encoding="utf-8",
     )
+    # Actual IntoDoc scans produce an audit report, not the strict snapshot
+    # receipt used by older fixtures.  Grounded startup must derive the latter
+    # before compiling the recipe so the implementation role is available.
     (scan_root / "redaction_report.json").write_text(
         json.dumps(
             {
@@ -414,6 +539,26 @@ async def test_quick_run_freezes_generic_inputs_and_queues_isolated_opencode_can
     assert body["model_id"] == "model-neutral-test"
     assert body["recipe_id"] == "alitalend-legacy-equivalence"
     assert body["source_snapshot_frozen"] is True
+    if candidate_mode == "grounded":
+        assert body["source_snapshot_fingerprint_sha256"]
+        assert body["source_coverage"]["declared_sources"] == 1
+        assert body["source_coverage"]["readable_sources"] == 1
+        assert body["source_inventory"] == [
+            {
+                "descriptor_id": "current-intodoc-scan",
+                "source_kind": "intodoc_scan",
+                "source_role": "implementation",
+                "status": "readable",
+                "status_reason": None,
+                # scan_result plus the scanner-issued redaction audit report;
+                # the generated companion receipt is deliberately excluded.
+                "prepared_records": 2,
+            }
+        ]
+    else:
+        assert body["source_snapshot_fingerprint_sha256"] is None
+        assert body["source_coverage"] is None
+        assert body["source_inventory"] == []
     assert body["publishes"] is False
     assert body["status"] == "queued"
     assert len(dispatched) == 1
@@ -441,6 +586,625 @@ async def test_quick_run_freezes_generic_inputs_and_queues_isolated_opencode_can
         for path in sorted(docs.glob("*.md"))
     } == original_hashes
     assert await db_session.scalar(select(func.count(ProjectDocRagHash.project_id))) == 0
+
+
+@pytest.mark.asyncio
+async def test_quick_grounded_run_can_explicitly_select_preflighted_openai_agents(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    project, run, _ = await _seed_legacy_baseline(db_session, tmp_path)
+    scan_root = config.intodoc_output_dir / project.id
+    scan_root.mkdir(parents=True)
+    (scan_root / "scan_result.json").write_text(
+        json.dumps({"jobs": [{"name": "JobA", "platform": "any"}]}),
+        encoding="utf-8",
+    )
+    (scan_root / "redaction_report.json").write_text(
+        json.dumps(
+            {
+                "redaction_level": "standard",
+                "total_redactions": 0,
+                "summary": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "agentic_experiments_enabled", True)
+    monkeypatch.setattr(config, "agentic_opencode_password", "")
+    monkeypatch.setattr(config, "agentic_opencode_version", "not-selected")
+    monkeypatch.setattr(config, "agentic_grounded_runtime_id", "opencode")
+    monkeypatch.setattr(config, "agentic_openai_agents_enabled", True)
+    monkeypatch.setattr(config, "agentic_openai_agents_model_ids", "gpt-test")
+    monkeypatch.setattr(config, "agentic_paid_execution_enabled", True)
+    monkeypatch.setattr(config, "agentic_max_cost_usd", 5.0)
+    preflights: list[tuple[str, str]] = []
+    dispatched: list[dict[str, object]] = []
+
+    async def fake_compose(**kwargs: object) -> object:
+        preflights.append((str(kwargs["provider_id"]), str(kwargs["model_id"])))
+        return object()
+
+    async def fake_dispatch(**kwargs: object) -> None:
+        dispatched.append(kwargs)
+
+    monkeypatch.setattr(
+        agentic_experiments,
+        "compose_openai_agents_grounded_runtime",
+        fake_compose,
+    )
+    monkeypatch.setattr(
+        agentic_experiments,
+        "_run_quick_opencode_candidate",
+        fake_dispatch,
+    )
+
+    response = await client.post(
+        "/mcp/agentic-experiments/quick-run",
+        json={
+            "project_id": project.id,
+            "baseline_run_id": run.id,
+            "candidate_mode": "grounded",
+            "grounded_runtime_id": "openai-agents",
+            "provider_id": "openai",
+            "model_id": "gpt-test",
+            "acknowledge_paid_execution": True,
+            "acknowledge_non_publishing": True,
+            "idempotency_key": "generate-dialog-openai-agents-grounded",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["runtime_id"] == "openai-agents-grounded"
+    assert preflights == [("openai", "gpt-test")]
+    assert dispatched[0]["grounded_runtime_id"] == "openai-agents"
+    assert (scan_root / "grounded_evidence_receipt.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_quick_grounded_run_passes_no_cost_ceiling_when_unconfigured(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """agentic_max_cost_usd left at its 0.0 default must reach the runner as None
+    (unlimited), not as a $0 budget -- a configured ceiling is optional, only
+    the acknowledge_paid_execution confirmation is required."""
+    project, run, _ = await _seed_legacy_baseline(db_session, tmp_path)
+    scan_root = config.intodoc_output_dir / project.id
+    scan_root.mkdir(parents=True)
+    (scan_root / "scan_result.json").write_text(
+        json.dumps({"jobs": [{"name": "JobA", "platform": "any"}]}),
+        encoding="utf-8",
+    )
+    _write_bound_redaction_receipt(
+        scan_root / "redaction_report.json",
+        (scan_root / "scan_result.json",),
+    )
+    monkeypatch.setattr(config, "agentic_experiments_enabled", True)
+    monkeypatch.setattr(config, "agentic_openai_agents_enabled", True)
+    monkeypatch.setattr(config, "agentic_openai_agents_model_ids", "gpt-test")
+    monkeypatch.setattr(config, "agentic_paid_execution_enabled", True)
+    monkeypatch.setattr(config, "agentic_max_cost_usd", 0.0)
+
+    async def fake_compose(**kwargs: object) -> object:
+        return SimpleNamespace(runtime=object(), task_builder=object())
+
+    monkeypatch.setattr(
+        agentic_experiments,
+        "compose_openai_agents_grounded_runtime",
+        fake_compose,
+    )
+    handoff: dict[str, object] = {}
+
+    class CapturingGroundedRunner:
+        def __init__(self, **kwargs: object) -> None:
+            handoff["runner"] = kwargs
+
+        async def run(self, **kwargs: object):
+            raise RuntimeError("offline handoff captured")
+
+    monkeypatch.setattr(
+        agentic_experiments,
+        "GroundedRuntimeRunner",
+        CapturingGroundedRunner,
+    )
+
+    response = await client.post(
+        "/mcp/agentic-experiments/quick-run",
+        json={
+            "project_id": project.id,
+            "baseline_run_id": run.id,
+            "candidate_mode": "grounded",
+            "grounded_runtime_id": "openai-agents",
+            "provider_id": "openai",
+            "model_id": "gpt-test",
+            "acknowledge_paid_execution": True,
+            "acknowledge_non_publishing": True,
+            "idempotency_key": "no-cost-ceiling-configured",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    assert handoff["runner"]["max_billed_cost_usd"] is None
+
+
+@pytest.mark.asyncio
+async def test_quick_openai_agents_requires_paid_execution_acknowledgement(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    project, run, _ = await _seed_legacy_baseline(db_session, tmp_path)
+    monkeypatch.setattr(config, "agentic_experiments_enabled", True)
+    monkeypatch.setattr(config, "agentic_grounded_runtime_id", "opencode")
+    monkeypatch.setattr(config, "agentic_openai_agents_enabled", True)
+    monkeypatch.setattr(config, "agentic_openai_agents_model_ids", "gpt-test")
+    monkeypatch.setattr(config, "agentic_paid_execution_enabled", True)
+    monkeypatch.setattr(config, "agentic_max_cost_usd", 5.0)
+
+    response = await client.post(
+        "/mcp/agentic-experiments/quick-run",
+        json={
+            "project_id": project.id,
+            "baseline_run_id": run.id,
+            "candidate_mode": "grounded",
+            "grounded_runtime_id": "openai-agents",
+            "provider_id": "openai",
+            "model_id": "gpt-test",
+            "acknowledge_non_publishing": True,
+            "idempotency_key": "missing-paid-ack",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "OpenAI Agents requires explicit paid execution acknowledgement"
+    )
+
+
+@pytest.mark.asyncio
+async def test_quick_openai_agents_requires_operator_paid_execution_gate(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    project, run, _ = await _seed_legacy_baseline(db_session, tmp_path)
+    monkeypatch.setattr(config, "agentic_experiments_enabled", True)
+    monkeypatch.setattr(config, "agentic_openai_agents_enabled", True)
+    monkeypatch.setattr(config, "agentic_paid_execution_enabled", False)
+
+    response = await client.post(
+        "/mcp/agentic-experiments/quick-run",
+        json={
+            "project_id": project.id,
+            "baseline_run_id": run.id,
+            "candidate_mode": "grounded",
+            "grounded_runtime_id": "openai-agents",
+            "provider_id": "openai",
+            "model_id": "gpt-test",
+            "acknowledge_paid_execution": True,
+            "acknowledge_non_publishing": True,
+            "idempotency_key": "operator-paid-gate-disabled",
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "OpenAI Agents paid execution is disabled by the operator"
+    )
+
+
+@pytest.mark.asyncio
+async def test_grounded_runtime_selector_is_rejected_for_non_grounded_mode(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    project, run, _ = await _seed_legacy_baseline(db_session, tmp_path)
+    monkeypatch.setattr(config, "agentic_experiments_enabled", True)
+
+    response = await client.post(
+        "/mcp/agentic-experiments/quick-run",
+        json={
+            "project_id": project.id,
+            "baseline_run_id": run.id,
+            "candidate_mode": "single_agent",
+            "grounded_runtime_id": "openai-agents",
+            "provider_id": "openai",
+            "model_id": "gpt-test",
+            "acknowledge_non_publishing": True,
+            "idempotency_key": "invalid-runtime-mode",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "A Grounded runtime can be selected only for Grounded execution"
+    )
+
+
+@pytest.mark.asyncio
+async def test_quick_grounded_run_rejects_additional_implementation_authority(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    project, run, _ = await _seed_legacy_baseline(db_session, tmp_path)
+    monkeypatch.setattr(config, "agentic_experiments_enabled", True)
+    monkeypatch.setattr(config, "agentic_opencode_password", "test-only-password")
+    monkeypatch.setattr(config, "doc_generation_deepseek_api_key", "test-only-key")
+
+    response = await client.post(
+        "/mcp/agentic-experiments/quick-run",
+        json={
+            "project_id": project.id,
+            "baseline_run_id": run.id,
+            "candidate_mode": "grounded",
+            "provider_id": "provider-neutral-test",
+            "model_id": "model-neutral-test",
+            "additional_sources": [
+                {
+                    "id": "spoofed-implementation",
+                    "source_kind": "directory_evidence",
+                    "source_role": "implementation",
+                    "capabilities": ["searchable_text"],
+                    "governed_root_index": 0,
+                    "relative_path": "spoofed",
+                }
+            ],
+            "acknowledge_non_publishing": True,
+            "idempotency_key": "reject-spoofed-implementation-authority",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Additional project evidence cannot claim implementation authority"
+    )
+
+
+@pytest.mark.asyncio
+async def test_quick_grounded_run_freezes_mixed_project_evidence_and_replays_it(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    project, run, _ = await _seed_legacy_baseline(db_session, tmp_path)
+    scan_root = config.intodoc_output_dir / project.id
+    scan_root.mkdir(parents=True)
+    scan_file = scan_root / "scan_result.json"
+    scan_file.write_text(
+        '{"jobs":[{"name":"JobA","components":[{"component_type":"tMap"}]}]}',
+        encoding="utf-8",
+    )
+    _write_bound_redaction_receipt(
+        scan_root / "redaction_report.json",
+        (scan_file,),
+    )
+
+    governed = tmp_path / "governed"
+    supporting = governed / "supporting"
+    runtime_root = governed / "runtime"
+    receipts = governed / "receipts"
+    supporting.mkdir(parents=True)
+    runtime_root.mkdir()
+    receipts.mkdir()
+    policy = supporting / "policy.md"
+    policy.write_text("approved support policy", encoding="utf-8")
+    runtime = runtime_root / "events.jsonl"
+    runtime.write_text('{"event_id":"evt-1","state":"ok"}\n', encoding="utf-8")
+    unsupported = governed / "future.bin"
+    unsupported.write_bytes(b"future evidence")
+    _write_bound_redaction_receipt(receipts / "supporting.json", (policy,))
+    _write_bound_redaction_receipt(receipts / "runtime.json", (runtime,))
+
+    monkeypatch.setattr(config, "agentic_experiments_enabled", True)
+    monkeypatch.setattr(config, "agentic_opencode_password", "test-only-password")
+    monkeypatch.setattr(config, "doc_generation_deepseek_api_key", "test-only-key")
+    monkeypatch.setattr(
+        config,
+        "agentic_governed_source_roots_json",
+        json.dumps([str(governed)]),
+    )
+    real_dispatch = agentic_experiments._run_quick_opencode_candidate
+    dispatched: list[dict[str, object]] = []
+
+    async def fake_dispatch(**kwargs: object) -> None:
+        dispatched.append(kwargs)
+
+    monkeypatch.setattr(
+        agentic_experiments,
+        "_run_quick_opencode_candidate",
+        fake_dispatch,
+    )
+    response = await client.post(
+        "/mcp/agentic-experiments/quick-run",
+        json={
+            "project_id": project.id,
+            "baseline_run_id": run.id,
+            "candidate_mode": "grounded",
+            "provider_id": "provider-neutral-test",
+            "model_id": "model-neutral-test",
+            "additional_sources": [
+                {
+                    "id": "supporting-policy",
+                    "source_kind": "directory_evidence",
+                    "source_role": "supporting_reference",
+                    "capabilities": ["searchable_text"],
+                    "governed_root_index": 0,
+                    "relative_path": "supporting",
+                    "redaction_receipt_relative_path": "receipts/supporting.json",
+                },
+                {
+                    "id": "runtime-observations",
+                    "source_kind": "runtime_export",
+                    "source_role": "runtime_observation",
+                    "capabilities": ["runtime_events"],
+                    "governed_root_index": 0,
+                    "relative_path": "runtime/events.jsonl",
+                    "redaction_receipt_relative_path": "receipts/runtime.json",
+                },
+                {
+                    "id": "missing-runtime",
+                    "source_kind": "runtime_export",
+                    "source_role": "runtime_observation",
+                    "capabilities": ["runtime_events"],
+                    "governed_root_index": 0,
+                    "relative_path": "runtime/missing.jsonl",
+                    "redaction_receipt_relative_path": "receipts/missing.json",
+                },
+                {
+                    "id": "unsupported-future",
+                    "source_kind": "future_evidence",
+                    "source_role": "supporting_reference",
+                    "capabilities": ["searchable_text"],
+                    "governed_root_index": 0,
+                    "relative_path": "future.bin",
+                },
+            ],
+            "acknowledge_non_publishing": True,
+            "idempotency_key": "grounded-mixed-project-evidence",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert len(dispatched) == 1
+    assert body["source_snapshot_fingerprint_sha256"]
+    coverage = body["source_coverage"]
+    assert {
+        key: coverage[key]
+        for key in (
+            "declared_sources",
+            "readable_sources",
+            "unreadable_sources",
+            "unsupported_sources",
+            "prepared_records",
+            "raw_files",
+        )
+    } == {
+        "declared_sources": 5,
+        "readable_sources": 3,
+        "unreadable_sources": 1,
+        "unsupported_sources": 1,
+        "prepared_records": 3,
+        "raw_files": 4,
+    }
+    assert coverage["prepared_bytes"] > 0
+    assert coverage["raw_bytes"] > 0
+    inventory = {value["descriptor_id"]: value for value in body["source_inventory"]}
+    assert set(inventory) == {
+        "current-intodoc-scan",
+        "supporting-policy",
+        "runtime-observations",
+        "missing-runtime",
+        "unsupported-future",
+    }
+    assert inventory["missing-runtime"]["status"] == "unreadable"
+    assert inventory["missing-runtime"]["status_reason"] == "redaction_receipt_unreadable"
+    assert inventory["unsupported-future"]["status"] == "unsupported"
+    assert inventory["unsupported-future"]["status_reason"] == "no_registered_adapter"
+
+    scan_file.write_text("changed after freeze", encoding="utf-8")
+    policy.unlink()
+    runtime.unlink()
+    db_session.expire_all()
+    experiment = await db_session.get(GenerationExperiment, body["experiment_id"])
+    assert experiment is not None and experiment.source_snapshot_id is not None
+    snapshot_row = await db_session.get(
+        GenerationSourceSnapshot,
+        experiment.source_snapshot_id,
+    )
+    assert snapshot_row is not None
+    indexed_items = tuple(
+        (
+            await db_session.execute(
+                select(GenerationSourceSnapshotItem)
+                .where(GenerationSourceSnapshotItem.snapshot_id == snapshot_row.id)
+                .order_by(GenerationSourceSnapshotItem.logical_identity)
+            )
+        ).scalars()
+    )
+    replayed = agentic_experiments._load_verified_project_evidence_snapshot(
+        project_id=body["project_id"],
+        experiment_id=experiment.id,
+        snapshot_row=snapshot_row,
+        indexed_items=indexed_items,
+    )
+
+    assert replayed.fingerprint_sha256 == body["source_snapshot_fingerprint_sha256"]
+    assert len(replayed.prepared_content_items) == 3
+    assert any(b"approved support policy" in content for _, content in replayed.prepared_contents())
+    assert any(b"evt-1" in content for _, content in replayed.prepared_contents())
+    assert {source.descriptor_id for source in replayed.sources} == set(inventory)
+
+    scanner_items = tuple(
+        item for item in indexed_items if item.source_kind == "intodoc_scan"
+    )
+    scanner_paths = agentic_experiments._quick_candidate_sources(
+        project_id=body["project_id"],
+        experiment_id=experiment.id,
+        relative_paths=tuple(item.content_relative_path for item in scanner_items),
+    )
+    scanner_receipt_sha256 = next(
+        source.redaction_receipt_sha256
+        for source in replayed.sources
+        if source.source_kind == "intodoc_scan"
+    )
+    ledger, source_preflight = preflight_grounded_sources(
+        tuple(
+            (item.logical_identity, path)
+            for item, path in zip(scanner_items, scanner_paths, strict=True)
+        ),
+        max_source_items=1_000,
+        max_source_bytes=100 * 1024 * 1024,
+        project_id=body["project_id"],
+        approved_redaction_receipt_sha256=scanner_receipt_sha256,
+    )
+    assert source_preflight["json_source_count"] == 1
+    assert source_preflight["redaction_receipt_approved"] is True
+    assert source_preflight["ledger"]["status"] == "pass"
+    assert ledger["totals"]["jobs"] == 1
+    assert [unit["name"] for unit in ledger["canonical_units"]] == ["JobA"]
+
+    scanner_index = scanner_items[0]
+    for field, tampered in (
+        ("source_role", "tampered-role"),
+        ("source_kind", "tampered-kind"),
+        ("logical_identity", "tampered/path.json"),
+        ("raw_sha256", "0" * 64),
+        ("extracted_sha256", "1" * 64),
+        ("size_bytes", scanner_index.size_bytes + 1),
+        ("extracted_size_bytes", scanner_index.extracted_size_bytes + 1),
+        ("content_relative_path", "shared/tampered.bin"),
+    ):
+        original = getattr(scanner_index, field)
+        setattr(scanner_index, field, tampered)
+        with pytest.raises(ValueError, match="database index differs"):
+            agentic_experiments._load_verified_project_evidence_snapshot(
+                project_id=body["project_id"],
+                experiment_id=experiment.id,
+                snapshot_row=snapshot_row,
+                indexed_items=indexed_items,
+            )
+        setattr(scanner_index, field, original)
+
+    handoff: dict[str, object] = {}
+
+    class CapturingGroundedRunner:
+        def __init__(self, **kwargs: object) -> None:
+            handoff["runner"] = kwargs
+
+        async def run(self, **kwargs: object):
+            handoff["run"] = kwargs
+            raise RuntimeError("offline handoff captured")
+
+    monkeypatch.setattr(
+        agentic_experiments,
+        "GroundedRuntimeRunner",
+        CapturingGroundedRunner,
+    )
+    await real_dispatch(
+        experiment_id=body["experiment_id"],
+        project_id=body["project_id"],
+        provider_id="provider-neutral-test",
+        model_id="model-neutral-test",
+        output_names=("unused-by-capture.md",),
+        candidate_mode="grounded",
+    )
+
+    run_handoff = handoff["run"]
+    assert len(run_handoff["source_items"]) == 1
+    assert run_handoff["project_evidence_snapshot"].fingerprint_sha256 == (
+        body["source_snapshot_fingerprint_sha256"]
+    )
+    assert len(
+        run_handoff["project_evidence_snapshot"].prepared_content_items
+    ) == 3
+
+
+@pytest.mark.asyncio
+async def test_quick_grounded_run_prepares_managed_uploaded_workspace_as_supporting(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    project, run, _ = await _seed_legacy_baseline(db_session, tmp_path)
+    project.source_type = "zip"
+    await db_session.commit()
+
+    scan_root = config.intodoc_output_dir / project.id
+    scan_root.mkdir(parents=True)
+    scan_file = scan_root / "scan_result.json"
+    scan_file.write_text('{"jobs":[{"name":"JobA"}]}', encoding="utf-8")
+    scanner_index = scan_root / "scan" / "files_index.json"
+    scanner_index.parent.mkdir()
+    scanner_index.write_text(
+        json.dumps(
+            [
+                {
+                    "relative_path": "implementation/JobA.item",
+                    "platform_metadata": {"source_root": "implementation"},
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    _write_bound_redaction_receipt(
+        scan_root / "redaction_report.json", (scan_file, scanner_index)
+    )
+
+    workspace = config.repos_dir / project.id
+    workspace.mkdir(parents=True)
+    (workspace / "notes.txt").write_text("uploaded workspace note", encoding="utf-8")
+    implementation = workspace / "implementation"
+    implementation.mkdir()
+    (implementation / "JobA.item").write_text("scanner-owned implementation", encoding="utf-8")
+
+    monkeypatch.setattr(config, "agentic_experiments_enabled", True)
+    monkeypatch.setattr(config, "agentic_opencode_password", "test-only-password")
+    monkeypatch.setattr(config, "doc_generation_deepseek_api_key", "test-only-key")
+    dispatched: list[dict[str, object]] = []
+
+    async def fake_dispatch(**kwargs: object) -> None:
+        dispatched.append(kwargs)
+
+    monkeypatch.setattr(agentic_experiments, "_run_quick_opencode_candidate", fake_dispatch)
+    response = await client.post(
+        "/mcp/agentic-experiments/quick-run",
+        json={
+            "project_id": project.id,
+            "baseline_run_id": run.id,
+            "candidate_mode": "grounded",
+            "provider_id": "provider-neutral-test",
+            "model_id": "model-neutral-test",
+            "acknowledge_non_publishing": True,
+            "idempotency_key": "grounded-auto-managed-workspace",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    body = response.json()
+    inventory = {entry["descriptor_id"]: entry for entry in body["source_inventory"]}
+    assert set(inventory) == {"current-intodoc-scan", "managed-project-workspace"}
+    workspace_entry = inventory["managed-project-workspace"]
+    assert workspace_entry["source_role"] == "supporting_reference"
+    assert workspace_entry["status"] == "readable"
+    assert workspace_entry["status_reason"] is None
+    assert workspace_entry["prepared_records"] == 1
+    assert body["source_coverage"]["declared_sources"] == 2
+    assert body["source_coverage"]["readable_sources"] == 2
+    assert len(dispatched) == 1
 
 
 @pytest.mark.asyncio

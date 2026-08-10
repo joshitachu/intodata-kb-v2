@@ -31,6 +31,10 @@ class DocCatalogEntry(BaseModel):
     required_sections: list[str] = Field(default_factory=list)
     phase2_sections: list[str] = Field(default_factory=list)
     doc_specific_instructions: str = ""
+    # Expanded by the harness into one document per scanned unit
+    # ("{name}__{group}__{unit}"). Per-unit docs are written first and the
+    # catalog/summary docs synthesize from the finished unit docs.
+    per_unit: bool = False
 
 
 class DocCatalog(BaseModel):
@@ -39,6 +43,10 @@ class DocCatalog(BaseModel):
     @cached_property
     def required_docs(self) -> list[str]:
         return [d.name for d in self.docs]
+
+    @cached_property
+    def per_unit_docs(self) -> list[DocCatalogEntry]:
+        return [d for d in self.docs if d.per_unit]
 
     @cached_property
     def doc_assignments(self) -> dict[str, list[str]]:

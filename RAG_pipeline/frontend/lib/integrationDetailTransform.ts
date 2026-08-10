@@ -5,7 +5,6 @@ import type {
   LandscapeInterface,
   LandscapeProvenance,
   ProjectLandscapeResponse,
-  SemanticTopologyEvidence,
 } from "@/types/landscape";
 import { landscapeEntityLabel, type TopologyEdge } from "@/lib/landscapeTransform";
 
@@ -51,15 +50,6 @@ export function integrationDetailForEdge(
     id: "boundary:target", type: "integrationBoundary", position: { x: 740, y: 160 },
     data: { label: landscapeEntityLabel(landscape, edge.target), side: "target", edge }, width: 220, height: 96,
   };
-  const semanticEvidence = edge.semanticExchange?.evidence ?? [];
-  const evidenceByArtifact = new Map<string, SemanticTopologyEvidence[]>();
-  for (const evidence of semanticEvidence) {
-    if (!evidence.qualified_artifact_id) continue;
-    evidenceByArtifact.set(
-      evidence.qualified_artifact_id,
-      [...(evidenceByArtifact.get(evidence.qualified_artifact_id) ?? []), evidence],
-    );
-  }
   const uniqueProvenance = new Map<string, LandscapeProvenance>();
   for (const record of provenance) {
     uniqueProvenance.set(record.qualified_artifact_id, record);
@@ -68,10 +58,7 @@ export function integrationDetailForEdge(
     id: `artifact:${record.qualified_artifact_id}`,
     type: "integrationArtifact",
     position: { x: 350, y: 36 + index * 126 },
-    data: {
-      record,
-      semanticEvidence: evidenceByArtifact.get(record.qualified_artifact_id) ?? [],
-    },
+    data: { record },
     width: 280,
     height: 106,
   }));

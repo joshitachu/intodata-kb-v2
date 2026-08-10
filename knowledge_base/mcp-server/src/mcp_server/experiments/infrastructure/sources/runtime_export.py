@@ -17,6 +17,7 @@ from mcp_server.experiments.domain.sources import (
 )
 from mcp_server.experiments.infrastructure.sources.registry import (
     AdapterSnapshotResult,
+    CapturedRawSource,
     SourceAdapterError,
     read_regular,
 )
@@ -77,6 +78,13 @@ class RuntimeExportAdapter:
         return AdapterSnapshotResult(
             items=tuple(item for item, _ in captured),
             contents=tuple(content for _, content in captured),
+            raw_sources=(
+                CapturedRawSource(
+                    logical_identity=f"{descriptor.id}:{descriptor.source_path.name}",
+                    raw_sha256=hashlib.sha256(raw).hexdigest(),
+                    size_bytes=len(raw),
+                ),
+            ),
         )
 
     def _parse_json_object(self, raw: bytes) -> dict[str, object]:
@@ -96,9 +104,13 @@ class RuntimeExportAdapter:
             if len(line) > self._limits.max_line_bytes:
                 raise SourceAdapterError("runtime JSONL line exceeds byte limit")
             try:
-                decoded = json.loads(line.decode("utf-8"), object_pairs_hook=self._no_duplicate_keys)
+                decoded = json.loads(
+                    line.decode("utf-8"), object_pairs_hook=self._no_duplicate_keys
+                )
             except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
-                raise SourceAdapterError(f"runtime JSONL line {line_number} is malformed") from error
+                raise SourceAdapterError(
+                    f"runtime JSONL line {line_number} is malformed"
+                ) from error
             if not isinstance(decoded, dict):
                 raise SourceAdapterError("runtime JSONL records must be objects")
             records.append(self._normalise_value(decoded, depth=0))
@@ -123,7 +135,9 @@ class RuntimeExportAdapter:
         if value is None or isinstance(value, bool):
             return value
         if isinstance(value, (int, float)):
-            if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+            if isinstance(value, float) and (
+                value != value or value in (float("inf"), float("-inf"))
+            ):
                 raise SourceAdapterError("runtime export contains non-finite number")
             return value
         if isinstance(value, str):
@@ -165,7 +179,9 @@ class RuntimeExportAdapter:
                 raise SourceAdapterError("runtime export has duplicate logical identity")
             seen.add(logical_identity)
             timestamp_field, timestamp = self._timestamp(record)
-            canonical = json.dumps(record, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            canonical = json.dumps(
+                record, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
             locator = f"{descriptor.provenance_locator}#record={quote(record_key, safe='')}"
             if timestamp is not None:
                 locator += f"&timestamp={quote(timestamp, safe='')}"
@@ -177,22 +193,22 @@ class RuntimeExportAdapter:
                 "timestamp_field": timestamp_field,
             }
             item = SourceSnapshotItem(
-                    id=hashlib.sha256(logical_identity.encode("utf-8")).hexdigest(),
-                    source_descriptor_id=descriptor.id,
-                    logical_identity=logical_identity,
-                    source_kind=descriptor.source_kind,
-                    source_role=descriptor.source_role,
-                    capabilities=descriptor.capabilities,
-                    locator=locator,
-                    raw_sha256=raw_sha,
-                    extracted_sha256=hashlib.sha256(canonical).hexdigest(),
-                    media_type=media_type,
-                    size_bytes=len(raw),
-                    extracted_size_bytes=len(canonical),
-                    trust_level=descriptor.trust_level,
-                    redaction_state=RedactionState.APPROVED,
-                    adapter_id=self.id,
-                    adapter_version=self.version,
+                id=hashlib.sha256(logical_identity.encode("utf-8")).hexdigest(),
+                source_descriptor_id=descriptor.id,
+                logical_identity=logical_identity,
+                source_kind=descriptor.source_kind,
+                source_role=descriptor.source_role,
+                capabilities=descriptor.capabilities,
+                locator=locator,
+                raw_sha256=raw_sha,
+                extracted_sha256=hashlib.sha256(canonical).hexdigest(),
+                media_type=media_type,
+                size_bytes=len(raw),
+                extracted_size_bytes=len(canonical),
+                trust_level=descriptor.trust_level,
+                redaction_state=RedactionState.APPROVED,
+                adapter_id=self.id,
+                adapter_version=self.version,
                 metadata=metadata,
             )
             captured.append(

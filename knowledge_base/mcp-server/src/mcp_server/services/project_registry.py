@@ -370,12 +370,14 @@ class ProjectRegistry:
         project_id: str,
         triggered_by: str = "api",
         model_name: str | None = None,
+        partition_name: str | None = None,
     ) -> GenerateRun:
         run = GenerateRun(
             project_id=project_id,
             triggered_by=triggered_by,
             status="running",
             model_name=model_name,
+            partition_name=partition_name,
         )
         self.db.add(run)
         await self.db.flush()

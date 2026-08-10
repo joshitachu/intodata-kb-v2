@@ -206,7 +206,29 @@ async def test_project_landscape_returns_scanner_artifact(
     response = await client.get(f"/mcp/projects/{PROJECT_ID}/landscape")
 
     assert response.status_code == 200, response.text
-    assert response.json() == LANDSCAPE
+    payload = response.json()
+    # Historic scanner semantic proposals are discarded at the API boundary.
+    assert "semantic_topology" not in payload
+    assert payload["business_topology"] is None
+    assert payload["topology_evidence"] == {}
+    assert payload["topology_state"] == {
+        "available": False,
+        "validated": False,
+        "stale": False,
+        "source": "none",
+        "message": "Business topology has not been generated for this project.",
+    }
+    for key in (
+        "systems",
+        "applications",
+        "edges",
+        "channels",
+        "interfaces",
+        "diagnostics",
+        "unmapped",
+        "summary",
+    ):
+        assert payload[key] == LANDSCAPE[key]
 
 
 async def test_project_landscape_preserves_edge_provenance(
@@ -230,14 +252,244 @@ async def test_project_landscape_preserves_edge_provenance(
     assert response.json()["channels"][0]["redaction_descriptor"]["tls"] is False
     assert response.json()["interfaces"][0]["endpoint_type"] == "rest"
     assert response.json()["interfaces"][0]["redaction_descriptor"]["auth_type"] == "api_key"
-    semantic_exchange = response.json()["semantic_topology"]["exchanges"][0]
-    assert semantic_exchange["label"] == "Work orders"
-    assert semantic_exchange["implementation_solution_ids"] == [
-        "application:assetcheck"
-    ]
-    assert semantic_exchange["evidence"][0]["qualified_artifact_id"] == (
-        "MAXIMO_INTEGRATION::FetchMaximo"
+
+
+async def test_project_landscape_composes_validated_current_business_topology(
+    client,
+    landscape_fixture,
+):
+    from mcp_server.config import config
+    from mcp_server.services.business_topology import build_business_topology_evidence
+
+    topology_dir = config.project_root / "output" / PROJECT_ID / "docs" / "_topology"
+    topology_dir.parent.mkdir(parents=True, exist_ok=True)
+    scan_root = config.intodoc_output_dir / PROJECT_ID
+    (scan_root / "scan_result.json").write_text(
+        json.dumps(
+            {
+                "platform": "talend",
+                "jobs": [
+                    {
+                        "name": "FetchMaximo",
+                        "job_id": "job-1",
+                        "source_root": "MAXIMO_INTEGRATION",
+                        "artifact_kind": "job",
+                        "artifact_role": "execution",
+                        "components": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
     )
+    bundle = build_business_topology_evidence(
+        project_id=PROJECT_ID,
+        scan_output_dir=scan_root,
+        staging_dir=topology_dir.parent,
+    )
+    fingerprint = bundle.scan_fingerprint
+    artifact_id = next(iter(bundle.artifact_ids))
+    topology = {
+        "schema_version": "business-topology-v1",
+        "scan_fingerprint": fingerprint,
+        "metadata": {
+            "project_id": PROJECT_ID,
+            "scan_fingerprint": fingerprint,
+        },
+        "systems": [],
+        "integration_solutions": [{
+            "id": "solution:1",
+            "name": "Integration runtime",
+            "description": "Implements the exchange.",
+            "status": "inferred",
+            "confidence": 0.8,
+            "platform": "talend",
+            "role": "execution",
+            "artifact_ids": [artifact_id],
+            "evidence_ids": [artifact_id],
+        }],
+        "business_objects": [],
+        "data_streams": [],
+        "delivery_paths": [],
+        "controls": [],
+        "risks": [],
+        "unknowns": [],
+        "artifact_annotations": [],
+        "component_annotations": [],
+        "lineage_annotations": [],
+        "coverage": {
+            "total_artifacts": 1,
+            "cited_artifacts": 1,
+            "total_evidence": len(bundle.evidence_ids),
+            "cited_evidence": 1,
+            "coverage_ratio": round(1 / len(bundle.evidence_ids), 6),
+            "notes": [],
+        },
+    }
+    (topology_dir / "business_topology.json").write_text(
+        json.dumps(topology), encoding="utf-8"
+    )
+    (topology_dir / "validation_report.json").write_text(
+        json.dumps({
+            "validated": True,
+            "scan_fingerprint": fingerprint,
+            "project_id": PROJECT_ID,
+            "errors": [],
+            "warnings": [],
+        }),
+        encoding="utf-8",
+    )
+    artifacts_path = topology_dir / "evidence" / "artifacts.jsonl"
+    artifact_record = json.loads(artifacts_path.read_text(encoding="utf-8").splitlines()[0])
+    artifact_record["connections"] = [{"secret": "must-not-be-served"}]
+    artifacts_path.write_text(json.dumps(artifact_record) + "\n", encoding="utf-8")
+
+    response = await client.get(f"/mcp/projects/{PROJECT_ID}/landscape")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["business_topology"] == topology
+    assert response.json()["topology_state"]["validated"] is True
+    assert response.json()["topology_evidence"] == {
+        "artifacts": [{
+            "id": artifact_id,
+            "name": "FetchMaximo",
+            "job_id": "job-1",
+            "source_root": "MAXIMO_INTEGRATION",
+            "artifact_kind": "job",
+            "artifact_role": "execution",
+        }],
+        "components": [],
+        "lineage": [],
+    }
+    assert "secret" not in response.text
+
+
+async def test_project_landscape_rejects_stale_business_topology(
+    client,
+    landscape_fixture,
+):
+    from mcp_server.config import config
+
+    topology_dir = config.project_root / "output" / PROJECT_ID / "docs" / "_topology"
+    topology_dir.mkdir(parents=True, exist_ok=True)
+    (topology_dir / "business_topology.json").write_text(
+        json.dumps({
+            "schema_version": "business-topology-v1",
+            "scan_fingerprint": "old-scan",
+            "metadata": {
+                "project_id": PROJECT_ID,
+                "scan_fingerprint": "old-scan",
+            },
+            "systems": [],
+            "integration_solutions": [],
+            "business_objects": [],
+            "data_streams": [],
+            "delivery_paths": [],
+            "controls": [],
+            "risks": [],
+            "unknowns": [],
+            "artifact_annotations": [],
+            "component_annotations": [],
+            "lineage_annotations": [],
+            "coverage": {
+                "total_artifacts": 0,
+                "cited_artifacts": 0,
+                "total_evidence": 0,
+                "cited_evidence": 0,
+                "coverage_ratio": 0,
+                "notes": [],
+            },
+        }),
+        encoding="utf-8",
+    )
+    (topology_dir / "validation_report.json").write_text(
+        json.dumps({
+            "validated": True,
+            "scan_fingerprint": "old-scan",
+            "project_id": PROJECT_ID,
+            "errors": [],
+            "warnings": [],
+        }),
+        encoding="utf-8",
+    )
+
+    response = await client.get(f"/mcp/projects/{PROJECT_ID}/landscape")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["business_topology"] is None
+    assert response.json()["topology_evidence"] == {}
+    assert response.json()["topology_state"]["stale"] is True
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["wrong-project", "wrong-schema", "unknown-evidence", "wrong-coverage"],
+)
+async def test_project_landscape_revalidates_published_topology_identity(
+    client,
+    landscape_fixture,
+    failure: str,
+):
+    from mcp_server.config import config
+    from mcp_server.services.business_topology import build_business_topology_evidence
+
+    topology_dir = config.project_root / "output" / PROJECT_ID / "docs" / "_topology"
+    topology_dir.parent.mkdir(parents=True, exist_ok=True)
+    bundle = build_business_topology_evidence(
+        project_id=PROJECT_ID,
+        scan_output_dir=config.intodoc_output_dir / PROJECT_ID,
+        staging_dir=topology_dir.parent,
+    )
+    topology_project_id = "another-project" if failure == "wrong-project" else PROJECT_ID
+    schema_version = "business-topology-v999" if failure == "wrong-schema" else "business-topology-v1"
+    topology = {
+        "schema_version": schema_version,
+        "scan_fingerprint": bundle.scan_fingerprint,
+        "metadata": {
+            "project_id": topology_project_id,
+            "scan_fingerprint": bundle.scan_fingerprint,
+        },
+        "coverage": {
+            "total_artifacts": len(bundle.artifact_ids),
+            "cited_artifacts": 0,
+            "total_evidence": len(bundle.evidence_ids),
+            "cited_evidence": 0,
+            "coverage_ratio": 0,
+        },
+    }
+    if failure == "unknown-evidence":
+        topology["business_objects"] = [
+            {
+                "id": "object:unsupported",
+                "name": "Unsupported object",
+                "status": "inferred",
+                "confidence": 0.5,
+                "evidence_ids": ["evidence:not-in-ledger"],
+            }
+        ]
+    if failure == "wrong-coverage":
+        topology["coverage"]["total_evidence"] += 1
+    (topology_dir / "business_topology.json").write_text(
+        json.dumps(topology), encoding="utf-8"
+    )
+    (topology_dir / "validation_report.json").write_text(
+        json.dumps(
+            {
+                "validated": True,
+                "scan_fingerprint": bundle.scan_fingerprint,
+                "project_id": topology_project_id,
+                "errors": [],
+                "warnings": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = await client.get(f"/mcp/projects/{PROJECT_ID}/landscape")
+
+    assert response.status_code == 200
+    assert response.json()["business_topology"] is None
+    assert response.json()["topology_state"]["validated"] is False
 
 
 async def test_project_landscape_missing_artifact_returns_404(client):

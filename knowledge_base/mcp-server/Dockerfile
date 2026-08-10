@@ -30,7 +30,10 @@ COPY mcp-server/src/ src/
 COPY mcp-server/alembic/ alembic/
 COPY mcp-server/alembic.ini .
 COPY mcp-server/data/ data/
-RUN pip install --no-cache-dir .
+# The grounded OpenAI runtime imports the separate OpenAI Agents SDK as
+# `agents`.  Keep it optional for library consumers, but include the declared
+# extra in the production image whenever this API route is advertised.
+RUN pip install --no-cache-dir ".[openai-agents]" && python -c "import agents"
 
 # Run as non-root user
 RUN addgroup --system --gid 1001 appgroup && \

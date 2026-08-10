@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 import json
 
@@ -216,3 +217,89 @@ async def test_runtime_deduplicates_sse_events():
     assert events[0].event_id == "same"
     assert events[0].category == "tool"
     await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_runtime_observe_yields_a_normalized_event_before_sse_closure():
+    class HangingAfterEvent(httpx.AsyncByteStream):
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def __aiter__(self):
+            yield (
+                b'data: {"type":"usage","properties":{"sessionID":"session-1",'
+                b'"id":"usage-1","tokens":{"input":101,"output":1}}}\n\n'
+            )
+            await asyncio.Event().wait()
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    stream = HangingAfterEvent()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/global/health":
+            return httpx.Response(200, json={"version": "1.18.4"})
+        if request.url.path == "/provider":
+            return httpx.Response(200, json=_provider_response())
+        if request.url.path == "/session" and request.method == "POST":
+            return httpx.Response(200, json={"id": "session-1"})
+        if request.url.path.endswith("prompt_async"):
+            return httpx.Response(204)
+        if request.url.path == "/event":
+            return httpx.Response(200, stream=stream)
+        raise AssertionError(request.url.path)
+
+    runtime, http_client = _runtime(handler)
+    handle = await runtime.start_task(_request())
+    observer = runtime.observe(handle)
+
+    event = await asyncio.wait_for(observer.__anext__(), timeout=0.1)
+    await observer.aclose()
+    await http_client.aclose()
+
+    assert event.event_id == "usage-1"
+    assert event.category == "usage"
+    assert event.payload == {"input_tokens": 101, "output_tokens": 1}
+    assert stream.closed is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_normalizes_terminal_usage_over_budget_as_failure():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/global/health":
+            return httpx.Response(200, json={"version": "1.18.4"})
+        if request.url.path == "/provider":
+            return httpx.Response(200, json=_provider_response())
+        if request.url.path == "/session":
+            return httpx.Response(200, json={"id": "session-1"})
+        if request.url.path.endswith("prompt_async"):
+            return httpx.Response(204)
+        if request.url.path == "/session/session-1/message":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "info": {"role": "assistant"},
+                        "parts": [
+                            {
+                                "type": "step-finish",
+                                "reason": "stop",
+                                "tokens": {"input": 10, "output": 51},
+                            }
+                        ],
+                    }
+                ],
+            )
+        if request.url.path == "/session/status":
+            return httpx.Response(200, json={})
+        raise AssertionError(request.url.path)
+
+    runtime, http_client = _runtime(handler)
+    handle = await runtime.start_task(_request())
+    result = await runtime.result(handle)
+    await http_client.aclose()
+
+    assert result.status == RuntimeTaskStatus.FAILED
+    assert result.failure_category == "budget_exceeded"
+    assert result.failure_detail == {"budget": "output_tokens"}

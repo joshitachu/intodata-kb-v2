@@ -863,6 +863,7 @@ class GenerateRunResponse(BaseModel):
     id: int
     project_id: str
     triggered_by: str
+    partition_name: str | None = None
     status: str
     started_at: datetime.datetime | None = None
     completed_at: datetime.datetime | None = None
@@ -1186,63 +1187,29 @@ class LandscapeDiagnosticResponse(BaseModel):
     severity: str = "info"
 
 
-class SemanticTopologyEvidenceResponse(BaseModel):
-    signal_type: str
-    label: str
-    artifact_id: str = ""
-    qualified_artifact_id: str = ""
-    source_root: str = ""
-    component_name: str = ""
+class BusinessTopologyStateResponse(BaseModel):
+    """Publication state for the optional AI-authored business overlay.
 
+    The scanner landscape remains usable when this overlay is absent, stale,
+    or invalid.  Keeping the state explicit prevents the UI from presenting a
+    previous generation as current business truth.
+    """
 
-class SemanticSystemResponse(BaseModel):
-    id: str
-    name: str
-    kind: str = "software_system"
-    status: str = "proposed"
-    confidence: str = "unknown"
-    aliases: list[str] = Field(default_factory=list)
-    evidence: list[SemanticTopologyEvidenceResponse] = Field(default_factory=list)
-
-
-class IntegrationSolutionResponse(BaseModel):
-    id: str
-    name: str
-    platform: str = ""
-    role: str = "execution"
-    source_roots: list[str] = Field(default_factory=list)
-    artifact_count: int = 0
-
-
-class SemanticExchangeResponse(BaseModel):
-    id: str
-    source_system_id: str
-    target_system_id: str
-    label: str
-    payloads: list[str] = Field(default_factory=list)
-    mechanisms: list[str] = Field(default_factory=list)
-    reliability: str = "unknown"
-    status: str = "proposed"
-    confidence: str = "unknown"
-    implementation_solution_ids: list[str] = Field(default_factory=list)
-    artifact_ids: list[str] = Field(default_factory=list)
-    evidence: list[SemanticTopologyEvidenceResponse] = Field(default_factory=list)
-
-
-class SemanticTopologyResponse(BaseModel):
-    systems: list[SemanticSystemResponse] = Field(default_factory=list)
-    integration_solutions: list[IntegrationSolutionResponse] = Field(default_factory=list)
-    exchanges: list[SemanticExchangeResponse] = Field(default_factory=list)
-    unresolved: list[dict] = Field(default_factory=list)
-    summary: dict = Field(default_factory=dict)
+    available: bool = False
+    validated: bool = False
+    stale: bool = False
+    source: str = "none"
+    message: str = "Business topology has not been generated."
 
 
 class ProjectLandscapeResponse(BaseModel):
-    """Read-only scanner-computed landscape artifact.
+    """Scanner facts plus an optional validated business-oriented overlay.
 
     This mirrors ``intodoc.models.Landscape`` without importing the scanner
     package into the MCP API process. Keeping an explicit response contract
-    makes schema drift fail loudly instead of serving an arbitrary JSON file.
+    makes scanner schema drift fail loudly. ``business_topology`` is authored
+    after documentation generation and is deliberately kept separate from the
+    deterministic fields below.
     """
 
     systems: list[LandscapeSystemResponse] = Field(default_factory=list)
@@ -1251,8 +1218,13 @@ class ProjectLandscapeResponse(BaseModel):
     channels: list[LandscapeChannelResponse] = Field(default_factory=list)
     interfaces: list[LandscapeInterfaceResponse] = Field(default_factory=list)
     diagnostics: list[LandscapeDiagnosticResponse] = Field(default_factory=list)
-    semantic_topology: SemanticTopologyResponse = Field(
-        default_factory=SemanticTopologyResponse
+    business_topology: dict | None = None
+    # Bounded factual ID catalogue used to resolve business annotations back
+    # to the scanner-authored L3/L4 artifacts. It contains identities only,
+    # never another semantic interpretation layer.
+    topology_evidence: dict = Field(default_factory=dict)
+    topology_state: BusinessTopologyStateResponse = Field(
+        default_factory=BusinessTopologyStateResponse
     )
     unmapped: list[dict] = Field(default_factory=list)
     summary: dict = Field(default_factory=dict)

@@ -32,7 +32,10 @@ from mcp_server.services.generation_run_state import (
     release_generation_lock,
     write_run_manifest,
 )
-from mcp_server.providers.custom.source_context import materialize_direct_redacted_source
+from mcp_server.providers.custom.source_context import (
+    materialize_direct_redacted_source,
+    redact_inline_credentials,
+)
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.plugin_runner import build_plugin_runner
 from mcp_server.services.pack_governance import PackGovernanceDenied, pack_governance
@@ -314,13 +317,16 @@ class DocGenerationCoordinator:
     def _format_chunk_markdown(
         scanner: ScannerService, output_dir: str, chunks: list[dict],
         platform: str = "talend",
+        unit_allowlist: set[str] | None = None,
     ) -> tuple[list[str], int]:
         """Process chunks into markdown parts. Returns (parts, job_count)."""
         parts: list[str] = []
         job_count = 0
 
         for chunk in chunks:
-            chunk_data = scanner.read_chunk_data(output_dir, chunk["chunk_id"])
+            chunk_data = scanner.read_chunk_data(
+                output_dir, chunk["chunk_id"], unit_allowlist=unit_allowlist,
+            )
             if "error" in chunk_data:
                 parts.append(f"\n## Chunk {chunk['chunk_id']} — ERROR: {chunk_data['error']}\n")
                 continue
@@ -457,12 +463,21 @@ class DocGenerationCoordinator:
         staging_dir: Path,
         platform: str = "talend",
         total_jobs: int = 0,
+        unit_allowlist: set[str] | None = None,
     ) -> list[str]:
         """Pre-process raw job JSONs into structured markdown summaries.
 
         Reads scan data via ScannerService and writes per-group markdown files
         to staging_dir/_preprocess/{group}.md. Also bundles analysis prompts,
         reference docs, and scoring templates for sub-agents.
+
+        ``unit_allowlist`` (composite sub-project scoping) restricts the
+        preprocess to the partition's own canonical unit names: chunk
+        definitions, chunk payloads, group files and the design inventory then
+        contain ONLY that sub-project's units. Shared-name REFERENCES jobs are
+        safe because canonical job ids are unique per zip (see
+        ``ScannerService.get_chunk_definitions``). ``None`` => full scan,
+        unchanged behaviour.
 
         Returns list of group names.
         """
@@ -492,8 +507,10 @@ class DocGenerationCoordinator:
                 source_coverage.get("summary", {}).get("redactions", 0),
             )
         else:
-            # Get chunk definitions
-            chunk_defs = scanner.get_chunk_definitions(output_dir)
+            # Get chunk definitions (scoped to the partition when allowlisted)
+            chunk_defs = scanner.get_chunk_definitions(
+                output_dir, unit_allowlist=unit_allowlist,
+            )
             if "error" in chunk_defs:
                 raise RuntimeError(f"Failed to get chunk definitions: {chunk_defs['error']}")
 
@@ -503,8 +520,34 @@ class DocGenerationCoordinator:
                 group = chunk["group"]
                 groups.setdefault(group, []).append(chunk)
 
+            # Case-insensitive filesystems (macOS/Windows dev hosts) map group
+            # names differing only in case (Talend allows e.g. VISE2AssetCheck
+            # and Vise2AssetCheck side by side) onto the SAME {group}.md path,
+            # silently clobbering the earlier group's preprocess file and
+            # losing its units from Phase 1/2. Disambiguate every collider
+            # after the first with a "_part_ci{k}" slice base: the existing
+            # slice->group resolvers (harness._group_units, validators.
+            # _groups_for_analysis_file, quick-scan globbing) already map any
+            # "{group}_part*" slice back to its group, and the suffix keeps
+            # paths distinct even case-insensitively. Non-colliding groups are
+            # byte-identical to before.
+            slice_base: dict[str, str] = {}
+            lower_buckets: dict[str, list[str]] = {}
+            for group in sorted(groups):
+                lower_buckets.setdefault(group.lower(), []).append(group)
+            for bucket in lower_buckets.values():
+                slice_base[bucket[0]] = bucket[0]
+                for k, group in enumerate(bucket[1:], start=1):
+                    slice_base[group] = f"{group}_part_ci{k}"
+                    logger.warning(
+                        "Group %r collides case-insensitively with %r — "
+                        "writing its preprocess slice as %r",
+                        group, bucket[0], slice_base[group],
+                    )
+
             for group, chunks in sorted(groups.items()):
                 total_jobs = sum(c["job_count"] for c in chunks)
+                base = slice_base[group]
 
                 # Split large groups (>40 jobs) into parts for parallel Phase 2
                 if total_jobs > 40:
@@ -516,16 +559,22 @@ class DocGenerationCoordinator:
                         if cumulative >= target:
                             split_idx = i + 1
                             break
+                    if base == group:
+                        part_names = (f"{group}_part1", f"{group}_part2")
+                    else:
+                        # Collision-suffixed base already contains "_part";
+                        # nested split parts stay under the same unique base.
+                        part_names = (f"{base}_1", f"{base}_2")
                     chunk_slices = [
-                        (f"{group}_part1", chunks[:split_idx]),
-                        (f"{group}_part2", chunks[split_idx:]),
+                        (part_names[0], chunks[:split_idx]),
+                        (part_names[1], chunks[split_idx:]),
                     ]
                     logger.info(
                         "Splitting group %s (%d jobs) into 2 parts at chunk %d",
                         group, total_jobs, split_idx,
                     )
                 else:
-                    chunk_slices = [(group, chunks)]
+                    chunk_slices = [(base, chunks)]
 
                 for slice_name, slice_chunks in chunk_slices:
                     if not slice_chunks:
@@ -555,8 +604,21 @@ class DocGenerationCoordinator:
 
                     body_parts, actual_jobs = self._format_chunk_markdown(
                         scanner, output_dir, slice_chunks, platform=platform,
+                        unit_allowlist=unit_allowlist,
                     )
                     content = header + "".join(body_parts)
+                    # Defence-in-depth for scan caches produced before the
+                    # scanner-side credential-param fix: inline credential
+                    # query-params / RAW() values in verbatim code strings are
+                    # masked here so no downstream consumer (Phase 1/2 tasks,
+                    # evidence bundles built from these files) ever sees them.
+                    content, inline_redactions = redact_inline_credentials(content)
+                    if inline_redactions:
+                        logger.warning(
+                            "Preprocess group %s: masked %d inline credential "
+                            "parameter(s) left by an older scan cache",
+                            slice_name, inline_redactions,
+                        )
                     out_path = preprocess_dir / f"{slice_name}.md"
                     out_path.write_text(content, encoding="utf-8")
                     if len(content) > 100_000:
@@ -1047,6 +1109,7 @@ Required sections:
         instruction_pack_dir: str | None = None,
         enterprise_mode: bool | None = None,
         scoped_docs: set[str] | None = None,
+        partition=None,
     ) -> dict:
         """Spawn Claude Code CLI to generate docs for a project.
 
@@ -1057,9 +1120,28 @@ Required sections:
         takes precedence over the project's saved ``plugin_pack_id``. Pass
         ``None`` (the default) to keep the existing per-project behaviour.
 
+        ``partition`` (a ``partition_planner.Partition``) scopes this run to one
+        composite sub-project: preprocessing, the facts manifest, coverage and
+        the call budget see only that partition's units, and all output lands
+        under ``output/{project_id}/{subproject}/`` (its own docs_staging,
+        generation lock and atomic swap). ``None`` => whole-project run with
+        today's layout, unchanged.
+
         Returns dict with success, cost_usd, duration_ms, input_tokens, etc.
         """
+        from mcp_server.providers.custom.partition_planner import (
+            WHOLE_PROJECT_PARTITION,
+            partition_output_subdir,
+        )
+
         output_dir = config.project_root / "output" / project_id
+        unit_allowlist: set[str] | None = None
+        if partition is not None:
+            subdir = partition_output_subdir(partition.name)
+            if subdir is not None:
+                output_dir = output_dir / subdir
+            if partition.name != WHOLE_PROJECT_PARTITION:
+                unit_allowlist = set(partition.unit_names)
 
         # Use a staging directory so old docs survive if generation fails
         staging_dir = output_dir / "docs_staging"
@@ -1221,7 +1303,9 @@ Required sections:
         # Compute project metrics early (needed for preprocessing decisions)
         scanner = ScannerService()
         scan_output_dir = str(config.intodoc_output_dir / project_id)
-        chunk_defs = scanner.get_chunk_definitions(scan_output_dir)
+        chunk_defs = scanner.get_chunk_definitions(
+            scan_output_dir, unit_allowlist=unit_allowlist,
+        )
         total_jobs = chunk_defs.get("total_jobs", 0)
 
         # Step 7: Stale scan detection — compare scan mtime against manifest
@@ -1278,6 +1362,7 @@ Required sections:
             preprocess_groups = await self._preprocess_scan_data(
                 project_id, staging_dir, platform,
                 total_jobs=total_jobs,
+                unit_allowlist=unit_allowlist,
             )
 
         await self.log_manager.emit(
@@ -1294,6 +1379,7 @@ Required sections:
             "platform": platform,
             "groups": preprocess_groups,
             "total_jobs": total_jobs,
+            "partition": partition.name if partition is not None else None,
             "model": model or config.doc_generation_model,
             "scan_mtime": scan_manifest_path.stat().st_mtime if scan_manifest_path.exists() else 0,
             "created_at": time.time(),
@@ -1353,6 +1439,7 @@ Required sections:
             enterprise_mode=config.doc_generation_enterprise_mode_default if enterprise_mode is None else enterprise_mode,
             resume_state=resume_state,
             scoped_docs=scoped_docs,
+            partition=partition,
             nexus_presentation=nexus_presentation,
             nexus_private_analysis_packs=tuple(nexus_private_analysis_packs or ()),
         )

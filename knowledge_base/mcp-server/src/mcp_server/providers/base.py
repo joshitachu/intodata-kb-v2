@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 if TYPE_CHECKING:
+    from mcp_server.providers.custom.partition_planner import Partition
     from mcp_server.schemas import NexusPresentation, NexusPrivateAnalysisPack
 
 
@@ -76,6 +77,12 @@ class DocGenContext:
     # (no ``.md`` suffix) are regenerated; all other baseline docs are preserved
     # byte-stable. ``None`` => regenerate the full required-doc set.
     scoped_docs: set[str] | None = None
+    # Composite sub-project scoping. When set, the harness filters the facts
+    # manifest to this sub-project's units/groups (via
+    # ``partition_planner.filter_manifest``) so Phase 1/2/3, coverage and the
+    # per-run call budget only ever see that sub-project. ``None`` (every
+    # single-root project) => the whole scan runs as one partition, unchanged.
+    partition: "Partition | None" = None
     # Governed Style Pack output. Only Phase 3 prompt rendering may consume it.
     nexus_presentation: "NexusPresentation | None" = None
     # Verified V3 declarations, including metadata-only reference attachments and

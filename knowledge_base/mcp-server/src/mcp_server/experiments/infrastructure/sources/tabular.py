@@ -22,6 +22,7 @@ from mcp_server.experiments.domain.sources import (
 )
 from mcp_server.experiments.infrastructure.sources.registry import (
     AdapterSnapshotResult,
+    CapturedRawSource,
     SourceAdapterError,
     read_regular,
 )
@@ -92,6 +93,13 @@ class TabularFileAdapter:
             return AdapterSnapshotResult(
                 items=tuple(item for item, _ in captured),
                 contents=tuple(content for _, content in captured),
+                raw_sources=(
+                    CapturedRawSource(
+                        f"{descriptor.id}:{source_name}",
+                        hashlib.sha256(raw).hexdigest(),
+                        len(raw),
+                    ),
+                ),
             )
         if suffix == ".xlsx":
             sheets = self._read_xlsx(raw)
@@ -114,6 +122,13 @@ class TabularFileAdapter:
             return AdapterSnapshotResult(
                 items=tuple(item for item, _ in captured),
                 contents=tuple(content for _, content in captured),
+                raw_sources=(
+                    CapturedRawSource(
+                        f"{descriptor.id}:{descriptor.source_path.name}",
+                        hashlib.sha256(raw).hexdigest(),
+                        len(raw),
+                    ),
+                ),
             )
         raise SourceAdapterError("tabular adapter supports only .csv and .xlsx files")
 
@@ -145,7 +160,9 @@ class TabularFileAdapter:
             raise SourceAdapterError("CSV source is empty")
         return tuple(rows)
 
-    def _read_xlsx(self, raw: bytes) -> tuple[tuple[str, tuple[tuple[int, tuple[dict[str, object], ...]], ...]], ...]:
+    def _read_xlsx(
+        self, raw: bytes
+    ) -> tuple[tuple[str, tuple[tuple[int, tuple[dict[str, object], ...]], ...]], ...]:
         try:
             archive = zipfile.ZipFile(io.BytesIO(raw))
         except zipfile.BadZipFile as error:
@@ -159,7 +176,9 @@ class TabularFileAdapter:
             lowered = {name.casefold() for name in names}
             if any(name.endswith("vbaproject.bin") for name in lowered):
                 raise SourceAdapterError("XLSX macro/VBA content is not allowed")
-            if "xl/connections.xml" in lowered or any(name.startswith("xl/externallinks/") for name in lowered):
+            if "xl/connections.xml" in lowered or any(
+                name.startswith("xl/externallinks/") for name in lowered
+            ):
                 raise SourceAdapterError("XLSX external connections/links are not allowed")
             shared_strings = self._shared_strings(archive, names)
             sheet_paths = self._sheet_paths(archive, names)
@@ -219,7 +238,9 @@ class TabularFileAdapter:
             values.append(self._bounded_cell("".join(item.itertext())))
         return tuple(values)
 
-    def _sheet_paths(self, archive: zipfile.ZipFile, names: set[str]) -> tuple[tuple[str, str], ...]:
+    def _sheet_paths(
+        self, archive: zipfile.ZipFile, names: set[str]
+    ) -> tuple[tuple[str, str], ...]:
         rels_name = "xl/_rels/workbook.xml.rels"
         if rels_name not in names:
             raise SourceAdapterError("XLSX workbook relationships are missing")
@@ -233,7 +254,9 @@ class TabularFileAdapter:
         sheets = []
         for sheet in workbook.findall("x:sheets/x:sheet", _XML_NS):
             sheet_name = sheet.attrib.get("name", "").strip()
-            relation_id = sheet.attrib.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+            relation_id = sheet.attrib.get(
+                "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+            )
             target = targets.get(relation_id, "")
             if not sheet_name or not target:
                 raise SourceAdapterError("XLSX sheet relationship is invalid")
@@ -271,13 +294,19 @@ class TabularFileAdapter:
                         "formula": None if formula is None else self._bounded_cell(formula),
                     }
                 )
-            rows.append((row_number, tuple(sorted(cells, key=lambda item: int(item["column_index"])))) )
+            rows.append(
+                (row_number, tuple(sorted(cells, key=lambda item: int(item["column_index"]))))
+            )
         return tuple(rows)
 
     def _cell_value(self, cell: ET.Element, shared_strings: tuple[str, ...]) -> str:
         cell_type = cell.attrib.get("t")
         if cell_type == "inlineStr":
-            return self._bounded_cell("".join(cell.find("x:is", _XML_NS).itertext()) if cell.find("x:is", _XML_NS) is not None else "")
+            return self._bounded_cell(
+                "".join(cell.find("x:is", _XML_NS).itertext())
+                if cell.find("x:is", _XML_NS) is not None
+                else ""
+            )
         raw_value = cell.findtext("x:v", default="", namespaces=_XML_NS)
         if cell_type == "s":
             try:
@@ -309,7 +338,9 @@ class TabularFileAdapter:
                 for value in values
                 if isinstance(value.get("value"), str) and _FORMULA_PREFIX.match(value["value"])
             ]
-            identity_suffix = f"sheet={sheet_name}&row={row_number}" if sheet_name else f"row={row_number}"
+            identity_suffix = (
+                f"sheet={sheet_name}&row={row_number}" if sheet_name else f"row={row_number}"
+            )
             logical_identity = f"{descriptor.id}:{source_name}#{identity_suffix}"
             extracted = {
                 "columns": headers,
@@ -318,7 +349,9 @@ class TabularFileAdapter:
                 "sheet": sheet_name,
                 "values": values,
             }
-            encoded = json.dumps(extracted, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            encoded = json.dumps(
+                extracted, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
             metadata: dict[str, object] = {
                 "format": "xlsx" if sheet_name else "csv",
                 "columns": headers,
@@ -330,22 +363,22 @@ class TabularFileAdapter:
                 "formula_like_cells": formula_like_cells,
             }
             item = SourceSnapshotItem(
-                    id=hashlib.sha256(logical_identity.encode("utf-8")).hexdigest(),
-                    source_descriptor_id=descriptor.id,
-                    logical_identity=logical_identity,
-                    source_kind=descriptor.source_kind,
-                    source_role=descriptor.source_role,
-                    capabilities=descriptor.capabilities,
-                    locator=f"{descriptor.provenance_locator}#{identity_suffix}",
-                    raw_sha256=raw_sha,
-                    extracted_sha256=hashlib.sha256(encoded).hexdigest(),
-                    media_type=media_type,
-                    size_bytes=len(raw),
-                    extracted_size_bytes=len(encoded),
-                    trust_level=descriptor.trust_level,
-                    redaction_state=RedactionState.APPROVED,
-                    adapter_id=self.id,
-                    adapter_version=self.version,
+                id=hashlib.sha256(logical_identity.encode("utf-8")).hexdigest(),
+                source_descriptor_id=descriptor.id,
+                logical_identity=logical_identity,
+                source_kind=descriptor.source_kind,
+                source_role=descriptor.source_role,
+                capabilities=descriptor.capabilities,
+                locator=f"{descriptor.provenance_locator}#{identity_suffix}",
+                raw_sha256=raw_sha,
+                extracted_sha256=hashlib.sha256(encoded).hexdigest(),
+                media_type=media_type,
+                size_bytes=len(raw),
+                extracted_size_bytes=len(encoded),
+                trust_level=descriptor.trust_level,
+                redaction_state=RedactionState.APPROVED,
+                adapter_id=self.id,
+                adapter_version=self.version,
                 metadata=metadata,
             )
             captured.append(
@@ -370,11 +403,16 @@ class TabularFileAdapter:
             else:
                 candidate = str(value)
             candidate = " ".join(candidate.split()) or f"column_{index}"
-            count = sum(existing == candidate or existing.startswith(f"{candidate}_") for existing in headers)
+            count = sum(
+                existing == candidate or existing.startswith(f"{candidate}_")
+                for existing in headers
+            )
             headers.append(candidate if count == 0 else f"{candidate}_{count + 1}")
         return tuple(headers)
 
-    def _normalised_row(self, row: tuple[object, ...], headers: tuple[str, ...]) -> list[dict[str, object]]:
+    def _normalised_row(
+        self, row: tuple[object, ...], headers: tuple[str, ...]
+    ) -> list[dict[str, object]]:
         if len(row) > self._limits.max_columns:
             raise SourceAdapterError("tabular column limit exceeded")
         values: list[dict[str, object]] = []

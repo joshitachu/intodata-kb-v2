@@ -1769,12 +1769,71 @@ async def _run_generate_background(
     swap is skipped, ``docs/`` is left intact, the project is marked ``error``
     with a ``manual_review`` reason, and the SHA is not advanced. Manual and
     onboarding generate paths pass no hook and are unaffected.
+
+    Composite/oversized uploads: when the deterministic partition planner
+    resolves the scan into more than one sub-project, the full-generation path
+    (no ``scoped_docs``, no reingestion gate) delegates to the partition
+    orchestrator, which runs one scoped legacy generation per sub-project into
+    ``output/{project_id}/{subproject}/docs``. Single-partition scans continue
+    below on the unchanged single-run path.
     """
     claude = DocGenerationCoordinator(log_manager=log_mgr)
     log_mgr.reset_log_file(project_id)
     current_task = asyncio.current_task()
     if current_task is not None:
         _generation_tasks[project_id] = current_task
+
+    if scoped_docs is None and pre_swap_gate is None and not partial_rag_sync:
+        from mcp_server.services.partition_orchestrator import (
+            plan_composite_generation,
+            run_partitioned_generation,
+        )
+
+        planned = plan_composite_generation(project_id)
+        if planned is not None:
+            plan, facts = planned
+            try:
+                await run_partitioned_generation(
+                    project_id,
+                    run_id,
+                    log_mgr,
+                    claude,
+                    plan=plan,
+                    facts=facts,
+                    resume=resume,
+                    generate_kwargs={
+                        "investigation_model": investigation_model,
+                        "model": model,
+                        "write_model": write_model,
+                        "plugin_pack_id": plugin_pack_id,
+                        "nexus_pack_ids": nexus_pack_ids,
+                        "nexus_pack_snapshot": nexus_pack_snapshot,
+                        "nexus_presentation": nexus_presentation,
+                        "nexus_audience_render": nexus_audience_render,
+                        "nexus_private_pack_receipts": nexus_private_pack_receipts,
+                        "nexus_private_analysis_packs": nexus_private_analysis_packs,
+                        "doc_generation_provider": doc_generation_provider,
+                        "instruction_pack_dir": instruction_pack_dir,
+                        "enterprise_mode": enterprise_mode,
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "Composite orchestration crashed for %s", project_id
+                )
+                async with async_session_factory() as db:
+                    registry = ProjectRegistry(db)
+                    await registry.update_status(
+                        project_id, "error",
+                        error_message="Composite doc generation crashed; see logs",
+                    )
+                    await db.commit()
+            finally:
+                _currently_generating.discard(project_id)
+                _generation_tasks.pop(project_id, None)
+                await log_mgr.emit_done(project_id)
+            return
+
     try:
         result = await claude.generate_docs(
             project_id, investigation_model=investigation_model, model=model,
@@ -2667,6 +2726,7 @@ def _run_to_response(r) -> GenerateRunResponse:
         id=r.id,
         project_id=r.project_id,
         triggered_by=r.triggered_by,
+        partition_name=getattr(r, "partition_name", None),
         status=r.status,
         started_at=r.started_at,
         completed_at=r.completed_at,
@@ -3557,12 +3617,12 @@ async def get_project_graph(project_id: str, request: Request):
     response_model=ProjectLandscapeResponse,
 )
 async def get_project_landscape(project_id: str, request: Request):
-    """Return the deterministic L1/L2 landscape computed during scanning.
+    """Return scanner facts plus the current validated business overlay.
 
-    The endpoint is deliberately read-only: it never rebuilds a scan, derives
-    identities at request time, or mutates curation state. Every returned edge
-    therefore retains the scanner-produced provenance used to drill back to
-    job/component/lineage evidence.
+    The endpoint is deliberately read-only. It never derives identities at
+    request time: scanner facts come from ``scan/landscape.json`` and the
+    optional business view comes from the atomically published documentation
+    run. A missing, invalid, or stale overlay never hides the technical graph.
     """
     await require_project_access(request, project_id)
 
@@ -3577,6 +3637,16 @@ async def get_project_landscape(project_id: str, request: Request):
 
     try:
         payload = json.loads(landscape_path.read_text(encoding="utf-8"))
+        # Older scans may still contain the retired deterministic semantic
+        # projection. Never serve those filename-based proposals as business
+        # truth; the agent-authored artifact below is the only semantic layer.
+        payload.pop("semantic_topology", None)
+        business_topology, topology_state, topology_evidence = _load_published_business_topology(
+            project_id
+        )
+        payload["business_topology"] = business_topology
+        payload["topology_evidence"] = topology_evidence
+        payload["topology_state"] = topology_state
         return ProjectLandscapeResponse.model_validate(payload)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         logger.error(
@@ -3588,6 +3658,212 @@ async def get_project_landscape(project_id: str, request: Request):
             status_code=500,
             detail="Landscape data is invalid; rescan the project",
         ) from exc
+
+
+def _load_published_business_topology(
+    project_id: str,
+) -> tuple[dict | None, dict, dict]:
+    """Load only a validated topology for the exact current scan fingerprint."""
+
+    topology_dir = (
+        config.project_root / "output" / project_id / "docs" / "_topology"
+    )
+    topology_path = topology_dir / "business_topology.json"
+    report_path = topology_dir / "validation_report.json"
+    missing_state = {
+        "available": False,
+        "validated": False,
+        "stale": False,
+        "source": "none",
+        "message": "Business topology has not been generated for this project.",
+    }
+    if not topology_path.is_file():
+        return None, missing_state, {}
+
+    invalid_state = {
+        "available": True,
+        "validated": False,
+        "stale": False,
+        "source": "documentation_topology_agent",
+        "message": "The latest business topology did not pass validation.",
+    }
+    if not report_path.is_file():
+        return None, invalid_state, {}
+
+    try:
+        topology = json.loads(topology_path.read_text(encoding="utf-8"))
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if not isinstance(topology, dict) or not isinstance(report, dict):
+            return None, invalid_state, {}
+        if report.get("validated") is not True:
+            return None, invalid_state, {}
+
+        from mcp_server.services.business_topology import (
+            BusinessTopology,
+            compute_scan_fingerprint,
+            load_business_topology_evidence,
+        )
+        from mcp_server.services.business_topology.validation import (
+            validate_business_topology,
+        )
+
+        # Treat the publication report as necessary but not sufficient: a
+        # manually edited or partially copied artifact must still satisfy the
+        # strict contract at read time.
+        topology_model = BusinessTopology.model_validate(topology)
+
+        current_fingerprint = compute_scan_fingerprint(
+            config.intodoc_output_dir / project_id
+        )
+        topology_fingerprint = str(
+            topology.get("scan_fingerprint")
+            or (topology.get("metadata") or {}).get("scan_fingerprint")
+            or ""
+        )
+        report_fingerprint = str(report.get("scan_fingerprint") or "")
+        if report.get("project_id") != project_id:
+            return None, invalid_state, {}
+        if (
+            not topology_fingerprint
+            or topology_fingerprint != current_fingerprint
+            or report_fingerprint != current_fingerprint
+        ):
+            return None, {
+                "available": True,
+                "validated": False,
+                "stale": True,
+                "source": "documentation_topology_agent",
+                "message": (
+                    "Business topology belongs to an older scan; regenerate "
+                    "documentation to refresh it."
+                ),
+            }, {}
+
+        bundle = load_business_topology_evidence(topology_dir)
+        if bundle.scan_fingerprint != current_fingerprint:
+            return None, invalid_state, {}
+        supplied_coverage = dict(topology.get("coverage") or {})
+        fresh_report = validate_business_topology(
+            topology_model,
+            bundle=bundle,
+            project_id=project_id,
+        )
+        if not fresh_report.validated:
+            return None, invalid_state, {}
+        recalculated_coverage = topology_model.coverage.model_dump(mode="json")
+        if any(
+            recalculated_coverage.get(key) != value
+            for key, value in supplied_coverage.items()
+        ):
+            return None, invalid_state, {}
+
+        return topology, {
+            "available": True,
+            "validated": True,
+            "stale": False,
+            "source": "documentation_topology_agent",
+            "message": "Validated business topology is available.",
+        }, _load_topology_evidence_catalog(topology_dir, topology)
+    except (OSError, json.JSONDecodeError, ValueError, FileNotFoundError) as exc:
+        logger.warning(
+            "Business topology unavailable for project %s: %s",
+            project_id,
+            type(exc).__name__,
+        )
+        return None, invalid_state, {}
+
+
+def _load_topology_evidence_catalog(topology_dir: Path, topology: dict) -> dict:
+    """Return a bounded, identity-only map for resolving L1/L2 to L3/L4."""
+
+    evidence_dir = topology_dir / "evidence"
+
+    def read_jsonl(
+        name: str,
+        allowed: tuple[str, ...],
+        wanted_ids: set[str],
+    ) -> list[dict]:
+        path = evidence_dir / name
+        if not path.is_file() or not wanted_ids:
+            return []
+        rows: list[dict] = []
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                value = json.loads(line)
+                if isinstance(value, dict) and value.get("id") in wanted_ids:
+                    rows.append({key: value.get(key) for key in allowed if key in value})
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Unreadable business-topology evidence catalogue: %s", name)
+            return []
+        return rows
+
+    wanted_artifacts = {
+        str(artifact_id)
+        for items in (
+            topology.get("data_streams") or [],
+            topology.get("integration_solutions") or [],
+        )
+        for item in items
+        if isinstance(item, dict)
+        for artifact_id in item.get("artifact_ids") or []
+    }
+    wanted_artifacts.update(
+        str(item.get("artifact_id"))
+        for item in topology.get("artifact_annotations") or []
+        if isinstance(item, dict) and item.get("artifact_id")
+    )
+    wanted_components = {
+        str(item.get("component_id"))
+        for item in topology.get("component_annotations") or []
+        if isinstance(item, dict) and item.get("component_id")
+    }
+    wanted_lineage = {
+        str(item.get("lineage_id"))
+        for item in topology.get("lineage_annotations") or []
+        if isinstance(item, dict) and item.get("lineage_id")
+    }
+    components = read_jsonl(
+        "components.jsonl",
+        ("id", "artifact_id", "name", "component_type"),
+        wanted_components,
+    )
+    wanted_artifacts.update(
+        str(item["artifact_id"])
+        for item in components
+        if item.get("artifact_id")
+    )
+
+    return {
+        "artifacts": read_jsonl(
+            "artifacts.jsonl",
+            (
+                "id",
+                "name",
+                "job_id",
+                "source_root",
+                "artifact_kind",
+                "artifact_role",
+            ),
+            wanted_artifacts,
+        ),
+        "components": components,
+        "lineage": read_jsonl(
+            "lineage.jsonl",
+            (
+                "id",
+                "job_name",
+                "source_table",
+                "source_column",
+                "source_component",
+                "target_table",
+                "target_column",
+                "target_component",
+            ),
+            wanted_lineage,
+        ),
+    }
 
 
 def _load_job_scan(project_id: str, job_name: str) -> tuple[str, dict, Path]:
@@ -3692,6 +3968,15 @@ async def get_job_graph(project_id: str, job_name: str, request: Request):
     # credential-filtered inventory doc (no LLM call). Empty map when no docs
     # exist -> every node's description defaults to "" (anti-fabrication).
     descriptions = parse_component_descriptions(project_id, job_name)
+    platform = ""
+    meta_path = config.intodoc_output_dir / project_id / "scan" / "meta.json"
+    if meta_path.exists():
+        try:
+            platform = str(
+                json.loads(meta_path.read_text(encoding="utf-8")).get("platform") or ""
+            )
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Unreadable scan metadata for project %s", project_id)
 
     return build_job_graph(
         project_id=project_id,
@@ -3699,6 +3984,7 @@ async def get_job_graph(project_id: str, job_name: str, request: Request):
         group=group,
         job_data=scan_data,
         descriptions=descriptions,
+        platform=platform or "talend",
     )
 
 

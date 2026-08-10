@@ -58,6 +58,10 @@ def test_event_and_helper_redact_sensitive_payload_keys():
         "normal": "kept",
         "token": "[REDACTED]",
     }
+    assert redact_payload({"input_tokens": 12, "output_tokens": "secret-ish"}) == {
+        "input_tokens": 12,
+        "output_tokens": "[REDACTED]",
+    }
 
 
 def test_fake_runtime_satisfies_runtime_protocol():

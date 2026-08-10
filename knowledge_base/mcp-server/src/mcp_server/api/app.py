@@ -35,6 +35,9 @@ from mcp_server.experiments.infrastructure.mcp_transport import (
     TaskServerRegistry,
     create_experiment_mcp_transport,
 )
+from mcp_server.experiments.infrastructure.persistence.sqlalchemy_repository import (
+    SqlAlchemyExperimentRepository,
+)
 from mcp_server.experiments.mcp_tools.auth import TaskTokenVerifier
 from mcp_server.services.atomic_swap import (
     gc_abandoned_staging,
@@ -94,6 +97,41 @@ class _AgenticMcpFeatureGate:
                 )(scope, receive, send)
                 return
         await self._app(scope, receive, send)
+
+
+def _apply_column_migrations(sync_conn: Any) -> None:
+    """Idempotent in-place column migrations for existing deployments.
+
+    This repo bootstraps its schema with ``create_all`` (no alembic), which
+    never alters existing tables. Runs inside the startup engine transaction.
+
+    - ``generate_runs.partition_name`` (VARCHAR(100), nullable): composite
+      child runs record their sub-project partition here instead of encoding
+      it into ``triggered_by`` (which overflowed its VARCHAR(20)).
+    - ``generate_runs.triggered_by`` / ``scan_runs.triggered_by`` widened to
+      VARCHAR(40) so every trigger-source label fits.
+    """
+    from sqlalchemy import text as sa_text
+
+    inspector = inspect(sync_conn)
+    dialect = sync_conn.dialect.name
+    try:
+        gen_columns = {c["name"] for c in inspector.get_columns("generate_runs")}
+    except Exception:  # table absent (fresh DB handled by create_all)
+        return
+    if "partition_name" not in gen_columns:
+        sync_conn.execute(
+            sa_text("ALTER TABLE generate_runs ADD COLUMN partition_name VARCHAR(100)")
+        )
+        logger.info("[startup] added generate_runs.partition_name")
+    if dialect == "postgresql":
+        # SQLite ignores VARCHAR lengths; only Postgres needs the widening.
+        for table in ("generate_runs", "scan_runs"):
+            sync_conn.execute(
+                sa_text(
+                    f"ALTER TABLE {table} ALTER COLUMN triggered_by TYPE VARCHAR(40)"
+                )
+            )
 
 
 def _pid_alive(pid: int) -> bool:
@@ -170,6 +208,11 @@ async def lifespan(app: FastAPI):
             logger.info("Created tables: %s", [t.name for t in tables_to_create])
         else:
             logger.info("All tables already exist, skipping create")
+        # Idempotent in-place column migrations (this repo uses create_all, not
+        # alembic; create_all never alters existing tables). Composite child
+        # runs record their partition in generate_runs.partition_name, and
+        # triggered_by is widened to hold every trigger source label.
+        await conn.run_sync(_apply_column_migrations)
     try:
         repaired_paths = await repair_managed_project_repo_paths(async_session_factory)
         if repaired_paths:
@@ -183,6 +226,24 @@ async def lifespan(app: FastAPI):
             logger.info("Certified %d explicitly configured legacy Pack(s)", migrated_packs)
     except Exception:
         logger.exception("Startup Pack governance migration failed")
+    try:
+        async with async_session_factory() as session:
+            orphaned = await SqlAlchemyExperimentRepository(session).fail_orphaned_grounded_experiments(
+                "Marked failed at server startup: this Grounded experiment was still "
+                "\"running\" when the server process restarted. Its in-process "
+                "background task -- the only thing that could ever finish or fail "
+                "it -- no longer exists, even if the underlying runtime (OpenCode, "
+                "etc.) went on to finish its own work independently."
+            )
+            await session.commit()
+        if orphaned:
+            logger.warning(
+                "Marked %d orphaned Grounded experiment(s) as failed at startup: %s",
+                len(orphaned),
+                ", ".join(orphaned),
+            )
+    except Exception:
+        logger.exception("Startup Grounded experiment reconciliation failed")
     app.state.log_manager = log_manager
     app.state.experiment_task_registry = experiment_task_registry
     app.state.git_poller_task = asyncio.create_task(git_polling_loop(log_manager))

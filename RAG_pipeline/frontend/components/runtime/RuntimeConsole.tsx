@@ -85,6 +85,7 @@ function Hub({ scope, onDetail }: { scope?: string; onDetail: (detail: Detail) =
 
   return <>
     <AskLogs scope={scope} />
+    <SyncStatusBanner scope={scope} />
     <QueryState queries={[overview, runs, health, incidents]}>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Kpi icon={<Server />} label="Engines online" value={`${estate?.engines_online ?? 0}/${estate?.engines_total ?? 0}`} tone="good" />
@@ -206,4 +207,68 @@ function Empty({ label }: { label: string }) { return <p className="py-8 text-ce
 function HealthList({ items }: { items: Array<{ job_name: string; failure_rate: number; current_failure_streak: number }> }) { return items.length ? <div className="divide-y divide-border">{items.map((item) => <div key={item.job_name} className="flex justify-between gap-3 py-3 text-sm"><span className="truncate font-medium">{item.job_name}</span><span className="shrink-0 text-destructive">{Math.round(item.failure_rate * 100)}% failed</span></div>)}</div> : <Empty label="No unhealthy job rollups are available." />; }
 function detailTitle(detail: Detail, item: Record<string, unknown>) { return String(item.execution_id ?? item.incident_id ?? item.job_id ?? item.plan_id ?? item.engine_id ?? item.label ?? detail.kind); }
 function formatDate(value: string | null | undefined) { return value ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)) : "-"; }
+
+function formatAge(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h}h`;
+  return `${Math.round(h / 24)}d`;
+}
+
+function formatInterval(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  return `${Math.round(seconds / 3600)}h`;
+}
+
+// Surfaces automatic-polling health on the Overview: when the last import ran,
+// how many sources are polling, and a clear warning when data has gone stale.
+function SyncStatusBanner({ scope }: { scope?: string }) {
+  const sources = useRuntimeSources({ projectId: scope, limit: 100 });
+  const rows = sources.data?.sources ?? [];
+  if (sources.isLoading || rows.length === 0) return null;
+
+  const polling = rows.filter((source) => source.enabled !== false);
+  const syncedTimes = rows
+    .map((source) => source.last_synced_at)
+    .filter((value): value is string => Boolean(value))
+    .map((value) => new Date(value).getTime());
+  const freshest = syncedTimes.length ? Math.max(...syncedTimes) : null;
+  const ageMs = freshest === null ? null : Date.now() - freshest;
+  const intervals = polling.map((source) => source.sync_interval_seconds ?? 60);
+  const minInterval = intervals.length ? Math.min(...intervals) : 60;
+  const maxInterval = intervals.length ? Math.max(...intervals) : 60;
+  // Stale = older than three missed cycles, floored at 15 min to avoid flapping.
+  const staleThresholdMs = Math.max(maxInterval * 3, 900) * 1000;
+
+  const noPolling = polling.length === 0;
+  const isStale = noPolling || ageMs === null || ageMs > staleThresholdMs;
+
+  let message: string;
+  if (noPolling) {
+    message = "No runtime sources are enabled for polling. Enable a source to start importing data.";
+  } else if (ageMs === null) {
+    message = `No runtime data imported yet. ${polling.length} source(s) set to poll every ${formatInterval(minInterval)}.`;
+  } else if (isStale) {
+    message = `Last import ${formatAge(ageMs)} ago — data may be stale. ${polling.length} source(s) set to poll every ${formatInterval(minInterval)}.`;
+  } else {
+    message = `Last import ${formatAge(ageMs)} ago · ${polling.length} source(s) polling every ${formatInterval(minInterval)}.`;
+  }
+
+  return (
+    <div className={cn(
+      "flex flex-col gap-2 rounded-lg border px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between",
+      isStale ? "border-amber-500/40 bg-amber-500/5 text-amber-700 dark:text-amber-400" : "border-border bg-muted/30 text-muted-foreground",
+    )}>
+      <span className="flex items-center gap-2">
+        {isStale ? <AlertTriangle className="h-4 w-4 shrink-0" /> : <RefreshCw className="h-4 w-4 shrink-0" />}
+        <span>{message}</span>
+      </span>
+      <Link href="/admin/runtime" className="shrink-0 font-medium text-primary hover:underline">Manage sources</Link>
+    </div>
+  );
+}
 function formatDuration(value: number | null | undefined) { if (!value) return "-"; return value < 60_000 ? `${Math.round(value / 1000)}s` : `${Math.floor(value / 60_000)}m ${Math.round((value % 60_000) / 1000)}s`; }

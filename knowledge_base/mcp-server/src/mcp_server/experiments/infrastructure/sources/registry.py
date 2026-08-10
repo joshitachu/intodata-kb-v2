@@ -23,10 +23,34 @@ class SourceAdapterError(RuntimeError):
     pass
 
 
+class SourceBudgetError(SourceAdapterError):
+    """A source exceeded an explicit file or byte boundary."""
+
+
+@dataclass(frozen=True)
+class CapturedRawSource:
+    """One actual raw file consumed by an adapter, before record expansion."""
+
+    logical_identity: str
+    raw_sha256: str
+    size_bytes: int
+
+    def __post_init__(self) -> None:
+        if not self.logical_identity.strip():
+            raise ValueError("captured raw source identity must not be blank")
+        if len(self.raw_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in self.raw_sha256
+        ):
+            raise ValueError("captured raw source hash must be a lowercase SHA-256 digest")
+        if self.size_bytes < 0:
+            raise ValueError("captured raw source size must not be negative")
+
+
 @dataclass(frozen=True)
 class AdapterSnapshotResult:
     items: tuple[SourceSnapshotItem, ...]
     contents: tuple[SourceSnapshotContent, ...]
+    raw_sources: tuple[CapturedRawSource, ...] = ()
 
 
 class SourceAdapter(Protocol):
@@ -35,7 +59,9 @@ class SourceAdapter(Protocol):
 
     def supports(self, descriptor: SourceDescriptor) -> bool: ...
 
-    def snapshot(self, descriptor: SourceDescriptor, limits: SourceLimits) -> AdapterSnapshotResult: ...
+    def snapshot(
+        self, descriptor: SourceDescriptor, limits: SourceLimits
+    ) -> AdapterSnapshotResult: ...
 
 
 class SourceAdapterRegistry:
@@ -52,15 +78,27 @@ class SourceAdapterRegistry:
         self._adapters[adapter.id] = adapter
 
     def resolve(self, descriptor: SourceDescriptor) -> SourceAdapter:
-        matches = sorted(
-            (adapter for adapter in self._adapters.values() if adapter.supports(descriptor)),
-            key=lambda adapter: adapter.id,
-        )
+        matches = self.matching_adapters(descriptor)
         if len(matches) != 1:
             raise SourceAdapterError(
                 f"expected exactly one trusted adapter for {descriptor.id}, found {len(matches)}"
             )
         return matches[0]
+
+    def matching_adapters(self, descriptor: SourceDescriptor) -> tuple[SourceAdapter, ...]:
+        """Return the deterministic adapter candidates without attempting extraction.
+
+        Aggregate evidence inventory needs to disclose an unsupported descriptor
+        in its frozen manifest instead of treating it as an exception that can be
+        silently lost.  Existing callers should continue using ``resolve`` when
+        exactly one adapter is required.
+        """
+        return tuple(
+            sorted(
+                (adapter for adapter in self._adapters.values() if adapter.supports(descriptor)),
+                key=lambda adapter: adapter.id,
+            )
+        )
 
 
 def regular_files(root: Path, *, limits: SourceLimits) -> tuple[Path, ...]:
@@ -81,7 +119,7 @@ def regular_files(root: Path, *, limits: SourceLimits) -> tuple[Path, ...]:
         size = path.stat().st_size
         total += size
         if len(files) >= limits.max_files or total > limits.max_bytes:
-            raise SourceAdapterError("source file or byte limit exceeded")
+            raise SourceBudgetError("source file or byte limit exceeded")
         files.append(path)
     return tuple(files)
 
@@ -105,12 +143,17 @@ def read_regular(path: Path, *, max_bytes: int) -> bytes:
             pass
         raise
     if len(content) > max_bytes:
-        raise SourceAdapterError("source item exceeds byte limit")
+        raise SourceBudgetError("source item exceeds byte limit")
     return content
 
 
 def capture_snapshot_item(
-    *, descriptor: SourceDescriptor, path: Path, root: Path, adapter_id: str, adapter_version: str,
+    *,
+    descriptor: SourceDescriptor,
+    path: Path,
+    root: Path,
+    adapter_id: str,
+    adapter_version: str,
     redaction_state: RedactionState,
 ) -> tuple[SourceSnapshotItem, SourceSnapshotContent]:
     content = read_regular(path, max_bytes=path.stat().st_size)

@@ -6,7 +6,12 @@ from pathlib import Path
 
 from mcp_server.experiments.domain.sources import RedactionState, SourceDescriptor, SourceLimits
 from mcp_server.experiments.infrastructure.sources.registry import (
-    AdapterSnapshotResult, SourceAdapterError, capture_snapshot_item, ensure_within, regular_files,
+    AdapterSnapshotResult,
+    CapturedRawSource,
+    SourceAdapterError,
+    capture_snapshot_item,
+    ensure_within,
+    regular_files,
 )
 
 
@@ -25,11 +30,22 @@ class DirectoryEvidenceAdapter:
             raise SourceAdapterError("governed directory adapter has no configured roots")
         root = ensure_within(descriptor.source_path, self._allowed_roots)
         files = regular_files(root, limits=limits)
-        captured = tuple(capture_snapshot_item(
-            descriptor=descriptor, path=path, root=root, adapter_id=self.id,
-            adapter_version=self.version, redaction_state=RedactionState.APPROVED,
-        ) for path in files)
+        captured = tuple(
+            capture_snapshot_item(
+                descriptor=descriptor,
+                path=path,
+                root=root,
+                adapter_id=self.id,
+                adapter_version=self.version,
+                redaction_state=RedactionState.APPROVED,
+            )
+            for path in files
+        )
         return AdapterSnapshotResult(
             items=tuple(item for item, _ in captured),
             contents=tuple(content for _, content in captured),
+            raw_sources=tuple(
+                CapturedRawSource(item.logical_identity, item.raw_sha256, item.size_bytes)
+                for item, _ in captured
+            ),
         )

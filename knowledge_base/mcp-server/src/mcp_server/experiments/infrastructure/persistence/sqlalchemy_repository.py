@@ -43,11 +43,15 @@ from mcp_server.experiments.domain.parity import (
     GoldenParityReceipt,
     thaw_json,
 )
+from mcp_server.experiments.domain.project_evidence import ProjectEvidenceSnapshot
 from mcp_server.experiments.domain.recipes import AgenticRecipeManifest
 from mcp_server.experiments.domain.sources import SourceSnapshot
 from mcp_server.experiments.domain.statuses import ExperimentStatus
 from mcp_server.experiments.domain.tasks import CompiledTaskGraph
 from mcp_server.experiments.infrastructure.storage.artifact_store import StoredArtifact
+from mcp_server.experiments.infrastructure.storage.project_evidence_snapshot_store import (
+    ProjectEvidenceSnapshotPersistence,
+)
 
 
 class SqlAlchemyExperimentRepository:
@@ -229,6 +233,114 @@ class SqlAlchemyExperimentRepository:
         # The experiment and source snapshot deliberately point at each other.
         # Materialize the owned snapshot first, then attach the convenience
         # reference so databases with immediate FK enforcement remain safe.
+        await self._session.flush()
+        experiment.source_snapshot_id = snapshot.id
+        await self._session.flush()
+        return snapshot_row
+
+    async def finalize_project_evidence_snapshot(
+        self,
+        *,
+        experiment_id: str,
+        snapshot: ProjectEvidenceSnapshot,
+        persistence: ProjectEvidenceSnapshotPersistence,
+    ) -> GenerationSourceSnapshotRow:
+        """Index a verified multi-source inventory through the existing snapshot FK."""
+
+        experiment = await self.get(experiment_id)
+        if experiment is None:
+            raise LookupError("experiment reservation no longer exists")
+        if (
+            persistence.snapshot_id != snapshot.id
+            or persistence.fingerprint_sha256 != snapshot.fingerprint_sha256
+        ):
+            raise ValueError("project evidence persistence identity mismatch")
+        prepared_ids = {content.item_id for content in snapshot.prepared_content_items}
+        if set(persistence.content_relative_paths) != prepared_ids:
+            raise ValueError("project evidence persistence content index mismatch")
+        existing = await self._session.get(GenerationSourceSnapshotRow, snapshot.id)
+        if existing is not None or experiment.source_snapshot_id is not None:
+            raise ValueError("experiment source snapshot is immutable")
+
+        manifest = snapshot.manifest()
+        counts = dict(manifest["counts"])
+        inventory = [
+            {
+                "descriptor_id": source.descriptor_id,
+                "source_kind": source.source_kind,
+                "source_role": source.source_role,
+                "status": source.status.value,
+                "status_reason": source.status_reason,
+                "prepared_records": len(source.prepared_representations),
+            }
+            for source in snapshot.sources
+        ]
+        coverage = {
+            "declared_sources": len(snapshot.sources),
+            "readable_sources": sum(item["status"] == "readable" for item in inventory),
+            "unreadable_sources": sum(item["status"] == "unreadable" for item in inventory),
+            "unsupported_sources": sum(item["status"] == "unsupported" for item in inventory),
+            "prepared_records": counts["prepared_records"],
+            "prepared_bytes": counts["prepared_bytes"],
+            "raw_files": counts["raw_files"],
+            "raw_bytes": counts["raw_bytes"],
+        }
+        finalized_at = datetime.datetime.now(datetime.timezone.utc)
+        snapshot_row = GenerationSourceSnapshotRow(
+            id=snapshot.id,
+            experiment_id=experiment_id,
+            schema_version=snapshot.schema_version,
+            manifest_sha256=persistence.manifest_sha256,
+            security_state="approved",
+            manifest_relative_path=persistence.manifest_relative_path,
+            snapshot_metadata={
+                "contract": "project_evidence",
+                "content_relative_paths": dict(persistence.content_relative_paths),
+                "coverage": coverage,
+                "fingerprint_sha256": snapshot.fingerprint_sha256,
+                "inventory": inventory,
+                "manifest_size_bytes": persistence.manifest_size_bytes,
+            },
+            finalized_at=finalized_at,
+        )
+        self._session.add(snapshot_row)
+        for source in snapshot.sources:
+            raw_by_id = {
+                str(reference["item_id"]): reference
+                for reference in source.raw_evidence_references
+            }
+            for prepared in source.prepared_representations:
+                item_id = str(prepared["item_id"])
+                raw = raw_by_id.get(item_id)
+                if raw is None:
+                    raise ValueError("prepared project evidence has no raw reference")
+                self._session.add(
+                    GenerationSourceSnapshotItemRow(
+                        id=item_id,
+                        snapshot_id=snapshot.id,
+                        source_descriptor_id=source.descriptor_id,
+                        logical_identity=str(prepared["logical_path"]),
+                        source_kind=source.source_kind,
+                        source_role=source.source_role,
+                        capabilities_json=list(source.capabilities),
+                        locator=str(raw["locator"]),
+                        raw_sha256=str(raw["raw_sha256"]),
+                        extracted_sha256=str(prepared["extracted_sha256"]),
+                        media_type=str(prepared["media_type"]),
+                        size_bytes=int(raw["size_bytes"]),
+                        extracted_size_bytes=int(prepared["size_bytes"]),
+                        content_relative_path=persistence.content_relative_paths[item_id],
+                        trust_level=source.trust_level,
+                        redaction_state="approved",
+                        adapter_id="project-evidence",
+                        adapter_version=str(snapshot.schema_version),
+                        item_metadata={
+                            "opaque_logical_identity": str(prepared["logical_identity"]),
+                            "project_evidence_fingerprint_sha256": snapshot.fingerprint_sha256,
+                            "source_status": source.status.value,
+                        },
+                    )
+                )
         await self._session.flush()
         experiment.source_snapshot_id = snapshot.id
         await self._session.flush()
@@ -422,6 +534,43 @@ class SqlAlchemyExperimentRepository:
         row.error_message = detail[:4000]
         row.completed_at = datetime.datetime.now(datetime.timezone.utc)
         await self._session.flush()
+
+    async def fail_orphaned_grounded_experiments(self, detail: str) -> tuple[str, ...]:
+        """Fail every grounded experiment still marked "running" at process start.
+
+        A Grounded (OpenCode / OpenAI Agents) candidate is driven entirely by an
+        in-process background task on the server that dispatched it. If that
+        process restarts -- for any reason -- the task and every reference to it
+        are gone; nothing is ever coming back to finish or fail that row. Left
+        alone it stays "running" forever even after the underlying runtime
+        (OpenCode, etc.) has long since finished its own work independently.
+        Since this runs at startup, before this process has dispatched anything
+        of its own, every matching row is unconditionally orphaned -- there is
+        no live task anywhere that could still complete it.
+
+        Deliberately excludes "queued": unlike "running", queued is also a
+        legitimate resting state for an experiment that was frozen but never
+        told to dispatch a candidate (the two-step create-then-run flow), so a
+        queued row cannot be assumed orphaned the way a running one can.
+        """
+
+        result = await self._session.execute(
+            select(GenerationExperimentRow).where(
+                GenerationExperimentRow.status == ExperimentStatus.RUNNING.value,
+                GenerationExperimentRow.runtime_id.in_(
+                    ("opencode-grounded", "openai-agents-grounded")
+                ),
+            )
+        )
+        orphaned = tuple(result.scalars())
+        now = datetime.datetime.now(datetime.timezone.utc)
+        for row in orphaned:
+            row.status = ExperimentStatus.FAILED.value
+            row.error_message = detail[:4000]
+            row.completed_at = now
+        if orphaned:
+            await self._session.flush()
+        return tuple(row.id for row in orphaned)
 
     async def mark_candidate_running(self, experiment_id: str) -> GenerationExperimentRow:
         """Record the start of the explicit UI-triggered candidate call."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any, Literal
 
@@ -14,9 +15,12 @@ class UnitFact(BaseModel):
     """One canonical scanner unit: Talend job, Workato recipe/function, etc."""
 
     name: str
+    display_name: str = ""
     path: str = ""
     unit_type: str = "unit"
     group: str = "Global"
+    logical_group: str = ""
+    source_root: str = ""
     component_count: int = 0
     component_types: dict[str, int] = Field(default_factory=dict)
     key_systems: list[str] = Field(default_factory=list)
@@ -133,6 +137,33 @@ class HarnessRunState(BaseModel):
     errors: list[str] = Field(default_factory=list)
     warning_collector: WarningCollector = Field(default_factory=WarningCollector)
     thin_bundle_groups: list[str] = Field(default_factory=list)
+    # Salvage-first bookkeeping: groups whose Phase 2 degraded to a partial
+    # stub, and docs that shipped as stubs / truncated after a Phase 3 failure.
+    partial_groups: list[str] = Field(default_factory=list)
+    failed_docs: list[dict] = Field(default_factory=list)
+    # Call budget computed from the actual bin-packed work plan at run start
+    # (P0.1/R2.1). ``planned_call_budget`` is the plan SUM -- a reservation
+    # guide for reporting, never the enforcement ceiling (the verified
+    # Assetcheck failure: the run blocked Phase 3 at plan=179 while cap=250
+    # had ~71 calls unused). The enforced ceiling is ``docgen_max_run_calls``;
+    # ``planned_phase_floors`` reserves guaranteed call counts for late phases
+    # (Phase 3 docs, business topology) so earlier-phase overruns cannot
+    # starve them. ``floor_class_calls`` counts reserved calls per budget
+    # class ("phase3" / "business_topology" / "shared") to track floor use.
+    planned_call_budget: int | None = Field(default=None, exclude=True)
+    planned_phase1_tasks: int | None = Field(default=None, exclude=True)
+    planned_phase2_tasks: int | None = Field(default=None, exclude=True)
+    planned_phase_floors: dict[str, int] = Field(default_factory=dict, exclude=True)
+    floor_class_calls: dict[str, int] = Field(default_factory=dict, exclude=True)
+    # Provider calls run concurrently. These excluded runtime-only fields make
+    # call/token budget reservations atomic without changing persisted run data.
+    budget_lock: asyncio.Lock = Field(default_factory=asyncio.Lock, exclude=True)
+    pending_model_calls: int = Field(default=0, exclude=True)
+    pending_input_tokens: int = Field(default=0, exclude=True)
+    pending_output_tokens: int = Field(default=0, exclude=True)
+    budget_consumed_calls: int = Field(default=0, exclude=True)
+    budget_consumed_input_tokens: int = Field(default=0, exclude=True)
+    budget_consumed_output_tokens: int = Field(default=0, exclude=True)
 
     @property
     def input_tokens(self) -> int:

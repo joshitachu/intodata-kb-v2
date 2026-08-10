@@ -105,6 +105,101 @@ This is the primary method for generating project documentation. Follow it exact
   gates surface as warnings, the swap happens. (Added 2026-06-11 —
   removed the `_phase3_targeted_repair` mechanism; softened the
   remaining hard-fail gates in a follow-up commit.)
+- **Work-plan call/output budgets (P0.1, 2026-08)**: the run call budget is computed at
+  run start from the ACTUAL bin-packed work plan (`harness._plan_call_budget`, using
+  `evidence_tasks.count_evidence_tasks`) — base + phase1 tasks + phase2 claim tasks +
+  scorecard/doc slice allowances — not the old `20 + groups*4` heuristic (which
+  under-counted job-dense groups ~7x; verified werkorder budget_exhaustion). The output
+  budget is sized per doc-task via per-doc-type ceilings (`_doc_output_ceiling`:
+  unit docs 6K, briefs 14K, inventory scales with units). `docgen_max_run_calls` (250)
+  stays a hard ceiling; the partition planner (`estimate_partition_calls`) sizes/splits
+  partitions with the same units-scaled estimate, and `top_level_partitions()` folds
+  size-splits back to zip level for the cross-project index.
+- **True-ceiling budget + late-phase floors (R2.1, 2026-08)**: the plan sum is a GUIDE,
+  never the enforcement ceiling — the enforced cap is `docgen_max_run_calls` (verified
+  Assetcheck failure: run blocked Phase 3 at plan=179 while cap=250 had ~71 calls
+  unused; real consumption ~197). `_reserve_model_budget(phase=...)` classifies calls
+  (`_budget_class`: phase3 / business_topology / shared) and blocks a call only when it
+  would exceed ceiling minus the still-unused floors reserved for OTHER classes
+  (`state.planned_phase_floors`: phase3 = required_docs x allowed_slices, topology = 2),
+  so early-phase overruns can never starve doc writing; `_phase3_docs` releases its
+  floor when dispatch finishes. Plan estimates now include evidence-agent calls, a
+  Phase-2 repair-retry allowance (`MCP_DOCGEN_PHASE2_RETRY_ALLOWANCE`, default 0.25),
+  ~2 calls/group for agentic Phase 1, and a realistic scorecard slice count
+  (1 reducer + ceil(0.75 x groups)) instead of a flat 4.
+- **Salvage-first publishing (P0.2, 2026-08)**: per-group Phase 2 failures become PARTIAL
+  stubs (`_contain_phase2_group_failures`; group joins `thin_bundle_groups` +
+  `partial_groups`, stub intentionally fails `group_analysis_is_complete` so resume
+  retries); a failed scorecard writes an explicit "SCORECARD UNAVAILABLE" file and
+  continues; a failed/rejected Phase 3 doc becomes a stub (or a truncate-flag-ACCEPTED
+  doc on an output-cap hit) recorded in `_assessment/failed_docs.json`, and the run
+  publishes everything that passed. The old fail-closed `raise` chain
+  (`raise group_errors[0]`, "Doc generation failed for ...", "Scorecard generation
+  failed") is gone — accepted content ships with flagged gaps; resume regenerates the
+  stragglers.
+- **Phase 3 slice governance + merge (P0.3/P2.7, 2026-08)**: `docgen_allowed_slices_per_doc`
+  is hard-enforced for doc-level phases (excess evidence slices are dropped with a
+  SLICE CAP NOTICE + `_assessment/slice_cap_flags.json`; the call is accepted). Each
+  input slice restarts the document, so Phase 3 multi-slice output is merged by section
+  (`doc_slice_merge.merge_sliced_doc_outputs`: one title, one TOC, each H2 once,
+  duplicate blocks dropped); `duplicate_heading_errors` is the post-assembly guard and
+  `dedupe_document` the deterministic last-resort repair in `_final_doc_content`
+  (verified fix for the VQ docs that shipped the same structure 11x). Slice prompts are
+  byte-stable; the per-slice instruction is a TAIL context file (provider prefix cache).
+- **Phase 3 input-partitioned slicing (R2.5, 2026-08)**: for `phase3*` calls whose
+  context exceeds the hard ceiling, `phase3_slices.plan_phase3_slices` (wired in
+  `_complete_core_generation` ahead of the generic splitter) partitions the INPUT like
+  Phase 2 bin-packs evidence: files <= `MCP_PHASE3_SHARED_CONTEXT_FILE_BYTES` (16K) are
+  SHARED and byte-stable in every slice; larger files split into whole markdown
+  sections (H2, then H3, then line-boundary) distributed so each slice gets ONLY its
+  portion; the doc pack's leading small H2 sections (project scope, unit index,
+  obligations digest) become a shared `__skeleton.md`. Total input is ~1x the pack +
+  N x the small skeleton, not N x everything, and slice count may exceed
+  `docgen_allowed_slices_per_doc` when needed for full coverage (partitioned plans are
+  exempt from the cap-drop; the verified truncation driver was dropped evidence
+  chunks). The generic splitter + cap remain for non-phase3 phases and as fallback.
+- **Per-unit reference docs (P1.4/P1.6, 2026-08)**: standard runs expand the
+  `10_UNIT_REFERENCE` catalog entry (`per_unit: true`; gate:
+  `MCP_DOCGEN_UNIT_DOCS_ENABLED`, default OFF) into one opencode-shaped ~80-line dossier
+  per scanned unit (template `phase3_unit_doc.md`: protected-facts table, verbatim
+  code/tMap/SQL, per-env context with provenance, evidence discrepancies, runtime
+  unknowns). Unit docs are written FIRST; group/summary docs then receive a bounded
+  deterministic digest of the finished unit docs (`_analysis/_unit_docs_digest.md`,
+  `MCP_PHASE3_UNIT_DIGEST_BYTES`) so summaries synthesize from unit docs, not the
+  analysis layer alone. Protected facts are a deterministic ledger in the target
+  evidence bundle; `protected_fact_errors` / `unit_count_claim_errors`
+  (fabrication_validators) reject recomputed facts pre-acceptance.
+- **Phase-2 claims density floor (P3.10, relaxed by R2.4, 2026-08)**: the prompt still
+  REQUIRES verbatim backticked citations for code-bearing sections
+  (TRANSFORMATION_DETAIL/SOURCE_SQL/CUSTOM_CODE), but validation no longer fails the
+  whole bin-packed batch for one uncited claim (verified: 21/73 Assetcheck tasks — 29%
+  — were rejected whole, stubbing every unit in the task to unknown and producing
+  phantom-absence warnings). `validate_claim_batch` fails only STRUCTURAL errors (bad
+  JSON, section/unit outside contract, duplicate ids, claim ceilings); evidential gaps
+  are `warnings` and `apply_claim_floors` (called post-parse in
+  `_run_phase2_claim_spec`, fresh + resume) deterministically DEMOTES the individual
+  claim to unknown when it has neither evidence_refs nor a verbatim citation (a claim
+  citing evidence_refs is kept even when its statement paraphrases). Component-echo
+  fabrication checks still fail the batch. Ceilings unchanged.
+- **LLM scorecard + default evidence agents are opt-in (R2.2/R2.3, 2026-08)**: standard
+  runs skip the advisory Phase 2.6 scorecard (`MCP_DOCGEN_LLM_SCORECARD_ENABLED`,
+  default off; verified: planned 4 calls, used 13 + ~0.8M tokens with contract gaps) —
+  `_write_omitted_scorecard_marker` writes a deterministic `_assessment/scorecard.md`
+  so the 07 doc / exec summary / enterprise doc-set validator degrade gracefully — and
+  run no built-in evidence agents (`MCP_DOCGEN_DEFAULT_EVIDENCE_AGENTS_ENABLED`,
+  default off; verified: 3 of 4 defaults produced 0 claims, ~0.6M tokens). Plugin
+  packs that declare a scorecard phase or evidence_agents are unaffected.
+- **Cache audit (R2.6, 2026-08)**: provider-reported cache hits are logged per call
+  (`_log_call_metrics`: `in=/cache_read=/cache_miss=`) and aggregated in
+  `_assessment/phase_costs.json`. Phase-2 repair retries keep the prompt + evidence
+  packet byte-stable and deliver validation-gap feedback as a transient TAIL file
+  (`_transient/claim_repair/`), same pattern as slice instructions — mutating the
+  prompt head invalidated the provider prefix cache for the whole packet (verified:
+  phase2.claims cache-hit ratio 0.7% vs 66% for the prefix-stable scorecard slices).
+- **Composite child runs** record `triggered_by="composite"` +
+  `GenerateRun.partition_name` (new column; idempotent startup migration in
+  `api/app.py::_apply_column_migrations`) instead of overflowing `triggered_by` with
+  `composite:{name}`.
 - Runtime task directories store `status.json` and exact LLM `output.md` as
   always-on breadcrumb artifacts; `contract.json`, `validation_report.json`,
   `tool_call_ledger.json`, and `provider_metrics.json` are written under
@@ -140,6 +235,42 @@ This is the primary method for generating project documentation. Follow it exact
   EIP patterns, and error/exception channels). `validators.py::validate_analysis_guide_sections`
   enforces the single canonical `ESB_ROUTES` heading (via the shared `_has_section` check) only
   when `talend_esb_facts.json` reports `esb_detected` -- pure-DI projects never hard-fail on it.
+
+### Composite-Upload Orchestration (partition runs)
+
+- **Partition planner** (`providers/custom/partition_planner.py`): a composite-ZIP scan
+  (source_roots carrying `.__intodoc_zip__`) partitions into one sub-project per zip;
+  an oversized partition (base + groups*per_group > `MCP_DOCGEN_MAX_RUN_CALLS`) is further
+  split along whole groups (`split_groups`/`parent` on `Partition`). Single-root small
+  projects always yield ONE `__all__` partition — the legacy single-run path, unchanged.
+- **Orchestrator** (`services/partition_orchestrator.py`, hooked at the top of
+  `projects.py::_run_generate_background`, gated to full runs only — no `scoped_docs`,
+  no reingestion `pre_swap_gate` — and by `MCP_DOCGEN_PARTITION_ORCHESTRATION`): loops one
+  scoped `DocGenerationCoordinator.generate_docs(partition=...)` per partition into
+  `output/{project_id}/{subproject}/` (own docs_staging, generation lock, call budget,
+  atomic swap, child GenerateRun `composite:{name}`, RAG push with `{subproject}/`-prefixed
+  filenames). Failure isolation: a failed sub-project preserves its staging for resume and
+  never rolls back siblings; `topology/partition_state.json` (scan-fingerprint keyed) skips
+  up-to-date partitions on resume. Internal RAG layers sync once (single wholesale delete,
+  then per-sub prefixed pushes) — never call `sync_internal_layers` per partition.
+- **Scoping seam**: `DocGenContext.partition` filters the facts manifest (harness), and a
+  per-partition **unit allowlist** (canonical job ids — unique per zip even for shared
+  REFERENCES display names) threads through `scanner_service.get_chunk_definitions` /
+  `read_chunk_data`, `_preprocess_scan_data`, `EngineeringFactsService.extract_and_write`,
+  `write_talend_intelligence`, and `build_business_topology_evidence` so scoped runs never
+  see sibling sub-projects' units.
+- **Cross-project layer (deterministic, no LLM)**: before any partition run the orchestrator
+  writes `output/{pid}/topology/cross_project_index.json` (job-call edges across sub-projects
+  with same-partition-first resolution, landscape application edges, shared systems) +
+  `CROSS_PROJECT_TOPOLOGY.md` (pushed to RAG at upload level). Each partition run stages
+  `cross_project_refs.md` (engineering-fact context for Phase 2/3 — external references
+  without sibling content) and `_topology/cross_project_index.json` (consumed by the
+  business-topology starter pack).
+- **Case-colliding groups**: Talend groups differing only in case (werkorder:
+  `VISE2AssetCheck` vs `Vise2AssetCheck`) clobbered each other's `_preprocess/{group}.md`
+  on case-insensitive filesystems (macOS). `_preprocess_scan_data` now writes later
+  colliders as `{group}_part_ci{k}.md`; the existing `_part*` slice→group resolvers map
+  them back.
 
 ### Steven Project Finding
 

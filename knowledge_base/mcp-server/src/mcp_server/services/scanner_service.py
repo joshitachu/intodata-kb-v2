@@ -425,11 +425,24 @@ class ScannerService:
 
         return {"error": f"Unknown section: {section}"}
 
-    def get_chunk_definitions(self, output_dir: str) -> dict:
+    def get_chunk_definitions(
+        self,
+        output_dir: str,
+        unit_allowlist: set[str] | frozenset[str] | None = None,
+    ) -> dict:
         """Compute chunk definitions from scan data.
 
         Groups jobs by their group field, then splits large groups into
         sub-chunks of ~30K tokens (matching intodoc's distiller logic).
+
+        ``unit_allowlist`` (composite sub-project scoping) restricts the chunk
+        set to jobs whose canonical name (``job_id`` falling back to ``name``)
+        is in the set. Canonical job ids are scanner-unique even when the same
+        display name appears in several composite zips (each zip's shared
+        REFERENCES jobs carry distinct hashed job ids), so allowlisting keeps
+        exactly this partition's copy of a shared job and never drops or
+        cross-wires the sibling copies. ``None`` (every existing caller) keeps
+        the full scan: behaviour is unchanged.
 
         Returns:
             dict with "chunks" list and "total_chunks" count.
@@ -444,21 +457,29 @@ class ScannerService:
 
         if scan_dir.exists() and (scan_dir / "jobs").exists():
             jobs_dir = scan_dir / "jobs"
+            # Bucket by the canonical ``group`` stored inside each job JSON, never
+            # the on-disk directory name.  Composite-ZIP scans escape+hash the
+            # physical composite path into the directory name (e.g.
+            # ``VendorProject_...__intodoc_zip-<hash>``), so a single clean
+            # functional group (``AssetCheck_Interface``) is split across many
+            # physical directories.  Keying on the directory would produce a
+            # group key space disjoint from the facts manifest
+            # (``validators._canonical_analysis_group`` uses clean ``job.group``),
+            # which then fails the Phase 2 "scanner contract mismatch" check.
             for group_dir in sorted(jobs_dir.iterdir()):
                 if not group_dir.is_dir():
                     continue
-                group = group_dir.name
-                jobs_in_group = []
                 for f in sorted(group_dir.glob("*.json")):
                     size = f.stat().st_size
                     try:
                         job = json.loads(f.read_text(encoding="utf-8"))
                     except (json.JSONDecodeError, OSError):
                         continue
+                    group = str(job.get("group") or "Global")
                     job_name = str(job.get("job_id") or job.get("name") or "unknown")
-                    jobs_in_group.append((job_name, size))
-                if jobs_in_group:
-                    group_jobs[group] = jobs_in_group
+                    if unit_allowlist is not None and job_name not in unit_allowlist:
+                        continue
+                    group_jobs.setdefault(group, []).append((job_name, size))
         else:
             # Fallback: monolithic scan_result.json
             mono = base_dir / "scan_result.json"
@@ -468,6 +489,8 @@ class ScannerService:
             for job in data.get("jobs", []):
                 group = job.get("group") or "Global"
                 name = job.get("job_id") or job.get("name", "unknown")
+                if unit_allowlist is not None and str(name) not in unit_allowlist:
+                    continue
                 size = len(json.dumps(job))
                 group_jobs.setdefault(group, []).append((name, size))
 
@@ -531,19 +554,28 @@ class ScannerService:
             "total_jobs": sum(c["job_count"] for c in chunks),
         }
 
-    def read_chunk_data(self, output_dir: str, chunk_id: str) -> dict:
+    def read_chunk_data(
+        self,
+        output_dir: str,
+        chunk_id: str,
+        unit_allowlist: set[str] | frozenset[str] | None = None,
+    ) -> dict:
         """Read job data for a specific chunk.
 
         The chunk_id format is "{group}_all" or "{group}_{index}".
         Uses the same chunking logic as get_chunk_definitions to determine
-        which jobs belong to the requested chunk.
+        which jobs belong to the requested chunk. When the caller computed its
+        chunk set with a ``unit_allowlist`` (composite sub-project scoping) the
+        SAME allowlist must be passed here so chunk ids resolve against the
+        identical scoped chunking; the loaded jobs, related connections,
+        contexts and filtered manifest then cover only allowlisted units.
 
         Returns:
             dict with "chunk_id", "group", "jobs" (list of job dicts),
             "related_connections", "related_contexts", and "manifest" (filtered).
         """
         # First get chunk definitions to find the job names for this chunk
-        chunk_defs = self.get_chunk_definitions(output_dir)
+        chunk_defs = self.get_chunk_definitions(output_dir, unit_allowlist=unit_allowlist)
         if "error" in chunk_defs:
             return chunk_defs
 
@@ -580,9 +612,14 @@ class ScannerService:
                     continue
                 if str(job.get("job_id") or job.get("name") or "") == job_name:
                     jobs.append(job)
-            if not jobs and (scan_dir / "jobs" / group).exists():
-                jobs_dir = scan_dir / "jobs" / group
-                for f in sorted(jobs_dir.glob("*.json")):
+            if not jobs and (scan_dir / "jobs").exists():
+                # Fallback for scans without a usable ``manifest.job_files`` map.
+                # Match by canonical job id/name across every physical directory
+                # rather than assuming a directory named after the clean group
+                # (composite-ZIP scans escape+hash the directory name, so
+                # ``scan/jobs/<clean_group>`` does not exist).
+                jobs_dir = scan_dir / "jobs"
+                for f in sorted(jobs_dir.rglob("*.json")):
                     try:
                         job = json.loads(f.read_text(encoding="utf-8"))
                     except (json.JSONDecodeError, OSError):

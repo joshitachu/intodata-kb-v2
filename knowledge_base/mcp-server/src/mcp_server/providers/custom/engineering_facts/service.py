@@ -29,8 +29,25 @@ class EngineeringFactsService:
         scan_output_dir: Path,
         facts_manifest: FactsManifest,
         staging_dir: Path,
+        unit_allowlist: set[str] | frozenset[str] | None = None,
     ) -> tuple[EngineeringFacts, list[Path]]:
+        """Extract engineering facts and write JSON/CSV/markdown artifacts.
+
+        ``unit_allowlist`` (composite sub-project scoping) filters the raw scan
+        jobs by canonical unit name before ANY extractor runs, so every derived
+        artifact (dependency_map, sql_usage, config_runtime_map, ...) covers
+        only the scoped partition -- one filter at the seam instead of per
+        extractor. ``None`` keeps the full scan: behaviour unchanged.
+        """
         scan = _load_scan_result(scan_output_dir)
+        if unit_allowlist is not None:
+            scan = {
+                **scan,
+                "jobs": [
+                    job for job in scan.get("jobs", []) or []
+                    if str(job.get("job_id") or job.get("name") or "") in unit_allowlist
+                ],
+            }
         platform = str(scan.get("platform") or facts_manifest.platform or "generic").lower()
         extractor = self.registry.get(platform)
         facts = extractor.extract(project_id, scan, facts_manifest)

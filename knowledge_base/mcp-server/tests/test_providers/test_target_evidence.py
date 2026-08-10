@@ -311,3 +311,156 @@ def test_phase3_context_files_prepends_bundle_and_filters_maps(
 def test_extract_component_refs():
     refs = extract_component_refs("uses tJavaRow_1 and tMap_2; tMap without number ignored")
     assert refs == {"tJavaRow_1", "tMap_2"}
+
+
+# ── GAP 1: resolve a unit by job_id, not display name ────────────────
+
+
+def _dup_job(job_id: str, marker_code: str) -> dict:
+    """Two jobs share the display name 'MessageMonitoring'; only job_id differs.
+
+    Mirrors real multi-export-root scans where the same display name recurs and
+    build_facts_manifest hands the builder the unique job_id, not the name.
+    """
+    return {
+        "name": "MessageMonitoring",
+        "job_id": job_id,
+        "path": f"{job_id}/MessageMonitoring_1.0.item",
+        "group": "GroupA",
+        "version": "1.0",
+        "components": [
+            {
+                "unique_name": "tJava_1",
+                "component_type": "tJava",
+                "params": [{"name": "CODE", "value": marker_code}],
+                "metadata_connection_ref": "",
+            }
+        ],
+        "connections": [],
+        "context_groups": [],
+        "tmap_data": [],
+        "trunjob_refs": [],
+        "raw_routines": {},
+        "subgroup": "",
+        "active": True,
+        "is_esb_route": False,
+        "esb_component_types": [],
+    }
+
+
+def test_resolves_duplicated_display_name_by_job_id(tmp_path):
+    scan_output = tmp_path / "intodoc-output" / "proj"
+    jobs_dir = scan_output / "scan" / "jobs" / "GroupA"
+    jobs_dir.mkdir(parents=True)
+    (jobs_dir / "dup-aaa.json").write_text(
+        json.dumps(_dup_job("dup-aaaaaa111111", "MARKER_COPY_A();")), encoding="utf-8"
+    )
+    (jobs_dir / "dup-bbb.json").write_text(
+        json.dumps(_dup_job("dup-bbbbbb222222", "MARKER_COPY_B();")), encoding="utf-8"
+    )
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    builder = TargetEvidenceBuilder(scan_output, staging, 120_000)
+
+    ev_a = builder.build("doc_a", "dup-aaaaaa111111")
+    ev_b = builder.build("doc_b", "dup-bbbbbb222222")
+
+    assert ev_a is not None and ev_b is not None
+    text_a = ev_a.path.read_text(encoding="utf-8")
+    text_b = ev_b.path.read_text(encoding="utf-8")
+    # Each hashed unit resolves to its own scan job, not the other copy.
+    assert "MARKER_COPY_A();" in text_a and "MARKER_COPY_B();" not in text_a
+    assert "MARKER_COPY_B();" in text_b and "MARKER_COPY_A();" not in text_b
+
+
+def test_resolves_by_display_name_when_job_id_absent(tmp_path):
+    """Older scans set no job_id; the harness then passes the display name."""
+    scan_output = tmp_path / "intodoc-output" / "proj"
+    jobs_dir = scan_output / "scan" / "jobs" / "GroupA"
+    jobs_dir.mkdir(parents=True)
+    job = _job_getthing()  # no job_id field
+    (jobs_dir / "Job_GetThing.json").write_text(json.dumps(job), encoding="utf-8")
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    builder = TargetEvidenceBuilder(scan_output, staging, 120_000)
+    assert builder.build(DOC_NAME, "Job_GetThing") is not None
+
+
+# ── GAP 2: scope shared context to the groups the unit references ─────
+
+
+def test_context_scoped_to_referenced_shared_groups(tmp_path):
+    """Only shared groups the unit references (by repository_context_id) are rendered."""
+    scan_output = tmp_path / "intodoc-output" / "proj"
+    jobs_dir = scan_output / "scan" / "jobs" / "GroupA"
+    jobs_dir.mkdir(parents=True)
+    job = {
+        "name": "Scoped_Job",
+        "job_id": "scoped-1",
+        "path": "GroupA/Scoped_Job_1.0.item",
+        "group": "GroupA",
+        "version": "1.0",
+        "components": [
+            {
+                "unique_name": "tJava_1",
+                "component_type": "tJava",
+                "params": [{"name": "CODE", "value": "keep();"}],
+                "metadata_connection_ref": "",
+            }
+        ],
+        "connections": [],
+        "context_groups": [
+            {
+                "name": "inline",
+                "variables": [
+                    {
+                        "name": "Endpoint",
+                        "type": "id_String",
+                        "values": {"DEV": "http://dev", "PROD": "http://prod"},
+                        "repository_context_id": "ctx-used",
+                    }
+                ],
+            }
+        ],
+        "tmap_data": [],
+        "trunjob_refs": [],
+        "raw_routines": {},
+        "subgroup": "",
+        "active": True,
+        "is_esb_route": False,
+        "esb_component_types": [],
+    }
+    (jobs_dir / "Scoped_Job.json").write_text(json.dumps(job), encoding="utf-8")
+    shared = [
+        {
+            "name": "UsedGroup",
+            "context_id": "ctx-used",
+            "variables": [
+                {"name": "Endpoint", "type": "id_String",
+                 "values": {"DEV": "http://dev", "PROD": "http://prod-DIVERGED"}},
+                {"name": "UsedOnlyShared", "type": "id_String", "values": {"Default": "used-shared-val"}},
+            ],
+        },
+        {
+            "name": "UnusedGroup",
+            "context_id": "ctx-unused",
+            "variables": [
+                {"name": "IrrelevantVar", "type": "id_String", "values": {"Default": "noise-value"}},
+            ],
+        },
+    ]
+    (scan_output / "scan" / "contexts.json").write_text(json.dumps(shared), encoding="utf-8")
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    builder = TargetEvidenceBuilder(scan_output, staging, 120_000)
+
+    evidence = builder.build("doc_scoped", "scoped-1")
+    assert evidence is not None
+    text = evidence.path.read_text(encoding="utf-8")
+    # Referenced group's shared-only var and divergence are present.
+    assert "UsedOnlyShared" in text
+    assert "DIVERGES from shared group 'UsedGroup' on PROD" in text
+    # The unreferenced group is not dumped into this unit's bundle.
+    assert "IrrelevantVar" not in text
+    assert "noise-value" not in text
+    assert "UnusedGroup" not in text

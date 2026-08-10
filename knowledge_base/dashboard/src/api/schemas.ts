@@ -8,7 +8,11 @@ export const ProjectSchema = z.object({
   platform: z.string(),
   doc_generation_provider: z.string().nullable(),
   source_type: z.string(),
-  status: z.enum(["registered", "scanning", "generating", "ready", "error"]),
+  // `scanned` is the status returned by the project registry after a
+  // successful source scan. Keep the explicit union so genuinely malformed
+  // project records still fail closed, while accepting every lifecycle state
+  // emitted by the backend.
+  status: z.enum(["registered", "scanning", "scanned", "generating", "ready", "error"]),
   last_scan_at: z.string().nullable(),
   last_generate_at: z.string().nullable(),
   last_rag_push_at: z.string().nullable(),
@@ -39,6 +43,8 @@ export const GenerateRunSchema = z.object({
   id: z.number(),
   project_id: z.string(),
   triggered_by: z.string(),
+  // Composite orchestration: sub-project partition of a "composite" child run.
+  partition_name: z.string().nullable().optional(),
   status: z.enum(["pending", "running", "completed", "failed"]),
   started_at: z.string(),
   completed_at: z.string().nullable(),
@@ -458,6 +464,19 @@ export const AgenticExperimentCapabilitiesSchema = z.object({
   candidate_dispatch_available: z.boolean(),
   paid_execution_enabled: z.boolean(),
   opencode_version: z.string(),
+  grounded_runtimes: z.array(z.object({
+    runtime_id: z.enum(["opencode", "openai-agents"]),
+    available: z.boolean(),
+    routes: z.array(z.object({
+      provider_id: z.string(),
+      model_id: z.string(),
+      display_name: z.string(),
+    })).default([]),
+    provider_id: z.string().optional(),
+    model_ids: z.array(z.string()).optional(),
+    paid_execution_confirmation_required: z.boolean(),
+    blockers: z.array(z.string()),
+  })),
   supported_source_kinds: z.array(z.string()),
   recipes: z.array(z.object({
     recipe_id: z.string(),

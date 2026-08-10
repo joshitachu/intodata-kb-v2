@@ -6,11 +6,13 @@ import asyncio
 import datetime
 from decimal import Decimal
 import json
+import os
 from pathlib import Path, PurePosixPath
 from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
+from starlette.responses import StreamingResponse
 import httpx
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -18,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 
 from mcp_server.api.permissions import require_project_access
 from mcp_server.config import config
+from mcp_server.services.log_manager import experiment_log_manager
 from mcp_server.db.models import (
     GenerateRun,
     GenerationExperiment,
@@ -33,6 +36,17 @@ from mcp_server.db.session import async_session_factory
 from mcp_server.experiments.application.snapshot_baseline import (
     BaselineFreezeRequest,
     BaselineFreezer,
+)
+from mcp_server.experiments.application.snapshot_project_evidence import (
+    CreateProjectEvidenceSnapshotRequest,
+    ProjectEvidenceSnapshotService,
+)
+from mcp_server.experiments.application.prepare_supporting_evidence import (
+    SupportingEvidenceLimits,
+    SupportingEvidencePreparationService,
+)
+from mcp_server.experiments.application.scanner_evidence_receipt import (
+    ensure_grounded_scanner_receipt,
 )
 from mcp_server.experiments.application.recover_experiment import (
     ExperimentRecoverySnapshot,
@@ -54,7 +68,7 @@ from mcp_server.experiments.application.run_orchestrated_candidate import (
     OrchestratedOpenCodeRunner,
 )
 from mcp_server.experiments.application.run_staged_grounded_candidate import (
-    GroundedOpenCodeRunner,
+    GroundedRuntimeRunner,
 )
 from mcp_server.experiments.application.snapshot_sources import (
     CreateSourceSnapshotRequest,
@@ -68,11 +82,25 @@ from mcp_server.experiments.domain.models import (
     LegacyBaselineRun,
     require_safe_identifier,
 )
+from mcp_server.experiments.domain.project_evidence import (
+    PROJECT_EVIDENCE_SCHEMA_VERSION,
+    ProjectEvidenceSnapshot,
+)
 from mcp_server.experiments.domain.sources import (
     SourceDescriptor,
     SourceLimits,
 )
 from mcp_server.experiments.infrastructure.opencode.client import OpenCodeHttpClient
+from mcp_server.experiments.infrastructure.opencode.runtime import (
+    OpenCodeAgentRuntime,
+    OpenCodeGroundedTaskBuilder,
+)
+from mcp_server.experiments.infrastructure.openai_agents.composition import (
+    OPENAI_AGENTS_GROUNDED_RUNTIME_ID,
+    OPENCODE_GROUNDED_RUNTIME_ID,
+    compose_openai_agents_grounded_runtime,
+    configured_openai_agents_routes,
+)
 from mcp_server.experiments.infrastructure.persistence.repositories import (
     InMemoryExperimentRepository,
 )
@@ -106,9 +134,16 @@ from mcp_server.experiments.infrastructure.sources.registry import (
 from mcp_server.experiments.infrastructure.sources.runtime_export import (
     RuntimeExportAdapter,
 )
+from mcp_server.experiments.infrastructure.sources.prepared_directory import (
+    PreparedDirectoryEvidenceAdapter,
+)
 from mcp_server.experiments.infrastructure.sources.tabular import TabularFileAdapter
 from mcp_server.experiments.infrastructure.storage.source_snapshot_store import (
     SourceSnapshotArtifactSink,
+)
+from mcp_server.experiments.infrastructure.storage.project_evidence_snapshot_store import (
+    ProjectEvidenceSnapshotArtifactSink,
+    ProjectEvidenceSnapshotPersistence,
 )
 
 router = APIRouter(prefix="/agentic-experiments", tags=["agentic-experiments"])
@@ -127,6 +162,16 @@ class CreateExperimentRequest(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=200)
 
 
+class SourceInputRequest(BaseModel):
+    id: str = Field(min_length=1, max_length=200)
+    source_kind: str = Field(min_length=1, max_length=200)
+    source_role: str = Field(min_length=1, max_length=200)
+    capabilities: set[str] = Field(min_length=1, max_length=32)
+    governed_root_index: int | None = Field(default=None, ge=0)
+    relative_path: str | None = Field(default=None, max_length=1000)
+    redaction_receipt_relative_path: str | None = Field(default=None, max_length=1000)
+
+
 class QuickOpenCodeRunRequest(BaseModel):
     """Normal Generate-dialog request for one isolated OpenCode candidate."""
 
@@ -141,9 +186,13 @@ class QuickOpenCodeRunRequest(BaseModel):
     provider_id: str | None = Field(default=None, min_length=1, max_length=100)
     model_id: str | None = Field(default=None, min_length=1, max_length=200)
     candidate_mode: Literal["single_agent", "orchestrated", "grounded"] = "single_agent"
+    grounded_runtime_id: Literal["opencode", "openai-agents"] | None = None
+    acknowledge_paid_execution: Literal[True] | None = None
+    additional_sources: tuple[SourceInputRequest, ...] = Field(default=(), max_length=31)
     scope: dict[str, object] | None = None
     acknowledge_non_publishing: Literal[True]
     idempotency_key: str = Field(min_length=1, max_length=200)
+    resume_from_experiment_id: str | None = Field(default=None, min_length=1, max_length=36)
 
 
 class RecoverOpenCodeRunRequest(BaseModel):
@@ -191,6 +240,26 @@ class GroundedProgressResponse(BaseModel):
     roles: tuple[GroundedRoleProgressResponse, ...]
 
 
+class ProjectEvidenceSourceStatusResponse(BaseModel):
+    descriptor_id: str
+    source_kind: str
+    source_role: str
+    status: Literal["readable", "unreadable", "unsupported"]
+    status_reason: str | None
+    prepared_records: int
+
+
+class ProjectEvidenceCoverageResponse(BaseModel):
+    declared_sources: int
+    readable_sources: int
+    unreadable_sources: int
+    unsupported_sources: int
+    prepared_records: int
+    prepared_bytes: int
+    raw_files: int
+    raw_bytes: int
+
+
 class ExperimentResponse(BaseModel):
     experiment_id: str
     project_id: str
@@ -203,6 +272,9 @@ class ExperimentResponse(BaseModel):
     model_id: str | None
     source_snapshot_id: str | None
     source_snapshot_frozen: bool
+    source_snapshot_fingerprint_sha256: str | None = None
+    source_coverage: ProjectEvidenceCoverageResponse | None = None
+    source_inventory: tuple[ProjectEvidenceSourceStatusResponse, ...] = ()
     recipe_snapshot_id: str | None
     recipe_id: str | None
     recipe_version: str | None
@@ -219,20 +291,6 @@ class ExperimentResponse(BaseModel):
     artifacts: tuple[ArtifactResponse, ...] = ()
 
 
-class SourceInputRequest(BaseModel):
-    id: str = Field(min_length=1, max_length=200)
-    source_kind: Literal[
-        "intodoc_scan",
-        "directory_evidence",
-        "tabular_file",
-        "runtime_export",
-    ]
-    source_role: str = Field(min_length=1, max_length=200)
-    capabilities: set[str] = Field(min_length=1, max_length=32)
-    governed_root_index: int | None = Field(default=None, ge=0)
-    relative_path: str | None = Field(default=None, max_length=1000)
-
-
 class CreateSourceSnapshotBody(BaseModel):
     sources: tuple[SourceInputRequest, ...] = Field(min_length=1, max_length=32)
 
@@ -246,6 +304,9 @@ class SourceSnapshotResponse(BaseModel):
     item_count: int
     source_kinds: tuple[str, ...]
     source_roles: tuple[str, ...]
+    fingerprint_sha256: str | None = None
+    coverage: ProjectEvidenceCoverageResponse | None = None
+    inventory: tuple[ProjectEvidenceSourceStatusResponse, ...] = ()
     publishes: Literal[False] = False
 
 
@@ -377,6 +438,22 @@ class RecipeCapabilityResponse(BaseModel):
     document_output_count: int
 
 
+class GroundedRuntimeCapabilityResponse(BaseModel):
+    runtime_id: Literal["opencode", "openai-agents"]
+    available: bool
+    provider_id: str
+    model_ids: tuple[str, ...]
+    paid_execution_confirmation_required: bool
+    routes: tuple["GroundedModelRouteCapabilityResponse", ...] = ()
+    blockers: tuple[str, ...]
+
+
+class GroundedModelRouteCapabilityResponse(BaseModel):
+    provider_id: str
+    model_id: str
+    display_name: str
+
+
 class ExperimentCapabilitiesResponse(BaseModel):
     feature_enabled: Literal[True] = True
     provider_neutral: Literal[True] = True
@@ -387,6 +464,7 @@ class ExperimentCapabilitiesResponse(BaseModel):
     opencode_version: str
     supported_source_kinds: tuple[str, ...]
     recipes: tuple[RecipeCapabilityResponse, ...]
+    grounded_runtimes: tuple[GroundedRuntimeCapabilityResponse, ...]
     execution_blockers: tuple[str, ...]
 
 
@@ -416,24 +494,41 @@ def _governed_roots() -> tuple[Path, ...]:
 def _governed_source_path(
     source: SourceInputRequest,
     roots: tuple[Path, ...],
+    *,
+    allow_missing: bool = False,
 ) -> Path:
     if source.governed_root_index is None or source.relative_path is None:
         raise ValueError("non-scanner sources require a governed root and relative path")
+    return _governed_relative_path(
+        root_index=source.governed_root_index,
+        relative_path=source.relative_path,
+        roots=roots,
+        allow_missing=allow_missing,
+    )
+
+
+def _governed_relative_path(
+    *,
+    root_index: int,
+    relative_path: str,
+    roots: tuple[Path, ...],
+    allow_missing: bool,
+) -> Path:
     try:
-        root = roots[source.governed_root_index].resolve(strict=True)
+        root = roots[root_index].resolve(strict=True)
     except (IndexError, OSError) as exc:
         raise ValueError("governed source root is unavailable") from exc
-    relative = PurePosixPath(source.relative_path)
+    relative = PurePosixPath(relative_path)
     if (
         relative.is_absolute()
-        or not source.relative_path
-        or "\\" in source.relative_path
-        or "\x00" in source.relative_path
+        or not relative_path
+        or "\\" in relative_path
+        or "\x00" in relative_path
         or any(part in {"", ".", ".."} for part in relative.parts)
     ):
         raise ValueError("governed source path must be a safe relative POSIX path")
     try:
-        candidate = root.joinpath(*relative.parts).resolve(strict=True)
+        candidate = root.joinpath(*relative.parts).resolve(strict=not allow_missing)
         candidate.relative_to(root)
     except (OSError, ValueError) as exc:
         raise ValueError("governed source path escapes its configured root") from exc
@@ -444,6 +539,9 @@ def _source_composition(
     *,
     project_id: str,
     sources: tuple[SourceInputRequest, ...],
+    allow_missing: bool = False,
+    managed_workspace_root: Path | None = None,
+    require_bound_scanner_receipt: bool = False,
 ) -> tuple[SourceAdapterRegistry, tuple[SourceDescriptor, ...]]:
     require_safe_identifier(project_id, field_name="project_id")
     roots = _governed_roots()
@@ -453,12 +551,24 @@ def _source_composition(
         if any(not capability.strip() for capability in capabilities):
             raise ValueError("source capabilities must be non-blank")
         if source.source_kind == "intodoc_scan":
-            if source.governed_root_index is not None or source.relative_path is not None:
+            if (
+                source.governed_root_index is not None
+                or source.relative_path is not None
+                or source.redaction_receipt_relative_path is not None
+            ):
                 raise ValueError("IntoDoc source location is project-owned and cannot be overridden")
             source_path = config.intodoc_output_dir / project_id
-            report = source_path / "redaction_report.json"
-            fallback = source_path / "redaction.json"
-            receipt = report if report.is_file() else fallback
+            if require_bound_scanner_receipt:
+                # A normal scanner report records that redaction ran.
+                # Project-evidence snapshots additionally need a closed,
+                # hash-bound receipt for the exact files they freeze.  Create
+                # that companion only from already-approved scanner output;
+                # no uploaded source files are read here.
+                receipt = ensure_grounded_scanner_receipt(source_path)
+            else:
+                report = source_path / "redaction_report.json"
+                fallback = source_path / "redaction.json"
+                receipt = report if report.is_file() else fallback
             descriptor = SourceDescriptor(
                 id=source.id,
                 source_kind=source.source_kind,
@@ -470,7 +580,22 @@ def _source_composition(
                 trust_level="scanner_redacted",
             )
         else:
-            source_path = _governed_source_path(source, roots)
+            source_path = _governed_source_path(
+                source,
+                roots,
+                allow_missing=allow_missing,
+            )
+            receipt_path = (
+                _governed_relative_path(
+                    root_index=source.governed_root_index,
+                    relative_path=source.redaction_receipt_relative_path,
+                    roots=roots,
+                    allow_missing=allow_missing,
+                )
+                if source.governed_root_index is not None
+                and source.redaction_receipt_relative_path is not None
+                else None
+            )
             descriptor = SourceDescriptor(
                 id=source.id,
                 source_kind=source.source_kind,
@@ -480,18 +605,116 @@ def _source_composition(
                     f"governed://{source.governed_root_index}/{source.relative_path}"
                 ),
                 capabilities=capabilities,
+                redaction_receipt_path=receipt_path,
                 trust_level="governed",
             )
         descriptors.append(descriptor)
+    adapter_roots = roots
+    if managed_workspace_root is not None:
+        managed_root = Path(managed_workspace_root)
+        if managed_root.is_symlink():
+            raise ValueError("managed project workspace cannot be a symlink")
+        # Managed Git/ZIP projects are rooted under the server-owned repository
+        # directory.  Do not turn the persisted project path into a caller-
+        # controlled filesystem capability.
+        expected_root = (config.repos_dir / project_id).resolve(strict=False)
+        try:
+            managed_root.resolve(strict=False).relative_to(expected_root.parent)
+        except ValueError as exc:
+            raise ValueError("managed project workspace is outside the server repository root") from exc
+        descriptor = SourceDescriptor(
+            id="managed-project-workspace",
+            source_kind="directory_evidence",
+            source_role="supporting_reference",
+            source_path=managed_root,
+            provenance_locator=f"project-workspace://{project_id}",
+            capabilities=frozenset({"searchable_text", "structured_records"}),
+            # Uploaded workspaces are not implicitly trusted as redacted input.
+            # A missing or invalid receipt is recorded as unavailable by the
+            # project-evidence snapshot service; never bypass this boundary.
+            redaction_receipt_path=None,
+            trust_level="managed_workspace_unredacted",
+            metadata={
+                "automatic": True,
+                "authority": "supporting_only",
+                # Scanner-owned inputs are implementation evidence, already
+                # represented through the IntoDoc source snapshot and fact
+                # ledger.  The supporting-evidence stage must never expose a
+                # duplicate raw code copy to an agent.
+                "exclude_relative_prefixes": _scanner_owned_relative_prefixes(
+                    project_id
+                ),
+            },
+        )
+        if any(item.id == descriptor.id for item in descriptors):
+            raise ValueError("managed project workspace descriptor id collides with an explicit source")
+        descriptors.append(descriptor)
+        adapter_roots = (*roots, managed_root)
+
     registry = SourceAdapterRegistry(
         (
             IntodocScanSourceAdapter(),
-            DirectoryEvidenceAdapter(allowed_roots=roots),
+            DirectoryEvidenceAdapter(allowed_roots=adapter_roots),
             TabularFileAdapter(),
             RuntimeExportAdapter(),
         )
     )
     return registry, tuple(descriptors)
+
+
+def _scanner_owned_relative_prefixes(project_id: str) -> tuple[str, ...]:
+    """Read scanner-declared source roots without platform filename heuristics.
+
+    The scanner is the authority for which project paths implement the scanned
+    system.  Its file index may contain records outside a platform execution
+    root; only explicitly declared ``source_root`` values are excluded from
+    generic supporting-evidence preparation.  Missing or malformed metadata is
+    intentionally treated as no exclusion instead of guessing from a folder
+    name such as ``Talend exports``.
+    """
+
+    path = config.intodoc_output_dir / project_id / "scan" / "files_index.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return ()
+    if not isinstance(value, list):
+        return ()
+    prefixes: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        metadata = item.get("platform_metadata")
+        if not isinstance(metadata, dict):
+            continue
+        root = metadata.get("source_root")
+        if not isinstance(root, str) or not root.strip():
+            continue
+        candidate = PurePosixPath(root.strip())
+        if (
+            candidate.is_absolute()
+            or "\\" in root
+            or any(part in {"", ".", ".."} for part in candidate.parts)
+        ):
+            continue
+        prefixes.add(candidate.as_posix().rstrip("/"))
+    return tuple(sorted(prefixes))
+
+
+async def _managed_project_workspace(project_id: str) -> Path | None:
+    """Return the server-owned workspace for an uploaded/managed project.
+
+    Local-path projects are intentionally excluded: their path was supplied by
+    an operator and is not an implicit Generate Docs source.  Git/ZIP projects
+    are materialized beneath ``config.repos_dir`` and can be declared as
+    supporting evidence without asking the caller for a filesystem path.
+    """
+
+    async with async_session_factory() as db:
+        project = await db.get(Project, project_id)
+    if project is None or project.source_type not in {"git", "zip"}:
+        return None
+    return config.repos_dir / project_id
 
 
 def _bundled_recipe_root() -> Path:
@@ -651,6 +874,14 @@ async def _response(experiment_id: str, *, include_artifacts: bool = True) -> Ex
             if row.recipe_snapshot_id is not None
             else None
         )
+        source_snapshot = (
+            await db.get(GenerationSourceSnapshot, row.source_snapshot_id)
+            if row.source_snapshot_id is not None
+            else None
+        )
+        source_fingerprint, source_coverage, source_inventory = (
+            _project_evidence_response_metadata(source_snapshot)
+        )
         artifacts = await repository.list_artifacts(experiment_id)
         candidate_metrics_json = (
             row.metrics_json.get("candidate")
@@ -687,6 +918,9 @@ async def _response(experiment_id: str, *, include_artifacts: bool = True) -> Ex
             model_id=row.model_id,
             source_snapshot_id=row.source_snapshot_id,
             source_snapshot_frozen=row.source_snapshot_id is not None,
+            source_snapshot_fingerprint_sha256=source_fingerprint,
+            source_coverage=source_coverage,
+            source_inventory=source_inventory,
             recipe_snapshot_id=row.recipe_snapshot_id,
             recipe_id=recipe_snapshot.recipe_id if recipe_snapshot is not None else None,
             recipe_version=(
@@ -881,6 +1115,36 @@ def _sum_known_attempt_cost(
     )
 
 
+def _project_evidence_response_metadata(
+    snapshot: GenerationSourceSnapshot | None,
+) -> tuple[
+    str | None,
+    ProjectEvidenceCoverageResponse | None,
+    tuple[ProjectEvidenceSourceStatusResponse, ...],
+]:
+    metadata = snapshot.snapshot_metadata if snapshot is not None else None
+    if not isinstance(metadata, dict) or metadata.get("contract") != "project_evidence":
+        return None, None, ()
+    fingerprint = metadata.get("fingerprint_sha256")
+    coverage = metadata.get("coverage")
+    inventory = metadata.get("inventory")
+    if (
+        not isinstance(fingerprint, str)
+        or len(fingerprint) != 64
+        or not isinstance(coverage, dict)
+        or not isinstance(inventory, list)
+    ):
+        raise ValueError("project evidence snapshot metadata is invalid")
+    return (
+        fingerprint,
+        ProjectEvidenceCoverageResponse.model_validate(coverage),
+        tuple(
+            ProjectEvidenceSourceStatusResponse.model_validate(value)
+            for value in inventory
+        ),
+    )
+
+
 async def _source_snapshot_response(
     db,
     *,
@@ -896,6 +1160,11 @@ async def _source_snapshot_response(
             )
         ).scalars()
     )
+    fingerprint, coverage, inventory = _project_evidence_response_metadata(snapshot)
+    source_kinds = {item.source_kind for item in items}
+    source_roles = {item.source_role for item in items}
+    source_kinds.update(value.source_kind for value in inventory)
+    source_roles.update(value.source_role for value in inventory)
     return SourceSnapshotResponse(
         experiment_id=experiment_id,
         snapshot_id=snapshot.id,
@@ -903,8 +1172,11 @@ async def _source_snapshot_response(
         security_state="approved",
         manifest_relative_path=snapshot.manifest_relative_path,
         item_count=len(items),
-        source_kinds=tuple(sorted({item.source_kind for item in items})),
-        source_roles=tuple(sorted({item.source_role for item in items})),
+        source_kinds=tuple(sorted(source_kinds)),
+        source_roles=tuple(sorted(source_roles)),
+        fingerprint_sha256=fingerprint,
+        coverage=coverage,
+        inventory=inventory,
         publishes=False,
     )
 
@@ -1145,6 +1417,8 @@ async def create_source_snapshot(
     experiment_id: str,
     body: CreateSourceSnapshotBody,
     request: Request,
+    *,
+    managed_workspace_root: Path | None = None,
 ) -> SourceSnapshotResponse:
     """Freeze approved scanner and governed inputs without exposing raw paths."""
 
@@ -1154,13 +1428,26 @@ async def create_source_snapshot(
         if experiment is None:
             raise HTTPException(status_code=404, detail="Experiment not found")
         project_id = experiment.project_id
+        use_project_evidence = experiment.runtime_id in {
+            "opencode-grounded",
+            "openai-agents-grounded",
+        }
     await require_project_access(request, project_id)
 
     try:
         registry, descriptors = _source_composition(
             project_id=project_id,
             sources=body.sources,
+            allow_missing=use_project_evidence,
+            managed_workspace_root=managed_workspace_root,
+            require_bound_scanner_receipt=use_project_evidence,
         )
+        if use_project_evidence:
+            descriptors = _prepare_managed_supporting_evidence(
+                project_id=project_id,
+                descriptors=descriptors,
+                registry=registry,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1194,27 +1481,47 @@ async def create_source_snapshot(
             project_id=project_id,
             experiment_id=experiment_id,
         )
-        service = SourceSnapshotService(
-            registry=registry,
-            sink=SourceSnapshotArtifactSink(store),
-        )
         try:
-            result = await asyncio.to_thread(
-                service.create,
-                CreateSourceSnapshotRequest(
-                    descriptors=descriptors,
-                    limits=SourceLimits(),
-                    snapshot_id=str(uuid4()),
-                ),
-            )
-            if result.persistence is None:
-                raise RuntimeError("source snapshot storage did not return a durable receipt")
             repository = SqlAlchemyExperimentRepository(db)
-            snapshot_row = await repository.finalize_source_snapshot(
-                experiment_id=experiment_id,
-                snapshot=result.snapshot,
-                persistence=result.persistence,
-            )
+            if use_project_evidence:
+                project_snapshot = await asyncio.to_thread(
+                    ProjectEvidenceSnapshotService(registry=registry).create,
+                    CreateProjectEvidenceSnapshotRequest(
+                        descriptors=descriptors,
+                        limits=SourceLimits(),
+                        snapshot_id=f"project-evidence-{uuid4().hex[:16]}",
+                    ),
+                )
+                project_persistence = await asyncio.to_thread(
+                    ProjectEvidenceSnapshotArtifactSink(store).save_snapshot,
+                    project_snapshot,
+                )
+                snapshot_row = await repository.finalize_project_evidence_snapshot(
+                    experiment_id=experiment_id,
+                    snapshot=project_snapshot,
+                    persistence=project_persistence,
+                )
+            else:
+                result = await asyncio.to_thread(
+                    SourceSnapshotService(
+                        registry=registry,
+                        sink=SourceSnapshotArtifactSink(store),
+                    ).create,
+                    CreateSourceSnapshotRequest(
+                        descriptors=descriptors,
+                        limits=SourceLimits(),
+                        snapshot_id=str(uuid4()),
+                    ),
+                )
+                if result.persistence is None:
+                    raise RuntimeError(
+                        "source snapshot storage did not return a durable receipt"
+                    )
+                snapshot_row = await repository.finalize_source_snapshot(
+                    experiment_id=experiment_id,
+                    snapshot=result.snapshot,
+                    persistence=result.persistence,
+                )
             await db.commit()
         except (SourceAdapterError, ValueError) as exc:
             await db.rollback()
@@ -1228,17 +1535,59 @@ async def create_source_snapshot(
                 )
                 await failure_db.commit()
             raise HTTPException(status_code=500, detail="Source snapshot failed") from exc
-        return SourceSnapshotResponse(
-            experiment_id=experiment_id,
-            snapshot_id=result.snapshot.id,
-            manifest_sha256=result.snapshot.manifest_sha256,
-            security_state="approved",
-            manifest_relative_path=snapshot_row.manifest_relative_path,
-            item_count=len(result.snapshot.items),
-            source_kinds=tuple(sorted({item.source_kind for item in result.snapshot.items})),
-            source_roles=tuple(sorted({item.source_role for item in result.snapshot.items})),
-            publishes=False,
+    return await _source_snapshot_response(
+        db,
+        experiment_id=experiment_id,
+        snapshot=snapshot_row,
+    )
+
+
+def _prepare_managed_supporting_evidence(
+    *,
+    project_id: str,
+    descriptors: tuple[SourceDescriptor, ...],
+    registry: SourceAdapterRegistry,
+) -> tuple[SourceDescriptor, ...]:
+    """Replace an automatic raw workspace with its redacted derivative.
+
+    Supporting material is additive.  A project containing only implementation
+    source, only unsupported binaries, or material that cannot be safely
+    prepared must still run the existing scanner-grounded workflow.  In that
+    case the original automatic descriptor remains explicitly unreadable in
+    the immutable inventory; it is never silently treated as evidence.
+    """
+
+    managed = next(
+        (
+            descriptor
+            for descriptor in descriptors
+            if descriptor.id == "managed-project-workspace"
+        ),
+        None,
+    )
+    if managed is None:
+        return descriptors
+    preparation_root = (
+        config.project_root / "output" / project_id / "supporting-evidence"
+    )
+    try:
+        prepared = SupportingEvidencePreparationService().prepare(
+            managed,
+            output_root=preparation_root,
+            limits=SupportingEvidenceLimits(
+                max_file_bytes=config.supporting_evidence_max_file_bytes,
+                max_raw_bytes=config.supporting_evidence_max_raw_bytes,
+            ),
         )
+    except SourceAdapterError:
+        return descriptors
+    registry.register(
+        PreparedDirectoryEvidenceAdapter(allowed_roots=(preparation_root,))
+    )
+    return tuple(
+        prepared.descriptor if descriptor.id == managed.id else descriptor
+        for descriptor in descriptors
+    )
 
 
 @router.post(
@@ -1697,6 +2046,125 @@ def _quick_candidate_sources(
     return tuple(resolved)
 
 
+def _project_evidence_persistence(
+    snapshot: GenerationSourceSnapshot,
+) -> ProjectEvidenceSnapshotPersistence:
+    metadata = snapshot.snapshot_metadata
+    if not isinstance(metadata, dict) or metadata.get("contract") != "project_evidence":
+        raise ValueError("Grounded experiment has no project evidence snapshot")
+    fingerprint = metadata.get("fingerprint_sha256")
+    content_paths = metadata.get("content_relative_paths")
+    manifest_size = metadata.get("manifest_size_bytes")
+    if (
+        not isinstance(fingerprint, str)
+        or not isinstance(content_paths, dict)
+        or any(
+            not isinstance(item_id, str) or not isinstance(relative_path, str)
+            for item_id, relative_path in content_paths.items()
+        )
+        or not isinstance(manifest_size, int)
+        or isinstance(manifest_size, bool)
+    ):
+        raise ValueError("project evidence persistence metadata is invalid")
+    return ProjectEvidenceSnapshotPersistence(
+        snapshot_id=snapshot.id,
+        fingerprint_sha256=fingerprint,
+        content_relative_paths=content_paths,
+        manifest_relative_path=snapshot.manifest_relative_path,
+        manifest_sha256=snapshot.manifest_sha256,
+        manifest_size_bytes=manifest_size,
+    )
+
+
+def _load_verified_project_evidence_snapshot(
+    *,
+    project_id: str,
+    experiment_id: str,
+    snapshot_row: GenerationSourceSnapshot,
+    indexed_items: tuple[GenerationSourceSnapshotItem, ...],
+) -> ProjectEvidenceSnapshot:
+    if (
+        snapshot_row.experiment_id != experiment_id
+        or snapshot_row.schema_version != PROJECT_EVIDENCE_SCHEMA_VERSION
+        or snapshot_row.security_state != "approved"
+        or any(item.snapshot_id != snapshot_row.id for item in indexed_items)
+    ):
+        raise ValueError("project evidence database linkage is invalid")
+    persistence = _project_evidence_persistence(snapshot_row)
+    snapshot = ProjectEvidenceSnapshotArtifactSink(
+        ArtifactStore(
+            output_root=config.project_root / "output",
+            project_id=project_id,
+            experiment_id=experiment_id,
+        )
+    ).load_snapshot(persistence)
+    _verify_project_evidence_database_index(
+        snapshot=snapshot,
+        persistence=persistence,
+        indexed_items=indexed_items,
+    )
+    return snapshot
+
+
+def _verify_project_evidence_database_index(
+    *,
+    snapshot: ProjectEvidenceSnapshot,
+    persistence: ProjectEvidenceSnapshotPersistence,
+    indexed_items: tuple[GenerationSourceSnapshotItem, ...],
+) -> None:
+    indexed_by_id = {item.id: item for item in indexed_items}
+    if len(indexed_by_id) != len(indexed_items):
+        raise ValueError("project evidence database index has duplicate item ids")
+    expected_ids = {
+        str(prepared["item_id"])
+        for source in snapshot.sources
+        for prepared in source.prepared_representations
+    }
+    if set(indexed_by_id) != expected_ids:
+        raise ValueError("project evidence database index differs from persisted snapshot")
+
+    for source in snapshot.sources:
+        raw_by_id = {
+            str(reference["item_id"]): reference
+            for reference in source.raw_evidence_references
+        }
+        for prepared in source.prepared_representations:
+            item_id = str(prepared["item_id"])
+            raw = raw_by_id.get(item_id)
+            if raw is None:
+                raise ValueError("project evidence database index has no raw reference")
+            row = indexed_by_id[item_id]
+            expected_metadata = {
+                "opaque_logical_identity": str(prepared["logical_identity"]),
+                "project_evidence_fingerprint_sha256": snapshot.fingerprint_sha256,
+                "source_status": source.status.value,
+            }
+            if (
+                row.snapshot_id != snapshot.id
+                or row.source_descriptor_id != source.descriptor_id
+                or row.logical_identity != prepared["logical_path"]
+                or row.source_kind != source.source_kind
+                or row.source_role != source.source_role
+                or tuple(row.capabilities_json) != source.capabilities
+                or row.locator != raw["locator"]
+                or row.raw_sha256 != raw["raw_sha256"]
+                or row.extracted_sha256 != prepared["extracted_sha256"]
+                or row.media_type != prepared["media_type"]
+                or row.size_bytes != raw["size_bytes"]
+                or row.extracted_size_bytes != prepared["size_bytes"]
+                or row.content_relative_path
+                != persistence.content_relative_paths[item_id]
+                or row.trust_level != source.trust_level
+                or row.redaction_state != "approved"
+                or row.adapter_id != "project-evidence"
+                or row.adapter_version != str(snapshot.schema_version)
+                or row.item_metadata != expected_metadata
+            ):
+                raise ValueError(
+                    "project evidence database index differs from persisted snapshot"
+                )
+
+
 async def _resolve_experiment_recipe(db, experiment: GenerationExperiment):
     """Resolve the certified recipe through the experiment's immutable snapshot."""
 
@@ -1722,14 +2190,27 @@ async def _run_quick_opencode_candidate(
     model_id: str,
     output_names: tuple[str, ...],
     candidate_mode: Literal["single_agent", "orchestrated", "grounded"] = "single_agent",
+    grounded_runtime_id: str = OPENCODE_GROUNDED_RUNTIME_ID,
+    resume_from_experiment_id: str | None = None,
 ) -> None:
     """Run after the HTTP receipt is returned; failures remain visible in the ledger."""
 
     try:
+        if candidate_mode == "grounded" and grounded_runtime_id not in {
+            OPENCODE_GROUNDED_RUNTIME_ID,
+            OPENAI_AGENTS_GROUNDED_RUNTIME_ID,
+        }:
+            raise ValueError("configured Grounded runtime is not supported")
         async with async_session_factory() as db:
             experiment = await db.get(GenerationExperiment, experiment_id)
             if experiment is None or experiment.source_snapshot_id is None:
                 raise LookupError("prepared experiment is unavailable")
+            source_snapshot = await db.get(
+                GenerationSourceSnapshot,
+                experiment.source_snapshot_id,
+            )
+            if source_snapshot is None:
+                raise LookupError("prepared source snapshot is unavailable")
             source_items = tuple(
                 (
                     await db.execute(
@@ -1742,14 +2223,34 @@ async def _run_quick_opencode_candidate(
                     )
                 ).scalars()
             )
+            project_evidence_snapshot = None
+            if candidate_mode == "grounded":
+                project_evidence_snapshot = await asyncio.to_thread(
+                    _load_verified_project_evidence_snapshot,
+                    project_id=project_id,
+                    experiment_id=experiment_id,
+                    snapshot_row=source_snapshot,
+                    indexed_items=source_items,
+                )
+            execution_source_items = (
+                tuple(
+                    item
+                    for item in source_items
+                    if item.source_kind == "intodoc_scan"
+                )
+                if candidate_mode == "grounded"
+                else source_items
+            )
             source_paths = _quick_candidate_sources(
                 project_id=project_id,
                 experiment_id=experiment_id,
-                relative_paths=tuple(item.content_relative_path for item in source_items),
+                relative_paths=tuple(
+                    item.content_relative_path for item in execution_source_items
+                ),
             )
             frozen_sources = tuple(
                 (item.logical_identity, path)
-                for item, path in zip(source_items, source_paths, strict=True)
+                for item, path in zip(execution_source_items, source_paths, strict=True)
             )
             execution_pack = None
             if candidate_mode == "grounded":
@@ -1768,20 +2269,40 @@ async def _run_quick_opencode_candidate(
             runner_class = {
                 "single_agent": AgenticLegacyOpenCodeRunner,
                 "orchestrated": OrchestratedOpenCodeRunner,
-                "grounded": GroundedOpenCodeRunner,
+                "grounded": GroundedRuntimeRunner,
             }[candidate_mode]
+            opencode_client = OpenCodeHttpClient(
+                base_url=config.agentic_opencode_base_url,
+                username=config.agentic_opencode_username,
+                password=config.agentic_opencode_password,
+                client=http_client,
+            )
             runner_kwargs = {
-                "client": OpenCodeHttpClient(
-                    base_url=config.agentic_opencode_base_url,
-                    username=config.agentic_opencode_username,
-                    password=config.agentic_opencode_password,
-                    client=http_client,
-                ),
                 "output_root": config.project_root / "output",
                 "project_root": config.project_root,
                 "workspace_root": config.agentic_workspace_root,
                 "timeout_seconds": config.agentic_max_wall_seconds,
             }
+            if candidate_mode == "grounded":
+                if grounded_runtime_id == OPENAI_AGENTS_GROUNDED_RUNTIME_ID:
+                    composed = await compose_openai_agents_grounded_runtime(
+                        settings=config,
+                        provider_id=provider_id,
+                        model_id=model_id,
+                        workspace_root=config.agentic_workspace_root,
+                    )
+                    runner_kwargs["runtime"] = composed.runtime
+                    runner_kwargs["task_builder"] = composed.task_builder
+                    runner_kwargs["max_billed_cost_usd"] = (
+                        config.agentic_max_cost_usd
+                        if config.agentic_max_cost_usd > 0
+                        else None
+                    )
+                else:
+                    runner_kwargs["runtime"] = OpenCodeAgentRuntime(opencode_client)
+                    runner_kwargs["task_builder"] = OpenCodeGroundedTaskBuilder()
+            else:
+                runner_kwargs["client"] = opencode_client
             if execution_pack is not None:
                 runner_kwargs["execution_pack"] = execution_pack
             run_kwargs = {
@@ -1796,6 +2317,9 @@ async def _run_quick_opencode_candidate(
                 run_kwargs["legacy_baseline_available"] = (
                     experiment.baseline_run_id is not None
                 )
+                run_kwargs["project_evidence_snapshot"] = project_evidence_snapshot
+                if resume_from_experiment_id is not None:
+                    run_kwargs["resume_from_experiment_id"] = resume_from_experiment_id
             result = await runner_class(**runner_kwargs).run(**run_kwargs)
 
         async with async_session_factory() as db:
@@ -1814,7 +2338,12 @@ async def _run_quick_opencode_candidate(
             await db.commit()
     except Exception as exc:
         detail = str(exc).strip()
-        failure = f"OpenCode candidate failed: {type(exc).__name__}"
+        runtime_label = (
+            "OpenAI Agents"
+            if grounded_runtime_id == OPENAI_AGENTS_GROUNDED_RUNTIME_ID
+            else "OpenCode"
+        )
+        failure = f"{runtime_label} candidate failed: {type(exc).__name__}"
         if detail:
             failure = f"{failure}: {detail}"
         async with async_session_factory() as db:
@@ -1823,6 +2352,8 @@ async def _run_quick_opencode_candidate(
                 failure[:2000],
             )
             await db.commit()
+        await experiment_log_manager.emit(experiment_id, failure[:2000], level="error")
+        await experiment_log_manager.emit_done(experiment_id)
 
 
 @router.post("/quick-run", response_model=ExperimentResponse, status_code=202)
@@ -1834,19 +2365,97 @@ async def start_quick_opencode_candidate(
     """Freeze inputs and queue a non-publishing OpenCode candidate from Generate Docs."""
 
     _require_feature()
-    if config.agentic_opencode_version != "1.18.4":
-        raise HTTPException(status_code=503, detail="OpenCode runtime pin is not configured")
-    if not config.agentic_opencode_password:
-        raise HTTPException(status_code=503, detail="OpenCode runtime authentication is unavailable")
-    if body.candidate_mode == "grounded" and (
-        body.provider_id is None or body.model_id is None
+    if body.candidate_mode != "grounded" and body.grounded_runtime_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="A Grounded runtime can be selected only for Grounded execution",
+        )
+    if body.candidate_mode != "grounded" and body.acknowledge_paid_execution is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Paid execution acknowledgement applies only to Grounded execution",
+        )
+    if body.candidate_mode != "grounded" and body.resume_from_experiment_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Resuming a prior attempt applies only to Grounded execution",
+        )
+    grounded_runtime_id = (
+        body.grounded_runtime_id or config.agentic_grounded_runtime_id
+        if body.candidate_mode == "grounded"
+        else OPENCODE_GROUNDED_RUNTIME_ID
+    )
+    if grounded_runtime_id not in {
+        OPENCODE_GROUNDED_RUNTIME_ID,
+        OPENAI_AGENTS_GROUNDED_RUNTIME_ID,
+    }:
+        raise HTTPException(status_code=503, detail="Grounded runtime is not configured")
+    if (
+        grounded_runtime_id != OPENAI_AGENTS_GROUNDED_RUNTIME_ID
+        and body.acknowledge_paid_execution is not None
     ):
         raise HTTPException(
             status_code=400,
-            detail="Grounded execution requires an explicit provider and model",
+            detail="Paid execution acknowledgement applies only to OpenAI Agents",
         )
-    provider_id = body.provider_id or "deepseek"
-    model_id = body.model_id or "deepseek-v4-pro"
+    if grounded_runtime_id == OPENCODE_GROUNDED_RUNTIME_ID:
+        if config.agentic_opencode_version != "1.18.4":
+            raise HTTPException(status_code=503, detail="OpenCode runtime pin is not configured")
+        if not config.agentic_opencode_password:
+            raise HTTPException(
+                status_code=503,
+                detail="OpenCode runtime authentication is unavailable",
+            )
+    elif body.candidate_mode == "grounded":
+        if not config.agentic_paid_execution_enabled:
+            raise HTTPException(
+                status_code=503,
+                detail="OpenAI Agents paid execution is disabled by the operator",
+            )
+        if body.acknowledge_paid_execution is not True:
+            raise HTTPException(
+                status_code=400,
+                detail="OpenAI Agents requires explicit paid execution acknowledgement",
+            )
+    if body.additional_sources and body.candidate_mode != "grounded":
+        raise HTTPException(
+            status_code=400,
+            detail="Additional project evidence is available only to Grounded execution",
+        )
+    if any(
+        source.source_kind == "intodoc_scan" for source in body.additional_sources
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="The project-owned IntoDoc scanner source cannot be duplicated",
+        )
+    if any(
+        source.source_role.casefold() == "implementation"
+        for source in body.additional_sources
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Additional project evidence cannot claim implementation authority",
+        )
+    # Server-side default resolution. Grounded runs no longer require the caller
+    # to pin a provider/model: when omitted, the platform default (config knob,
+    # ``deepseek-v4-pro`` out of the box) is used. An explicit caller value
+    # always wins. Non-grounded modes fall back to the same default.
+    provider_id = body.provider_id or config.agentic_grounded_default_provider_id
+    model_id = body.model_id or config.agentic_grounded_default_model_id
+    if grounded_runtime_id == OPENAI_AGENTS_GROUNDED_RUNTIME_ID:
+        try:
+            await compose_openai_agents_grounded_runtime(
+                settings=config,
+                provider_id=provider_id,
+                model_id=model_id,
+                workspace_root=config.agentic_workspace_root,
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="OpenAI Agents Grounded runtime preflight failed",
+            ) from exc
     try:
         _, manifest = _resolve_bundled_recipe(body.recipe_id, body.recipe_version)
         if body.candidate_mode == "grounded":
@@ -1876,7 +2485,11 @@ async def start_quick_opencode_candidate(
             runtime_id={
                 "single_agent": "opencode",
                 "orchestrated": "opencode-orchestrated",
-                "grounded": "opencode-grounded",
+                "grounded": (
+                    "openai-agents-grounded"
+                    if grounded_runtime_id == OPENAI_AGENTS_GROUNDED_RUNTIME_ID
+                    else "opencode-grounded"
+                ),
             }[body.candidate_mode],
             provider_id=provider_id,
             model_id=model_id,
@@ -1896,9 +2509,15 @@ async def start_quick_opencode_candidate(
                     source_role="implementation",
                     capabilities={"searchable_text", "structured_records"},
                 ),
+                *body.additional_sources,
             )
         ),
         request,
+        managed_workspace_root=(
+            await _managed_project_workspace(body.project_id)
+            if body.candidate_mode == "grounded"
+            else None
+        ),
     )
     await create_recipe_snapshot(
         experiment.experiment_id,
@@ -1920,6 +2539,8 @@ async def start_quick_opencode_candidate(
             model_id=model_id,
             output_names=output_names,
             candidate_mode=body.candidate_mode,
+            grounded_runtime_id=grounded_runtime_id,
+            resume_from_experiment_id=body.resume_from_experiment_id,
         )
     return prepared
 
@@ -2076,8 +2697,34 @@ async def get_experiment_capabilities() -> ExperimentCapabilitiesResponse:
         blockers.append("OpenCode runtime authentication is unavailable")
     if not config.doc_generation_deepseek_api_key:
         blockers.append("DeepSeek credentials are unavailable")
+    opencode_blockers: list[str] = []
+    if config.agentic_opencode_version != "1.18.4":
+        opencode_blockers.append("OpenCode runtime pin is not configured")
+    if not config.agentic_opencode_password:
+        opencode_blockers.append("OpenCode runtime authentication is unavailable")
+    openai_blockers: list[str] = []
+    route_config_error: str | None = None
+    try:
+        configured_routes = configured_openai_agents_routes(config)
+    except ValueError:
+        configured_routes = ()
+        route_config_error = "OpenAI Agents provider route allowlist is invalid"
+    ready_routes = tuple(
+        route for route in configured_routes if os.environ.get(route.api_key_env_var)
+    )
+    openai_models = tuple(route.model_id for route in configured_routes)
+    if not config.agentic_openai_agents_enabled:
+        openai_blockers.append("OpenAI Agents Grounded runtime is disabled")
+    if not config.agentic_paid_execution_enabled:
+        openai_blockers.append("OpenAI Agents paid execution is disabled")
+    if route_config_error:
+        openai_blockers.append(route_config_error)
+    elif not configured_routes:
+        openai_blockers.append("OpenAI Agents model allowlist is empty")
+    elif not ready_routes:
+        openai_blockers.append("OpenAI Agents credentials are unavailable")
     return ExperimentCapabilitiesResponse(
-        candidate_dispatch_available=not blockers,
+        candidate_dispatch_available=(not opencode_blockers or not openai_blockers),
         paid_execution_enabled=config.agentic_paid_execution_enabled,
         opencode_version=config.agentic_opencode_version,
         supported_source_kinds=(
@@ -2087,6 +2734,33 @@ async def get_experiment_capabilities() -> ExperimentCapabilitiesResponse:
             "runtime_export",
         ),
         recipes=_bundled_recipe_capabilities(),
+        grounded_runtimes=(
+            GroundedRuntimeCapabilityResponse(
+                runtime_id="opencode",
+                available=not opencode_blockers,
+                provider_id="",
+                model_ids=(),
+                paid_execution_confirmation_required=False,
+                routes=(),
+                blockers=tuple(opencode_blockers),
+            ),
+            GroundedRuntimeCapabilityResponse(
+                runtime_id="openai-agents",
+                available=not openai_blockers,
+                provider_id=(configured_routes[0].provider_id if configured_routes else ""),
+                model_ids=openai_models,
+                paid_execution_confirmation_required=True,
+                routes=tuple(
+                    GroundedModelRouteCapabilityResponse(
+                        provider_id=route.provider_id,
+                        model_id=route.model_id,
+                        display_name=route.display_name,
+                    )
+                    for route in ready_routes
+                ),
+                blockers=tuple(openai_blockers),
+            ),
+        ),
         execution_blockers=tuple(blockers),
     )
 
@@ -2116,3 +2790,46 @@ async def get_experiment(experiment_id: str, request: Request) -> ExperimentResp
         project_id = row.project_id
     await require_project_access(request, project_id)
     return await _response(experiment_id)
+
+
+@router.get("/{experiment_id}/events/stream")
+async def stream_experiment_events(experiment_id: str, request: Request):
+    """SSE endpoint for live Grounded/OpenCode role progress and tool activity.
+
+    Mirrors GET /logs/stream, keyed by experiment_id instead of project_id --
+    see mcp_server.services.log_manager.experiment_log_manager.
+    """
+
+    _require_feature()
+    async with async_session_factory() as db:
+        row = await SqlAlchemyExperimentRepository(db).get(experiment_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Experiment not found")
+        project_id = row.project_id
+    await require_project_access(request, project_id)
+    queue = experiment_log_manager.subscribe(experiment_id)
+
+    async def event_generator():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    if event.get("project_id") != experiment_id:
+                        continue
+                    yield f"data: {json.dumps(event)}\n\n"
+                except TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            experiment_log_manager.unsubscribe(experiment_id, queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

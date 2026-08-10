@@ -197,12 +197,74 @@ def _render_task_evidence(
     return "\n".join(lines)
 
 
+def _pack_bins(
+    sections: list[JobSection],
+    preamble_bytes: int,
+    budget_bytes: int,
+    max_units_per_task: int | None,
+) -> list[list[JobSection]]:
+    """First-fit bin packing in file order: whole sections only, never split a job.
+
+    Single source of truth for the binning decision so ``plan_evidence_tasks``
+    (which writes task files) and ``count_evidence_tasks`` (a pure dry count
+    used for run call-budget sizing) can never disagree.
+    """
+    bins: list[list[JobSection]] = []
+    current: list[JobSection] = []
+    current_bytes = preamble_bytes
+    for section in sections:
+        size_limit_reached = current_bytes + section.size_bytes > budget_bytes
+        unit_limit_reached = (
+            max_units_per_task is not None and len(current) >= max_units_per_task
+        )
+        if current and (size_limit_reached or unit_limit_reached):
+            bins.append(current)
+            current = []
+            current_bytes = preamble_bytes
+        current.append(section)
+        current_bytes += section.size_bytes
+    if current:
+        bins.append(current)
+    return bins
+
+
+def count_evidence_tasks(
+    group_file: Path,
+    group_units: list[str],
+    budget_bytes: int,
+    max_units_per_task: int | None = None,
+) -> int:
+    """Dry-count the evidence tasks ``plan_evidence_tasks`` would plan.
+
+    Reads the group evidence file but writes nothing. Used to size the run
+    call budget from the actual bin-packed work plan (one model call per task)
+    instead of a per-group heuristic that under-counts by ~7x on job-dense
+    groups. Returns 0 for a missing file, mirroring ``plan_evidence_tasks``.
+    """
+    if not group_file.exists():
+        return 0
+    text = group_file.read_text(encoding="utf-8", errors="replace")
+    file_bytes = len(text.encode("utf-8"))
+    preamble, sections = split_job_sections(text)
+    if file_bytes <= budget_bytes and (
+        max_units_per_task is None or len(group_units) <= max_units_per_task
+    ):
+        return 1
+    if not sections:
+        return 1
+    bins = _pack_bins(
+        sections, len(preamble.encode("utf-8")), budget_bytes, max_units_per_task
+    )
+    return max(1, len(bins))
+
+
 def plan_evidence_tasks(
     group: str,
     group_file: Path,
     group_units: list[str],
     out_dir: Path,
     budget_bytes: int,
+    max_units_per_task: int | None = None,
 ) -> list[EvidenceTask]:
     """Plan whole-job evidence tasks for one group.
 
@@ -217,7 +279,9 @@ def plan_evidence_tasks(
     file_bytes = len(text.encode("utf-8"))
     preamble, sections = split_job_sections(text)
 
-    if file_bytes <= budget_bytes:
+    if file_bytes <= budget_bytes and (
+        max_units_per_task is None or len(group_units) <= max_units_per_task
+    ):
         return [EvidenceTask(index=1, task_id=group, path=group_file, units=list(group_units))]
 
     if not sections:
@@ -233,20 +297,8 @@ def plan_evidence_tasks(
 
     section_to_unit, missing_units = _match_units(sections, group_units)
 
-    # First-fit in file order: whole sections only, never split a job.
     preamble_bytes = len(preamble.encode("utf-8"))
-    bins: list[list[JobSection]] = []
-    current: list[JobSection] = []
-    current_bytes = preamble_bytes
-    for section in sections:
-        if current and current_bytes + section.size_bytes > budget_bytes:
-            bins.append(current)
-            current = []
-            current_bytes = preamble_bytes
-        current.append(section)
-        current_bytes += section.size_bytes
-    if current:
-        bins.append(current)
+    bins = _pack_bins(sections, preamble_bytes, budget_bytes, max_units_per_task)
 
     if len(bins) == 1:
         return [EvidenceTask(index=1, task_id=group, path=group_file, units=list(group_units))]

@@ -17,7 +17,7 @@ services:
       - /var/lib/opencode:uid=10001,gid=10001,mode=0700
     volumes:
       - ./knowledge_base/agentic-workspaces:/runtime/workspaces
-    mem_limit: 1g
+    mem_limit: 3g
     cpus: 1.0
     restart: unless-stopped
 
@@ -171,7 +171,7 @@ services:
       RUNTIME_STATUS_TIMEOUT: ${RUNTIME_STATUS_TIMEOUT:-5.0}
       RUNTIME_TOOL_TIMEOUT: ${RUNTIME_TOOL_TIMEOUT:-10.0}
       RUNTIME_TOOL_RESULT_MAX_CHARS: ${RUNTIME_TOOL_RESULT_MAX_CHARS:-12000}
-      RUNTIME_SYNC_SCHEDULER_ENABLED: ${RUNTIME_SYNC_SCHEDULER_ENABLED:-false}
+      RUNTIME_SYNC_SCHEDULER_ENABLED: ${RUNTIME_SYNC_SCHEDULER_ENABLED:-true}
       RUNTIME_SYNC_INTERVAL_SECONDS: ${RUNTIME_SYNC_INTERVAL_SECONDS:-60}
       RUNTIME_SYNC_SOURCE_KEY: ${RUNTIME_SYNC_SOURCE_KEY:-}
       RUNTIME_SYNC_PROJECT_IDS: ${RUNTIME_SYNC_PROJECT_IDS:-}
@@ -312,14 +312,28 @@ services:
       MCP_DOC_GENERATION_ROUTE33_API_KEY: ${MCP_DOC_GENERATION_ROUTE33_API_KEY:-}
       MCP_DOC_GENERATION_ROUTE33_BASE_URL: ${MCP_DOC_GENERATION_ROUTE33_BASE_URL:-https://api.route33.ai/v1}
       MCP_MODEL_PRICING_JSON: ${MCP_MODEL_PRICING_JSON:-}
-      # Additive A/B documentation experiments. Both gates default off; enabling
-      # paid execution also requires task/runtime secrets and a positive ceiling.
+      # Additive A/B documentation experiments. Both gates default off. Paid
+      # execution also requires task/runtime secrets and, per run, explicit
+      # operator confirmation (acknowledge_paid_execution); a cost ceiling
+      # (MCP_AGENTIC_MAX_COST_USD) is optional, not required.
       MCP_AGENTIC_EXPERIMENTS_ENABLED: ${MCP_AGENTIC_EXPERIMENTS_ENABLED:-false}
       MCP_AGENTIC_PAID_EXECUTION_ENABLED: ${MCP_AGENTIC_PAID_EXECUTION_ENABLED:-false}
       MCP_AGENTIC_OPENCODE_BASE_URL: ${MCP_AGENTIC_OPENCODE_BASE_URL:-http://opencode-runtime:4096}
       MCP_AGENTIC_OPENCODE_USERNAME: ${MCP_AGENTIC_OPENCODE_USERNAME:-opencode}
       MCP_AGENTIC_OPENCODE_PASSWORD: ${MCP_AGENTIC_OPENCODE_PASSWORD:-nexus-opencode-local-only}
       MCP_AGENTIC_OPENCODE_VERSION: ${MCP_AGENTIC_OPENCODE_VERSION:-1.18.4}
+      MCP_AGENTIC_GROUNDED_RUNTIME_ID: ${MCP_AGENTIC_GROUNDED_RUNTIME_ID:-opencode}
+      MCP_AGENTIC_OPENAI_AGENTS_ENABLED: ${MCP_AGENTIC_OPENAI_AGENTS_ENABLED:-false}
+      MCP_AGENTIC_OPENAI_AGENTS_PROVIDER_ID: ${MCP_AGENTIC_OPENAI_AGENTS_PROVIDER_ID:-openai}
+      MCP_AGENTIC_OPENAI_AGENTS_MODEL_IDS: ${MCP_AGENTIC_OPENAI_AGENTS_MODEL_IDS:-}
+      MCP_AGENTIC_OPENAI_AGENTS_API_KEY_ENV_VAR: ${MCP_AGENTIC_OPENAI_AGENTS_API_KEY_ENV_VAR:-OPENAI_API_KEY}
+      MCP_AGENTIC_OPENAI_AGENTS_MAX_TURNS_PER_ROLE: ${MCP_AGENTIC_OPENAI_AGENTS_MAX_TURNS_PER_ROLE:-8}
+      # Optional provider-neutral route allowlist (JSON array), used instead of
+      # the single-provider MODEL_IDS/PROVIDER_ID/API_KEY_ENV_VAR fields above
+      # when more than one OpenAI-compatible provider (e.g. DeepSeek) must be
+      # selectable. Each entry: provider_id, model_id, display_name,
+      # api_key_env_var, optional base_url, input/output_usd_per_million.
+      MCP_AGENTIC_OPENAI_AGENTS_ROUTES_JSON: ${MCP_AGENTIC_OPENAI_AGENTS_ROUTES_JSON:-}
       MCP_AGENTIC_RECIPE_ROOT: ${MCP_AGENTIC_RECIPE_ROOT:-/app/data/agentic_recipes}
       MCP_AGENTIC_WORKSPACE_ROOT: ${MCP_AGENTIC_WORKSPACE_ROOT:-/app/agentic-workspaces}
       MCP_AGENTIC_TASK_TOKEN_SECRET: ${MCP_AGENTIC_TASK_TOKEN_SECRET:-}
@@ -365,7 +379,7 @@ services:
         condition: service_healthy
       opencode-runtime:
         condition: service_healthy
-    mem_limit: 1g
+    mem_limit: 3g
     cpus: 2.0
     restart: unless-stopped
 

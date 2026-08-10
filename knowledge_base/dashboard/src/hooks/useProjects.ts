@@ -53,6 +53,9 @@ export function useGenerate() {
       executionEngine = "legacy",
       openCodeProvider,
       openCodeModel,
+      groundedRuntimeId,
+      acknowledgePaidExecution,
+      resumeFromExperimentId,
     }: {
       projectId: string;
       resume?: boolean;
@@ -61,23 +64,30 @@ export function useGenerate() {
       writeModel?: string | null;
       organizationPackId?: number | null;
       privateVersionIds?: number[];
-      executionEngine?: "legacy" | "opencode" | "opencode_orchestrated" | "opencode_grounded";
+      executionEngine?: "legacy" | "opencode" | "opencode_orchestrated" | "opencode_grounded" | "openai_agents_grounded";
       openCodeProvider?: string;
       openCodeModel?: string;
+      groundedRuntimeId?: "opencode" | "openai-agents";
+      acknowledgePaidExecution?: true;
+      resumeFromExperimentId?: string;
     }): Promise<
       import("../types").StatusResponse | import("../types").AgenticExperiment
     > => executionEngine === "opencode" ||
       executionEngine === "opencode_orchestrated" ||
-      executionEngine === "opencode_grounded"
+      executionEngine === "opencode_grounded" ||
+      executionEngine === "openai_agents_grounded"
       ? await api.generateOpenCodeCandidate(
           projectId,
-          executionEngine === "opencode_grounded"
+          executionEngine === "opencode_grounded" || executionEngine === "openai_agents_grounded"
             ? "grounded"
             : executionEngine === "opencode_orchestrated"
               ? "orchestrated"
               : "single_agent",
           openCodeProvider,
           openCodeModel,
+          groundedRuntimeId,
+          acknowledgePaidExecution,
+          resumeFromExperimentId,
         )
       : await api.generate(
           projectId,

@@ -1,5 +1,55 @@
 # KB Sub-project Context
 
+## Current State (2026-08-07) -- agentic grounded doc pipeline repaired (7 slices, UNCOMMITTED, unit-verified)
+
+**Last completed**: root-caused why the `werkorder` grounded run produced near-empty docs and implemented a 7-slice repair (all under `mcp-server/`, uncommitted on `feat/intodoc-composite-zip-scanner`). Two root causes closed: (1) staged evidence was written as `.bin` and the external OpenCode `read` tool silently refused it as binary -> now staged as text via `evidence_relative_suffix`; (2) the recipe hard-coded 2 analysis outputs -> analysis/writer stages now fan out dynamically per evidence batch (`analysis_batch_planner.py` + `fanout` recipe template + `expand_grounded_fanout`) with coupling-aware boundaries, a coverage gate, verbatim per-unit evidence pushed into prompts (`unit_evidence.py`), two-tier deep docs, prod/test tiering (`unit_tiering.py`), PDF/`.xls` + mapping routing (`mapping_association.py`), diagnosable topology failures, claim-checker subject-scoping, default `deepseek-v4-pro`, and batch-content-hash resume. Agentic suite 479 passed / 1 known-unrelated fail.
+
+**Immediate next**: run a LIVE end-to-end `werkorder` generation through the real OpenCode/deepseek stack on `deepseek-v4-pro` (omit the model or pick pro explicitly; the dashboard still allows flash) -- this is the only outstanding validation and the true proof of depth. New deps `pypdf`/`xlrd` must be installed on any fresh deploy (in `pyproject.toml`, env uses `uv`). Then commit the session's slice set separately from the branch's other pre-existing uncommitted work.
+
+**Note**: this branch also carries substantial pre-existing uncommitted work (RAG_pipeline, dashboard, intodoc, `providers/custom`, business-topology service, openai_agents infra) that is NOT part of this session's changes.
+
+## Current State (2026-08-03) -- scanner-aware standard doc generation deployed
+
+The standard custom-harness documentation path now consumes composite scanner
+output through bounded, typed Phase 2 packets. Canonical analysis groups come
+from `manifest.job_files`, so two roots may contain identical logical group/job
+names without being merged; human logical groups and source roots remain on each
+unit fact. Task source evidence is planned on unit boundaries, project-wide maps
+are filtered to relationships touching the assigned units, and direct-mode
+groups are promoted to the same planner when they exceed the packet threshold.
+
+Phase 2 task output is capped at 10K tokens and synthesis at 6K. Required
+sections are validated before deterministic assembly. A provider response ending
+with `finish_reason=length` is rejected even when transport success and non-empty
+text are reported, is not retried identically, and cannot enter synthesis.
+Atomic run-level call/output reservations bound concurrent requests and record
+all physical fallback calls. Input tokens remain fully accounted, but the
+cumulative input ceiling is unlimited by default; a positive
+`MCP_DOCGEN_MAX_RUN_INPUT_TOKENS` explicitly restores an operator cap. A
+provider length stop is never retried with the identical prompt/context.
+
+Phase 3 narrative prompts now define completeness as decision coverage plus
+traceability, not wholesale evidence duplication. Oversized change-impact maps
+are grouped deterministically into a bounded narrative view while the complete
+matrix remains the evidence of record. On `assetcheck_tester`, the Phase 3 `08`
+context fell from 257 KB to 125 KB and its 1,001-row/158 KB matrix became a
+23 KB grouped view.
+
+**Real failed-run regression:** `assetcheck_tester` now resolves 10 canonical
+Jobs across the same two collision-safe preprocess groups. Its stored source
+replans into nine correctly assigned packets of 89-130 KB, all below the 140 KB
+cap; the failed run had sent roughly 303-335 KB to each Phase 2 attempt and had
+zero canonical task assignments because group identities did not match.
+
+**Verification:** 256 focused provider/prompt tests passed; the full MCP suite
+reached 1,666 passed with the same three unrelated baseline failures. Scoped
+compile and Ruff passed. The MCP image was rebuilt/recreated and `/health` is OK.
+
+**Immediate next:** resume `assetcheck_tester`; accepted Phase 3 documents `00`-
+`07` remain checkpointed and document `08` will use the bounded evidence view.
+Inspect final playbook quality and provider-reported total usage. No paid
+generation was started automatically.
+
 ## Current State (2026-07-29) -- topology roadmap backend complete
 
 IntoDoc now produces approved scan, manifest, L4 lineage, and deterministic
@@ -530,6 +580,16 @@ Enterprise documentation quality gates and verdicts: enterprise mode is now the 
 
 - Authenticated product review of the regenerated L1/L2.
 - Business alias/ownership confirmation remains later work and must be additive.
+- Configure an approved OpenAI-compatible model route, then run a grounded candidate against a project with scanner facts plus prepared supporting evidence.
+- Add an explicit review/promotion action before grounded candidate documents or business topology can become the normal published view.
+- Add governed runtime connectors only after their credentials, schemas, refresh policy, and redaction boundaries are agreed.
+
+## Grounded project-evidence workflow (2026-08-05)
+
+- The existing Talend scanner is unchanged and remains the implementation source of truth: `scan_result.json` and `lineage.json` are frozen into each candidate snapshot.
+- Managed project workspaces can now supply additive supporting evidence. Preparation dynamically excludes the scanner source roots declared in `scan/files_index.json`, inventories all remaining content, prepares only redacted safe derivatives, and records unsupported files instead of dropping them silently.
+- OpenAI Agents receive role-scoped evidence packets through bounded `list`, `search`, `read`, and factual `traverse` tools. They cannot read raw workspaces, candidate outputs, or sibling-role packets.
+- The reviewer waits for topology completion. A grounded run is still an isolated, non-publishing candidate; the normal legacy documentation path remains unchanged.
 
 ## Resolved blockers
 

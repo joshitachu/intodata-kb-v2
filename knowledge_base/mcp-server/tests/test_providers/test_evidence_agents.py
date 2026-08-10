@@ -52,6 +52,27 @@ def _manifest(**kwargs) -> PluginPackManifest:
     return PluginPackManifest.model_validate(data)
 
 
+@pytest.fixture(autouse=True)
+def _enable_default_agents(monkeypatch):
+    """These tests exercise the built-in default-agent machinery, which is
+    config-gated OFF for standard runs since R2.3 (verified: 3 of 4 defaults
+    produced 0 claims on the Assetcheck run)."""
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "docgen_default_evidence_agents_enabled", True)
+
+
+def test_standard_runs_resolve_no_agents_by_default(monkeypatch) -> None:
+    """R2.3: without a plugin manifest and with the flag at its default (off),
+    no evidence agents run -- the DEFAULT_HARNESS_AGENTS are opt-in."""
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "docgen_default_evidence_agents_enabled", False)
+    resolution = resolve_evidence_agents(None, None)
+    assert resolution.agents == []
+    assert resolution.errors == []
+
+
 def test_resolves_default_agents_without_pack() -> None:
     resolution = resolve_evidence_agents(None, None)
 

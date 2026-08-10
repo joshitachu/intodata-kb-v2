@@ -2,7 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useGenerate, usePackWorkspace } from "../hooks/useProjects";
 import { useModels } from "../hooks/useDiscovery";
+import { useAgenticExperimentCapabilities, useAgenticExperiments } from "../hooks/useAgenticExperiments";
 import type { Project } from "../types";
+
+const GROUNDED_RUNTIME_IDS = new Set(["opencode-grounded", "openai-agents-grounded"]);
 
 interface Props {
   project: Project;
@@ -15,16 +18,21 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
   const generate = useGenerate();
   const { data: modelsData } = useModels();
   const workspaceQuery = usePackWorkspace(project.id);
+  const capabilitiesQuery = useAgenticExperimentCapabilities();
+  const experimentsQuery = useAgenticExperiments(project.id);
 
   const [resume, setResume] = useState(true);
+  const [resumeFromExperimentId, setResumeFromExperimentId] = useState("");
   const [organizationPackId, setOrganizationPackId] = useState<number | null>(null);
   const [privateVersionIds, setPrivateVersionIds] = useState<number[]>([]);
   const [runInvestigationModel, setRunInvestigationModel] = useState("");
   const [runAnalysisModel, setRunAnalysisModel] = useState("");
   const [runWriteModel, setRunWriteModel] = useState("");
   const [openCodeRoute, setOpenCodeRoute] = useState("");
+  const [openAIAgentsRoute, setOpenAIAgentsRoute] = useState("");
+  const [paidExecutionConfirmed, setPaidExecutionConfirmed] = useState(false);
   const [executionEngine, setExecutionEngine] = useState<
-    "legacy" | "opencode" | "opencode_orchestrated" | "opencode_grounded"
+    "legacy" | "opencode" | "opencode_orchestrated" | "opencode_grounded" | "openai_agents_grounded"
   >("legacy");
 
   useEffect(() => {
@@ -36,7 +44,10 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
       setRunAnalysisModel("");
       setRunWriteModel("");
       setOpenCodeRoute("");
+      setOpenAIAgentsRoute("");
+      setPaidExecutionConfirmed(false);
       setExecutionEngine("legacy");
+      setResumeFromExperimentId("");
     }
   }, [open, project.id]);
 
@@ -89,6 +100,19 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
     ) ??
     openCodeModels.find((m) => m.is_default_analysis) ??
     openCodeModels[0];
+  const openAIAgentsRuntime = capabilitiesQuery.data?.grounded_runtimes.find(
+    (runtime) => runtime.runtime_id === "openai-agents",
+  );
+  const openAIAgentsRoutes = openAIAgentsRuntime?.routes ?? [];
+  const selectedOpenAIAgentsRoute = openAIAgentsRoutes.find(
+    (route) => JSON.stringify([route.provider_id, route.model_id]) === openAIAgentsRoute,
+  ) ?? openAIAgentsRoutes[0];
+  const usesOpenAIAgents = executionEngine === "openai_agents_grounded";
+  const isGroundedEngine = executionEngine === "opencode_grounded" || executionEngine === "openai_agents_grounded";
+  const resumableExperiments = (experimentsQuery.data ?? []).filter(
+    (experiment) =>
+      experiment.status === "failed" && GROUNDED_RUNTIME_IDS.has(experiment.runtime_id),
+  );
 
   if (!open) return null;
 
@@ -113,8 +137,23 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
         organizationPackId,
         privateVersionIds,
         executionEngine,
-        openCodeProvider: selectedOpenCodeModel?.provider,
-        openCodeModel: selectedOpenCodeModel?.id,
+        openCodeProvider: usesOpenAIAgents
+          ? selectedOpenAIAgentsRoute?.provider_id
+          : selectedOpenCodeModel?.provider,
+        openCodeModel: usesOpenAIAgents
+          ? selectedOpenAIAgentsRoute?.model_id
+          : selectedOpenCodeModel?.id,
+        groundedRuntimeId: executionEngine === "opencode_grounded"
+          ? "opencode"
+          : usesOpenAIAgents
+            ? "openai-agents"
+            : undefined,
+        acknowledgePaidExecution: usesOpenAIAgents && paidExecutionConfirmed
+          ? true
+          : undefined,
+        resumeFromExperimentId: isGroundedEngine && resumeFromExperimentId
+          ? resumeFromExperimentId
+          : undefined,
       },
       {
         onSuccess: () => {
@@ -188,8 +227,14 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
             <PackOption
               checked={executionEngine === "opencode_grounded"}
               onCheck={() => setExecutionEngine("opencode_grounded")}
-              title="OpenCode grounded"
-              subtitle="Recommended candidate: deterministic scanner facts, seven isolated Nexus-scheduled roles, cross-document review, and bounded fact repair. Isolated; never publishes or enters RAG."
+              title="Nexus grounded — OpenCode"
+              subtitle="The Nexus architecture on OpenCode: immutable scanner facts plus a supporting-evidence snapshot; Nexus schedules Investigation → Analysis → Writing + Business Topology → Review. Existing docs remain unchanged."
+            />
+            <PackOption
+              checked={executionEngine === "openai_agents_grounded"}
+              onCheck={() => setExecutionEngine("openai_agents_grounded")}
+              title="Nexus grounded — OpenAI Agents"
+              subtitle="The Nexus architecture on the OpenAI Agents SDK: immutable scanner facts plus a supporting-evidence snapshot; Nexus schedules Investigation → Analysis → Writing + Business Topology → Review. Existing docs remain unchanged; paid execution requires confirmation."
             />
           </div>
         </section>
@@ -325,17 +370,72 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
           </>
         ) : (
           <section className="space-y-4 rounded border border-amber-400/30 bg-amber-400/[0.06] px-4 py-3">
-            <h4 className="text-sm font-medium text-amber-200">Isolated OpenCode candidate</h4>
+            <h4 className="text-sm font-medium text-amber-200">
+              {usesOpenAIAgents ? "Nexus grounded — OpenAI Agents" : "Isolated OpenCode candidate"}
+            </h4>
             <p className="mt-1 text-xs leading-5 text-slate-300">
               Nexus freezes the current approved IntoDoc scan and, when available, the latest
-              completed legacy baseline for comparison. It then asks {executionEngine === "opencode_grounded"
+              completed legacy baseline for comparison. It then asks {usesOpenAIAgents
+                ? "the OpenAI Agents SDK to execute Nexus's fact-grounded, role-isolated workflow"
+                : executionEngine === "opencode_grounded"
                 ? "Nexus to schedule a fact-grounded sequence of isolated OpenCode specialists"
                 : executionEngine === "opencode_orchestrated"
                   ? "an OpenCode orchestrator and its bounded specialist subagents"
                   : "one OpenCode agent"} to create the same ten documentation outputs. Results
               and usage appear in Experiments. Existing documentation remains unchanged.
             </p>
-            <label className="block space-y-1.5">
+            {usesOpenAIAgents ? (
+              <>
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-medium text-slate-300">Approved provider and model</span>
+                  <select
+                    aria-label="Approved provider and model"
+                    value={selectedOpenAIAgentsRoute
+                      ? JSON.stringify([selectedOpenAIAgentsRoute.provider_id, selectedOpenAIAgentsRoute.model_id])
+                      : ""}
+                    onChange={(event) => setOpenAIAgentsRoute(event.target.value)}
+                    className="input-dark w-full"
+                  >
+                    {openAIAgentsRoutes.map((route) => (
+                      <option
+                        key={`${route.provider_id}:${route.model_id}`}
+                        value={JSON.stringify([route.provider_id, route.model_id])}
+                      >
+                        {route.display_name} ({route.provider_id}/{route.model_id})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {capabilitiesQuery.isLoading && (
+                  <p className="text-xs text-slate-400">Checking OpenAI Agents availability...</p>
+                )}
+                {capabilitiesQuery.isError && (
+                  <p className="text-xs text-red-300">OpenAI Agents capabilities could not be loaded.</p>
+                )}
+                {openAIAgentsRuntime && !openAIAgentsRuntime.available && (
+                  <div className="text-xs text-red-300" role="alert">
+                    <p>OpenAI Agents grounded is not available:</p>
+                    <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                      {openAIAgentsRuntime.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {openAIAgentsRuntime?.available && openAIAgentsRoutes.length === 0 && (
+                  <p className="text-xs text-red-300" role="alert">
+                    No approved provider and model routes are advertised by the server.
+                  </p>
+                )}
+                <label className="flex items-start gap-2.5 rounded border border-amber-300/25 bg-black/10 px-3 py-2.5 text-xs text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={paidExecutionConfirmed}
+                    onChange={(event) => setPaidExecutionConfirmed(event.target.checked)}
+                    className="mt-0.5 h-4 w-4 accent-accent-primary"
+                  />
+                  <span>I understand this run uses the paid OpenAI API and may incur usage charges.</span>
+                </label>
+              </>
+            ) : <label className="block space-y-1.5">
               <span className="text-xs font-medium text-slate-300">
                 OpenCode provider and model
               </span>
@@ -363,7 +463,44 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
                   No available model supports both analysis and writing.
                 </span>
               )}
-            </label>
+            </label>}
+            {isGroundedEngine && (
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-slate-300">
+                  Resume from a previous failed attempt (optional)
+                </span>
+                <select
+                  aria-label="Resume from a previous failed attempt"
+                  value={resumeFromExperimentId}
+                  onChange={(event) => setResumeFromExperimentId(event.target.value)}
+                  className="input-dark w-full"
+                >
+                  <option value="">Start fresh — run every role</option>
+                  {resumableExperiments.map((experiment) => {
+                    const progress = experiment.grounded_progress;
+                    const label = progress
+                      ? `${experiment.experiment_id.slice(0, 8)} — reached ${progress.stage} (${progress.accepted_artifact_count}/${progress.required_artifact_count} artifacts accepted)`
+                      : `${experiment.experiment_id.slice(0, 8)} — failed before any role was accepted`;
+                    return (
+                      <option key={experiment.experiment_id} value={experiment.experiment_id}>
+                        {label}
+                      </option>
+                    );
+                  })}
+                </select>
+                {resumeFromExperimentId && (
+                  <span className="block text-xs text-slate-400">
+                    Roles already accepted in that attempt are reused as-is; only the roles that
+                    never finished (and anything depending on them) will actually run again.
+                  </span>
+                )}
+                {resumableExperiments.length === 0 && (
+                  <span className="block text-xs text-slate-500">
+                    No failed Grounded attempts for this project yet.
+                  </span>
+                )}
+              </label>
+            )}
           </section>
         )}
 
@@ -389,7 +526,14 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
             onClick={submit}
             disabled={
               generate.isPending ||
-              (executionEngine !== "legacy" && !selectedOpenCodeModel) ||
+              (usesOpenAIAgents && (
+                capabilitiesQuery.isLoading ||
+                capabilitiesQuery.isError ||
+                !openAIAgentsRuntime?.available ||
+                !selectedOpenAIAgentsRoute ||
+                !paidExecutionConfirmed
+              )) ||
+              (executionEngine !== "legacy" && !usesOpenAIAgents && !selectedOpenCodeModel) ||
               (executionEngine === "legacy" && (
                 workspaceQuery.isLoading ||
                 workspaceQuery.isError ||
@@ -407,6 +551,8 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
                     ? "Start Orchestrated Candidate"
                     : executionEngine === "opencode_grounded"
                       ? "Start Grounded Candidate"
+                    : executionEngine === "openai_agents_grounded"
+                      ? "Start OpenAI Grounded Candidate"
                   : "Generate"}
           </button>
         </div>

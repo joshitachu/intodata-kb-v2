@@ -31,6 +31,7 @@ class AgentPhase(StrEnum):
     SCORECARD = "scorecard"
     PHASE3_DOC = "phase3_doc"
     REPAIR = "repair"
+    BUSINESS_TOPOLOGY = "business_topology"
 
 
 def _atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
@@ -217,6 +218,19 @@ class ScopedEvidenceTools:
                 continue
             if category_terms and not any(term in lower for term in category_terms):
                 continue
+            if path.suffix == ".jsonl":
+                for line in text.splitlines():
+                    line_lower = line.lower()
+                    if terms and not any(term in line_lower for term in terms):
+                        continue
+                    if category_terms and not any(term in line_lower for term in category_terms):
+                        continue
+                    results.append(
+                        f"Source: {path.relative_to(self.staging_dir).as_posix()}\n{line}"
+                    )
+                    if len(results) >= max(1, limit):
+                        return "\n\n---\n\n".join(results)
+                continue
             snippet = self._snippet(text, terms or category_terms)
             results.append(f"Source: {path.relative_to(self.staging_dir).as_posix()}\n{snippet}")
             if len(results) >= max(1, limit):
@@ -243,15 +257,28 @@ class ScopedEvidenceTools:
         target = (self.staging_dir / subdir).resolve() if subdir else self.staging_dir.resolve()
         if not str(target).startswith(str(self.staging_dir.resolve())):
             return "ERROR: path outside staging directory"
+        if self.contract.phase == AgentPhase.BUSINESS_TOPOLOGY and subdir:
+            relative = target.relative_to(self.staging_dir.resolve())
+            if not self._topology_artifact_allowed(relative):
+                return "ERROR: path outside business-topology evidence boundary"
         if not target.exists():
             return f"Directory not found: {subdir or '.'}"
-        files = sorted(p.relative_to(self.staging_dir).as_posix() for p in target.iterdir())
+        files = sorted(
+            p.relative_to(self.staging_dir).as_posix()
+            for p in target.iterdir()
+            if self.contract.phase != AgentPhase.BUSINESS_TOPOLOGY
+            or self._topology_artifact_allowed(p.relative_to(self.staging_dir))
+        )
         return "\n".join(files) if files else "(empty)"
 
     def _read_artifact(self, path: str, offset: int = 0, limit: int | None = None) -> str:
         target = (self.staging_dir / path).resolve()
         if not str(target).startswith(str(self.staging_dir.resolve())):
             return "ERROR: path outside staging directory"
+        if self.contract.phase == AgentPhase.BUSINESS_TOPOLOGY:
+            relative = target.relative_to(self.staging_dir.resolve())
+            if not self._topology_artifact_allowed(relative):
+                return "ERROR: path outside business-topology evidence boundary"
         if not target.exists():
             return f"ERROR: not found: {path}"
         if not target.is_file():
@@ -268,6 +295,26 @@ class ScopedEvidenceTools:
                 f"offset={start} limit={capped_limit} total_bytes={len(raw)}]"
             )
         return text
+
+    @staticmethod
+    def _topology_artifact_allowed(relative: Path) -> bool:
+        if not relative.parts:
+            return True
+        if relative.parts[0] in {"_analysis", "_investigation", "_phase1", "_topology"}:
+            return True
+        return relative.as_posix() in {
+            "engineering_facts.md",
+            "dependency_map.md",
+            "architecture_map.md",
+            "data_flow_map.md",
+            "api_surface.md",
+            "config_runtime_map.md",
+            "known_risks.md",
+            "test_coverage_map.md",
+            "change_impact_matrix.md",
+            "facts_manifest.json",
+            "documentation_obligations.json",
+        }
 
     def _evidence_files(self) -> list[Path]:
         names = [
@@ -286,6 +333,15 @@ class ScopedEvidenceTools:
         files = [self.staging_dir / name for name in names]
         files.extend(sorted((self.staging_dir / "_investigation").glob("*.md")))
         files.extend(sorted((self.staging_dir / "_analysis").glob("*.md")))
+        # Preserve every pre-existing agent's evidence boundary byte-for-byte.
+        # Topology may search its factual ledger, but never completed writer
+        # prose; accepted Phase 1/2 inputs above are its semantic boundary.
+        if self.contract.phase == AgentPhase.BUSINESS_TOPOLOGY:
+            files.extend(
+                sorted(
+                    (self.staging_dir / "_topology" / "evidence").rglob("*.json*")
+                )
+            )
         return [path for path in files if path.exists() and path.is_file()]
 
     @staticmethod
@@ -392,11 +448,27 @@ class AgentTaskRuntime:
                 "metadata": result.metadata,
             })
             incomplete_reason = self._incomplete_reason(result, validation, attempt, attempts)
+            # Repeating an identical request after the provider hit its output
+            # ceiling reproduces the same truncation and doubles the bill.  The
+            # caller must re-plan a smaller task or stop with an explicit bounded
+            # failure; semantic validation failures still receive one repair.
+            if incomplete_reason in {"length", "budget_exhaustion"}:
+                break
+            # Transport/provider failures are not repairable by appending model
+            # validation feedback to the same request.  Provider-level transient
+            # retries already happen inside the provider.  Replaying here would
+            # duplicate the full evidence packet and its cost.
+            if not result.success:
+                break
             if result.success and validation.get("ok", False):
                 incomplete_reason = None
                 break
 
-        accepted = bool(result.success and validation.get("ok", False))
+        accepted = bool(
+            result.success
+            and validation.get("ok", False)
+            and incomplete_reason is None
+        )
         status = "accepted" if accepted else ("incomplete" if incomplete_reason else "rejected")
         # Atomic writes: temp-file + rename prevents partial state on crash.
         # status.json is written last — it is the acceptance gate for resume.

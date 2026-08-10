@@ -129,7 +129,7 @@ class ScanRun(Base):
         index=True,
         nullable=False,
     )
-    triggered_by: Mapped[str] = mapped_column(String(20), nullable=False)  # mcp | api | webhook
+    triggered_by: Mapped[str] = mapped_column(String(40), nullable=False)  # mcp | api | webhook | mission_control
     status: Mapped[str] = mapped_column(
         String(20), default="running", index=True
     )  # running | completed | failed
@@ -154,7 +154,13 @@ class GenerateRun(Base):
         index=True,
         nullable=False,
     )
-    triggered_by: Mapped[str] = mapped_column(String(20), nullable=False)  # api | mcp
+    # Trigger source only (api | mcp | webhook | mission_control | composite |
+    # manual_full_rebuild). Composite sub-project runs previously encoded the
+    # partition name here ("composite:{name}"), overflowing the column; the
+    # partition now lives in its own field.
+    triggered_by: Mapped[str] = mapped_column(String(40), nullable=False)
+    # Composite orchestration: the sub-project partition this child run covers.
+    partition_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     status: Mapped[str] = mapped_column(
         String(20), default="running", index=True
     )  # running | completed | completed_warnings | failed

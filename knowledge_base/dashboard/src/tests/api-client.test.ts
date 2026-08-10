@@ -40,8 +40,62 @@ describe("API client", () => {
           created_at: null,
           updated_at: null,
         },
+        {
+          id: "scanned-project",
+          display_name: "Scanned Project",
+          repo_url: null,
+          local_path: "/data/repos/scanned-project",
+          platform: "talend",
+          doc_generation_provider: null,
+          source_type: "upload",
+          status: "scanned",
+          last_scan_at: "2026-08-04T10:00:00Z",
+          last_generate_at: null,
+          last_rag_push_at: null,
+          job_count: 12,
+          doc_count: 0,
+          error_message: null,
+          last_ingested_commit_sha: null,
+          auto_reingest_enabled: false,
+          auto_reingest_last_checked_at: null,
+          auto_reingest_error: null,
+          git_update_summary: null,
+          has_github_token: false,
+          webhook_status: null,
+          instruction_pack_dir: null,
+          plugin_pack_id: null,
+          created_at: null,
+          updated_at: null,
+        },
+        {
+          id: "error-project",
+          display_name: "Error Project",
+          repo_url: null,
+          local_path: "/data/repos/error-project",
+          platform: "generic",
+          doc_generation_provider: null,
+          source_type: "upload",
+          status: "error",
+          last_scan_at: null,
+          last_generate_at: null,
+          last_rag_push_at: null,
+          job_count: 0,
+          doc_count: 0,
+          error_message: "scan failed",
+          last_ingested_commit_sha: null,
+          auto_reingest_enabled: false,
+          auto_reingest_last_checked_at: null,
+          auto_reingest_error: null,
+          git_update_summary: null,
+          has_github_token: false,
+          webhook_status: null,
+          instruction_pack_dir: null,
+          plugin_pack_id: null,
+          created_at: null,
+          updated_at: null,
+        },
       ],
-      total: 1,
+      total: 3,
     };
 
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
@@ -52,8 +106,13 @@ describe("API client", () => {
     );
 
     const result = await api.listProjects();
-    expect(result.projects).toHaveLength(1);
+    expect(result.projects).toHaveLength(3);
     expect(result.projects[0].id).toBe("test-project");
+    expect(result.projects.map((project) => project.status)).toEqual([
+      "ready",
+      "scanned",
+      "error",
+    ]);
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "/mcp/projects",
       expect.objectContaining({ credentials: "include" })
@@ -131,6 +190,35 @@ describe("API client", () => {
     expect(openCodeRuntimeModelId("provider", "already-local")).toBe(
       "already-local",
     );
+  });
+
+  it("sends the exact approved provider/model route with OpenAI Agents and paid acknowledgement", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response("not started", { status: 503 }),
+    );
+
+    await expect(
+      api.generateOpenCodeCandidate(
+        "werkorder",
+        "grounded",
+        "deepseek",
+        "deepseek-v4-flash",
+        "openai-agents",
+        true,
+      ),
+    ).rejects.toThrow("503");
+
+    const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
+    const body = JSON.parse(fetchCall[1]?.body as string);
+    expect(body).toMatchObject({
+      project_id: "werkorder",
+      candidate_mode: "grounded",
+      provider_id: "deepseek",
+      model_id: "deepseek-v4-flash",
+      grounded_runtime_id: "openai-agents",
+      acknowledge_paid_execution: true,
+      acknowledge_non_publishing: true,
+    });
   });
 
   it("throws on non-OK response", async () => {
@@ -213,7 +301,6 @@ describe("API client", () => {
     const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
     expect(fetchCall[0]).toBe("/nexus-api/harness/packs/projects/p1/generate");
     expect(JSON.parse(fetchCall[1]?.body as string)).toMatchObject({
-      project_id: "p1",
       resume: true,
       investigation_model: "investigator",
       model: "analyst",
@@ -221,6 +308,7 @@ describe("API client", () => {
       organization_pack_id: 10,
       private_version_ids: [21],
     });
+    expect(JSON.parse(fetchCall[1]?.body as string)).not.toHaveProperty("project_id");
     expect(JSON.parse(fetchCall[1]?.body as string)).not.toHaveProperty("plugin_pack_id");
   });
 });

@@ -12,6 +12,8 @@ import {
   useReconcileAgenticExperiment,
   useRetryAgenticExperimentTask,
 } from "../hooks/useAgenticExperiments";
+import { useExperimentLogStream } from "../hooks/useExperimentLogStream";
+import LogPanel from "./LogPanel";
 import { parseApiError } from "../lib/errors";
 import type {
   AgenticExperiment,
@@ -108,6 +110,7 @@ export default function AgenticExperimentsPage() {
   const retryTask = useRetryAgenticExperimentTask();
   const reconcile = useReconcileAgenticExperiment();
   const retention = useAgenticExperimentRetention();
+  const { logs: liveLogs, clear: clearLiveLogs } = useExperimentLogStream(selectedExperimentId);
 
   useEffect(() => {
     if (!projectId && projects[0]) setProjectId(projects[0].id);
@@ -417,6 +420,14 @@ export default function AgenticExperimentsPage() {
                     : `Recipe compile failed: ${parseApiError(compileRecipe.error)}`}
                 </p>
               )}
+
+              <LogPanel
+                logs={liveLogs}
+                onClear={clearLiveLogs}
+                projectId={null}
+                selectedLogFile={null}
+                onLogFileCleared={() => {}}
+              />
 
               {experiment.runtime_id === "opencode" && tasks.length > 0
                 && tasks.every((task) => task.status === "pending") ? (

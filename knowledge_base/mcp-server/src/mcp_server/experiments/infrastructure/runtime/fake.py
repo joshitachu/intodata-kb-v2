@@ -136,6 +136,9 @@ class FakeAgentRuntime(AgentRuntime):
         self.started_requests.append(request)
         return handle
 
+    async def poll_status(self, handle: RuntimeTaskHandle) -> RuntimeTaskStatus:
+        return (await self.result(handle)).status
+
     async def result(self, handle: RuntimeTaskHandle) -> RuntimeTaskResult:
         stored = self._stored(handle)
         if stored.cancelled_at is not None:

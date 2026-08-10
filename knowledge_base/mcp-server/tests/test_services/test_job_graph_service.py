@@ -55,6 +55,33 @@ def test_job_graph_keeps_technical_identity_beside_human_label():
     assert node.type_explanation == "Maps hierarchical XML data."
 
 
+def test_generic_code_graph_never_describes_files_as_talend_components():
+    job = {
+        "components": [{
+            "unique_name": "route",
+            "component_type": "CodeFile",
+            "params": [],
+        }],
+        "connections": [{
+            "name": "imports",
+            "source": "route",
+            "target": "page",
+            "connector_name": "IMPORTS",
+            "line_style": 0,
+        }],
+    }
+
+    graph = build_job_graph("p1", "app", "grp", job, platform="generic")
+
+    assert graph.nodes[0].type_explanation == (
+        "Source-code file analyzed as part of this application."
+    )
+    assert "Talend" not in graph.nodes[0].type_explanation
+    assert graph.edges[0].explanation == (
+        "References or depends on the following project artifact."
+    )
+
+
 def test_param_summary_is_bounded_and_credential_free():
     component = {
         "unique_name": "tDBOutput_1",

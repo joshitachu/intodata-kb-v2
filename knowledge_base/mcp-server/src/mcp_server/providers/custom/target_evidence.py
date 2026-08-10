@@ -21,9 +21,14 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from mcp_server.providers.custom.source_context import redact_inline_credentials
+
+if TYPE_CHECKING:  # avoid a runtime import cycle (noncode_evidence imports this module)
+    from mcp_server.providers.custom.noncode_evidence import NonCodeAssociationPlan
 
 logger = logging.getLogger("mcp_server.providers.custom.target_evidence")
 
@@ -65,6 +70,10 @@ class TargetEvidence:
     component_refs: frozenset[str]
     categories: frozenset[str]
     truncated: bool
+    # Deterministic protected-fact ledger (P1.5): scanner facts the doc must
+    # copy verbatim and may never recompute. Keys are fact names, values the
+    # exact rendered strings from the bundle's PROTECTED SCANNER FACTS table.
+    protected_facts: dict[str, str] = field(default_factory=dict)
 
 
 def _safe_name(name: str) -> str:
@@ -116,6 +125,35 @@ def param_map(component: dict[str, Any]) -> dict[str, str]:
     return out
 
 
+def load_jobs(scan_output_dir: Path) -> list[dict[str, Any]]:
+    """Public wrapper over the split/mono scan-cache job loader."""
+    return _load_jobs(scan_output_dir)
+
+
+def build_unit_index(jobs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Resolve every scan unit by the identity the harness passes downstream.
+
+    ``build_facts_manifest`` sets ``UnitFact.name = job_id or display_name``, so
+    a unit is addressed by its unique ``job_id`` when the scanner assigned one
+    (display names duplicate across composite export roots) and by display name
+    only for older scans lacking ``job_id``. Indexing by display name first and
+    ``job_id`` last means the unique id always wins over a duplicated name.
+
+    Public helper: shared by ``TargetEvidenceBuilder`` and the non-code Tier-3
+    association so both key units the same way.
+    """
+    by_id: dict[str, dict[str, Any]] = {}
+    by_name: dict[str, dict[str, Any]] = {}
+    for job in jobs:
+        job_id = str(job.get("job_id") or "")
+        if job_id:
+            by_id.setdefault(job_id, job)
+        name = str(job.get("name") or "")
+        if name:
+            by_name.setdefault(name, job)
+    return {**by_name, **by_id}
+
+
 def component_code(component: dict[str, Any]) -> str:
     """Prefer the top-level code field (new scans); fall back to CODE params."""
     top = component.get("code")
@@ -145,12 +183,26 @@ def extract_component_refs(text: str) -> set[str]:
 class TargetEvidenceBuilder:
     """Builds `_analysis/_evidence_{doc}.md` bundles for unit-scoped Phase 3 docs."""
 
-    def __init__(self, scan_output_dir: Path, staging_dir: Path, max_bytes: int) -> None:
+    def __init__(
+        self,
+        scan_output_dir: Path,
+        staging_dir: Path,
+        max_bytes: int,
+        *,
+        noncode_plan: "NonCodeAssociationPlan | None" = None,
+        noncode_section_bytes: int = 0,
+    ) -> None:
         self.scan_output_dir = scan_output_dir
         self.staging_dir = staging_dir
         self.max_bytes = max_bytes
+        # Optional Tier-3 documented-context (non-code) attachment. Additive
+        # redacted intent appended after the verbatim evidence; bounded by its
+        # own byte budget and dropped before any verbatim evidence, never ahead.
+        self._noncode_plan = noncode_plan
+        self._noncode_section_bytes = noncode_section_bytes
         self._jobs: list[dict[str, Any]] | None = None
         self._shared: list[dict[str, Any]] | None = None
+        self._job_index: dict[str, dict[str, Any]] | None = None
 
     # ── lazy caches ──────────────────────────────────────────────────
 
@@ -164,16 +216,56 @@ class TargetEvidenceBuilder:
             self._shared = _load_shared_contexts(self.scan_output_dir)
         return self._shared
 
-    def _job_by_name(self, unit_name: str) -> dict[str, Any] | None:
-        for job in self._all_jobs():
-            if str(job.get("name") or "") == unit_name:
-                return job
-        return None
+    def _job_lookup(self) -> dict[str, dict[str, Any]]:
+        """Resolve a unit by the identity the harness actually passes.
+
+        `build_facts_manifest` sets ``UnitFact.name = job_id or display_name``
+        (validators.py), so the harness hands us the unique ``job_id`` when the
+        scanner assigned one (it must, since display names are duplicated across
+        export roots) and the display name only for older scans where ``job_id``
+        is absent. Indexing by ``job_id`` first and ``name`` second matches both
+        cases; job_id keys win over display-name keys so duplicated names never
+        shadow the unique id.
+        """
+        if self._job_index is None:
+            self._job_index = build_unit_index(self._all_jobs())
+        return self._job_index
+
+    def _job_by_unit(self, unit_name: str) -> dict[str, Any] | None:
+        return self._job_lookup().get(unit_name)
 
     # ── section renderers ────────────────────────────────────────────
 
     @staticmethod
-    def _render_header(unit_name: str, job: dict[str, Any]) -> str:
+    def protected_facts(unit_name: str, job: dict[str, Any]) -> dict[str, str]:
+        """Deterministic protected-fact ledger for one unit (P1.5).
+
+        These are scanner facts a document must copy verbatim and may never
+        recompute by model inference. Rendered into the bundle's PROTECTED
+        SCANNER FACTS table and checked by ``protected_fact_errors``.
+        """
+        components = job.get("components", []) or []
+        inactive = sorted(
+            str(c.get("unique_name") or "")
+            for c in components
+            if c.get("active") is False
+        )
+        return {
+            "kind": str(job.get("kind") or job.get("type") or "job"),
+            "group": str(job.get("group") or "Global"),
+            "version": str(job.get("version") or "unknown"),
+            "component_count": str(len(components)),
+            "connection_count": str(len(job.get("connections", []) or [])),
+            "inactive_components": ", ".join(inactive) or "none",
+            "project_source_path": str(job.get("path") or "unknown"),
+        }
+
+    @classmethod
+    def _render_header(cls, unit_name: str, job: dict[str, Any]) -> str:
+        facts = cls.protected_facts(unit_name, job)
+        fact_rows = "\n".join(
+            f"| {name} | {_escape_cell(value)} |" for name, value in facts.items()
+        )
         lines = [
             f"# Target Evidence: {unit_name}",
             "",
@@ -187,6 +279,15 @@ class TargetEvidenceBuilder:
             f"- Source artifact: {job.get('path') or 'unknown'}",
             f"- Version: {job.get('version') or 'unknown'}",
             f"- Component count: {len(job.get('components', []) or [])}",
+            "",
+            "## PROTECTED SCANNER FACTS",
+            "",
+            "Copy this table verbatim into the document's Protected Scanner Facts",
+            "section. Never recompute, round, or restate these values.",
+            "",
+            "| fact | value |",
+            "|---|---|",
+            fact_rows,
         ]
         return "\n".join(lines)
 
@@ -283,9 +384,36 @@ class TargetEvidenceBuilder:
             return ""
         return "## SQL QUERIES (VERBATIM)\n\n" + "\n\n".join(blocks)
 
+    def _referenced_shared_groups(self, job: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return only the shared context groups this unit actually references.
+
+        Each job-embedded context var carries the ``repository_context_id`` of
+        the repository context group it originates from; that id matches a shared
+        group's ``context_id``. A unit typically references a handful of groups,
+        not the whole repository, so scoping to referenced groups keeps a
+        unit's bundle from carrying every shared group's variables (163 groups /
+        ~1185 vars on the werkorder scan) it never uses -- bloat that crowded out
+        the verbatim evidence and pushed every bundle past the byte budget.
+
+        Older scan formats express no group linkage (no ``repository_context_id``
+        on vars, no ``context_id`` on groups). When no linkage id is present we
+        cannot scope, so we fall back to the full shared set -- these scans are
+        small and dropping shared context would lose divergence detection.
+        """
+        referenced_ids: set[str] = set()
+        for group in job.get("context_groups", []) or []:
+            for var in group.get("variables", []) or []:
+                rid = str(var.get("repository_context_id") or "")
+                if rid:
+                    referenced_ids.add(rid)
+        shared = self._shared_contexts()
+        if not referenced_ids:
+            return shared
+        return [g for g in shared if str(g.get("context_id") or "") in referenced_ids]
+
     def _render_context(self, job: dict[str, Any]) -> str:
         shared_index: dict[str, list[dict[str, Any]]] = {}
-        for group in self._shared_contexts():
+        for group in self._referenced_shared_groups(job):
             for var in group.get("variables", []) or []:
                 shared_index.setdefault(str(var.get("name") or ""), []).append({
                     "group": str(group.get("name") or ""),
@@ -368,7 +496,7 @@ class TargetEvidenceBuilder:
     # ── assembly ─────────────────────────────────────────────────────
 
     def build(self, doc_name: str, unit_name: str) -> TargetEvidence | None:
-        job = self._job_by_name(unit_name)
+        job = self._job_by_unit(unit_name)
         if job is None:
             logger.warning("target_evidence: unit %s not found in scan cache", unit_name)
             return None
@@ -381,18 +509,31 @@ class TargetEvidenceBuilder:
         connections_md = self._render_connections(job)
         inventory_md = self._render_inventory(job, include_params=True)
         header_md = self._render_header(unit_name, job)
+        noncode_md = ""
+        if self._noncode_plan is not None and self._noncode_section_bytes > 0:
+            noncode_md = self._noncode_plan.unit_section(
+                unit_name, max_bytes=self._noncode_section_bytes
+            ) or ""
 
-        def _assemble(inventory: str, connections: str) -> str:
-            parts = [header_md, callers_md, inventory, code_md, tmap_md, sql_md, context_md, connections]
+        def _assemble(inventory: str, connections: str, noncode: str) -> str:
+            parts = [
+                header_md, callers_md, inventory, code_md, tmap_md, sql_md,
+                context_md, connections, noncode,
+            ]
             return "\n\n".join(p for p in parts if p) + "\n"
 
         truncated = False
-        content = _assemble(inventory_md, connections_md)
-        # Trim derived niceties first, verbatim evidence last (never silently).
+        # Trim order (least to most important): derived connections, then param
+        # detail, then the additive Tier-3 non-code section, and only then --
+        # last resort -- ship verbatim evidence alone. Verbatim code/SQL/tMap/
+        # context is never trimmed ahead of the documented-context section.
+        content = _assemble(inventory_md, connections_md, noncode_md)
         if len(content.encode("utf-8")) > self.max_bytes:
-            content = _assemble(inventory_md, "")
+            content = _assemble(inventory_md, "", noncode_md)
         if len(content.encode("utf-8")) > self.max_bytes:
-            content = _assemble(self._render_inventory(job, include_params=False), "")
+            content = _assemble(self._render_inventory(job, include_params=False), "", noncode_md)
+        if len(content.encode("utf-8")) > self.max_bytes:
+            content = _assemble(self._render_inventory(job, include_params=False), "", "")
         if len(content.encode("utf-8")) > self.max_bytes:
             # Verbatim evidence alone exceeds the budget: keep it and say so —
             # an over-budget honest bundle beats a trimmed misleading one.
@@ -405,6 +546,18 @@ class TargetEvidenceBuilder:
             logger.warning(
                 "target_evidence: bundle for %s exceeds budget (%d bytes)",
                 unit_name, len(content.encode("utf-8")),
+            )
+
+        # Defence-in-depth for scan caches produced before the scanner-side
+        # credential-param fix: inline credential query-params / RAW() values
+        # in verbatim code strings are masked before the bundle can reach a
+        # doc-writer agent. Narrow by construction (query-string context or
+        # the Camel RAW() wrapper), so verbatim code evidence stays intact.
+        content, inline_redactions = redact_inline_credentials(content)
+        if inline_redactions:
+            logger.warning(
+                "target_evidence: masked %d inline credential parameter(s) in "
+                "the %s bundle (older scan cache)", inline_redactions, unit_name,
             )
 
         analysis_dir = self.staging_dir / "_analysis"
@@ -430,6 +583,7 @@ class TargetEvidenceBuilder:
             component_refs=frozenset(r for r in component_refs if r),
             categories=frozenset(categories),
             truncated=truncated,
+            protected_facts=self.protected_facts(unit_name, job),
         )
 
 

@@ -1416,14 +1416,6 @@ def build_landscape(
         unmapped=unmapped,
         summary=summary,
     )
-    # The semantic proposal layer is deliberately additive. The technical
-    # applications/systems/edges above remain the complete deterministic
-    # evidence graph used for auditing, documentation, and fallback clients.
-    # Import locally so the semantic projector can depend on the Landscape
-    # model without creating a module-initialization cycle.
-    from intodoc.semantic_topology import build_semantic_topology
-
-    landscape.semantic_topology = build_semantic_topology(scan_result, landscape)
     return landscape
 
 

@@ -43,6 +43,58 @@ _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"accesskey)\s*=\s*\")(?P<value>[^\"]*)(?P<suffix>\")",
     re.IGNORECASE,
 )
+# ── Inline credential parameters in code/URI strings ──────────────────────────
+#
+# Verified leak (werkorder run, doc 05): a Camel file/FTP URI built in Talend
+# job code carried `?password=RAW(<plaintext>)&fileName=...`. The scanner's URL
+# redaction masked the host portion (`[URL_REDACTED]`) but the query fragment
+# lived in a separate string literal, so `password=RAW(...)` survived into the
+# scan cache, the evidence bundles, and the published doc. These two patterns
+# close that shape WITHOUT mangling ordinary code such as
+# `String password = decoded.substring(0, spaceIndex)`:
+#
+# * `_CREDENTIAL_QUERY_PARAM_RE` requires query-string context -- the key must
+#   follow `?`, `&`, `&amp;` or `;` -- so free-standing assignments in Java
+#   code never match.
+# * `_CREDENTIAL_RAW_WRAPPER_RE` matches `key=RAW(...)` anywhere: Camel's
+#   RAW() wrapper exists precisely to mark a literal (usually secret) value,
+#   so a credential key with a RAW value is a leak by definition.
+_CREDENTIAL_KEY_TOKENS = (
+    r"password|passwd|pwd|secret|token|apikey|api[_-]?key|client[_-]?secret|"
+    r"access[_-]?token|refresh[_-]?token|auth[_-]?token|passphrase|credential"
+)
+_CREDENTIAL_QUERY_PARAM_RE = re.compile(
+    rf"(?P<prefix>[?&;](?:amp;)?\s*(?:{_CREDENTIAL_KEY_TOKENS})\s*=\s*)"
+    rf"(?P<value>RAW\([^)\n]*\)|[^\s&\"'<>;,\n]+)",
+    re.IGNORECASE,
+)
+_CREDENTIAL_RAW_WRAPPER_RE = re.compile(
+    rf"(?P<prefix>\b(?:{_CREDENTIAL_KEY_TOKENS})\s*=\s*)(?P<value>RAW\([^)\n]*\))",
+    re.IGNORECASE,
+)
+
+
+def redact_inline_credentials(text: str) -> tuple[str, int]:
+    """Redact credential query-params / RAW() values inside code and URI strings.
+
+    Deliberately narrow (query-string context or the Camel RAW() literal
+    wrapper) so verbatim code evidence is preserved: variable references and
+    ordinary assignments are never touched. Safe to run over already-redacted
+    text -- `[REDACTED]` values are idempotent. Used as the defence-in-depth
+    sweep for scan caches produced before the scanner-side fix.
+    """
+    count = 0
+
+    def _sub(match: re.Match[str]) -> str:
+        nonlocal count
+        if "REDACTED" in match.group("value").upper():
+            return match.group(0)
+        count += 1
+        return f"{match.group('prefix')}[REDACTED]"
+
+    text = _CREDENTIAL_QUERY_PARAM_RE.sub(_sub, text)
+    text = _CREDENTIAL_RAW_WRAPPER_RE.sub(_sub, text)
+    return text, count
 _SENSITIVE_NAME_RE = re.compile(
     r"(password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|"
     r"license[_-]?key|authorization|x-api-key|credential|connectionstring|clientsecret|"
@@ -723,6 +775,8 @@ def _redact(content: str) -> tuple[str, int]:
     redacted = _XML_SENSITIVE_ADD_RE.sub(replace_secret, redacted)
     redacted = _XML_VALUE_THEN_SENSITIVE_KEY_RE.sub(replace_reordered_xml_secret, redacted)
     redacted = _SENSITIVE_ASSIGNMENT_RE.sub(replace_sensitive_assignment, redacted)
+    redacted, inline_count = redact_inline_credentials(redacted)
+    count += inline_count
 
     for pattern, placeholder in _SIMPLE_REDACT_PATTERNS:
         def _make_sub(ph: str = placeholder) -> re.Match[str]:

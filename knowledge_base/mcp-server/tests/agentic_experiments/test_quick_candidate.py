@@ -926,6 +926,78 @@ def test_orchestrated_candidate_rejects_reproduced_sensitive_values(
         )
 
 
+@pytest.mark.parametrize(
+    "placeholder",
+    [
+        "[REDACTED]",
+        "[PASSWORD_REDACTED]",
+        "[API_KEY_REDACTED]",
+        "[BEARER_TOKEN_REDACTED]",
+    ],
+)
+def test_orchestrated_candidate_allows_redaction_placeholders(
+    tmp_path: Path,
+    placeholder: str,
+) -> None:
+    scan = tmp_path / "scan_result.json"
+    scan.write_text(
+        json.dumps(
+            {
+                "context_groups": [
+                    {
+                        "variables": [
+                            {
+                                "name": "ServicePassword",
+                                "values": {"PROD": placeholder},
+                            }
+                        ]
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _reject_reproduced_secrets(
+        (("scan", scan),),
+        {"doc.md": f"Credential value: {placeholder}"},
+        {},
+        {},
+    )
+
+
+def test_orchestrated_candidate_rejects_modified_redaction_placeholder(
+    tmp_path: Path,
+) -> None:
+    value = "[PASSWORD_REDACTED]-actual"
+    scan = tmp_path / "scan_result.json"
+    scan.write_text(
+        json.dumps(
+            {
+                "context_groups": [
+                    {
+                        "variables": [
+                            {
+                                "name": "ServicePassword",
+                                "values": {"PROD": value},
+                            }
+                        ]
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="reproduced a sensitive source value"):
+        _reject_reproduced_secrets(
+            (("scan", scan),),
+            {"doc.md": f"Credential value: {value}"},
+            {},
+            {},
+        )
+
+
 def test_grounded_orchestration_rejects_nonexistent_evidence_locator(
     tmp_path: Path,
 ) -> None:

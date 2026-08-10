@@ -142,6 +142,13 @@ beforeEach(() => {
     candidate_dispatch_available: false,
     paid_execution_enabled: false,
     opencode_version: "1.18.4",
+    grounded_runtimes: [{
+      runtime_id: "opencode",
+      available: false,
+      routes: [],
+      paid_execution_confirmation_required: false,
+      blockers: ["OpenCode runtime authentication is unavailable"],
+    }],
     supported_source_kinds: [
       "intodoc_scan",
       "directory_evidence",

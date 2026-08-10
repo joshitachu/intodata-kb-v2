@@ -116,6 +116,36 @@ class MCPServerConfig(BaseSettings):
     agentic_opencode_username: str = "opencode"
     agentic_opencode_password: str = ""
     agentic_opencode_version: str = "1.18.4"
+    # Backward-compatible Grounded runtime default when a request does not
+    # explicitly choose a runtime. Per-request selection remains operator-gated.
+    agentic_grounded_runtime_id: str = "opencode"
+    # Server-side default provider/model for grounded doc-generation runs. Used
+    # when the API caller (e.g. the Generate dialog) does not pin an explicit
+    # provider/model. Kept as config knobs (not a buried literal) so an operator
+    # can retarget the default without a code change. The deep legacy runs used
+    # ``deepseek-v4-pro``; a weaker default (``deepseek-v4-flash``) produced the
+    # thin werkorder output, so ``pro`` is the platform default. An explicit
+    # caller-supplied provider/model always overrides these. Env:
+    # MCP_AGENTIC_GROUNDED_DEFAULT_PROVIDER_ID / MCP_AGENTIC_GROUNDED_DEFAULT_MODEL_ID.
+    agentic_grounded_default_provider_id: str = "deepseek"
+    agentic_grounded_default_model_id: str = "deepseek-v4-pro"
+    # Bounded retry budget for TRANSIENT provider/runtime errors (e.g. the
+    # OpenCode 5xx "runtime unavailable" class or a runtime read timeout) while
+    # executing one grounded role. Distinct from the pack repair limit, which
+    # retries DETERMINISTIC validation failures. Deterministic (non-retryable)
+    # errors are never retried by this budget. Env:
+    # MCP_AGENTIC_GROUNDED_TRANSIENT_RETRY_LIMIT.
+    agentic_grounded_transient_retry_limit: int = 2
+    agentic_openai_agents_enabled: bool = False
+    agentic_openai_agents_provider_id: str = "openai"
+    agentic_openai_agents_model_ids: str = ""
+    agentic_openai_agents_api_key_env_var: str = "OPENAI_API_KEY"
+    # Optional provider-neutral allowlist for OpenAI-compatible Agents routes.
+    # Each entry declares provider_id, model_id, display_name, api_key_env_var,
+    # optional base_url, and frozen input/output USD-per-million rates. Secret
+    # values remain in their referenced environment variables.
+    agentic_openai_agents_routes_json: str = ""
+    agentic_openai_agents_max_turns_per_role: int = 8
     agentic_recipe_root: Path = Path("data/agentic_recipes")
     # Shared only between Nexus and the isolated OpenCode runtime. Each
     # experiment receives one directory containing frozen sources and a
@@ -134,8 +164,10 @@ class MCPServerConfig(BaseSettings):
     agentic_max_input_tokens: int = 1_500_000
     agentic_max_output_tokens: int = 200_000
     agentic_max_wall_seconds: int = 7_200
-    # Zero means paid execution is unavailable until an operator supplies a
-    # non-zero run-specific ceiling and a frozen price-card receipt.
+    # Zero (the default) means no cost ceiling is enforced. Paid execution is
+    # still gated on explicit per-run operator confirmation
+    # (acknowledge_paid_execution); this value only caps spend when an
+    # operator opts into a ceiling by setting it above zero.
     agentic_max_cost_usd: float = 0.0
     agentic_retention_days: int = 30
     # Optional JSON array of administrator-governed directory roots for
@@ -258,6 +290,17 @@ class MCPServerConfig(BaseSettings):
     # LLM output token limits per phase
     investigation_max_tokens: int = 10_000   # MCP_INVESTIGATION_MAX_TOKENS
     phase2_max_tokens: int = 32_000          # MCP_PHASE2_MAX_TOKENS
+    # Phase 2 unit/group tasks must be materially smaller than the provider's
+    # absolute response ceiling.  Large outputs are harder to validate and were
+    # observed to truncate repeatedly while omitting late required sections.
+    phase2_task_max_tokens: int = 10_000     # MCP_PHASE2_TASK_MAX_TOKENS
+    phase2_synthesis_max_tokens: int = 6_000  # MCP_PHASE2_SYNTHESIS_MAX_TOKENS
+    # Claim-mode Phase 2 is the provider-neutral default. Each canonical unit
+    # packet produces one compact JSON batch; semantic splitting happens only
+    # when the provider proves the bounded response is still too large.
+    phase2_claim_max_tokens: int = 6_000     # MCP_PHASE2_CLAIM_MAX_TOKENS
+    phase2_dense_unit_bytes: int = 24_000    # MCP_PHASE2_DENSE_UNIT_BYTES
+    phase2_claim_units_per_task: int = 1     # MCP_PHASE2_CLAIM_UNITS_PER_TASK
     phase3_max_tokens: int = 32_000          # MCP_PHASE3_MAX_TOKENS
     context_max_tokens: int = 900_000        # MCP_CONTEXT_MAX_TOKENS — hard pre-flight ceiling
     core_context_soft_target_tokens: int = 80_000   # MCP_CORE_CONTEXT_SOFT_TARGET_TOKENS
@@ -265,15 +308,81 @@ class MCPServerConfig(BaseSettings):
     core_slice_concurrency: int = 4       # MCP_CORE_SLICE_CONCURRENCY
     # Per-task evidence byte budget for job-boundary bin packing (Phase 1/2).
     # Whole jobs are packed into tasks up to this size; a job is never split.
-    phase2_task_evidence_bytes: int = 70_000  # MCP_PHASE2_TASK_EVIDENCE_BYTES
+    phase2_task_evidence_bytes: int = 48_000  # MCP_PHASE2_TASK_EVIDENCE_BYTES
+    # Complete per-task packet budget, including typed source evidence,
+    # task-scoped deterministic maps, and static analysis instructions.
+    phase2_task_context_bytes: int = 140_000  # MCP_PHASE2_TASK_CONTEXT_BYTES
+    phase2_synthesis_context_bytes: int = 140_000  # MCP_PHASE2_SYNTHESIS_CONTEXT_BYTES
+    phase2_filtered_map_bytes: int = 16_000  # MCP_PHASE2_FILTERED_MAP_BYTES
     # Per-target evidence bundle for unit-scoped Phase 3 docs: raw scan facts
     # (code/tMap/SQL/context, verbatim) delivered ahead of the analysis doc
     # pack. Derived niceties are trimmed first; verbatim evidence is never
     # silently cut (over-budget bundles ship whole with a logged warning).
     phase3_target_evidence_bytes: int = 120_000  # MCP_PHASE3_TARGET_EVIDENCE_BYTES
+    # Byte cap for the business-topology PUSHED evidence context. The topology
+    # step no longer pulls evidence via budget-limited tools; the high-signal
+    # scanner evidence (systems/applications/edges/connections/relations,
+    # trimmed artifacts, the factual overview, cross-project index and the
+    # Phase 1/2 starter pack) is injected directly into the model context up to
+    # this cap. Validation-critical evidence is pushed first and never dropped;
+    # lower-signal bulk (components/lineage/channels) is added only if it fits.
+    topology_context_evidence_bytes: int = 300_000  # MCP_TOPOLOGY_CONTEXT_EVIDENCE_BYTES
     # Byte cap for unit-filtered copies of derived fact maps (dependency_map
     # and friends) handed to unit-scoped Phase 3 docs instead of full maps.
     phase3_filtered_map_bytes: int = 24_000  # MCP_PHASE3_FILTERED_MAP_BYTES
+    # Tier-3 non-code documented context (Excel schema exports, XSLT/XSL
+    # mappings, business notes, sample XML) associated to a unit and appended,
+    # already redacted, to that unit's Phase 3 evidence bundle. Additive
+    # documented intent: it is bounded by this budget and is trimmed before
+    # verbatim scanner evidence, never ahead of it.
+    phase3_noncode_evidence_bytes: int = 40_000  # MCP_PHASE3_NONCODE_EVIDENCE_BYTES
+    # Byte budget for the project-tier non-code documented-context section handed
+    # to group/summary Phase 3 docs (the full prepared set, association-agnostic).
+    phase3_noncode_project_bytes: int = 120_000  # MCP_PHASE3_NONCODE_PROJECT_BYTES
+    # A token present in more than this fraction of scanned units is treated as
+    # non-distinctive (project-wide boilerplate) and is dropped from non-code
+    # association, so ubiquitous identifiers do not attach an item to every unit.
+    noncode_unit_token_df_threshold: float = 0.1  # MCP_NONCODE_UNIT_TOKEN_DF_THRESHOLD
+    # A non-code item must share at least this many distinctive tokens with a
+    # unit to associate. One shared token is weak evidence; requiring two breaks
+    # the over-association where schema exports touched every unit.
+    noncode_min_distinctive_overlap: int = 2  # MCP_NONCODE_MIN_DISTINCTIVE_OVERLAP
+    # Narrative docs receive a grouped view of an oversized project-wide impact
+    # matrix. The complete deterministic matrix remains stored as evidence.
+    phase3_change_impact_view_bytes: int = 48_000  # MCP_PHASE3_CHANGE_IMPACT_VIEW_BYTES
+    # Per-unit verbatim evidence bundle staged into Grounded (experiments)
+    # evidence-role packets: component inventory, all code bodies, tMap
+    # expressions, SQL, and context variables extracted deterministically from
+    # the frozen scan. Verbatim evidence is never trimmed before derived
+    # niceties; over-budget bundles ship whole with a logged warning.
+    grounded_unit_evidence_bytes: int = 120_000  # MCP_GROUNDED_UNIT_EVIDENCE_BYTES
+    # Byte budget for one Grounded (experiments) Phase 2 analysis batch. The
+    # deterministic batch planner bin-packs whole units (never splitting a unit)
+    # up to this budget, so analysis fans out with the project instead of a
+    # fixed role count. Tightly-coupled units (caller/callee, shared
+    # connection, same group) are kept in the same batch where the budget
+    # allows. Sized under the analysis role packet budget to leave room for the
+    # FACT_LEDGER/SOURCE_MANIFEST copies staged alongside the evidence.
+    grounded_analysis_batch_bytes: int = 6_000_000  # MCP_GROUNDED_ANALYSIS_BATCH_BYTES
+    # Force every scanned unit to the deep per-unit (Tier-A) document tier,
+    # bypassing the production/test classifier. Off by default: real production
+    # units are documented deeply while classified test/scratch/sandbox units get
+    # a lighter summary. Turn on to treat every unit as production.
+    grounded_force_all_units_deep: bool = False  # MCP_GROUNDED_FORCE_ALL_UNITS_DEEP
+    # Supporting-evidence preparation caps (non-code artifacts: mappings, PDFs,
+    # notes). These are LOUD: every file skipped by a cap is logged with its
+    # relative path and size (never a silent drop). Raising max_file_bytes lets
+    # bigger mapping workbooks/PDFs through; raising max_raw_bytes lifts the
+    # cumulative raw-read budget. Both flow into SupportingEvidenceLimits.
+    supporting_evidence_max_file_bytes: int = 4 * 1024 * 1024  # MCP_SUPPORTING_EVIDENCE_MAX_FILE_BYTES
+    supporting_evidence_max_raw_bytes: int = 100 * 1024 * 1024  # MCP_SUPPORTING_EVIDENCE_MAX_RAW_BYTES
+    # Per-unit budget for the appended "Documented mappings (Tier-3 context)"
+    # section. Verbatim code/SQL/tMap evidence is NEVER trimmed to make room for
+    # mappings; only the mapping section itself is bounded (and truncation is
+    # logged). Also bounds the project-tier documented-mappings file handed to
+    # the Tier-B summary writers.
+    grounded_unit_mapping_bytes: int = 24_000  # MCP_GROUNDED_UNIT_MAPPING_BYTES
+    grounded_project_mapping_bytes: int = 200_000  # MCP_GROUNDED_PROJECT_MAPPING_BYTES
     source_context_mode: str = "direct_redacted"  # MCP_SOURCE_CONTEXT_MODE: structured | direct_redacted
     direct_source_inline_max_bytes: int = 120_000  # MCP_DIRECT_SOURCE_INLINE_MAX_BYTES
     direct_source_chunk_bytes: int = 80_000  # MCP_DIRECT_SOURCE_CHUNK_BYTES
@@ -319,9 +428,75 @@ class MCPServerConfig(BaseSettings):
     docgen_empty_outputs_per_doc_limit: int = 3       # MCP_DOCGEN_EMPTY_OUTPUTS_PER_DOC_LIMIT
     docgen_empty_outputs_per_run_limit: int = 10      # MCP_DOCGEN_EMPTY_OUTPUTS_PER_RUN_LIMIT
     docgen_allowed_slices_per_doc: int = 4            # MCP_DOCGEN_ALLOWED_SLICES_PER_DOC
-    docgen_min_run_call_budget: int = 100             # MCP_DOCGEN_MIN_RUN_CALL_BUDGET
-    docgen_call_budget_base: int = 50                 # MCP_DOCGEN_CALL_BUDGET_BASE
-    docgen_call_budget_per_group: int = 8             # MCP_DOCGEN_CALL_BUDGET_PER_GROUP
+    docgen_min_run_call_budget: int = 40              # MCP_DOCGEN_MIN_RUN_CALL_BUDGET
+    docgen_call_budget_base: int = 20                 # MCP_DOCGEN_CALL_BUDGET_BASE
+    docgen_call_budget_per_group: int = 4             # MCP_DOCGEN_CALL_BUDGET_PER_GROUP
+    docgen_max_run_calls: int = 250                   # MCP_DOCGEN_MAX_RUN_CALLS
+    # Composite/oversized-upload orchestration: when a scan partitions into
+    # more than one sub-project (composite zips, or a single root split to fit
+    # the call budget), the manual/api generate path loops one scoped run per
+    # partition into output/{project_id}/{subproject}/docs. Disable to force
+    # the legacy single whole-upload run.
+    docgen_partition_orchestration: bool = True       # MCP_DOCGEN_PARTITION_ORCHESTRATION
+    # Provider-neutral total-token accounting. Input usage remains recorded, but
+    # the cumulative input ceiling is disabled by default because evidence-rich
+    # multi-document runs legitimately reuse project facts across Phase 3. Set
+    # MCP_DOCGEN_MAX_RUN_INPUT_TOKENS to a positive value to opt back into a cap.
+    docgen_input_token_budget_base: int = 150_000     # MCP_DOCGEN_INPUT_TOKEN_BUDGET_BASE
+    docgen_input_token_budget_per_unit: int = 25_000  # MCP_DOCGEN_INPUT_TOKEN_BUDGET_PER_UNIT
+    docgen_input_token_budget_per_doc: int = 60_000   # MCP_DOCGEN_INPUT_TOKEN_BUDGET_PER_DOC
+    docgen_max_run_input_tokens: int = 0              # MCP_DOCGEN_MAX_RUN_INPUT_TOKENS (0 = unlimited)
+    docgen_output_token_budget_base: int = 80_000     # MCP_DOCGEN_OUTPUT_TOKEN_BUDGET_BASE
+    docgen_output_token_budget_per_unit: int = 10_000 # MCP_DOCGEN_OUTPUT_TOKEN_BUDGET_PER_UNIT
+    docgen_output_token_budget_per_doc: int = 35_000  # MCP_DOCGEN_OUTPUT_TOKEN_BUDGET_PER_DOC
+    # Runaway ceiling only. The run's real output budget is sized per doc-task
+    # (base + sum of per-doc output ceilings); this cap exists to stop a
+    # misconfigured run, not to bound planned work. The old 600K default
+    # starved legitimate multi-doc partitions (verified: VQ_MQ2RHM blocked at
+    # exactly 560664/560000 while writing accepted docs).
+    docgen_max_run_output_tokens: int = 2_000_000     # MCP_DOCGEN_MAX_RUN_OUTPUT_TOKENS
+    # Per-doc-type output ceilings (P0.3 output governance). A brief must be
+    # far smaller than an inventory; inventories scale with unit count.
+    docgen_unit_doc_output_tokens: int = 6_000        # MCP_DOCGEN_UNIT_DOC_OUTPUT_TOKENS
+    docgen_brief_output_tokens: int = 14_000          # MCP_DOCGEN_BRIEF_OUTPUT_TOKENS
+    docgen_inventory_output_tokens_base: int = 10_000 # MCP_DOCGEN_INVENTORY_OUTPUT_TOKENS_BASE
+    docgen_inventory_output_tokens_per_unit: int = 120  # MCP_DOCGEN_INVENTORY_OUTPUT_TOKENS_PER_UNIT
+    # Standard-catalog per-unit reference docs (opencode-grade unit dossiers).
+    # Expanded one-per-scanned-unit from catalog entries marked per_unit; the
+    # unit docs are written FIRST and the catalog/summary docs synthesize from
+    # them (plus the analysis layer). Disable to restore the pre-unit-doc set.
+    docgen_unit_docs_enabled: bool = False            # MCP_DOCGEN_UNIT_DOCS_ENABLED
+    # Byte budget for the deterministic digest of finished unit docs handed to
+    # the group/summary Phase 3 writers (units-first wiring).
+    phase3_unit_digest_bytes: int = 150_000           # MCP_PHASE3_UNIT_DIGEST_BYTES
+    # LLM scorecard (Phase 2.6) gate for STANDARD (non-plugin) runs. The
+    # scorecard is advisory (it feeds only 07_QUALITY_SECURITY_RISK_SCORECARD);
+    # on the verified Assetcheck run it planned 4 calls, used 13 (12 slices +
+    # reducer, ~0.8M input tokens) and still shipped contract gaps. Default off:
+    # a deterministic "scorecard omitted" marker is written instead so the 07
+    # doc, executive summary, and enterprise gates degrade gracefully. Plugin
+    # packs that declare a scorecard phase are unaffected by this flag.
+    docgen_llm_scorecard_enabled: bool = False        # MCP_DOCGEN_LLM_SCORECARD_ENABLED
+    # Built-in evidence agents on STANDARD (non-plugin) runs. Verified waste:
+    # 3 of the 4 defaults (core_architecture_dependency, core_data_flow,
+    # core_runtime_config) produced 0 claims + 1 validation issue each on the
+    # Assetcheck run (~0.6M tokens of pure noise). Default off; plugin packs
+    # that explicitly declare evidence_agents are unaffected.
+    docgen_default_evidence_agents_enabled: bool = False  # MCP_DOCGEN_DEFAULT_EVIDENCE_AGENTS_ENABLED
+    # Phase 2 plan allowance for validation-failure repair retries, as a
+    # fraction of the planned claim tasks (verified: ~21 retries on 73 tasks =
+    # 29% before the per-section claim demotion landed; the allowance keeps the
+    # plan honest without inflating it now that retries are rarer).
+    docgen_phase2_retry_allowance: float = 0.25       # MCP_DOCGEN_PHASE2_RETRY_ALLOWANCE
+    # Phase 3 input-partitioned slicing: a context file at or below this size is
+    # SHARED (replicated byte-stable into every slice: unit index, cross-refs,
+    # small relational maps); anything larger is EVIDENCE, split on section
+    # boundaries with each slice receiving only its own portion. Verified
+    # failure: the generic splitter replicated ~195 KB of "common" context into
+    # every slice and paged evidence into 19-22 tiny chunks, so the 4-slice cap
+    # dropped most of the evidence (input = N x pack; units truncated).
+    phase3_shared_context_file_bytes: int = 16_000    # MCP_PHASE3_SHARED_CONTEXT_FILE_BYTES
+    docgen_token_estimate_safety_factor: float = 1.5  # MCP_DOCGEN_TOKEN_ESTIMATE_SAFETY_FACTOR
     docgen_adaptive_concurrency: bool = True          # MCP_DOCGEN_ADAPTIVE_CONCURRENCY
     phase_cost_warning_input_tokens: int = 500_000   # MCP_PHASE_COST_WARNING_INPUT_TOKENS
 
@@ -460,26 +635,54 @@ def check_agentic_configuration(
         warnings_out.append(
             "agentic experiments require a dedicated task-token secret of at least 32 bytes"
         )
-    if not current.agentic_opencode_password:
+    if current.agentic_grounded_runtime_id != "openai-agents":
+        if not current.agentic_opencode_password:
+            warnings_out.append(
+                "agentic experiments require authenticated OpenCode access"
+            )
+        if not current.agentic_opencode_base_url or not current.agentic_opencode_username:
+            warnings_out.append(
+                "agentic experiments require an OpenCode URL and username"
+            )
+        if not current.agentic_opencode_version:
+            warnings_out.append("agentic experiments require a pinned OpenCode version")
+    if current.agentic_grounded_runtime_id not in {"opencode", "openai-agents"}:
         warnings_out.append(
-            "agentic experiments require authenticated OpenCode access"
+            "agentic grounded runtime must be 'opencode' or 'openai-agents'"
         )
-    if not current.agentic_opencode_base_url or not current.agentic_opencode_username:
-        warnings_out.append(
-            "agentic experiments require an OpenCode URL and username"
-        )
-    if not current.agentic_opencode_version:
-        warnings_out.append("agentic experiments require a pinned OpenCode version")
+    if (
+        current.agentic_grounded_runtime_id == "openai-agents"
+        or current.agentic_openai_agents_enabled
+    ):
+        if not current.agentic_openai_agents_enabled:
+            warnings_out.append(
+                "OpenAI Agents Grounded runtime requires its explicit enable flag"
+            )
+        # The provider-neutral routes allowlist (each entry self-contained:
+        # provider_id, model_id, api_key_env_var) is an alternative to the
+        # single-provider fields below -- either configuration path suffices.
+        if not current.agentic_openai_agents_routes_json.strip():
+            if not current.agentic_openai_agents_provider_id.strip():
+                warnings_out.append("OpenAI Agents requires a provider id")
+            if not any(
+                item.strip()
+                for item in current.agentic_openai_agents_model_ids.split(",")
+            ):
+                warnings_out.append("OpenAI Agents requires an operator model allowlist")
+            if not current.agentic_openai_agents_api_key_env_var.strip():
+                warnings_out.append("OpenAI Agents requires an API-key environment name")
+        if current.agentic_openai_agents_max_turns_per_role < 1:
+            warnings_out.append("OpenAI Agents requires a positive per-role turn limit")
     if current.agentic_task_token_ttl_seconds <= 0:
         warnings_out.append(
             "agentic experiments require a positive task-token TTL"
         )
-    if current.agentic_paid_execution_enabled and (
-        not math.isfinite(current.agentic_max_cost_usd)
-        or current.agentic_max_cost_usd <= 0
-    ):
+    # A cost ceiling is optional -- paid execution is gated on explicit
+    # per-run confirmation, not on a configured maximum. Zero (the default)
+    # means unlimited; only a malformed explicit value is rejected.
+    if not math.isfinite(current.agentic_max_cost_usd) or current.agentic_max_cost_usd < 0:
         warnings_out.append(
-            "agentic paid execution requires a positive operator cost ceiling"
+            "operator cost ceiling must be zero (unlimited) or a positive finite number"
         )
     return warnings_out
 

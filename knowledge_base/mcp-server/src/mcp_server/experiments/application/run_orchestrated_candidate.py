@@ -17,6 +17,7 @@ from mcp_server.experiments.application.grounded_pack import (
     grounded_pack_payload,
 )
 from mcp_server.experiments.application.grounded_preflight import (
+    is_redaction_placeholder,
     preflight_grounded_sources,
     reject_secret_like_output,
 )
@@ -1101,6 +1102,7 @@ def _collect_sensitive_values(value: Any, secrets: set[str]) -> None:
             normalized = candidate.strip()
             if (
                 len(normalized) >= 6
+                and not is_redaction_placeholder(normalized)
                 and normalized.casefold()
                 not in {"[redacted]", "[url_redacted]", "unknown", "default"}
             ):

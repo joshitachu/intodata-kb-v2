@@ -956,8 +956,18 @@ class OpenAICompatibleProvider:
                 finish_reason = choice.get("finish_reason")
                 if finish_reason:
                     metadata["finish_reason"] = finish_reason
+                reasoning_content = message.get("reasoning_content")
+                reasoning_text = reasoning_content if isinstance(reasoning_content, str) else ""
+                completion_details = _as_dict(usage.get("completion_tokens_details"))
+                reasoning_tokens = int(completion_details.get("reasoning_tokens") or 0)
+                if reasoning_tokens:
+                    metadata["reasoning_tokens"] = reasoning_tokens
+                if reasoning_text:
+                    # Preserve observability without copying private reasoning
+                    # into generated artifacts or debug snapshots.
+                    metadata["reasoning_content_bytes"] = len(reasoning_text.encode("utf-8"))
                 result = ModelResult(
-                    success=True,
+                    success=bool(text.strip()) and finish_reason not in {"length", "max_tokens"},
                     text=text,
                     model_name=self.model_name,
                     input_tokens=int(usage.get("prompt_tokens") or _estimate_tokens(full_prompt)),
@@ -965,8 +975,25 @@ class OpenAICompatibleProvider:
                     cache_read_tokens=_cache_hit_tokens(usage),
                     latency_ms=int((time.monotonic() - start) * 1000),
                     retries=attempt,
+                    raw_error=(
+                        "incomplete: provider stopped because max tokens were reached"
+                        if finish_reason in {"length", "max_tokens"}
+                        else (
+                            "empty final content after provider reasoning"
+                            if not text.strip() and reasoning_text
+                            else ("empty provider response" if not text.strip() else None)
+                        )
+                    ),
                     metadata=metadata,
                 )
+                # Content-completeness failures are deterministic for this
+                # request shape. Return the real usage and finish metadata so
+                # the planner can split/re-plan; never repeat the same paid
+                # request inside the transport adapter.
+                if not result.success:
+                    if finish_reason in {"length", "max_tokens"}:
+                        result.metadata["incomplete_reason"] = "length"
+                    return result
                 _assert_contract(result, self.provider_name)
                 return result
             except httpx.HTTPStatusError as exc:

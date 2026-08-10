@@ -65,19 +65,16 @@ It is the authoritative reference for platform-specific patterns, component beha
 Follow all extraction rules, examples, and depth requirements defined there in addition to the instructions above.
 Your output is the analysis body only -- the Python harness writes the coverage block and output file.
 
-NARRATIVE RULES (strictly enforced):
-- Never summarize when you can enumerate
-- Every claim requires an exact unit name + component reference
-- Show ACTUAL code / expressions / SQL verbatim, then explain -- never paraphrase without showing the raw value
+BOUNDED ANALYSIS RULES (strictly enforced):
+- Complete every required heading before adding depth; keep detail proportional to the assigned scope
+- Every concrete claim requires an exact unit name and, when available, a component or source-path reference
+- Quote only the decisive expression, SQL fragment, or code excerpt needed to support a claim; point to the raw evidence for the complete value
 - "Error handling is weak" is UNACCEPTABLE
 - "7 of 9 ${GROUP} jobs have no tLogCatcher" IS acceptable
 - Include concrete counts, percentages, exact names throughout
-- Expressions must be shown in full -- never truncate even if 500+ chars
-- SQL queries must be shown in full -- never truncate
-- Custom code blocks must be shown in full
-- Hardcoded values must be cataloged in a markdown table with location and risk
-- Each section must contain at least 3 enumerated items or a table with at least 2 data rows;
-  a section with only a heading or a single vague sentence is too thin and will be rejected
+- Do not repeat complete component inventories, expressions, SQL queries, custom-code blocks, or configuration tables
+- For no scoped evidence, emit one explicit UNKNOWN/scanner-limited statement rather than padding the section
+- Prefer compact tables or at most three evidence bullets per assigned unit in each section
 
 FACTUAL CONSTRAINTS:
 - Use only the supplied scanner facts and preprocessed scan data
