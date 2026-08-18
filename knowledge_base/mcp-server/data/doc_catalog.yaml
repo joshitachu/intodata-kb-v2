@@ -58,6 +58,15 @@ docs:
       - "Components"
       - "Dependencies"
       - "Scanner-Limited Evidence"
+    # Sections whose content scales with the unit count. When this document's
+    # expected output exceeds one model call, the task is partitioned by
+    # unit-range: every slice writes ONLY these sections for its own units;
+    # all other sections are written once by part 1.
+    unit_scoped_sections:
+      - "Canonical Unit Inventory"
+      - "Source Artifacts"
+      - "Components"
+      - "Dependencies"
     phase2_sections:
       - "COMPONENTS"
       - "SCHEMA_DICTIONARY"
@@ -98,6 +107,10 @@ docs:
       - "Transformation"
       - "Hardcoded Values"
       - "Impact"
+    unit_scoped_sections:
+      - "Business Rules"
+      - "Transformation"
+      - "Hardcoded Values"
     phase2_sections:
       - "BUSINESS_RULES"
       - "TRANSFORMATION_DETAIL"

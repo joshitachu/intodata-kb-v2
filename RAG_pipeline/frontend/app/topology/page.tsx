@@ -1263,6 +1263,8 @@ function TopologyContent() {
     setLineageQuery(null);
     if (selection.kind === "edge") {
       descendToIntegration({ kind: "edge", edgeKey: landscapeEdgeKey(selection.item) });
+    } else if (selection.kind === "relationship") {
+      descendToIntegration({ kind: "relationship", source: selection.source, target: selection.target, streamKeys: selection.streamKeys });
     } else if (selection.kind === "application") {
       descendToIntegration({ kind: "application", applicationId: selection.item.id });
     } else {

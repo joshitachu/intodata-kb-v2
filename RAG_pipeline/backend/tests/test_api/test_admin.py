@@ -255,6 +255,48 @@ class TestRoles:
 
 
 class TestProjectAssignments:
+    async def test_create_project_registers_an_empty_document_container(self, mock_admin_deps):
+        mock_db = mock_admin_deps["db"]
+
+        no_owner = MagicMock()
+        no_owner.scalar_one_or_none.return_value = None
+        no_assignment = MagicMock()
+        no_assignment.scalar_one_or_none.return_value = None
+        mock_db.execute = AsyncMock(side_effect=[no_owner, no_assignment, MagicMock()])
+
+        import datetime
+
+        def capture_add(obj):
+            if isinstance(obj, ProjectAssignment):
+                obj.id = 10
+                obj.assigned_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
+
+        mock_db.add = capture_add
+        mock_db.flush = AsyncMock()
+        mock_db.refresh = AsyncMock()
+
+        with patch("src.api.routes.admin.AuditService") as mock_audit_cls:
+            mock_audit = MagicMock()
+            mock_audit.log = AsyncMock()
+            mock_audit_cls.return_value = mock_audit
+
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/v1/admin/projects",
+                    json={"project_id": "document-only", "display_name": "Document only"},
+                    headers=CSRF_HEADERS,
+                )
+
+        assert response.status_code == 201
+        inserted_query, inserted_params = mock_db.execute.await_args_list[2].args
+        assert "INSERT INTO projects" in str(inserted_query)
+        assert inserted_params == {
+            "project_id": "document-only",
+            "display_name": "Document only",
+            "local_path": "/data/manual-projects/unconfigured",
+        }
+
     async def test_create_project_assignment(self, mock_admin_deps):
         mock_db = mock_admin_deps["db"]
 

@@ -733,6 +733,51 @@ async def test_update_doc_from_evidence_posts_payload_and_forwards_cookie() -> N
     assert result.rag_result["pushed"] == 1
 
 
+async def test_chat_patch_preview_and_activation_forward_exact_approval() -> None:
+    seen: list[tuple[str, dict, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.read())
+        seen.append((request.url.path, payload, request.headers.get("cookie")))
+        if request.url.path.endswith("/preview"):
+            return httpx.Response(200, json={
+                "proposal_id": "ldp-1", "patch_plan_hash": "a" * 64,
+                "base_document_sha256": "sha256:" + "b" * 64,
+                "base_knowledge_revision_id": "kr-1", "compact_diff": "-x\n+y",
+                "changed_scope": ["canonical/x"], "evidence_refs": ["scan:1"],
+                "assertion_kind": "source_backed", "expires_at": "2026-08-11T01:00:00Z",
+                "requires_owner_approval": False,
+            })
+        return httpx.Response(200, json={
+            "proposal_id": "ldp-1", "candidate_id": "ldc-1",
+            "knowledge_revision_id": "kr-2", "filename": "04_RUNBOOK.md",
+            "before_sha": "sha256:before", "after_sha": "sha256:after",
+            "assertion_kind": "source_backed", "changed_logical_ids": ["canonical/x"],
+        })
+
+    provider = McpDocumentationProvider(
+        base_url="http://mcp.internal/mcp", transport=httpx.MockTransport(handler)
+    )
+    preview = await provider.preview_chat_patch(
+        project_id="p1", filename="04_RUNBOOK.md", section="Recovery",
+        replacement_text="new", evidence_refs=["scan:1"], assertion_kind="source_backed",
+        access_token="jwt-token",
+    )
+    result = await provider.activate_chat_patch(
+        project_id="p1", filename="04_RUNBOOK.md", proposal_id=preview.proposal_id,
+        patch_plan_hash=preview.patch_plan_hash, access_token="jwt-token",
+    )
+
+    assert seen[0] == (
+        "/mcp/projects/p1/docs/04_RUNBOOK.md/chat-patch/preview",
+        {"section": "Recovery", "replacement_text": "new", "evidence_refs": ["scan:1"],
+         "assertion_kind": "source_backed"},
+        "access_token=jwt-token",
+    )
+    assert seen[1][1] == {"proposal_id": "ldp-1", "patch_plan_hash": "a" * 64}
+    assert result.knowledge_revision_id == "kr-2"
+
+
 async def test_cancel_generation_uses_authoritative_reset_endpoint() -> None:
     seen: dict[str, object] = {}
 

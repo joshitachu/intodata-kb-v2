@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import defaultdict
+from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -36,6 +37,7 @@ def _build_search_filter(
     project_ids: list[str] | None = None,
     source_layers: list[str] | None = None,
     document_roles: list[str] | None = None,
+    knowledge_revisions: Mapping[str, str] | None = None,
 ) -> Filter | None:
     """Build Qdrant filter combining RBAC groups, project access, ids, layer, and role.
 
@@ -53,6 +55,9 @@ def _build_search_filter(
             None or [] → no role condition.
             Including "source" → exact source match plus is-empty for legacy chunks.
             Other roles → exact role match.
+        knowledge_revisions: Active revision by project.  Each pair is matched
+            together, so a query cannot combine project A's revision with
+            project B's revision or read a prepared candidate.
     """
     conditions = []
     # Admin users see everything — skip group filter
@@ -155,6 +160,35 @@ def _build_search_filter(
         else:
             conditions.append(role_condition)
 
+    # ``knowledge_revisions`` is intentionally distinct from ``None``.  Normal
+    # request paths always pass a (possibly empty) durable active map.  This
+    # includes legacy chunks that have no revision tag but excludes every
+    # prepared, non-active tagged chunk.  Direct/legacy callers can pass None
+    # during migration to preserve the old unfiltered behaviour.
+    if knowledge_revisions is not None:
+        revision_pairs = [
+            Filter(
+                must=[
+                    FieldCondition(key="project_id", match=MatchAny(any=[project_id])),
+                    FieldCondition(
+                        key="knowledge_revision_id", match=MatchAny(any=[revision_id])
+                    ),
+                ]
+            )
+            for project_id, revision_id in sorted(knowledge_revisions.items())
+            if project_id and revision_id
+        ]
+        legacy_conditions = [IsEmptyCondition(is_empty=PayloadField(key="knowledge_revision_id"))]
+        active_projects = [project_id for project_id, revision_id in knowledge_revisions.items() if project_id and revision_id]
+        if active_projects:
+            legacy_scope = Filter(
+                must=legacy_conditions,
+                must_not=[FieldCondition(key="project_id", match=MatchAny(any=active_projects))],
+            )
+        else:
+            legacy_scope = Filter(must=legacy_conditions)
+        conditions.append(Filter(should=[*revision_pairs, legacy_scope]))
+
     if conditions:
         return Filter(must=conditions)
     return None
@@ -210,6 +244,7 @@ def _source_from_payload(payload: dict, score: float) -> Source:
         visibility=payload.get("visibility"),
         run_id=payload.get("run_id"),
         project_id=payload.get("project_id"),
+        knowledge_revision_id=payload.get("knowledge_revision_id"),
     )
 
 
@@ -223,6 +258,7 @@ async def search_similar(
     project_ids: list[str] | None = None,
     source_layers: list[str] | None = None,
     document_roles: list[str] | None = None,
+    knowledge_revisions: Mapping[str, str] | None = None,
 ) -> list[Source]:
     """Embed query, search Qdrant with RBAC filtering, return sources above threshold.
 
@@ -234,7 +270,7 @@ async def search_similar(
     logger.info(f"Embedded query in {embed_ms}ms: {query[:80]!r}")
 
     search_filter = _build_search_filter(
-        user_groups, document_ids, project_ids, source_layers, document_roles,
+        user_groups, document_ids, project_ids, source_layers, document_roles, knowledge_revisions,
     )
     logger.info(f"Search filter: groups={user_groups}, doc_ids={document_ids}, project_ids={project_ids} | top_k={top_k}")
 
@@ -261,6 +297,7 @@ async def search_similar_hybrid(
     project_ids: list[str] | None = None,
     source_layers: list[str] | None = None,
     document_roles: list[str] | None = None,
+    knowledge_revisions: Mapping[str, str] | None = None,
 ) -> list[Source]:
     """Hybrid search: dense + sparse with Reciprocal Rank Fusion (RRF).
 
@@ -276,7 +313,7 @@ async def search_similar_hybrid(
     logger.info(f"Embedded query (dense + sparse) in {embed_ms}ms: {query[:80]!r}")
 
     search_filter = _build_search_filter(
-        user_groups, document_ids, project_ids, source_layers, document_roles,
+        user_groups, document_ids, project_ids, source_layers, document_roles, knowledge_revisions,
     )
     logger.info(f"Search filter: groups={user_groups}, doc_ids={document_ids}, project_ids={project_ids} | top_k={top_k}")
 
@@ -321,6 +358,7 @@ async def search_and_rerank(
     project_ids: list[str] | None = None,
     source_layers: list[str] | None = None,
     document_roles: list[str] | None = None,
+    knowledge_revisions: Mapping[str, str] | None = None,
 ) -> list[Source]:
     """Search with hybrid retrieval then rerank with cross-encoder.
 
@@ -348,6 +386,7 @@ async def search_and_rerank(
             project_ids=project_ids,
             source_layers=source_layers,
             document_roles=document_roles,
+            knowledge_revisions=knowledge_revisions,
         )
     else:
         candidates = await search_similar(
@@ -360,6 +399,7 @@ async def search_and_rerank(
             project_ids=project_ids,
             source_layers=source_layers,
             document_roles=document_roles,
+            knowledge_revisions=knowledge_revisions,
         )
 
     if not candidates:
@@ -390,6 +430,7 @@ async def search_and_rerank(
         project_ids=project_ids,
         source_layers=source_layers,
         document_roles=document_roles,
+        knowledge_revisions=knowledge_revisions,
     )
 
 
@@ -400,6 +441,7 @@ def _build_neighbor_filter(
     project_ids: list[str] | None = None,
     source_layers: list[str] | None = None,
     document_roles: list[str] | None = None,
+    knowledge_revisions: Mapping[str, str] | None = None,
 ) -> Filter:
     """Build a same-document/same-project filter for neighbor chunk fetches."""
     base = _build_search_filter(
@@ -408,6 +450,7 @@ def _build_neighbor_filter(
         project_ids=project_ids,
         source_layers=source_layers,
         document_roles=document_roles,
+        knowledge_revisions=knowledge_revisions,
     )
     conditions = list(base.must) if base and base.must else []
     conditions.append(
@@ -427,6 +470,7 @@ async def expand_neighbor_chunks(
     window: int | None = None,
     source_layers: list[str] | None = None,
     document_roles: list[str] | None = None,
+    knowledge_revisions: Mapping[str, str] | None = None,
 ) -> list[Source]:
     """Add adjacent chunks around high-scoring retrieved chunks.
 
@@ -467,6 +511,7 @@ async def expand_neighbor_chunks(
                         project_ids=project_ids,
                         source_layers=source_layers,
                         document_roles=document_roles,
+                        knowledge_revisions=knowledge_revisions,
                     ),
                     limit=len(missing),
                     with_payload=True,
@@ -508,6 +553,7 @@ async def search_multi_query(
     project_ids: list[str] | None = None,
     source_layers: list[str] | None = None,
     document_roles: list[str] | None = None,
+    knowledge_revisions: Mapping[str, str] | None = None,
 ) -> list[Source]:
     """Multi-query search with query expansion + deduplication + reranking.
 
@@ -534,6 +580,7 @@ async def search_multi_query(
                 project_ids=project_ids,
                 source_layers=source_layers,
                 document_roles=document_roles,
+                knowledge_revisions=knowledge_revisions,
             )
         else:
             sources = await search_similar(
@@ -546,6 +593,7 @@ async def search_multi_query(
                 project_ids=project_ids,
                 source_layers=source_layers,
                 document_roles=document_roles,
+                knowledge_revisions=knowledge_revisions,
             )
         all_sources.extend(sources)
 
@@ -585,6 +633,7 @@ async def search_multi_query(
             project_ids=project_ids,
             source_layers=source_layers,
             document_roles=document_roles,
+            knowledge_revisions=knowledge_revisions,
         )
 
     # No reranker — sort by score and return top_k
@@ -630,11 +679,13 @@ def _build_unit_filter(
     project_ids: list[str] | None = None,
     source_layers: list[str] | None = None,
     document_roles: list[str] | None = None,
+    knowledge_revisions: Mapping[str, str] | None = None,
 ) -> Filter:
     """RBAC/project/layer filter plus exact `unit` payload match."""
     base = _build_search_filter(
         user_groups, document_ids=None, project_ids=project_ids,
         source_layers=source_layers, document_roles=document_roles,
+        knowledge_revisions=knowledge_revisions,
     )
     conditions = list(base.must) if base and base.must else []
     conditions.append(FieldCondition(key="unit", match=MatchAny(any=units)))
@@ -650,6 +701,7 @@ async def fetch_unit_chunks(
     project_ids: list[str] | None = None,
     document_roles: list[str] | None = None,
     limit: int | None = None,
+    knowledge_revisions: Mapping[str, str] | None = None,
 ) -> list[Source]:
     """Deterministically fetch chunks whose `unit` payload matches a named unit.
 
@@ -666,6 +718,7 @@ async def fetch_unit_chunks(
         scroll_filter=_build_unit_filter(
             user_groups, units, project_ids=project_ids, source_layers=source_layers,
             document_roles=document_roles,
+            knowledge_revisions=knowledge_revisions,
         ),
         limit=limit if limit is not None else settings.rung2_entity_match_limit,
         with_payload=True,
@@ -684,11 +737,13 @@ def _build_section_filter(
     project_ids: list[str] | None = None,
     source_layers: list[str] | None = None,
     document_roles: list[str] | None = None,
+    knowledge_revisions: Mapping[str, str] | None = None,
 ) -> Filter:
     """Same-document same-section filter under the standard RBAC constraints."""
     base = _build_search_filter(
         user_groups, document_ids=[document_id], project_ids=project_ids,
         source_layers=source_layers, document_roles=document_roles,
+        knowledge_revisions=knowledge_revisions,
     )
     conditions = list(base.must) if base and base.must else []
     conditions.append(FieldCondition(key="section", match=MatchAny(any=[section])))
@@ -703,6 +758,7 @@ async def expand_section_chunks(
     source_layers: list[str] | None = None,
     document_roles: list[str] | None = None,
     limit: int | None = None,
+    knowledge_revisions: Mapping[str, str] | None = None,
 ) -> list[Source]:
     """Replace each section-bearing hit with its complete owning section.
 
@@ -742,6 +798,7 @@ async def expand_section_chunks(
                         user_groups, src.document_id, src.section,
                         project_ids=project_ids, source_layers=source_layers,
                         document_roles=document_roles,
+                        knowledge_revisions=knowledge_revisions,
                     ),
                     limit=cap - fetched,
                     with_payload=True,
@@ -782,6 +839,7 @@ async def search_layered(
     project_ids: list[str] | None = None,
     matched_units: list[str] | None = None,
     document_roles: list[str] | None = None,
+    knowledge_revisions: Mapping[str, str] | None = None,
 ) -> list[Source]:
     """Deep-rung search against explicit corpus layers.
 
@@ -806,6 +864,7 @@ async def search_layered(
                 top_k=top_k, threshold=threshold, project_ids=project_ids,
                 source_layers=source_layers,
                 document_roles=document_roles,
+                knowledge_revisions=knowledge_revisions,
                 rerank_candidates=settings.rung2_rerank_top_n,
                 prefetch_limit=settings.rung2_prefetch_limit,
             )
@@ -816,6 +875,7 @@ async def search_layered(
                 source_layers=source_layers,
                 document_roles=document_roles,
                 prefetch_limit=settings.rung2_prefetch_limit,
+                knowledge_revisions=knowledge_revisions,
             )
         else:
             results = await search_similar(
@@ -823,6 +883,7 @@ async def search_layered(
                 top_k=top_k, threshold=threshold, project_ids=project_ids,
                 source_layers=source_layers,
                 document_roles=document_roles,
+                knowledge_revisions=knowledge_revisions,
             )
         for s in results:
             key = (s.document_id, s.chunk_index)
@@ -837,6 +898,7 @@ async def search_layered(
                 client, user_groups, matched_units,
                 source_layers=source_layers, project_ids=project_ids,
                 document_roles=document_roles,
+                knowledge_revisions=knowledge_revisions,
             ):
                 key = (s.document_id, s.chunk_index)
                 if key not in seen:
@@ -853,6 +915,7 @@ async def search_layered(
         client, merged, user_groups,
         project_ids=project_ids, source_layers=source_layers,
         document_roles=document_roles,
+        knowledge_revisions=knowledge_revisions,
     )
 
 

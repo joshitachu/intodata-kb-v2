@@ -11,6 +11,7 @@ from mcp_server.config import config
 from mcp_server.platforms import get_platform_strategy
 from mcp_server.providers.custom.constants import ESB_ROUTES_SECTION, GROUP_SUMMARY_SECTION
 from mcp_server.providers.custom.models import CoverageReport, FactsManifest, InvestigationReport, UnitFact
+from mcp_server.providers.custom.partition_planner import clean_system_keys
 from mcp_server.providers.custom.doc_catalog import load_doc_catalog as _load_catalog
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES, REQUIRED_SECTION_NAMES
 
@@ -88,6 +89,15 @@ def _component_counts(components: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def _systems_for(job: dict[str, Any]) -> list[str]:
+    """Harvest key-system identities for one unit from scanner evidence.
+
+    Raw candidates are denoised through
+    ``partition_planner.clean_system_keys`` (normalize quoted literals, drop
+    booleans/numbers/localhost/component-instance names/code expressions) at
+    this shared extraction seam, so every consumer of ``key_systems`` -- the
+    facts manifest, Phase 1/2 context, cross-project index/topology markdown,
+    business-topology evidence, and landscape rendering -- benefits.
+    """
     systems: set[str] = set()
     for value in job.get("manifest_external_systems", []) or []:
         if isinstance(value, str):
@@ -108,7 +118,7 @@ def _systems_for(job: dict[str, Any]) -> list[str]:
             value = str(param.get("value", ""))
             if any(key in name for key in ("url", "host", "endpoint", "server", "database")):
                 systems.add(value[:120])
-    return sorted(s for s in systems if s)
+    return clean_system_keys(systems)
 
 
 def _raw_source_audit(scan: dict[str, Any], jobs: list[dict[str, Any]], platform: str) -> dict[str, Any]:

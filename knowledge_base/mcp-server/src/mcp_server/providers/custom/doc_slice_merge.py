@@ -111,12 +111,16 @@ class _BlockAccumulator:
     is evidence, never a restatement.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, prose_dedupe: bool = True) -> None:
         self._order: list[dict] = []
         self._seen_exact: set[str] = set()
         # normalized header -> entry dict with "rows" + "row_keys"
         self._tables: dict[str, dict] = {}
         self._prose_tokens: list[frozenset[str]] = []
+        # Section-partitioned assembly (disjoint unit ranges per slice) keeps
+        # near-duplicate prose: similar wording about DIFFERENT units is real
+        # content, not a restatement. Restart merging keeps the Jaccard lane.
+        self._prose_dedupe = prose_dedupe
 
     def add(self, block: str) -> None:
         block = block.strip("\n")
@@ -149,7 +153,7 @@ class _BlockAccumulator:
             return
 
         is_code = block.lstrip().startswith("```")
-        if not is_code:
+        if not is_code and self._prose_dedupe:
             tokens = _block_tokens(block)
             if tokens and any(
                 _jaccard(tokens, existing) >= _PROSE_JACCARD_THRESHOLD
@@ -216,8 +220,9 @@ def _split_level(text: str, heading_re: re.Pattern[str]) -> tuple[str, list[tupl
 class _SectionMerger:
     """Merge same-titled sections across slices, recursing H2 -> H3."""
 
-    def __init__(self, sub_heading_re: re.Pattern[str] | None) -> None:
+    def __init__(self, sub_heading_re: re.Pattern[str] | None, prose_dedupe: bool = True) -> None:
         self._sub_heading_re = sub_heading_re
+        self._prose_dedupe = prose_dedupe
         self._order: list[str] = []
         self._headings: dict[str, str] = {}
         self._lead: dict[str, _BlockAccumulator] = {}
@@ -227,9 +232,9 @@ class _SectionMerger:
         if key not in self._headings:
             self._order.append(key)
             self._headings[key] = heading
-            self._lead[key] = _BlockAccumulator()
+            self._lead[key] = _BlockAccumulator(prose_dedupe=self._prose_dedupe)
             if self._sub_heading_re is not None:
-                self._subs[key] = _SectionMerger(None)
+                self._subs[key] = _SectionMerger(None, prose_dedupe=self._prose_dedupe)
         if self._sub_heading_re is not None:
             lead, subsections = _split_level(body, self._sub_heading_re)
             for block in re.split(r"\n\s*\n", lead):
@@ -249,6 +254,17 @@ class _SectionMerger:
                 parts.extend(self._subs[key].render())
         return parts
 
+    def reorder(self, preferred_order: tuple[str, ...]) -> None:
+        """Apply the catalog section order: TOC first, then preferred titles
+        in their given order, then everything else in appearance order."""
+        preferred_keys = [_normalize_heading(title) for title in preferred_order]
+        ordered: list[str] = [key for key in self._order if key in _TOC_TITLES]
+        for key in preferred_keys:
+            if key in self._order and key not in ordered:
+                ordered.append(key)
+        ordered.extend(key for key in self._order if key not in ordered)
+        self._order = ordered
+
 
 def merge_sliced_doc_outputs(outputs: list[str]) -> str:
     """Merge N per-slice document restarts into one deduplicated document."""
@@ -258,6 +274,28 @@ def merge_sliced_doc_outputs(outputs: list[str]) -> str:
     if len(outputs) == 1:
         return reconcile_absence_contradictions(outputs[0])
     return _merge(outputs)
+
+
+def merge_sectioned_doc_outputs(
+    outputs: list[str], preferred_order: tuple[str, ...] | list[str] = ()
+) -> str:
+    """Assemble section-partitioned slice outputs into one document.
+
+    Used by the output-sized Phase 3 plan: each slice wrote ONLY its assigned
+    sections (part 1: title/TOC/cross-cutting + its unit range; parts >1:
+    unit-scoped sections for their own units), so assembly is heading-once
+    concatenation in slice order. Near-duplicate PROSE is kept (similar
+    wording about different units is content, not restatement); exact
+    duplicates and same-header tables still union. ``preferred_order`` is the
+    catalog section order for the final document; sections not in it keep
+    their appearance order after the ordered ones.
+    """
+    outputs = [o for o in outputs if o and o.strip()]
+    if not outputs:
+        return ""
+    if len(outputs) == 1:
+        return reconcile_absence_contradictions(outputs[0])
+    return _merge(outputs, prose_dedupe=False, preferred_order=tuple(preferred_order))
 
 
 def dedupe_document(text: str) -> str:
@@ -278,10 +316,14 @@ def dedupe_document(text: str) -> str:
     return _merge(parts or [text])
 
 
-def _merge(outputs: list[str]) -> str:
+def _merge(
+    outputs: list[str],
+    prose_dedupe: bool = True,
+    preferred_order: tuple[str, ...] = (),
+) -> str:
     title_line = ""
     merged_preamble = ""
-    merger = _SectionMerger(_H3_RE)
+    merger = _SectionMerger(_H3_RE, prose_dedupe=prose_dedupe)
     toc_done = False
 
     for output in outputs:
@@ -306,6 +348,8 @@ def _merge(outputs: list[str]) -> str:
                 toc_done = True
             merger.add(key, heading, section_body)
 
+    if preferred_order:
+        merger.reorder(preferred_order)
     parts: list[str] = []
     if title_line:
         parts.append(title_line)

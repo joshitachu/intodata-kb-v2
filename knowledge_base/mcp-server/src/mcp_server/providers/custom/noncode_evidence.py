@@ -40,6 +40,11 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Iterator, Mapping, Protocol, Sequence
 from xml.etree import ElementTree as ET
 
+from mcp_server.providers.custom.source_context import (
+    CREDENTIAL_KEY_TOKENS,
+    REDACTED_CREDENTIAL,
+    redact_inline_credentials,
+)
 from mcp_server.providers.custom.target_evidence import (
     HIGH_SIGNAL_PARAM_NAMES,
     HIGH_SIGNAL_PARAM_PATTERN,
@@ -50,9 +55,20 @@ logger = logging.getLogger("mcp_server.providers.custom.noncode_evidence")
 
 
 # ── redaction (copied from prepare_supporting_evidence) ──────────────────────
+#
+# Credential-key vocabulary is shared with source_context (single source of
+# truth); this lane adds header/cookie keys that only make sense in prose or
+# HTTP-shaped text. Credential VALUES are replaced with REDACTED_CREDENTIAL,
+# keeping the key name and surrounding structure.
 
 _SENSITIVE_ASSIGNMENT = re.compile(
-    r'''(?im)(?P<key>\b(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|credential|clientsecret|authorization|cookie|set-cookie|x-api-key)\b\s*(?::|=)\s*)(?P<value>(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;&}]+)'''
+    r"(?P<key>\b(?:" + CREDENTIAL_KEY_TOKENS
+    + r"|authorization|cookie|set-cookie|x-api-key)\b\s*(?::|=)\s*)"
+    + r"(?P<value>(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+"
+    + r'|"(?:[^"\\]|\\.)*"'
+    + r"|'(?:[^'\\]|\\.)*'"
+    + r"|[^\s,;&}]+)",
+    re.IGNORECASE | re.MULTILINE,
 )
 _AUTH_SCHEME = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}")
 _URL_USERINFO = re.compile(r"(?i)(\b[a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@")
@@ -81,7 +97,7 @@ _JWT = re.compile(
 _CREDENTIAL_WORDS = frozenset({
     "password", "passwd", "pwd", "pw", "secret", "secrets", "token", "tokens",
     "apikey", "credential", "credentials", "connectionstring", "passphrase",
-    "privatekey", "clientsecret",
+    "privatekey", "clientsecret", "wachtwoord",
 })
 _CREDENTIAL_WORD_PAIRS = frozenset({
     "apikey", "clientsecret", "connectionstring", "accesskey", "secretkey",
@@ -93,7 +109,7 @@ _CELL_WORD_RE = re.compile(r"[a-z0-9]+")
 # A header cell is a short identifier-ish label, never a value with symbols.
 _HEADER_CELL_RE = re.compile(r"[A-Za-z][\w .\-/()#]{0,63}")
 _TABLE_DELIMITERS = ("|", "\t", ";", ",")
-_REDACTED_CELL = "[REDACTED]"
+_REDACTED_CELL = REDACTED_CREDENTIAL
 
 
 def _is_credential_header(cell: str) -> bool:
@@ -148,7 +164,7 @@ def _redact_tabular_credentials(text: str) -> tuple[str, int]:
             changed = False
             # Transposed key/value row: ``ftp_pw | <secret>``.
             if len(cells) == 2 and _is_credential_header(cells[0]) and cells[1]:
-                if cells[1] != _REDACTED_CELL:
+                if "REDACTED" not in cells[1].upper():
                     cells[1] = _REDACTED_CELL
                     changed = True
             header = active.get(delimiter)
@@ -156,7 +172,7 @@ def _redact_tabular_credentials(text: str) -> tuple[str, int]:
                 column_count, columns = header
                 if len(cells) == column_count:
                     for col in columns:
-                        if cells[col] and cells[col] != _REDACTED_CELL:
+                        if cells[col] and "REDACTED" not in cells[col].upper():
                             cells[col] = _REDACTED_CELL
                             changed = True
             if changed:
@@ -168,20 +184,41 @@ def _redact_tabular_credentials(text: str) -> tuple[str, int]:
 def redact_text(text: str) -> tuple[str, int]:
     """Strip credentials from text before it can reach any consumer.
 
-    Returns the redacted text and the number of redactions applied. Mirrors the
-    grounded preparation service so the two pipelines redact identically.
+    Returns the redacted text and the number of redactions applied. Applies to
+    EVERY prepared non-code artifact (xlsx/xls probes, xslt, xml, txt, csv,
+    pdf) -- there is exactly one exit from this module and it runs through
+    here. Order matters:
+
+    1. tabular pass -- credential-named COLUMNS in delimiter-structured text
+       (headers preserved, cell values replaced);
+    2. inline pass (shared with the code-evidence lane) -- ``key=RAW(secret)``
+       Talend/Camel wrappers and query-string params, structure-preserving
+       (``password=RAW([REDACTED-CREDENTIAL])``). Must run BEFORE the generic
+       assignment pass, which would otherwise split a RAW value on whitespace
+       and leave the tail of the secret behind;
+    3. generic ``key=value`` / ``key: value`` assignments (connection strings,
+       comma/semicolon param lists, headers);
+    4. URL userinfo, bearer/basic schemes, private keys, JWTs.
     """
     text, tabular_changes = _redact_tabular_credentials(text)
-    text, assignment_changes = _SENSITIVE_ASSIGNMENT.subn(
-        lambda m: f"{m.group('key')}[REDACTED]", text
-    )
-    text, url_changes = _URL_USERINFO.subn(r"\1[REDACTED]@", text)
-    text, auth_changes = _AUTH_SCHEME.subn(r"\1 [REDACTED]", text)
+    text, inline_changes = redact_inline_credentials(text)
+    assignment_changes = 0
+
+    def _assignment_sub(match: re.Match[str]) -> str:
+        nonlocal assignment_changes
+        if "REDACTED" in match.group("value").upper():
+            return match.group(0)  # already redacted; idempotent
+        assignment_changes += 1
+        return f"{match.group('key')}{REDACTED_CREDENTIAL}"
+
+    text = _SENSITIVE_ASSIGNMENT.sub(_assignment_sub, text)
+    text, url_changes = _URL_USERINFO.subn(rf"\1{REDACTED_CREDENTIAL}@", text)
+    text, auth_changes = _AUTH_SCHEME.subn(rf"\1 {REDACTED_CREDENTIAL}", text)
     text, key_changes = _PRIVATE_KEY.subn("[REDACTED PRIVATE KEY]", text)
     text, jwt_changes = _JWT.subn("[REDACTED JWT]", text)
     return text, (
-        tabular_changes + assignment_changes + url_changes + auth_changes
-        + key_changes + jwt_changes
+        tabular_changes + inline_changes + assignment_changes + url_changes
+        + auth_changes + key_changes + jwt_changes
     )
 
 
@@ -233,7 +270,7 @@ class OfficeOpenXmlProbe:
     """
 
     id = "office-open-xml"
-    version = "2"
+    version = "3"
     _MAX_MEMBERS = 512
     _MAX_MEMBER_BYTES = 4 * 1024 * 1024
     _MAX_UNCOMPRESSED_BYTES = 32 * 1024 * 1024
@@ -275,9 +312,15 @@ class OfficeOpenXmlProbe:
                     or not info.filename.casefold().endswith(".xml")
                 ):
                     continue
-                # The shared-string table is rendered inline into the sheets;
-                # emitting it again as a flat blob is noise.
-                if is_xlsx and info.filename.casefold() == "xl/sharedstrings.xml":
+                # NEVER emit the shared-string pool as a flat blob. When
+                # worksheets exist it is rendered inline into the sheet rows;
+                # when they do not, the pool is a context-free, SPACE-joined
+                # dump in which column structure (and therefore credential-
+                # column redaction) is unrecoverable -- this exact shape is
+                # how the run-74 FTP password leaked (header names and cell
+                # values on one line, positions unalignable). v3: skip
+                # unconditionally, not just for detected worksheets.
+                if info.filename.casefold() == "xl/sharedstrings.xml":
                     continue
                 try:
                     payload = archive.read(info)
@@ -857,9 +900,9 @@ NONCODE_SECTION_HEADING = "DOCUMENTED CONTEXT (NON-CODE, TIER-3)"
 _TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{2,}")
 _MIN_TOKEN_LEN = 4
 # Tokens the redaction placeholders themselves tokenise to. Excluding these
-# fixes the real over-association bug: `[REDACTED]`/`[URL_REDACTED]` else match
-# every unit that contains any redacted value.
-_REDACTION_TOKENS = frozenset({"redacted", "url_redacted"})
+# fixes the real over-association bug: `[REDACTED]`/`[REDACTED-CREDENTIAL]`/
+# `[URL_REDACTED]` else match every unit that contains any redacted value.
+_REDACTION_TOKENS = frozenset({"redacted", "url_redacted", "credential"})
 _STOPWORDS = frozenset(
     {
         # SQL / documentation prose

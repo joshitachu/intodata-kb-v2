@@ -144,6 +144,8 @@ export const BusinessDataStreamSchema = z.object({
   business_object_ids: z.array(z.string()).default([]),
   business_summary: z.string().default(""),
   integration_solution_ids: z.array(z.string()).default([]),
+  protocols: z.array(z.string()).default([]),
+  requiredness: z.enum(["required", "optional", "conditional", "not_established"]).default("not_established"),
   delivery_path_id: z.string().nullable().optional(),
   status: ClaimStatusSchema,
   confidence: z.number().min(0).max(1),
@@ -164,6 +166,10 @@ export const BusinessDeliveryPathSegmentSchema = z.object({
   source_ref: z.string(),
   destination_ref: z.string(),
   mechanism: z.string().default("unknown"),
+  protocol: z.string().default("unknown"),
+  resource: z.string().default(""),
+  component: z.string().default(""),
+  artifact_ids: z.array(z.string()).default([]),
   mode: z.enum(["direct", "buffered", "batch", "scheduled", "event_driven", "file_transfer", "database", "unknown"]).default("unknown"),
   status: ClaimStatusSchema,
   confidence: z.number().min(0).max(1),
@@ -181,6 +187,12 @@ export const BusinessDeliveryPathSchema = z.object({
   evidence_ids: BusinessEvidenceIdsSchema,
 }).strict();
 
+export const TransformationMappingSchema = z.object({
+  source: z.string(),
+  target: z.string(),
+  mapping_type: z.enum(["direct", "value", "derived", "constant", "unknown"]).default("unknown"),
+}).strict();
+
 const EvidenceBackedClaimSchema = z.object({
   id: z.string(),
   name: z.string().default(""),
@@ -188,6 +200,13 @@ const EvidenceBackedClaimSchema = z.object({
   status: ClaimStatusSchema,
   confidence: z.number().min(0).max(1),
   evidence_ids: BusinessEvidenceIdsSchema,
+}).strict();
+
+export const BusinessTransformationSchema = EvidenceBackedClaimSchema.extend({
+  stream_ids: z.array(z.string()).default([]),
+  integration_solution_ids: z.array(z.string()).default([]),
+  artifact_ids: z.array(z.string()).default([]),
+  mappings: z.array(TransformationMappingSchema).default([]),
 }).strict();
 
 export const RuntimeObservationSchema = EvidenceBackedClaimSchema.extend({
@@ -264,6 +283,7 @@ export const BusinessTopologySchema = z.object({
   business_objects: z.array(BusinessObjectSchema).default([]),
   data_streams: z.array(BusinessDataStreamSchema).default([]),
   delivery_paths: z.array(BusinessDeliveryPathSchema).default([]),
+  transformations: z.array(BusinessTransformationSchema).default([]),
   controls: z.array(BusinessControlSchema).default([]),
   risks: z.array(BusinessRiskSchema).default([]),
   runtime_observations: z.array(RuntimeObservationSchema).optional(),
@@ -320,10 +340,20 @@ export const TopologyEvidenceLineageSchema = z.object({
   target_component: z.string(),
 }).strict();
 
+export const TopologyEvidenceRelationSchema = z.object({
+  id: z.string(),
+  source: z.string(),
+  target: z.string(),
+  relation_type: z.string(),
+  component_name: z.string().default(""),
+  resolution: z.string().default("unknown"),
+}).strict();
+
 export const TopologyEvidenceSchema = z.object({
   artifacts: z.array(TopologyEvidenceArtifactSchema).default([]),
   components: z.array(TopologyEvidenceComponentSchema).default([]),
   lineage: z.array(TopologyEvidenceLineageSchema).default([]),
+  relations: z.array(TopologyEvidenceRelationSchema).default([]),
 }).strict();
 
 export const ProjectLandscapeResponseSchema = z.object({
@@ -355,6 +385,8 @@ export type BusinessObject = z.infer<typeof BusinessObjectSchema>;
 export type BusinessDataStream = z.infer<typeof BusinessDataStreamSchema>;
 export type BusinessDeliveryPath = z.infer<typeof BusinessDeliveryPathSchema>;
 export type BusinessDeliveryPathSegment = z.infer<typeof BusinessDeliveryPathSegmentSchema>;
+export type BusinessTransformation = z.infer<typeof BusinessTransformationSchema>;
+export type TransformationMapping = z.infer<typeof TransformationMappingSchema>;
 export type BusinessControl = z.infer<typeof BusinessControlSchema>;
 export type BusinessRisk = z.infer<typeof BusinessRiskSchema>;
 export type RuntimeObservation = z.infer<typeof RuntimeObservationSchema>;
@@ -370,4 +402,5 @@ export type TopologyEvidence = z.infer<typeof TopologyEvidenceSchema>;
 export type TopologyEvidenceArtifact = z.infer<typeof TopologyEvidenceArtifactSchema>;
 export type TopologyEvidenceComponent = z.infer<typeof TopologyEvidenceComponentSchema>;
 export type TopologyEvidenceLineage = z.infer<typeof TopologyEvidenceLineageSchema>;
+export type TopologyEvidenceRelation = z.infer<typeof TopologyEvidenceRelationSchema>;
 export type ProjectLandscapeResponse = z.infer<typeof ProjectLandscapeResponseSchema>;

@@ -59,10 +59,21 @@ _SENSITIVE_ASSIGNMENT_RE = re.compile(
 # * `_CREDENTIAL_RAW_WRAPPER_RE` matches `key=RAW(...)` anywhere: Camel's
 #   RAW() wrapper exists precisely to mark a literal (usually secret) value,
 #   so a credential key with a RAW value is a leak by definition.
-_CREDENTIAL_KEY_TOKENS = (
+# Public: shared credential-key vocabulary for inline-parameter redaction.
+# Consumed by noncode_evidence.redact_text so the Tier-3 non-code lane and the
+# code-evidence lane agree on what counts as a credential key. English and
+# Dutch (wachtwoord) vocabulary; compounds cover both `_` and `-` separators.
+CREDENTIAL_KEY_TOKENS = (
     r"password|passwd|pwd|secret|token|apikey|api[_-]?key|client[_-]?secret|"
-    r"access[_-]?token|refresh[_-]?token|auth[_-]?token|passphrase|credential"
+    r"access[_-]?token|refresh[_-]?token|auth[_-]?token|passphrase|credential|"
+    r"wachtwoord|secret[_-]?key|access[_-]?key|private[_-]?key"
 )
+_CREDENTIAL_KEY_TOKENS = CREDENTIAL_KEY_TOKENS
+
+# Public: the marker substituted for credential VALUES. Key names and the
+# Camel/Talend `RAW(...)` wrapper are preserved so docs can still say
+# "a password is configured here" without carrying the secret.
+REDACTED_CREDENTIAL = "[REDACTED-CREDENTIAL]"
 _CREDENTIAL_QUERY_PARAM_RE = re.compile(
     rf"(?P<prefix>[?&;](?:amp;)?\s*(?:{_CREDENTIAL_KEY_TOKENS})\s*=\s*)"
     rf"(?P<value>RAW\([^)\n]*\)|[^\s&\"'<>;,\n]+)",
@@ -87,10 +98,15 @@ def redact_inline_credentials(text: str) -> tuple[str, int]:
 
     def _sub(match: re.Match[str]) -> str:
         nonlocal count
-        if "REDACTED" in match.group("value").upper():
+        value = match.group("value")
+        if "REDACTED" in value.upper():
             return match.group(0)
         count += 1
-        return f"{match.group('prefix')}[REDACTED]"
+        if value[:4].upper() == "RAW(":
+            # Preserve the RAW() literal wrapper: docs keep the structural fact
+            # that a raw credential is configured, without the secret itself.
+            return f"{match.group('prefix')}RAW({REDACTED_CREDENTIAL})"
+        return f"{match.group('prefix')}{REDACTED_CREDENTIAL}"
 
     text = _CREDENTIAL_QUERY_PARAM_RE.sub(_sub, text)
     text = _CREDENTIAL_RAW_WRAPPER_RE.sub(_sub, text)

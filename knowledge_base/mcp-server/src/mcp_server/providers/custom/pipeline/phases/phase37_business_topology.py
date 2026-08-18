@@ -41,11 +41,15 @@ class Phase37BusinessTopology(Phase):
             default_tool_budget,
         )
         from mcp_server.providers.custom.models import ModelOptions, ModelResult
+        from mcp_server.providers.custom.transient_artifacts import (
+            transient_dir,
+            transient_write,
+        )
         from mcp_server.services.business_topology import (
             build_business_topology_evidence,
             build_deterministic_topology,
             build_topology_context_files,
-            parse_and_validate_business_topology,
+            parse_validate_repair_business_topology,
             validate_business_topology,
         )
         from mcp_server.services.business_topology.prompt import business_topology_prompt
@@ -83,6 +87,21 @@ class Phase37BusinessTopology(Phase):
             prompt = business_topology_prompt(
                 project_id=ctx.project_id,
                 scan_fingerprint=bundle.scan_fingerprint,
+            )
+            # Built once, used two ways: (a) as the floor the LLM output must
+            # beat -- a schema-valid but EMPTY topology (verified pre-fix
+            # ETTM_part1 shape: the model refused to fabricate and emitted no
+            # claims) must not be published when scanner edges ground real
+            # streams; (b) as the published fallback when the LLM leg fails.
+            deterministic_candidate = build_deterministic_topology(
+                bundle, project_id=ctx.project_id
+            )
+            deterministic_report = validate_business_topology(
+                deterministic_candidate, bundle=bundle, project_id=ctx.project_id
+            )
+            deterministic_has_streams = (
+                deterministic_report.validated
+                and bool(deterministic_candidate.data_streams)
             )
             provider = self._helpers.write_provider
             options = ModelOptions(
@@ -129,6 +148,34 @@ class Phase37BusinessTopology(Phase):
                     task: AgentTaskContract,
                     tools: ScopedEvidenceTools,
                 ) -> ModelResult:
+                    # Tools are disabled for this phase, so the harness never
+                    # applies _with_agent_contract to the prompt and the
+                    # runtime's validation_gaps would otherwise be silently
+                    # dropped: the verified werkorder retries were byte-
+                    # identical blind re-rolls that diverged (ESB_part1 went
+                    # from 3 validation errors to 36). Feed the gaps back as a
+                    # transient TAIL context file (same cache-friendly pattern
+                    # as the harness claim-repair dispatch) so attempt 2 fixes
+                    # the reported errors instead of resampling from scratch.
+                    effective_context = topology_context_files
+                    if task.attempt > 1:
+                        gaps = "\n".join(
+                            f"- {gap}" for gap in task.validation_gaps
+                        ) or "- Previous JSON failed validation."
+                        repair_tail = transient_dir(
+                            ctx.staging_dir, "claim_repair", "business_topology"
+                        ) / f"{task.target_id}__attempt_{task.attempt}.md"
+                        transient_write(
+                            repair_tail,
+                            "REPAIR INSTRUCTION: Return a complete corrected "
+                            "replacement JSON object. Fix only these validation "
+                            f"gaps:\n{gaps}\n\n"
+                            "Do not widen scope while repairing: drop any claim "
+                            "you cannot ground in the attached evidence instead "
+                            "of inventing IDs, and keep every already-valid "
+                            "claim unchanged.",
+                        )
+                        effective_context = [*topology_context_files, repair_tail]
                     return await harness_provider._complete_core_generation(
                         ctx,
                         state,
@@ -136,7 +183,7 @@ class Phase37BusinessTopology(Phase):
                         phase="business_topology",
                         target=task.target_id,
                         prompt=prompt,
-                        context_files=topology_context_files,
+                        context_files=effective_context,
                         opts=options,
                         log_cb=log_cb,
                         task_contract=task,
@@ -144,15 +191,42 @@ class Phase37BusinessTopology(Phase):
                     )
 
                 def _runtime_validation(text: str) -> dict[str, Any]:
-                    _, validation = parse_and_validate_business_topology(
-                        text,
-                        bundle=bundle,
-                        project_id=ctx.project_id,
+                    # Repair-aware acceptance: a raw output that fails only on
+                    # the verified mechanical grounding shapes (missing
+                    # artifact_id citations, fabricated `artifact:` prefixes,
+                    # ungrounded sibling-partition solutions) is accepted after
+                    # deterministic repair instead of burning the single LLM
+                    # retry. When repair cannot help, the RAW errors flow into
+                    # validation_gaps for the retry.
+                    parsed, validation, repair_notes = (
+                        parse_validate_repair_business_topology(
+                            text,
+                            bundle=bundle,
+                            project_id=ctx.project_id,
+                        )
                     )
-                    return {
+                    payload = {
                         "ok": validation.validated,
                         **validation.model_dump(),
                     }
+                    if (
+                        validation.validated
+                        and parsed is not None
+                        and not parsed.data_streams
+                        and deterministic_has_streams
+                    ):
+                        # Schema-valid but empty while scanner edges ground
+                        # real streams: give the retry a chance to emit them.
+                        payload["ok"] = False
+                        payload["errors"] = [
+                            *validation.errors,
+                            "topology contains no data streams although scanner "
+                            "directional edges in the attached evidence ground at "
+                            "least one stream; emit the grounded streams",
+                        ]
+                    if repair_notes:
+                        payload["repair_notes"] = repair_notes
+                    return payload
 
                 task_result = await runtime.run(
                     contract,
@@ -161,26 +235,43 @@ class Phase37BusinessTopology(Phase):
                 )
                 result = task_result.result
 
-            topology, report = parse_and_validate_business_topology(
+            topology, report, repair_notes = parse_validate_repair_business_topology(
                 result.text,
                 bundle=bundle,
                 project_id=ctx.project_id,
             )
-            used_deterministic_fallback = False
-            if not result.success or topology is None or not report.validated:
-                # The agent runtime already retried the LLM up to max_attempts.
-                # Rather than dropping topology entirely, reconstruct an
-                # evidence-only L1 overlay deterministically from scanner edges
-                # and identity evidence, so `available` can still be true with
-                # real cited edges even when the LLM narrative failed.
-                fallback = build_deterministic_topology(bundle, project_id=ctx.project_id)
-                fallback_report = validate_business_topology(
-                    fallback, bundle=bundle, project_id=ctx.project_id
+            if topology is not None and repair_notes:
+                await log_cb(
+                    ctx.project_id,
+                    "[custom] Business topology: accepted after deterministic repair "
+                    f"({len(repair_notes)} corrections, e.g. {repair_notes[0]})",
+                    "warning",
                 )
+            used_deterministic_fallback = False
+            llm_failed = not result.success or topology is None or not report.validated
+            llm_empty_but_valid = (
+                not llm_failed
+                and topology is not None
+                and not topology.data_streams
+                and deterministic_has_streams
+            )
+            if llm_failed or llm_empty_but_valid:
+                # The agent runtime already retried the LLM up to max_attempts.
+                # Rather than dropping topology entirely (or publishing a
+                # schema-valid but empty overlay when scanner edges ground real
+                # streams), use the evidence-only deterministic overlay so
+                # `available` can still be true with real cited edges.
+                fallback = deterministic_candidate
+                fallback_report = deterministic_report
                 if fallback_report.validated and fallback.data_streams:
-                    llm_errors = list(report.errors)
-                    if not result.success:
-                        llm_errors.insert(0, result.raw_error or "model call failed")
+                    if llm_empty_but_valid:
+                        llm_errors = [
+                            "LLM topology validated but contained no data streams"
+                        ]
+                    else:
+                        llm_errors = list(report.errors)
+                        if not result.success:
+                            llm_errors.insert(0, result.raw_error or "model call failed")
                     await log_cb(
                         ctx.project_id,
                         "[custom] Business topology: LLM synthesis did not validate ("
@@ -190,7 +281,13 @@ class Phase37BusinessTopology(Phase):
                         "warning",
                     )
                     topology, report = fallback, fallback_report
+                    repair_notes = []
                     used_deterministic_fallback = True
+                elif llm_empty_but_valid:
+                    # Unreachable in practice (deterministic_has_streams implies
+                    # a validated stream-bearing fallback), but never turn a
+                    # valid LLM overlay into `available=false` here.
+                    pass
                 else:
                     errors = list(report.errors)
                     if not result.success:
@@ -228,6 +325,13 @@ class Phase37BusinessTopology(Phase):
                 bundle=bundle,
                 project_id=ctx.project_id,
             )
+            if repair_notes and report.validated:
+                report.warnings = [
+                    "accepted after deterministic repair "
+                    f"({len(repair_notes)} corrections)",
+                    *[f"repaired: {note}" for note in repair_notes[:20]],
+                    *report.warnings,
+                ]
             validation_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
             if not report.validated:
                 topology_path.unlink(missing_ok=True)
@@ -270,6 +374,7 @@ class Phase37BusinessTopology(Phase):
                     "systems": len(topology.systems),
                     "data_streams": len(topology.data_streams),
                     "deterministic_fallback": used_deterministic_fallback,
+                    "repaired": bool(repair_notes) and not used_deterministic_fallback,
                 },
             )
         except Exception as exc:  # noqa: BLE001 - this phase is explicitly non-blocking

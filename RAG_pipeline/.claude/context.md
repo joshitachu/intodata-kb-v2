@@ -1,5 +1,13 @@
 # Current State
 
+**Status (2026-08-11, scoped WerkOrder TMC runtime sync deployed without schema migration):** The Talend TMC source connector no longer sweeps every tenant task/run. Project `werkorder` defaults to a bounded task/artifact/connection vocabulary, retains only related inventory and plans, reads 90 days as nine API-compliant windows of at most 10 days, limits each executable to 250 runs, fetches logs only for the 25 most recent failures, fetches component metrics for at most 50 recent runs, uses concurrency 5, and retries transient transport failures three times. Source 13 (`vw_TMC`) is explicitly disabled after validation and remains at a 60-second configured interval.
+
+**Last completed:** focused TMC suite **21 passed**; complete runtime suite **341 passed**; scoped Ruff, compilation, and diff checks passed. Live deployment exposes the new constants and `/health` responds; the backend is temporarily launched directly with uvicorn because the dirty worktree contains multiple Alembic heads and the normal `alembic upgrade head` entrypoint cannot start.
+
+**Immediate next:** resolve the unrelated Alembic multiple-head condition, raise source 13's interval before enabling it, then run one operator-controlled sync and inspect matched task names/counts plus API call volume. Do not re-enable `vw_TMC` until that review. Ollama remains unavailable, so overall `/health` is degraded although database, Qdrant, Hindsight, and the API are available.
+
+**Resolved blockers:** tenant-wide sequential log/metric sweep; unsupported `lastDays=90`; single transient `ConnectError` without retry; scope matching when the business/system name appears only on a TMC connection.
+
 **Status (2026-07-30, L1/L2 topology frontend implemented and locally deployed):** `/topology` now opens on the scanner-computed application/system landscape when a project exposes `landscape.json`, with an evidence-preserving L2 relationship drill-down before existing Job/Route and mapping/lineage levels. The legacy Talend functional-group canvas stays available only for pre-landscape rescans and as an application's Designs view. The contract is typed end-to-end through the BFF and does not merge labels or use redacted channel values to infer peers.
 
 **Last completed:** 440 frontend tests and production build pass; frontend and MCP Docker containers are healthy. The real composite `topology` payload is 14 applications, 123 systems, 185 edges, 1,115 channels, 146 interfaces, 38 diagnostics, and 15 unmapped records.
@@ -355,3 +363,16 @@ See `PROJECT_MEMORY.md` for architecture decisions and `PROGRESS_LOG.md` for ses
 
 - Unbounded orphan nodes, raw L2 IDs, unexplained Talend graph vocabulary, and
   Talend-project-as-business-application presentation.
+
+## Latest Runtime State (2026-08-11 WerkOrder TMC)
+
+- `vw_TMC` source 13 is enabled and successful on a 3,600-second schedule.
+- Default scope is business-object-only: WerkOrder(s)/WorkOrder(s). The live
+  selection is 8 task records (6 distinct names), down from 64 tenant-wide tasks.
+- The first committed 90-day sync persisted 765 job runs, 250 plan runs, 113
+  failures, 4,768 log events, and 593 component metrics.
+- Standard Compose startup is restored (`alembic upgrade head && uvicorn`). The
+  single Alembic head is `080_runtime_duration_bigint`; runtime durations are
+  `bigint` to preserve long-running TMC executions without truncation.
+- The backend API is reachable. Overall `/health` is degraded only because the
+  local Ollama dependency is unavailable; database, Qdrant, and Hindsight pass.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { landscapeEdgeKey, landscapeToFlow } from "@/lib/landscapeTransform";
+import { findLandscapeEdge, landscapeEdgeKey, landscapeToFlow } from "@/lib/landscapeTransform";
 import type { ProjectLandscapeResponse } from "@/types/landscape";
 
 const landscape: ProjectLandscapeResponse = {
@@ -17,16 +17,16 @@ const landscape: ProjectLandscapeResponse = {
 
 describe("landscapeToFlow", () => {
   it("uses validated business systems and readable data streams instead of technical projects", () => {
-    const result = landscapeToFlow({
+    const businessLandscape: ProjectLandscapeResponse = {
       ...landscape,
       edges: [{
         ...landscape.edges[0],
-        provenance: [{ artifact_id: "Fetch", qualified_artifact_id: "ZIP/A::Fetch", source_root: "ZIP/A", component_name: "tRESTClient_1", fact_type: "interface" }],
+        provenance: [],
       }],
       topology_state: { available: true, validated: true, stale: false, source: "agent" },
       topology_evidence: {
         artifacts: [{ id: "artifact:fetch", name: "Fetch", job_id: "Fetch", source_root: "ZIP/A", artifact_kind: "job", artifact_role: "implementation" }],
-        components: [], lineage: [],
+        components: [], lineage: [], relations: [],
       },
       business_topology: {
         schema_version: "1.0",
@@ -49,6 +49,8 @@ describe("landscapeToFlow", () => {
           business_object_ids: ["object:workorder"],
           business_summary: "Supplies inspectors with work orders.",
           integration_solution_ids: ["integration:one"],
+          protocols: ["REST"],
+          requiredness: "not_established",
           delivery_path_id: "path:workorders",
           status: "proposed",
           confidence: 0.9,
@@ -56,10 +58,12 @@ describe("landscapeToFlow", () => {
           artifact_ids: ["artifact:fetch"],
           unknown_ids: [], evidence_ids: [],
         }],
-        delivery_paths: [{ id: "path:workorders", name: "Work order delivery", description: "", stream_id: "stream:workorders", status: "proposed", confidence: 0.9, evidence_ids: [], segments: [{ id: "segment:one", name: "REST delivery", description: "", sequence: 1, source_ref: "business:maximo", destination_ref: "business:assetcheck", mechanism: "rest", mode: "direct", status: "proposed", confidence: 0.9, evidence_ids: [] }] }],
+        delivery_paths: [{ id: "path:workorders", name: "Work order delivery", description: "", stream_id: "stream:workorders", status: "proposed", confidence: 0.9, evidence_ids: [], segments: [{ id: "segment:one", name: "REST delivery", description: "", sequence: 1, source_ref: "business:maximo", destination_ref: "business:assetcheck", mechanism: "rest", protocol: "REST", resource: "", component: "", artifact_ids: [], mode: "direct", status: "proposed", confidence: 0.9, evidence_ids: [] }] }],
+        transformations: [],
         controls: [], risks: [], unknowns: [], artifact_annotations: [], component_annotations: [], lineage_annotations: [], coverage: { total_artifacts: 1, cited_artifacts: 1, total_evidence: 1, cited_evidence: 1, coverage_ratio: 1, notes: [] },
       },
-    });
+    };
+    const result = landscapeToFlow(businessLandscape);
 
     expect(result.nodes.map((node) => node.id)).toEqual([
       "business:maximo",
@@ -69,8 +73,20 @@ describe("landscapeToFlow", () => {
     expect(result.nodes.map((node) => node.id)).not.toContain("application:one");
     expect(result.edges).toHaveLength(1);
     expect(result.edges[0].label).toBe("Work orders");
-    expect(result.edges[0].data?.landscapeEdge.businessStream?.id).toBe("stream:workorders");
-    expect(result.edges[0].data?.landscapeEdge.provenance).toHaveLength(1);
+    // A single-stream system pair still aggregates to one L1 edge; the
+    // constituent stream key resolves back to its own TopologyEdge via
+    // findLandscapeEdge (see AggregatedRelationshipEdgeData).
+    const aggregatedData = result.edges[0].data as { streamKeys: string[]; pair: { source: string; target: string } };
+    expect(aggregatedData.streamKeys).toHaveLength(1);
+    const resolved = findLandscapeEdge(businessLandscape, aggregatedData.streamKeys[0]);
+    expect(resolved?.businessStream?.id).toBe("stream:workorders");
+    expect(resolved?.provenance).toHaveLength(1);
+    expect(resolved?.provenance[0]).toMatchObject({
+      artifact_id: "Fetch",
+      qualified_artifact_id: "ZIP/A::Fetch",
+      fact_type: "business_topology_artifact",
+    });
+    expect(aggregatedData.pair).toEqual({ source: "business:maximo", target: "business:assetcheck" });
     expect(result.edges[0].style).toMatchObject({ strokeDasharray: "7 4" });
   });
 

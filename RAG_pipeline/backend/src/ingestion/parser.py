@@ -6,7 +6,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_TYPES = {"pdf", "docx", "pptx", "xlsx"}
+SUPPORTED_TYPES = {"pdf", "docx", "pptx", "xlsx", "md"}
 
 
 def parse_file(file_bytes: bytes, filename: str) -> str:
@@ -20,6 +20,7 @@ def parse_file(file_bytes: bytes, filename: str) -> str:
         "docx": _parse_docx,
         "pptx": _parse_pptx,
         "xlsx": _parse_xlsx,
+        "md": _parse_markdown,
     }
     text = parsers[ext](file_bytes)
     logger.info(f"Parsed {filename}: {len(text)} chars")
@@ -90,3 +91,8 @@ def _parse_xlsx(data: bytes) -> str:
             if row_text:
                 texts.append(row_text)
     return "\n".join(texts)
+
+
+def _parse_markdown(data: bytes) -> str:
+    """Return UTF-8 Markdown unchanged for structure-aware chunking."""
+    return data.decode("utf-8")

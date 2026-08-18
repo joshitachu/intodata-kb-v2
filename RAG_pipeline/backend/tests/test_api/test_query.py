@@ -52,7 +52,10 @@ async def test_query_endpoint_success(mock_deps):
         latency_ms=150,
     )
 
-    with patch("src.api.routes.query.run_rag_query", new_callable=AsyncMock) as mock_rag:
+    with (
+        patch("src.api.routes.query.run_rag_query", new_callable=AsyncMock) as mock_rag,
+        patch("src.api.routes.query.active_knowledge_revisions", new_callable=AsyncMock, return_value={}),
+    ):
         mock_rag.return_value = response_data
 
         transport = ASGITransport(app=app)
@@ -93,7 +96,10 @@ async def test_query_debug_endpoint(mock_deps):
     mock_result.points = [mock_point]
     mock_deps["qdrant"].query_points.return_value = mock_result
 
-    with patch("src.api.routes.query.embed_text", new_callable=AsyncMock) as mock_embed:
+    with (
+        patch("src.api.routes.query.embed_text", new_callable=AsyncMock) as mock_embed,
+        patch("src.api.routes.query.active_knowledge_revisions", new_callable=AsyncMock, return_value={}),
+    ):
         mock_embed.return_value = [0.1] * 768
 
         transport = ASGITransport(app=app)

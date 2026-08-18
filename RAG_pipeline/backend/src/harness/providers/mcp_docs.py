@@ -154,6 +154,32 @@ class McpEvidenceDocUpdateResult:
 
 
 @dataclass(frozen=True)
+class McpChatPatchPreview:
+    proposal_id: str
+    patch_plan_hash: str
+    base_document_sha256: str
+    base_knowledge_revision_id: str | None
+    compact_diff: str
+    changed_scope: list[str]
+    evidence_refs: list[str]
+    assertion_kind: str
+    expires_at: str
+    requires_owner_approval: bool
+
+
+@dataclass(frozen=True)
+class McpChatPatchActivation:
+    proposal_id: str
+    candidate_id: str
+    knowledge_revision_id: str
+    filename: str
+    before_sha: str
+    after_sha: str
+    assertion_kind: str
+    changed_logical_ids: list[str]
+
+
+@dataclass(frozen=True)
 class McpDocumentVersion:
     project_id: str
     filename: str
@@ -1110,6 +1136,79 @@ class McpDocumentationProvider:
             docs_path=f"/projects/{project_id}/docs",
             run_id=_optional_int(active.get("id")),
         )
+
+    async def preview_chat_patch(
+        self, *, project_id: str, filename: str, section: str,
+        replacement_text: str, evidence_refs: list[str], assertion_kind: str,
+        access_token: str | None = None,
+    ) -> McpChatPatchPreview:
+        """Freeze the exact MCP-side candidate preview before approval."""
+        data = await self._chat_patch_request(
+            project_id=project_id, filename=filename, action="preview",
+            payload={"section": section, "replacement_text": replacement_text,
+                     "evidence_refs": evidence_refs, "assertion_kind": assertion_kind},
+            access_token=access_token,
+        )
+        return McpChatPatchPreview(
+            proposal_id=str(data["proposal_id"]), patch_plan_hash=str(data["patch_plan_hash"]),
+            base_document_sha256=str(data["base_document_sha256"]),
+            base_knowledge_revision_id=_optional_text(data.get("base_knowledge_revision_id")),
+            compact_diff=str(data.get("compact_diff") or ""),
+            changed_scope=[str(item) for item in data.get("changed_scope", [])],
+            evidence_refs=[str(item) for item in data.get("evidence_refs", [])],
+            assertion_kind=str(data.get("assertion_kind") or "editorial"),
+            expires_at=str(data.get("expires_at") or ""),
+            requires_owner_approval=bool(data.get("requires_owner_approval")),
+        )
+
+    async def activate_chat_patch(
+        self, *, project_id: str, filename: str, proposal_id: str,
+        patch_plan_hash: str, access_token: str | None = None,
+    ) -> McpChatPatchActivation:
+        """Consume the approved, hash-bound MCP candidate proposal."""
+        data = await self._chat_patch_request(
+            project_id=project_id, filename=filename, action="activate",
+            payload={"proposal_id": proposal_id, "patch_plan_hash": patch_plan_hash},
+            access_token=access_token,
+        )
+        return McpChatPatchActivation(
+            proposal_id=str(data["proposal_id"]), candidate_id=str(data["candidate_id"]),
+            knowledge_revision_id=str(data["knowledge_revision_id"]),
+            filename=str(data.get("filename") or filename), before_sha=str(data.get("before_sha") or ""),
+            after_sha=str(data.get("after_sha") or ""), assertion_kind=str(data.get("assertion_kind") or ""),
+            changed_logical_ids=[str(item) for item in data.get("changed_logical_ids", [])],
+        )
+
+    async def _chat_patch_request(
+        self, *, project_id: str, filename: str, action: str,
+        payload: dict[str, Any], access_token: str | None,
+    ) -> dict[str, Any]:
+        if not self._base_url:
+            raise McpDocumentationProviderError("Documentation provider is not configured.")
+        project_id = _validated_project_id(project_id)
+        filename = _validated_markdown_filename(filename)
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url, timeout=self._timeout, transport=self._transport,
+                cookies={"access_token": access_token} if access_token else None,
+            ) as client:
+                response = await client.post(
+                    f"/projects/{project_id}/docs/{filename}/chat-patch/{action}", json=payload
+                )
+        except httpx.TimeoutException as exc:
+            raise McpDocumentationProviderError(
+                f"Documentation provider timed out after {self._timeout:g}s."
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise McpDocumentationProviderError(
+                _safe_error("Documentation provider could not be reached", str(exc))
+            ) from exc
+        if response.status_code >= 400:
+            raise McpDocumentationProviderError(_safe_error(
+                f"Documentation provider returned HTTP {response.status_code}",
+                _response_error_text(response),
+            ))
+        return _json_object(response)
 
 
 def _set_if_present(payload: dict[str, Any], key: str, value: Any | None) -> None:

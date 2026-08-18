@@ -20,7 +20,7 @@ import asyncio
 import logging
 import math
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -60,12 +60,36 @@ from src.runtime.sync import RuntimeSyncBatch
 
 logger = logging.getLogger(__name__)
 
-_LOG_PAGE_SIZE = 500
+# TMC rejects log page sizes above 200 with HTTP 400.
+_LOG_PAGE_SIZE = 200
 _LOG_CAPTURE_LIMIT = 10_000
 _LOG_MAX_POLL_ATTEMPTS = 3
 _LOG_POLL_INTERVAL_SECONDS = 0.0
 _COMPONENT_PAGE_SIZE = 50
 _DEFAULT_FETCH_LIMIT = 1000
+_DEFAULT_HISTORY_DAYS = 90
+_RUNS_PER_EXECUTABLE_LIMIT = 250
+_EXECUTION_WINDOW_DAYS = 10
+_FAILED_LOG_RUN_LIMIT = 25
+_COMPONENT_METRIC_RUN_LIMIT = 50
+_DETAIL_FETCH_CONCURRENCY = 5
+_TRANSPORT_MAX_ATTEMPTS = 3
+_TRANSPORT_RETRY_DELAY_SECONDS = 0.25
+
+# A source may provide its own comma-separated filters. The WerkOrder default
+# stays business-object-specific: application-only terms such as ``Maximo`` or
+# ``RHM`` also match payroll, HR, asset, and supplier flows and therefore need
+# an explicit operator override rather than silently widening this source.
+_PROJECT_SCOPE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "werkorder": (
+        "werkorder",
+        "werkorders",
+        "workorder",
+        "workorders",
+        "work order",
+        "work orders",
+    ),
+}
 
 _STATE_MAP: dict[str, RuntimeExecutionState] = {
     "execution_successful": RuntimeExecutionState.SUCCESS,
@@ -99,6 +123,8 @@ class TalendTmcRuntimeProvider:
         self._transport = transport
         self._token: str | None = None
         self._base_url_override: str | None = None
+        self._task_scope_keywords: tuple[str, ...] = ()
+        self._history_days = _DEFAULT_HISTORY_DAYS
 
     def provider_key(self) -> str:
         return "tmc"
@@ -110,6 +136,18 @@ class TalendTmcRuntimeProvider:
         return [
             {"name": "api_token", "type": "secret", "label": "API token", "required": True},
             {"name": "base_url", "type": "url", "label": "Base URL", "required": True},
+            {
+                "name": "task_name_filter",
+                "type": "text",
+                "label": "Task/artifact filters (comma-separated)",
+                "required": False,
+            },
+            {
+                "name": "history_days",
+                "type": "text",
+                "label": "Run history in days (1-90)",
+                "required": False,
+            },
         ]
 
     def container_key_field(self) -> str:
@@ -135,6 +173,10 @@ class TalendTmcRuntimeProvider:
         if not token or not base_url:
             return False, "Missing required TMC credentials"
         try:
+            _history_days(credentials)
+        except RuntimeProviderError as error:
+            return False, str(error)
+        try:
             async with httpx.AsyncClient(
                 base_url=base_url,
                 timeout=10.0,
@@ -149,6 +191,11 @@ class TalendTmcRuntimeProvider:
             return False, "Connection timed out after 10s"
         except httpx.HTTPError as e:
             return False, _sanitize_tmc_error(str(e), token)
+        except ValueError:
+            # httpx encodes header values as ASCII (UnicodeEncodeError is a
+            # ValueError subclass); a corrupted paste (e.g. a homoglyph
+            # swapped into the token) must not surface as an unhandled 500.
+            return False, "Credentials contain a character that could not be sent in an HTTP header"
 
     async def sync(self, *, credentials: Mapping[str, Any], project_id: str) -> RuntimeSyncBatch:
         token = str(credentials.get("api_token") or "").strip()
@@ -158,6 +205,8 @@ class TalendTmcRuntimeProvider:
         provider = TalendTmcRuntimeProvider(transport=self._transport)
         provider._token = token
         provider._base_url_override = base_url
+        provider._task_scope_keywords = _task_scope_keywords(credentials, project_id)
+        provider._history_days = _history_days(credentials)
         return await provider.fetch_runtime_batch(project_id=project_id)
 
     def _read_token(self) -> str:
@@ -193,15 +242,32 @@ class TalendTmcRuntimeProvider:
         )
 
     async def _get(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any] | list[dict[str, Any]]:
-        try:
-            async with self._client() as client:
-                response = await client.get(path, params={k: v for k, v in (params or {}).items() if v is not None})
-                response.raise_for_status()
-                data = response.json()
-        except httpx.HTTPStatusError as e:
-            raise RuntimeProviderError(f"Talend TMC GET {path} returned HTTP {e.response.status_code}") from e
-        except httpx.HTTPError as e:
-            raise RuntimeProviderError(f"Talend TMC GET {path} transport failure: {type(e).__name__}") from e
+        for attempt in range(_TRANSPORT_MAX_ATTEMPTS):
+            try:
+                async with self._client() as client:
+                    response = await client.get(
+                        path,
+                        params={k: v for k, v in (params or {}).items() if v is not None},
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                break
+            except httpx.HTTPStatusError as e:
+                raise RuntimeProviderError(
+                    f"Talend TMC GET {path} returned HTTP {e.response.status_code}"
+                ) from e
+            except httpx.TransportError as e:
+                if attempt + 1 < _TRANSPORT_MAX_ATTEMPTS:
+                    await asyncio.sleep(_TRANSPORT_RETRY_DELAY_SECONDS * (attempt + 1))
+                    continue
+                raise RuntimeProviderError(
+                    f"Talend TMC GET {path} transport failure after "
+                    f"{_TRANSPORT_MAX_ATTEMPTS} attempts: {type(e).__name__}"
+                ) from e
+            except ValueError as e:
+                raise RuntimeProviderError(
+                    f"Talend TMC GET {path} credentials could not be encoded for the request"
+                ) from e
         # Talend TMC list endpoints return a bare JSON array; single-resource
         # endpoints return an object. Accept either; reject scalars/null.
         if isinstance(data, dict):
@@ -211,15 +277,32 @@ class TalendTmcRuntimeProvider:
         raise RuntimeProviderError(f"Talend TMC GET {path} returned a non-object/non-array payload")
 
     async def _post(self, path: str, *, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
-        try:
-            async with self._client() as client:
-                response = await client.post(path, json={k: v for k, v in (json_body or {}).items() if v is not None})
-                response.raise_for_status()
-                data = response.json()
-        except httpx.HTTPStatusError as e:
-            raise RuntimeProviderError(f"Talend TMC POST {path} returned HTTP {e.response.status_code}") from e
-        except httpx.HTTPError as e:
-            raise RuntimeProviderError(f"Talend TMC POST {path} transport failure: {type(e).__name__}") from e
+        for attempt in range(_TRANSPORT_MAX_ATTEMPTS):
+            try:
+                async with self._client() as client:
+                    response = await client.post(
+                        path,
+                        json={k: v for k, v in (json_body or {}).items() if v is not None},
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                break
+            except httpx.HTTPStatusError as e:
+                raise RuntimeProviderError(
+                    f"Talend TMC POST {path} returned HTTP {e.response.status_code}"
+                ) from e
+            except httpx.TransportError as e:
+                if attempt + 1 < _TRANSPORT_MAX_ATTEMPTS:
+                    await asyncio.sleep(_TRANSPORT_RETRY_DELAY_SECONDS * (attempt + 1))
+                    continue
+                raise RuntimeProviderError(
+                    f"Talend TMC POST {path} transport failure after "
+                    f"{_TRANSPORT_MAX_ATTEMPTS} attempts: {type(e).__name__}"
+                ) from e
+            except ValueError as e:
+                raise RuntimeProviderError(
+                    f"Talend TMC POST {path} credentials could not be encoded for the request"
+                ) from e
         if not isinstance(data, dict):
             raise RuntimeProviderError(f"Talend TMC POST {path} returned a non-object payload")
         return data
@@ -331,14 +414,70 @@ class TalendTmcRuntimeProvider:
         tasks_raw = await self._get_all_pages("/orchestration/executables/tasks", max_items=_DEFAULT_FETCH_LIMIT)
         plans_raw = await self._get_all_pages("/orchestration/executables/plans", max_items=_DEFAULT_FETCH_LIMIT)
 
-        environments = [_to_environment(item, source_key, synced_at) for item in environments_raw]
-        workspaces = [_to_workspace(item, source_key, synced_at) for item in workspaces_raw]
-        engines = [_to_engine(item, source_key, synced_at) for item in engines_raw]
+        all_environments = [_to_environment(item, source_key, synced_at) for item in environments_raw]
+        all_workspaces = [_to_workspace(item, source_key, synced_at) for item in workspaces_raw]
+        all_engines = [_to_engine(item, source_key, synced_at) for item in engines_raw]
+        all_artifacts = [_to_artifact(item, source_key, synced_at) for item in artifacts_raw]
+        all_connections = [_to_connection(item, source_key, synced_at) for item in connections_raw]
+        all_artifacts_by_id = {artifact.artifact_id: artifact for artifact in all_artifacts}
+        all_connections_by_id = {
+            connection.connection_id: connection for connection in all_connections
+        }
+
+        if self._task_scope_keywords:
+            tasks_raw = [
+                item
+                for item in tasks_raw
+                if _task_matches_scope(
+                    item,
+                    self._task_scope_keywords,
+                    all_artifacts_by_id,
+                    all_connections_by_id,
+                )
+            ]
+            if not tasks_raw:
+                raise RuntimeProviderError("No Talend TMC tasks matched the configured project scope")
+
+        selected_artifact_ids = {
+            artifact_id
+            for item in tasks_raw
+            if (artifact_id := _str_field(item, "artifactId", "artifact_id"))
+        }
+        selected_connection_ids = {
+            connection_id for item in tasks_raw for connection_id in _connection_ids(item)
+        }
+        selected_workspace_ids = {
+            workspace_id
+            for item in tasks_raw
+            if (workspace_id := _str_field(_dict_field(item, "workspace"), "id", "workspace_id"))
+        }
+        selected_engine_ids = {
+            engine_id
+            for item in tasks_raw
+            if (engine_id := _str_field(_dict_field(item, "runtime"), "id", "engineId", "engine_id"))
+        }
+
+        if self._task_scope_keywords:
+            artifacts = [item for item in all_artifacts if item.artifact_id in selected_artifact_ids]
+            connections = [item for item in all_connections if item.connection_id in selected_connection_ids]
+            workspaces = [item for item in all_workspaces if item.workspace_id in selected_workspace_ids]
+            engines = [item for item in all_engines if item.engine_id in selected_engine_ids]
+            selected_environment_ids = {
+                item.environment_id for item in workspaces + engines if item.environment_id is not None
+            }
+            environments = [
+                item for item in all_environments if item.environment_id in selected_environment_ids
+            ]
+        else:
+            environments = all_environments
+            workspaces = all_workspaces
+            engines = all_engines
+            artifacts = all_artifacts
+            connections = all_connections
+
         engines_by_id = {engine.engine_id: engine for engine in engines}
         workspaces_by_id = {workspace.workspace_id: workspace for workspace in workspaces}
-        artifacts = [_to_artifact(item, source_key, synced_at) for item in artifacts_raw]
         artifacts_by_id = {artifact.artifact_id: artifact for artifact in artifacts}
-        connections = [_to_connection(item, source_key, synced_at) for item in connections_raw]
         connections_by_id = {connection.connection_id: connection for connection in connections}
 
         jobs = [_to_job(item, source_key, synced_at, engines_by_id) for item in tasks_raw]
@@ -352,27 +491,55 @@ class TalendTmcRuntimeProvider:
             synced_at=synced_at,
         )
 
-        task_runs_raw: list[dict[str, Any]] = []
-        for job in jobs:
-            task_runs_raw.extend(
-                await self._get_all_pages(
-                    f"/processing/executables/tasks/{job.job_id}/executions",
-                    params={"lastDays": 7},
-                    max_items=_DEFAULT_FETCH_LIMIT,
-                )
-            )
+        run_fetch_semaphore = asyncio.Semaphore(_DETAIL_FETCH_CONCURRENCY)
 
+        async def fetch_execution_history(path: str) -> list[dict[str, Any]]:
+            collected: list[dict[str, Any]] = []
+            seen_execution_ids: set[str] = set()
+            for window_start, window_end in _execution_windows(synced_at, self._history_days):
+                remaining = _RUNS_PER_EXECUTABLE_LIMIT - len(collected)
+                if remaining <= 0:
+                    break
+                page = await self._get_all_pages(
+                    path,
+                    params={
+                        "from": int(window_start.timestamp() * 1000),
+                        "to": int(window_end.timestamp() * 1000),
+                    },
+                    max_items=remaining,
+                )
+                for item in page:
+                    execution_id = _str_field(item, "executionId", "execution_id", "id")
+                    if execution_id is not None and execution_id in seen_execution_ids:
+                        continue
+                    if execution_id is not None:
+                        seen_execution_ids.add(execution_id)
+                    collected.append(item)
+            return collected
+
+        async def fetch_task_runs(job: RuntimeJob) -> list[dict[str, Any]]:
+            async with run_fetch_semaphore:
+                return await fetch_execution_history(
+                    f"/processing/executables/tasks/{job.job_id}/executions"
+                )
+
+        task_run_pages = await asyncio.gather(*(fetch_task_runs(job) for job in jobs))
+        task_runs_raw = [item for page in task_run_pages for item in page]
+
+        if self._task_scope_keywords:
+            selected_job_ids = set(jobs_by_id)
+            plans_raw = [item for item in plans_raw if _plan_references_job(item, selected_job_ids)]
         plans = [_to_plan(item, source_key, synced_at, jobs_by_id, workspaces_by_id) for item in plans_raw]
         plans_by_id = {plan.plan_id: plan for plan in plans}
-        plan_runs_raw: list[dict[str, Any]] = []
-        for plan in plans:
-            plan_runs_raw.extend(
-                await self._get_all_pages(
-                    f"/processing/executables/plans/{plan.plan_id}/executions",
-                    params={"lastDays": 7},
-                    max_items=_DEFAULT_FETCH_LIMIT,
+
+        async def fetch_plan_runs(plan: RuntimePlan) -> list[dict[str, Any]]:
+            async with run_fetch_semaphore:
+                return await fetch_execution_history(
+                    f"/processing/executables/plans/{plan.plan_id}/executions"
                 )
-            )
+
+        plan_run_pages = await asyncio.gather(*(fetch_plan_runs(plan) for plan in plans))
+        plan_runs_raw = [item for page in plan_run_pages for item in page]
 
         job_runs = [_to_job_run(item, source_key, jobs_by_id, engines_by_id) for item in task_runs_raw]
         plan_runs = [_to_plan_run(item, source_key, plans_by_id, task_runs_raw) for item in plan_runs_raw]
@@ -388,17 +555,40 @@ class TalendTmcRuntimeProvider:
             for raw, run in zip(task_runs_raw, job_runs, strict=False)
             if run.state == RuntimeExecutionState.FAILED
         ]
-        log_events: list[RuntimeLogEvent] = []
-        component_metrics: list[RuntimeComponentMetric] = []
-        for run in job_runs:
+        runs_by_recency = sorted(job_runs, key=lambda item: item.started_at, reverse=True)
+        failed_runs = [
+            item for item in runs_by_recency if item.state == RuntimeExecutionState.FAILED
+        ][:_FAILED_LOG_RUN_LIMIT]
+        metric_runs = runs_by_recency[:_COMPONENT_METRIC_RUN_LIMIT]
+        detail_fetch_semaphore = asyncio.Semaphore(_DETAIL_FETCH_CONCURRENCY)
+
+        async def fetch_logs(run: RuntimeJobRun) -> list[RuntimeLogEvent]:
             try:
-                log_events.extend(await self.get_execution_logs(GetExecutionLogsInput(execution_id=run.run_id, limit=_LOG_CAPTURE_LIMIT)))
+                async with detail_fetch_semaphore:
+                    return await self.get_execution_logs(
+                        GetExecutionLogsInput(execution_id=run.run_id, limit=_LOG_CAPTURE_LIMIT)
+                    )
             except RuntimeProviderError:
                 logger.warning("TMC log fetch failed for execution %s", run.run_id)
+                return []
+
+        async def fetch_metrics(run: RuntimeJobRun) -> list[RuntimeComponentMetric]:
             try:
-                component_metrics.extend(await self.get_component_metrics(run.run_id))
+                async with detail_fetch_semaphore:
+                    return await self.get_component_metrics(run.run_id)
             except RuntimeProviderError:
                 logger.warning("TMC component metric fetch failed for execution %s", run.run_id)
+                return []
+
+        detail_results = await asyncio.gather(
+            *(fetch_logs(run) for run in failed_runs),
+            *(fetch_metrics(run) for run in metric_runs),
+        )
+        log_result_count = len(failed_runs)
+        log_events = [item for result in detail_results[:log_result_count] for item in result]
+        component_metrics = [
+            item for result in detail_results[log_result_count:] for item in result
+        ]
         return RuntimeSyncBatch(
             sources=[
                 RuntimeSource(
@@ -501,6 +691,84 @@ class TalendTmcRuntimeProvider:
         return items
 
 
+def _task_scope_keywords(credentials: Mapping[str, Any], project_id: str) -> tuple[str, ...]:
+    configured = str(credentials.get("task_name_filter") or "").strip()
+    if configured:
+        return tuple(dict.fromkeys(part.strip() for part in configured.split(",") if part.strip()))
+    project_key = re.sub(r"[^a-z0-9]+", "", project_id.casefold())
+    return _PROJECT_SCOPE_KEYWORDS.get(project_key, ())
+
+
+def _history_days(credentials: Mapping[str, Any]) -> int:
+    configured = credentials.get("history_days")
+    if configured is None or (isinstance(configured, str) and not configured.strip()):
+        return _DEFAULT_HISTORY_DAYS
+    value = _as_int(configured)
+    if value is None or not 1 <= value <= 90:
+        raise RuntimeProviderError("TMC run history must be a whole number from 1 to 90 days")
+    return value
+
+
+def _execution_windows(ending_at: datetime, history_days: int) -> list[tuple[datetime, datetime]]:
+    windows: list[tuple[datetime, datetime]] = []
+    window_end = ending_at
+    days_remaining = history_days
+    while days_remaining > 0:
+        window_days = min(_EXECUTION_WINDOW_DAYS, days_remaining)
+        window_start = window_end - timedelta(days=window_days)
+        windows.append((window_start, window_end))
+        window_end = window_start
+        days_remaining -= window_days
+    return windows
+
+
+def _task_matches_scope(
+    task: dict[str, Any],
+    keywords: tuple[str, ...],
+    artifacts_by_id: dict[str, RuntimeArtifact],
+    connections_by_id: dict[str, RuntimeConnection],
+) -> bool:
+    artifact_id = _str_field(task, "artifactId", "artifact_id")
+    artifact = artifacts_by_id.get(artifact_id or "")
+    workspace = _dict_field(task, "workspace")
+    connections = [
+        connections_by_id[connection_id]
+        for connection_id in _connection_ids(task)
+        if connection_id in connections_by_id
+    ]
+    candidates = (
+        _str_field(task, "name"),
+        _str_field(task, "description"),
+        _str_field(task, "artifactName"),
+        artifact.name if artifact is not None else None,
+        _str_field(workspace, "name", "workspace_name"),
+        *(connection.name for connection in connections),
+    )
+    normalized_candidates = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        camel_split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", candidate)
+        normalized_candidates.append(
+            f" {' '.join(re.findall(r'[a-z0-9]+', camel_split.casefold()))} "
+        )
+    for keyword in keywords:
+        normalized_keyword = " ".join(re.findall(r"[a-z0-9]+", keyword.casefold()))
+        if not normalized_keyword:
+            continue
+        if any(f" {normalized_keyword} " in candidate for candidate in normalized_candidates):
+            return True
+    return False
+
+
+def _plan_references_job(plan: dict[str, Any], selected_job_ids: set[str]) -> bool:
+    return any(
+        step.job_id in selected_job_ids
+        for step in _plan_steps(_dict_field(plan, "chart"), {})
+        if step.job_id is not None
+    )
+
+
 def _extract_items(data: Any) -> list[dict[str, Any]]:
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
@@ -570,6 +838,15 @@ def _required_str(item: dict[str, Any], *names: str) -> str:
 
 
 def _parse_dt(value: Any) -> datetime | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # Monitoring logs use Unix epoch milliseconds, while other payloads
+        # commonly use ISO-8601 strings. Accept seconds as well for defensive
+        # compatibility with older endpoints.
+        seconds = value / 1000 if abs(value) >= 100_000_000_000 else value
+        try:
+            return datetime.fromtimestamp(seconds, tz=UTC)
+        except (OSError, OverflowError, ValueError) as e:
+            raise RuntimeProviderError("Talend TMC payload has unparseable datetime") from e
     if not isinstance(value, str) or not value:
         return None
     try:

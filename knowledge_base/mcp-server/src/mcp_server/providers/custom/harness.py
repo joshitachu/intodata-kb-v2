@@ -46,6 +46,7 @@ from mcp_server.providers.custom.evidence_bundles import CATEGORY_PATTERNS, Evid
 from mcp_server.providers.custom.doc_slice_merge import (
     dedupe_document,
     duplicate_heading_errors,
+    merge_sectioned_doc_outputs,
     merge_sliced_doc_outputs,
 )
 from mcp_server.providers.custom.fabrication_validators import (
@@ -144,7 +145,13 @@ from mcp_server.providers.custom.evidence_tasks import (
 )
 from mcp_server.providers.custom.phase2_context import build_phase2_context_packet
 from mcp_server.providers.custom.phase3_context import compact_change_impact_matrix
-from mcp_server.providers.custom.phase3_slices import plan_phase3_slices
+from mcp_server.providers.custom.phase3_slices import (
+    Phase3PlanInputs,
+    Phase3TaskPlan,
+    plan_phase3_document,
+    plan_phase3_slices,
+)
+from mcp_server.providers.custom.unit_naming import resolve_unit_display_names
 from mcp_server.providers.custom.phase2_claims import (
     ClaimTaskSpec,
     Phase2ClaimBatch,
@@ -1296,6 +1303,65 @@ Fallback plan example:
             )
             return min(config.phase3_max_tokens, max(2_000, scaled))
         return config.phase3_max_tokens
+
+    def _doc_expected_output_tokens(self, doc_name: str, state: HarnessRunState) -> int:
+        """Expected OUTPUT size of one document (slicing-redesign driver).
+
+        The per-doc-type ceiling (`_doc_output_ceiling`) is a safety cap, not
+        an estimate: fixed-shape docs land around 7-16K deduplicated tokens
+        regardless of evidence volume (verified across the werkorder run),
+        while inventories and rule catalogs scale with rows-to-emit (unit
+        count). The planner writes a doc in ONE call when this estimate fits
+        `phase3_single_call_output_tokens`, and partitions the task by
+        section/unit-range only when it does not.
+        """
+        if doc_name in self._per_job_doc_units:
+            return max(1_200, config.docgen_unit_doc_output_tokens)
+        base = doc_name.split("__", 1)[0]
+        if base in {"00_AGENT_BRIEF", "09_EXECUTIVE_SUMMARY"}:
+            return max(2_000, config.docgen_brief_output_tokens)
+        if base == "02_COMPONENT_INVENTORY":
+            return max(
+                2_000,
+                config.docgen_inventory_output_tokens_base
+                + state.facts_manifest.unit_count
+                * config.docgen_inventory_output_tokens_per_unit,
+            )
+        if base == "04_BUSINESS_RULES_AND_TRANSFORMATIONS":
+            return max(
+                2_000,
+                config.docgen_rules_output_tokens_base
+                + state.facts_manifest.unit_count
+                * config.docgen_rules_output_tokens_per_unit,
+            )
+        return max(2_000, config.docgen_doc_expected_output_tokens)
+
+    def _phase3_plan_inputs(
+        self, state: HarnessRunState, doc_name: str
+    ) -> Phase3PlanInputs:
+        """Doc-level facts for the output-sized Phase 3 planner."""
+        required = (
+            (self._doc_section_requirements_extra or {}).get(doc_name)
+            or load_doc_catalog().section_requirements.get(doc_name.split("__", 1)[0], [])
+        )
+        unit_scoped: list[str] = []
+        if doc_name not in self._per_job_doc_units:
+            unit_scoped = load_doc_catalog().unit_scoped_sections_map.get(
+                doc_name.split("__", 1)[0], []
+            )
+        return Phase3PlanInputs(
+            doc_name=doc_name,
+            expected_output_tokens=self._doc_expected_output_tokens(doc_name, state),
+            single_call_output_tokens=min(
+                config.phase3_max_tokens,
+                max(2_000, config.phase3_single_call_output_tokens),
+            ),
+            required_sections=tuple(required),
+            unit_scoped_sections=tuple(unit_scoped),
+            units=tuple(
+                (unit.name, unit.group) for unit in state.facts_manifest.units
+            ),
+        )
 
     def _run_input_token_budget(self, state: HarnessRunState) -> int:
         if config.docgen_max_run_input_tokens <= 0:
@@ -3811,6 +3877,10 @@ Fallback plan example:
     ) -> None:
         self._apply_private_analysis_packs(ctx)
         scorecard = ctx.staging_dir / "_assessment" / "scorecard.md"
+        # Whole-partition deterministic facts shared by every doc writer (and
+        # every slice of a partitioned doc) so no two outputs can disagree on
+        # scanner-derived counts.
+        self._write_cross_cutting_facts(ctx, state)
         _doc_write_provider = self._provider_for_phase("doc_write")
 
         _calls_lock = asyncio.Lock()
@@ -4352,6 +4422,7 @@ Fallback plan example:
         calls_lock: asyncio.Lock | None = None,
         task_contract: AgentTaskContract | None = None,
         scoped_tools: ScopedEvidenceTools | None = None,
+        phase3_inputs: Phase3PlanInputs | None = None,
     ):
         """Run a Phase 2/3 model call with explicit bounded files and slice caching."""
 
@@ -4385,7 +4456,48 @@ Fallback plan example:
         estimated = estimate_input_tokens(estimate_prompt, context_files)
         hard = config.core_context_hard_ceiling_tokens
         soft = config.core_context_soft_target_tokens
-        if estimated <= hard:
+
+        # Slicing redesign: Phase 3 documents are planned by expected OUTPUT
+        # size. Most doc types fit ONE call (their evidence is bounded to the
+        # context ceiling by priority trimming); only genuinely large docs
+        # (unit-scaled inventories / rule catalogs) are partitioned by
+        # section/unit-range with a shared skeleton -- every slice writes ONLY
+        # its assigned sections and units, so there are no whole-document
+        # restarts to merge and no blind-sibling contradictions.
+        sectioned: Phase3TaskPlan | None = None
+        if phase3_inputs is not None and phase.startswith("phase3") and not use_tools:
+            doc_plan = plan_phase3_document(
+                ctx.staging_dir,
+                phase=phase,
+                target=target,
+                prompt=estimate_prompt,
+                context_files=context_files,
+                hard_tokens=hard,
+                soft_tokens=soft,
+                shared_file_max_bytes=config.phase3_shared_context_file_bytes,
+                inputs=phase3_inputs,
+            )
+            if doc_plan is not None and doc_plan.mode == "single":
+                context_files = doc_plan.slices[0].files
+                estimated = estimate_input_tokens(estimate_prompt, context_files)
+                if doc_plan.trimmed_bytes:
+                    self._record_context_trim_flag(
+                        ctx, phase, target, doc_plan.trimmed_bytes, doc_plan.trimmed_sources
+                    )
+                    await log_cb(
+                        ctx.project_id,
+                        f"[custom] single-call plan for {phase}/{target}: trimmed "
+                        f"{doc_plan.trimmed_bytes} evidence bytes from "
+                        f"{', '.join(doc_plan.trimmed_sources)} to fit the context ceiling",
+                        "warning",
+                    )
+            elif doc_plan is not None and doc_plan.mode == "sections":
+                sectioned = doc_plan
+                if doc_plan.trimmed_bytes:
+                    self._record_context_trim_flag(
+                        ctx, phase, target, doc_plan.trimmed_bytes, doc_plan.trimmed_sources
+                    )
+        if estimated <= hard and sectioned is None:
             result = await self._call_model_with_logging(
                 ctx,
                 state,
@@ -4420,24 +4532,30 @@ Fallback plan example:
         # unit's evidence is covered instead of being dropped at the slice
         # cap. The generic splitter remains the fallback for other phases and
         # for contexts the partitioner cannot help with.
-        partitioned = (
-            plan_phase3_slices(
-                ctx.staging_dir,
-                phase=phase,
-                target=target,
-                prompt=estimate_prompt,
-                context_files=context_files,
-                hard_tokens=hard,
-                soft_tokens=soft,
-                max_slices=max(1, config.docgen_allowed_slices_per_doc),
-                shared_file_max_bytes=config.phase3_shared_context_file_bytes,
+        slice_instructions: list[str | None] | None = None
+        if sectioned is not None:
+            partitioned = [list(s.files) for s in sectioned.slices]
+            slice_instructions = [s.instruction for s in sectioned.slices]
+            slices = partitioned
+        else:
+            partitioned = (
+                plan_phase3_slices(
+                    ctx.staging_dir,
+                    phase=phase,
+                    target=target,
+                    prompt=estimate_prompt,
+                    context_files=context_files,
+                    hard_tokens=hard,
+                    soft_tokens=soft,
+                    max_slices=max(1, config.docgen_allowed_slices_per_doc),
+                    shared_file_max_bytes=config.phase3_shared_context_file_bytes,
+                )
+                if phase.startswith("phase3")
+                else None
             )
-            if phase.startswith("phase3")
-            else None
-        )
-        slices = partitioned if partitioned is not None else self._split_context_pack(
-            ctx, phase, target, estimate_prompt, context_files, hard, soft
-        )
+            slices = partitioned if partitioned is not None else self._split_context_pack(
+                ctx, phase, target, estimate_prompt, context_files, hard, soft
+            )
         if phase in {"phase2", "phase2_group"} and len(slices) > config.agent_phase2_max_slices:
             raise RuntimeError(
                 f"Context slicing exceeded agent_phase2_max_slices={config.agent_phase2_max_slices} "
@@ -4503,19 +4621,24 @@ Fallback plan example:
             tail = transient_dir(ctx.staging_dir, "context_slices", phase) / (
                 f"{self._safe_name(slice_id)}__instruction.md"
             )
-            transient_write(
-                tail,
-                f"SLICE INSTRUCTION: You are processing slice {idx} of {len(slices)} "
-                f"for target {target}. Use only this slice's evidence. Preserve exact "
-                "names and mark any unresolved coverage as scanner-limited. The slices "
-                "are merged by section afterwards: write only sections this slice's "
-                "evidence supports, do not restate content that needs no evidence, and "
-                + (
-                    "include the title and Table of Contents."
-                    if idx == 1
-                    else "do NOT include a Table of Contents."
-                ),
-            )
+            if slice_instructions is not None and slice_instructions[idx - 1]:
+                # Section-partitioned plan: the tail carries this part's
+                # explicit section + unit assignment (write ONLY those).
+                instruction_text = slice_instructions[idx - 1]
+            else:
+                instruction_text = (
+                    f"SLICE INSTRUCTION: You are processing slice {idx} of {len(slices)} "
+                    f"for target {target}. Use only this slice's evidence. Preserve exact "
+                    "names and mark any unresolved coverage as scanner-limited. The slices "
+                    "are merged by section afterwards: write only sections this slice's "
+                    "evidence supports, do not restate content that needs no evidence, and "
+                    + (
+                        "include the title and Table of Contents."
+                        if idx == 1
+                        else "do NOT include a Table of Contents."
+                    )
+                )
+            transient_write(tail, instruction_text)
             slice_files = [*slice_files, tail]
             async with semaphore:
                 result = await self._call_model_with_logging(
@@ -4610,7 +4733,16 @@ Fallback plan example:
         # Phase 3 slice outputs are merged by section deterministically --
         # one title, one TOC, each H2 exactly once, duplicate blocks dropped.
         if phase.startswith("phase3") and len(outputs) > 1:
-            assembled = merge_sliced_doc_outputs(outputs)
+            if sectioned is not None:
+                # Output-partitioned plan (slicing redesign): each slice wrote
+                # its OWN distinct sections/units (no whole-document restarts),
+                # so assemble heading-once in catalog section order rather than
+                # deduping N restarts.
+                assembled = merge_sectioned_doc_outputs(
+                    outputs, preferred_order=sectioned.section_order
+                )
+            else:
+                assembled = merge_sliced_doc_outputs(outputs)
             if slice_cap_note is not None:
                 assembled = assembled.rstrip() + "\n\n" + slice_cap_note
         else:
@@ -5455,6 +5587,68 @@ Allowed docs:
                 f"| {unit.name} | {unit.group} | {unit.unit_type} | {unit.component_count} |"
             )
         return "\n".join(lines)
+
+    @staticmethod
+    def _cross_cutting_facts_markdown(state: HarnessRunState) -> str:
+        """Deterministic whole-partition facts shared by every Phase 3 writer.
+
+        Kills cross-slice contradictions at the source (verified failure: one
+        doc set claimed 0, 1 AND 2 tLogCatcher jobs because each evidence
+        slice was blind to the others): every doc call -- and every slice of a
+        partitioned doc -- receives the same scanner-derived component census,
+        group sizes, and key systems. Python renders manifest facts verbatim;
+        no prose.
+        """
+        facts = state.facts_manifest
+        units_containing: dict[str, int] = {}
+        for unit in facts.units:
+            for component_type in unit.component_types:
+                units_containing[component_type] = units_containing.get(component_type, 0) + 1
+        lines = [
+            "# Cross-Cutting Facts (deterministic, whole partition)",
+            "",
+            "Scanner-derived facts of record for this partition. Quote these",
+            "counts as-is; never recompute them. A claim that a component type",
+            "is absent from the partition is FALSE if it appears in this census.",
+            "",
+            "## Partition Scope",
+            "",
+            f"- Canonical inventory: {facts.unit_count} {facts.canonical_unit_label}",
+            "- Groups: "
+            + (", ".join(f"{g}={n}" for g, n in sorted(facts.groups.items())) or "none"),
+            "",
+            "## Component Census",
+            "",
+            "| Component Type | Total Occurrences | Units Containing It |",
+            "|----------------|-------------------|---------------------|",
+        ]
+        totals = dict(facts.component_counts)
+        for component_type, unit_hits in sorted(units_containing.items()):
+            totals.setdefault(component_type, 0)
+        for component_type in sorted(totals):
+            lines.append(
+                f"| {component_type} | {totals[component_type]} | "
+                f"{units_containing.get(component_type, 0)} |"
+            )
+        lines.extend([
+            "",
+            "## Key Systems (scanner landscape)",
+            "",
+        ])
+        lines.extend(f"- {system}" for system in facts.key_systems)
+        if not facts.key_systems:
+            lines.append("- None identified in scanner facts")
+        return "\n".join(lines) + "\n"
+
+    def _write_cross_cutting_facts(self, ctx: DocGenContext, state: HarnessRunState) -> Path | None:
+        """Write `_analysis/_cross_cutting_facts.md` once per run (never raises)."""
+        try:
+            path = ctx.staging_dir / "_analysis" / "_cross_cutting_facts.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(self._cross_cutting_facts_markdown(state), encoding="utf-8")
+            return path
+        except OSError:
+            return None
 
     @staticmethod
     def _load_investigation_artifact(investigation_dir: Path, chunk_name: str) -> InvestigationReport | None:
@@ -6314,6 +6508,12 @@ Allowed docs:
             unit_digest = ctx.staging_dir / "_analysis" / "_unit_docs_digest.md"
             if unit_digest.exists():
                 files.append(unit_digest)
+        # Whole-partition cross-cutting facts (deterministic census; small, so
+        # it stays SHARED across any slicing) -- every doc writer sees the same
+        # scanner-derived counts.
+        cross_cutting = ctx.staging_dir / "_analysis" / "_cross_cutting_facts.md"
+        if cross_cutting.exists():
+            files.append(cross_cutting)
         # Pack path: analysis was skipped — Phase 3 writes from evidence bundle +
         # investigation output (when investigation: run).
         # bounded/run analysis falls through to the enterprise context path below.

@@ -12,8 +12,9 @@ describe("BusinessTopologySchema", () => {
       systems: [{ ...claim, id: "system:1", kind: "software_system", aliases: ["System One"], purpose: "Dispatches work", owner: "Operations" }],
       integration_solutions: [{ ...claim, id: "solution:1", platform: "talend", role: "orchestration", artifact_ids: ["artifact:1"] }],
       business_objects: [{ ...claim, id: "object:1", aliases: ["Object One"] }],
-      data_streams: [{ ...claim, id: "stream:1", source_system_id: "system:1", destination_system_id: "system:2", business_object_ids: ["object:1"], business_summary: "Moves work orders.", integration_solution_ids: ["solution:1"], delivery_path_id: "path:1", control_ids: ["control:1"], risk_ids: ["risk:1"], unknown_ids: ["unknown:1"], runtime_observation_ids: ["runtime:1"], conflict_ids: ["conflict:1"], artifact_ids: ["artifact:1"] }],
-      delivery_paths: [{ ...claim, id: "path:1", stream_id: "stream:1", segments: [{ ...claim, id: "segment:1", sequence: 1, source_ref: "system:1", destination_ref: "system:2", mechanism: "rest", mode: "direct" }] }],
+      data_streams: [{ ...claim, id: "stream:1", source_system_id: "system:1", destination_system_id: "system:2", business_object_ids: ["object:1"], business_summary: "Moves work orders.", integration_solution_ids: ["solution:1"], protocols: ["REST", "JMS"], requiredness: "not_established", delivery_path_id: "path:1", control_ids: ["control:1"], risk_ids: ["risk:1"], unknown_ids: ["unknown:1"], runtime_observation_ids: ["runtime:1"], conflict_ids: ["conflict:1"], artifact_ids: ["artifact:1"] }],
+      delivery_paths: [{ ...claim, id: "path:1", stream_id: "stream:1", segments: [{ ...claim, id: "segment:1", sequence: 1, source_ref: "system:1", destination_ref: "system:2", mechanism: "rest", protocol: "REST", resource: "/workorders", component: "restClient", artifact_ids: ["artifact:1"], mode: "direct" }] }],
+      transformations: [{ ...claim, id: "transformation:1", stream_ids: ["stream:1"], integration_solution_ids: ["solution:1"], artifact_ids: ["artifact:1"], mappings: [{ source: "STATUS=READY", target: "Status=In Process", mapping_type: "value" }] }],
       controls: [{ ...claim, id: "control:1", stream_ids: ["stream:1"], control_type: "validation" }],
       risks: [{ ...claim, id: "risk:1", stream_ids: ["stream:1"], severity: "high" }],
       unknowns: [{ ...claim, id: "unknown:1", stream_ids: ["stream:1"], question: "Who owns this stream?" }],
@@ -25,6 +26,9 @@ describe("BusinessTopologySchema", () => {
       coverage: { total_artifacts: 5, cited_artifacts: 4, total_evidence: 8, cited_evidence: 7, coverage_ratio: 0.875, technical_relationships: 1, grounded_technical_relationships: 1, notes: ["Partial route coverage"] },
     });
     expect(topology.data_streams[0].destination_system_id).toBe("system:2");
+    expect(topology.data_streams[0].protocols).toEqual(["REST", "JMS"]);
+    expect(topology.delivery_paths[0].segments[0].resource).toBe("/workorders");
+    expect(topology.transformations[0].mappings[0].mapping_type).toBe("value");
     expect(topology.unknowns[0].question).toContain("owns");
   });
 });

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -552,7 +552,9 @@ class AssignProjectRequest(BaseModel):
 
 
 class CreateProjectRequest(BaseModel):
-    project_id: str = Field(..., min_length=1, max_length=255)
+    project_id: str = Field(
+        ..., min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$"
+    )
     display_name: str | None = Field(None, max_length=255)
 
 
@@ -590,6 +592,10 @@ async def create_project(
     Ownership is recorded as an ``is_owner`` ProjectAssignment for the creator,
     which is what scopes an admin's visibility/management to their own projects.
     A project can have exactly one owner — a second claim is rejected.
+
+    Creating a project establishes both its shared project-registry record and its
+    owner assignment. This makes a new project immediately available to document
+    upload and documentation views, even before it has generated documentation.
 
     Non-superadmins may only claim GENUINELY-NEW projects. Projects that already
     exist (created via the scanner/dashboard, which leaves documents but no owner
@@ -631,6 +637,32 @@ async def create_project(
                 status_code=409,
                 detail="Project already exists — ask a superadmin to grant access",
             )
+
+        existing_project = await db.execute(
+            text("SELECT 1 FROM projects WHERE id = :project_id LIMIT 1"),
+            {"project_id": body.project_id},
+        )
+        if existing_project.scalar_one_or_none() is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Project already exists — ask a superadmin to grant access",
+            )
+
+    # The MCP/documentation service and RAG backend share this registry. A manual
+    # project intentionally has no source path yet; it is still a valid document
+    # container, and source onboarding can configure it later.
+    await db.execute(
+        text("""
+            INSERT INTO projects (id, display_name, local_path, platform, source_type, status)
+            VALUES (:project_id, :display_name, :local_path, 'manual', 'manual', 'registered')
+            ON CONFLICT (id) DO NOTHING
+        """),
+        {
+            "project_id": body.project_id,
+            "display_name": body.display_name or body.project_id,
+            "local_path": "/data/manual-projects/unconfigured",
+        },
+    )
 
     assignment = ProjectAssignment(
         user_id=creator.id,

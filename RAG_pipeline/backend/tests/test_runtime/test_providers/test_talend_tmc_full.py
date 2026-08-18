@@ -15,6 +15,18 @@ def test_tmc_provider_contract_and_schema():
     assert provider.credential_schema() == [
         {"name": "api_token", "type": "secret", "label": "API token", "required": True},
         {"name": "base_url", "type": "url", "label": "Base URL", "required": True},
+        {
+            "name": "task_name_filter",
+            "type": "text",
+            "label": "Task/artifact filters (comma-separated)",
+            "required": False,
+        },
+        {
+            "name": "history_days",
+            "type": "text",
+            "label": "Run history in days (1-90)",
+            "required": False,
+        },
     ]
 
 
@@ -41,6 +53,18 @@ async def test_tmc_validate_credentials_unauthorized_is_sanitized():
     assert ok is False
     assert error == "401 Unauthorized"
     assert "tmc-token" not in error
+
+
+async def test_tmc_validate_credentials_non_ascii_token_is_reported_cleanly():
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"items": []}))
+    provider = TalendTmcRuntimeProvider(transport=transport)
+
+    ok, error = await provider.validate_credentials(
+        {"api_token": "tmc-toРken", "base_url": "https://tmc.example.com"}
+    )
+
+    assert ok is False
+    assert error == "Credentials contain a character that could not be sent in an HTTP header"
 
 
 async def test_tmc_validate_credentials_transport_error_is_sanitized():

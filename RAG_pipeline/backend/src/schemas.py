@@ -42,6 +42,7 @@ class Source(BaseModel):
     visibility: str | None = None
     run_id: int | None = None
     project_id: str | None = None
+    knowledge_revision_id: str | None = None
 
 
 class DocumentSource(BaseModel):
@@ -62,6 +63,7 @@ class DocumentSource(BaseModel):
     visibility: str | None = None
     run_id: int | None = None
     project_id: str | None = None
+    knowledge_revision_id: str | None = None
 
 
 class QueryResponse(BaseModel):
@@ -133,6 +135,40 @@ class MarkdownIngestRequest(BaseModel):
         description="How the assistant should use this document",
     )
     metadata: dict = Field(default_factory=dict)
+
+
+class KnowledgeRevisionPrepareRequest(BaseModel):
+    """Authenticated receipt for an inactive revision already staged in RAG."""
+
+    project_id: str = Field(..., min_length=1, max_length=255)
+    knowledge_revision_id: str = Field(..., min_length=1, max_length=255)
+    base_knowledge_revision_id: str | None = Field(default=None, max_length=255)
+    membership_hashes: dict[str, str] = Field(default_factory=dict)
+    deleted_logical_ids: list[str] = Field(default_factory=list)
+    aliases: dict[str, str] = Field(default_factory=dict)
+
+
+class KnowledgeRevisionReceipt(BaseModel):
+    project_id: str
+    knowledge_revision_id: str
+    state: str
+    base_knowledge_revision_id: str | None = None
+    previous_knowledge_revision_id: str | None = None
+
+
+class KnowledgeRevisionRollbackRequest(BaseModel):
+    expected_active_revision_id: str = Field(..., min_length=1, max_length=255)
+
+
+class KnowledgeRevisionDetailResponse(KnowledgeRevisionReceipt):
+    membership_hashes: dict[str, str] = Field(default_factory=dict)
+    deleted_logical_ids: list[str] = Field(default_factory=list)
+    aliases: dict[str, str] = Field(default_factory=dict)
+
+
+class ActiveKnowledgeRevisionResponse(BaseModel):
+    project_id: str
+    knowledge_revision_id: str | None = None
 
 
 class EntityAliasRecord(BaseModel):

@@ -35,6 +35,12 @@ class DocCatalogEntry(BaseModel):
     # ("{name}__{group}__{unit}"). Per-unit docs are written first and the
     # catalog/summary docs synthesize from the finished unit docs.
     per_unit: bool = False
+    # Sections whose content scales with the unit count (inventory rows,
+    # rule catalog entries). Drives the output-sized Phase 3 planner: when a
+    # doc's expected output exceeds one call, the task is partitioned by
+    # unit-range along these sections; docs without unit-scoped sections are
+    # always written in a single call.
+    unit_scoped_sections: list[str] = Field(default_factory=list)
 
 
 class DocCatalog(BaseModel):
@@ -62,6 +68,10 @@ class DocCatalog(BaseModel):
     @cached_property
     def section_requirements(self) -> dict[str, list[str]]:
         return {entry.name: entry.required_sections for entry in self.docs}
+
+    @cached_property
+    def unit_scoped_sections_map(self) -> dict[str, list[str]]:
+        return {entry.name: entry.unit_scoped_sections for entry in self.docs}
 
     @cached_property
     def doc_section_bundle_map(self) -> dict[str, set[str]]:

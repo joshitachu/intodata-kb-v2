@@ -31,6 +31,13 @@ def _scoped_filename(filename: str, project_id: str | None) -> str:
     return filename
 
 
+def _revision_storage_filename(logical_filename: str, knowledge_revision_id: str | None) -> str:
+    """Keep revisions separate in SQL while retaining logical RAG citations."""
+    if not knowledge_revision_id:
+        return logical_filename
+    return f"__knowledge_revisions__/{knowledge_revision_id}/{logical_filename}"
+
+
 def _build_chunk_metadatas(
     chunks: list[str] | list[MarkdownChunk],
     request_metadata: dict,
@@ -61,6 +68,12 @@ def _build_chunk_metadatas(
             "group": request_metadata.get("group"),
             "artifact_path": request_metadata.get("artifact_path"),
             "run_id": request_metadata.get("run_id"),
+            "artifact_id": request_metadata.get("artifact_id"),
+            "content_sha256": request_metadata.get("content_sha256"),
+            # A prepared candidate is stored under a new revision identifier.
+            # Retrieval only makes it visible after the activation authority
+            # supplies the matching active revision filter.
+            "knowledge_revision_id": request_metadata.get("knowledge_revision_id"),
         }.items()
         if v is not None
     }
@@ -124,7 +137,10 @@ async def ingest_document(
 
     Returns the created Document and IngestionJob records.
     """
-    filename = _scoped_filename(filename, project_id)
+    logical_filename = _scoped_filename(filename, project_id)
+    filename = _revision_storage_filename(
+        logical_filename, (metadata or {}).get("knowledge_revision_id")
+    )
     ext = Path(filename).suffix.lower().lstrip(".")
     request_metadata = dict(metadata or {})
     if document_role is not None:
@@ -207,6 +223,7 @@ async def ingest_document(
             allowed_groups=allowed_groups,
             sparse_embeddings=sparse_embeddings,
             chunk_metadatas=chunk_metadatas,
+            payload_filename=logical_filename,
         )
 
         # 7. Update records
@@ -241,8 +258,11 @@ async def ingest_text(
     Used by the MCP server's /ingest/md endpoint to push generated docs into RAG.
     Idempotent: replaces existing document with same filename.
     """
-    filename = _scoped_filename(filename, project_id)
+    logical_filename = _scoped_filename(filename, project_id)
     request_metadata = dict(metadata)
+    filename = _revision_storage_filename(
+        logical_filename, request_metadata.get("knowledge_revision_id")
+    )
     if document_role is not None:
         request_metadata["document_role"] = document_role
     normalized_role = normalize_document_role(request_metadata.get("document_role"))
@@ -307,6 +327,7 @@ async def ingest_text(
             allowed_groups=allowed_groups,
             sparse_embeddings=sparse_embeddings,
             chunk_metadatas=chunk_metadatas,
+            payload_filename=logical_filename,
         )
 
         # 6. Update records

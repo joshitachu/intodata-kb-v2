@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,96 @@ SHARED_PARTITION = "__shared__"
 
 # Partition name used when the scan is not composite (single sub-project).
 WHOLE_PROJECT_PARTITION = "__all__"
+
+
+# --------------------------------------------------------------------------- #
+# Key-system denoising
+#
+# Per-unit ``key_systems`` are harvested from component params whose *name*
+# hints at a system (url/host/endpoint/server/database) plus scanner manifest
+# externals. On real Talend exports the harvested *values* include junk that
+# is not a system identity (verified on the werkorder run's
+# ``topology/cross_project_index.json``): literal ``true``/``false``, empty
+# quoted strings, ``localhost``, bare numbers (ports), Talend component
+# instance names (``cDirect_1``, ``cSEDA_2``), raw Java/tMap expressions
+# (``((String) globalMap.get("objectUrl")) + ...``), ``context.*`` variable
+# references, and quoted-literal wrappers around otherwise meaningful values
+# (``"[SERVER_IP]"``). These helpers normalize and filter deterministically at
+# the shared extraction seam (``validators._systems_for`` and the scoped
+# manifest recompute below) so every consumer -- facts manifest, cross-project
+# index/topology markdown, business-topology evidence, landscape rendering --
+# sees only meaningful system identities.
+# --------------------------------------------------------------------------- #
+
+# Talend component *instance* names: c-prefixed Camel components (cDirect_1,
+# cJMS_3) and t-prefixed DI components (tMSSqlOutput_2). These are code
+# artifacts, never external system identities.
+_COMPONENT_INSTANCE_RE = re.compile(r"^[ct][A-Z]\w*_\d+$")
+
+# Bare numeric values (ports, counters), optionally dotted (e.g. "1.5").
+_BARE_NUMBER_RE = re.compile(r"^\d+(?:\.\d+)*$")
+
+# Literal values that carry no system identity, compared lowercase.
+_MEANINGLESS_LITERALS = {"true", "false", "null", "none", "localhost", "127.0.0.1", "::1"}
+
+# Characters that only appear in code/expressions, never in host, DB, queue,
+# or redaction-placeholder names. Quotes remaining AFTER normalization signal
+# an embedded string literal inside an expression.
+_CODE_MARKER_CHARS = ("(", ")", "+", ";", "\n", "\r", "\t", '"', "'")
+
+# System keys longer than this are code fragments or path dumps, not names.
+_MAX_SYSTEM_KEY_LEN = 80
+
+
+def normalize_system_key(value: str) -> str:
+    """Strip quoted-literal wrappers from a harvested key-system value.
+
+    Talend serializes param values as Java string literals, so meaningful
+    identities often arrive wrapped in quotes (``"[SERVER_IP]"`` -> the
+    redaction placeholder ``[SERVER_IP]``, which must be KEPT). Matched
+    surrounding quote pairs are stripped repeatedly; a stray unbalanced
+    leading/trailing quote (truncated literals like ``"[URL_REDACTED]``) is
+    stripped as well. Whitespace is trimmed at every step.
+    """
+    text = str(value or "").strip()
+    while len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
+        text = text[1:-1].strip()
+    return text.strip("'\"").strip()
+
+
+def is_meaningful_system_key(value: str) -> bool:
+    """True when a harvested ``key_systems`` value names an actual system.
+
+    Deterministic denoise filter (see the section comment above for the junk
+    categories verified on the werkorder run). Legitimate host names, DB and
+    queue names, endpoint paths, and redaction placeholders
+    (``[SERVER_IP]``, ``[REDACTED-*]``) all pass.
+    """
+    text = normalize_system_key(value)
+    if not text:
+        return False
+    if text.lower() in _MEANINGLESS_LITERALS:
+        return False
+    if _BARE_NUMBER_RE.match(text):
+        return False
+    if len(text) > _MAX_SYSTEM_KEY_LEN:
+        return False
+    if _COMPONENT_INSTANCE_RE.match(text):
+        return False
+    if text.startswith("context."):
+        return False
+    if any(marker in text for marker in _CODE_MARKER_CHARS):
+        return False
+    return True
+
+
+def clean_system_keys(values: Iterable[str]) -> list[str]:
+    """Normalize, filter, dedupe, and sort a collection of key-system values."""
+    return sorted({
+        normalize_system_key(value)
+        for value in values
+        if is_meaningful_system_key(value)
+    })
 
 
 def subproject_key(source_root: str) -> str | None:
@@ -411,7 +502,10 @@ def filter_manifest(facts: FactsManifest, partition: Partition) -> FactsManifest
 
     Membership is by ``source_root`` (the partition's set of source roots), so no
     unit is dropped, duplicated, or split. ``groups``, ``component_counts`` and
-    ``key_systems`` are recomputed from the scoped unit set. ``scan_warnings`` and
+    ``key_systems`` are recomputed from the scoped unit set; the recomputed
+    ``key_systems`` pass through :func:`clean_system_keys` so the cross-project
+    index / topology markdown never surface junk keys even when the input
+    manifest predates unit-level denoising. ``scan_warnings`` and
     ``raw_source_audit`` are project-level context and are carried through
     unchanged (per-partition raw-source auditing is a documented follow-up).
     """
@@ -449,7 +543,7 @@ def filter_manifest(facts: FactsManifest, partition: Partition) -> FactsManifest
         groups=dict(sorted(groups.items())),
         units=sorted(units, key=lambda u: (u.group, u.name)),
         component_counts=dict(sorted(component_counts.items())),
-        key_systems=sorted(key_systems),
+        key_systems=clean_system_keys(key_systems),
         scan_warnings=list(facts.scan_warnings),
         raw_source_audit=dict(facts.raw_source_audit),
     )

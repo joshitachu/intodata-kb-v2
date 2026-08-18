@@ -9,6 +9,7 @@ from src.db.models.user import (
     role_permissions,
 )
 from src.db.models.document import Document
+from src.db.models.knowledge_revision import ActiveRagKnowledgeRevision, RagKnowledgeRevision
 from src.db.models.query_log import QueryLog
 from src.db.models.ingestion_job import IngestionJob
 from src.db.models.conversation import Conversation, ConversationMessage
@@ -99,6 +100,8 @@ __all__ = [
     "user_roles",
     "role_permissions",
     "Document",
+    "RagKnowledgeRevision",
+    "ActiveRagKnowledgeRevision",
     "QueryLog",
     "IngestionJob",
     "Conversation",

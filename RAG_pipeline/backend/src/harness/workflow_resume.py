@@ -256,6 +256,13 @@ async def resume_project_onboarding_workflow(
         selected_pack_ids=selected_pack_ids,
         plugin_pack_id=plugin_pack_id,
         thread_id=run.runtime_thread_id,
+        proposal_id=(str(arguments["proposal_id"]) if arguments.get("proposal_id") else None),
+        patch_plan_hash=(str(arguments["patch_plan_hash"]) if arguments.get("patch_plan_hash") else None),
+        base_knowledge_revision_id=(str(arguments["base_knowledge_revision_id"]) if arguments.get("base_knowledge_revision_id") else None),
+        compact_diff=(str(arguments["compact_diff"]) if arguments.get("compact_diff") else None),
+        changed_scope=[str(item) for item in arguments.get("changed_scope", [])],
+        assertion_kind=str(arguments.get("assertion_kind") or "source_backed"),
+        expires_at=(str(arguments["expires_at"]) if arguments.get("expires_at") else None),
     )
     fields = set(required_fields or [])
     response: dict[str, Any] = {"platform": platform}

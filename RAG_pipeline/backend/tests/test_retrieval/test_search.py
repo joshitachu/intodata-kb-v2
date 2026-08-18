@@ -381,6 +381,45 @@ class TestSourceFromPayload:
 
 
 class TestLayerFilter:
+    def test_durable_authority_excludes_unactivated_revision_tagged_chunks(self) -> None:
+        """An empty active map still permits legacy data, never candidates."""
+        from qdrant_client.models import Filter as QFilter, IsEmptyCondition
+
+        f = _build_search_filter([], source_layers=[], knowledge_revisions={})
+
+        assert f is not None
+        authority_filter = next(
+            condition
+            for condition in f.must
+            if isinstance(condition, QFilter) and condition.should
+        )
+        legacy = authority_filter.should[0]
+        assert isinstance(legacy, QFilter)
+        assert any(isinstance(item, IsEmptyCondition) for item in legacy.must)
+
+    def test_revision_filter_pairs_each_project_with_its_active_revision(self) -> None:
+        """A candidate revision cannot be returned before it becomes active."""
+        from qdrant_client.models import Filter as QFilter
+
+        f = _build_search_filter(
+            [],
+            source_layers=[],
+            knowledge_revisions={"project-a": "R7", "project-b": "R3"},
+        )
+
+        assert f is not None
+        revision_scope = next(
+            condition
+            for condition in f.must
+            if isinstance(condition, QFilter) and condition.should
+        )
+        compiled = str(revision_scope)
+        assert "knowledge_revision_id" in compiled
+        assert "project-a" in compiled
+        assert "R7" in compiled
+        assert "project-b" in compiled
+        assert "R3" in compiled
+
     def test_default_filter_includes_legacy_is_empty(self) -> None:
         """source_layers=None → default filter includes IsEmptyCondition."""
         from qdrant_client.models import IsEmptyCondition

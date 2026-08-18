@@ -51,7 +51,6 @@ from src.harness.models import (
 )
 from src.harness.packs.draft_service import PackDraftService
 from src.harness.providers.mcp_docs import (
-    McpDocumentVersion,
     McpDocumentationGenerationResult,
     McpDocumentationGenerationStatus,
 )
@@ -219,11 +218,20 @@ async def test_agent_document_update_creates_approval_without_writing(db_session
     writes = 0
 
     class DocsProvider:
-        async def get_document_version(self, **kwargs):
-            return McpDocumentVersion(
-                project_id=kwargs["project_id"],
-                filename=kwargs["filename"],
-                sha256="sha256:authoritative-base",
+        async def preview_chat_patch(self, **kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                proposal_id="ldp-preview",
+                patch_plan_hash="a" * 64,
+                base_document_sha256="sha256:authoritative-base",
+                base_knowledge_revision_id="kr-active",
+                compact_diff="- old\n+ new",
+                changed_scope=["canonical:security.md#Dependency risks"],
+                evidence_refs=["evidence:scan:17"],
+                assertion_kind=kwargs["assertion_kind"],
+                expires_at="2026-08-11T01:00:00+00:00",
+                requires_owner_approval=True,
             )
 
         async def update_doc_from_evidence(self, **kwargs):
@@ -271,7 +279,7 @@ async def test_agent_document_update_creates_approval_without_writing(db_session
         ),
     )
 
-    assert observation.status == "triggered"
+    assert observation.status == "triggered", observation.model_dump(mode="json")
     assert writes == 0
     assert observation.task_ref is not None
     assert observation.task_ref.kind is ConversationTaskKind.DOCUMENTATION_WORKFLOW
@@ -285,6 +293,9 @@ async def test_agent_document_update_creates_approval_without_writing(db_session
     arguments = interrupts[0].scope_snapshot["execution_arguments"]
     assert arguments["expected_base_sha"] == "sha256:authoritative-base"
     assert arguments["target_doc"] == "security.md"
+    assert arguments["proposal_id"] == "ldp-preview"
+    assert arguments["patch_plan_hash"] == "a" * 64
+    assert arguments["compact_diff"] == "- old\n+ new"
     assert interrupts[0].argument_hash
     state = await state_repo.finalize_claim(
         claim_id=claim.id,

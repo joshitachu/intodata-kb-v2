@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime
 
-from sqlalchemy import DateTime, Index, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, DateTime, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db.base import Base
@@ -34,7 +34,7 @@ class RuntimeEnrichedEventRow(Base):
     exception_class: Mapped[str | None] = mapped_column(String(255), nullable=True)
     retry_attempt: Mapped[int | None] = mapped_column(Integer, nullable=True)
     retry_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     timeout_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     endpoint: Mapped[str | None] = mapped_column(Text, nullable=True)
     host: Mapped[str | None] = mapped_column(String(255), nullable=True)

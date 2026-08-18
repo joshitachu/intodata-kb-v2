@@ -27,9 +27,16 @@ class DocumentationUpdateRequest(BaseModel):
     expected_base_sha: str
     section: str | None = None
     thread_id: str | None = None
+    proposal_id: str | None = None
+    patch_plan_hash: str | None = None
+    base_knowledge_revision_id: str | None = None
+    compact_diff: str | None = None
+    changed_scope: list[str] = Field(default_factory=list)
+    assertion_kind: str = "source_backed"
+    expires_at: str | None = None
 
     def executor_arguments(self) -> dict[str, Any]:
-        return {
+        arguments = {
             "project_id": self.project_id,
             "target_doc": self.target_doc,
             "evidence_refs": self.evidence_refs,
@@ -38,6 +45,17 @@ class DocumentationUpdateRequest(BaseModel):
             "section": self.section,
             "workflow_run_id": str(self.workflow_run_id),
         }
+        if self.proposal_id and self.patch_plan_hash:
+            arguments.update({
+                "proposal_id": self.proposal_id,
+                "patch_plan_hash": self.patch_plan_hash,
+                "base_knowledge_revision_id": self.base_knowledge_revision_id,
+                "compact_diff": self.compact_diff,
+                "changed_scope": self.changed_scope,
+                "assertion_kind": self.assertion_kind,
+                "expires_at": self.expires_at,
+            })
+        return arguments
 
 
 class DocumentationUpdateResult(BaseModel):
@@ -107,6 +125,12 @@ class DocumentationUpdateWorkflow:
                 "section": arguments.get("section"),
                 "evidence_refs": list(arguments.get("evidence_refs") or []),
                 "expected_base_sha": arguments["expected_base_sha"],
+                "base_knowledge_revision_id": arguments.get("base_knowledge_revision_id"),
+                "patch_plan_hash": arguments.get("patch_plan_hash"),
+                "compact_diff": arguments.get("compact_diff"),
+                "changed_scope": list(arguments.get("changed_scope") or []),
+                "assertion_kind": arguments.get("assertion_kind", "source_backed"),
+                "expires_at": arguments.get("expires_at"),
             }
             return _update(state, "resolve", "documentation_update.scope_resolved", "Resolved target document and base version", proposal=proposal)
 

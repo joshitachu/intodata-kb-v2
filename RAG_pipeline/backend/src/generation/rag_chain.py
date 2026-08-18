@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Mapping
 
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -80,6 +81,7 @@ async def _execute_search(
     document_ids: list[int] | None,
     project_ids: list[str] | None,
     document_roles: list[str] | None = None,
+    knowledge_revisions: Mapping[str, str] | None = None,
 ) -> list[Source]:
     """Run the operator-configured document search implementation."""
     if settings.query_expansion_enabled:
@@ -88,6 +90,7 @@ async def _execute_search(
             top_k=top_k, threshold=threshold,
             document_ids=document_ids, project_ids=project_ids,
             document_roles=document_roles,
+            knowledge_revisions=knowledge_revisions,
         )
     if settings.reranker_enabled:
         return await search_and_rerank(
@@ -95,6 +98,7 @@ async def _execute_search(
             top_k=top_k, threshold=threshold,
             document_ids=document_ids, project_ids=project_ids,
             document_roles=document_roles,
+            knowledge_revisions=knowledge_revisions,
         )
     if settings.hybrid_search_enabled:
         return await search_similar_hybrid(
@@ -102,12 +106,14 @@ async def _execute_search(
             top_k=top_k, threshold=threshold,
             document_ids=document_ids, project_ids=project_ids,
             document_roles=document_roles,
+            knowledge_revisions=knowledge_revisions,
         )
     return await search_similar(
         client=qdrant, query=query, user_groups=user_groups,
         top_k=top_k, threshold=threshold,
         document_ids=document_ids, project_ids=project_ids,
         document_roles=document_roles,
+        knowledge_revisions=knowledge_revisions,
     )
 
 
@@ -117,6 +123,7 @@ async def _execute_role_aware_search(
     user_groups: list[str],
     qdrant: AsyncQdrantClient,
     project_ids: list[str] | None,
+    knowledge_revisions: Mapping[str, str] | None = None,
 ) -> tuple[list[Source], list[Source]]:
     """Run source-first retrieval plus bounded auxiliary/template context.
 
@@ -133,6 +140,7 @@ async def _execute_role_aware_search(
             request.document_ids,
             project_ids,
             document_roles=["source"],
+            knowledge_revisions=knowledge_revisions,
         ),
         _execute_search(
             query,
@@ -143,6 +151,7 @@ async def _execute_role_aware_search(
             request.document_ids,
             project_ids,
             document_roles=list(AUXILIARY_DOCUMENT_ROLES),
+            knowledge_revisions=knowledge_revisions,
         ),
     )
     return source_sources, auxiliary_sources
@@ -217,6 +226,7 @@ async def run_rag_query(
     qdrant: AsyncQdrantClient,
     db: AsyncSession,
     project_ids: list[str] | None = None,
+    knowledge_revisions: Mapping[str, str] | None = None,
 ) -> QueryResponse:
     """Run the explicit RBAC-scoped document retrieval/generation API."""
     start = time.perf_counter()
@@ -234,7 +244,7 @@ async def run_rag_query(
             logger.warning("Failed to fetch system knowledge: %s", e)
 
     sources, auxiliary_sources = await _execute_role_aware_search(
-        request.query, request, user_groups, qdrant, project_ids,
+        request.query, request, user_groups, qdrant, project_ids, knowledge_revisions,
     )
 
     if sources or auxiliary_sources:

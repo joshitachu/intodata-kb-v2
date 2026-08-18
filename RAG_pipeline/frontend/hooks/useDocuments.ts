@@ -70,6 +70,8 @@ export function useUploadDocument() {
     mutationFn: uploadDocument,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["documents"] });
+      queryClient.invalidateQueries({ queryKey: ["docs-projects"] });
+      queryClient.invalidateQueries({ queryKey: ["user-projects"] });
     },
   });
 }

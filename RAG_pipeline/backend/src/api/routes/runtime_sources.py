@@ -14,6 +14,7 @@ from src.runtime.models import (
     RuntimeSourceRotateCredentials,
     RuntimeSourceUpdate,
 )
+from src.runtime.providers.base import find_non_ascii_credential_field
 from src.runtime.source_registry import get_source_provider
 from src.runtime.store import ProjectScope, RuntimeDuplicateSourceError, RuntimeRecordNotFoundError, RuntimeStoreRepository
 from src.runtime.sync import run_runtime_source_sync_cycle
@@ -84,6 +85,12 @@ async def create_runtime_source(
     provider = get_source_provider(body.provider_key)
     if provider is None:
         raise HTTPException(status_code=400, detail="Unknown runtime source type")
+    bad_field = find_non_ascii_credential_field(provider.credential_schema(), body.credentials)
+    if bad_field is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Field '{bad_field}' contains a non-ASCII character. Re-type it instead of pasting from a rich-text source.",
+        )
     ok, error = await provider.validate_credentials(body.credentials)
     if not ok:
         raise HTTPException(status_code=400, detail=_sanitize_error(error) or "Connection validation failed")
@@ -181,6 +188,12 @@ async def rotate_runtime_source_credentials(
     provider = get_source_provider(source.source_type)
     if provider is None:
         raise HTTPException(status_code=400, detail="Unknown runtime source type")
+    bad_field = find_non_ascii_credential_field(provider.credential_schema(), body.credentials)
+    if bad_field is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Field '{bad_field}' contains a non-ASCII character. Re-type it instead of pasting from a rich-text source.",
+        )
     ok, error = await provider.validate_credentials(body.credentials)
     if not ok:
         raise HTTPException(status_code=400, detail=_sanitize_error(error) or "Connection validation failed")

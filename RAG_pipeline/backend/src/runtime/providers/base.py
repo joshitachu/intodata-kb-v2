@@ -50,3 +50,30 @@ class RuntimeSourceProvider(Protocol):
 
     async def sync(self, *, credentials: Mapping[str, Any], project_id: str) -> RuntimeSyncBatch:
         """Fetch a source batch for the scheduler/write-port path."""
+
+
+def find_non_ascii_credential_field(
+    schema: list[CredentialField], credentials: Mapping[str, Any]
+) -> str | None:
+    """Return the label of the first declared credential field holding a non-ASCII value, else None.
+
+    Connector adapters commonly interpolate credential values straight into HTTP
+    headers or URLs (see ``httpx.Headers``, which defaults to ascii encoding).
+    Values corrupted by rich-text paste (e.g. a Cyrillic look-alike character
+    swapped for a Latin one) crash deep inside the HTTP client with a raw
+    ``UnicodeEncodeError`` instead of a clear validation error. Checking every
+    provider's declared schema here catches this for all connectors, not just
+    the ones we've hit it on.
+    """
+    for field in schema:
+        name = field.get("name")
+        if not name:
+            continue
+        value = credentials.get(name)
+        if not isinstance(value, str):
+            continue
+        try:
+            value.encode("ascii")
+        except UnicodeEncodeError:
+            return field.get("label") or name
+    return None

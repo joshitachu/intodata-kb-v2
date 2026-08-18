@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { integrationDetailForEdge } from "@/lib/integrationDetailTransform";
+import { implementingDesignDetail, integrationDetailForEdge } from "@/lib/integrationDetailTransform";
 import type { ProjectLandscapeResponse } from "@/types/landscape";
 
 const landscape: ProjectLandscapeResponse = {
@@ -24,5 +24,76 @@ describe("integrationDetailForEdge", () => {
     const detail = integrationDetailForEdge(landscape, landscape.edges[0]);
     expect(detail.nodes.map((node) => node.id)).not.toContain("artifact:B::Other");
     expect(detail.channels.every((channel) => channel.artifact_id !== "Other")).toBe(true);
+  });
+
+  it("projects exact job context and prioritizes its mappings before technical drill-down", () => {
+    const claim = { name: "", description: "", status: "observed" as const, confidence: 0.8, evidence_ids: ["artifact:fetch"] };
+    const stream = {
+      id: "stream:orders", name: "Orders", description: "", status: "inferred" as const,
+      confidence: 0.8, evidence_ids: ["edge:orders"], source_system_id: "system:maximo",
+      destination_system_id: "application:assetcheck", business_object_ids: [],
+      business_summary: "Moves orders into AssetCheck.", integration_solution_ids: ["solution:ettm"],
+      protocols: ["REST"], requiredness: "not_established" as const, control_ids: [], risk_ids: [],
+      unknown_ids: [], artifact_ids: ["artifact:fetch"],
+    };
+    const enriched: ProjectLandscapeResponse = {
+      ...landscape,
+      business_topology: {
+        schema_version: "business-topology-v1", scan_fingerprint: "f",
+        metadata: { project_id: "demo", scan_fingerprint: "f", generated_by: "test", model_name: "" },
+        systems: [], business_objects: [], data_streams: [stream], delivery_paths: [], controls: [], risks: [], unknowns: [],
+        runtime_observations: [], conflicts: [], component_annotations: [], lineage_annotations: [],
+        integration_solutions: [{ ...claim, id: "solution:ettm", name: "ETTM", platform: "Talend", role: "routing", artifact_ids: ["artifact:fetch"] }],
+        transformations: [{ ...claim, id: "transform:orders", name: "Order mapping", stream_ids: [stream.id], integration_solution_ids: ["solution:ettm"], artifact_ids: ["artifact:fetch"], mappings: [{ source: "Order.Status", target: "serviceOrders.status", mapping_type: "value" }] }],
+        artifact_annotations: [{ ...claim, id: "annotation:fetch", artifact_id: "artifact:fetch", business_role: "Transforms order status" }],
+        coverage: { total_artifacts: 1, cited_artifacts: 1, total_evidence: 1, cited_evidence: 1, coverage_ratio: 1, notes: [] },
+      },
+      topology_evidence: {
+        artifacts: [
+          { id: "artifact:fetch", name: "Fetch", job_id: "Fetch", source_root: "A", artifact_kind: "route", artifact_role: "transformation" },
+          { id: "artifact:writer", name: "Writer", job_id: "Writer", source_root: "B", artifact_kind: "job", artifact_role: "transformation" },
+        ],
+        components: [{ id: "component:map", artifact_id: "artifact:writer", name: "tMap_1", component_type: "tMap" }],
+        lineage: [
+          { id: "lineage:1", job_name: "Fetch", source_table: "Order", source_column: "Number", source_component: "tInput", target_table: "serviceOrders", target_column: "orderNo", target_component: "tMap" },
+          { id: "lineage:2", job_name: "Writer", source_table: "Order", source_column: "Status", source_component: "tInput", target_table: "serviceOrders", target_column: "status", target_component: "tMap" },
+        ],
+        relations: [{ id: "relation:writer", source: "Fetch", target: "Writer", relation_type: "job_call", component_name: "tRunJob_1", resolution: "unique_exact_name" }],
+      },
+    };
+    const edge = { ...enriched.edges[0], businessStream: stream };
+    const detail = implementingDesignDetail(enriched, edge, edge.provenance[0]);
+
+    expect(detail.label).toBe("Fetch");
+    expect(detail.businessRole).toBe("Transforms order status");
+    expect(detail.integrationSolutions).toEqual(["ETTM"]);
+    expect(detail.protocols).toEqual(["REST"]);
+    expect(detail.channels).toHaveLength(1);
+    expect(detail.invokedDesigns).toEqual(["Writer"]);
+    expect(detail.mappingComponents).toEqual(["tMap_1 (tMap)"]);
+    expect(detail.mappings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: "Order.Status", target: "serviceOrders.status", mappingType: "value" }),
+      expect.objectContaining({ source: "Order.Number", target: "serviceOrders.orderNo", origin: "scanner_lineage" }),
+      expect.objectContaining({ source: "Order.Status", target: "serviceOrders.status", group: "Invoked job · Writer" }),
+    ]));
+    expect(detail.mappingAttribution).toBe("exact");
+  });
+
+  it("does not assign name-only lineage when duplicate jobs exist in different roots", () => {
+    const ambiguous: ProjectLandscapeResponse = {
+      ...landscape,
+      topology_evidence: {
+        artifacts: [
+          { id: "artifact:a", name: "Fetch", job_id: "Fetch", source_root: "A", artifact_kind: "job", artifact_role: "execution" },
+          { id: "artifact:b", name: "Fetch", job_id: "Fetch", source_root: "B", artifact_kind: "job", artifact_role: "execution" },
+        ],
+        components: [],
+        lineage: [{ id: "lineage:1", job_name: "Fetch", source_table: "A", source_column: "id", source_component: "in", target_table: "B", target_column: "id", target_component: "out" }],
+        relations: [],
+      },
+    };
+    const detail = implementingDesignDetail(ambiguous, ambiguous.edges[0], ambiguous.edges[0].provenance[0]);
+    expect(detail.mappings).toEqual([]);
+    expect(detail.mappingAttribution).toBe("ambiguous");
   });
 });
