@@ -46,6 +46,26 @@ _ARTIFACT_MIN_KEYS = (
     "artifact_role",
 )
 
+_TECHNICAL_FACT_KEYS: dict[str, tuple[str, ...]] = {
+    "scanner_endpoint": (
+        "id", "type", "artifact", "component_name", "direction",
+        "endpoint_type", "endpoint_descriptor",
+    ),
+    "scanner_channel": (
+        "id", "type", "artifact", "component_name", "direction",
+        "channel_type", "channel", "channel_descriptor",
+    ),
+    "scanner_resource": (
+        "id", "type", "artifact", "component_name", "direction",
+        "resource_type", "resource", "resource_descriptor",
+    ),
+    "scanner_lineage": (
+        "id", "type", "job_name", "resolved", "confidence",
+        "source_system", "source_table", "source_column", "source_component",
+        "target_table", "target_column", "target_component", "transformations",
+    ),
+}
+
 
 def _write_trimmed_artifacts(context_dir: Path, artifacts_path: Path) -> Path | None:
     """Write an identity-only projection of artifacts.jsonl and return its path.
@@ -77,6 +97,58 @@ def _write_trimmed_artifacts(context_dir: Path, artifacts_path: Path) -> Path | 
     return out
 
 
+def _write_technical_facts(
+    context_dir: Path,
+    bundle: BusinessTopologyEvidenceBundle,
+    *,
+    max_lineage_per_artifact: int = 40,
+    max_bytes: int = 100_000,
+) -> Path:
+    """Write a compact, generation-critical technical enrichment index.
+
+    The full endpoint/channel/resource/lineage ledgers can be too large to push
+    reliably. This projection retains the fields needed to structure protocols,
+    ordered paths, queues/endpoints and mappings. Lineage is bounded per job so
+    one mapping-heavy artifact cannot evict the rest of the architecture.
+    """
+
+    context_dir.mkdir(parents=True, exist_ok=True)
+    rows: list[str] = []
+    total_bytes = 0
+    lineage_counts: dict[str, int] = {}
+    for evidence_id in sorted(bundle.evidence_ids):
+        evidence_type = bundle.evidence_types.get(evidence_id, "")
+        keys = _TECHNICAL_FACT_KEYS.get(evidence_type)
+        if keys is None:
+            continue
+        record = bundle.evidence_records.get(evidence_id) or {}
+        if evidence_type == "scanner_lineage":
+            artifact = str(record.get("job_name") or "")
+            count = lineage_counts.get(artifact, 0)
+            if count >= max_lineage_per_artifact:
+                continue
+            lineage_counts[artifact] = count + 1
+        trimmed = {key: record[key] for key in keys if key in record}
+        if evidence_type == "scanner_lineage":
+            trimmed["transformations"] = [
+                {
+                    "transformation_type": str(item.get("transformation_type") or ""),
+                    "expression": str(item.get("expression") or "")[:500],
+                }
+                for item in record.get("transformations") or []
+                if isinstance(item, dict)
+            ]
+        line = json.dumps(trimmed, sort_keys=True, ensure_ascii=False)
+        line_bytes = len(line.encode("utf-8")) + 1
+        if total_bytes + line_bytes > max_bytes:
+            continue
+        rows.append(line)
+        total_bytes += line_bytes
+    out = context_dir / "technical_facts_min.jsonl"
+    out.write_text("\n".join(rows) + ("\n" if rows else ""), encoding="utf-8")
+    return out
+
+
 def build_topology_context_files(
     bundle: BusinessTopologyEvidenceBundle,
     staging_dir: Path,
@@ -95,6 +167,7 @@ def build_topology_context_files(
     context_dir = topo_root / "_context"
 
     trimmed_artifacts = _write_trimmed_artifacts(context_dir, evidence_dir / "artifacts.jsonl")
+    technical_facts = _write_technical_facts(context_dir, bundle)
 
     # (path, critical). Order is priority order.
     candidates: list[tuple[Path, bool]] = [
@@ -107,6 +180,7 @@ def build_topology_context_files(
     ]
     if trimmed_artifacts is not None:
         candidates.append((trimmed_artifacts, True))
+    candidates.append((technical_facts, True))
     cross_index = topo_root / "cross_project_index.json"
     candidates.append((cross_index, True))
     candidates.append((bundle.starter_pack_path, True))     # _doc_pack_business_topology.md

@@ -66,6 +66,10 @@ class DeliverySegment(EvidenceBackedClaim):
     source_ref: str
     destination_ref: str
     mechanism: str = "unknown"
+    protocol: str = "unknown"
+    resource: str = ""
+    component: str = ""
+    artifact_ids: list[str] = Field(default_factory=list)
     mode: Literal[
         "direct",
         "buffered",
@@ -89,6 +93,10 @@ class BusinessDataStream(EvidenceBackedClaim):
     business_object_ids: list[str] = Field(default_factory=list)
     business_summary: str
     integration_solution_ids: list[str] = Field(default_factory=list)
+    protocols: list[str] = Field(default_factory=list)
+    requiredness: Literal[
+        "required", "optional", "conditional", "not_established"
+    ] = "not_established"
     delivery_path_id: str | None = None
     control_ids: list[str] = Field(default_factory=list)
     risk_ids: list[str] = Field(default_factory=list)
@@ -96,6 +104,21 @@ class BusinessDataStream(EvidenceBackedClaim):
     runtime_observation_ids: list[str] = Field(default_factory=list)
     conflict_ids: list[str] = Field(default_factory=list)
     artifact_ids: list[str] = Field(default_factory=list)
+
+
+class TransformationMapping(StrictModel):
+    source: str
+    target: str
+    mapping_type: Literal["direct", "value", "derived", "constant", "unknown"] = (
+        "unknown"
+    )
+
+
+class BusinessTransformation(EvidenceBackedClaim):
+    stream_ids: list[str] = Field(default_factory=list)
+    integration_solution_ids: list[str] = Field(default_factory=list)
+    artifact_ids: list[str] = Field(default_factory=list)
+    mappings: list[TransformationMapping] = Field(default_factory=list)
 
 
 class BusinessControl(EvidenceBackedClaim):
@@ -177,6 +200,7 @@ class BusinessTopology(StrictModel):
     business_objects: list[BusinessObject] = Field(default_factory=list)
     data_streams: list[BusinessDataStream] = Field(default_factory=list)
     delivery_paths: list[DeliveryPath] = Field(default_factory=list)
+    transformations: list[BusinessTransformation] = Field(default_factory=list)
     controls: list[BusinessControl] = Field(default_factory=list)
     runtime_observations: list[RuntimeObservation] = Field(default_factory=list)
     conflicts: list[BusinessConflict] = Field(default_factory=list)

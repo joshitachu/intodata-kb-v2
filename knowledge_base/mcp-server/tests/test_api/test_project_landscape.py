@@ -342,7 +342,10 @@ async def test_project_landscape_composes_validated_current_business_topology(
     artifacts_path = topology_dir / "evidence" / "artifacts.jsonl"
     artifact_record = json.loads(artifacts_path.read_text(encoding="utf-8").splitlines()[0])
     artifact_record["connections"] = [{"secret": "must-not-be-served"}]
-    artifacts_path.write_text(json.dumps(artifact_record) + "\n", encoding="utf-8")
+    artifacts_path.write_text(
+        json.dumps(artifact_record) + "\n",
+        encoding="utf-8",
+    )
 
     response = await client.get(f"/mcp/projects/{PROJECT_ID}/landscape")
 
@@ -360,8 +363,99 @@ async def test_project_landscape_composes_validated_current_business_topology(
         }],
         "components": [],
         "lineage": [],
+        "relations": [],
     }
     assert "secret" not in response.text
+
+
+def test_topology_evidence_catalog_expands_invoked_design_context(tmp_path):
+    from mcp_server.api.routes.projects import _load_topology_evidence_catalog
+
+    topology_dir = tmp_path / "_topology"
+    evidence_dir = topology_dir / "evidence"
+    evidence_dir.mkdir(parents=True)
+    records = {
+        "artifacts.jsonl": [
+            {
+                "id": "artifact:route",
+                "name": "rAssetCheck2Vise_SendFormType",
+                "job_id": "rAssetCheck2Vise_SendFormType",
+                "source_root": "ASSETCHECK_WORKER",
+                "artifact_kind": "route",
+                "artifact_role": "execution",
+            },
+            {
+                "id": "artifact:job",
+                "name": "AssetCheck2Vise_SendFormType",
+                "job_id": "AssetCheck2Vise_SendFormType",
+                "source_root": "ASSETCHECK",
+                "artifact_kind": "job",
+                "artifact_role": "transformation",
+                "secret": "must-not-be-served",
+            },
+        ],
+        "relations.jsonl": [{
+            "id": "relation:route-job",
+            "source": "rAssetCheck2Vise_SendFormType",
+            "target": "AssetCheck2Vise_SendFormType",
+            "relation_type": "route_invokes_job",
+            "component_name": "cTalendJob_1",
+            "resolution": "unique_exact_name",
+            "secret": "must-not-be-served",
+        }],
+        "components.jsonl": [{
+            "id": "component:job-map",
+            "artifact_id": "artifact:job",
+            "name": "tMap_1",
+            "component_type": "tMap",
+            "secret": "must-not-be-served",
+        }],
+        "lineage.jsonl": [{
+            "id": "lineage:form-type",
+            "job_name": "AssetCheck2Vise_SendFormType",
+            "source_table": "assetcheck_form",
+            "source_column": "formType",
+            "source_component": "tInput_1",
+            "target_table": "vise_form",
+            "target_column": "typeCode",
+            "target_component": "tMap_1",
+            "secret": "must-not-be-served",
+        }],
+    }
+    for filename, rows in records.items():
+        (evidence_dir / filename).write_text(
+            "".join(json.dumps(row) + "\n" for row in rows),
+            encoding="utf-8",
+        )
+
+    result = _load_topology_evidence_catalog(topology_dir, {
+        "data_streams": [{"artifact_ids": ["artifact:route"]}],
+        "integration_solutions": [],
+        "artifact_annotations": [],
+        "component_annotations": [],
+        "lineage_annotations": [],
+    })
+
+    assert [row["id"] for row in result["artifacts"]] == [
+        "artifact:route", "artifact:job",
+    ]
+    assert result["components"] == [{
+        "id": "component:job-map",
+        "artifact_id": "artifact:job",
+        "name": "tMap_1",
+        "component_type": "tMap",
+    }]
+    assert result["lineage"][0]["source_column"] == "formType"
+    assert result["lineage"][0]["target_column"] == "typeCode"
+    assert result["relations"] == [{
+        "id": "relation:route-job",
+        "source": "rAssetCheck2Vise_SendFormType",
+        "target": "AssetCheck2Vise_SendFormType",
+        "relation_type": "route_invokes_job",
+        "component_name": "cTalendJob_1",
+        "resolution": "unique_exact_name",
+    }]
+    assert "secret" not in json.dumps(result)
 
 
 async def test_project_landscape_rejects_stale_business_topology(
@@ -526,3 +620,39 @@ async def test_project_landscape_rbac_denied(non_owner_client):  # noqa: F811
     )
 
     assert response.status_code == 403
+
+
+def test_nonproduction_artifact_classifier_excludes_scratch_folders():
+    """Playground/Scratchpad/PoC/dev_*_tbd designs are non-production; real
+    groups (e.g. maximoFourps) and routes (empty group) are kept. Classified by
+    Talend folder only, never the job name, so name-based false positives can't
+    slip in."""
+    from mcp_server.api.routes.projects import _is_nonproduction_artifact
+
+    nonproduction = [
+        {"group": "Playground", "path": "Playground/TestMdG_0.1.item"},
+        {"group": "Scratchpad", "path": ""},
+        {"group": "PoC"},
+        {"group": "dev_route_tbd"},
+        {"group": "dev_jobs_tbd"},
+        {"group": "utils", "name": "DumpContextVar"},
+        {"group": "utils", "name": "jsonValidator"},
+        # Talend "Copy_of_" duplicate prefix, even in a production folder.
+        {"group": "maximoFourps", "name": "Copy_of_maximoFourpsInvoice"},
+    ]
+    production = [
+        {"group": "maximoFourps", "name": "maximoFourpsInvoice"},
+        {"group": "", "name": "rMaximo2Quintiq_Workorder"},
+        {"group": "Maximo2RHM"},
+        {"group": "MessageLogging"},
+        {"group": "Talend_Support"},
+        # A production job whose NAME contains "test" must NOT be excluded.
+        {"group": "maximoFourps", "name": "latest_workorder"},
+        # A production job whose name merely starts with "copy" but is not the
+        # Talend "Copy_of_" duplicate prefix must NOT be excluded.
+        {"group": "maximoFourps", "name": "copyright_sync"},
+    ]
+    for artifact in nonproduction:
+        assert _is_nonproduction_artifact(artifact) is True, artifact
+    for artifact in production:
+        assert _is_nonproduction_artifact(artifact) is False, artifact

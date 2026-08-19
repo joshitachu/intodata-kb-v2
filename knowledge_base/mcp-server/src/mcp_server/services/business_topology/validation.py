@@ -33,6 +33,62 @@ _SCANNER_EVIDENCE_TYPES = frozenset(
         *_DIRECTIONAL_EVIDENCE_TYPES,
     }
 )
+
+_CANONICAL_PROTOCOLS = {
+    "rest": "REST",
+    "http": "REST",
+    "webhook": "REST",
+    "soap": "SOAP",
+    "jms": "JMS",
+    "activemq": "JMS",
+    "queue": "JMS",
+    "sftp": "SFTP",
+    "file": "File",
+    "file transfer": "File",
+    "jdbc": "JDBC",
+    "database": "Database",
+    "sql": "Database",
+}
+
+
+def _normalize_structured_fields(topology: BusinessTopology) -> None:
+    """Canonicalize additive enrichment without inventing absent facts."""
+
+    def protocol(value: str) -> str:
+        token = re.sub(r"\s+", " ", value.strip()).casefold()
+        return _CANONICAL_PROTOCOLS.get(token, value.strip())
+
+    path_by_id = {path.id: path for path in topology.delivery_paths}
+    for path in topology.delivery_paths:
+        for segment in path.segments:
+            segment.protocol = protocol(segment.protocol) or "unknown"
+            segment.mechanism = segment.mechanism.strip() or "unknown"
+            segment.resource = segment.resource.strip()
+            segment.component = segment.component.strip()
+            segment.artifact_ids = list(dict.fromkeys(segment.artifact_ids))
+    for stream in topology.data_streams:
+        values = [protocol(value) for value in stream.protocols if value.strip()]
+        path = path_by_id.get(stream.delivery_path_id or "")
+        if path is not None:
+            values.extend(
+                segment.protocol
+                for segment in path.segments
+                if segment.protocol.casefold() not in {"", "unknown", "transformation"}
+            )
+        stream.protocols = list(dict.fromkeys(values))
+        stream.artifact_ids = list(dict.fromkeys(stream.artifact_ids))
+    for transformation in topology.transformations:
+        transformation.stream_ids = list(dict.fromkeys(transformation.stream_ids))
+        transformation.artifact_ids = list(dict.fromkeys(transformation.artifact_ids))
+        for mapping in transformation.mappings:
+            mapping.source = mapping.source.strip()
+            mapping.target = mapping.target.strip()
+    for system in topology.systems:
+        system.aliases = list(dict.fromkeys(alias.strip() for alias in system.aliases if alias.strip()))
+    for business_object in topology.business_objects:
+        business_object.aliases = list(
+            dict.fromkeys(alias.strip() for alias in business_object.aliases if alias.strip())
+        )
 _SYSTEM_IDENTITY_EVIDENCE_TYPES = frozenset(
     {
         "scanner_connection",
@@ -104,6 +160,7 @@ def _all_claims(topology: BusinessTopology) -> Iterable[EvidenceBackedClaim]:
         topology.business_objects,
         topology.data_streams,
         topology.delivery_paths,
+        topology.transformations,
         topology.controls,
         topology.runtime_observations,
         topology.conflicts,
@@ -149,7 +206,12 @@ def _cited_evidence_ids(topology: BusinessTopology) -> set[str]:
     cited = {evidence_id for claim in _all_claims(topology) for evidence_id in claim.evidence_ids}
     cited.update(
         artifact_id
-        for item in (*topology.integration_solutions, *topology.data_streams)
+        for item in (
+            *topology.integration_solutions,
+            *topology.data_streams,
+            *topology.transformations,
+            *(segment for path in topology.delivery_paths for segment in path.segments),
+        )
         for artifact_id in item.artifact_ids
     )
     cited.update(item.artifact_id for item in topology.artifact_annotations)
@@ -445,7 +507,13 @@ def validate_business_topology(
         sequences = [segment.sequence for segment in path.segments]
         if sequences != list(range(1, len(sequences) + 1)):
             errors.append(f"{path.id} segments must be ordered contiguously from 1")
-        allowed_refs = system_ids | solution_ids
+        internal_refs = {
+            ref
+            for segment in path.segments
+            for ref in (segment.source_ref, segment.destination_ref)
+            if ref.startswith("step:")
+        }
+        allowed_refs = system_ids | solution_ids | internal_refs
         for segment in path.segments:
             directional_ids = _evidence_of_type(
                 segment.evidence_ids,
@@ -469,6 +537,9 @@ def validate_business_topology(
                 errors.append(f"{segment.id} has unknown source_ref {segment.source_ref}")
             if segment.destination_ref not in allowed_refs:
                 errors.append(f"{segment.id} has unknown destination_ref {segment.destination_ref}")
+            for artifact_id in segment.artifact_ids:
+                if artifact_id not in bundle.artifact_ids:
+                    errors.append(f"{segment.id} has unknown artifact_id {artifact_id}")
             source_claim = system_by_id.get(segment.source_ref) or solution_by_id.get(
                 segment.source_ref
             )
@@ -495,10 +566,39 @@ def validate_business_topology(
                     errors.append(
                         f"{segment.id} directional evidence does not establish its declared source/destination"
                     )
+        if path.segments:
+            if path.segments[0].source_ref != next(
+                (stream.source_system_id for stream in topology.data_streams if stream.id == path.stream_id),
+                "",
+            ):
+                errors.append(f"{path.id} does not start at its stream source")
+            if path.segments[-1].destination_ref != next(
+                (stream.destination_system_id for stream in topology.data_streams if stream.id == path.stream_id),
+                "",
+            ):
+                errors.append(f"{path.id} does not end at its stream destination")
+            for previous, current in zip(path.segments, path.segments[1:]):
+                if previous.destination_ref != current.source_ref:
+                    errors.append(f"{path.id} has disconnected delivery segments")
     for stream in topology.data_streams:
         if stream.delivery_path_id and path_by_id.get(stream.delivery_path_id, None):
             if path_by_id[stream.delivery_path_id].stream_id != stream.id:
                 errors.append(f"{stream.id} delivery path belongs to another stream")
+
+    for transformation in topology.transformations:
+        for ref in transformation.stream_ids:
+            if ref not in stream_ids:
+                errors.append(f"{transformation.id} has unknown stream_id {ref}")
+        for ref in transformation.integration_solution_ids:
+            if ref not in solution_ids:
+                errors.append(
+                    f"{transformation.id} has unknown integration_solution_id {ref}"
+                )
+        for artifact_id in transformation.artifact_ids:
+            if artifact_id not in bundle.artifact_ids:
+                errors.append(
+                    f"{transformation.id} has unknown artifact_id {artifact_id}"
+                )
 
     observation_ids = {item.id for item in topology.runtime_observations}
     conflict_ids = {item.id for item in topology.conflicts}
@@ -627,6 +727,29 @@ def validate_business_topology(
     cited = _cited_evidence_ids(topology)
     if not topology.data_streams:
         warnings.append("No business data streams were established from the available evidence")
+    streams_without_protocols = sum(not stream.protocols for stream in topology.data_streams)
+    if streams_without_protocols:
+        warnings.append(
+            f"{streams_without_protocols} data stream(s) have no structured protocols; "
+            "mechanism details may remain only in evidence or prose"
+        )
+    incomplete_segments = sum(
+        segment.protocol == "unknown" or not (segment.component or segment.resource)
+        for path in topology.delivery_paths
+        for segment in path.segments
+    )
+    if incomplete_segments:
+        warnings.append(
+            f"{incomplete_segments} delivery segment(s) lack a structured protocol, "
+            "component, or resource"
+        )
+    empty_transformations = sum(
+        not transformation.mappings for transformation in topology.transformations
+    )
+    if empty_transformations:
+        warnings.append(
+            f"{empty_transformations} transformation claim(s) contain no structured mappings"
+        )
     if topology.coverage.cited_artifacts < topology.coverage.total_artifacts:
         warnings.append(
             f"Topology cites {topology.coverage.cited_artifacts} of {topology.coverage.total_artifacts} scanned artifacts; "
@@ -647,25 +770,56 @@ def validate_business_topology(
     )
 
 
+def parse_business_topology(
+    text: str,
+    *,
+    bundle: BusinessTopologyEvidenceBundle,
+    project_id: str,
+) -> tuple[BusinessTopology | None, BusinessTopologyValidationReport | None]:
+    """Parse model output into a schema-valid topology WITHOUT semantic checks.
+
+    Returns ``(topology, None)`` on success or ``(None, failing report)`` when
+    the text is empty or not a schema-conformant JSON object. An empty response
+    (verified shape: provider-level failure such as a 402 leaves ``text=\"\"``)
+    is reported as such instead of a misleading char-0 JSON error.
+    """
+
+    def _failure(message: str) -> BusinessTopologyValidationReport:
+        return BusinessTopologyValidationReport(
+            validated=False,
+            scan_fingerprint=bundle.scan_fingerprint,
+            project_id=project_id,
+            errors=[message],
+            evidence_count=len(bundle.evidence_ids),
+            artifact_count=len(bundle.artifact_ids),
+        )
+
+    if not text or not text.strip():
+        return None, _failure(
+            "model returned no output text (provider failure or empty response)"
+        )
+    try:
+        payload = json.loads(_strip_json_fence(text))
+        if isinstance(payload, dict) and set(payload) == {"business_topology"}:
+            payload = payload["business_topology"]
+        topology = BusinessTopology.model_validate(payload)
+        _normalize_structured_fields(topology)
+        return topology, None
+    except (json.JSONDecodeError, ValidationError, TypeError) as exc:
+        return None, _failure(f"invalid business topology JSON: {exc}")
+
+
 def parse_and_validate_business_topology(
     text: str,
     *,
     bundle: BusinessTopologyEvidenceBundle,
     project_id: str,
 ) -> tuple[BusinessTopology | None, BusinessTopologyValidationReport]:
-    try:
-        payload = json.loads(_strip_json_fence(text))
-        if isinstance(payload, dict) and set(payload) == {"business_topology"}:
-            payload = payload["business_topology"]
-        topology = BusinessTopology.model_validate(payload)
-    except (json.JSONDecodeError, ValidationError, TypeError) as exc:
-        return None, BusinessTopologyValidationReport(
-            validated=False,
-            scan_fingerprint=bundle.scan_fingerprint,
-            project_id=project_id,
-            errors=[f"invalid business topology JSON: {exc}"],
-            evidence_count=len(bundle.evidence_ids),
-            artifact_count=len(bundle.artifact_ids),
-        )
+    topology, parse_failure = parse_business_topology(
+        text, bundle=bundle, project_id=project_id
+    )
+    if topology is None:
+        assert parse_failure is not None
+        return None, parse_failure
     report = validate_business_topology(topology, bundle=bundle, project_id=project_id)
     return (topology if report.validated else None), report

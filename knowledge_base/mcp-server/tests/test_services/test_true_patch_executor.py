@@ -21,6 +21,7 @@ from mcp_server.services.true_patch_executor import (
     _assert_invariants_preserved,
     _br_tags,
     _compute_field_diff,
+    _load_curr_jobs,
     _reassemble_analysis,
     _split_analysis,
 )
@@ -91,6 +92,20 @@ def _make_provider(response_text: str, success: bool = True) -> MagicMock:
     provider = MagicMock()
     provider.complete = AsyncMock(return_value=result)
     return provider
+
+
+def test_load_curr_jobs_can_read_an_isolated_candidate_scan(tmp_path: Path) -> None:
+    """Candidate patching must not read the active project's mutable scan tree."""
+    candidate_jobs = tmp_path / "scan" / "jobs" / "GROUP_A"
+    candidate_jobs.mkdir(parents=True)
+    expected = {"name": "candidate_job", "components": []}
+    (candidate_jobs / "candidate.json").write_text(json.dumps(expected), encoding="utf-8")
+
+    assert _load_curr_jobs(
+        "active-project",
+        "GROUP_A",
+        scan_output_dir=tmp_path,
+    ) == [expected]
 
 
 # ---------------------------------------------------------------------------

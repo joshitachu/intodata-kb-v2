@@ -5,6 +5,9 @@ those facts for a bounded language-model task and validates the separate
 business-facing result.
 """
 
+from mcp_server.services.business_topology.composite import (
+    build_composite_org_topology,
+)
 from mcp_server.services.business_topology.context import (
     build_topology_context_files,
 )
@@ -20,7 +23,14 @@ from mcp_server.services.business_topology.evidence import (
     lineage_evidence_id,
     load_business_topology_evidence,
 )
+from mcp_server.services.business_topology.evidence_merge import (
+    build_composite_evidence_catalog,
+)
 from mcp_server.services.business_topology.models import BusinessTopology
+from mcp_server.services.business_topology.repair import (
+    parse_validate_repair_business_topology,
+    repair_business_topology,
+)
 from mcp_server.services.business_topology.validation import (
     BusinessTopologyValidationReport,
     parse_and_validate_business_topology,
@@ -33,6 +43,8 @@ __all__ = [
     "BusinessTopologyValidationReport",
     "artifact_evidence_id",
     "build_business_topology_evidence",
+    "build_composite_evidence_catalog",
+    "build_composite_org_topology",
     "build_deterministic_topology",
     "build_topology_context_files",
     "component_evidence_id",
@@ -40,5 +52,7 @@ __all__ = [
     "lineage_evidence_id",
     "load_business_topology_evidence",
     "parse_and_validate_business_topology",
+    "parse_validate_repair_business_topology",
+    "repair_business_topology",
     "validate_business_topology",
 ]

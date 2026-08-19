@@ -320,7 +320,7 @@ async def test_auto_doc_update_scoped_regen_threads_targeted_docs(
         assert project.git_update_summary["touched_docs"] == ["01_ARCHITECTURE_MAP"]
 
 
-async def test_auto_doc_update_full_regen_threads_no_doc_filter(
+async def test_auto_doc_update_legacy_full_regen_decision_is_held(
     session_factory,
     monkeypatch,
     tmp_path,
@@ -356,8 +356,7 @@ async def test_auto_doc_update_full_regen_threads_no_doc_filter(
     seen: dict[str, object] = {}
 
     async def regen_stub(*args, **kwargs):
-        seen["targeted_docs"] = kwargs.get("targeted_docs")
-        return True
+        raise AssertionError("automatic full generation must never be dispatched")
 
     monkeypatch.setattr(auto_doc_update, "run_git_reingestion", regen_stub)
 
@@ -384,13 +383,14 @@ async def test_auto_doc_update_full_regen_threads_no_doc_filter(
         trigger="webhook",
     )
 
-    assert ok is True
-    assert seen["targeted_docs"] is None  # full regen -> no Phase 3 doc filter
+    assert ok is False
     async with session_factory() as session:
         project = await ProjectRegistry(session).get_project("proj")
         assert project is not None
-        assert project.git_update_summary["action"] == "full_regen"
-        assert project.git_update_summary["outcome"] == "full_regen"
+        assert project.git_update_summary["action"] == "held"
+        assert project.git_update_summary["outcome"] == "held"
+        assert project.git_update_summary["reason_code"] == "automatic_full_generation_forbidden"
+        assert project.git_update_summary["held"] is True
 
 
 async def test_auto_doc_update_scoped_regen_missing_cache_requires_rebaseline(
@@ -469,14 +469,13 @@ async def test_auto_doc_update_scoped_regen_missing_cache_requires_rebaseline(
         assert project.git_update_summary["regen_result"]["skipped"] is True
 
 
-async def test_auto_doc_update_true_patch_scoped_regen_fallback_gates_reingestion(
+async def test_auto_doc_update_true_patch_fallback_is_held_without_regeneration(
     session_factory,
     monkeypatch,
     tmp_path,
     log_manager,
 ):
-    """Slice 4 true patch fallback: scoped_regen_fallback from TruePatchExecutor routes to
-    _scoped_regen; without a cache/support tree the preflight gates run_git_reingestion."""
+    """A failed true patch stays held; it cannot escalate into regeneration."""
     import mcp_server.services.auto_doc_update as auto_doc_update
     from mcp_server.services.true_patch_executor import PatchResult
     from mcp_server.config import config
@@ -519,7 +518,7 @@ async def test_auto_doc_update_true_patch_scoped_regen_fallback_gates_reingestio
     monkeypatch.setattr(auto_doc_update, "TruePatchExecutor", _StubExecutor)
 
     async def regen_stub(*args, **kwargs):
-        raise AssertionError("_scoped_regen preflight must gate reingestion when cache is absent")
+        raise AssertionError("a patch failure must not launch regeneration")
 
     monkeypatch.setattr(auto_doc_update, "run_git_reingestion", regen_stub)
 
@@ -547,14 +546,10 @@ async def test_auto_doc_update_true_patch_scoped_regen_fallback_gates_reingestio
     async with session_factory() as session:
         project = await ProjectRegistry(session).get_project("proj")
         assert project is not None
-        assert project.git_update_summary["action"] == "manual_review"
-        assert project.git_update_summary["outcome"] == "manual_review"
-        # _scoped_regen preflight fails -> full_rebaseline_required (no docs/cache on disk)
-        assert project.git_update_summary["reason_code"] == "full_rebaseline_required"
-        assert project.git_update_summary["targeted_regen_ready"] is False
-        assert project.git_update_summary["requires_full_rebaseline"] is True
-        assert project.git_update_summary["fallback_used"] is False
-        assert project.git_update_summary["regen_result"]["skipped"] is True
+        assert project.git_update_summary["action"] == "held"
+        assert project.git_update_summary["outcome"] == "held"
+        assert project.git_update_summary["reason_code"] == "patch_failed"
+        assert project.git_update_summary["held"] is True
 
     # Slice 4 (US-9): manual_review is not a confirmed write outcome, even
     # though its summary carries a candidate touched_docs list -- no
