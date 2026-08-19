@@ -12,7 +12,21 @@ from mcp_server.db.models import Base
 # Import all models so Base.metadata is complete
 from mcp_server.db.models import GenerateRun, InstanceSetting, Project, ScanRun  # noqa: F401
 
-TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+#: SQLite, on disk, one connection per session.
+#:
+#: ``sqlite+aiosqlite:///:memory:`` is the obvious choice and it is wrong here.
+#: SQLAlchemy backs a memory URL with a ``StaticPool``, which hands *the same*
+#: DBAPI connection to every session, so two sessions that overlap in time share
+#: one transaction. Anything that opens a second session while the first is
+#: mid-write -- the documentation-job run loop's ``_refresh_status`` poller does
+#: exactly that -- ends its ``async with`` block with a ``ROLLBACK`` that
+#: discards the first session's flushed-but-uncommitted rows. That is not a model
+#: of production (PostgreSQL, pooled, one connection per session): it silently
+#: deletes writes and makes every concurrency assertion in the suite vacuous.
+#:
+#: A file-backed database gets a real connection pool, so sessions are isolated
+#: from each other the way they are in production.
+TEST_DATABASE_FILENAME = "mcp-server-tests.db"
 
 # Stub SQL for RAG pipeline tables that MCP server queries via raw SQL
 _RBAC_STUB_TABLES = """
@@ -58,15 +72,32 @@ INSERT INTO users (id, username, is_superadmin) VALUES (1, 'testuser', 1);
 
 
 @pytest.fixture
-async def engine():
-    """Create an in-memory SQLite async engine for testing."""
-    eng = create_async_engine(TEST_DATABASE_URL, echo=False)
+async def engine(tmp_path_factory):
+    """Create a per-test SQLite async engine with production-shaped isolation."""
+    database_path = tmp_path_factory.mktemp("db") / TEST_DATABASE_FILENAME
+    eng = create_async_engine(
+        f"sqlite+aiosqlite:///{database_path}",
+        echo=False,
+        # SQLite serializes writers. Without a busy timeout a second session that
+        # writes while another holds the write lock fails immediately with
+        # "database is locked" instead of waiting its turn.
+        connect_args={"timeout": 30},
+    )
 
     # Enable SQLite foreign key enforcement (required for CASCADE)
     @event.listens_for(eng.sync_engine, "connect")
     def set_sqlite_pragma(dbapi_conn, connection_record):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        # WAL lets readers run while one writer holds the write lock, which is
+        # what the poller-plus-writer shape in the run loop needs.
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        # The database is a per-test temp file that is thrown away, so durability
+        # across a power loss buys nothing and the fsync per commit is most of
+        # the cost of moving off ``:memory:``. Isolation and locking, which are
+        # the properties being modelled here, are unaffected.
+        cursor.execute("PRAGMA synchronous=OFF")
         cursor.close()
         dbapi_conn.create_function("NOW", 0, lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
 
@@ -128,7 +159,6 @@ async def client(session_factory, monkeypatch, tmp_path):
     # Monkeypatch session factory in all modules
     import mcp_server.api.routes.projects as projects_mod
     import mcp_server.api.routes.generate_runs as generate_runs_mod
-    import mcp_server.api.routes.agentic_experiments as agentic_experiments_mod
     import mcp_server.api.routes.plugins as plugins_mod
     import mcp_server.api.routes.webhook as webhook_mod
     import mcp_server.api.routes.instance_settings as instance_settings_mod
@@ -142,7 +172,6 @@ async def client(session_factory, monkeypatch, tmp_path):
     monkeypatch.setattr(session_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(projects_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(generate_runs_mod, "async_session_factory", session_factory)
-    monkeypatch.setattr(agentic_experiments_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(plugins_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(webhook_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(instance_settings_mod, "async_session_factory", session_factory)

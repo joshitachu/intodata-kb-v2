@@ -160,7 +160,7 @@ This is the primary method for generating project documentation. Follow it exact
   chunks). The generic splitter + cap remain for non-phase3 phases and as fallback.
 - **Per-unit reference docs (P1.4/P1.6, 2026-08)**: standard runs expand the
   `10_UNIT_REFERENCE` catalog entry (`per_unit: true`; gate:
-  `MCP_DOCGEN_UNIT_DOCS_ENABLED`, default OFF) into one opencode-shaped ~80-line dossier
+  `MCP_DOCGEN_UNIT_DOCS_ENABLED`, default OFF) into one ~80-line dossier
   per scanned unit (template `phase3_unit_doc.md`: protected-facts table, verbatim
   code/tMap/SQL, per-env context with provenance, evidence discrepancies, runtime
   unknowns). Unit docs are written FIRST; group/summary docs then receive a bounded

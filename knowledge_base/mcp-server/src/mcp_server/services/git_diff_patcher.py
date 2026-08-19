@@ -71,6 +71,7 @@ OUTCOME_BOUNDED_PATCH = "bounded_patch"
 OUTCOME_TARGETED_REGEN = "targeted_regen"
 OUTCOME_FULL_REGEN = "full_regen"
 OUTCOME_MANUAL_REVIEW = "manual_review"
+OUTCOME_HELD = "held"
 OUTCOME_FAILED = "failed"
 NORMALIZED_OUTCOMES = {
     OUTCOME_SKIP,
@@ -78,6 +79,7 @@ NORMALIZED_OUTCOMES = {
     OUTCOME_TARGETED_REGEN,
     OUTCOME_FULL_REGEN,
     OUTCOME_MANUAL_REVIEW,
+    OUTCOME_HELD,
     OUTCOME_FAILED,
 }
 _ACTION_OUTCOMES = {
@@ -87,6 +89,7 @@ _ACTION_OUTCOMES = {
     "targeted_regen": OUTCOME_TARGETED_REGEN,
     "full_regen": OUTCOME_FULL_REGEN,
     "manual_review": OUTCOME_MANUAL_REVIEW,
+    "held": OUTCOME_HELD,
     "failed": OUTCOME_FAILED,
 }
 
@@ -194,6 +197,8 @@ def reason_code_for(action: str, reason: str | None = None) -> str:
         return "full_regen_succeeded"
     if outcome == OUTCOME_MANUAL_REVIEW:
         return "manual_review"
+    if outcome == OUTCOME_HELD:
+        return "held"
     return "unexpected_error"
 
 

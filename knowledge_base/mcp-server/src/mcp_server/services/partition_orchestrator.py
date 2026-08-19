@@ -318,6 +318,7 @@ async def run_partitioned_generation(
 
     # Upload-level connective topology + internal support layers in RAG.
     if succeeded and not cancelled:
+        _write_composite_org_topology(project_id, fingerprint)
         await _push_upload_level_artifacts(project_id, log_mgr)
         await _sync_internal_layers_multi(
             project_id, run_id, output_root, [o for o in outcomes if o.success], log_mgr
@@ -536,6 +537,49 @@ async def _push_partition_docs(
     except Exception as exc:  # noqa: BLE001
         return [f"RAG push failed for {subdir}: {exc}"]
     return list(result.get("errors") or [])
+
+
+def _write_composite_org_topology(project_id: str, fingerprint: str) -> None:
+    """Materialize the deterministic org-level business topology after a run.
+
+    The landscape endpoint also builds this on request, but writing it here
+    means the artifact exists under ``output/{pid}/topology/`` immediately after
+    a composite run completes (inspectable, and served without a rebuild).
+    """
+    try:
+        from mcp_server.services.business_topology import build_composite_org_topology
+
+        topology = build_composite_org_topology(
+            project_id, project_root=config.project_root
+        )
+        if topology is None:
+            return
+        topo_dir = upload_topology_dir(project_id)
+        topo_dir.mkdir(parents=True, exist_ok=True)
+        (topo_dir / "business_topology.json").write_text(
+            json.dumps(topology.model_dump(mode="json"), indent=2), encoding="utf-8"
+        )
+        (topo_dir / "validation_report.json").write_text(
+            json.dumps(
+                {
+                    "validated": True,
+                    "scan_fingerprint": fingerprint,
+                    "project_id": project_id,
+                    "errors": [],
+                    "warnings": topology.coverage.notes,
+                    "generated_by": "composite_org_merge",
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception as exc:  # noqa: BLE001 - additive artifact must not block finalize
+        logger.warning(
+            "Composite org topology materialization failed for %s: %s",
+            project_id,
+            exc,
+            exc_info=True,
+        )
 
 
 async def _push_upload_level_artifacts(project_id: str, log_mgr) -> None:

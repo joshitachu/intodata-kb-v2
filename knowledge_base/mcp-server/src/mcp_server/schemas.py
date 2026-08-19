@@ -73,6 +73,17 @@ class VerifyZipUploadRequest(BaseModel):
     receipt: str = Field(..., min_length=32, max_length=4096)
 
 
+class ZipReplacementResponse(BaseModel):
+    """A staged replacement ZIP; it never means active source was replaced."""
+
+    project_id: str
+    candidate_id: str
+    source_revision_id: str
+    sha256: str
+    status: Literal["queued", "held", "failed", "noop"]
+    reason_code: str | None = None
+
+
 class ProjectListResponse(BaseModel):
     projects: list[ProjectResponse]
     total: int
@@ -772,6 +783,18 @@ class EvidenceDocUpdateRequest(BaseModel):
     expected_base_sha: str | None = Field(None, min_length=64, max_length=71)
 
 
+class ChatDocPatchPreviewRequest(BaseModel):
+    replacement_text: StrippedStr = Field(..., min_length=1, max_length=12000)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=25)
+    section: StrippedStr = Field(..., min_length=1, max_length=200)
+    assertion_kind: Literal["source_backed", "editorial"] = "editorial"
+
+
+class ChatDocPatchActivateRequest(BaseModel):
+    proposal_id: StrippedStr = Field(..., min_length=1, max_length=132)
+    patch_plan_hash: StrippedStr = Field(..., min_length=64, max_length=64)
+
+
 class EvidenceDocRevertRequest(BaseModel):
     receipt_path: StrippedStr = Field(..., min_length=1, max_length=500)
     expected_base_sha: str | None = Field(None, min_length=64, max_length=71)
@@ -955,6 +978,37 @@ class EvidenceDocUpdateResponse(BaseModel):
     section: str | None = None
     revert_path: str = ""
     reconciliation_status: str = "indexed"
+
+
+class ChatDocPatchPreviewResponse(BaseModel):
+    proposal_id: str
+    project_id: str
+    filename: str
+    section: str
+    assertion_kind: Literal["source_backed", "editorial"]
+    base_document_sha256: str
+    base_knowledge_revision_id: str | None
+    evidence_refs: list[str]
+    patch_plan_hash: str
+    compact_diff: str
+    changed_scope: list[str]
+    estimated_input_tokens: int
+    estimated_output_tokens: int
+    expires_at: str
+    requires_owner_approval: bool
+
+
+class ChatDocPatchActivateResponse(BaseModel):
+    proposal_id: str
+    candidate_id: str
+    knowledge_revision_id: str
+    filename: str
+    before_sha: str
+    after_sha: str
+    assertion_kind: Literal["source_backed", "editorial"]
+    changed_logical_ids: list[str]
+    embedded_content_count: int
+    reused_content_count: int
 
 
 class EvidenceDocRevertResponse(BaseModel):

@@ -227,6 +227,22 @@ class ProjectRegistry:
         )
         await self.db.flush()
 
+    async def update_source_path(self, project_id: str, local_path: str) -> None:
+        """Promote an already-activated immutable managed source root.
+
+        ZIP replacement uses this only after its candidate docs and matching
+        knowledge revision have activated. It is deliberately separate from
+        project registration so a staged archive can never replace the active
+        source by accident.
+        """
+        now = datetime.datetime.now(datetime.timezone.utc)
+        await self.db.execute(
+            update(Project)
+            .where(Project.id == project_id)
+            .values(local_path=local_path, updated_at=now)
+        )
+        await self.db.flush()
+
     async def update_git_update_summary(
         self,
         project_id: str,

@@ -103,11 +103,3 @@ class LogManager:
 
     def get_current_log_path(self, project_id: str) -> Path | None:
         return self._log_files.get(project_id)
-
-
-# Separate instance, keyed by experiment_id instead of project_id -- Grounded
-# (OpenCode / OpenAI Agents) runs are not tied to a single project the way
-# legacy generation is, and importing this module directly (rather than
-# threading `request.app.state`) keeps the application layer decoupled from
-# the web framework.
-experiment_log_manager = LogManager()

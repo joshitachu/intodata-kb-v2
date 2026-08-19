@@ -38,7 +38,7 @@ export default function ActionButtons({ project, status, onAction }: Props) {
       <button
         className="btn-icon-action"
         disabled={busy}
-        title="Generate Docs (choose pack + see default models)"
+        title="Generate Docs (choose the engine, pack, and models)"
         onClick={(e) => { e.stopPropagation(); onAction(projectId); setGenerateOpen(true); }}
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

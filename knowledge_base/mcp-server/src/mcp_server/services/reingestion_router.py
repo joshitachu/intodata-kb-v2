@@ -1,6 +1,6 @@
 """Deterministic, model-independent reingestion routing (Strategy pattern).
 
-Python computes the AUTHORITATIVE affected-doc set and picks one of four
+Python computes the AUTHORITATIVE affected-doc set and picks one of five
 strategies from structural facts alone:
 
     changed files -> changed_groups (resolve_changed_groups)
@@ -10,8 +10,8 @@ strategies from structural facts alone:
 Decision table (evaluated in order):
 
     no doc-relevant change                                   -> skip
-    manifest missing / groups unresolved / affected empty    -> full_regen
-    affected set wider than the breadth threshold            -> full_regen
+    manifest missing / groups unresolved / affected empty    -> held
+    affected set wider than the patch bound                  -> scoped_regen
     structural change (unit/file add or remove)              -> scoped_regen
     in-file edits only, affected set within the patch bound  -> bounded_patch
     in-file edits only, affected set above the patch bound   -> scoped_regen
@@ -23,7 +23,7 @@ timeout, or invalid output is discarded and the run proceeds on Python's floor.
 
 The Strategy classes encode the DECISION (which docs, which lane); the runtime
 in ``auto_doc_update`` maps a ``RoutingDecision`` to the concrete action
-(skip / bounded patch / scoped or full reingest). Keeping decision and action
+(skip / held / bounded patch / scoped reingest). Keeping decision and action
 separate keeps a single named pattern without a god-object.
 """
 
@@ -50,7 +50,7 @@ from mcp_server.services.rag_support_package import RAG_SUPPORT_DIRNAME
 
 logger = logging.getLogger(__name__)
 
-RoutingStrategyName = Literal["skip", "bounded_patch", "scoped_regen", "full_regen"]
+RoutingStrategyName = Literal["skip", "held", "bounded_patch", "scoped_regen", "full_regen"]
 
 
 class RoutingDecision(BaseModel):
@@ -69,6 +69,7 @@ class RoutingDecision(BaseModel):
     manifest_present: bool = False
     expanded_docs: list[str] = Field(default_factory=list)
     reason: str = ""
+    reason_code: str | None = None
 
     def to_impact_dict(self) -> dict[str, Any]:
         """Render in the legacy impact-plan shape consumed by git_diff_patcher.
@@ -87,6 +88,7 @@ class RoutingDecision(BaseModel):
             "stale_claims": [],
             "confidence": 1.0,
             "reason": self.reason,
+            "reason_code": self.reason_code,
         }
 
 
@@ -104,6 +106,7 @@ class ReingestionStrategy(ABC):
         structural: bool,
         manifest_present: bool,
         reason: str,
+        reason_code: str | None = None,
     ) -> RoutingDecision:
         ...
 
@@ -120,6 +123,7 @@ class _SimpleStrategy(ReingestionStrategy):
         structural: bool,
         manifest_present: bool,
         reason: str,
+        reason_code: str | None = None,
     ) -> RoutingDecision:
         return RoutingDecision(
             strategy=self.name,
@@ -128,12 +132,18 @@ class _SimpleStrategy(ReingestionStrategy):
             structural=structural,
             manifest_present=manifest_present,
             reason=reason,
+            reason_code=reason_code,
         )
 
 
 class SkipStrategy(_SimpleStrategy):
     def __init__(self) -> None:
         super().__init__("skip")
+
+
+class HeldStrategy(_SimpleStrategy):
+    def __init__(self) -> None:
+        super().__init__("held")
 
 
 class BoundedPatchStrategy(_SimpleStrategy):
@@ -169,6 +179,7 @@ class ReingestionRouter:
             max_patch_docs if max_patch_docs is not None else config.git_diff_patch_max_docs
         )
         self._skip = SkipStrategy()
+        self._held = HeldStrategy()
         self._bounded = BoundedPatchStrategy()
         self._scoped = ScopedRegenStrategy()
         self._full = FullRegenStrategy()
@@ -202,58 +213,30 @@ class ReingestionRouter:
         manifest_present = dependency is not None
         affected = self._affected_docs(dependency, changed_groups)
 
-        # Slice 1: under impact routing the fingerprint dirty-set (inside
-        # run_git_reingestion) is the authoritative Phase 3 scope. The doc-count
-        # thresholds and the "path resolution failed -> full" fallback are retired
-        # here. Flag off -> the branches below are byte-identical to the legacy
-        # decision table.
-        impact_mode = config.impact_routing_enabled
-
-        # A missing provenance manifest is a genuine, reasoned full regeneration
-        # (traceability unavailable) in both modes.
+        # A missing/corrupt provenance manifest is not permission to regenerate
+        # every document. Keep the active revision and request traceability
+        # repair or an explicit manual rebuild instead.
         if dependency is None:
-            return self._full.build(
+            return self._held.build(
                 affected_docs=affected,
                 changed_groups=changed_groups,
                 structural=structural,
                 manifest_present=manifest_present,
-                reason=self._full_regen_reason(dependency, changed_groups, affected),
+                reason="Documentation provenance is unavailable; automatic patch held",
+                reason_code="traceability_required",
             )
 
-        # Groups unresolved by path, or resolved but mapping to no docs.
+        # Path resolution is an optimisation. Until semantic impact analysis can
+        # produce an exact target set, unresolved paths and empty maps fail
+        # closed rather than becoming an all-documents operation.
         if not changed_groups or not affected:
-            if impact_mode:
-                # Do NOT force full: the path resolver is not the driver. Delegate
-                # the real scope to the fingerprint dirty-set downstream.
-                return self._scoped.build(
-                    affected_docs=affected,
-                    changed_groups=changed_groups,
-                    structural=structural,
-                    manifest_present=manifest_present,
-                    reason=(
-                        "Impact routing: change unresolved by path; scope "
-                        "delegated to the fingerprint dirty-set"
-                    ),
-                )
-            return self._full.build(
+            return self._held.build(
                 affected_docs=affected,
                 changed_groups=changed_groups,
                 structural=structural,
                 manifest_present=manifest_present,
-                reason=self._full_regen_reason(dependency, changed_groups, affected),
-            )
-
-        # Doc-count full-regen threshold: retired under impact routing.
-        if not impact_mode and len(affected) > self._full_regen_threshold:
-            return self._full.build(
-                affected_docs=affected,
-                changed_groups=changed_groups,
-                structural=structural,
-                manifest_present=manifest_present,
-                reason=(
-                    f"Affected doc set ({len(affected)}) exceeds full-regen "
-                    f"threshold ({self._full_regen_threshold})"
-                ),
+                reason="Changed source could not be mapped to a bounded documentation scope",
+                reason_code="traceability_required",
             )
 
         if structural:
@@ -263,18 +246,6 @@ class ReingestionRouter:
                 structural=True,
                 manifest_present=manifest_present,
                 reason="Structural change (unit add/remove) -> scoped regeneration",
-            )
-
-        # Non-structural in-file edits. Under impact routing these always take the
-        # patch lane regardless of doc count (the count gate is retired); the
-        # patch executor scopes and safely falls back to scoped regen on its own.
-        if impact_mode:
-            return self._bounded.build(
-                affected_docs=affected,
-                changed_groups=changed_groups,
-                structural=False,
-                manifest_present=manifest_present,
-                reason="Impact routing: in-file edits -> patch lane",
             )
 
         if len(affected) <= self._max_patch_docs:
@@ -315,7 +286,7 @@ class ReingestionRouter:
         """
         if not config.reingestion_llm_expand_enabled:
             return decision
-        if decision.strategy == "skip":
+        if decision.strategy in {"skip", "held"}:
             return decision
 
         try:
@@ -429,18 +400,6 @@ class ReingestionRouter:
             output_dir / "docs" / RAG_SUPPORT_DIRNAME / DOC_PACK_MANIFEST_FILENAME
         )
         return GroupDocDependency.load(manifest_path)
-
-    @staticmethod
-    def _full_regen_reason(
-        dependency: GroupDocDependency | None,
-        changed_groups: list[str],
-        affected: list[str],
-    ) -> str:
-        if dependency is None:
-            return "No provenance manifest (pre-feature baseline) -> full regeneration"
-        if not changed_groups:
-            return "Changed files did not resolve to any scan group -> full regeneration"
-        return "Changed groups map to no docs -> full regeneration"
 
 
 def _expander_provider_config(model_id: str) -> dict[str, str | None]:

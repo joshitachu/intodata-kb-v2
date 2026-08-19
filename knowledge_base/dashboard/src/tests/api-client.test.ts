@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { api, openCodeRuntimeModelId } from "../api/client";
+import { api } from "../api/client";
 
 describe("API client", () => {
   beforeEach(() => {
@@ -180,47 +180,6 @@ describe("API client", () => {
     );
   });
 
-  it("splits canonical catalogue routes into OpenCode provider-local model IDs", () => {
-    expect(
-      openCodeRuntimeModelId("deepseek", "deepseek/deepseek-v4-pro"),
-    ).toBe("deepseek-v4-pro");
-    expect(
-      openCodeRuntimeModelId("route33", "route33/z-ai/glm-5.2"),
-    ).toBe("z-ai/glm-5.2");
-    expect(openCodeRuntimeModelId("provider", "already-local")).toBe(
-      "already-local",
-    );
-  });
-
-  it("sends the exact approved provider/model route with OpenAI Agents and paid acknowledgement", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response("not started", { status: 503 }),
-    );
-
-    await expect(
-      api.generateOpenCodeCandidate(
-        "werkorder",
-        "grounded",
-        "deepseek",
-        "deepseek-v4-flash",
-        "openai-agents",
-        true,
-      ),
-    ).rejects.toThrow("503");
-
-    const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
-    const body = JSON.parse(fetchCall[1]?.body as string);
-    expect(body).toMatchObject({
-      project_id: "werkorder",
-      candidate_mode: "grounded",
-      provider_id: "deepseek",
-      model_id: "deepseek-v4-flash",
-      grounded_runtime_id: "openai-agents",
-      acknowledge_paid_execution: true,
-      acknowledge_non_publishing: true,
-    });
-  });
-
   it("throws on non-OK response", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response("Server Error", { status: 500 })
@@ -311,4 +270,5 @@ describe("API client", () => {
     expect(JSON.parse(fetchCall[1]?.body as string)).not.toHaveProperty("project_id");
     expect(JSON.parse(fetchCall[1]?.body as string)).not.toHaveProperty("plugin_pack_id");
   });
+
 });

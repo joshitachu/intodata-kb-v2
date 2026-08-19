@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -107,73 +106,6 @@ class MCPServerConfig(BaseSettings):
     # App env (development | staging | production) — toggles hard-fail secret validation
     app_env: str = "development"
 
-    # Additive agentic documentation experiments. These settings are isolated
-    # from the legacy scanner and /mcp/generate workflow. The experiment surface
-    # remains unavailable unless explicitly enabled.
-    agentic_experiments_enabled: bool = False
-    agentic_paid_execution_enabled: bool = False
-    agentic_opencode_base_url: str = "http://opencode-runtime:4096"
-    agentic_opencode_username: str = "opencode"
-    agentic_opencode_password: str = ""
-    agentic_opencode_version: str = "1.18.4"
-    # Backward-compatible Grounded runtime default when a request does not
-    # explicitly choose a runtime. Per-request selection remains operator-gated.
-    agentic_grounded_runtime_id: str = "opencode"
-    # Server-side default provider/model for grounded doc-generation runs. Used
-    # when the API caller (e.g. the Generate dialog) does not pin an explicit
-    # provider/model. Kept as config knobs (not a buried literal) so an operator
-    # can retarget the default without a code change. The deep legacy runs used
-    # ``deepseek-v4-pro``; a weaker default (``deepseek-v4-flash``) produced the
-    # thin werkorder output, so ``pro`` is the platform default. An explicit
-    # caller-supplied provider/model always overrides these. Env:
-    # MCP_AGENTIC_GROUNDED_DEFAULT_PROVIDER_ID / MCP_AGENTIC_GROUNDED_DEFAULT_MODEL_ID.
-    agentic_grounded_default_provider_id: str = "deepseek"
-    agentic_grounded_default_model_id: str = "deepseek-v4-pro"
-    # Bounded retry budget for TRANSIENT provider/runtime errors (e.g. the
-    # OpenCode 5xx "runtime unavailable" class or a runtime read timeout) while
-    # executing one grounded role. Distinct from the pack repair limit, which
-    # retries DETERMINISTIC validation failures. Deterministic (non-retryable)
-    # errors are never retried by this budget. Env:
-    # MCP_AGENTIC_GROUNDED_TRANSIENT_RETRY_LIMIT.
-    agentic_grounded_transient_retry_limit: int = 2
-    agentic_openai_agents_enabled: bool = False
-    agentic_openai_agents_provider_id: str = "openai"
-    agentic_openai_agents_model_ids: str = ""
-    agentic_openai_agents_api_key_env_var: str = "OPENAI_API_KEY"
-    # Optional provider-neutral allowlist for OpenAI-compatible Agents routes.
-    # Each entry declares provider_id, model_id, display_name, api_key_env_var,
-    # optional base_url, and frozen input/output USD-per-million rates. Secret
-    # values remain in their referenced environment variables.
-    agentic_openai_agents_routes_json: str = ""
-    agentic_openai_agents_max_turns_per_role: int = 8
-    agentic_recipe_root: Path = Path("data/agentic_recipes")
-    # Shared only between Nexus and the isolated OpenCode runtime. Each
-    # experiment receives one directory containing frozen sources and a
-    # candidate-only output directory.
-    agentic_workspace_root: Path = Path("agentic-workspaces")
-    # A separate secret signs short-lived, task-scoped MCP tokens. It must never
-    # reuse a provider key or the dashboard JWT secret.
-    agentic_task_token_secret: str = ""
-    agentic_task_token_ttl_seconds: int = 900
-    agentic_max_concurrent_experiments: int = 1
-    agentic_max_concurrent_tasks: int = 3
-    agentic_max_task_attempts: int = 2
-    agentic_max_tool_calls: int = 80
-    agentic_max_tool_bytes: int = 1_000_000
-    agentic_max_tool_result_bytes: int = 100_000
-    agentic_max_input_tokens: int = 1_500_000
-    agentic_max_output_tokens: int = 200_000
-    agentic_max_wall_seconds: int = 7_200
-    # Zero (the default) means no cost ceiling is enforced. Paid execution is
-    # still gated on explicit per-run operator confirmation
-    # (acknowledge_paid_execution); this value only caps spend when an
-    # operator opts into a ceiling by setting it above zero.
-    agentic_max_cost_usd: float = 0.0
-    agentic_retention_days: int = 30
-    # Optional JSON array of administrator-governed directory roots for
-    # non-scanner evidence adapters. Empty trusts no extra directory.
-    agentic_governed_source_roots_json: str = ""
-
     # Doc generation
     doc_generation_provider: str = "custom"
     # Supported values:
@@ -251,6 +183,14 @@ class MCPServerConfig(BaseSettings):
     # path-based resolve_changed_groups are RETIRED as routing drivers under this
     # flag. Default off so deploy is a no-op until baselines are primed.
     impact_routing_enabled: bool = False  # MCP_IMPACT_ROUTING_ENABLED
+
+    # Candidate-first living-document patch publication. Disabled until an
+    # operator has deployed the matching RAG revision migration and primed a
+    # baseline; when enabled, bounded Git patches never write active docs or
+    # invoke legacy direct-RAG publication.
+    living_doc_patching_enabled: bool = False  # MCP_LIVING_DOC_PATCHING_ENABLED
+    living_doc_rollout_stage: str = "approval_only"  # MCP_LIVING_DOC_ROLLOUT_STAGE
+    living_doc_low_risk_max_artifacts: int = 3  # MCP_LIVING_DOC_LOW_RISK_MAX_ARTIFACTS
 
     # Deterministic reingestion routing (Slice 3). The affected-doc set is
     # computed in Python; a change touching more than this many docs routes to a
@@ -350,25 +290,6 @@ class MCPServerConfig(BaseSettings):
     # Narrative docs receive a grouped view of an oversized project-wide impact
     # matrix. The complete deterministic matrix remains stored as evidence.
     phase3_change_impact_view_bytes: int = 48_000  # MCP_PHASE3_CHANGE_IMPACT_VIEW_BYTES
-    # Per-unit verbatim evidence bundle staged into Grounded (experiments)
-    # evidence-role packets: component inventory, all code bodies, tMap
-    # expressions, SQL, and context variables extracted deterministically from
-    # the frozen scan. Verbatim evidence is never trimmed before derived
-    # niceties; over-budget bundles ship whole with a logged warning.
-    grounded_unit_evidence_bytes: int = 120_000  # MCP_GROUNDED_UNIT_EVIDENCE_BYTES
-    # Byte budget for one Grounded (experiments) Phase 2 analysis batch. The
-    # deterministic batch planner bin-packs whole units (never splitting a unit)
-    # up to this budget, so analysis fans out with the project instead of a
-    # fixed role count. Tightly-coupled units (caller/callee, shared
-    # connection, same group) are kept in the same batch where the budget
-    # allows. Sized under the analysis role packet budget to leave room for the
-    # FACT_LEDGER/SOURCE_MANIFEST copies staged alongside the evidence.
-    grounded_analysis_batch_bytes: int = 6_000_000  # MCP_GROUNDED_ANALYSIS_BATCH_BYTES
-    # Force every scanned unit to the deep per-unit (Tier-A) document tier,
-    # bypassing the production/test classifier. Off by default: real production
-    # units are documented deeply while classified test/scratch/sandbox units get
-    # a lighter summary. Turn on to treat every unit as production.
-    grounded_force_all_units_deep: bool = False  # MCP_GROUNDED_FORCE_ALL_UNITS_DEEP
     # Supporting-evidence preparation caps (non-code artifacts: mappings, PDFs,
     # notes). These are LOUD: every file skipped by a cap is logged with its
     # relative path and size (never a silent drop). Raising max_file_bytes lets
@@ -376,13 +297,6 @@ class MCPServerConfig(BaseSettings):
     # cumulative raw-read budget. Both flow into SupportingEvidenceLimits.
     supporting_evidence_max_file_bytes: int = 4 * 1024 * 1024  # MCP_SUPPORTING_EVIDENCE_MAX_FILE_BYTES
     supporting_evidence_max_raw_bytes: int = 100 * 1024 * 1024  # MCP_SUPPORTING_EVIDENCE_MAX_RAW_BYTES
-    # Per-unit budget for the appended "Documented mappings (Tier-3 context)"
-    # section. Verbatim code/SQL/tMap evidence is NEVER trimmed to make room for
-    # mappings; only the mapping section itself is bounded (and truncation is
-    # logged). Also bounds the project-tier documented-mappings file handed to
-    # the Tier-B summary writers.
-    grounded_unit_mapping_bytes: int = 24_000  # MCP_GROUNDED_UNIT_MAPPING_BYTES
-    grounded_project_mapping_bytes: int = 200_000  # MCP_GROUNDED_PROJECT_MAPPING_BYTES
     source_context_mode: str = "direct_redacted"  # MCP_SOURCE_CONTEXT_MODE: structured | direct_redacted
     direct_source_inline_max_bytes: int = 120_000  # MCP_DIRECT_SOURCE_INLINE_MAX_BYTES
     direct_source_chunk_bytes: int = 80_000  # MCP_DIRECT_SOURCE_CHUNK_BYTES
@@ -461,7 +375,22 @@ class MCPServerConfig(BaseSettings):
     docgen_brief_output_tokens: int = 14_000          # MCP_DOCGEN_BRIEF_OUTPUT_TOKENS
     docgen_inventory_output_tokens_base: int = 10_000 # MCP_DOCGEN_INVENTORY_OUTPUT_TOKENS_BASE
     docgen_inventory_output_tokens_per_unit: int = 120  # MCP_DOCGEN_INVENTORY_OUTPUT_TOKENS_PER_UNIT
-    # Standard-catalog per-unit reference docs (opencode-grade unit dossiers).
+    # Output-sized Phase 3 slicing (slicing redesign). A document whose
+    # expected OUTPUT fits one model call is generated in ONE call with all
+    # its evidence bounded to the context ceiling (no evidence-chunk restarts,
+    # no merge). Only genuinely large docs (unit-scaled inventories / rule
+    # catalogs) are partitioned by section/unit-range with a shared skeleton.
+    # The single-call cap reflects the OBSERVED per-call output of production
+    # models (~16-18K tokens on deepseek-v4-pro), not the configured
+    # phase3_max_tokens safety ceiling.
+    phase3_single_call_output_tokens: int = 16_000    # MCP_PHASE3_SINGLE_CALL_OUTPUT_TOKENS
+    # Expected output for fixed-shape docs (00,01,03,05,06,07,08 style):
+    # observed real deduplicated content is ~7-16K tokens per doc.
+    docgen_doc_expected_output_tokens: int = 12_000   # MCP_DOCGEN_DOC_EXPECTED_OUTPUT_TOKENS
+    # Business-rule catalogs (04 style) scale with unit count like inventories.
+    docgen_rules_output_tokens_base: int = 4_000      # MCP_DOCGEN_RULES_OUTPUT_TOKENS_BASE
+    docgen_rules_output_tokens_per_unit: int = 150    # MCP_DOCGEN_RULES_OUTPUT_TOKENS_PER_UNIT
+    # Standard-catalog per-unit reference docs (deep per-unit dossiers).
     # Expanded one-per-scanned-unit from catalog entries marked per_unit; the
     # unit docs are written FIRST and the catalog/summary docs synthesize from
     # them (plus the analysis layer). Disable to restore the pre-unit-doc set.
@@ -618,75 +547,6 @@ def check_provider_credentials() -> list[str]:
     return warnings_out
 
 
-def check_agentic_configuration(
-    settings: MCPServerConfig | None = None,
-) -> list[str]:
-    """Return fail-closed configuration warnings for the additive experiment path."""
-
-    current = settings or config
-    warnings_out: list[str] = []
-    if current.agentic_paid_execution_enabled and not current.agentic_experiments_enabled:
-        warnings_out.append(
-            "agentic paid execution requires MCP_AGENTIC_EXPERIMENTS_ENABLED=true"
-        )
-    if not current.agentic_experiments_enabled:
-        return warnings_out
-    if len(current.agentic_task_token_secret.encode("utf-8")) < 32:
-        warnings_out.append(
-            "agentic experiments require a dedicated task-token secret of at least 32 bytes"
-        )
-    if current.agentic_grounded_runtime_id != "openai-agents":
-        if not current.agentic_opencode_password:
-            warnings_out.append(
-                "agentic experiments require authenticated OpenCode access"
-            )
-        if not current.agentic_opencode_base_url or not current.agentic_opencode_username:
-            warnings_out.append(
-                "agentic experiments require an OpenCode URL and username"
-            )
-        if not current.agentic_opencode_version:
-            warnings_out.append("agentic experiments require a pinned OpenCode version")
-    if current.agentic_grounded_runtime_id not in {"opencode", "openai-agents"}:
-        warnings_out.append(
-            "agentic grounded runtime must be 'opencode' or 'openai-agents'"
-        )
-    if (
-        current.agentic_grounded_runtime_id == "openai-agents"
-        or current.agentic_openai_agents_enabled
-    ):
-        if not current.agentic_openai_agents_enabled:
-            warnings_out.append(
-                "OpenAI Agents Grounded runtime requires its explicit enable flag"
-            )
-        # The provider-neutral routes allowlist (each entry self-contained:
-        # provider_id, model_id, api_key_env_var) is an alternative to the
-        # single-provider fields below -- either configuration path suffices.
-        if not current.agentic_openai_agents_routes_json.strip():
-            if not current.agentic_openai_agents_provider_id.strip():
-                warnings_out.append("OpenAI Agents requires a provider id")
-            if not any(
-                item.strip()
-                for item in current.agentic_openai_agents_model_ids.split(",")
-            ):
-                warnings_out.append("OpenAI Agents requires an operator model allowlist")
-            if not current.agentic_openai_agents_api_key_env_var.strip():
-                warnings_out.append("OpenAI Agents requires an API-key environment name")
-        if current.agentic_openai_agents_max_turns_per_role < 1:
-            warnings_out.append("OpenAI Agents requires a positive per-role turn limit")
-    if current.agentic_task_token_ttl_seconds <= 0:
-        warnings_out.append(
-            "agentic experiments require a positive task-token TTL"
-        )
-    # A cost ceiling is optional -- paid execution is gated on explicit
-    # per-run confirmation, not on a configured maximum. Zero (the default)
-    # means unlimited; only a malformed explicit value is rejected.
-    if not math.isfinite(current.agentic_max_cost_usd) or current.agentic_max_cost_usd < 0:
-        warnings_out.append(
-            "operator cost ceiling must be zero (unlimited) or a positive finite number"
-        )
-    return warnings_out
-
-
 def validate_production_secrets() -> None:
     """Hard-fail if secrets are left at defaults in production mode."""
     if config.app_env != "production":
@@ -700,12 +560,6 @@ def validate_production_secrets() -> None:
         raise ValueError(
             "CRITICAL: MCP_INGEST_API_KEY is empty. "
             "Set a strong random key in production (used to push generated docs to RAG)."
-        )
-    agentic_warnings = check_agentic_configuration(config)
-    if agentic_warnings:
-        raise ValueError(
-            "CRITICAL: invalid agentic experiment configuration: "
-            + "; ".join(agentic_warnings)
         )
     # GitHub App is optional (PAT fallback exists), but a PARTIAL configuration is a
     # latent failure: the install redirect or token minting will break at runtime.

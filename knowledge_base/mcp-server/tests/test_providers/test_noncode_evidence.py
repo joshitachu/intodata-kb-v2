@@ -100,10 +100,140 @@ def test_redaction_strips_credentials_and_is_idempotent():
     assert count >= 2
     assert "Sup3rSecret" not in safe
     assert "abcdef123456789" not in safe
-    assert "[REDACTED]" in safe
+    assert nc.REDACTED_CREDENTIAL in safe
+    assert "user=admin" in safe  # key names and non-credential params survive
     # Idempotent: re-redacting produces identical text.
     again, _ = nc.redact_text(safe)
     assert again == safe
+
+
+# ── credential redaction: tabular columns and inline parameters ──────────────
+#
+# Run-74 leak class: an Excel export with a credential-named column rendered
+# as delimiter rows, and Talend/Camel `password=RAW(...)` parameters embedded
+# in URI/param strings, both sailed through into published docs.
+
+
+def test_credential_column_values_redacted_header_preserved():
+    text = (
+        "server | ftp_user | ftp_pw | directory\n"
+        "transfer.example.nl | svc-account | S3cr3t!Pass | /data/in\n"
+        "backup.example.nl | svc-account2 | 0therS3cret | /data/out"
+    )
+    safe, count = nc.redact_text(text)
+    assert count >= 2
+    assert "S3cr3t!Pass" not in safe
+    assert "0therS3cret" not in safe
+    assert safe.count(nc.REDACTED_CREDENTIAL) == 2
+    # Header row survives so docs can say "password column present (redacted)".
+    assert "ftp_pw" in safe
+    # Non-credential columns are untouched.
+    assert "transfer.example.nl" in safe
+    assert "svc-account" in safe
+    assert "/data/in" in safe
+
+
+def test_wachtwoord_column_redacted_semicolon_delimiter():
+    text = "gebruiker;wachtwoord;omgeving\npiet;GeheimW8w;prod"
+    safe, _ = nc.redact_text(text)
+    assert "GeheimW8w" not in safe
+    assert "wachtwoord" in safe  # header preserved
+    assert "gebruiker" in safe and "prod" in safe
+
+
+def test_xlsx_password_column_redacted_end_to_end(tmp_path: Path):
+    # xlsx probe renders pipe-joined rows; the walk must redact the column.
+    raw = _xlsx_bytes(
+        ["host", "user", "password"],
+        [["ftp01", "svc-intf", "TopS3cret!x"]],
+    )
+    (tmp_path / "esb_ftp.xlsx").write_bytes(raw)
+    result = nc.NonCodeEvidenceExtractor(tmp_path).extract()
+    item = next(i for i in result.items if i.relative_path == "esb_ftp.xlsx")
+    assert "TopS3cret" not in item.text
+    assert "password" in item.text  # header preserved
+    assert nc.REDACTED_CREDENTIAL in item.text
+    assert item.redactions >= 1
+
+
+def test_talend_raw_password_redacted_preserving_wrapper():
+    text = (
+        "ftp://host/dir?user=sa-talend&password=RAW(P@ss w0rd!X)&passiveMode=true"
+    )
+    safe, count = nc.redact_text(text)
+    assert count >= 1
+    assert "P@ss w0rd!X" not in safe
+    # Key name AND the RAW() wrapper structure are preserved.
+    assert "password=RAW([REDACTED-CREDENTIAL])" in safe
+    assert "user=sa-talend" in safe
+    assert "passiveMode=true" in safe
+    again, _ = nc.redact_text(safe)
+    assert again == safe  # idempotent
+
+
+def test_inline_credentials_in_connection_strings_and_urls():
+    text = (
+        "Server=db1;Database=app;User Id=svc;Pwd=Hunter2!x;Encrypt=true\n"
+        "https://api.example.com/v1?client_id=abc&token=tok_9f8e7d6c&size=10\n"
+        "header X-API-Key: 9f8e7d6c5b4a\n"
+        "props: host=h1, secret=s3cr3tv4l, timeout=30"
+    )
+    safe, _ = nc.redact_text(text)
+    assert "Hunter2!x" not in safe
+    assert "tok_9f8e7d6c" not in safe
+    assert "9f8e7d6c5b4a" not in safe
+    assert "s3cr3tv4l" not in safe
+    # Key names and surrounding structure preserved; non-credential params kept.
+    assert "Pwd=" in safe and "Server=db1" in safe and "Database=app" in safe
+    assert "client_id=abc" in safe and "size=10" in safe
+    assert "timeout=30" in safe
+
+
+def test_inline_raw_redaction_applies_to_all_text_artifact_types(tmp_path: Path):
+    body = "endpoint ftp://h/in?password=RAW(Sup3r Secret!)&binary=true"
+    (tmp_path / "map.xslt").write_text(f"<xsl:stylesheet><!-- {body} --></xsl:stylesheet>", encoding="utf-8")
+    (tmp_path / "sample.xml").write_text(f"<cfg uri='{body}'/>", encoding="utf-8")
+    (tmp_path / "note.txt").write_text(body, encoding="utf-8")
+    (tmp_path / "export.csv").write_text(f"name,uri\nftp-in,{body}", encoding="utf-8")
+    result = nc.NonCodeEvidenceExtractor(tmp_path).extract()
+    assert len(result.items) == 4
+    for item in result.items:
+        assert "Sup3r Secret" not in item.text, item.relative_path
+        assert "password=RAW([REDACTED-CREDENTIAL])" in item.text, item.relative_path
+
+
+def test_shared_string_pool_never_emitted_flat():
+    # Run-74 leak shape: a shared-string pool dumped as ONE space-joined line
+    # (headers and cell values mixed) has no recoverable column structure, so
+    # no value redactor can safely act on it. The probe must never emit it --
+    # even when no worksheet is detected in the package.
+    shared_xml = (
+        '<?xml version="1.0"?><sst '
+        'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        "<si><t>ftp_pw</t></si><si><t>S3cr3t!777</t></si></sst>"
+    )
+    workbook_xml = '<?xml version="1.0"?><workbook><sheets/></workbook>'
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("xl/sharedStrings.xml", shared_xml)
+        zf.writestr("xl/workbook.xml", workbook_xml)  # no worksheets member
+    out = nc.OfficeOpenXmlProbe().extract(buf.getvalue(), max_bytes=64 * 1024)
+    assert out is None or b"S3cr3t!777" not in out
+
+
+def test_non_credential_content_untouched():
+    text = (
+        "WorkOrderId | AssetTag | Status\n"
+        "1001 | PUMP-7 | OPEN\n"
+        "See https://example.com/path?order=123&limit=5 for details.\n"
+        "user=admin host=db1 port=1433\n"
+        "Primary Key | Pass/Fail\n"
+        "id | pass"
+    )
+    safe, count = nc.redact_text(text)
+    assert safe == text
+    assert count == 0
 
 
 # ── code-tree exclusion derivation ───────────────────────────────────────────
@@ -174,7 +304,7 @@ def test_extractor_skips_code_ingests_noncode_and_redacts(tmp_path: Path):
     # credential in the note is redacted before it leaves the module
     note = next(i for i in result.items if i.relative_path == "Notes/readme.txt")
     assert "Hunter2Secret" not in note.text
-    assert "[REDACTED]" in note.text
+    assert nc.REDACTED_CREDENTIAL in note.text
 
 
 def test_zip_pre_extracted_sibling_skips_recursion(tmp_path: Path):

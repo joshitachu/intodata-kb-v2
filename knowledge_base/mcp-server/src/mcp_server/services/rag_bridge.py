@@ -6,6 +6,7 @@ import hashlib
 import logging
 from contextlib import nullcontext
 from pathlib import Path
+from collections.abc import Mapping, Sequence
 
 import httpx
 
@@ -16,6 +17,17 @@ from mcp_server.services.log_manager import LogManager
 from mcp_server.services.rag_support_package import (
     build_entity_aliases,
     collect_internal_artifacts,
+)
+from mcp_server.services.living_docs.rag_revisions import (
+    PreparedRagRevision,
+    RagArtifact,
+    RagActivationReceipt,
+    RagMutation,
+    RagMutationKind,
+    RagValidationReceipt,
+    RevisionedRagPort,
+    RevisionNotPreparedError,
+    RevisionValidationError,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,10 +56,99 @@ def rag_push_succeeded(result: dict, *, expected_count: int | None = None) -> bo
 class RagBridge:
     """Pushes markdown documents to the RAG pipeline for indexing."""
 
-    def __init__(self, log_manager: LogManager | None = None) -> None:
+    def __init__(
+        self,
+        log_manager: LogManager | None = None,
+        *,
+        revisioned_rag: RevisionedRagPort | None = None,
+    ) -> None:
         self.base_url = config.rag_base_url
         self.log_manager = log_manager
         self._api_key = config.ingest_api_key
+        # Incremental patch publication injects a revision-aware adapter.  The
+        # legacy bridge remains unchanged for first ingestion/manual recovery,
+        # so an ordinary caller never accidentally stages or activates a
+        # revision through its existing push methods.
+        self._revisioned_rag = revisioned_rag
+
+    def _require_revisioned_rag(self) -> RevisionedRagPort:
+        if self._revisioned_rag is None:
+            raise RuntimeError(
+                "Revision-aware RAG is not configured; use the explicit "
+                "prepare/validate/activate patch path"
+            )
+        return self._revisioned_rag
+
+    async def prepare_revision(
+        self,
+        project_id: str,
+        knowledge_revision_id: str,
+        mutations: Sequence[RagMutation],
+        *,
+        base_knowledge_revision_id: str | None,
+    ) -> PreparedRagRevision:
+        """Prepare targeted canonical/internal mutations while reads stay active.
+
+        This is the S2 entry point for the incremental coordinator.  It has no
+        fallback to ``sync_internal_layers`` or ``push_docs`` because either
+        legacy method can expose a partial update before a revision activates.
+        """
+        return await self._require_revisioned_rag().prepare(
+            project_id,
+            knowledge_revision_id,
+            mutations,
+            base_knowledge_revision_id=base_knowledge_revision_id,
+        )
+
+    async def validate_revision(
+        self,
+        project_id: str,
+        knowledge_revision_id: str,
+        *,
+        required_artifact_hashes: Mapping[str, str] | None = None,
+        required_deletes: Sequence[str] = (),
+        required_aliases: Mapping[str, str] | None = None,
+    ) -> RagValidationReceipt:
+        """Validate exact membership/hashes before making a revision visible."""
+        return await self._require_revisioned_rag().validate(
+            project_id,
+            knowledge_revision_id,
+            required_artifact_hashes=required_artifact_hashes,
+            required_deletes=required_deletes,
+            required_aliases=required_aliases,
+        )
+
+    async def activate_revision(
+        self, project_id: str, knowledge_revision_id: str
+    ) -> RagActivationReceipt:
+        """Atomically expose a previously validated RAG revision."""
+        return await self._require_revisioned_rag().activate(
+            project_id,
+            knowledge_revision_id,
+        )
+
+    async def active_knowledge_revision(self, project_id: str) -> str | None:
+        """Return the revision that retrieval must filter to for this project."""
+        return await self._require_revisioned_rag().active_revision(project_id)
+
+    async def rollback_revision(
+        self,
+        project_id: str,
+        knowledge_revision_id: str,
+        *,
+        expected_active_revision_id: str,
+    ) -> RagActivationReceipt:
+        """CAS-restore a retained revision; this never calls an embedding provider."""
+
+        return await self._require_revisioned_rag().rollback(
+            project_id,
+            knowledge_revision_id,
+            expected_active_revision_id=expected_active_revision_id,
+        )
+
+    def http_revisioned_adapter(self) -> "HttpRevisionedRagAdapter":
+        """Build the authenticated HTTP port used by the enabled patch route."""
+        return HttpRevisionedRagAdapter(self)
 
     @staticmethod
     def push_succeeded(result: dict, *, expected_count: int | None = None) -> bool:
@@ -426,3 +527,181 @@ class RagBridge:
                 logger.error(f"Failed to read {md_file}: {e}")
 
         return docs
+
+
+class HttpRevisionedRagAdapter:
+    """RevisionedRagPort backed by the authenticated RAG HTTP surface.
+
+    Only changed upserts are sent through ``/ingest/md``.  The prepare endpoint
+    receives the complete membership and clones unchanged base vectors under
+    the target revision, so activation can switch one coherent snapshot
+    without re-embedding inherited artifacts.
+    """
+
+    def __init__(self, bridge: RagBridge) -> None:
+        self._bridge = bridge
+
+    def _headers(self) -> dict[str, str]:
+        return ({"Authorization": f"Bearer {self._bridge._api_key}"}
+                if self._bridge._api_key else {})
+
+    async def _request(self, method: str, path: str, *, payload: dict | None = None) -> dict:
+        async with httpx.AsyncClient(timeout=config.rag_push_timeout_s) as client:
+            response = await client.request(
+                method,
+                f"{self._bridge.base_url}{path}",
+                json=payload,
+                headers=self._headers(),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def _revision_detail(self, project_id: str, knowledge_revision_id: str) -> dict:
+        try:
+            return await self._request(
+                "GET", f"/api/v1/ingest/revisions/{project_id}/{knowledge_revision_id}"
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise RevisionNotPreparedError(
+                    f"Base revision {knowledge_revision_id!r} is not prepared"
+                ) from exc
+            raise
+
+    async def prepare(
+        self,
+        project_id: str,
+        knowledge_revision_id: str,
+        mutations: Sequence[RagMutation],
+        *,
+        base_knowledge_revision_id: str | None,
+    ) -> PreparedRagRevision:
+        base_membership: dict[str, str] = {}
+        base_aliases: dict[str, str] = {}
+        if base_knowledge_revision_id is not None:
+            base = await self._revision_detail(project_id, base_knowledge_revision_id)
+            base_membership = dict(base.get("membership_hashes") or {})
+            base_aliases = dict(base.get("aliases") or {})
+
+        membership = dict(base_membership)
+        aliases = dict(base_aliases)
+        deleted: set[str] = set()
+        embedded: set[str] = set()
+        reused: set[str] = set(base_membership.values())
+        seen: set[str] = set()
+        for mutation in mutations:
+            if mutation.logical_id in seen:
+                raise RevisionValidationError("A revision may mutate each logical_id only once")
+            seen.add(mutation.logical_id)
+            if mutation.kind is RagMutationKind.UPSERT:
+                assert mutation.artifact is not None
+                artifact: RagArtifact = mutation.artifact
+                artifact_hash = artifact.content_hash
+                if base_membership.get(artifact.logical_id) != artifact_hash:
+                    await self._bridge.push_markdown(
+                        project_id=project_id,
+                        filename=artifact.logical_id,
+                        content=artifact.content,
+                        metadata={
+                            **dict(artifact.metadata),
+                            "source_layer": artifact.source_layer,
+                            "artifact_type": artifact.artifact_type,
+                            "artifact_id": artifact.logical_id,
+                            "content_sha256": artifact_hash,
+                            "knowledge_revision_id": knowledge_revision_id,
+                        },
+                    )
+                    embedded.add(artifact_hash)
+                else:
+                    reused.add(artifact_hash)
+                membership[artifact.logical_id] = artifact_hash
+                aliases.pop(artifact.logical_id, None)
+            elif mutation.kind is RagMutationKind.DELETE:
+                membership.pop(mutation.logical_id, None)
+                aliases.pop(mutation.logical_id, None)
+                deleted.add(mutation.logical_id)
+            else:
+                assert mutation.alias_target is not None
+                aliases[mutation.logical_id] = mutation.alias_target
+
+        await self._request(
+            "POST",
+            "/api/v1/ingest/revisions/prepare",
+            payload={
+                "project_id": project_id,
+                "knowledge_revision_id": knowledge_revision_id,
+                "base_knowledge_revision_id": base_knowledge_revision_id,
+                "membership_hashes": membership,
+                "deleted_logical_ids": sorted(deleted),
+                "aliases": aliases,
+            },
+        )
+        return PreparedRagRevision(
+            project_id=project_id,
+            knowledge_revision_id=knowledge_revision_id,
+            base_knowledge_revision_id=base_knowledge_revision_id,
+            membership_hashes=membership,
+            deleted_logical_ids=frozenset(deleted),
+            aliases=aliases,
+            embedded_content_hashes=frozenset(embedded),
+            reused_content_hashes=frozenset(reused),
+        )
+
+    async def validate(
+        self,
+        project_id: str,
+        knowledge_revision_id: str,
+        *,
+        required_artifact_hashes: Mapping[str, str] | None = None,
+        required_deletes: Sequence[str] = (),
+        required_aliases: Mapping[str, str] | None = None,
+    ) -> RagValidationReceipt:
+        detail = await self._revision_detail(project_id, knowledge_revision_id)
+        membership = dict(detail.get("membership_hashes") or {})
+        deletes = frozenset(detail.get("deleted_logical_ids") or [])
+        aliases = dict(detail.get("aliases") or {})
+        if any(membership.get(key) != value for key, value in (required_artifact_hashes or {}).items()):
+            raise RevisionValidationError("Artifact membership mismatch")
+        if not set(required_deletes).issubset(deletes):
+            raise RevisionValidationError("Delete membership mismatch")
+        if any(aliases.get(key) != value for key, value in (required_aliases or {}).items()):
+            raise RevisionValidationError("Alias membership mismatch")
+        return RagValidationReceipt(
+            project_id=project_id,
+            knowledge_revision_id=knowledge_revision_id,
+            membership_hashes=membership,
+            deleted_logical_ids=deletes,
+            aliases=aliases,
+        )
+
+    async def activate(self, project_id: str, knowledge_revision_id: str) -> RagActivationReceipt:
+        payload = await self._request(
+            "POST", f"/api/v1/ingest/revisions/{project_id}/{knowledge_revision_id}/activate"
+        )
+        return RagActivationReceipt(
+            project_id=project_id,
+            knowledge_revision_id=knowledge_revision_id,
+            previous_knowledge_revision_id=payload.get("previous_knowledge_revision_id"),
+        )
+
+    async def active_revision(self, project_id: str) -> str | None:
+        payload = await self._request("GET", f"/api/v1/ingest/revisions/{project_id}/active")
+        return payload.get("knowledge_revision_id")
+
+    async def rollback(
+        self,
+        project_id: str,
+        knowledge_revision_id: str,
+        *,
+        expected_active_revision_id: str,
+    ) -> RagActivationReceipt:
+        payload = await self._request(
+            "POST",
+            f"/api/v1/ingest/revisions/{project_id}/{knowledge_revision_id}/rollback",
+            payload={"expected_active_revision_id": expected_active_revision_id},
+        )
+        return RagActivationReceipt(
+            project_id=project_id,
+            knowledge_revision_id=knowledge_revision_id,
+            previous_knowledge_revision_id=payload.get("previous_knowledge_revision_id"),
+        )

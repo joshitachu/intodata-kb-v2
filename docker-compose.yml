@@ -1,26 +1,4 @@
 services:
-  opencode-runtime:
-    pull_policy: build
-    build:
-      context: ./knowledge_base/opencode-runtime
-      dockerfile: Dockerfile
-    environment:
-      DEEPSEEK_API_KEY: ${MCP_DOC_GENERATION_DEEPSEEK_API_KEY:-}
-      OPENCODE_SERVER_USERNAME: ${MCP_AGENTIC_OPENCODE_USERNAME:-opencode}
-      OPENCODE_SERVER_PASSWORD: ${MCP_AGENTIC_OPENCODE_PASSWORD:-nexus-opencode-local-only}
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /var/lib/opencode:uid=10001,gid=10001,mode=0700
-    volumes:
-      - ./knowledge_base/agentic-workspaces:/runtime/workspaces
-    mem_limit: 3g
-    cpus: 1.0
-    restart: unless-stopped
-
   postgres:
     image: postgres:16-alpine
     ports:
@@ -278,6 +256,8 @@ services:
       MCP_PROJECT_ROOT: /app/workspace
       MCP_HINDSIGHT_ENABLED: "true"
       MCP_HINDSIGHT_URL: http://hindsight:8888
+      MCP_LIVING_DOC_PATCHING_ENABLED: ${MCP_LIVING_DOC_PATCHING_ENABLED:-true}
+      MCP_LIVING_DOC_ROLLOUT_STAGE: ${MCP_LIVING_DOC_ROLLOUT_STAGE:-approval_only}
       MCP_IMPACT_ROUTING_ENABLED: ${MCP_IMPACT_ROUTING_ENABLED:-false}
       MCP_LOG_LEVEL: ${MCP_LOG_LEVEL:-INFO}
       MCP_JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production-use-a-strong-random-key}
@@ -288,6 +268,9 @@ services:
       MCP_APP_ENV: ${MCP_APP_ENV:-${APP_ENV:-production}}
       MCP_GITHUB_WEBHOOK_SECRET: ${MCP_GITHUB_WEBHOOK_SECRET:-}
       MCP_PIPELINE_DEBUG: "1"
+      MCP_MAX_UPLOAD_ZIP_BYTES: ${MCP_MAX_UPLOAD_ZIP_BYTES:-3221225472}
+      MCP_MAX_UPLOAD_ZIP_UNCOMPRESSED_BYTES: ${MCP_MAX_UPLOAD_ZIP_UNCOMPRESSED_BYTES:-6442450944}
+      MCP_MAX_UPLOAD_ZIP_ENTRIES: ${MCP_MAX_UPLOAD_ZIP_ENTRIES:-300000}
       MCP_DEV_WEBHOOK_SKIP_SIGNATURE: ${MCP_DEV_WEBHOOK_SKIP_SIGNATURE:-false}
       MCP_TOKEN_ENCRYPTION_KEY: ${MCP_TOKEN_ENCRYPTION_KEY:-}
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-${PUBLIC_APP_URL:-}}
@@ -312,33 +295,6 @@ services:
       MCP_DOC_GENERATION_ROUTE33_API_KEY: ${MCP_DOC_GENERATION_ROUTE33_API_KEY:-}
       MCP_DOC_GENERATION_ROUTE33_BASE_URL: ${MCP_DOC_GENERATION_ROUTE33_BASE_URL:-https://api.route33.ai/v1}
       MCP_MODEL_PRICING_JSON: ${MCP_MODEL_PRICING_JSON:-}
-      # Additive A/B documentation experiments. Both gates default off. Paid
-      # execution also requires task/runtime secrets and, per run, explicit
-      # operator confirmation (acknowledge_paid_execution); a cost ceiling
-      # (MCP_AGENTIC_MAX_COST_USD) is optional, not required.
-      MCP_AGENTIC_EXPERIMENTS_ENABLED: ${MCP_AGENTIC_EXPERIMENTS_ENABLED:-false}
-      MCP_AGENTIC_PAID_EXECUTION_ENABLED: ${MCP_AGENTIC_PAID_EXECUTION_ENABLED:-false}
-      MCP_AGENTIC_OPENCODE_BASE_URL: ${MCP_AGENTIC_OPENCODE_BASE_URL:-http://opencode-runtime:4096}
-      MCP_AGENTIC_OPENCODE_USERNAME: ${MCP_AGENTIC_OPENCODE_USERNAME:-opencode}
-      MCP_AGENTIC_OPENCODE_PASSWORD: ${MCP_AGENTIC_OPENCODE_PASSWORD:-nexus-opencode-local-only}
-      MCP_AGENTIC_OPENCODE_VERSION: ${MCP_AGENTIC_OPENCODE_VERSION:-1.18.4}
-      MCP_AGENTIC_GROUNDED_RUNTIME_ID: ${MCP_AGENTIC_GROUNDED_RUNTIME_ID:-opencode}
-      MCP_AGENTIC_OPENAI_AGENTS_ENABLED: ${MCP_AGENTIC_OPENAI_AGENTS_ENABLED:-false}
-      MCP_AGENTIC_OPENAI_AGENTS_PROVIDER_ID: ${MCP_AGENTIC_OPENAI_AGENTS_PROVIDER_ID:-openai}
-      MCP_AGENTIC_OPENAI_AGENTS_MODEL_IDS: ${MCP_AGENTIC_OPENAI_AGENTS_MODEL_IDS:-}
-      MCP_AGENTIC_OPENAI_AGENTS_API_KEY_ENV_VAR: ${MCP_AGENTIC_OPENAI_AGENTS_API_KEY_ENV_VAR:-OPENAI_API_KEY}
-      MCP_AGENTIC_OPENAI_AGENTS_MAX_TURNS_PER_ROLE: ${MCP_AGENTIC_OPENAI_AGENTS_MAX_TURNS_PER_ROLE:-8}
-      # Optional provider-neutral route allowlist (JSON array), used instead of
-      # the single-provider MODEL_IDS/PROVIDER_ID/API_KEY_ENV_VAR fields above
-      # when more than one OpenAI-compatible provider (e.g. DeepSeek) must be
-      # selectable. Each entry: provider_id, model_id, display_name,
-      # api_key_env_var, optional base_url, input/output_usd_per_million.
-      MCP_AGENTIC_OPENAI_AGENTS_ROUTES_JSON: ${MCP_AGENTIC_OPENAI_AGENTS_ROUTES_JSON:-}
-      MCP_AGENTIC_RECIPE_ROOT: ${MCP_AGENTIC_RECIPE_ROOT:-/app/data/agentic_recipes}
-      MCP_AGENTIC_WORKSPACE_ROOT: ${MCP_AGENTIC_WORKSPACE_ROOT:-/app/agentic-workspaces}
-      MCP_AGENTIC_TASK_TOKEN_SECRET: ${MCP_AGENTIC_TASK_TOKEN_SECRET:-}
-      MCP_AGENTIC_MAX_COST_USD: ${MCP_AGENTIC_MAX_COST_USD:-0}
-      MCP_AGENTIC_GOVERNED_SOURCE_ROOTS_JSON: ${MCP_AGENTIC_GOVERNED_SOURCE_ROOTS_JSON:-[]}
       MCP_AGENT_PHASE1_AGENTIC: "true"
       MCP_DEEP_DIVE_ENGINE: ${MCP_DEEP_DIVE_ENGINE:-repo_agent}
       MCP_DEEP_DIVE_MODEL: ${MCP_DEEP_DIVE_MODEL:-anthropic/claude-sonnet-4-6}
@@ -359,7 +315,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./knowledge_base/agentic-workspaces:/app/agentic-workspaces
       - ./knowledge_base/mcp-server/data:/app/data
       - ./knowledge_base/intodoc-output:/app/intodoc-output
       - ./knowledge_base/output:/app/workspace/output
@@ -376,8 +331,6 @@ services:
       backend:
         condition: service_healthy
       hindsight:
-        condition: service_healthy
-      opencode-runtime:
         condition: service_healthy
     mem_limit: 3g
     cpus: 2.0
@@ -413,7 +366,6 @@ services:
       args:
         VITE_LOGIN_URL: ${VITE_LOGIN_URL:-${PUBLIC_APP_URL:-http://localhost:3000}/login}
         VITE_FLEET_ENABLED: ${FLEET_ENABLED:-true}
-        VITE_AGENTIC_EXPERIMENTS_ENABLED: ${VITE_AGENTIC_EXPERIMENTS_ENABLED:-false}
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-8001}:8001"
     environment:

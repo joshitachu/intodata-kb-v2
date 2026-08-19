@@ -29,9 +29,6 @@ vi.mock("../api/client", () => ({
     getPackWorkspace: vi.fn(),
     updatePackWorkspace: vi.fn(),
     generate: vi.fn(),
-    generateOpenCodeCandidate: vi.fn(),
-    getAgenticExperimentCapabilities: vi.fn(),
-    listAgenticExperiments: vi.fn(),
   },
 }));
 
@@ -98,7 +95,7 @@ const runs = {
   total: 2,
 };
 
-const openCodeModels = {
+const neutralModels = {
   models: [{
     id: "provider-neutral-test/model-neutral-test",
     provider: "provider-neutral-test",
@@ -147,38 +144,6 @@ const workspaceProject: Project = {
 
 beforeEach(() => {
   vi.resetAllMocks();
-  vi.mocked(api.getAgenticExperimentCapabilities).mockResolvedValue({
-    feature_enabled: true,
-    provider_neutral: true,
-    model_selection: "runtime_discovered",
-    publishes: false,
-    candidate_dispatch_available: true,
-    paid_execution_enabled: true,
-    opencode_version: "1.18.4",
-    grounded_runtimes: [
-      {
-        runtime_id: "opencode",
-        available: true,
-        routes: [],
-        paid_execution_confirmation_required: false,
-        blockers: [],
-      },
-      {
-        runtime_id: "openai-agents",
-        available: true,
-        routes: [
-          { provider_id: "openai", model_id: "gpt-5.2", display_name: "GPT-5.2" },
-          { provider_id: "deepseek", model_id: "deepseek-v4-flash", display_name: "DeepSeek V4 Flash" },
-        ],
-        paid_execution_confirmation_required: true,
-        blockers: [],
-      },
-    ],
-    supported_source_kinds: ["intodoc_scan"],
-    recipes: [],
-    execution_blockers: [],
-  });
-  vi.mocked(api.listAgenticExperiments).mockResolvedValue([]);
 });
 
 describe("EP-000 dashboard panels", () => {
@@ -286,7 +251,7 @@ describe("EP-000 dashboard panels", () => {
       updated_at: null,
     };
     vi.mocked(api.listPlatforms).mockResolvedValue({ platforms: [] });
-    vi.mocked(api.listModels).mockResolvedValue(openCodeModels);
+    vi.mocked(api.listModels).mockResolvedValue(neutralModels);
     vi.mocked(api.listPluginPacks).mockResolvedValue([]);
     vi.mocked(api.getProjectUsage).mockResolvedValue({
       project_id: "p1",
@@ -386,270 +351,4 @@ describe("EP-000 dashboard panels", () => {
     });
   });
 
-  it("starts an isolated single-agent OpenCode candidate from the normal Generate Docs dialog", async () => {
-    vi.mocked(api.listModels).mockResolvedValue(openCodeModels);
-    vi.mocked(api.getPackWorkspace).mockResolvedValue({
-      project_id: "p1",
-      organization_packs: [],
-      personal_packs: [],
-      selected_organization_pack_id: null,
-      selected_private_version_ids: [],
-    });
-    vi.mocked(api.generateOpenCodeCandidate).mockResolvedValue({} as never);
-
-    renderWithClient(
-      <GenerateDialog project={workspaceProject} open onClose={vi.fn()} />,
-    );
-
-    fireEvent.click(screen.getByText("OpenCode single-agent"));
-    expect(await screen.findByText(/Neutral Test Model/)).toBeInTheDocument();
-    expect(screen.getAllByText(/never publishes or enters RAG/i)).toHaveLength(2);
-    fireEvent.click(
-      screen.getByRole("button", { name: "Start Single-Agent Candidate" }),
-    );
-
-    await waitFor(() => {
-      expect(api.generateOpenCodeCandidate).toHaveBeenCalledWith(
-        "p1",
-        "single_agent",
-        "provider-neutral-test",
-        "provider-neutral-test/model-neutral-test",
-        undefined,
-        undefined,
-        undefined,
-      );
-    });
-    expect(api.generate).not.toHaveBeenCalled();
-  });
-
-  it("starts the orchestrated OpenCode candidate with specialist subagents", async () => {
-    vi.mocked(api.listModels).mockResolvedValue(openCodeModels);
-    vi.mocked(api.getPackWorkspace).mockResolvedValue({
-      project_id: "p1",
-      organization_packs: [],
-      personal_packs: [],
-      selected_organization_pack_id: null,
-      selected_private_version_ids: [],
-    });
-    vi.mocked(api.generateOpenCodeCandidate).mockResolvedValue({} as never);
-
-    renderWithClient(
-      <GenerateDialog project={workspaceProject} open onClose={vi.fn()} />,
-    );
-
-    fireEvent.click(screen.getByText("OpenCode orchestrated"));
-    expect(await screen.findByText(/Neutral Test Model/)).toBeInTheDocument();
-    expect(screen.getAllByText(/bounded specialist subagents/i)).toHaveLength(2);
-    fireEvent.click(
-      screen.getByRole("button", { name: "Start Orchestrated Candidate" }),
-    );
-
-    await waitFor(() => {
-      expect(api.generateOpenCodeCandidate).toHaveBeenCalledWith(
-        "p1",
-        "orchestrated",
-        "provider-neutral-test",
-        "provider-neutral-test/model-neutral-test",
-        undefined,
-        undefined,
-        undefined,
-      );
-    });
-    expect(api.generate).not.toHaveBeenCalled();
-  });
-
-  it("starts the recommended fact-grounded OpenCode candidate", async () => {
-    vi.mocked(api.listModels).mockResolvedValue(openCodeModels);
-    vi.mocked(api.getPackWorkspace).mockResolvedValue({
-      project_id: "p1",
-      organization_packs: [],
-      personal_packs: [],
-      selected_organization_pack_id: null,
-      selected_private_version_ids: [],
-    });
-    vi.mocked(api.generateOpenCodeCandidate).mockResolvedValue({} as never);
-
-    renderWithClient(
-      <GenerateDialog project={workspaceProject} open onClose={vi.fn()} />,
-    );
-
-    fireEvent.click(screen.getByText("Nexus grounded — OpenCode"));
-    expect(await screen.findByText(/Neutral Test Model/)).toBeInTheDocument();
-    expect(screen.getByText(/Nexus to schedule a fact-grounded sequence/i)).toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Start Grounded Candidate" }),
-    );
-
-    await waitFor(() => {
-      expect(api.generateOpenCodeCandidate).toHaveBeenCalledWith(
-        "p1",
-        "grounded",
-        "provider-neutral-test",
-        "provider-neutral-test/model-neutral-test",
-        "opencode",
-        undefined,
-        undefined,
-      );
-    });
-    expect(api.generate).not.toHaveBeenCalled();
-  });
-
-  it("offers to resume a previously failed Grounded attempt and passes its id through", async () => {
-    vi.mocked(api.listModels).mockResolvedValue(openCodeModels);
-    vi.mocked(api.getPackWorkspace).mockResolvedValue({
-      project_id: "p1",
-      organization_packs: [],
-      personal_packs: [],
-      selected_organization_pack_id: null,
-      selected_private_version_ids: [],
-    });
-    vi.mocked(api.generateOpenCodeCandidate).mockResolvedValue({} as never);
-    vi.mocked(api.listAgenticExperiments).mockResolvedValue([
-      {
-        experiment_id: "eea9b004-b693-471e-a865-2699c8e72ff7",
-        project_id: "p1",
-        baseline_run_id: null,
-        status: "failed",
-        comparison_status: "not_evaluated",
-        candidate_verdict: "not_evaluated",
-        runtime_id: "opencode-grounded",
-        provider_id: "deepseek",
-        model_id: "deepseek-v4-flash",
-        source_snapshot_id: null,
-        source_snapshot_frozen: false,
-        recipe_snapshot_id: null,
-        recipe_id: null,
-        recipe_version: null,
-        baseline_manifest_sha256: null,
-        baseline_document_count: 0,
-        artifact_count: 0,
-        publishes: false,
-        candidate_not_started: false,
-        error_message: "grounded candidate output failed the secret-safety gate",
-        baseline_metrics: {
-          document_count: 0, duration_ms: null, provider_latency_ms: null,
-          input_tokens: null, output_tokens: null, billed_cost_usd: null,
-          quality_score: null, model_id: null, attempt_count: null, retry_count: null,
-        },
-        candidate_metrics: {
-          document_count: 0, duration_ms: null, provider_latency_ms: null,
-          input_tokens: null, output_tokens: null, billed_cost_usd: null,
-          quality_score: null, model_id: null, attempt_count: 2, retry_count: 1,
-        },
-        safety_warnings: [],
-        grounded_progress: {
-          stage: "writing",
-          accepted_artifact_count: 8,
-          required_artifact_count: 10,
-          roles: [],
-        },
-        artifacts: [],
-      },
-    ]);
-
-    renderWithClient(
-      <GenerateDialog project={workspaceProject} open onClose={vi.fn()} />,
-    );
-
-    fireEvent.click(screen.getByText("Nexus grounded — OpenCode"));
-    expect(await screen.findByText(/Neutral Test Model/)).toBeInTheDocument();
-    const resumeSelect = await screen.findByRole("combobox", {
-      name: "Resume from a previous failed attempt",
-    });
-    expect(
-      screen.getByText(/reached writing \(8\/10 artifacts accepted\)/),
-    ).toBeInTheDocument();
-
-    fireEvent.change(resumeSelect, {
-      target: { value: "eea9b004-b693-471e-a865-2699c8e72ff7" },
-    });
-    fireEvent.click(
-      screen.getByRole("button", { name: "Start Grounded Candidate" }),
-    );
-
-    await waitFor(() => {
-      expect(api.generateOpenCodeCandidate).toHaveBeenCalledWith(
-        "p1",
-        "grounded",
-        "provider-neutral-test",
-        "provider-neutral-test/model-neutral-test",
-        "opencode",
-        undefined,
-        "eea9b004-b693-471e-a865-2699c8e72ff7",
-      );
-    });
-  });
-
-  it("starts the Nexus grounded architecture through OpenAI Agents only after paid confirmation", async () => {
-    vi.mocked(api.listModels).mockResolvedValue(openCodeModels);
-    vi.mocked(api.getPackWorkspace).mockResolvedValue({
-      project_id: "p1",
-      organization_packs: [],
-      personal_packs: [],
-      selected_organization_pack_id: null,
-      selected_private_version_ids: [],
-    });
-    vi.mocked(api.generateOpenCodeCandidate).mockResolvedValue({} as never);
-
-    renderWithClient(
-      <GenerateDialog project={workspaceProject} open onClose={vi.fn()} />,
-    );
-
-    fireEvent.click(screen.getByText("Nexus grounded — OpenAI Agents"));
-    const approvedModel = await screen.findByRole("combobox", { name: "Approved provider and model" });
-    await waitFor(() => expect(approvedModel).toHaveValue(JSON.stringify(["openai", "gpt-5.2"])));
-    const start = screen.getByRole("button", { name: "Start OpenAI Grounded Candidate" });
-    expect(start).toBeDisabled();
-
-    fireEvent.change(approvedModel, {
-      target: { value: JSON.stringify(["deepseek", "deepseek-v4-flash"]) },
-    });
-    fireEvent.click(screen.getByText(/I understand this run uses the paid OpenAI API/i));
-    expect(start).toBeEnabled();
-    fireEvent.click(start);
-
-    await waitFor(() => {
-      expect(api.generateOpenCodeCandidate).toHaveBeenCalledWith(
-        "p1",
-        "grounded",
-        "deepseek",
-        "deepseek-v4-flash",
-        "openai-agents",
-        true,
-        undefined,
-      );
-    });
-    expect(api.generate).not.toHaveBeenCalled();
-  });
-
-  it("shows server blockers and prevents unavailable OpenAI Agents execution", async () => {
-    vi.mocked(api.listModels).mockResolvedValue(openCodeModels);
-    vi.mocked(api.getAgenticExperimentCapabilities).mockResolvedValue({
-      feature_enabled: true,
-      provider_neutral: true,
-      model_selection: "runtime_discovered",
-      publishes: false,
-      candidate_dispatch_available: false,
-      paid_execution_enabled: false,
-      opencode_version: "1.18.4",
-      grounded_runtimes: [{
-        runtime_id: "openai-agents",
-        available: false,
-        routes: [{ provider_id: "openai", model_id: "gpt-5.2", display_name: "GPT-5.2" }],
-        paid_execution_confirmation_required: true,
-        blockers: ["OpenAI API credentials are unavailable"],
-      }],
-      supported_source_kinds: ["intodoc_scan"],
-      recipes: [],
-      execution_blockers: ["OpenAI API credentials are unavailable"],
-    });
-
-    renderWithClient(
-      <GenerateDialog project={workspaceProject} open onClose={vi.fn()} />,
-    );
-    fireEvent.click(screen.getByText("Nexus grounded — OpenAI Agents"));
-
-    expect(await screen.findByText("OpenAI API credentials are unavailable")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Start OpenAI Grounded Candidate" })).toBeDisabled();
-  });
 });

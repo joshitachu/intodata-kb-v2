@@ -127,9 +127,20 @@ def _load_prev_jobs(output_dir: Path, group: str) -> list[dict] | None:
         return None
 
 
-def _load_curr_jobs(project_id: str, group: str) -> list[dict]:
-    """Return current scan job list for ``group`` from the intodoc output dir."""
-    jobs_dir = config.intodoc_output_dir / project_id / "scan" / "jobs" / group
+def _load_curr_jobs(
+    project_id: str,
+    group: str,
+    *,
+    scan_output_dir: Path | None = None,
+) -> list[dict]:
+    """Return current scan jobs, optionally from an isolated candidate scan.
+
+    Existing callers keep the published project scan as their source.  The
+    living-document coordinator passes its candidate output root so a patch can
+    be fully derived and validated before it touches the active revision.
+    """
+    scan_root = scan_output_dir or (config.intodoc_output_dir / project_id)
+    jobs_dir = scan_root / "scan" / "jobs" / group
     if not jobs_dir.is_dir():
         return []
     jobs: list[dict] = []
@@ -466,6 +477,8 @@ class TruePatchExecutor:
         before_sha: str = "",
         after_sha: str = "",
         trigger: str = "webhook",
+        scan_output_dir: Path | None = None,
+        publish_rag: bool = True,
     ) -> PatchResult:
         """Execute the true patch lane for ``changed_groups``.
 
@@ -495,6 +508,7 @@ class TruePatchExecutor:
                     group=group,
                     project_id=project_id,
                     output_dir=output_dir,
+                    scan_output_dir=scan_output_dir,
                     platform=platform,
                     provider=provider,
                 )
@@ -806,8 +820,12 @@ class TruePatchExecutor:
             d for d in synthesis_patched_docs if d not in patched_docs
         )
 
-        # ── RAG push ───────────────────────────────────────────────────────
-        if patched_docs:
+        # ── Legacy RAG push ────────────────────────────────────────────────
+        # Candidate-based patching deliberately disables this branch.  Its
+        # coordinator stages canonical and internal artifacts under an inactive
+        # knowledge revision and activates both layers together after the
+        # candidate tree has validated.
+        if patched_docs and publish_rag:
             bridge = RagBridge(log_manager=log_mgr)
             try:
                 rag_result = await bridge.push_docs(
@@ -886,6 +904,7 @@ class TruePatchExecutor:
         group: str,
         project_id: str,
         output_dir: Path,
+        scan_output_dir: Path | None = None,
         platform: str,
         provider,
     ) -> _Phase2Patch:
@@ -907,7 +926,12 @@ class TruePatchExecutor:
                 f"No (or empty) prev scan for group {group!r}",
                 reason_code="missing_prev_scan",
             )
-        curr_jobs = await asyncio.to_thread(_load_curr_jobs, project_id, group)
+        curr_jobs = await asyncio.to_thread(
+            _load_curr_jobs,
+            project_id,
+            group,
+            scan_output_dir=scan_output_dir,
+        )
         if not curr_jobs:
             raise PatchQualityError(
                 f"Empty curr scan for group {group!r}",

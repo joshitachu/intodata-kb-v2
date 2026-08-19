@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 
 // jsdom has no EventSource. Components that open a live log stream
-// (LogPanel/useLogStream, useExperimentLogStream) only need a no-op
+// (LogPanel/useLogStream) only need a no-op
 // implementation under test -- nothing here asserts on stream delivery.
 if (typeof globalThis.EventSource === "undefined") {
   class NoopEventSource {

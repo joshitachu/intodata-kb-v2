@@ -1,12 +1,31 @@
 # KB Sub-project Context
 
-## Current State (2026-08-07) -- agentic grounded doc pipeline repaired (7 slices, UNCOMMITTED, unit-verified)
+## Current State (2026-08-19) -- OpenCode / agentic experiment surfaces removed
 
-**Last completed**: root-caused why the `werkorder` grounded run produced near-empty docs and implemented a 7-slice repair (all under `mcp-server/`, uncommitted on `feat/intodoc-composite-zip-scanner`). Two root causes closed: (1) staged evidence was written as `.bin` and the external OpenCode `read` tool silently refused it as binary -> now staged as text via `evidence_relative_suffix`; (2) the recipe hard-coded 2 analysis outputs -> analysis/writer stages now fan out dynamically per evidence batch (`analysis_batch_planner.py` + `fanout` recipe template + `expand_grounded_fanout`) with coupling-aware boundaries, a coverage gate, verbatim per-unit evidence pushed into prompts (`unit_evidence.py`), two-tier deep docs, prod/test tiering (`unit_tiering.py`), PDF/`.xls` + mapping routing (`mapping_association.py`), diagnosable topology failures, claim-checker subject-scoping, default `deepseek-v4-pro`, and batch-content-hash resume. Agentic suite 479 passed / 1 known-unrelated fail.
+**Last completed**: removed every OpenCode, agentic-experiment, and
+documentation-job surface from the platform, returning doc generation to the
+legacy scanner + 7-phase pipeline only. Deleted the `experiments/` and
+`documentation_jobs/` backend packages, their API routes, tests, data
+(`agentic_recipes/`, `documentation_jobs/`), the `opencode-runtime/` container,
+and `agentic-workspaces/` run output. Stripped `agentic_*`/`docjob_*` config,
+the experiment/docjob wiring in `api/app.py`, the 16 experiment/documentation-job
+ORM classes, and the OpenCode patch-task contract in
+`services/living_docs/patch_worker.py` (the deterministic patch machinery is
+retained). Dashboard is back to the legacy Generate dialog (no engine selector),
+legacy-only Run History, and no Experiments nav entry. Compose/Dockerfile/env
+templates no longer carry `MCP_AGENTIC_*`, `MCP_DOCJOB_*`, or the two `VITE_*`
+build args.
 
-**Immediate next**: run a LIVE end-to-end `werkorder` generation through the real OpenCode/deepseek stack on `deepseek-v4-pro` (omit the model or pick pro explicitly; the dashboard still allows flash) -- this is the only outstanding validation and the true proof of depth. New deps `pypdf`/`xlrd` must be installed on any fresh deploy (in `pyproject.toml`, env uses `uv`). Then commit the session's slice set separately from the branch's other pre-existing uncommitted work.
+**Verification**: `mcp_server.api.app` imports (87 routes); backend suite runs
+with no import or collection errors; dashboard `tsc -b` clean and 13 tests pass;
+`docker compose config` valid.
 
-**Note**: this branch also carries substantial pre-existing uncommitted work (RAG_pipeline, dashboard, intodoc, `providers/custom`, business-topology service, openai_agents infra) that is NOT part of this session's changes.
+**Note**: the corresponding Postgres tables (8 `generation_*` experiment tables,
+8 `documentation_job*` tables) still exist in the live database. Dropping them is
+a separate operational decision and was NOT done here.
+
+**Immediate next**: the agentic idea is being restarted from scratch; nothing
+from the removed attempts should be revived from this tree.
 
 ## Current State (2026-08-03) -- scanner-aware standard doc generation deployed
 
@@ -71,67 +90,6 @@ out of scope.
 
 **Resolved blockers**: Slice 3b backend endpoint, scan/publication integrity,
 composite landscape rollup, and Runtime static-snapshot handoff.
-
-## Current State (2026-07-29) -- Nexus-staged Grounded OpenCode v2 deployed
-
-Generate Docs still offers four independent paths: unchanged legacy generation,
-single-agent OpenCode, the original OpenCode-parent orchestrated Candidate C, and
-the recommended `OpenCode grounded` candidate. Grounded no longer relies on a
-parent model to dispatch or finalize. Nexus compiles the selected recipe into a
-strict role DAG, creates one physically separate OpenCode workspace/session per
-role, schedules ready roles up to the pack concurrency limit, and copies only
-validated upstream artifacts into downstream packets. Task/subagent dispatch is
-disabled for every Grounded session.
-
-Before OpenCode health or session creation, Nexus checks frozen source item/byte
-budgets, requires the approved scanner redaction receipt, rejects credential-shaped
-source values without echoing them, compiles `FACT_LEDGER.json` from logical source
-paths (frozen payloads are physically `.bin`), and fails closed on missing scanner
-jobs, manifest/unit reconciliation errors, or incomplete component inventories.
-Intermediate and final artifacts pass exact ownership, non-empty/JSON, secret,
-reproduced-secret, evidence-locator, and deterministic protected-claim gates.
-Unaccepted files are never propagated. Each role has one bounded repair attempt;
-finalization is based on Nexus-owned files and state, not an agent final message.
-
-The AlitaLand legacy-equivalence pack instantiates seven roles and preserves the
-same Phase 2/scorecard/Phase 3 prompt and context files. A separate logistics recipe
-instantiates four roles and two documents, proving the runner and pack compiler are
-not tied to Talend, one job, or ten outputs. The quick Generate Docs route currently
-freezes the approved IntoDoc source set; generic directory, tabular, mapping, and
-runtime sources remain available through the experiment compose/compile surface.
-Legacy publication and RAG remain untouched; every candidate stays isolated.
-
-A strict no-provider recovery endpoint was added for already completed failed
-orchestrated sessions. It verifies exact session ID/title/directory/runtime/model,
-idle state, child completions, workspace outputs, and secret isolation before
-indexing. Candidate C could not be recovered after deployment because rebuilding
-OpenCode cleared its ephemeral session store; the guard rejected recovery before
-copying/indexing artifacts. Its original workspace remains intact and the experiment
-remains failed with zero indexed candidate artifacts.
-
-Verification: 292 experiment/API tests passed; 21 dashboard tests passed; Ruff,
-Python compile, scoped diff checks, Compose config, and production Vite build passed.
-The delegated full MCP run reached 1611 passed with three unrelated existing
-environment/catalogue failures. OpenCode 1.18.4, MCP, dashboard, backend, and
-mission-control are healthy; all required Grounded agents and both reference packs
-are visible in the live runtime. No model prompt was submitted during validation.
-
-**Immediate next:** create a new approved/redacted AlitaLand scan: the current
-snapshot is rejected by the fail-closed trust gate for credential-shaped values in
-scanner JSON, before any provider request. Then choose Generate Docs → `OpenCode
-grounded` → select the connected DeepSeek route → `Start Grounded Candidate`. Judge
-the same ten outputs against the latest legacy baseline using
-factual accuracy/coverage first, then latency, aggregate role tokens/cache reads,
-and billed cost. No paid Grounded run was started during implementation.
-
-## Previous State (2026-07-27) -- second OpenCode candidate with bounded subagents
-
-Candidate C introduced a broad multi-session OpenCode orchestrator with evidence,
-analysis, referee, per-document writer, and reviewer agents. It generated all ten
-AlitaLand documents but failed final indexing because the validator expected array
-shapes for two execution-plan fields that the contract had not typed. The validator
-now accepts non-empty arrays or objects, but the generated run was not trusted after
-its runtime session provenance disappeared.
 
 ## Previous State (2026-07-19) -- governed Packs plus unified Nexus agent path, locally deployed
 
@@ -580,16 +538,7 @@ Enterprise documentation quality gates and verdicts: enterprise mode is now the 
 
 - Authenticated product review of the regenerated L1/L2.
 - Business alias/ownership confirmation remains later work and must be additive.
-- Configure an approved OpenAI-compatible model route, then run a grounded candidate against a project with scanner facts plus prepared supporting evidence.
-- Add an explicit review/promotion action before grounded candidate documents or business topology can become the normal published view.
 - Add governed runtime connectors only after their credentials, schemas, refresh policy, and redaction boundaries are agreed.
-
-## Grounded project-evidence workflow (2026-08-05)
-
-- The existing Talend scanner is unchanged and remains the implementation source of truth: `scan_result.json` and `lineage.json` are frozen into each candidate snapshot.
-- Managed project workspaces can now supply additive supporting evidence. Preparation dynamically excludes the scanner source roots declared in `scan/files_index.json`, inventories all remaining content, prepares only redacted safe derivatives, and records unsupported files instead of dropping them silently.
-- OpenAI Agents receive role-scoped evidence packets through bounded `list`, `search`, `read`, and factual `traverse` tools. They cannot read raw workspaces, candidate outputs, or sibling-role packets.
-- The reviewer waits for topology completion. A grounded run is still an isolated, non-publishing candidate; the normal legacy documentation path remains unchanged.
 
 ## Resolved blockers
 
