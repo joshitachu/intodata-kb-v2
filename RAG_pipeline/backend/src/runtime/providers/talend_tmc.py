@@ -70,8 +70,12 @@ _DEFAULT_FETCH_LIMIT = 1000
 _DEFAULT_HISTORY_DAYS = 90
 _RUNS_PER_EXECUTABLE_LIMIT = 250
 _EXECUTION_WINDOW_DAYS = 10
-_FAILED_LOG_RUN_LIMIT = 25
-_COMPONENT_METRIC_RUN_LIMIT = 50
+# Fallback ceilings used when settings supply none. The operative values come
+# from settings (talend_tmc_failed_log_run_limit /
+# talend_tmc_component_metric_run_limit) so the capture window is tunable per
+# deployment rather than hardcoded.
+_FAILED_LOG_RUN_LIMIT = 500
+_COMPONENT_METRIC_RUN_LIMIT = 200
 _DETAIL_FETCH_CONCURRENCY = 5
 _TRANSPORT_MAX_ATTEMPTS = 3
 _TRANSPORT_RETRY_DELAY_SECONDS = 0.25
@@ -556,10 +560,26 @@ class TalendTmcRuntimeProvider:
             if run.state == RuntimeExecutionState.FAILED
         ]
         runs_by_recency = sorted(job_runs, key=lambda item: item.started_at, reverse=True)
-        failed_runs = [
+        # A ceiling of 0 means "no ceiling" — capture every failure in the window.
+        log_ceiling = settings.talend_tmc_failed_log_run_limit or _FAILED_LOG_RUN_LIMIT
+        metric_ceiling = (
+            settings.talend_tmc_component_metric_run_limit or _COMPONENT_METRIC_RUN_LIMIT
+        )
+        all_failed_runs = [
             item for item in runs_by_recency if item.state == RuntimeExecutionState.FAILED
-        ][:_FAILED_LOG_RUN_LIMIT]
-        metric_runs = runs_by_recency[:_COMPONENT_METRIC_RUN_LIMIT]
+        ]
+        failed_runs = all_failed_runs[:log_ceiling]
+        if len(all_failed_runs) > len(failed_runs):
+            # Silent truncation here reads downstream as "these runs had no logs",
+            # which is indistinguishable from a genuinely log-free run.
+            logger.warning(
+                "TMC log capture ceiling reached: %d of %d failed runs will have logs "
+                "downloaded this cycle (talend_tmc_failed_log_run_limit=%d)",
+                len(failed_runs),
+                len(all_failed_runs),
+                log_ceiling,
+            )
+        metric_runs = runs_by_recency[:metric_ceiling]
         detail_fetch_semaphore = asyncio.Semaphore(_DETAIL_FETCH_CONCURRENCY)
 
         async def fetch_logs(run: RuntimeJobRun) -> list[RuntimeLogEvent]:

@@ -53,6 +53,17 @@ import {
   RuntimePlanRunListResponseSchema,
   RuntimeSourceListResponse,
   RuntimeSourceListResponseSchema,
+  RuntimeComponentHotspotResponse,
+  RuntimeComponentHotspotResponseSchema,
+  RuntimeErrorSignatureResponse,
+  RuntimeErrorSignatureResponseSchema,
+  RuntimeJobReliabilityResponse,
+  RuntimeJobReliabilityResponseSchema,
+  RuntimeJobThroughputResponse,
+  RuntimeJobThroughputResponseSchema,
+  RuntimeTrendBucket,
+  RuntimeTrendResponse,
+  RuntimeTrendResponseSchema,
   TimelineResponse,
   TimelineResponseSchema,
 } from "@/types";
@@ -61,6 +72,11 @@ export interface ExecutionFilters {
   projectId?: string;
   jobName?: string;
   state?: RuntimeExecutionState;
+  since?: string;
+  until?: string;
+  minDurationMs?: number;
+  /** Tri-state: omitted = all runs, true = only runs with no ended_at, false = only finished. */
+  unfinished?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -138,8 +154,44 @@ export interface LogFilters {
   offset?: number;
 }
 
+/** Shared window/scope filters for the SQL-computed aggregate rollups. */
+export interface AggregateFilters {
+  projectId?: string;
+  sourceKey?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface TrendFilters extends Omit<AggregateFilters, "offset"> {
+  jobName?: string;
+  bucket?: RuntimeTrendBucket;
+}
+
+export interface JobReliabilityFilters extends AggregateFilters {
+  jobName?: string;
+}
+
+export interface ComponentHotspotFilters extends AggregateFilters {
+  componentKey?: string;
+  componentType?: string;
+}
+
+export interface JobThroughputFilters extends AggregateFilters {
+  jobName?: string;
+}
+
+export interface ErrorSignatureFilters extends Omit<AggregateFilters, "sourceKey"> {
+  errorCode?: string;
+  exceptionClass?: string;
+  componentName?: string;
+}
+
 /** Build a query string from defined, non-empty filter values. */
-function buildQuery(params: Record<string, string | number | undefined>): string {
+function buildQuery(
+  params: Record<string, string | number | boolean | undefined>,
+): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value !== "") {
@@ -159,6 +211,10 @@ async function fetchExecutions(
     project_id: filters.projectId,
     job_name: filters.jobName,
     state: filters.state,
+    since: filters.since,
+    until: filters.until,
+    min_duration_ms: filters.minDurationMs,
+    unfinished: filters.unfinished,
     limit: filters.limit,
     offset: filters.offset,
   });
@@ -785,6 +841,161 @@ export function useRuntimeSimilarFailures(
     queryKey: ["runtime", "similar", incidentId, filters],
     queryFn: () => fetchSimilarFailures(incidentId as string, filters),
     enabled: enabled && !!incidentId,
+    staleTime: STALE_MS,
+  });
+}
+
+// --- Aggregate rollups ---
+// Each takes `enabled` so a route-scoped view only fires the queries it renders.
+
+async function fetchTrend(filters: TrendFilters): Promise<RuntimeTrendResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    job_name: filters.jobName,
+    bucket: filters.bucket,
+    since: filters.since,
+    until: filters.until,
+    limit: filters.limit,
+  });
+  const res = await fetch(`/api/runtime/trend${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch runtime trend");
+  }
+  return RuntimeTrendResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeTrend(filters: TrendFilters = {}, enabled = true) {
+  return useQuery({
+    queryKey: ["runtime", "trend", filters],
+    queryFn: () => fetchTrend(filters),
+    enabled,
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchJobReliability(
+  filters: JobReliabilityFilters,
+): Promise<RuntimeJobReliabilityResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    job_name: filters.jobName,
+    since: filters.since,
+    until: filters.until,
+    limit: filters.limit,
+    offset: filters.offset,
+  });
+  const res = await fetch(`/api/runtime/job-reliability${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch job reliability");
+  }
+  return RuntimeJobReliabilityResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeJobReliability(
+  filters: JobReliabilityFilters = {},
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ["runtime", "job-reliability", filters],
+    queryFn: () => fetchJobReliability(filters),
+    enabled,
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchComponentHotspots(
+  filters: ComponentHotspotFilters,
+): Promise<RuntimeComponentHotspotResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    component_key: filters.componentKey,
+    component_type: filters.componentType,
+    since: filters.since,
+    until: filters.until,
+    limit: filters.limit,
+    offset: filters.offset,
+  });
+  const res = await fetch(`/api/runtime/component-hotspots${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch component hotspots");
+  }
+  return RuntimeComponentHotspotResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeComponentHotspots(
+  filters: ComponentHotspotFilters = {},
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ["runtime", "component-hotspots", filters],
+    queryFn: () => fetchComponentHotspots(filters),
+    enabled,
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchJobThroughput(
+  filters: JobThroughputFilters,
+): Promise<RuntimeJobThroughputResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    job_name: filters.jobName,
+    since: filters.since,
+    until: filters.until,
+    limit: filters.limit,
+    offset: filters.offset,
+  });
+  const res = await fetch(`/api/runtime/job-throughput${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch job throughput");
+  }
+  return RuntimeJobThroughputResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeJobThroughput(
+  filters: JobThroughputFilters = {},
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ["runtime", "job-throughput", filters],
+    queryFn: () => fetchJobThroughput(filters),
+    enabled,
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchErrorSignatures(
+  filters: ErrorSignatureFilters,
+): Promise<RuntimeErrorSignatureResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    error_code: filters.errorCode,
+    exception_class: filters.exceptionClass,
+    component_name: filters.componentName,
+    since: filters.since,
+    until: filters.until,
+    limit: filters.limit,
+    offset: filters.offset,
+  });
+  const res = await fetch(`/api/runtime/error-signatures${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch error signatures");
+  }
+  return RuntimeErrorSignatureResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeErrorSignatures(
+  filters: ErrorSignatureFilters = {},
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ["runtime", "error-signatures", filters],
+    queryFn: () => fetchErrorSignatures(filters),
+    enabled,
     staleTime: STALE_MS,
   });
 }

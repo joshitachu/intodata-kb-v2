@@ -141,6 +141,7 @@ class DocumentationGenerationHandler:
             "project_id": str(request.arguments["project_id"]),
             "access_token": context.access_token,
             "resume": bool(request.arguments.get("resume", True)),
+            "doc_generation_provider": request.arguments.get("doc_generation_provider"),
             "investigation_model": request.arguments.get("investigation_model"),
             "model": request.arguments.get("model"),
             "write_model": request.arguments.get("write_model"),

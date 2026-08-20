@@ -21,15 +21,20 @@ from src.runtime.models import (
     GetRuntimeIncidentInput,
     ListExecutionsInput,
     ListRuntimeArtifactsInput,
+    ListRuntimeComponentHotspotsInput,
     ListRuntimeConnectionsInput,
     ListRuntimeDependenciesInput,
     ListRuntimeEnginesInput,
+    ListRuntimeErrorSignaturesInput,
     ListRuntimeHealthInput,
     ListRuntimeInventoryInput,
+    ListRuntimeJobReliabilityInput,
     ListRuntimeJobsInput,
+    ListRuntimeJobThroughputInput,
     ListRuntimePlansInput,
     ListRuntimeSyncStatusInput,
     RuntimeToolDefinition,
+    RuntimeTrendInput,
 )
 
 
@@ -211,6 +216,62 @@ _TOOL_SPECS: dict[str, RuntimeToolSpec] = {
                 "questions."
             ),
             input_model=ListRuntimePlansInput,
+        ),
+        # --- Aggregate rollup tools (trends and rankings over many runs) --------
+        RuntimeToolSpec(
+            name="get_runtime_outcome_trend",
+            description=(
+                "Answer 'is this getting better or worse?' questions. Returns a "
+                "time-bucketed series of run outcomes (total/success/failed) plus p50, "
+                "p95 and max duration per bucket. Set bucket to hour, day (default) or "
+                "week, and optionally filter by project_id, job_name, or a since/until "
+                "window. Use this instead of listing individual executions when the "
+                "question is about a trend over time."
+            ),
+            input_model=RuntimeTrendInput,
+        ),
+        RuntimeToolSpec(
+            name="list_runtime_job_reliability",
+            description=(
+                "Rank jobs by reliability over a window. Per job: total/success/failed "
+                "run counts, failure rate, current failure streak, never-completed "
+                "(unfinished) run count, first/last run time, latest state, and p50/p95/max "
+                "duration. Use for 'which jobs are least reliable?', 'which job is slowest?', "
+                "and to tell a still-running job from one that stopped running weeks ago "
+                "(compare last_run_at)."
+            ),
+            input_model=ListRuntimeJobReliabilityInput,
+        ),
+        RuntimeToolSpec(
+            name="list_runtime_component_hotspots",
+            description=(
+                "Rank individual pipeline components by data volume and latency across "
+                "executions: rows processed, rows rejected, reject ratio, and average/p95/max "
+                "duration, with source and target connector types. Use for 'which component "
+                "is the bottleneck?', 'where are rows being rejected?', and per-component "
+                "performance questions."
+            ),
+            input_model=ListRuntimeComponentHotspotsInput,
+        ),
+        RuntimeToolSpec(
+            name="list_runtime_job_throughput",
+            description=(
+                "Report how much data each job moves: rows processed, rows rejected, reject "
+                "ratio, component count, and executions measured. Use for 'which jobs move "
+                "the most data?' and data-volume questions, not for failure diagnosis."
+            ),
+            input_model=ListRuntimeJobThroughputInput,
+        ),
+        RuntimeToolSpec(
+            name="list_runtime_error_signatures",
+            description=(
+                "List recurring fault fingerprints ranked by how often they occurred, with "
+                "error code, exception class, component, and the first/last time each was "
+                "seen. Use for 'what keeps breaking?' and 'what are our most common errors?' "
+                "across many executions. For one specific failure use "
+                "analyze_execution_failure instead."
+            ),
+            input_model=ListRuntimeErrorSignaturesInput,
         ),
         RuntimeToolSpec(
             name="list_runtime_unhealthy",

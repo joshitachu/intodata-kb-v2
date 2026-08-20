@@ -18,7 +18,7 @@ import math
 import uuid
 from collections import defaultdict
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, case, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models.runtime_data import (
@@ -42,24 +42,30 @@ from src.db.models.runtime_data import (
     RuntimeSyncStateRow,
     RuntimeWorkspaceRow,
 )
-from src.db.models.runtime_insights import RuntimeIncidentRow
+from src.db.models.runtime_insights import RuntimeErrorSignatureRow, RuntimeIncidentRow
 from src.runtime.models import (
     DetectFailuresInput,
     GetExecutionDetailsInput,
     GetExecutionLogsInput,
     ListExecutionsInput,
     ListRuntimeArtifactsInput,
+    ListRuntimeComponentHotspotsInput,
     ListRuntimeConnectionsInput,
     ListRuntimeDependenciesInput,
     ListRuntimeEnginesInput,
+    ListRuntimeErrorSignaturesInput,
     ListRuntimeInventoryInput,
     ListRuntimeJobRunsInput,
+    ListRuntimeJobReliabilityInput,
+    ListRuntimeJobThroughputInput,
     ListRuntimeJobsInput,
     ListRuntimePlanRunsInput,
     ListRuntimePlansInput,
     RuntimeArtifact,
+    RuntimeComponentHotspot,
     RuntimeConnection,
     RuntimeDependencySummary,
+    RuntimeErrorSignature,
     RuntimeExecution,
     RuntimeEngine,
     RuntimeEngineHealth,
@@ -73,10 +79,13 @@ from src.runtime.models import (
     RuntimeJob,
     RuntimeJobDependency,
     RuntimeJobHealth,
+    RuntimeJobReliability,
     RuntimeJobRun,
+    RuntimeJobThroughput,
     RuntimeComponentMetric,
     RuntimeLogEvent,
     RuntimeLogSeverity,
+    RuntimeOutcomeTrendPoint,
     RuntimePlan,
     RuntimePlanHealth,
     RuntimePlanRun,
@@ -86,6 +95,8 @@ from src.runtime.models import (
     RuntimeSourceHealth,
     RuntimeSourceRead,
     RuntimeSourceUpdate,
+    RuntimeTrendBucket,
+    RuntimeTrendInput,
     RuntimeWorkspaceProjectMap,
     RuntimeSyncState,
     RuntimeSyncStatus,
@@ -112,6 +123,67 @@ def log_event_fingerprint(event: RuntimeLogEvent) -> str:
     """Deterministic fingerprint for log idempotency (no natural unique id upstream)."""
     raw = f"{event.timestamp.isoformat()}|{event.severity.value}|{event.line_ordinal}|{event.message}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:64]
+
+
+_SQLITE_BUCKET_FORMATS: dict[RuntimeTrendBucket, str] = {
+    RuntimeTrendBucket.HOUR: "%Y-%m-%dT%H:00:00",
+    RuntimeTrendBucket.DAY: "%Y-%m-%dT00:00:00",
+    RuntimeTrendBucket.WEEK: "%Y-%m-%dT00:00:00",
+}
+
+
+def _bucket_key_expr(dialect: str, column, bucket: RuntimeTrendBucket):
+    """UTC-anchored time-bucket key rendered as an ISO 'YYYY-MM-DDTHH:MM:SS' string.
+
+    Returning a string rather than a native timestamp keeps one expression working on
+    both backends. On Postgres the column is pinned to UTC first: ``date_trunc`` on a
+    ``timestamptz`` otherwise honours the session TimeZone, so the same rows would
+    bucket differently depending on connection settings. SQLite stores these columns
+    as naive UTC strings already, so ``strftime`` is directly equivalent. Week buckets
+    start Monday on both backends (verified against real data).
+    """
+    if dialect == "postgresql":
+        truncated = func.date_trunc(bucket.value, func.timezone("UTC", column))
+        return func.to_char(truncated, 'YYYY-MM-DD"T"HH24:MI:SS')
+    fmt = _SQLITE_BUCKET_FORMATS[bucket]
+    if bucket is RuntimeTrendBucket.WEEK:
+        return func.strftime(fmt, column, "weekday 0", "-6 days")
+    return func.strftime(fmt, column)
+
+
+def _parse_bucket_key(value: object) -> datetime.datetime | None:
+    if not isinstance(value, str):
+        return _as_utc(value) if isinstance(value, datetime.datetime) else None
+    try:
+        return datetime.datetime.fromisoformat(value).replace(tzinfo=datetime.UTC)
+    except ValueError:
+        return None
+
+
+def _percentile_at_rank(rank_col, count_col, value_col, percentile: int):
+    """Pick the value at the ceil-ranked percentile position, division-free.
+
+    ``rank`` is the smallest integer n with ``n >= count * percentile / 100``. Encoding
+    that as two integer multiplications avoids depending on how each backend (or
+    SQLAlchemy's ``/`` operator) treats integer division, and reproduces exactly the
+    discrete semantics of the in-process ``_percentile`` helper below — so a percentile
+    computed in SQL and one computed in Python always agree.
+    """
+    threshold = count_col * percentile
+    return func.max(
+        case(
+            (
+                and_(rank_col * 100 >= threshold, (rank_col - 1) * 100 < threshold),
+                value_col,
+            ),
+        )
+    )
+
+
+def _ratio(numerator: int | None, denominator: int | None) -> float | None:
+    if numerator is None or not denominator:
+        return None
+    return numerator / denominator
 
 
 def _as_utc(value: datetime.datetime | None) -> datetime.datetime | None:
@@ -144,15 +216,17 @@ class RuntimeStoreRepository:
             return stmt
         return stmt.where(column.in_(scope))
 
-    # --- reads (project-scoped) ---
+    @property
+    def _dialect(self) -> str:
+        return self._session.bind.dialect.name if self._session.bind is not None else ""
 
-    async def list_executions(
-        self, scope: ProjectScope, params: ListExecutionsInput
-    ) -> list[RuntimeExecution]:
-        if self._denies_all(scope):
-            return []
-        stmt = select(RuntimeExecutionRow)
-        stmt = self._apply_scope(stmt, RuntimeExecutionRow.project_id, scope)
+    @staticmethod
+    def _apply_execution_filters(stmt, params: ListExecutionsInput):
+        """Filters shared by the execution list and its count.
+
+        Kept in one place so a page and its `total` can never be computed from
+        different predicates.
+        """
         if params.project_name:
             stmt = stmt.where(RuntimeExecutionRow.project_name == params.project_name)
         if params.job_name:
@@ -163,6 +237,26 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeExecutionRow.started_at >= params.since)
         if params.until:
             stmt = stmt.where(RuntimeExecutionRow.started_at <= params.until)
+        if params.min_duration_ms is not None:
+            stmt = stmt.where(RuntimeExecutionRow.duration_ms >= params.min_duration_ms)
+        if params.unfinished is not None:
+            stmt = (
+                stmt.where(RuntimeExecutionRow.ended_at.is_(None))
+                if params.unfinished
+                else stmt.where(RuntimeExecutionRow.ended_at.is_not(None))
+            )
+        return stmt
+
+    # --- reads (project-scoped) ---
+
+    async def list_executions(
+        self, scope: ProjectScope, params: ListExecutionsInput
+    ) -> list[RuntimeExecution]:
+        if self._denies_all(scope):
+            return []
+        stmt = select(RuntimeExecutionRow)
+        stmt = self._apply_scope(stmt, RuntimeExecutionRow.project_id, scope)
+        stmt = self._apply_execution_filters(stmt, params)
         stmt = stmt.order_by(RuntimeExecutionRow.started_at.desc(), RuntimeExecutionRow.id.desc()).offset(params.offset).limit(params.limit)
         rows = (await self._session.execute(stmt)).scalars().all()
         # Defensive read-side protection for historical mirrored writes. A source
@@ -245,16 +339,7 @@ class RuntimeStoreRepository:
             return 0
         stmt = select(RuntimeExecutionRow.source_key, RuntimeExecutionRow.execution_id)
         stmt = self._apply_scope(stmt, RuntimeExecutionRow.project_id, scope)
-        if params.project_name:
-            stmt = stmt.where(RuntimeExecutionRow.project_name == params.project_name)
-        if params.job_name:
-            stmt = stmt.where(RuntimeExecutionRow.job_name == params.job_name)
-        if params.state is not None:
-            stmt = stmt.where(RuntimeExecutionRow.state == params.state.value)
-        if params.since:
-            stmt = stmt.where(RuntimeExecutionRow.started_at >= params.since)
-        if params.until:
-            stmt = stmt.where(RuntimeExecutionRow.started_at <= params.until)
+        stmt = self._apply_execution_filters(stmt, params)
         deduped = stmt.distinct().subquery()
         return int((await self._session.execute(select(func.count()).select_from(deduped))).scalar_one())
 
@@ -1362,6 +1447,661 @@ class RuntimeStoreRepository:
             last_synced_at=max(synced_values) if synced_values else None,
         )
 
+    # --- SQL-computed aggregate rollups ---
+    #
+    # These replace "fetch every row and reduce in Python" for the surfaces that
+    # summarise thousands of runs. Grouping, counting, percentiles and ordering all
+    # happen in the database; only the already-aggregated rows cross the boundary.
+
+    def _scoped_execution_base(
+        self,
+        scope: ProjectScope,
+        *,
+        project_id: str | None,
+        source_key: str | None,
+        job_name: str | None,
+        since: datetime.datetime | None,
+        until: datetime.datetime | None,
+    ):
+        """Scoped, filtered execution rows as a subquery for aggregate composition."""
+        stmt = select(
+            RuntimeExecutionRow.id.label("id"),
+            RuntimeExecutionRow.project_id.label("project_id"),
+            RuntimeExecutionRow.source_key.label("source_key"),
+            RuntimeExecutionRow.execution_id.label("execution_id"),
+            RuntimeExecutionRow.job_name.label("job_name"),
+            RuntimeExecutionRow.state.label("state"),
+            RuntimeExecutionRow.started_at.label("started_at"),
+            RuntimeExecutionRow.ended_at.label("ended_at"),
+            RuntimeExecutionRow.duration_ms.label("duration_ms"),
+        )
+        stmt = self._apply_scope(stmt, RuntimeExecutionRow.project_id, scope)
+        if project_id is not None:
+            stmt = stmt.where(RuntimeExecutionRow.project_id == project_id)
+        if source_key is not None:
+            stmt = stmt.where(RuntimeExecutionRow.source_key == source_key)
+        if job_name is not None:
+            stmt = stmt.where(RuntimeExecutionRow.job_name == job_name)
+        if since is not None:
+            stmt = stmt.where(RuntimeExecutionRow.started_at >= since)
+        if until is not None:
+            stmt = stmt.where(RuntimeExecutionRow.started_at <= until)
+        return stmt.subquery()
+
+    @staticmethod
+    def _state_count(column, state: RuntimeExecutionState):
+        return func.coalesce(func.sum(case((column == state.value, 1), else_=0)), 0)
+
+    def _duration_percentiles(self, base, group_columns: list):
+        """Grouped p50/p95 duration subquery over non-null durations."""
+        ranked = (
+            select(
+                *group_columns,
+                base.c.duration_ms.label("duration_ms"),
+                func.row_number()
+                .over(partition_by=group_columns, order_by=base.c.duration_ms.asc())
+                .label("rn"),
+                func.count().over(partition_by=group_columns).label("cnt"),
+            )
+            .where(base.c.duration_ms.is_not(None))
+            .subquery()
+        )
+        ranked_groups = [ranked.c[column.name] for column in group_columns]
+        return (
+            select(
+                *ranked_groups,
+                _percentile_at_rank(ranked.c.rn, ranked.c.cnt, ranked.c.duration_ms, 50).label("p50"),
+                _percentile_at_rank(ranked.c.rn, ranked.c.cnt, ranked.c.duration_ms, 95).label("p95"),
+            )
+            .group_by(*ranked_groups)
+            .subquery()
+        )
+
+    async def get_outcome_trend(
+        self, scope: ProjectScope, params: RuntimeTrendInput
+    ) -> list[RuntimeOutcomeTrendPoint]:
+        """Return time-bucketed run outcomes with duration percentiles, newest first."""
+        if self._denies_all(scope):
+            return []
+        base = self._scoped_execution_base(
+            scope,
+            project_id=params.project_id,
+            source_key=params.source_key,
+            job_name=params.job_name,
+            since=params.since,
+            until=params.until,
+        )
+        bucket = _bucket_key_expr(self._dialect, base.c.started_at, params.bucket)
+        keyed = select(
+            bucket.label("bucket_key"),
+            base.c.state.label("state"),
+            base.c.duration_ms.label("duration_ms"),
+        ).subquery()
+        group = [keyed.c.bucket_key]
+        percentiles = self._duration_percentiles(keyed, group)
+        aggregated = (
+            select(
+                keyed.c.bucket_key,
+                func.count().label("total_runs"),
+                self._state_count(keyed.c.state, RuntimeExecutionState.SUCCESS).label("success_runs"),
+                self._state_count(keyed.c.state, RuntimeExecutionState.FAILED).label("failed_runs"),
+                self._state_count(keyed.c.state, RuntimeExecutionState.RUNNING).label("running_runs"),
+                self._state_count(keyed.c.state, RuntimeExecutionState.UNKNOWN).label("unknown_runs"),
+                func.max(keyed.c.duration_ms).label("max_duration_ms"),
+            )
+            .group_by(keyed.c.bucket_key)
+            .subquery()
+        )
+        stmt = (
+            select(aggregated, percentiles.c.p50, percentiles.c.p95)
+            .join(
+                percentiles,
+                percentiles.c.bucket_key == aggregated.c.bucket_key,
+                isouter=True,
+            )
+            .order_by(aggregated.c.bucket_key.desc())
+            .limit(params.limit)
+        )
+        rows = (await self._session.execute(stmt)).mappings().all()
+        points = [
+            RuntimeOutcomeTrendPoint(
+                bucket_start=bucket_start,
+                total_runs=row["total_runs"],
+                success_runs=row["success_runs"],
+                failed_runs=row["failed_runs"],
+                running_runs=row["running_runs"],
+                unknown_runs=row["unknown_runs"],
+                failure_rate=_ratio(row["failed_runs"], row["total_runs"]) or 0.0,
+                p50_duration_ms=row["p50"],
+                p95_duration_ms=row["p95"],
+                max_duration_ms=row["max_duration_ms"],
+            )
+            for row in rows
+            if (bucket_start := _parse_bucket_key(row["bucket_key"])) is not None
+        ]
+        return points
+
+    async def list_job_reliability(
+        self, scope: ProjectScope, params: ListRuntimeJobReliabilityInput
+    ) -> list[RuntimeJobReliability]:
+        """Per-job reliability rollup: outcomes, streak, latency percentiles."""
+        if self._denies_all(scope):
+            return []
+        base = self._scoped_execution_base(
+            scope,
+            project_id=params.project_id,
+            source_key=params.source_key,
+            job_name=params.job_name,
+            since=params.since,
+            until=params.until,
+        )
+        group = [base.c.project_id, base.c.source_key, base.c.job_name]
+        percentiles = self._duration_percentiles(base, group)
+        aggregated = (
+            select(
+                *group,
+                func.count().label("total_runs"),
+                self._state_count(base.c.state, RuntimeExecutionState.SUCCESS).label("success_runs"),
+                self._state_count(base.c.state, RuntimeExecutionState.FAILED).label("failed_runs"),
+                func.coalesce(
+                    func.sum(case((base.c.ended_at.is_(None), 1), else_=0)), 0
+                ).label("unfinished_runs"),
+                func.min(base.c.started_at).label("first_run_at"),
+                func.max(base.c.started_at).label("last_run_at"),
+                func.max(base.c.duration_ms).label("max_duration_ms"),
+                # Anchor for the failure streak: every run after the most recent
+                # non-failed run is, by definition, part of the current streak.
+                func.max(
+                    case((base.c.state != RuntimeExecutionState.FAILED.value, base.c.started_at))
+                ).label("last_ok_at"),
+            )
+            .group_by(*group)
+            .subquery()
+        )
+        streak = (
+            select(
+                base.c.project_id,
+                base.c.source_key,
+                base.c.job_name,
+                func.count().label("current_failure_streak"),
+            )
+            .join(
+                aggregated,
+                and_(
+                    aggregated.c.project_id == base.c.project_id,
+                    aggregated.c.source_key == base.c.source_key,
+                    aggregated.c.job_name == base.c.job_name,
+                ),
+            )
+            .where(base.c.state == RuntimeExecutionState.FAILED.value)
+            .where(
+                (aggregated.c.last_ok_at.is_(None))
+                | (base.c.started_at > aggregated.c.last_ok_at)
+            )
+            .group_by(base.c.project_id, base.c.source_key, base.c.job_name)
+            .subquery()
+        )
+        recent = self._latest_state_subquery(base, group)
+
+        def join_keys(other):
+            return and_(
+                other.c.project_id == aggregated.c.project_id,
+                other.c.source_key == aggregated.c.source_key,
+                other.c.job_name == aggregated.c.job_name,
+            )
+
+        stmt = (
+            select(
+                aggregated,
+                percentiles.c.p50,
+                percentiles.c.p95,
+                streak.c.current_failure_streak,
+                recent.c.latest_state,
+            )
+            .join(percentiles, join_keys(percentiles), isouter=True)
+            .join(streak, join_keys(streak), isouter=True)
+            .join(recent, join_keys(recent), isouter=True)
+            .order_by(
+                aggregated.c.failed_runs.desc(),
+                aggregated.c.last_run_at.desc(),
+                aggregated.c.job_name.asc(),
+            )
+            .offset(params.offset)
+            .limit(params.limit)
+        )
+        rows = (await self._session.execute(stmt)).mappings().all()
+        return [
+            RuntimeJobReliability(
+                project_id=row["project_id"],
+                source_key=row["source_key"],
+                job_name=row["job_name"],
+                total_runs=row["total_runs"],
+                success_runs=row["success_runs"],
+                failed_runs=row["failed_runs"],
+                unfinished_runs=row["unfinished_runs"],
+                failure_rate=_ratio(row["failed_runs"], row["total_runs"]) or 0.0,
+                current_failure_streak=row["current_failure_streak"] or 0,
+                first_run_at=_as_utc(row["first_run_at"]),
+                last_run_at=_as_utc(row["last_run_at"]),
+                latest_state=(
+                    RuntimeExecutionState(row["latest_state"]) if row["latest_state"] else None
+                ),
+                p50_duration_ms=row["p50"],
+                p95_duration_ms=row["p95"],
+                max_duration_ms=row["max_duration_ms"],
+            )
+            for row in rows
+        ]
+
+    @staticmethod
+    def _latest_state_subquery(base, group_columns: list):
+        """Most recent run's state per group, via a recency window rank."""
+        ranked = select(
+            *group_columns,
+            base.c.state.label("state"),
+            func.row_number()
+            .over(
+                partition_by=group_columns,
+                order_by=[base.c.started_at.desc(), base.c.id.desc()],
+            )
+            .label("rn"),
+        ).subquery()
+        ranked_groups = [ranked.c[column.name] for column in group_columns]
+        return (
+            select(*ranked_groups, ranked.c.state.label("latest_state"))
+            .where(ranked.c.rn == 1)
+            .subquery()
+        )
+
+    async def count_job_reliability(
+        self, scope: ProjectScope, params: ListRuntimeJobReliabilityInput
+    ) -> int:
+        if self._denies_all(scope):
+            return 0
+        base = self._scoped_execution_base(
+            scope,
+            project_id=params.project_id,
+            source_key=params.source_key,
+            job_name=params.job_name,
+            since=params.since,
+            until=params.until,
+        )
+        groups = (
+            select(base.c.project_id, base.c.source_key, base.c.job_name).distinct().subquery()
+        )
+        return int((await self._session.execute(select(func.count()).select_from(groups))).scalar_one())
+
+    def _scoped_metric_base(
+        self,
+        scope: ProjectScope,
+        *,
+        project_id: str | None,
+        source_key: str | None,
+        component_key: str | None = None,
+        component_type: str | None = None,
+        since: datetime.datetime | None = None,
+        until: datetime.datetime | None = None,
+    ):
+        stmt = select(
+            RuntimeComponentMetricRow.project_id.label("project_id"),
+            RuntimeComponentMetricRow.source_key.label("source_key"),
+            RuntimeComponentMetricRow.execution_id.label("execution_id"),
+            RuntimeComponentMetricRow.component_key.label("component_key"),
+            RuntimeComponentMetricRow.component_type.label("component_type"),
+            RuntimeComponentMetricRow.source_connector_type.label("source_connector_type"),
+            RuntimeComponentMetricRow.target_connector_type.label("target_connector_type"),
+            RuntimeComponentMetricRow.rows_total.label("rows_total"),
+            RuntimeComponentMetricRow.rows_rejected.label("rows_rejected"),
+            RuntimeComponentMetricRow.duration_ms.label("duration_ms"),
+            RuntimeComponentMetricRow.measured_at.label("measured_at"),
+        )
+        stmt = self._apply_scope(stmt, RuntimeComponentMetricRow.project_id, scope)
+        if project_id is not None:
+            stmt = stmt.where(RuntimeComponentMetricRow.project_id == project_id)
+        if source_key is not None:
+            stmt = stmt.where(RuntimeComponentMetricRow.source_key == source_key)
+        if component_key is not None:
+            stmt = stmt.where(RuntimeComponentMetricRow.component_key == component_key)
+        if component_type is not None:
+            stmt = stmt.where(RuntimeComponentMetricRow.component_type == component_type)
+        if since is not None:
+            stmt = stmt.where(RuntimeComponentMetricRow.measured_at >= since)
+        if until is not None:
+            stmt = stmt.where(RuntimeComponentMetricRow.measured_at <= until)
+        return stmt.subquery()
+
+    async def list_component_hotspots(
+        self, scope: ProjectScope, params: ListRuntimeComponentHotspotsInput
+    ) -> list[RuntimeComponentHotspot]:
+        """Per-component throughput/latency rollup, highest row volume first."""
+        if self._denies_all(scope):
+            return []
+        base = self._scoped_metric_base(
+            scope,
+            project_id=params.project_id,
+            source_key=params.source_key,
+            component_key=params.component_key,
+            component_type=params.component_type,
+            since=params.since,
+            until=params.until,
+        )
+        group = [base.c.project_id, base.c.source_key, base.c.component_key]
+        percentiles = self._duration_percentiles(base, group)
+        aggregated = (
+            select(
+                *group,
+                func.max(base.c.component_type).label("component_type"),
+                func.max(base.c.source_connector_type).label("source_connector_type"),
+                func.max(base.c.target_connector_type).label("target_connector_type"),
+                func.count(func.distinct(base.c.execution_id)).label("executions"),
+                func.sum(base.c.rows_total).label("rows_total"),
+                func.sum(base.c.rows_rejected).label("rows_rejected"),
+                func.avg(base.c.duration_ms).label("avg_duration_ms"),
+                func.max(base.c.duration_ms).label("max_duration_ms"),
+                func.max(base.c.measured_at).label("last_measured_at"),
+            )
+            .group_by(*group)
+            .subquery()
+        )
+        stmt = (
+            select(aggregated, percentiles.c.p95)
+            .join(
+                percentiles,
+                and_(
+                    percentiles.c.project_id == aggregated.c.project_id,
+                    percentiles.c.source_key == aggregated.c.source_key,
+                    percentiles.c.component_key == aggregated.c.component_key,
+                ),
+                isouter=True,
+            )
+            .order_by(
+                aggregated.c.rows_total.desc().nullslast(),
+                aggregated.c.executions.desc(),
+                aggregated.c.component_key.asc(),
+            )
+            .offset(params.offset)
+            .limit(params.limit)
+        )
+        rows = (await self._session.execute(stmt)).mappings().all()
+        return [
+            RuntimeComponentHotspot(
+                project_id=row["project_id"],
+                source_key=row["source_key"],
+                component_key=row["component_key"],
+                component_type=row["component_type"],
+                source_connector_type=row["source_connector_type"],
+                target_connector_type=row["target_connector_type"],
+                executions=row["executions"],
+                rows_total=row["rows_total"],
+                rows_rejected=row["rows_rejected"],
+                reject_ratio=_ratio(row["rows_rejected"], row["rows_total"]),
+                avg_duration_ms=(
+                    int(row["avg_duration_ms"]) if row["avg_duration_ms"] is not None else None
+                ),
+                p95_duration_ms=row["p95"],
+                max_duration_ms=row["max_duration_ms"],
+                last_measured_at=_as_utc(row["last_measured_at"]),
+            )
+            for row in rows
+        ]
+
+    async def count_component_hotspots(
+        self, scope: ProjectScope, params: ListRuntimeComponentHotspotsInput
+    ) -> int:
+        if self._denies_all(scope):
+            return 0
+        base = self._scoped_metric_base(
+            scope,
+            project_id=params.project_id,
+            source_key=params.source_key,
+            component_key=params.component_key,
+            component_type=params.component_type,
+            since=params.since,
+            until=params.until,
+        )
+        groups = (
+            select(base.c.project_id, base.c.source_key, base.c.component_key)
+            .distinct()
+            .subquery()
+        )
+        return int((await self._session.execute(select(func.count()).select_from(groups))).scalar_one())
+
+    async def list_job_throughput(
+        self, scope: ProjectScope, params: ListRuntimeJobThroughputInput
+    ) -> list[RuntimeJobThroughput]:
+        """Rows moved per job, joining run facts to their component metrics."""
+        if self._denies_all(scope):
+            return []
+        joined = self._job_throughput_base(scope, params)
+        aggregated = (
+            select(
+                joined.c.project_id,
+                joined.c.source_key,
+                joined.c.job_name,
+                func.count(func.distinct(joined.c.execution_id)).label("executions_with_metrics"),
+                func.count(func.distinct(joined.c.component_key)).label("component_count"),
+                func.sum(joined.c.rows_total).label("rows_total"),
+                func.sum(joined.c.rows_rejected).label("rows_rejected"),
+                func.max(joined.c.measured_at).label("last_measured_at"),
+            )
+            .group_by(joined.c.project_id, joined.c.source_key, joined.c.job_name)
+            .subquery()
+        )
+        stmt = (
+            select(aggregated)
+            .order_by(
+                aggregated.c.rows_total.desc().nullslast(),
+                aggregated.c.job_name.asc(),
+            )
+            .offset(params.offset)
+            .limit(params.limit)
+        )
+        rows = (await self._session.execute(stmt)).mappings().all()
+        return [
+            RuntimeJobThroughput(
+                project_id=row["project_id"],
+                source_key=row["source_key"],
+                job_name=row["job_name"],
+                executions_with_metrics=row["executions_with_metrics"],
+                component_count=row["component_count"],
+                rows_total=row["rows_total"],
+                rows_rejected=row["rows_rejected"],
+                reject_ratio=_ratio(row["rows_rejected"], row["rows_total"]),
+                last_measured_at=_as_utc(row["last_measured_at"]),
+            )
+            for row in rows
+        ]
+
+    def _job_throughput_base(
+        self, scope: ProjectScope, params: ListRuntimeJobThroughputInput
+    ):
+        """Component metrics joined to their owning execution's job name.
+
+        The join is on (project_id, execution_id): a source owns its execution ids, so
+        this is the same key the metric write-port uses.
+        """
+        executions = self._scoped_execution_base(
+            scope,
+            project_id=params.project_id,
+            source_key=params.source_key,
+            job_name=params.job_name,
+            since=params.since,
+            until=params.until,
+        )
+        metrics = self._scoped_metric_base(
+            scope, project_id=params.project_id, source_key=params.source_key
+        )
+        return (
+            select(
+                executions.c.project_id.label("project_id"),
+                executions.c.source_key.label("source_key"),
+                executions.c.job_name.label("job_name"),
+                metrics.c.execution_id.label("execution_id"),
+                metrics.c.component_key.label("component_key"),
+                metrics.c.rows_total.label("rows_total"),
+                metrics.c.rows_rejected.label("rows_rejected"),
+                metrics.c.measured_at.label("measured_at"),
+            )
+            .join(
+                metrics,
+                and_(
+                    metrics.c.project_id == executions.c.project_id,
+                    metrics.c.execution_id == executions.c.execution_id,
+                ),
+            )
+            .subquery()
+        )
+
+    async def count_job_throughput(
+        self, scope: ProjectScope, params: ListRuntimeJobThroughputInput
+    ) -> int:
+        if self._denies_all(scope):
+            return 0
+        joined = self._job_throughput_base(scope, params)
+        groups = (
+            select(joined.c.project_id, joined.c.source_key, joined.c.job_name)
+            .distinct()
+            .subquery()
+        )
+        return int((await self._session.execute(select(func.count()).select_from(groups))).scalar_one())
+
+    def _error_signature_stmt(self, scope: ProjectScope, params: ListRuntimeErrorSignaturesInput):
+        stmt = select(RuntimeErrorSignatureRow)
+        stmt = self._apply_scope(stmt, RuntimeErrorSignatureRow.project_id, scope)
+        if params.project_id is not None:
+            stmt = stmt.where(RuntimeErrorSignatureRow.project_id == params.project_id)
+        if params.error_code is not None:
+            stmt = stmt.where(RuntimeErrorSignatureRow.error_code == params.error_code)
+        if params.exception_class is not None:
+            stmt = stmt.where(RuntimeErrorSignatureRow.exception_class == params.exception_class)
+        if params.component_name is not None:
+            stmt = stmt.where(RuntimeErrorSignatureRow.component_name == params.component_name)
+        if params.since is not None:
+            stmt = stmt.where(RuntimeErrorSignatureRow.last_seen_at >= params.since)
+        if params.until is not None:
+            stmt = stmt.where(RuntimeErrorSignatureRow.last_seen_at <= params.until)
+        return stmt
+
+    async def list_error_signatures(
+        self, scope: ProjectScope, params: ListRuntimeErrorSignaturesInput
+    ) -> list[RuntimeErrorSignature]:
+        """Recurring fault fingerprints, most-recurrent first."""
+        if self._denies_all(scope):
+            return []
+        stmt = (
+            self._error_signature_stmt(scope, params)
+            .order_by(
+                RuntimeErrorSignatureRow.occurrence_count.desc(),
+                RuntimeErrorSignatureRow.last_seen_at.desc().nullslast(),
+                RuntimeErrorSignatureRow.id.desc(),
+            )
+            .offset(params.offset)
+            .limit(params.limit)
+        )
+        rows = (await self._session.execute(stmt)).scalars().all()
+        return [_to_error_signature(row) for row in rows]
+
+    async def count_error_signatures(
+        self, scope: ProjectScope, params: ListRuntimeErrorSignaturesInput
+    ) -> int:
+        if self._denies_all(scope):
+            return 0
+        inner = self._error_signature_stmt(scope, params).subquery()
+        return int((await self._session.execute(select(func.count()).select_from(inner))).scalar_one())
+
+    # --- honest counts for previously len()-reported list endpoints ---
+
+    async def count_job_runs(self, scope: ProjectScope, params: ListRuntimeJobRunsInput) -> int:
+        if self._denies_all(scope):
+            return 0
+        stmt = select(func.count()).select_from(RuntimeJobRunRow)
+        stmt = self._apply_scope(stmt, RuntimeJobRunRow.project_id, scope)
+        if params.project_id is not None:
+            stmt = stmt.where(RuntimeJobRunRow.project_id == params.project_id)
+        if params.source_key is not None:
+            stmt = stmt.where(RuntimeJobRunRow.source_key == params.source_key)
+        if params.job_id is not None:
+            stmt = stmt.where(RuntimeJobRunRow.job_id == params.job_id)
+        if params.engine_id is not None:
+            stmt = stmt.where(RuntimeJobRunRow.engine_id == params.engine_id)
+        if params.state is not None:
+            stmt = stmt.where(RuntimeJobRunRow.state == params.state.value)
+        if params.since is not None:
+            stmt = stmt.where(RuntimeJobRunRow.started_at >= params.since)
+        if params.until is not None:
+            stmt = stmt.where(RuntimeJobRunRow.started_at <= params.until)
+        return int((await self._session.execute(stmt)).scalar_one())
+
+    async def count_plan_runs(self, scope: ProjectScope, params: ListRuntimePlanRunsInput) -> int:
+        if self._denies_all(scope):
+            return 0
+        stmt = select(func.count()).select_from(RuntimePlanRunRow)
+        stmt = self._apply_scope(stmt, RuntimePlanRunRow.project_id, scope)
+        if params.project_id is not None:
+            stmt = stmt.where(RuntimePlanRunRow.project_id == params.project_id)
+        if params.source_key is not None:
+            stmt = stmt.where(RuntimePlanRunRow.source_key == params.source_key)
+        if params.plan_id is not None:
+            stmt = stmt.where(RuntimePlanRunRow.plan_id == params.plan_id)
+        if params.state is not None:
+            stmt = stmt.where(RuntimePlanRunRow.state == params.state.value)
+        if params.since is not None:
+            stmt = stmt.where(RuntimePlanRunRow.started_at >= params.since)
+        if params.until is not None:
+            stmt = stmt.where(RuntimePlanRunRow.started_at <= params.until)
+        return int((await self._session.execute(stmt)).scalar_one())
+
+    async def count_artifacts(self, scope: ProjectScope, params: ListRuntimeArtifactsInput) -> int:
+        if self._denies_all(scope):
+            return 0
+        stmt = select(func.count()).select_from(RuntimeArtifactRow)
+        stmt = self._apply_scope(stmt, RuntimeArtifactRow.project_id, scope)
+        if params.project_id is not None:
+            stmt = stmt.where(RuntimeArtifactRow.project_id == params.project_id)
+        if params.source_key is not None:
+            stmt = stmt.where(RuntimeArtifactRow.source_key == params.source_key)
+        if params.workspace_id is not None:
+            stmt = stmt.where(RuntimeArtifactRow.workspace_id == params.workspace_id)
+        if params.artifact_type is not None:
+            stmt = stmt.where(RuntimeArtifactRow.artifact_type == params.artifact_type)
+        return int((await self._session.execute(stmt)).scalar_one())
+
+    async def count_connections(
+        self, scope: ProjectScope, params: ListRuntimeConnectionsInput
+    ) -> int:
+        if self._denies_all(scope):
+            return 0
+        stmt = select(func.count()).select_from(RuntimeConnectionRow)
+        stmt = self._apply_scope(stmt, RuntimeConnectionRow.project_id, scope)
+        if params.project_id is not None:
+            stmt = stmt.where(RuntimeConnectionRow.project_id == params.project_id)
+        if params.source_key is not None:
+            stmt = stmt.where(RuntimeConnectionRow.source_key == params.source_key)
+        if params.workspace_id is not None:
+            stmt = stmt.where(RuntimeConnectionRow.workspace_id == params.workspace_id)
+        if params.connection_type is not None:
+            stmt = stmt.where(RuntimeConnectionRow.connection_type == params.connection_type)
+        return int((await self._session.execute(stmt)).scalar_one())
+
+    async def count_job_dependencies(
+        self, scope: ProjectScope, params: ListRuntimeDependenciesInput
+    ) -> int:
+        if self._denies_all(scope):
+            return 0
+        stmt = select(func.count()).select_from(RuntimeJobDependencyRow)
+        stmt = self._apply_scope(stmt, RuntimeJobDependencyRow.project_id, scope)
+        if params.project_id is not None:
+            stmt = stmt.where(RuntimeJobDependencyRow.project_id == params.project_id)
+        if params.source_key is not None:
+            stmt = stmt.where(RuntimeJobDependencyRow.source_key == params.source_key)
+        if params.dependency_type is not None:
+            stmt = stmt.where(RuntimeJobDependencyRow.dependency_type == params.dependency_type)
+        if params.dependency_id is not None:
+            stmt = stmt.where(RuntimeJobDependencyRow.dependency_id == params.dependency_id)
+        if params.job_id is not None:
+            stmt = stmt.where(RuntimeJobDependencyRow.job_id == params.job_id)
+        return int((await self._session.execute(stmt)).scalar_one())
+
     # --- write-port (idempotent) ---
 
     async def upsert_source(
@@ -1893,6 +2633,21 @@ def _to_log_event(row: RuntimeLogEventRow) -> RuntimeLogEvent:
         severity=RuntimeLogSeverity(row.severity),
         message=row.message,
         line_ordinal=row.line_ordinal,
+    )
+
+
+def _to_error_signature(row: RuntimeErrorSignatureRow) -> RuntimeErrorSignature:
+    return RuntimeErrorSignature(
+        project_id=row.project_id,
+        signature_hash=row.signature_hash,
+        error_code=row.error_code,
+        exception_class=row.exception_class,
+        component_name=row.component_name,
+        summary_text=row.summary_text,
+        causal_message=row.causal_message,
+        occurrence_count=row.occurrence_count,
+        first_seen_at=_as_utc(row.first_seen_at),
+        last_seen_at=_as_utc(row.last_seen_at),
     )
 
 

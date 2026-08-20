@@ -231,6 +231,7 @@ class McpDocumentationProvider:
         *,
         project_id: str,
         access_token: str | None = None,
+        doc_generation_provider: str | None = None,
         investigation_model: str | None = None,
         model: str | None = None,
         write_model: str | None = None,
@@ -257,6 +258,9 @@ class McpDocumentationProvider:
         project_id = _validated_project_id(project_id)
 
         payload: dict[str, Any] = {"project_id": project_id}
+        if doc_generation_provider not in {None, "custom", "opencode-cli"}:
+            raise McpDocumentationProviderError("Invalid documentation generation method.")
+        _set_if_present(payload, "doc_generation_provider", doc_generation_provider)
         _set_if_present(payload, "investigation_model", investigation_model)
         _set_if_present(payload, "model", model)
         _set_if_present(payload, "write_model", write_model)

@@ -891,6 +891,18 @@ export {
   RuntimeSimilarIncidentSchema,
   RuntimeAlertReadyMetadataSchema,
   IncidentSimilarResponseSchema,
+  // Aggregate rollup schemas
+  RuntimeTrendBucketSchema,
+  RuntimeOutcomeTrendPointSchema,
+  RuntimeTrendResponseSchema,
+  RuntimeJobReliabilitySchema,
+  RuntimeJobReliabilityResponseSchema,
+  RuntimeComponentHotspotSchema,
+  RuntimeComponentHotspotResponseSchema,
+  RuntimeJobThroughputSchema,
+  RuntimeJobThroughputResponseSchema,
+  RuntimeErrorSignatureSchema,
+  RuntimeErrorSignatureResponseSchema,
 } from "./runtime";
 export type {
   RuntimeExecutionState,
@@ -952,6 +964,18 @@ export type {
   RuntimeSimilarIncident,
   RuntimeAlertReadyMetadata,
   IncidentSimilarResponse,
+  // Aggregate rollup types
+  RuntimeTrendBucket,
+  RuntimeOutcomeTrendPoint,
+  RuntimeTrendResponse,
+  RuntimeJobReliability,
+  RuntimeJobReliabilityResponse,
+  RuntimeComponentHotspot,
+  RuntimeComponentHotspotResponse,
+  RuntimeJobThroughput,
+  RuntimeJobThroughputResponse,
+  RuntimeErrorSignature,
+  RuntimeErrorSignatureResponse,
 } from "./runtime";
 
 // --- Topology level-2 drill-down (S1 contract; schemas in ./jobGraph) ---

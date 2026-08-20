@@ -1122,6 +1122,10 @@ DOCUMENTATION_GENERATION_CAPABILITY = CapabilityDefinition(
         "properties": {
             "project_id": {"type": "string", "minLength": 1, "maxLength": 255},
             "resume": {"type": "boolean"},
+            "doc_generation_provider": {
+                "type": ["string", "null"],
+                "enum": ["custom", "opencode-cli", None],
+            },
             "template_profile_id": {"type": ["string", "null"], "maxLength": 160},
             "investigation_model": {"type": ["string", "null"], "maxLength": 160},
             "model": {"type": ["string", "null"], "maxLength": 160},

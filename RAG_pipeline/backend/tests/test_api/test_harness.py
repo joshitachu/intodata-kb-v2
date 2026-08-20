@@ -444,6 +444,7 @@ async def test_workspace_generation_sends_selected_personal_pack_to_intodoc(
                     "organization_pack_id": 7,
                     "private_version_ids": [version.id],
                     "resume": True,
+                    "doc_generation_provider": "opencode-cli",
                 },
                 headers=CSRF_HEADERS,
             )
@@ -453,6 +454,7 @@ async def test_workspace_generation_sends_selected_personal_pack_to_intodoc(
     assert response.status_code == 200
     assert response.json()["status"] == "generating"
     assert captured["plugin_pack_id"] == 7
+    assert captured["doc_generation_provider"] == "opencode-cli"
     private_payload = captured["nexus_private_analysis_packs"]
     assert private_payload[0]["receipt"]["version_id"] == version.id
     assert private_payload[0]["artifact"]["output_documents"][0]["title"] == "Security Investment Brief"

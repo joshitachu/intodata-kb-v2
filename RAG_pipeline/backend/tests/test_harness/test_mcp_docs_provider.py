@@ -54,6 +54,7 @@ async def test_trigger_generation_passes_only_explicit_options() -> None:
 
     await provider.trigger_generation(
         project_id="p1",
+        doc_generation_provider="opencode-cli",
         investigation_model="anthropic/claude-sonnet-4-5",
         write_model="openai/gpt-5",
         plugin_pack_id=7,
@@ -61,9 +62,20 @@ async def test_trigger_generation_passes_only_explicit_options() -> None:
     )
 
     assert captured["json"] == (
-        b'{"project_id":"p1","investigation_model":"anthropic/claude-sonnet-4-5",'
+        b'{"project_id":"p1","doc_generation_provider":"opencode-cli",'
+        b'"investigation_model":"anthropic/claude-sonnet-4-5",'
         b'"write_model":"openai/gpt-5","plugin_pack_id":7,"resume":false}'
     )
+
+
+async def test_trigger_generation_rejects_unknown_generation_method() -> None:
+    provider = McpDocumentationProvider(base_url="http://mcp.internal/mcp")
+
+    with pytest.raises(McpDocumentationProviderError, match="Invalid documentation generation method"):
+        await provider.trigger_generation(
+            project_id="p1",
+            doc_generation_provider="opencode-cli --unsafe",
+        )
 
 
 async def test_trigger_generation_keeps_governed_snapshot_and_presentation_separate() -> None:
