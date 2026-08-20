@@ -46,6 +46,11 @@ All endpoints are under `/mcp/` prefix:
 |--------|------|-------------|
 | POST | `/mcp/add-repo` | Register a project |
 | POST | `/mcp/upload-zip` | Upload ZIP, unpack, register |
+| GET | `/mcp/plugins/starter` | Return Swap Pack starter repo metadata |
+| GET | `/mcp/plugins/starter.zip` | Download bundled Swap Pack starter (compatibility) |
+| POST | `/mcp/plugins/upload` | Upload and register a Swap Pack ZIP (compatibility) |
+| POST | `/mcp/plugins/discover` | Discover valid Swap Pack branches in a GitHub repo |
+| POST | `/mcp/plugins` | Register a Swap Pack from local path or GitHub repo branch |
 | POST | `/mcp/scan` | Trigger scan (background task) |
 | POST | `/mcp/generate` | Run the configured doc-generation provider/harness |
 | POST | `/mcp/push-to-rag` | Push docs to RAG pipeline |
@@ -105,6 +110,22 @@ mcp-server/src/mcp_server/
 ```
 
 Note: all `/mcp/*` routes require JWT cookie auth. The GitHub webhook route explicitly bypasses JWT and uses HMAC verification instead.
+
+## Swap Pack Starter
+
+The dashboard-facing Swap Pack flow is backed by the existing `PluginPack`
+runtime. Admins provide a public GitHub repository URL, the dashboard calls
+`POST /mcp/plugins/discover`, and each branch with a valid root `plugin.yaml`
+can be registered as its own pack. Registered GitHub packs store both
+`repo_url` and `repo_branch`, clone into branch-specific local directories, and
+are updated by the poller/webhook for that branch.
+
+The starter repository shown in the dashboard comes from
+`MCP_SWAP_PACK_STARTER_REPO_URL` and defaults to
+`https://github.com/joshitachu/swap-pack-starter`. The starter repo contains
+runtime pack files plus AI-authoring instructions (`AGENTS.md`, Codex skill,
+Claude command). ZIP endpoints remain available for compatibility but are not
+the visible dashboard path.
 
 ## Enterprise Generation Verdicts
 
