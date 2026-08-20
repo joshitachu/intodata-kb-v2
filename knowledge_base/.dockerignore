@@ -1,0 +1,15 @@
+**/.DS_Store
+**/.pytest_cache
+**/.ruff_cache
+**/.venv
+**/__pycache__
+**/*.pyc
+**/node_modules
+**/.plans
+dashboard
+intodoc/tests
+mcp-server/tests
+mcp-server/data/logs
+mcp-server/data/repos
+mcp-server/data/uploads
+output

@@ -28,6 +28,10 @@ from mcp_server.services.git_reingestion import (
     run_git_reingestion,
 )
 from mcp_server.services.doc_version_history import record_push_outcome
+from mcp_server.services.living_docs.candidate_publisher import CandidatePublisher
+from mcp_server.services.living_docs.candidate_store import FileCandidateStore
+from mcp_server.services.living_docs.git_patch_coordinator import GitPatchCoordinator
+from mcp_server.services.living_docs.rollout import RolloutStage, inspect_project_patch_readiness
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.reingestion_router import ReingestionRouter, RoutingDecision
@@ -35,6 +39,7 @@ from mcp_server.services.rag_support_package import (
     GenerationCacheReadiness,
     inspect_generation_cache_readiness,
 )
+from mcp_server.services.rag_bridge import RagBridge
 from mcp_server.services.quick_change_scanner import QuickChangeScanner, QuickScanReport
 
 logger = logging.getLogger(__name__)
@@ -157,10 +162,21 @@ class AutoDocAgentRuntime:
                     summary,
                     decision.reason or "No documentation update required",
                 )
-            if decision.strategy in {"scoped_regen", "full_regen"}:
-                targeted = (
-                    list(decision.affected_docs) if decision.strategy == "scoped_regen" else None
+            if decision.strategy == "held":
+                return self._held(
+                    summary,
+                    decision.reason or "Automatic patch scope is not safely traceable",
+                    reason_code=decision.reason_code or "traceability_required",
                 )
+            if decision.strategy == "full_regen":
+                # The automatic entrypoint must be safe even if a legacy or
+                # injected router returns this retired strategy.
+                return self._held(
+                    summary,
+                    "Automatic exhaustive generation is forbidden; run an explicit manual rebuild",
+                    reason_code="automatic_full_generation_forbidden",
+                )
+            if decision.strategy == "scoped_regen":
                 return await self._scoped_regen(
                     ctx,
                     before_sha,
@@ -169,7 +185,7 @@ class AutoDocAgentRuntime:
                     summary,
                     decision,
                     decision.reason or "Deterministic router requested regeneration",
-                    targeted_docs=targeted,
+                    targeted_docs=list(decision.affected_docs),
                 )
 
             return await self._edit_validate_and_sync(
@@ -181,7 +197,7 @@ class AutoDocAgentRuntime:
                 decision=decision,
             )
         except AutoDocToolBudgetExceeded as exc:
-            return self._manual(summary, str(exc))
+            return self._held(summary, str(exc), reason_code="agent_budget_exceeded")
         except Exception as exc:
             logger.exception("Auto-doc agent failed for %s", ctx.project_id)
             return _failed(self._finalize_summary(summary, action="failed", reason=str(exc)), str(exc))
@@ -397,29 +413,16 @@ class AutoDocAgentRuntime:
         reason = last_result.error or merged.get("reason") or "Doc edit did not complete"
         clean_reason = str(reason).removeprefix("Manual review required: ")
         if _should_targeted_regen_after_patch_failure(clean_reason):
-            return await self._scoped_regen(
-                ctx,
-                before_sha,
-                after_sha,
-                trigger,
+            return self._held(
                 merged,
-                decision,
                 clean_reason,
-                targeted_docs=list(decision.affected_docs) or None,
+                reason_code="patch_failed",
+                repair_attempts=int(merged.get("repair_attempts") or 0),
             )
-        if last_result.action == "failed":
-            return _failed(
-                self._finalize_summary(
-                    merged,
-                    action="failed",
-                    reason=str(reason),
-                    repair_attempts=merged.get("repair_attempts", 0),
-                ),
-                str(reason),
-            )
-        return self._manual(
+        return self._held(
             merged,
             clean_reason,
+            reason_code="patch_failed",
             repair_attempts=int(merged.get("repair_attempts") or 0),
         )
 
@@ -436,7 +439,7 @@ class AutoDocAgentRuntime:
 
         Runs TruePatchExecutor for each group in decision.changed_groups.
         On success: returns advance_commit=True DiffPatchResult.
-        On scoped_regen_fallback: delegates to self._scoped_regen.
+        On scoped_regen_fallback: holds the source revision for review.
         On hard failure: returns _failed(...).
         """
         output_dir = config.project_root / "output" / ctx.project_id
@@ -444,6 +447,105 @@ class AutoDocAgentRuntime:
         executor = TruePatchExecutor(
             doc_generation_provider=ctx.doc_generation_provider
         )
+        if config.living_doc_patching_enabled:
+            # The enabled route has one authority: candidate docs + a
+            # revision-aware RAG membership.  The HTTP adapter stages changed
+            # artifacts and lets RAG clone unchanged vectors into the candidate
+            # revision without embedding them again.
+            raw_bridge = RagBridge(log_manager=self.log_mgr)
+            revision_bridge = RagBridge(
+                log_manager=self.log_mgr,
+                revisioned_rag=raw_bridge.http_revisioned_adapter(),
+            )
+            store = FileCandidateStore(
+                (config.data_dir / "living_docs" / "candidates" / ctx.project_id).resolve()
+            )
+            coordinator = GitPatchCoordinator(
+                store=store,
+                publisher=CandidatePublisher(store=store, rag=revision_bridge),
+                executor=executor,
+            )
+            try:
+                base_revision = await revision_bridge.active_knowledge_revision(ctx.project_id)
+                readiness = inspect_project_patch_readiness(
+                    project_id=ctx.project_id,
+                    output_dir=output_dir,
+                    feature_enabled=True,
+                    stage=RolloutStage(config.living_doc_rollout_stage),
+                    source_revision_id=before_sha or None,
+                    active_knowledge_revision_id=base_revision,
+                )
+                if not readiness.ready:
+                    return self._held(
+                        summary,
+                        f"Living-document baseline is not ready: {', '.join(readiness.reason_codes)}",
+                        reason_code=readiness.reason_codes[0],
+                    )
+                candidate = coordinator.create_candidate(
+                    project_id=ctx.project_id,
+                    source_identity=ctx.local_path,
+                    before_sha=before_sha,
+                    after_sha=after_sha,
+                    changed_groups=decision.changed_groups,
+                    active_docs_dir=output_dir / "docs",
+                    base_knowledge_revision_id=base_revision,
+                )
+            except Exception as exc:
+                return self._held(
+                    summary,
+                    f"Candidate creation held: {exc}",
+                    reason_code="traceability_required",
+                )
+            outcome = await coordinator.run(
+                candidate,
+                active_output_dir=output_dir,
+                candidate_scan_output_dir=config.intodoc_output_dir / ctx.project_id,
+                changed_groups=decision.changed_groups,
+                platform=platform,
+                log_mgr=self.log_mgr,
+                before_sha=before_sha,
+                after_sha=after_sha,
+                active_source_revision_key=candidate.change_set.source_revision.key,
+                source_path=ctx.local_path,
+                rollout_stage=config.living_doc_rollout_stage,
+                low_risk_max_artifacts=config.living_doc_low_risk_max_artifacts,
+            )
+            self._record_tool("living_doc_candidate", {
+                "candidate_id": outcome.candidate_id,
+                "knowledge_revision_id": outcome.knowledge_revision_id,
+                "action": outcome.action,
+                "reason_code": outcome.reason_code,
+            })
+            if outcome.action != "active":
+                return self._held(
+                    summary,
+                    "Candidate patch held; active docs and RAG revision are unchanged",
+                    reason_code=outcome.reason_code or "candidate_patch_held",
+                )
+            return DiffPatchResult(
+                action="true_patch",
+                summary=self._finalize_summary(
+                    {
+                        **summary,
+                        "candidate_id": outcome.candidate_id,
+                        "knowledge_revision_id": outcome.knowledge_revision_id,
+                        "publication": (
+                            {
+                                "changed_logical_ids": outcome.publication.changed_logical_ids,
+                                "deleted_logical_ids": outcome.publication.deleted_logical_ids,
+                                "embedded_content_count": outcome.publication.embedded_content_count,
+                                "reused_content_count": outcome.publication.reused_content_count,
+                            }
+                            if outcome.publication else {}
+                        ),
+                    },
+                    action="true_patch",
+                    touched_docs=list(outcome.patched_docs),
+                    reason_code="knowledge_revision_activated",
+                ),
+                patched_docs=list(outcome.patched_docs),
+                advance_commit=True,
+            )
         self._record_tool("true_patch_start", {
             "changed_groups": decision.changed_groups,
             "platform": platform,
@@ -481,28 +583,20 @@ class AutoDocAgentRuntime:
             fallback_reason = result.error or "True patch validation failed; scoped_regen fallback"
             await self.log_mgr.emit(
                 ctx.project_id,
-                f"TruePatch fallback -> scoped_regen: {fallback_reason}",
+                f"TruePatch held; exhaustive/scoped regeneration is not automatic: {fallback_reason}",
                 "warning",
             )
-            return await self._scoped_regen(
-                ctx,
-                before_sha,
-                after_sha,
-                trigger,
+            return self._held(
                 {**summary, **result.summary, "true_patch_fallback": True},
-                decision,
                 fallback_reason,
-                targeted_docs=list(decision.affected_docs) or None,
+                reason_code="patch_failed",
             )
-        # Hard failure -- no docs written
+        # A patch executor failure must not escalate into a broader generation.
         err = result.error or "True patch executor failed"
-        return _failed(
-            self._finalize_summary(
-                {**summary, **result.summary},
-                action="failed",
-                reason=err,
-            ),
+        return self._held(
+            {**summary, **result.summary},
             err,
+            reason_code="patch_failed",
         )
 
     async def _project_platform(self, project_id: str) -> str:
@@ -553,9 +647,15 @@ class AutoDocAgentRuntime:
         *,
         targeted_docs: list[str] | None,
     ) -> DiffPatchResult:
-        # targeted_docs None => full regeneration (no Phase 3 doc filter);
-        # a non-empty list => scoped regeneration of exactly those docs.
-        action_label = "targeted_regen" if targeted_docs else "full_regen"
+        # Automatic regeneration is only allowed with an explicit, non-empty
+        # target collection. ``None`` used to mean regenerate every document.
+        if not targeted_docs:
+            return self._held(
+                summary,
+                "Automatic regeneration has no bounded target documents",
+                reason_code="empty_target_scope",
+            )
+        action_label = "targeted_regen"
         self._record_tool(
             f"{action_label}_needed",
             {"reason": reason, "affected_docs": decision.affected_docs, "targeted_docs": targeted_docs},
@@ -687,6 +787,30 @@ class AutoDocAgentRuntime:
             summary=final,
             error=f"Manual review required: {reason}",
         )
+
+    def _held(
+        self,
+        summary: dict[str, Any],
+        reason: str,
+        *,
+        reason_code: str,
+        repair_attempts: int | None = None,
+    ) -> DiffPatchResult:
+        """Return a terminal, non-mutating automatic-update outcome."""
+        try:
+            self._record_tool("finish", {"action": "held", "reason": reason, "reason_code": reason_code})
+        except AutoDocToolBudgetExceeded:
+            pass
+        final = self._finalize_summary(
+            summary,
+            action="held",
+            reason=reason,
+            repair_attempts=repair_attempts,
+            reason_code=reason_code,
+        )
+        final["held"] = True
+        final["held_reason"] = reason
+        return DiffPatchResult(action="held", summary=final, error=f"Update held: {reason}")
 
     def _record_tool(self, name: str, payload: dict[str, Any]) -> None:
         import json
@@ -824,7 +948,7 @@ class AutoDocUpdateService:
                 await registry.update_status(project_id, "ready", error_message=None)
             elif result.action in {"skipped", "targeted_regen", "full_regen"} and result.error is None:
                 await registry.update_status(project_id, "ready", error_message=None)
-            elif result.action == "manual_review":
+            elif result.action in {"manual_review", "held"}:
                 await registry.update_status(project_id, "ready", error_message=result.error)
             else:
                 await registry.update_status(project_id, "error", error_message=result.error)

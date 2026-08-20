@@ -1575,16 +1575,24 @@ class TalendParser(BaseParser):
 
             # job_connections_used / connection_used_by (from component refs)
             conn_names: set[str] = set()
+            referenced_connection_components = _resolve_existing_connection_refs(job)
             for comp in job.components:
                 if comp.metadata_connection_ref:
+                    direction = _component_resource_direction(comp.component_type)
+                    if (
+                        direction == "unknown"
+                        and comp.unique_name in referenced_connection_components
+                    ):
+                        # The connection-holder component is implementation
+                        # plumbing. Its input/output consumers below provide
+                        # the actual data direction and more useful provenance.
+                        continue
                     conn_names.add(comp.metadata_connection_ref)
                     m.artifact_resources.append({
                         "artifact": job_key,
                         "resource_type": "repository_connection",
                         "resource": comp.metadata_connection_ref,
-                        "direction": _component_resource_direction(
-                            comp.component_type,
-                        ),
+                        "direction": direction,
                         "component_name": comp.unique_name,
                         "provenance": comp.component_type,
                     })
@@ -1923,6 +1931,72 @@ def _component_resource_direction(component_type: str) -> str:
     if normalized.endswith("output") or "output" in normalized:
         return "output"
     return "unknown"
+
+
+_EXISTING_CONNECTION_REFERENCE_PARAMS = (
+    "CONNECTION",
+    "CONNECTION_COMPONENT",
+    "CONNECTION_NAME",
+)
+
+
+def _existing_connection_component_name(component: Component) -> str:
+    """Return the exact in-job connection component referenced by a component.
+
+    Talend input/output components commonly carry no repository reference of
+    their own. Instead they set ``USE_EXISTING_CONNECTION=true`` and point at
+    a sibling ``t*Connection`` component. This is exact structural evidence,
+    not display-name matching.
+    """
+    params = {param.name.upper(): param.value for param in component.params}
+    if params.get("USE_EXISTING_CONNECTION", "").strip().casefold() != "true":
+        return ""
+    for name in _EXISTING_CONNECTION_REFERENCE_PARAMS:
+        value = params.get(name, "").strip().strip("\"'")
+        if value:
+            return value
+    return ""
+
+
+def _resolve_existing_connection_refs(job: ParsedJob) -> set[str]:
+    """Propagate repository identities through exact component references.
+
+    Returns the connection-holder component names used by another component so
+    manifest construction can omit their directionless plumbing record while
+    retaining the directional input/output evidence.
+    """
+    components_by_name = {
+        component.unique_name: component
+        for component in job.components
+        if component.unique_name
+    }
+    referenced: set[str] = set()
+    unresolved = {
+        component.unique_name: _existing_connection_component_name(component)
+        for component in job.components
+        if not component.metadata_connection_ref
+    }
+    # A bounded fixed-point also supports a connection component that itself
+    # references another connection component without introducing recursion.
+    for _ in range(len(job.components)):
+        changed = False
+        for component_name, referenced_name in unresolved.items():
+            if not referenced_name:
+                continue
+            referenced.add(referenced_name)
+            target = components_by_name.get(referenced_name)
+            component = components_by_name.get(component_name)
+            if (
+                component is not None
+                and target is not None
+                and not component.metadata_connection_ref
+                and target.metadata_connection_ref
+            ):
+                component.metadata_connection_ref = target.metadata_connection_ref
+                changed = True
+        if not changed:
+            break
+    return referenced
 
 
 def _route_channel_connection_name(channel_type: str, channel: str) -> str:

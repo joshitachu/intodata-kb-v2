@@ -141,6 +141,7 @@ class DocumentationGenerationHandler:
             "project_id": str(request.arguments["project_id"]),
             "access_token": context.access_token,
             "resume": bool(request.arguments.get("resume", True)),
+            "doc_generation_provider": request.arguments.get("doc_generation_provider"),
             "investigation_model": request.arguments.get("investigation_model"),
             "model": request.arguments.get("model"),
             "write_model": request.arguments.get("write_model"),
@@ -329,6 +330,38 @@ class DocumentationUpdateHandler:
 
     async def __call__(self, capability, request, context, services) -> CapabilityObservation:
         provider = services.docs_provider or McpDocumentationProvider()
+        if request.arguments.get("proposal_id") and request.arguments.get("patch_plan_hash"):
+            result = await provider.activate_chat_patch(
+                project_id=str(request.arguments["project_id"]),
+                filename=str(request.arguments["target_doc"]),
+                proposal_id=str(request.arguments["proposal_id"]),
+                patch_plan_hash=str(request.arguments["patch_plan_hash"]),
+                access_token=context.access_token,
+            )
+            return CapabilityObservation(
+                capability_id=capability.id,
+                status="succeeded",
+                output_type=capability.output_type,
+                summary=f"Activated documentation revision {result.knowledge_revision_id}.",
+                data={
+                    "project_id": request.arguments["project_id"],
+                    "filename": result.filename,
+                    "status": "active",
+                    "before_sha": result.before_sha,
+                    "after_sha": result.after_sha,
+                    "version_id": result.knowledge_revision_id,
+                    "knowledge_revision_id": result.knowledge_revision_id,
+                    "candidate_id": result.candidate_id,
+                    "assertion_kind": result.assertion_kind,
+                    "changed_logical_ids": result.changed_logical_ids,
+                    "reconciliation_status": "revision_activated",
+                },
+                artifact_links=[{
+                    "label": "Updated Documentation",
+                    "url": f"/projects/{request.arguments['project_id']}/docs/{result.filename}",
+                    "kind": "docs",
+                }],
+            )
         result = await provider.update_doc_from_evidence(
             project_id=str(request.arguments["project_id"]),
             filename=str(request.arguments["target_doc"]),

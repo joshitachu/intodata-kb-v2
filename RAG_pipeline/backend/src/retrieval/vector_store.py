@@ -8,6 +8,9 @@ from qdrant_client.models import (
     Distance,
     PayloadSchemaType,
     PointStruct,
+    FieldCondition,
+    Filter,
+    MatchAny,
     SparseVector,
     SparseVectorParams,
     VectorParams,
@@ -81,6 +84,16 @@ async def ensure_collection(client: AsyncQdrantClient) -> None:
     )
     await client.create_payload_index(
         collection_name=COLLECTION_NAME,
+        field_name="knowledge_revision_id",
+        field_schema=PayloadSchemaType.KEYWORD,
+    )
+    await client.create_payload_index(
+        collection_name=COLLECTION_NAME,
+        field_name="artifact_id",
+        field_schema=PayloadSchemaType.KEYWORD,
+    )
+    await client.create_payload_index(
+        collection_name=COLLECTION_NAME,
         field_name="unit",
         field_schema=PayloadSchemaType.KEYWORD,
     )
@@ -109,6 +122,7 @@ async def upsert_chunks(
     allowed_groups: list[str],
     sparse_embeddings: list[AppSparseVector] | None = None,
     chunk_metadatas: list[dict] | None = None,
+    payload_filename: str | None = None,
 ) -> list[str]:
     """Store chunk embeddings in Qdrant with metadata payload.
 
@@ -140,7 +154,7 @@ async def upsert_chunks(
 
         base_payload: dict = {
             "document_id": document_id,
-            "filename": filename,
+            "filename": payload_filename or filename,
             "chunk_index": i,
             "text": text,
             "allowed_groups": allowed_groups,
@@ -165,6 +179,48 @@ async def upsert_chunks(
         f" (sparse: {'yes' if sparse_embeddings else 'no'})"
     )
     return point_ids
+
+
+async def clone_revision_artifact_points(
+    client: AsyncQdrantClient,
+    *,
+    project_id: str,
+    source_revision_id: str,
+    target_revision_id: str,
+    artifact_id: str,
+) -> int:
+    """Copy an unchanged artifact's vectors into a new revision without embedding.
+
+    Deterministic UUID5 IDs make retries idempotent.  The candidate revision is
+    still invisible until the SQL active-revision authority switches to it.
+    """
+    points, _ = await client.scroll(
+        collection_name=COLLECTION_NAME,
+        scroll_filter=Filter(must=[
+            FieldCondition(key="project_id", match=MatchAny(any=[project_id])),
+            FieldCondition(
+                key="knowledge_revision_id", match=MatchAny(any=[source_revision_id])
+            ),
+            FieldCondition(key="artifact_id", match=MatchAny(any=[artifact_id])),
+        ]),
+        limit=10_000,
+        with_payload=True,
+        with_vectors=True,
+    )
+    clones = []
+    for point in points:
+        payload = dict(point.payload)
+        payload["knowledge_revision_id"] = target_revision_id
+        clones.append(
+            PointStruct(
+                id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"rag-revision:{target_revision_id}:{point.id}")),
+                vector=point.vector,
+                payload=payload,
+            )
+        )
+    if clones:
+        await client.upsert(collection_name=COLLECTION_NAME, points=clones)
+    return len(clones)
 
 
 async def delete_document_points(

@@ -122,7 +122,7 @@ def test_in_file_edit_wide_set_routes_to_scoped_regen(tmp_path: Path) -> None:
     assert len(decision.affected_docs) == 5
 
 
-def test_breadth_over_threshold_routes_to_full_regen(tmp_path: Path) -> None:
+def test_breadth_over_threshold_routes_to_scoped_regen(tmp_path: Path) -> None:
     docs = {f"D{i}": {"included": {"jobs.md": ["GROUP_SUMMARY"]}, "included_obligations": []} for i in range(10)}
     output_dir = _manifest(tmp_path, "proj", docs)
     _scan_group(tmp_path, "proj", "jobs")
@@ -134,10 +134,10 @@ def test_breadth_over_threshold_routes_to_full_regen(tmp_path: Path) -> None:
         project_id="proj", changed_files=changes, quick_scan=quick, output_dir=output_dir
     )
 
-    assert decision.strategy == "full_regen"
+    assert decision.strategy == "scoped_regen"
 
 
-def test_missing_manifest_routes_to_full_regen(tmp_path: Path) -> None:
+def test_missing_manifest_holds_for_traceability(tmp_path: Path) -> None:
     _scan_group(tmp_path, "proj", "jobs")
     output_dir = tmp_path / "output" / "proj"  # no manifest written
     changes = [FileChange(status="A", path="jobs/new/x.py")]
@@ -148,11 +148,12 @@ def test_missing_manifest_routes_to_full_regen(tmp_path: Path) -> None:
         project_id="proj", changed_files=changes, quick_scan=quick, output_dir=output_dir
     )
 
-    assert decision.strategy == "full_regen"
+    assert decision.strategy == "held"
     assert decision.manifest_present is False
+    assert decision.reason_code == "traceability_required"
 
 
-def test_unresolved_groups_routes_to_full_regen(tmp_path: Path) -> None:
+def test_unresolved_groups_holds_for_traceability(tmp_path: Path) -> None:
     output_dir = _manifest(
         tmp_path, "proj", {"01_ARCH": {"included": {"jobs.md": ["GROUP_SUMMARY"]}}}
     )
@@ -174,7 +175,8 @@ def test_unresolved_groups_routes_to_full_regen(tmp_path: Path) -> None:
         project_id="noscan", changed_files=changes, quick_scan=quick, output_dir=other_dir
     )
 
-    assert decision.strategy == "full_regen"
+    assert decision.strategy == "held"
+    assert decision.reason_code == "traceability_required"
 
 
 async def test_expand_disabled_is_identical_to_floor(tmp_path: Path, monkeypatch) -> None:
@@ -467,9 +469,9 @@ def _wide_docs(n: int) -> dict:
     }
 
 
-def test_impact_mode_wide_in_file_edit_routes_bounded_not_full(tmp_path, monkeypatch) -> None:
-    """12 affected docs (> default threshold 8), in-file edit: flag ON keeps it in
-    the patch lane; the doc-count full-regen threshold is retired (REC-3)."""
+def test_impact_mode_wide_in_file_edit_routes_scoped_not_full(tmp_path, monkeypatch) -> None:
+    """12 affected docs use a bounded scoped lane; breadth cannot request a
+    whole-project generation."""
     monkeypatch.setattr(config, "impact_routing_enabled", True)
     output_dir = _manifest(tmp_path, "proj", _wide_docs(12))
     _scan_group(tmp_path, "proj", "jobs")
@@ -480,13 +482,12 @@ def test_impact_mode_wide_in_file_edit_routes_bounded_not_full(tmp_path, monkeyp
         project_id="proj", changed_files=changes, quick_scan=quick, output_dir=output_dir
     )
 
-    assert decision.strategy == "bounded_patch"
+    assert decision.strategy == "scoped_regen"
     assert len(decision.affected_docs) == 12
 
 
-def test_flag_off_same_wide_edit_still_full_regen(tmp_path, monkeypatch) -> None:
-    """Contrast: with the flag OFF the same 12-doc edit hits the legacy full-regen
-    threshold. Guards flag-off byte-identical behaviour."""
+def test_flag_off_same_wide_edit_still_uses_scoped_regen(tmp_path, monkeypatch) -> None:
+    """The retired breadth threshold cannot re-enable exhaustive generation."""
     monkeypatch.setattr(config, "impact_routing_enabled", False)
     output_dir = _manifest(tmp_path, "proj", _wide_docs(12))
     _scan_group(tmp_path, "proj", "jobs")
@@ -497,7 +498,7 @@ def test_flag_off_same_wide_edit_still_full_regen(tmp_path, monkeypatch) -> None
         project_id="proj", changed_files=changes, quick_scan=quick, output_dir=output_dir
     )
 
-    assert decision.strategy == "full_regen"
+    assert decision.strategy == "scoped_regen"
 
 
 def test_impact_mode_structural_wide_set_routes_scoped_not_full(tmp_path, monkeypatch) -> None:
@@ -517,9 +518,8 @@ def test_impact_mode_structural_wide_set_routes_scoped_not_full(tmp_path, monkey
     assert decision.structural is True
 
 
-def test_impact_mode_path_unresolved_routes_scoped_not_full(tmp_path, monkeypatch) -> None:
-    """A change that resolves to no scan group no longer forces full regen under the
-    flag; scope is delegated to the fingerprint dirty-set downstream."""
+def test_impact_mode_path_unresolved_holds_not_full(tmp_path, monkeypatch) -> None:
+    """An unresolved path cannot be widened into a generation request."""
     monkeypatch.setattr(config, "impact_routing_enabled", True)
     other_dir = tmp_path / "output" / "noscan"
     (other_dir / "docs" / "_rag_support").mkdir(parents=True)
@@ -533,11 +533,12 @@ def test_impact_mode_path_unresolved_routes_scoped_not_full(tmp_path, monkeypatc
         project_id="noscan", changed_files=changes, quick_scan=quick, output_dir=other_dir
     )
 
-    assert decision.strategy == "scoped_regen"
+    assert decision.strategy == "held"
+    assert decision.reason_code == "traceability_required"
 
 
-def test_impact_mode_missing_manifest_still_full_regen(tmp_path, monkeypatch) -> None:
-    """Missing provenance manifest is a reasoned full regen even under the flag."""
+def test_impact_mode_missing_manifest_holds(tmp_path, monkeypatch) -> None:
+    """Missing provenance is held in every automatic-routing mode."""
     monkeypatch.setattr(config, "impact_routing_enabled", True)
     _scan_group(tmp_path, "proj", "jobs")
     output_dir = tmp_path / "output" / "proj"  # no manifest
@@ -548,8 +549,9 @@ def test_impact_mode_missing_manifest_still_full_regen(tmp_path, monkeypatch) ->
         project_id="proj", changed_files=changes, quick_scan=quick, output_dir=output_dir
     )
 
-    assert decision.strategy == "full_regen"
+    assert decision.strategy == "held"
     assert decision.manifest_present is False
+    assert decision.reason_code == "traceability_required"
 
 
 def test_impact_mode_infra_only_still_skips(tmp_path, monkeypatch) -> None:

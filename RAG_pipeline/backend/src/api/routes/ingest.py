@@ -13,12 +13,25 @@ from src.db.models.entity_alias import EntityAlias
 from src.db.models.user import ProjectAssignment
 from src.document_roles import DEFAULT_DOCUMENT_ROLE, DocumentRole, normalize_document_role
 from src.ingestion.pipeline import ingest_document, ingest_text
+from src.retrieval.knowledge_revisions import (
+    KnowledgeRevisionConflictError,
+    KnowledgeRevisionNotFoundError,
+    activate_knowledge_revision,
+    prepare_knowledge_revision,
+    rollback_knowledge_revision,
+)
 from src.rbac.permissions import get_user_project_ids
 from src.retrieval.vector_store import delete_document_points
+from src.retrieval.vector_store import clone_revision_artifact_points
 from src.schemas import (
     EntityAliasReplaceRequest,
     EntityAliasReplaceResponse,
+    ActiveKnowledgeRevisionResponse,
     IngestResponse,
+    KnowledgeRevisionPrepareRequest,
+    KnowledgeRevisionRollbackRequest,
+    KnowledgeRevisionDetailResponse,
+    KnowledgeRevisionReceipt,
     MarkdownIngestRequest,
 )
 from src.runtime.topology.models import (
@@ -92,8 +105,194 @@ async def verify_machine_topology_ingest_api_key(
 
 router = APIRouter(tags=["ingest"])
 
-ALLOWED_EXTENSIONS = {"pdf", "docx", "pptx", "xlsx"}
+ALLOWED_EXTENSIONS = {"pdf", "docx", "pptx", "xlsx", "md"}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+
+
+@router.post(
+    "/ingest/revisions/prepare",
+    response_model=KnowledgeRevisionReceipt,
+    dependencies=[Depends(verify_ingest_api_key)],
+    summary="Record an inactive RAG knowledge revision",
+)
+async def prepare_rag_knowledge_revision(
+    request: KnowledgeRevisionPrepareRequest,
+    db: DBSession,
+    qdrant: QdrantClient,
+) -> KnowledgeRevisionReceipt:
+    """Persist a revision receipt; it is not retrievable until activation."""
+    try:
+        row = await prepare_knowledge_revision(
+            db,
+            project_id=request.project_id,
+            knowledge_revision_id=request.knowledge_revision_id,
+            base_knowledge_revision_id=request.base_knowledge_revision_id,
+            membership_hashes=request.membership_hashes,
+            deleted_logical_ids=request.deleted_logical_ids,
+            aliases=request.aliases,
+        )
+        # The membership receipt contains inherited artifacts as well as changed
+        # ones.  Copy inherited vectors under the new revision tag so R2 query
+        # filtering returns a complete coherent snapshot without re-embedding.
+        if request.base_knowledge_revision_id:
+            from src.db.models import RagKnowledgeRevision
+
+            base = (
+                await db.execute(
+                    select(RagKnowledgeRevision).where(
+                        RagKnowledgeRevision.project_id == request.project_id,
+                        RagKnowledgeRevision.knowledge_revision_id
+                        == request.base_knowledge_revision_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if base is None:
+                raise KnowledgeRevisionConflictError("base knowledge revision is not retained")
+            deleted = set(request.deleted_logical_ids)
+            for artifact_id, content_hash in request.membership_hashes.items():
+                if (
+                    artifact_id not in deleted
+                    and base.membership_hashes.get(artifact_id) == content_hash
+                ):
+                    await clone_revision_artifact_points(
+                        qdrant,
+                        project_id=request.project_id,
+                        source_revision_id=request.base_knowledge_revision_id,
+                        target_revision_id=request.knowledge_revision_id,
+                        artifact_id=artifact_id,
+                    )
+        await db.commit()
+    except KnowledgeRevisionConflictError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return KnowledgeRevisionReceipt(
+        project_id=row.project_id,
+        knowledge_revision_id=row.knowledge_revision_id,
+        state=row.state,
+        base_knowledge_revision_id=row.base_knowledge_revision_id,
+    )
+
+
+@router.post(
+    "/ingest/revisions/{project_id}/{knowledge_revision_id}/activate",
+    response_model=KnowledgeRevisionReceipt,
+    dependencies=[Depends(verify_ingest_api_key)],
+    summary="Atomically activate a prepared RAG knowledge revision",
+)
+async def activate_rag_knowledge_revision(
+    project_id: str,
+    knowledge_revision_id: str,
+    db: DBSession,
+) -> KnowledgeRevisionReceipt:
+    """CAS-switch the revision normal retrieval is allowed to see."""
+    try:
+        row, previous = await activate_knowledge_revision(
+            db, project_id=project_id, knowledge_revision_id=knowledge_revision_id
+        )
+        await db.commit()
+    except KnowledgeRevisionNotFoundError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except KnowledgeRevisionConflictError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return KnowledgeRevisionReceipt(
+        project_id=row.project_id,
+        knowledge_revision_id=row.knowledge_revision_id,
+        state=row.state,
+        base_knowledge_revision_id=row.base_knowledge_revision_id,
+        previous_knowledge_revision_id=previous,
+    )
+
+
+@router.post(
+    "/ingest/revisions/{project_id}/{knowledge_revision_id}/rollback",
+    response_model=KnowledgeRevisionReceipt,
+    dependencies=[Depends(verify_ingest_api_key)],
+    summary="CAS-restore a retained RAG knowledge revision",
+)
+async def rollback_rag_knowledge_revision(
+    project_id: str,
+    knowledge_revision_id: str,
+    request: KnowledgeRevisionRollbackRequest,
+    db: DBSession,
+) -> KnowledgeRevisionReceipt:
+    """Restore a known-complete membership without embedding it again."""
+
+    try:
+        row, previous = await rollback_knowledge_revision(
+            db,
+            project_id=project_id,
+            knowledge_revision_id=knowledge_revision_id,
+            expected_active_revision_id=request.expected_active_revision_id,
+        )
+        await db.commit()
+    except KnowledgeRevisionNotFoundError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except KnowledgeRevisionConflictError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return KnowledgeRevisionReceipt(
+        project_id=row.project_id,
+        knowledge_revision_id=row.knowledge_revision_id,
+        state=row.state,
+        base_knowledge_revision_id=row.base_knowledge_revision_id,
+        previous_knowledge_revision_id=previous,
+    )
+
+
+@router.get(
+    "/ingest/revisions/{project_id}/active",
+    response_model=ActiveKnowledgeRevisionResponse,
+    dependencies=[Depends(verify_ingest_api_key)],
+    summary="Read the active RAG knowledge revision for a project",
+)
+async def active_rag_knowledge_revision(
+    project_id: str,
+    db: DBSession,
+) -> ActiveKnowledgeRevisionResponse:
+    from src.db.models import ActiveRagKnowledgeRevision
+
+    active = await db.get(ActiveRagKnowledgeRevision, project_id)
+    return ActiveKnowledgeRevisionResponse(
+        project_id=project_id,
+        knowledge_revision_id=active.knowledge_revision_id if active else None,
+    )
+
+
+@router.get(
+    "/ingest/revisions/{project_id}/{knowledge_revision_id}",
+    response_model=KnowledgeRevisionDetailResponse,
+    dependencies=[Depends(verify_ingest_api_key)],
+    summary="Read a prepared RAG knowledge revision receipt",
+)
+async def get_rag_knowledge_revision(
+    project_id: str,
+    knowledge_revision_id: str,
+    db: DBSession,
+) -> KnowledgeRevisionDetailResponse:
+    from src.db.models import RagKnowledgeRevision
+
+    row = (
+        await db.execute(
+            select(RagKnowledgeRevision).where(
+                RagKnowledgeRevision.project_id == project_id,
+                RagKnowledgeRevision.knowledge_revision_id == knowledge_revision_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="knowledge revision is not prepared")
+    return KnowledgeRevisionDetailResponse(
+        project_id=row.project_id,
+        knowledge_revision_id=row.knowledge_revision_id,
+        state=row.state,
+        base_knowledge_revision_id=row.base_knowledge_revision_id,
+        membership_hashes=row.membership_hashes,
+        deleted_logical_ids=row.deleted_logical_ids,
+        aliases=row.aliases,
+    )
 
 
 @router.post(

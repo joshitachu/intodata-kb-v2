@@ -18,11 +18,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
-
 from mcp_server.providers.custom.models import FactsManifest, UnitFact
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES
-from mcp_server.providers.custom.prompt_renderer import PromptRenderer
 from mcp_server.providers.custom.prompts import doc_prompt, group_analysis_prompt
 
 
@@ -132,12 +129,14 @@ class TestPhase2Template:
         lower = prompt.lower()
         assert "do not omit" in lower or "do not rename" in lower or "missing or empty heading" in lower
 
-    def test_depth_floor_instruction(self) -> None:
-        """Phase 2 prompt must include a depth floor / minimum content instruction."""
+    def test_bounded_depth_instruction(self) -> None:
+        """Phase 2 must require evidence depth without an unbounded enumeration floor."""
         facts = _make_facts(["UnitA"])
         prompt = _render_phase2(facts)
         lower = prompt.lower()
-        assert "at least 3" in lower or "too thin" in lower
+        assert "complete every required heading" in lower
+        assert "do not repeat complete component inventories" in lower
+        assert "at most three evidence bullets" in lower
 
     def test_talend_platform_renders_without_error(self) -> None:
         """Phase 2 renders correctly for the talend platform (uses talend.md section file)."""

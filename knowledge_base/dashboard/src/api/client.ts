@@ -1,15 +1,6 @@
 import { type ZodType } from "zod";
 import { getLoginUrl } from "../hooks/useAuth";
 import {
-  AgenticExperimentListSchema,
-  AgenticExperimentCapabilitiesSchema,
-  AgenticExperimentSchema,
-  AgenticExperimentTaskListSchema,
-  AgenticExperimentTaskSchema,
-  AgenticRecipeSnapshotSchema,
-  AgenticReconcileResultSchema,
-  AgenticRetentionResultSchema,
-  AgenticSourceSnapshotSchema,
   AssignPluginPackResponseSchema,
   DocContentSchema,
   DocListResponseSchema,
@@ -41,15 +32,6 @@ import {
   SubmitReviewResponseSchema,
   WebhookStatusSchema,
 } from "./schemas";
-
-export function openCodeRuntimeModelId(
-  providerId: string | undefined,
-  modelId: string | undefined,
-): string | undefined {
-  return providerId && modelId?.startsWith(`${providerId}/`)
-    ? modelId.slice(providerId.length + 1)
-    : modelId;
-}
 
 function parseResponse<T>(schema: ZodType<T>, data: unknown): T {
   return schema.parse(data);
@@ -449,161 +431,22 @@ export const api = {
     writeModel?: string | null,
     organizationPackId: number | null = null,
     privateVersionIds: number[] = [],
+    generationMethod?: "custom" | "opencode-cli" | null,
   ) =>
     request<import("../types").StatusResponse>(
       `/nexus-api/harness/packs/projects/${encodeURIComponent(projectId)}/generate`,
       {
         method: "POST",
         body: JSON.stringify({
-          project_id: projectId,
           resume,
           investigation_model: investigationModel ?? null,
           model: model ?? null,
           write_model: writeModel ?? null,
+          doc_generation_provider: generationMethod ?? null,
           organization_pack_id: organizationPackId,
           private_version_ids: privateVersionIds,
         }),
       },
       StatusResponseSchema,
-    ),
-
-  generateOpenCodeCandidate: (
-    projectId: string,
-    candidateMode: "single_agent" | "orchestrated" | "grounded" = "single_agent",
-    providerId?: string,
-    modelId?: string,
-  ) => {
-    // Discovery exposes canonical routes as ``provider/model`` while the
-    // OpenCode HTTP API accepts providerID and the provider-local modelID as
-    // separate fields.
-    const runtimeModelId = openCodeRuntimeModelId(providerId, modelId);
-    return request<import("../types").AgenticExperiment>(
-      "/mcp/agentic-experiments/quick-run",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          project_id: projectId,
-          recipe_id: "alitalend-legacy-equivalence",
-          recipe_version: "1.0.0",
-          provider_id: providerId,
-          model_id: runtimeModelId,
-          candidate_mode: candidateMode,
-          acknowledge_non_publishing: true,
-          idempotency_key: `generate-ui:${projectId}:${globalThis.crypto.randomUUID()}`,
-        }),
-      },
-      AgenticExperimentSchema,
-    );
-  },
-
-  listAgenticExperiments: (projectId: string) =>
-    request<import("../types").AgenticExperiment[]>(
-      `/mcp/agentic-experiments?project_id=${encodeURIComponent(projectId)}`,
-      {},
-      AgenticExperimentListSchema,
-    ),
-
-  getAgenticExperimentCapabilities: () =>
-    request<import("../types").AgenticExperimentCapabilities>(
-      "/mcp/agentic-experiments/capabilities",
-      {},
-      AgenticExperimentCapabilitiesSchema,
-    ),
-
-  getAgenticExperiment: (experimentId: string) =>
-    request<import("../types").AgenticExperiment>(
-      `/mcp/agentic-experiments/${encodeURIComponent(experimentId)}`,
-      {},
-      AgenticExperimentSchema,
-    ),
-
-  createAgenticExperiment: (body: {
-    project_id: string;
-    baseline_run_id?: number | null;
-    recipe_id?: string | null;
-    recipe_version?: string | null;
-    runtime_id?: string;
-    provider_id?: string | null;
-    model_id?: string | null;
-    scope?: Record<string, unknown> | null;
-    acknowledge_non_publishing: true;
-    idempotency_key: string;
-  }) =>
-    request<import("../types").AgenticExperiment>(
-      "/mcp/agentic-experiments",
-      { method: "POST", body: JSON.stringify(body) },
-      AgenticExperimentSchema,
-    ),
-
-  freezeAgenticSourceSnapshot: (
-    experimentId: string,
-    sources: import("../types").AgenticSourceInput[] = [{
-      id: "current-intodoc-scan",
-      source_kind: "intodoc_scan",
-      source_role: "implementation",
-      capabilities: ["searchable_text", "structured_records"],
-    }],
-  ) =>
-    request<import("../types").AgenticSourceSnapshot>(
-      `/mcp/agentic-experiments/${encodeURIComponent(experimentId)}/source-snapshot`,
-      {
-        method: "POST",
-        body: JSON.stringify({ sources }),
-      },
-      AgenticSourceSnapshotSchema,
-    ),
-
-  compileAgenticRecipe: (
-    experimentId: string,
-    recipe: { recipe_id: string; recipe_version: string; model_capabilities: string[]; scope?: Record<string, unknown> | null },
-  ) =>
-    request<import("../types").AgenticRecipeSnapshot>(
-      `/mcp/agentic-experiments/${encodeURIComponent(experimentId)}/recipe-snapshot`,
-      { method: "POST", body: JSON.stringify(recipe) },
-      AgenticRecipeSnapshotSchema,
-    ),
-
-  listAgenticExperimentTasks: (experimentId: string) =>
-    request<import("../types").AgenticExperimentTaskList>(
-      `/mcp/agentic-experiments/${encodeURIComponent(experimentId)}/tasks`,
-      {},
-      AgenticExperimentTaskListSchema,
-    ),
-
-  retryAgenticExperimentTask: (experimentId: string, taskRunId: string) =>
-    request<import("../types").AgenticExperimentTask>(
-      `/mcp/agentic-experiments/${encodeURIComponent(experimentId)}/tasks/${encodeURIComponent(taskRunId)}/retry`,
-      { method: "POST", body: JSON.stringify({ acknowledge_explicit_retry: true }) },
-      AgenticExperimentTaskSchema,
-    ),
-
-  reconcileAgenticExperiment: (experimentId: string) =>
-    request<import("../types").AgenticReconcileResult>(
-      `/mcp/agentic-experiments/${encodeURIComponent(experimentId)}/reconcile`,
-      {
-        method: "POST",
-        body: JSON.stringify({ acknowledge_no_dispatch: true }),
-      },
-      AgenticReconcileResultSchema,
-    ),
-
-  quarantineAgenticExperiment: (experimentId: string) =>
-    request<import("../types").AgenticRetentionResult>(
-      `/mcp/agentic-experiments/${encodeURIComponent(experimentId)}/quarantine`,
-      {
-        method: "POST",
-        body: JSON.stringify({ acknowledge_recoverable_move: true }),
-      },
-      AgenticRetentionResultSchema,
-    ),
-
-  restoreAgenticExperiment: (experimentId: string) =>
-    request<import("../types").AgenticRetentionResult>(
-      `/mcp/agentic-experiments/${encodeURIComponent(experimentId)}/restore`,
-      {
-        method: "POST",
-        body: JSON.stringify({ acknowledge_recoverable_move: true }),
-      },
-      AgenticRetentionResultSchema,
     ),
 };

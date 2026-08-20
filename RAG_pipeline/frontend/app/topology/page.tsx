@@ -30,6 +30,7 @@ import { JobGraphCanvas } from "@/components/graph/JobGraphCanvas";
 import { ComponentGraphCanvas } from "@/components/graph/ComponentGraphCanvas";
 import { LandscapeCanvas, type LandscapeSelection } from "@/components/graph/LandscapeCanvas";
 import { IntegrationDetailCanvas, IntegrationRelationshipChooser } from "@/components/graph/IntegrationDetailCanvas";
+import { BusinessContextBanner } from "@/components/graph/BusinessContextBanner";
 import { TopologyBreadcrumb } from "@/components/graph/TopologyBreadcrumb";
 import { LineagePathBanner } from "@/components/graph/LineagePathBanner";
 import { useTopologyNavigation } from "@/hooks/useTopologyNavigation";
@@ -72,8 +73,8 @@ import { computeFailureFocusSet, isFocusDimmableNode, isFocusDimmableEdge } from
 import { computeFocus, type FocusResult } from "@/lib/focusMode";
 import { FocusInteractionContext, type FocusInteraction } from "@/components/graph/focusInteraction";
 import { CALL_EDGE_COLOR } from "@/lib/nodeStyles";
-import { findLandscapeEdge, landscapeEdgeKey } from "@/lib/landscapeTransform";
-import type { LandscapeEdge, LandscapeProvenance } from "@/types/landscape";
+import { findLandscapeEdge, landscapeEdgeKey, type TopologyEdge } from "@/lib/landscapeTransform";
+import type { LandscapeProvenance } from "@/types/landscape";
 
 // Default focus-mode horizon: focal job ± this many dependency hops.
 const DEFAULT_FOCUS_HOPS = 2;
@@ -226,10 +227,42 @@ function TopologyContent() {
   );
   const showLegacyCanvas = navCurrent.kind === "group" || (navCurrent.kind === "project" && landscapeUnavailable);
   const integrationSelection = navCurrent.kind === "integration" ? navCurrent.selection : null;
-  const selectedLandscapeEdge = useMemo<LandscapeEdge | undefined>(() => {
+  const selectedLandscapeEdge = useMemo<TopologyEdge | undefined>(() => {
     if (!landscapeQuery.data || integrationSelection?.kind !== "edge") return undefined;
     return findLandscapeEdge(landscapeQuery.data, integrationSelection.edgeKey);
   }, [landscapeQuery.data, integrationSelection]);
+  // Claims carry opaque IDs. The API provides a scanner identity catalogue so
+  // annotations are attached only after an explicit ID bridge is resolved.
+  const jobBusinessAnnotations = useMemo(() => {
+    const topology = landscapeQuery.data?.business_topology;
+    const evidence = landscapeQuery.data?.topology_evidence;
+    if (!topology || !evidence || !currentJobName) return [];
+    const artifactIds = new Set(evidence.artifacts
+      .filter((artifact) => artifact.job_id === currentJobName || artifact.name === currentJobName)
+      .map((artifact) => artifact.id));
+    return topology.artifact_annotations.filter((annotation) => artifactIds.has(annotation.artifact_id));
+  }, [landscapeQuery.data?.business_topology, landscapeQuery.data?.topology_evidence, currentJobName]);
+  const componentBusinessAnnotations = useMemo(() => {
+    const topology = landscapeQuery.data?.business_topology;
+    const evidence = landscapeQuery.data?.topology_evidence;
+    if (!topology || !evidence || !currentComponent) return [];
+    const jobArtifactIds = new Set(evidence.artifacts
+      .filter((artifact) => artifact.job_id === currentComponent.jobName || artifact.name === currentComponent.jobName)
+      .map((artifact) => artifact.id));
+    const componentIds = new Set(evidence.components
+      .filter((component) => component.name === currentComponent.componentName && jobArtifactIds.has(component.artifact_id))
+      .map((component) => component.id));
+    return topology.component_annotations.filter((annotation) => componentIds.has(annotation.component_id));
+  }, [landscapeQuery.data?.business_topology, landscapeQuery.data?.topology_evidence, currentComponent]);
+  const lineageBusinessAnnotations = useMemo(() => {
+    const topology = landscapeQuery.data?.business_topology;
+    const evidence = landscapeQuery.data?.topology_evidence;
+    if (!topology || !evidence || !currentComponent) return [];
+    const lineageIds = new Set(evidence.lineage
+      .filter((lineage) => lineage.job_name === currentComponent.jobName && (lineage.source_component === currentComponent.componentName || lineage.target_component === currentComponent.componentName))
+      .map((lineage) => lineage.id));
+    return topology.lineage_annotations.filter((annotation) => lineageIds.has(annotation.lineage_id));
+  }, [landscapeQuery.data?.business_topology, landscapeQuery.data?.topology_evidence, currentComponent]);
 
   // S5 field lineage ("heritage mode") - a single selection lives here so it
   // survives ascending/descending between drill-down levels (each level's
@@ -1230,6 +1263,8 @@ function TopologyContent() {
     setLineageQuery(null);
     if (selection.kind === "edge") {
       descendToIntegration({ kind: "edge", edgeKey: landscapeEdgeKey(selection.item) });
+    } else if (selection.kind === "relationship") {
+      descendToIntegration({ kind: "relationship", source: selection.source, target: selection.target, streamKeys: selection.streamKeys });
     } else if (selection.kind === "application") {
       descendToIntegration({ kind: "application", applicationId: selection.item.id });
     } else {
@@ -1732,7 +1767,7 @@ function TopologyContent() {
           ) : integrationSelection?.kind === "application" ? (
             <IntegrationRelationshipChooser landscape={landscapeQuery.data} entityId={integrationSelection.applicationId} title={landscapeQuery.data.applications.find((item) => item.id === integrationSelection.applicationId)?.label || integrationSelection.applicationId} onBack={ascend} onChoose={(edge) => descendToIntegration({ kind: "edge", edgeKey: landscapeEdgeKey(edge) })} />
           ) : integrationSelection?.kind === "system" ? (
-            <IntegrationRelationshipChooser landscape={landscapeQuery.data} entityId={integrationSelection.systemId} title={landscapeQuery.data.systems.find((item) => item.id === integrationSelection.systemId)?.name || integrationSelection.systemId} onBack={ascend} onChoose={(edge) => descendToIntegration({ kind: "edge", edgeKey: landscapeEdgeKey(edge) })} />
+            <IntegrationRelationshipChooser landscape={landscapeQuery.data} entityId={integrationSelection.systemId} title={landscapeQuery.data.business_topology?.systems.find((item) => item.id === integrationSelection.systemId)?.name || landscapeQuery.data.systems.find((item) => item.id === integrationSelection.systemId)?.name || integrationSelection.systemId} onBack={ascend} onChoose={(edge) => descendToIntegration({ kind: "edge", edgeKey: landscapeEdgeKey(edge) })} />
           ) : (
             <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">This integration is no longer present in the current scan. Return to the landscape and select it again.</div>
           )
@@ -1742,6 +1777,7 @@ function TopologyContent() {
             forces a remount (new layout + animated fitView) for every level,
             including tRunJob portal hops between sibling jobs. */}
         {navCurrent.kind === "job" && currentJobName && selectedProject && (
+          <>
           <JobGraphCanvas
             key={`${navDepth}:${currentJobName}`}
             projectId={selectedProject}
@@ -1751,12 +1787,15 @@ function TopologyContent() {
             onOpenComponent={descendToComponent}
             lineageComponentIds={jobLineageIds}
           />
+          <BusinessContextBanner annotations={jobBusinessAnnotations} level="L3 job" />
+          </>
         )}
 
         {/* Level 3 canvas: one component's table graph (tMap) - or, on the
             documented 404 fallback, the inspector rendered in this same
             slot. Also remounts fresh per descent. */}
         {navCurrent.kind === "component" && currentComponent && selectedProject && (
+          <>
           <ComponentGraphCanvas
             key={`${navDepth}:${currentComponent.jobName}:${currentComponent.componentName}`}
             projectId={selectedProject}
@@ -1767,6 +1806,8 @@ function TopologyContent() {
             lineageHighlight={componentLineage}
             onColumnLineageClick={handleColumnLineageClick}
           />
+          <BusinessContextBanner annotations={[...componentBusinessAnnotations, ...lineageBusinessAnnotations]} level="L4 mapping" />
+          </>
         )}
 
         {/* Field-lineage path banner (S5): floats above whichever level is

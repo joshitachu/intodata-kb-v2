@@ -31,6 +31,16 @@ class DocCatalogEntry(BaseModel):
     required_sections: list[str] = Field(default_factory=list)
     phase2_sections: list[str] = Field(default_factory=list)
     doc_specific_instructions: str = ""
+    # Expanded by the harness into one document per scanned unit
+    # ("{name}__{group}__{unit}"). Per-unit docs are written first and the
+    # catalog/summary docs synthesize from the finished unit docs.
+    per_unit: bool = False
+    # Sections whose content scales with the unit count (inventory rows,
+    # rule catalog entries). Drives the output-sized Phase 3 planner: when a
+    # doc's expected output exceeds one call, the task is partitioned by
+    # unit-range along these sections; docs without unit-scoped sections are
+    # always written in a single call.
+    unit_scoped_sections: list[str] = Field(default_factory=list)
 
 
 class DocCatalog(BaseModel):
@@ -39,6 +49,10 @@ class DocCatalog(BaseModel):
     @cached_property
     def required_docs(self) -> list[str]:
         return [d.name for d in self.docs]
+
+    @cached_property
+    def per_unit_docs(self) -> list[DocCatalogEntry]:
+        return [d for d in self.docs if d.per_unit]
 
     @cached_property
     def doc_assignments(self) -> dict[str, list[str]]:
@@ -54,6 +68,10 @@ class DocCatalog(BaseModel):
     @cached_property
     def section_requirements(self) -> dict[str, list[str]]:
         return {entry.name: entry.required_sections for entry in self.docs}
+
+    @cached_property
+    def unit_scoped_sections_map(self) -> dict[str, list[str]]:
+        return {entry.name: entry.unit_scoped_sections for entry in self.docs}
 
     @cached_property
     def doc_section_bundle_map(self) -> dict[str, set[str]]:

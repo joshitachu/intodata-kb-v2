@@ -434,6 +434,185 @@ class TestRuntimePlans:
         assert resp.json() == {"health": [], "total": 0}
 
 
+class TestOutcomeTrendEndpoint:
+    async def test_returns_bucketed_points(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/trend?bucket=day")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["bucket"] == "day"
+        assert body["total"] == len(body["points"])
+        assert sum(point["total_runs"] for point in body["points"]) == 3
+        assert sum(point["failed_runs"] for point in body["points"]) == 1
+
+    async def test_bucket_is_validated(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/trend?bucket=fortnight")
+        assert resp.status_code == 422
+
+    async def test_project_id_filter_cannot_widen_scope(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get(f"/api/v1/runtime/trend?project_id={_OTHER}")
+        assert resp.status_code == 200
+        assert resp.json()["points"] == []
+
+    async def test_empty_scope_returns_empty(self, seeded_client):
+        with _scope([]):
+            resp = await seeded_client.get("/api/v1/runtime/trend")
+        assert resp.status_code == 200
+        assert resp.json()["points"] == []
+
+
+class TestJobReliabilityEndpoint:
+    async def test_reports_per_job_reliability(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/job-reliability")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == len(body["jobs"])
+        failing = next(job for job in body["jobs"] if job["failed_runs"] > 0)
+        assert failing["current_failure_streak"] >= 1
+        assert failing["latest_state"] == "failed"
+        assert failing["p50_duration_ms"] is not None
+
+    async def test_pagination_keeps_total_honest(self, seeded_client):
+        with _scope([_ESB]):
+            full = await seeded_client.get("/api/v1/runtime/job-reliability")
+            page = await seeded_client.get("/api/v1/runtime/job-reliability?limit=1")
+        assert len(page.json()["jobs"]) == 1
+        assert page.json()["total"] == full.json()["total"]
+
+    async def test_project_id_filter_cannot_widen_scope(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get(f"/api/v1/runtime/job-reliability?project_id={_OTHER}")
+        assert resp.json() == {"jobs": [], "total": 0}
+
+    async def test_empty_scope_returns_empty(self, seeded_client):
+        with _scope([]):
+            resp = await seeded_client.get("/api/v1/runtime/job-reliability")
+        assert resp.json() == {"jobs": [], "total": 0}
+
+
+class TestComponentAndThroughputEndpoints:
+    async def test_component_hotspots_respond(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/component-hotspots")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == len(body["components"])
+
+    async def test_job_throughput_responds(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/job-throughput")
+        assert resp.status_code == 200
+        assert resp.json()["total"] == len(resp.json()["jobs"])
+
+    async def test_empty_scope_returns_empty(self, seeded_client):
+        with _scope([]):
+            hotspots = await seeded_client.get("/api/v1/runtime/component-hotspots")
+            throughput = await seeded_client.get("/api/v1/runtime/job-throughput")
+        assert hotspots.json() == {"components": [], "total": 0}
+        assert throughput.json() == {"jobs": [], "total": 0}
+
+    async def test_project_id_filter_cannot_widen_scope(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get(
+                f"/api/v1/runtime/component-hotspots?project_id={_OTHER}"
+            )
+        assert resp.json() == {"components": [], "total": 0}
+
+
+class TestErrorSignatureEndpoint:
+    async def test_responds_with_signature_envelope(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/error-signatures")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == len(body["signatures"])
+
+    async def test_empty_scope_returns_empty(self, seeded_client):
+        with _scope([]):
+            resp = await seeded_client.get("/api/v1/runtime/error-signatures")
+        assert resp.json() == {"signatures": [], "total": 0}
+
+    async def test_project_id_filter_cannot_widen_scope(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get(f"/api/v1/runtime/error-signatures?project_id={_OTHER}")
+        assert resp.json() == {"signatures": [], "total": 0}
+
+
+class TestStuckRunFilters:
+    async def test_min_duration_filter_narrows_and_keeps_total_honest(self, seeded_client):
+        with _scope([_ESB]):
+            baseline = await seeded_client.get("/api/v1/runtime/executions")
+            filtered = await seeded_client.get(
+                "/api/v1/runtime/executions?min_duration_ms=999999999"
+            )
+        assert baseline.json()["total"] == 3
+        # No seeded run is anywhere near this long, so the page and its total agree at 0.
+        assert filtered.json()["executions"] == []
+        assert filtered.json()["total"] == 0
+
+    async def test_unfinished_filter_is_accepted_and_consistent(self, seeded_client):
+        with _scope([_ESB]):
+            unfinished = await seeded_client.get("/api/v1/runtime/executions?unfinished=true")
+            finished = await seeded_client.get("/api/v1/runtime/executions?unfinished=false")
+        assert unfinished.status_code == 200
+        assert finished.status_code == 200
+        assert unfinished.json()["total"] + finished.json()["total"] == 3
+
+    async def test_negative_min_duration_is_rejected(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/executions?min_duration_ms=-1")
+        assert resp.status_code == 422
+
+
+class TestHonestTotals:
+    """`total` must be the full scoped match count, not the length of the page."""
+
+    @pytest.mark.parametrize(
+        ("path", "key"),
+        [
+            ("/api/v1/runtime/job-runs", "runs"),
+            ("/api/v1/runtime/plan-runs", "runs"),
+            ("/api/v1/runtime/artifacts", "artifacts"),
+            ("/api/v1/runtime/connections", "connections"),
+            ("/api/v1/runtime/dependencies", "dependencies"),
+        ],
+    )
+    async def test_first_page_total_matches_unpaginated_total(self, seeded_client, path, key):
+        with _scope([_ESB]):
+            full = await seeded_client.get(f"{path}?limit=500")
+            page = await seeded_client.get(f"{path}?limit=1")
+        assert full.status_code == 200
+        assert page.status_code == 200
+        expected = len(full.json()[key])
+        assert full.json()["total"] == expected
+        assert page.json()["total"] == expected
+        if expected > 1:
+            # The page is genuinely truncated while the total still reports everything.
+            assert len(page.json()[key]) == 1
+
+    @pytest.mark.parametrize(
+        ("path", "key"),
+        [
+            ("/api/v1/runtime/job-runs", "runs"),
+            ("/api/v1/runtime/plan-runs", "runs"),
+            ("/api/v1/runtime/artifacts", "artifacts"),
+            ("/api/v1/runtime/connections", "connections"),
+            ("/api/v1/runtime/dependencies", "dependencies"),
+        ],
+    )
+    async def test_offset_paging_is_supported(self, seeded_client, path, key):
+        with _scope([_ESB]):
+            first = await seeded_client.get(f"{path}?limit=1&offset=0")
+            second = await seeded_client.get(f"{path}?limit=1&offset=1")
+        assert first.status_code == 200
+        assert second.status_code == 200
+        if first.json()["total"] > 1:
+            assert first.json()[key] != second.json()[key]
+
+
 class TestAuthentication:
     async def test_unauthenticated_request_is_401(self, db_session):
         # Only get_db is overridden so the dependency resolves; real get_current_user

@@ -6,16 +6,14 @@ import datetime
 import logging
 import os
 import asyncio
-import secrets
 import time
 from contextlib import asynccontextmanager
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
 from sqlalchemy import inspect, update
@@ -25,17 +23,11 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from mcp_server.api.middleware import IPAllowlistMiddleware
 from mcp_server.config import (
-    check_agentic_configuration,
     check_provider_credentials,
     config,
 )
 from mcp_server.db.models import Base, GenerateRun
 from mcp_server.db.session import async_session_factory, engine
-from mcp_server.experiments.infrastructure.mcp_transport import (
-    TaskServerRegistry,
-    create_experiment_mcp_transport,
-)
-from mcp_server.experiments.mcp_tools.auth import TaskTokenVerifier
 from mcp_server.services.atomic_swap import (
     gc_abandoned_staging,
     recover_stale_backups,
@@ -52,48 +44,40 @@ logger = logging.getLogger(__name__)
 # Shared log manager instance
 log_manager = LogManager()
 
-# A disabled installation still needs a valid verifier object at import time.
-# Its random process-local fallback key cannot mint a usable task token and is
-# replaced by the explicitly configured key whenever the feature is enabled.
-_experiment_task_token_key = (
-    config.agentic_task_token_secret.encode("utf-8")
-    if config.agentic_task_token_secret
-    else secrets.token_bytes(32)
-)
-experiment_task_registry = TaskServerRegistry(
-    verifier=TaskTokenVerifier(
-        keys={"v1": _experiment_task_token_key},
-        max_ttl=timedelta(
-            seconds=max(1, config.agentic_task_token_ttl_seconds)
-        ),
-    )
-)
-experiment_mcp_transport = create_experiment_mcp_transport(
-    experiment_task_registry
-)
 
+def _apply_column_migrations(sync_conn: Any) -> None:
+    """Idempotent in-place column migrations for existing deployments.
 
-class _AgenticMcpFeatureGate:
-    """Keep the internal task MCP surface unreachable unless fully enabled."""
+    This repo bootstraps its schema with ``create_all`` (no alembic), which
+    never alters existing tables. Runs inside the startup engine transaction.
 
-    def __init__(self, app: Any) -> None:
-        self._app = app
+    - ``generate_runs.partition_name`` (VARCHAR(100), nullable): composite
+      child runs record their sub-project partition here instead of encoding
+      it into ``triggered_by`` (which overflowed its VARCHAR(20)).
+    - ``generate_runs.triggered_by`` / ``scan_runs.triggered_by`` widened to
+      VARCHAR(40) so every trigger-source label fits.
+    """
+    from sqlalchemy import text as sa_text
 
-    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        if scope["type"] == "http":
-            if not config.agentic_experiments_enabled:
-                await JSONResponse(
-                    {"detail": "Not found"},
-                    status_code=404,
-                )(scope, receive, send)
-                return
-            if check_agentic_configuration():
-                await JSONResponse(
-                    {"detail": "Agentic experiment runtime is not configured"},
-                    status_code=503,
-                )(scope, receive, send)
-                return
-        await self._app(scope, receive, send)
+    inspector = inspect(sync_conn)
+    dialect = sync_conn.dialect.name
+    try:
+        gen_columns = {c["name"] for c in inspector.get_columns("generate_runs")}
+    except Exception:  # table absent (fresh DB handled by create_all)
+        return
+    if "partition_name" not in gen_columns:
+        sync_conn.execute(
+            sa_text("ALTER TABLE generate_runs ADD COLUMN partition_name VARCHAR(100)")
+        )
+        logger.info("[startup] added generate_runs.partition_name")
+    if dialect == "postgresql":
+        # SQLite ignores VARCHAR lengths; only Postgres needs the widening.
+        for table in ("generate_runs", "scan_runs"):
+            sync_conn.execute(
+                sa_text(
+                    f"ALTER TABLE {table} ALTER COLUMN triggered_by TYPE VARCHAR(40)"
+                )
+            )
 
 
 def _pid_alive(pid: int) -> bool:
@@ -170,6 +154,11 @@ async def lifespan(app: FastAPI):
             logger.info("Created tables: %s", [t.name for t in tables_to_create])
         else:
             logger.info("All tables already exist, skipping create")
+        # Idempotent in-place column migrations (this repo uses create_all, not
+        # alembic; create_all never alters existing tables). Composite child
+        # runs record their partition in generate_runs.partition_name, and
+        # triggered_by is widened to hold every trigger source label.
+        await conn.run_sync(_apply_column_migrations)
     try:
         repaired_paths = await repair_managed_project_repo_paths(async_session_factory)
         if repaired_paths:
@@ -184,7 +173,6 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Startup Pack governance migration failed")
     app.state.log_manager = log_manager
-    app.state.experiment_task_registry = experiment_task_registry
     app.state.git_poller_task = asyncio.create_task(git_polling_loop(log_manager))
     app.state.ops_telemetry_task = (
         asyncio.create_task(telemetry_loop()) if telemetry_enabled() else None
@@ -215,25 +203,15 @@ async def lifespan(app: FastAPI):
 
     for warning in (
         *check_provider_credentials(),
-        *check_agentic_configuration(),
     ):
         if config.app_env == "production":
             logger.error("[startup] %s", warning)
         else:
             logger.warning("[startup] %s", warning)
 
-    experiment_transport_started = False
     try:
-        if (
-            config.agentic_experiments_enabled
-            and not check_agentic_configuration()
-        ):
-            await experiment_mcp_transport.startup()
-            experiment_transport_started = True
         yield
     finally:
-        if experiment_transport_started:
-            await experiment_mcp_transport.shutdown()
         telemetry_task = getattr(app.state, "ops_telemetry_task", None)
         if telemetry_task:
             telemetry_task.cancel()
@@ -314,7 +292,7 @@ app.add_middleware(
 )
 
 # Import and register routes
-from mcp_server.api.routes import agentic_experiments, discovery, estimate as estimate_routes, generate_runs, health, instance_settings, logs, ops_control, plugins, projects, webhook  # noqa: E402
+from mcp_server.api.routes import discovery, estimate as estimate_routes, generate_runs, health, instance_settings, logs, ops_control, plugins, projects, webhook  # noqa: E402
 
 app.include_router(health.router)  # /health stays open
 app.include_router(ops_control.router)  # Mission Control triggers — own Bearer auth
@@ -339,11 +317,6 @@ app.include_router(
     dependencies=[Depends(require_auth)],
 )
 app.include_router(
-    agentic_experiments.router,
-    prefix="/mcp",
-    dependencies=[Depends(require_auth)],
-)
-app.include_router(
     plugins.router,
     prefix="/mcp",
     dependencies=[Depends(require_auth)],
@@ -357,14 +330,6 @@ app.include_router(
     estimate_routes.router,
     prefix="/mcp",
     dependencies=[Depends(require_auth)],
-)
-
-# Internal, task-token-authenticated transport used only by isolated OpenCode
-# workers. It is not part of the dashboard JWT surface and cannot publish docs.
-app.mount(
-    "/internal/agentic-mcp",
-    _AgenticMcpFeatureGate(experiment_mcp_transport.asgi_app()),
-    name="agentic-experiment-mcp",
 )
 
 # --- Static file serving for production dashboard ---

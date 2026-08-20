@@ -209,11 +209,87 @@ def test_composite_segmented_chunk_round_trip_preserves_canonical_ids(scanner, t
 
     definitions = scanner.get_chunk_definitions(str(tmp_path))
     assert {name for chunk in definitions["chunks"] for name in chunk["job_names"]} == {parent_id, child_id}
-    parent_chunk = next(chunk for chunk in definitions["chunks"] if parent_id in chunk["job_names"])
-    data = scanner.read_chunk_data(str(tmp_path), parent_chunk["chunk_id"])
-    assert [job["job_id"] for job in data["jobs"]] == [parent_id]
+    # Both jobs share the clean functional group "Jobs" even though the composite
+    # scanner stored them under two escaped/hashed physical directories
+    # (one__Jobs, two__Jobs). Grouping MUST key on the canonical job.group, not
+    # the directory name, so the two collapse into a single "Jobs" group -- this
+    # is what keeps preprocess groups in lockstep with the facts manifest, which
+    # also keys on clean job.group.
+    assert {chunk["group"] for chunk in definitions["chunks"]} == {"Jobs"}
+    group_chunk = next(chunk for chunk in definitions["chunks"] if parent_id in chunk["job_names"])
+    data = scanner.read_chunk_data(str(tmp_path), group_chunk["chunk_id"])
+    # Canonical ids and per-root provenance survive the round trip with no loss.
+    assert sorted(job["job_id"] for job in data["jobs"]) == [parent_id, child_id]
     assert data["manifest"]["job_calls"] == {parent_id: [child_id]}
-    assert data["manifest"]["job_source_roots"] == {parent_id: "one"}
+    assert data["manifest"]["job_source_roots"] == {parent_id: "one", child_id: "two"}
+
+
+def test_composite_zip_preprocess_groups_match_facts_manifest(scanner, tmp_path):
+    """Regression: composite-ZIP preprocess groups must equal the facts groups.
+
+    The Phase 2 harness contract (harness.py:1723) requires every preprocess
+    group to have canonical units in the facts manifest and ``_group_units`` to
+    resolve non-empty. That holds only if both derivation sites key on the same
+    identity. A composite-ZIP scan escapes+hashes the physical composite path
+    into the ``scan/jobs/<dir>`` name, so several physical directories map to a
+    single clean functional ``job.group``. Keying chunk groups on the directory
+    name (the old bug) produced a group key space disjoint from the facts
+    manifest, failing the contract for every group.
+    """
+    from pathlib import Path
+
+    from mcp_server.providers.custom.validators import build_facts_manifest
+
+    scan = tmp_path / "scan"
+    # Two clean functional groups (AssetCheck_Interface, MessageLogging), each
+    # split across two escaped/hashed physical composite directories.
+    layout = {
+        "Vendor_exports_Assetcheck.__intodoc_zip-aaaa1111": [
+            ("AC_GetLocation", "AssetCheck_Interface", "root_a"),
+            ("AC_GetWorkOrder", "AssetCheck_Interface", "root_a"),
+            ("Log_A", "MessageLogging", "root_a"),
+        ],
+        "Vendor_exports_ETTM.__intodoc_zip-bbbb2222": [
+            ("AC_SendForm", "AssetCheck_Interface", "root_b"),
+            ("Log_B", "MessageLogging", "root_b"),
+        ],
+    }
+    job_files: dict[str, str] = {}
+    for phys_dir, jobs in layout.items():
+        d = scan / "jobs" / phys_dir
+        d.mkdir(parents=True)
+        for job_id, group, root in jobs:
+            rel = f"jobs/{phys_dir}/{job_id}.json"
+            job_files[job_id] = rel
+            (scan / rel).write_text(json.dumps({
+                "name": job_id, "job_id": job_id, "group": group,
+                "source_root": root, "components": [], "raw_routines": [],
+            }))
+    (scan / "manifest.json").write_text(json.dumps({"job_files": job_files}))
+    # build_facts_manifest reads the monolithic scan_result.json.
+    all_jobs = [
+        {"name": j, "job_id": j, "group": g, "source_root": r,
+         "components": [], "raw_routines": []}
+        for jobs in layout.values() for j, g, r in jobs
+    ]
+    (tmp_path / "scan_result.json").write_text(
+        json.dumps({"platform": "talend", "jobs": all_jobs, "manifest": {"job_files": job_files}})
+    )
+
+    definitions = scanner.get_chunk_definitions(str(tmp_path))
+    preprocess_groups = {chunk["group"] for chunk in definitions["chunks"]}
+
+    facts = build_facts_manifest("composite_fixture", tmp_path)
+    facts_groups = set(facts.groups.keys())
+
+    # Preprocess groups are the clean functional groups, not the physical dirs.
+    assert preprocess_groups == {"AssetCheck_Interface", "MessageLogging"}
+    # The exact harness.py:1723 contract: every preprocess group is present in
+    # the facts manifest with non-empty canonical units.
+    assert preprocess_groups == facts_groups
+    for group in preprocess_groups:
+        units = [u.name for u in facts.units if u.group == group]
+        assert units, f"_group_units empty for {group}"
 
 
 def test_chunk_includes_linked_support_context_by_canonical_key(scanner, tmp_path):
@@ -320,3 +396,73 @@ def test_read_chunk_data_not_found(scanner, tmp_path):
 
     result = scanner.read_chunk_data(str(tmp_path), "nonexistent_chunk")
     assert "error" in result
+
+
+def _write_composite_scan(tmp_path):
+    """Two zips; the shared REFERENCES job name exists in both with distinct ids."""
+    scan = tmp_path / "scan"
+    layout = {
+        "Vendor_A.__intodoc_zip-aaaa": [
+            ("A_Main-h1", "Flows", "root_a"),
+            ("LogInfo-ha", "Logging", "root_a"),
+        ],
+        "Vendor_B.__intodoc_zip-bbbb": [
+            ("B_Main-h2", "Flows", "root_b"),
+            ("LogInfo-hb", "Logging", "root_b"),
+        ],
+    }
+    job_files = {}
+    display = {"LogInfo-ha": "LogInfo", "LogInfo-hb": "LogInfo"}
+    for phys_dir, jobs in layout.items():
+        d = scan / "jobs" / phys_dir
+        d.mkdir(parents=True)
+        for job_id, group, root in jobs:
+            rel = f"jobs/{phys_dir}/{job_id}.json"
+            job_files[job_id] = rel
+            (scan / rel).write_text(json.dumps({
+                "name": display.get(job_id, job_id), "job_id": job_id, "group": group,
+                "source_root": root, "components": [], "raw_routines": [],
+            }))
+    (scan / "manifest.json").write_text(json.dumps({"job_files": job_files}))
+    return job_files
+
+
+def test_get_chunk_definitions_unit_allowlist_scopes_without_dropping_shared_names(scanner, tmp_path):
+    _write_composite_scan(tmp_path)
+
+    # Unscoped: all four units, groups span both zips.
+    full = scanner.get_chunk_definitions(str(tmp_path))
+    assert full["total_jobs"] == 4
+
+    # Scoped to zip A: exactly its own two units, including its OWN copy of the
+    # shared-name LogInfo job. Zip B's copy (same display name, same group,
+    # different canonical id) is excluded, not cross-wired.
+    allow_a = {"A_Main-h1", "LogInfo-ha"}
+    scoped = scanner.get_chunk_definitions(str(tmp_path), unit_allowlist=allow_a)
+    names = {n for c in scoped["chunks"] for n in c["job_names"]}
+    assert names == allow_a
+    assert scoped["total_jobs"] == 2
+    # The Logging group survives with only the partition's copy.
+    logging_chunks = [c for c in scoped["chunks"] if c["group"] == "Logging"]
+    assert logging_chunks and logging_chunks[0]["job_names"] == ["LogInfo-ha"]
+
+
+def test_read_chunk_data_unit_allowlist_round_trip(scanner, tmp_path):
+    _write_composite_scan(tmp_path)
+    allow_b = {"B_Main-h2", "LogInfo-hb"}
+    defs = scanner.get_chunk_definitions(str(tmp_path), unit_allowlist=allow_b)
+    for chunk in defs["chunks"]:
+        data = scanner.read_chunk_data(
+            str(tmp_path), chunk["chunk_id"], unit_allowlist=allow_b
+        )
+        loaded = {job["job_id"] for job in data["jobs"]}
+        assert loaded <= allow_b
+        assert loaded == set(chunk["job_names"])
+
+
+def test_get_chunk_definitions_without_allowlist_unchanged(scanner, tmp_path):
+    """No-allowlist behaviour is byte-identical to before the scoping seam."""
+    _write_composite_scan(tmp_path)
+    a = scanner.get_chunk_definitions(str(tmp_path))
+    b = scanner.get_chunk_definitions(str(tmp_path), unit_allowlist=None)
+    assert a == b

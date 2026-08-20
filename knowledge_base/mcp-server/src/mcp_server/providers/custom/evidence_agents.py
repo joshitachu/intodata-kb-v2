@@ -269,9 +269,20 @@ DEFAULT_HARNESS_AGENTS: tuple[ResolvedEvidenceAgent, ...] = (
 
 
 def resolve_evidence_agents(manifest: Any | None, pack_dir: Path | None) -> EvidenceAgentResolution:
-    """Resolve the evidence agents that should run for this harness invocation."""
+    """Resolve the evidence agents that should run for this harness invocation.
+
+    Standard runs (no plugin manifest) run NO evidence agents unless
+    ``docgen_default_evidence_agents_enabled`` opts back in (R2.3): on the
+    verified Assetcheck run 3 of the 4 built-in agents produced 0 claims and
+    1 validation issue each (~0.6M wasted input tokens). Plugin packs that
+    explicitly declare ``evidence_agents`` are unaffected by the flag.
+    """
     if manifest is None:
-        return EvidenceAgentResolution(agents=list(DEFAULT_HARNESS_AGENTS))
+        from mcp_server.config import config
+
+        if config.docgen_default_evidence_agents_enabled:
+            return EvidenceAgentResolution(agents=list(DEFAULT_HARNESS_AGENTS))
+        return EvidenceAgentResolution()
 
     declared = list(getattr(manifest, "evidence_agents", []) or [])
     if not declared:

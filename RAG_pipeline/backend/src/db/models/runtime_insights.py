@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime
 
-from sqlalchemy import DateTime, Index, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, DateTime, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db.base import Base
@@ -23,6 +23,7 @@ class RuntimeEnrichedEventRow(Base):
         UniqueConstraint("project_id", "log_event_id", name="uq_runtime_enriched_events_project_log"),
         Index("ix_runtime_enriched_events_project_id", "project_id"),
         Index("ix_runtime_enriched_events_project_exec", "project_id", "execution_id"),
+        Index("ix_runtime_enriched_events_project_dialect", "project_id", "dialect"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -34,7 +35,7 @@ class RuntimeEnrichedEventRow(Base):
     exception_class: Mapped[str | None] = mapped_column(String(255), nullable=True)
     retry_attempt: Mapped[int | None] = mapped_column(Integer, nullable=True)
     retry_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     timeout_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     endpoint: Mapped[str | None] = mapped_column(Text, nullable=True)
     host: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -49,6 +50,12 @@ class RuntimeEnrichedEventRow(Base):
     expected_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
     message_family: Mapped[str | None] = mapped_column(String(50), nullable=True)
     confidence: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Which log dialect claimed this line. A population of NULL here is the
+    # measurable signal that a runtime's log shape is unrecognised by the parser.
+    dialect: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Job name as stated by the runtime (TMC execution-status lines name it).
+    # Join key toward runtime_job_scan_maps.static_job_id.
+    job_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class RuntimeErrorSignatureRow(Base):
@@ -69,6 +76,9 @@ class RuntimeErrorSignatureRow(Base):
     exception_class: Mapped[str | None] = mapped_column(String(255), nullable=True)
     component_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     summary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Representative diagnostic sentence for this signature, in the runtime's own
+    # words. summary_text alone is only "<code> / <exception> / <component>".
+    causal_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     first_seen_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_seen_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -99,6 +109,8 @@ class RuntimeExecutionSummaryRow(Base):
     primary_error_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
     primary_exception_class: Mapped[str | None] = mapped_column(String(255), nullable=True)
     summary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The runtime's own diagnostic sentence for the terminal fault (redacted).
+    causal_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_refs: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
@@ -120,6 +132,9 @@ class RuntimeIncidentRow(Base):
     signature_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     symptom_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     root_cause_candidate: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Verbatim (redacted) diagnostic sentence backing root_cause_candidate, so the
+    # surface can quote the log rather than only a catalog template.
+    causal_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # Origin of the root-cause attribution. "deterministic" is the only value the
     # builder writes; "llm_fallback" is reserved for the Slice 4 LLM fallback.

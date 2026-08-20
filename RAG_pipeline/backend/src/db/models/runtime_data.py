@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime
 
 from sqlalchemy import (
+    BigInteger,
     DateTime,
     ForeignKey,
     Index,
@@ -51,7 +52,7 @@ class RuntimeExecutionRow(Base):
     state: Mapped[str] = mapped_column(String(20), nullable=False)
     started_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ended_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     source_key: Mapped[str] = mapped_column(String(100), nullable=False)
     ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -480,7 +481,7 @@ class RuntimeJobRunRow(Base):
     engine_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     started_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ended_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -552,7 +553,7 @@ class RuntimePlanRunRow(Base):
     workspace_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     started_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ended_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     step_results: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
     ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -587,7 +588,7 @@ class RuntimeComponentMetricRow(Base):
     target_connector_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
     rows_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rows_rejected: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     source_key: Mapped[str] = mapped_column(String(100), nullable=False)
     measured_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)

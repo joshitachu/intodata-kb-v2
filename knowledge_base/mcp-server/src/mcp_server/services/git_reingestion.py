@@ -24,6 +24,7 @@ from mcp_server.services.group_doc_dependency import (
 from mcp_server.services.impact_router import ImpactRouter
 from mcp_server.services.rag_support_package import (
     RAG_SUPPORT_DIRNAME,
+    analysis_stem_matches_group,
     inspect_generation_cache_readiness,
 )
 from mcp_server.services.reingestion_gate import (
@@ -88,7 +89,9 @@ async def run_git_reingestion(
 
     ``targeted_docs`` (Slice 3) restricts Phase 3 to exactly those documents
     (names without ``.md``); unaffected docs are preserved byte-stable from the
-    prior baseline. ``None`` means full regeneration (no Phase 3 doc filter).
+    prior baseline. A ``None``/empty collection is never interpreted as an
+    automatic full regeneration: whole-project generation is reserved for
+    ``full_rederive=True`` or an initial ingestion.
 
     ``full_rederive`` (Slice 1) forces a full Phase 3 regeneration regardless of
     the impact map -- the explicit, deliberate path for a first push or an
@@ -103,9 +106,12 @@ async def run_git_reingestion(
     use this to avoid reporting a ``targeted_regen`` that never ran. Default
     ``None`` preserves the bool-only contract for existing callers/tests.
     """
-    def _mark(skipped: bool) -> None:
+    def _mark(skipped: bool, *, held_reason_code: str | None = None) -> None:
         if outcome_sink is not None:
             outcome_sink["skipped"] = skipped
+            if held_reason_code is not None:
+                outcome_sink["held"] = True
+                outcome_sink["held_reason_code"] = held_reason_code
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         project = await registry.get_project(project_id)
@@ -273,19 +279,25 @@ async def run_git_reingestion(
     # --- Slice 1: fingerprint dirty-set drives the Phase 3 document set ---
     # Under impact routing, the Phase 3 scope comes from the fingerprint dirty-set
     # via the provenance map (NOT the legacy path/threshold router's targeted_docs).
-    # A first push or an explicit full_rederive request forces full regeneration;
-    # a dirty-set that maps to no docs (missing manifest / unmapped) also falls
-    # back to full regeneration (scoped_docs=None) rather than regenerating zero
-    # docs. Flag off -> byte-identical legacy behaviour.
+    # Only a first ingestion or an explicit operator rebuild may use an
+    # unfiltered Phase 3 generation. Every ordinary source update needs a
+    # non-empty bounded scope; missing provenance or an empty map is held.
     if config.impact_routing_enabled and not full_rederive and not is_first_push:
         impact_plan = ImpactRouter.plan(dirty_groups, dependency)
-        scoped_docs: set[str] | None = (
-            set(impact_plan.targeted_docs) if impact_plan.targeted_docs else None
-        )
+        scoped_docs: set[str] | None = set(impact_plan.targeted_docs)
     elif full_rederive:
         scoped_docs = None
+    elif is_first_push:
+        scoped_docs = None
     else:
-        scoped_docs = set(targeted_docs) if targeted_docs else None
+        scoped_docs = set(targeted_docs or [])
+
+    if not full_rederive and not is_first_push and not scoped_docs:
+        reason = "Automatic reingestion held: no bounded documentation target scope"
+        logger.warning("%s for %s", reason, project_id)
+        await log_mgr.emit(project_id, reason, level="warning")
+        _mark(skipped=False, held_reason_code="empty_target_scope")
+        return False
 
     # --- Slice 3: classify dirty groups and partition into scoped/patch lanes ---
     group_delta_classifications = classify_dirty_groups(
@@ -801,11 +813,17 @@ def setup_incremental_staging(
     for f in analysis_cache.glob("*.md"):
         shutil.copy2(f, staging_analysis / f.name)
 
-    for group in changed_groups:
-        for variant in [group, f"{group}_part1", f"{group}_part2"]:
-            p = staging_analysis / f"{variant}.md"
-            if p.exists():
-                p.unlink()
+    # Evict every staged slice belonging to a changed group: {group}.md plus
+    # any {group}_part* slice (large-group _part1/_part2 splits AND
+    # case-collision _part_ci{k} slices). Matching actual directory-entry
+    # stems case-sensitively also prevents unlinking a case-colliding sibling
+    # group's file on case-insensitive filesystems.
+    for staged in list(staging_analysis.glob("*.md")):
+        if any(
+            analysis_stem_matches_group(staged.stem, group)
+            for group in changed_groups
+        ):
+            staged.unlink()
 
     for f in staging_analysis.glob("_bundle_*.md"):
         f.unlink()

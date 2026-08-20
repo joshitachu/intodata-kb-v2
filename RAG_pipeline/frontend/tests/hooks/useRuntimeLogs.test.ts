@@ -26,6 +26,11 @@ import {
   useRuntimePlans,
   useRuntimeSources,
   useRuntimeSimilarFailures,
+  useRuntimeTrend,
+  useRuntimeJobReliability,
+  useRuntimeComponentHotspots,
+  useRuntimeJobThroughput,
+  useRuntimeErrorSignatures,
 } from "@/hooks/useRuntimeLogs";
 
 function createWrapper() {
@@ -865,6 +870,259 @@ describe("useRuntimeLogs — insight hooks", () => {
   it("useRuntimeSimilarFailures does not fetch when incidentId is null", () => {
     const fetchSpy = vi.spyOn(global, "fetch");
     renderHook(() => useRuntimeSimilarFailures(null), { wrapper: createWrapper() });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+// --- Aggregate rollups ---
+
+describe("useRuntimeLogs aggregate rollups", () => {
+  beforeEach(() => vi.resetAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  const TREND_PAYLOAD = {
+    bucket: "day",
+    points: [
+      {
+        bucket_start: "2026-08-16T00:00:00Z",
+        total_runs: 67,
+        success_runs: 67,
+        failed_runs: 0,
+        running_runs: 0,
+        unknown_runs: 0,
+        failure_rate: 0,
+        p50_duration_ms: 2700,
+        p95_duration_ms: 8100,
+        max_duration_ms: 12000,
+      },
+    ],
+    total: 1,
+  };
+
+  it("useRuntimeTrend passes bucket and window through", async () => {
+    const fetchSpy = mockFetchOnce(TREND_PAYLOAD);
+
+    const { result } = renderHook(
+      () =>
+        useRuntimeTrend({
+          projectId: "werkorder",
+          bucket: "day",
+          since: "2026-08-01T00:00:00Z",
+          limit: 30,
+        }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = fetchSpy.mock.calls[0][0] as string;
+    expect(url).toContain("/api/runtime/trend?");
+    expect(url).toContain("project_id=werkorder");
+    expect(url).toContain("bucket=day");
+    expect(url).toContain("limit=30");
+    expect(result.current.data?.points[0].p95_duration_ms).toBe(8100);
+  });
+
+  it("useRuntimeTrend accepts null duration percentiles", async () => {
+    mockFetchOnce({
+      bucket: "week",
+      points: [
+        {
+          bucket_start: "2026-08-10T00:00:00Z",
+          total_runs: 3,
+          success_runs: 0,
+          failed_runs: 0,
+          running_runs: 3,
+          unknown_runs: 0,
+          failure_rate: 0,
+          p50_duration_ms: null,
+          p95_duration_ms: null,
+          max_duration_ms: null,
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(() => useRuntimeTrend({ bucket: "week" }), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.bucket).toBe("week");
+    expect(result.current.data?.points[0].p50_duration_ms).toBeNull();
+  });
+
+  it("useRuntimeTrend does not fetch when disabled", () => {
+    const fetchSpy = vi.spyOn(global, "fetch");
+    renderHook(() => useRuntimeTrend({}, false), { wrapper: createWrapper() });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("useRuntimeJobReliability parses streaks and unfinished counts", async () => {
+    const fetchSpy = mockFetchOnce({
+      jobs: [
+        {
+          project_id: "werkorder",
+          source_key: "talend_tmc",
+          job_name: "RHM2Smartflow_Workorders",
+          total_runs: 924,
+          success_runs: 378,
+          failed_runs: 546,
+          unfinished_runs: 0,
+          failure_rate: 0.591,
+          current_failure_streak: 4,
+          first_run_at: "2026-05-26T00:00:00Z",
+          last_run_at: "2026-07-01T00:00:00Z",
+          latest_state: "failed",
+          p50_duration_ms: 23700,
+          p95_duration_ms: 33700,
+          max_duration_ms: 41000,
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(
+      () => useRuntimeJobReliability({ projectId: "werkorder", limit: 100, offset: 0 }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(fetchSpy.mock.calls[0][0] as string).toContain("/api/runtime/job-reliability?");
+    expect(result.current.data?.jobs[0].current_failure_streak).toBe(4);
+    expect(result.current.data?.jobs[0].latest_state).toBe("failed");
+    expect(result.current.data?.total).toBe(1);
+  });
+
+  it("useRuntimeComponentHotspots sends component filters", async () => {
+    const fetchSpy = mockFetchOnce({
+      components: [
+        {
+          project_id: "werkorder",
+          source_key: "talend_tmc",
+          component_key: "tHashOutput_1",
+          component_type: "tHashOutput",
+          source_connector_type: "tHashOutput",
+          target_connector_type: "tJavaFlex",
+          executions: 348,
+          rows_total: 1128895,
+          rows_rejected: null,
+          reject_ratio: null,
+          avg_duration_ms: 17797,
+          p95_duration_ms: 24000,
+          max_duration_ms: 31000,
+          last_measured_at: "2026-08-16T22:00:00Z",
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(
+      () => useRuntimeComponentHotspots({ componentType: "tHashOutput", limit: 20 }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = fetchSpy.mock.calls[0][0] as string;
+    expect(url).toContain("/api/runtime/component-hotspots?");
+    expect(url).toContain("component_type=tHashOutput");
+    expect(result.current.data?.components[0].rows_total).toBe(1128895);
+    expect(result.current.data?.components[0].rows_rejected).toBeNull();
+  });
+
+  it("useRuntimeJobThroughput parses rows moved per job", async () => {
+    const fetchSpy = mockFetchOnce({
+      jobs: [
+        {
+          project_id: "werkorder",
+          source_key: "talend_tmc",
+          job_name: "Maximo2RHM_Workorders",
+          executions_with_metrics: 349,
+          component_count: 13,
+          rows_total: 7066404,
+          rows_rejected: null,
+          reject_ratio: null,
+          last_measured_at: "2026-08-16T22:00:00Z",
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(
+      () => useRuntimeJobThroughput({ projectId: "werkorder" }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(fetchSpy.mock.calls[0][0] as string).toContain("/api/runtime/job-throughput?");
+    expect(result.current.data?.jobs[0].executions_with_metrics).toBe(349);
+    expect(result.current.data?.jobs[0].component_count).toBe(13);
+  });
+
+  it("useRuntimeErrorSignatures parses recurrence windows and omits absent optionals", async () => {
+    const fetchSpy = mockFetchOnce({
+      signatures: [
+        {
+          project_id: "werkorder",
+          signature_hash: "a".repeat(64),
+          exception_class: "BatchUpdateException",
+          summary_text: "BatchUpdateException",
+          occurrence_count: 16,
+          first_seen_at: "2026-07-27T00:00:00Z",
+          last_seen_at: "2026-07-27T23:00:00Z",
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(
+      () => useRuntimeErrorSignatures({ exceptionClass: "BatchUpdateException" }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = fetchSpy.mock.calls[0][0] as string;
+    expect(url).toContain("/api/runtime/error-signatures?");
+    expect(url).toContain("exception_class=BatchUpdateException");
+    const signature = result.current.data?.signatures[0];
+    expect(signature?.occurrence_count).toBe(16);
+    // error_code, component_name and causal_message are absent, not null.
+    expect(signature?.error_code).toBeUndefined();
+    expect(signature?.causal_message).toBeUndefined();
+  });
+
+  it("useRuntimeErrorSignatures surfaces causal_message once the backend sends it", async () => {
+    mockFetchOnce({
+      signatures: [
+        {
+          project_id: "cdc",
+          signature_hash: "b".repeat(64),
+          exception_class: "BigQueryException",
+          summary_text: "BigQueryException",
+          causal_message:
+            'tBigQueryOutput_2_tBQBE Invalid dataset ID "test_ zaf_del_clean".',
+          occurrence_count: 5,
+          first_seen_at: null,
+          last_seen_at: null,
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(() => useRuntimeErrorSignatures({ projectId: "cdc" }), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.signatures[0].causal_message).toContain("Invalid dataset ID");
+  });
+
+  it("aggregate hooks do not fetch when disabled", () => {
+    const fetchSpy = vi.spyOn(global, "fetch");
+    const wrapper = createWrapper();
+    renderHook(() => useRuntimeJobReliability({}, false), { wrapper });
+    renderHook(() => useRuntimeComponentHotspots({}, false), { wrapper });
+    renderHook(() => useRuntimeJobThroughput({}, false), { wrapper });
+    renderHook(() => useRuntimeErrorSignatures({}, false), { wrapper });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

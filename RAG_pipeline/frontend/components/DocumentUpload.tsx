@@ -8,7 +8,19 @@ import { useChatContext } from "@/contexts/ChatContext";
 import { cn } from "@/lib/utils";
 import { DOCUMENT_ROLES, type DocumentRole } from "@/types";
 
-const ALLOWED_EXTENSIONS = [".pdf", ".docx", ".pptx", ".xlsx"];
+const ALLOWED_EXTENSIONS = [".pdf", ".docx", ".pptx", ".xlsx", ".md"];
+const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
+
+type UploadQueueStatus = "queued" | "uploading" | "complete" | "failed";
+
+interface UploadQueueItem {
+  id: number;
+  file: File;
+  projectId: string;
+  documentRole: DocumentRole;
+  status: UploadQueueStatus;
+  message?: string;
+}
 const ROLE_LABELS: Record<DocumentRole, string> = {
   source: "Source",
   reference: "Reference",
@@ -22,27 +34,80 @@ export function DocumentUpload() {
   const { selectedProject, setSelectedProject } = useChatContext();
   const [documentRole, setDocumentRole] = useState<DocumentRole>("source");
   const [dragOver, setDragOver] = useState(false);
+  const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const queueRef = useRef<UploadQueueItem[]>([]);
+  const queueIdRef = useRef(0);
+  const isProcessingRef = useRef(false);
   const upload = useUploadDocument();
   const { data: projectsData, isLoading: projectsLoading } = useDocsProjects();
 
-  const handleFile = useCallback(
-    (file: File) => {
-      if (!selectedProject) return;
-      const ext = file.name.substring(file.name.lastIndexOf(".")).toLowerCase();
-      if (!ALLOWED_EXTENSIONS.includes(ext)) {
-        return;
+  const updateQueueItem = useCallback((id: number, changes: Partial<UploadQueueItem>) => {
+    const next = queueRef.current.map((item) => (
+      item.id === id ? { ...item, ...changes } : item
+    ));
+    queueRef.current = next;
+    setUploadQueue(next);
+  }, []);
+
+  const processNext = useCallback(async () => {
+    if (isProcessingRef.current) return;
+
+    const next = queueRef.current.find((item) => item.status === "queued");
+    if (!next) return;
+
+    isProcessingRef.current = true;
+    updateQueueItem(next.id, { status: "uploading" });
+    try {
+      const response = await upload.mutateAsync({
+        file: next.file,
+        project_id: next.projectId,
+        document_role: next.documentRole,
+      });
+      updateQueueItem(next.id, { status: "complete", message: response.message });
+    } catch (error) {
+      updateQueueItem(next.id, {
+        status: "failed",
+        message: error instanceof Error ? error.message : "Upload failed",
+      });
+    } finally {
+      isProcessingRef.current = false;
+      void processNext();
+    }
+  }, [updateQueueItem, upload]);
+
+  const queueFiles = useCallback((files: Iterable<File>) => {
+    if (!selectedProject) return;
+
+    const items = Array.from(files).map((file): UploadQueueItem => {
+      const extension = file.name.substring(file.name.lastIndexOf(".")).toLowerCase();
+      const item: UploadQueueItem = {
+        id: queueIdRef.current++,
+        file,
+        projectId: selectedProject,
+        documentRole,
+        status: "queued",
+      };
+
+      if (!ALLOWED_EXTENSIONS.includes(extension)) {
+        return { ...item, status: "failed", message: "Unsupported file type" };
       }
-      upload.mutate({ file, project_id: selectedProject, document_role: documentRole });
-    },
-    [upload, selectedProject, documentRole],
-  );
+      if (file.size > MAX_FILE_SIZE_BYTES) {
+        return { ...item, status: "failed", message: "File exceeds the 50 MB limit" };
+      }
+      return item;
+    });
+
+    if (!items.length) return;
+    queueRef.current = [...queueRef.current, ...items];
+    setUploadQueue(queueRef.current);
+    void processNext();
+  }, [documentRole, processNext, selectedProject]);
 
   function handleDrop(e: DragEvent) {
     e.preventDefault();
     setDragOver(false);
-    const file = e.dataTransfer.files[0];
-    if (file) handleFile(file);
+    queueFiles(e.dataTransfer.files);
   }
 
   function handleDragOver(e: DragEvent) {
@@ -54,7 +119,7 @@ export function DocumentUpload() {
     setDragOver(false);
   }
 
-  const canUpload = !!selectedProject && !upload.isPending;
+  const canUpload = !!selectedProject;
 
   return (
     <div className="space-y-3">
@@ -139,14 +204,14 @@ export function DocumentUpload() {
           type="file"
           className="hidden"
           accept={ALLOWED_EXTENSIONS.join(",")}
+          multiple
           onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (file) handleFile(file);
+            if (e.target.files) queueFiles(e.target.files);
             e.target.value = "";
           }}
         />
 
-        {upload.isPending ? (
+        {uploadQueue.some((item) => item.status === "uploading") ? (
           <div className="flex flex-col items-center gap-2">
             <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
             <p className="text-sm text-muted-foreground">Uploading and processing...</p>
@@ -156,27 +221,43 @@ export function DocumentUpload() {
             <Upload className="h-8 w-8 text-muted-foreground" />
             <p className="text-sm font-medium">
               {selectedProject
-                ? "Drop a file here or click to browse"
+                ? "Drop files here or click to browse"
                 : "Select a project first"}
             </p>
             <p className="text-xs text-muted-foreground">
-              PDF, DOCX, PPTX, XLSX (max 50 MB)
+              PDF, DOCX, PPTX, XLSX, MD (max 50 MB)
             </p>
           </div>
         )}
       </div>
 
-      {upload.isSuccess && (
-        <div className="flex items-center gap-2 text-sm text-green-600">
-          <CheckCircle className="h-4 w-4" />
-          <span>{upload.data.message}</span>
-        </div>
-      )}
-
-      {upload.isError && (
-        <div className="flex items-center gap-2 text-sm text-destructive">
-          <AlertCircle className="h-4 w-4" />
-          <span>{upload.error.message}</span>
+      {uploadQueue.length > 0 && (
+        <div className="divide-y rounded-md border" aria-live="polite">
+          {uploadQueue.map((item) => (
+            <div key={item.id} className="flex items-center gap-2 px-3 py-2 text-sm">
+              {item.status === "uploading" && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />}
+              {item.status === "complete" && <CheckCircle className="h-4 w-4 shrink-0 text-green-600" />}
+              {item.status === "failed" && <AlertCircle className="h-4 w-4 shrink-0 text-destructive" />}
+              {item.status === "queued" && <Upload className="h-4 w-4 shrink-0 text-muted-foreground" />}
+              <span className="min-w-0 flex-1 truncate">{item.file.name}</span>
+              <span className={cn(
+                "shrink-0 text-xs",
+                item.status === "failed" ? "text-destructive" : "text-muted-foreground",
+              )}>
+                {item.status === "complete" && item.message
+                  ? `Complete — ${item.message}`
+                  : item.status === "failed" && item.message
+                    ? `Failed — ${item.message}`
+                    : item.status === "queued"
+                      ? "Waiting"
+                      : item.status === "uploading"
+                        ? "Uploading and processing..."
+                        : item.status === "complete"
+                          ? "Complete"
+                          : "Failed"}
+              </span>
+            </div>
+          ))}
         </div>
       )}
     </div>

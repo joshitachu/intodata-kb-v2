@@ -14,13 +14,18 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import hashlib
+import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.models.runtime_data import RuntimeExecutionRow, RuntimeLogEventRow
+from src.db.models.runtime_data import (
+    RuntimeComponentMetricRow,
+    RuntimeExecutionRow,
+    RuntimeLogEventRow,
+)
 from src.db.models.runtime_insights import (
     RuntimeEnrichedEventRow,
     RuntimeErrorSignatureRow,
@@ -86,22 +91,34 @@ async def build_runtime_insights_for_execution(
     source_key: str,
     ingested_at: datetime.datetime,
     semantic_indexer: "RuntimeSemanticIndexer | None" = None,
+    known_components: frozenset[str] | None = None,
 ) -> InsightBuildResult:
     """Build and persist insight rows for one (project_id, execution_id) pair.
 
     Idempotent: calling twice with the same inputs updates rows rather than
     duplicating them. Returns a result summary for test assertions.
+
+    ``known_components`` is the project's authoritative component inventory, used
+    by the parser to resolve compound component keys that no naming convention can
+    safely claim. Fetched here when not supplied; bulk callers should hoist it per
+    project to avoid one lookup per execution.
     """
     exec_row = await _fetch_execution(session, project_id, execution_id)
     if exec_row is None:
         return InsightBuildResult(enriched_events=0, had_incident=False)
 
-    log_rows = await _fetch_log_rows(session, project_id, execution_id)
+    log_rows = await fetch_execution_log_rows(session, project_id, execution_id)
+    if known_components is None:
+        known_components = await fetch_known_components(session, project_id)
 
-    parsed_list: list[ParsedRuntimeLog] = []
-    for log_row in log_rows:
-        parsed = parse_runtime_log_message(log_row.message)
-        parsed_list.append(parsed)
+    parsed_list = [
+        parse_runtime_log_message(log_row.message, known_components) for log_row in log_rows
+    ]
+    # Association needs the whole execution in view, so it runs after parsing and
+    # before persistence — the enriched rows then carry the borrowed sentence
+    # along with the provenance marker that says it was borrowed.
+    associate_context_signals(log_rows, parsed_list)
+    for log_row, parsed in zip(log_rows, parsed_list):
         await _upsert_enriched_event(session, project_id, log_row, parsed)
 
     summary = _compute_summary(exec_row, log_rows, parsed_list)
@@ -167,13 +184,18 @@ async def rebuild_runtime_insights(
 
     rebuilt = 0
     now = datetime.datetime.now(datetime.UTC)
+    # One inventory lookup per project, not per execution.
+    inventories: dict[str, frozenset[str]] = {}
     for row in rows:
+        if row.project_id not in inventories:
+            inventories[row.project_id] = await fetch_known_components(session, row.project_id)
         await build_runtime_insights_for_execution(
             session,
             project_id=row.project_id,
             execution_id=row.execution_id,
             source_key=row.source_key,
             ingested_at=now,
+            known_components=inventories[row.project_id],
         )
         rebuilt += 1
     return rebuilt
@@ -190,6 +212,121 @@ def _as_utc(value: datetime.datetime | None) -> datetime.datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=datetime.UTC)
     return value.astimezone(datetime.UTC)
+
+
+# ---------------------------------------------------------------------------
+# Context association
+# ---------------------------------------------------------------------------
+#
+# The parser is a pure per-line function, so a fault line that carries no text of
+# its own extracts nothing even when the line beside it states the cause. Real
+# runtimes emit exactly that pairing — a CXF/JAX-RS client logs the diagnosis as a
+# warning and then a bare "Failed request" as the error:
+#
+#   57  warning  Interceptor for {https://host:9200/alias}WebClient has thrown exception
+#   58  error    Failed request              <- no signal at all
+#
+# Association runs where an execution's lines are visible together (here, not in
+# the parser) and lends the neighbouring diagnosis to the empty line. It is
+# deliberately narrow: a bounded lookback, fault severities only, and provenance
+# recorded so a borrowed sentence is never mistaken for the line's own words.
+
+DIALECT_CONTEXT = "context"
+# Lines, not seconds: a diagnosis more than a couple of lines away is not
+# reliably about this error. Small by intent — widening it would start linking
+# unrelated faults that merely happened nearby.
+_CONTEXT_LOOKBACK = 3
+_FAULT_SEVERITIES = (_SEV_ERROR, _SEV_WARNING)
+
+
+def _carries_no_signal(parsed: ParsedRuntimeLog) -> bool:
+    """True when the parser found nothing at all on this line.
+
+    Deliberately strict: any single extracted signal — even just a component name
+    — means the line spoke for itself and must not be overwritten by a neighbour.
+    """
+    return not any(
+        (
+            parsed.causal_message,
+            parsed.exception_class,
+            parsed.error_code,
+            parsed.component_name,
+            parsed.field_violation_kind,
+            parsed.host,
+            parsed.queue_name,
+            parsed.endpoint,
+        )
+    )
+
+
+def associate_context_signals(
+    log_rows: list[RuntimeLogEventRow],
+    parsed_list: list[ParsedRuntimeLog],
+) -> int:
+    """Lend an adjacent line's diagnosis to signal-less fault lines, in place.
+
+    Only ``causal_message`` is borrowed — never ``exception_class`` or
+    ``error_code``. Those drive the signature hash and the confidence tier, and a
+    line that did not itself report an exception must not inflate either.
+
+    Walks back at most ``_CONTEXT_LOOKBACK`` rows, skipping info/debug chatter.
+    The first fault-severity row found is the only donor considered: if it is
+    itself signal-less, the search stops rather than reaching past it into an
+    older, unrelated fault. Donors that were themselves context-derived are
+    refused, so a borrowed sentence cannot propagate down a run of empty lines.
+
+    Returns the number of rows that adopted context.
+    """
+    adopted = 0
+    for index, (log_row, parsed) in enumerate(zip(log_rows, parsed_list)):
+        if normalize_severity(log_row.severity) not in _FAULT_SEVERITIES:
+            continue
+        if not _carries_no_signal(parsed):
+            continue
+        donor = _nearest_fault_donor(log_rows, parsed_list, index)
+        if donor is None:
+            continue
+        parsed.causal_message = donor.causal_message
+        # Provenance: this row's sentence is inherited, not extracted. Reuses the
+        # existing dialect column rather than adding a parallel mechanism — the
+        # column already answers "what claimed this line".
+        parsed.dialect = DIALECT_CONTEXT
+        adopted += 1
+    return adopted
+
+
+def _without_context_rows(
+    log_rows: list[RuntimeLogEventRow],
+    parsed_list: list[ParsedRuntimeLog],
+) -> tuple[list[RuntimeLogEventRow], list[ParsedRuntimeLog]]:
+    """Drop context-derived rows, keeping the two lists index-aligned."""
+    kept = [
+        (log_row, parsed)
+        for log_row, parsed in zip(log_rows, parsed_list)
+        if parsed.dialect != DIALECT_CONTEXT
+    ]
+    if not kept:
+        return [], []
+    rows, parses = zip(*kept)
+    return list(rows), list(parses)
+
+
+def _nearest_fault_donor(
+    log_rows: list[RuntimeLogEventRow],
+    parsed_list: list[ParsedRuntimeLog],
+    index: int,
+) -> ParsedRuntimeLog | None:
+    """Return the nearest preceding fault line able to explain ``index``."""
+    start = max(0, index - _CONTEXT_LOOKBACK)
+    for back in range(index - 1, start - 1, -1):
+        if normalize_severity(log_rows[back].severity) not in _FAULT_SEVERITIES:
+            continue  # info/debug chatter between the pair is not a boundary
+        candidate = parsed_list[back]
+        # First fault row wins or loses outright; never look past it.
+        if candidate.dialect == DIALECT_CONTEXT or not candidate.causal_message:
+            return None
+        return candidate
+    return None
 
 
 def _select_causal_signal(
@@ -225,6 +362,35 @@ def _select_causal_signal(
     if by_warning is not None:
         return by_warning
     return by_any
+
+
+def _select_causal_code(
+    log_rows: list[RuntimeLogEventRow],
+    parsed_list: list[ParsedRuntimeLog],
+) -> tuple[str | None, str | None]:
+    """Pick ``(error_code, error_family)`` as a consistent pair from ONE row.
+
+    Selecting the code and its family independently could pair a code from one
+    log line with a family from another, and the catalog now enforces family
+    agreement — a mismatched pair would silently suppress every platform pattern.
+    Tiering matches :func:`_select_causal_signal`: last error row, then last
+    warning row, then last row overall.
+    """
+    by_error: tuple[str, str | None] | None = None
+    by_warning: tuple[str, str | None] | None = None
+    by_any: tuple[str, str | None] | None = None
+    for log_row, parsed in zip(log_rows, parsed_list):
+        if not parsed.error_code:
+            continue
+        pair = (parsed.error_code, parsed.error_family)
+        by_any = pair
+        sev = normalize_severity(log_row.severity)
+        if sev == _SEV_ERROR:
+            by_error = pair
+        elif sev == _SEV_WARNING:
+            by_warning = pair
+    chosen = by_error or by_warning or by_any
+    return chosen if chosen is not None else (None, None)
 
 
 def _select_failed_component(
@@ -269,6 +435,21 @@ def _terminal_error_message(log_rows: list[RuntimeLogEventRow]) -> str | None:
     return None
 
 
+async def fetch_known_components(session: AsyncSession, project_id: str) -> frozenset[str]:
+    """Return the project's observed component keys.
+
+    ``runtime_component_metrics`` is the authoritative record of which components
+    the runtime actually reported, so it is the safe way to accept a component
+    name whose shape no convention regex can validate (subjob-prefixed compound
+    keys). Scoped to one project: a component key from another tenant must never
+    influence attribution here.
+    """
+    stmt = select(RuntimeComponentMetricRow.component_key).where(
+        RuntimeComponentMetricRow.project_id == project_id
+    ).distinct()
+    return frozenset((await session.execute(stmt)).scalars().all())
+
+
 async def _fetch_execution(
     session: AsyncSession, project_id: str, execution_id: str
 ) -> RuntimeExecutionRow | None:
@@ -279,7 +460,7 @@ async def _fetch_execution(
     return (await session.execute(stmt)).scalars().first()
 
 
-async def _fetch_log_rows(
+async def fetch_execution_log_rows(
     session: AsyncSession, project_id: str, execution_id: str
 ) -> list[RuntimeLogEventRow]:
     stmt = (
@@ -288,7 +469,17 @@ async def _fetch_log_rows(
             RuntimeLogEventRow.project_id == project_id,
             RuntimeLogEventRow.execution_id == execution_id,
         )
-        .order_by(RuntimeLogEventRow.timestamp.asc())
+        # line_ordinal is the authoritative position within an execution, and it is
+        # the tiebreaker rather than a nicety: runtimes stamp a whole burst of lines
+        # with one timestamp (7,754 such groups in the reference corpus), so
+        # timestamp alone leaves the order of a fault and its explanation
+        # undefined. Context association and every "last error row" selection
+        # depend on this being stable.
+        .order_by(
+            RuntimeLogEventRow.timestamp.asc(),
+            RuntimeLogEventRow.line_ordinal.asc(),
+            RuntimeLogEventRow.id.asc(),
+        )
     )
     return list((await session.execute(stmt)).scalars().all())
 
@@ -328,6 +519,8 @@ async def _upsert_enriched_event(
     row.expected_type = parsed.expected_type
     row.message_family = parsed.message_family
     row.confidence = parsed.confidence
+    row.dialect = parsed.dialect
+    row.job_name = parsed.job_name
     await session.flush()
 
 
@@ -345,8 +538,15 @@ class _SummaryData:
     final_error_at: datetime.datetime | None
     failed_component: str | None
     primary_error_code: str | None
+    primary_error_family: str | None
     primary_exception_class: str | None
     causal_message: str | None
+    # Full text of the failure-attributed log row, redacted, used ONLY for catalog
+    # matching. Not persisted: causal_message is the display field. Kept separate
+    # because trimming a transport preamble out of the readable sentence also
+    # removes tokens a dialect pattern keys on ("Exhausted after delivery
+    # attempt"), and matching must see all available evidence.
+    match_text: str | None
     first_host: str | None
     first_retry_max: int | None
     summary_text: str
@@ -380,15 +580,25 @@ def _compute_summary(
     # Causal selection (NOT first-seen): the primary diagnostic signals must come
     # from the failure-attributed event, i.e. the terminal causal error. A benign
     # code emitted early in the run must not shadow the real fault.
-    primary_error_code = _select_causal_signal(log_rows, parsed_list, lambda p: p.error_code)
+    primary_error_code, primary_error_family = _select_causal_code(log_rows, parsed_list)
     primary_exception_class = _select_causal_signal(
         log_rows, parsed_list, lambda p: p.exception_class
     )
-    causal_message = _select_causal_signal(log_rows, parsed_list, lambda p: p.causal_message)
+    # A borrowed sentence must never outrank one the runtime actually wrote on a
+    # fault line, so intrinsic rows are offered first and context-derived rows are
+    # only consulted when no intrinsic sentence exists anywhere in the execution.
+    causal_message = _select_causal_signal(
+        *_without_context_rows(log_rows, parsed_list), lambda p: p.causal_message
+    ) or _select_causal_signal(log_rows, parsed_list, lambda p: p.causal_message)
     if causal_message is None:
         # No exception/Caused-by line. Fall back to the terminal error line's text
         # so the unknown-signature digest can still distinguish distinct faults.
         causal_message = _terminal_error_message(log_rows)
+    if causal_message is not None:
+        # Persisted from here on, so redaction is mandatory rather than advisory.
+        causal_message = redact_credentials(causal_message)
+    terminal_text = _terminal_error_message(log_rows)
+    match_text = redact_credentials(terminal_text) if terminal_text else None
     # Failed component: the component on the failure-attributed line — the line
     # carrying a diagnostic signal (error_code / exception_class), not the parent
     # route that merely propagates the failure ("Route failed ...").
@@ -411,8 +621,10 @@ def _compute_summary(
         final_error_at=final_error_at,
         failed_component=failed_component,
         primary_error_code=primary_error_code,
+        primary_error_family=primary_error_family,
         primary_exception_class=primary_exception_class,
         causal_message=causal_message,
+        match_text=match_text,
         first_host=first_host,
         first_retry_max=first_retry_max,
         summary_text=summary_text,
@@ -471,6 +683,7 @@ async def _upsert_execution_summary(
     row.primary_error_code = s.primary_error_code
     row.primary_exception_class = s.primary_exception_class
     row.summary_text = s.summary_text
+    row.causal_message = s.causal_message
     row.evidence_refs = s.evidence_refs
     await session.flush()
 
@@ -502,11 +715,19 @@ async def _build_incident(
     # Match the catalog against the resolved causal line when available — the
     # deepest "Caused by:" / failure-attributed text — so message_contains
     # constraints fire on the real fault, not the wrapper or a synthetic summary.
-    match_message = summary.causal_message or symptom_summary
+    # All available evidence, most-specific first: the trimmed diagnosis plus the
+    # untrimmed failing line. Matching on the trimmed sentence alone silently loses
+    # dialect tokens that the preamble carried.
+    match_message = "\n".join(
+        part for part in (summary.causal_message, summary.match_text) if part
+    ) or symptom_summary
     pattern = CATALOG.match(
         summary.primary_error_code,
         summary.primary_exception_class,
         match_message,
+        # Family agreement: without it a platform pattern can claim a same-shaped
+        # code from another platform (e.g. a bare numeric read as a MySQL errno).
+        summary.primary_error_family,
     )
 
     signature_hash = _compose_signature(
@@ -546,6 +767,18 @@ async def _build_incident(
         )
         if not next_checks:
             next_checks = ["Review execution log for error details"]
+        # A fallback-tier template says nothing the reader did not already know
+        # ("Execution terminated with errors; review log events for details").
+        # When the runtime stated an actual diagnosis, quote it instead: the log's
+        # own sentence is strictly more informative than a placeholder. Specific
+        # patterns keep their template, which explains the fault class and is not
+        # merely a restatement.
+        if (
+            pattern.specificity <= _FALLBACK_PATTERN_CEILING
+            and summary.causal_message
+            and _is_substantive_diagnostic(summary.causal_message)
+        ):
+            root_cause_candidate = f"Reported by the runtime: {summary.causal_message.strip()}"
     confidence = _derive_confidence(
         error_code=summary.primary_error_code,
         exception_class=summary.primary_exception_class,
@@ -589,6 +822,7 @@ async def _build_incident(
     inc_row.signature_hash = signature_hash
     inc_row.symptom_summary = symptom_summary
     inc_row.root_cause_candidate = root_cause_candidate
+    inc_row.causal_message = summary.causal_message
     inc_row.confidence = confidence
     inc_row.cause_origin = cause_origin
     inc_row.pattern_id = pattern_id
@@ -604,6 +838,7 @@ async def _build_incident(
         error_code=summary.primary_error_code,
         exception_class=summary.primary_exception_class,
         failed_component=summary.failed_component,
+        causal_message=summary.causal_message,
     )
 
     for log_event_id, role, excerpt in evidence_excerpts:
@@ -620,6 +855,7 @@ async def _upsert_error_signature(
     error_code: str | None,
     exception_class: str | None,
     failed_component: str | None,
+    causal_message: str | None = None,
 ) -> None:
     # Derive occurrence_count, first_seen_at, last_seen_at from distinct incident rows
     # so repeated builds of the same execution do not inflate counts.
@@ -652,6 +888,7 @@ async def _upsert_error_signature(
     row.component_name = failed_component
     summary_parts = [p for p in (error_code, exception_class, failed_component) if p]
     row.summary_text = " / ".join(summary_parts) if summary_parts else None
+    row.causal_message = causal_message
     await session.flush()
 
 
@@ -757,6 +994,32 @@ def _build_symptom_summary(
 
 _SPECIFIC_PATTERN_FLOOR = 25
 _FALLBACK_PATTERN_CEILING = 2
+
+# A quotable diagnostic must carry more than the bare fact of failure. These are
+# the surface features that distinguish an actual diagnosis ("Invalid dataset ID
+# \"test_ zaf_del_clean\"", "Not found: Files gs://...") from a status stub
+# ("engine failed"), which must never be dressed up as a root cause.
+_MIN_DIAGNOSTIC_WORDS = 5
+_DIAGNOSTIC_SUBSTANCE_RES = (
+    re.compile(r"['\"`][^'\"`]{2,}['\"`]"),  # a quoted identifier or value
+    re.compile(r"\w+://"),  # a URI (gs://, https://, jdbc:...)
+    re.compile(r"\b[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+\.[A-Z]\w+"),  # qualified class
+    re.compile(r"\S+:\s+\S+"),  # "detail: value" structure
+)
+
+
+def _is_substantive_diagnostic(text: str) -> bool:
+    """True when the runtime's sentence says more than "it failed".
+
+    Quoting the log is only an improvement when the log actually explained
+    something. A short, featureless status line quoted as a root cause would look
+    like a diagnosis while carrying no more information than the fallback
+    template it replaced.
+    """
+    stripped = text.strip()
+    if len(stripped.split()) >= _MIN_DIAGNOSTIC_WORDS:
+        return True
+    return any(pattern.search(stripped) for pattern in _DIAGNOSTIC_SUBSTANCE_RES)
 
 
 def _compose_signature(

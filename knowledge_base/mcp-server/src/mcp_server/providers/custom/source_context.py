@@ -43,6 +43,74 @@ _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"accesskey)\s*=\s*\")(?P<value>[^\"]*)(?P<suffix>\")",
     re.IGNORECASE,
 )
+# ── Inline credential parameters in code/URI strings ──────────────────────────
+#
+# Verified leak (werkorder run, doc 05): a Camel file/FTP URI built in Talend
+# job code carried `?password=RAW(<plaintext>)&fileName=...`. The scanner's URL
+# redaction masked the host portion (`[URL_REDACTED]`) but the query fragment
+# lived in a separate string literal, so `password=RAW(...)` survived into the
+# scan cache, the evidence bundles, and the published doc. These two patterns
+# close that shape WITHOUT mangling ordinary code such as
+# `String password = decoded.substring(0, spaceIndex)`:
+#
+# * `_CREDENTIAL_QUERY_PARAM_RE` requires query-string context -- the key must
+#   follow `?`, `&`, `&amp;` or `;` -- so free-standing assignments in Java
+#   code never match.
+# * `_CREDENTIAL_RAW_WRAPPER_RE` matches `key=RAW(...)` anywhere: Camel's
+#   RAW() wrapper exists precisely to mark a literal (usually secret) value,
+#   so a credential key with a RAW value is a leak by definition.
+# Public: shared credential-key vocabulary for inline-parameter redaction.
+# Consumed by noncode_evidence.redact_text so the Tier-3 non-code lane and the
+# code-evidence lane agree on what counts as a credential key. English and
+# Dutch (wachtwoord) vocabulary; compounds cover both `_` and `-` separators.
+CREDENTIAL_KEY_TOKENS = (
+    r"password|passwd|pwd|secret|token|apikey|api[_-]?key|client[_-]?secret|"
+    r"access[_-]?token|refresh[_-]?token|auth[_-]?token|passphrase|credential|"
+    r"wachtwoord|secret[_-]?key|access[_-]?key|private[_-]?key"
+)
+_CREDENTIAL_KEY_TOKENS = CREDENTIAL_KEY_TOKENS
+
+# Public: the marker substituted for credential VALUES. Key names and the
+# Camel/Talend `RAW(...)` wrapper are preserved so docs can still say
+# "a password is configured here" without carrying the secret.
+REDACTED_CREDENTIAL = "[REDACTED-CREDENTIAL]"
+_CREDENTIAL_QUERY_PARAM_RE = re.compile(
+    rf"(?P<prefix>[?&;](?:amp;)?\s*(?:{_CREDENTIAL_KEY_TOKENS})\s*=\s*)"
+    rf"(?P<value>RAW\([^)\n]*\)|[^\s&\"'<>;,\n]+)",
+    re.IGNORECASE,
+)
+_CREDENTIAL_RAW_WRAPPER_RE = re.compile(
+    rf"(?P<prefix>\b(?:{_CREDENTIAL_KEY_TOKENS})\s*=\s*)(?P<value>RAW\([^)\n]*\))",
+    re.IGNORECASE,
+)
+
+
+def redact_inline_credentials(text: str) -> tuple[str, int]:
+    """Redact credential query-params / RAW() values inside code and URI strings.
+
+    Deliberately narrow (query-string context or the Camel RAW() literal
+    wrapper) so verbatim code evidence is preserved: variable references and
+    ordinary assignments are never touched. Safe to run over already-redacted
+    text -- `[REDACTED]` values are idempotent. Used as the defence-in-depth
+    sweep for scan caches produced before the scanner-side fix.
+    """
+    count = 0
+
+    def _sub(match: re.Match[str]) -> str:
+        nonlocal count
+        value = match.group("value")
+        if "REDACTED" in value.upper():
+            return match.group(0)
+        count += 1
+        if value[:4].upper() == "RAW(":
+            # Preserve the RAW() literal wrapper: docs keep the structural fact
+            # that a raw credential is configured, without the secret itself.
+            return f"{match.group('prefix')}RAW({REDACTED_CREDENTIAL})"
+        return f"{match.group('prefix')}{REDACTED_CREDENTIAL}"
+
+    text = _CREDENTIAL_QUERY_PARAM_RE.sub(_sub, text)
+    text = _CREDENTIAL_RAW_WRAPPER_RE.sub(_sub, text)
+    return text, count
 _SENSITIVE_NAME_RE = re.compile(
     r"(password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|"
     r"license[_-]?key|authorization|x-api-key|credential|connectionstring|clientsecret|"
@@ -723,6 +791,8 @@ def _redact(content: str) -> tuple[str, int]:
     redacted = _XML_SENSITIVE_ADD_RE.sub(replace_secret, redacted)
     redacted = _XML_VALUE_THEN_SENSITIVE_KEY_RE.sub(replace_reordered_xml_secret, redacted)
     redacted = _SENSITIVE_ASSIGNMENT_RE.sub(replace_sensitive_assignment, redacted)
+    redacted, inline_count = redact_inline_credentials(redacted)
+    count += inline_count
 
     for pattern, placeholder in _SIMPLE_REDACT_PATTERNS:
         def _make_sub(ph: str = placeholder) -> re.Match[str]:

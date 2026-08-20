@@ -1,40 +1,13 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { DocsProjectsResponseSchema } from "@/types";
+import { fastapiFetch } from "@/lib/fastapi";
 
-const KB_API_URL = process.env.KB_API_URL || "http://localhost:8001";
-
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
-    const cookieHeader = request.headers.get("cookie") || "";
-
-    const res = await fetch(`${KB_API_URL}/mcp/projects`, {
-      headers: { Cookie: cookieHeader },
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      let message = "Failed to fetch projects";
-      try {
-        message = JSON.parse(text).detail || message;
-      } catch {
-        // use default
-      }
-      return NextResponse.json({ error: message }, { status: res.status });
-    }
-
-    const data = await res.json();
-
-    // Filter to projects with docs and map to DocsProject shape
-    const docsProjects = data.projects
-      .filter((p: { doc_count: number }) => p.doc_count > 0)
-      .map((p: { id: string; display_name: string; platform: string; doc_count: number }) => ({
-        id: p.id,
-        display_name: p.display_name,
-        platform: p.platform,
-        doc_count: p.doc_count,
-      }));
-
-    const result = { projects: docsProjects, total: docsProjects.length };
+    const data = await fastapiFetch<{
+      projects: Array<{ id: string; display_name: string; platform: string; doc_count: number }>;
+    }>("/api/v1/projects");
+    const result = { projects: data.projects, total: data.projects.length };
     const validated = DocsProjectsResponseSchema.parse(result);
     return NextResponse.json(validated);
   } catch (error) {

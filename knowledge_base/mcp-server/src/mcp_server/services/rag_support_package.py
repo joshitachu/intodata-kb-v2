@@ -5,9 +5,10 @@ the published `docs/` tree would otherwise lose the group-level Phase 2
 analyses that later RAG layers and incremental webhook regeneration need.
 
 `build_rag_support_package()` copies an allowlist of `_analysis/{group}.md`
-files (groups from the facts manifest only — never `_doc_pack_*`, `_bundle_*`,
-reports, or other runtime artifacts) into `docs_staging/_rag_support/` with a
-manifest. The atomic swap then carries `_rag_support/` into `docs/`.
+files — including `{group}_part*` slices (large-group splits and
+case-collision `_part_ci{k}` slices) resolved back to their facts-manifest
+group, never `_doc_pack_*`, `_bundle_*`, reports, or other runtime
+artifacts — into `docs_staging/_rag_support/` with a manifest. The atomic swap then carries `_rag_support/` into `docs/`.
 
 `replace_analysis_cache_from_rag_support()` runs after the swap and rebuilds
 the flat `output/{project_id}/analysis_cache/` that
@@ -44,6 +45,7 @@ LAYER_TECHNICAL_ANALYSIS = "technical_analysis"
 LAYER_SUPPORT_MAPS = "support_maps"
 LAYER_SCORECARD = "scorecard"
 LAYER_EVIDENCE_SLICES = "evidence_slices"
+LAYER_EDITORIAL_OVERLAYS = "editorial_overlays"
 
 REASON_MISSING_BASELINE = "missing_baseline_commit"
 REASON_MISSING_DOCS = "missing_docs"
@@ -60,6 +62,60 @@ REBASELINE_REASON_CODES = {
     REASON_CACHE_SUPPORT_MISMATCH,
     REASON_MISSING_CHANGED_GROUPS,
 }
+
+
+def analysis_stem_matches_group(stem: str, group: str) -> bool:
+    """True when an ``_analysis/*.md`` slice stem belongs to ``group``.
+
+    Mirrors the pipeline's slice->group resolver convention
+    (``harness._group_units``: ``group.startswith(f"{u.group}_part")``;
+    ``validators._groups_for_analysis_file``): Phase 2 writes one analysis per
+    *preprocess slice*, and a slice base is either the group itself
+    (``{group}.md``) or a ``{group}_part*`` disambiguation -- large-group
+    splits (``{group}_part1``/``_part2``), case-insensitive-filesystem
+    collision slices (``{group}_part_ci{k}``), and nested collider splits
+    (``{group}_part_ci{k}_1``/``_2``).
+
+    Comparison is case-SENSITIVE on the actual directory-entry stem: on
+    case-insensitive filesystems ``analysis_dir / f"{group}.md"`` can resolve
+    to a *different* group's file that differs only in case (verified on the
+    werkorder Assetcheck run: ``AssetCheck2Vise`` resolved to
+    ``AssetCheck2VISE.md`` and its real ``AssetCheck2Vise_part_ci1.md``
+    analysis was silently dropped from the package).
+    """
+    return stem == group or stem.startswith(f"{group}_part")
+
+
+def resolve_group_analysis_files(
+    analysis_dir: Path, groups: Iterable[str]
+) -> tuple[dict[str, list[Path]], list[str]]:
+    """Assign each ``_analysis/*.md`` slice file to its owning manifest group.
+
+    Returns ``(owned, missing_groups)`` where ``owned`` maps each group with
+    at least one analysis slice to its sorted slice paths, and
+    ``missing_groups`` lists manifest groups with none. Ownership follows
+    :func:`analysis_stem_matches_group`; an exact stem match wins outright,
+    otherwise the longest matching group owns the slice (so a slice can never
+    be claimed by a shorter prefix group). Files whose stem matches no
+    manifest group -- runtime artifacts (``_doc_pack_*``, ``_bundle_*``) and
+    non-manifest analyses -- are never assigned.
+    """
+    group_set = set(groups)
+    owned: dict[str, list[Path]] = {group: [] for group in group_set}
+    if analysis_dir.is_dir():
+        for path in sorted(analysis_dir.glob("*.md")):
+            stem = path.stem
+            if stem in group_set:
+                owned[stem].append(path)
+                continue
+            candidates = [
+                group for group in group_set
+                if analysis_stem_matches_group(stem, group)
+            ]
+            if candidates:
+                owned[max(candidates, key=len)].append(path)
+    missing = sorted(group for group, files in owned.items() if not files)
+    return {g: files for g, files in owned.items() if files}, missing
 
 
 @dataclass(frozen=True)
@@ -191,9 +247,14 @@ def build_rag_support_package(
     """Package Phase 2 group analyses into `staging_dir/_rag_support/`.
 
     Recreates `_rag_support/phase2_analysis/` from scratch (stale files from a
-    resumed run cannot survive) and copies only `_analysis/{group}.md` for the
-    given manifest groups. Groups without an analysis file are recorded in the
-    manifest's `missing_groups`; no fallback content is synthesized.
+    resumed run cannot survive) and copies every `_analysis/` slice owned by a
+    manifest group -- ``{group}.md`` plus any ``{group}_part*`` slice the
+    pipeline produced (large-group splits, case-collision ``_part_ci{k}``
+    slices; see :func:`resolve_group_analysis_files`). Slice filenames are
+    kept verbatim so case-colliding groups cannot clobber each other inside
+    the package on case-insensitive filesystems. Groups without any analysis
+    slice are recorded in the manifest's `missing_groups`; no fallback content
+    is synthesized.
 
     Returns the manifest dict that was written to `_rag_support/manifest.json`.
     """
@@ -205,28 +266,25 @@ def build_rag_support_package(
         shutil.rmtree(package_dir)
     package_dir.mkdir(parents=True, exist_ok=True)
 
+    owned, missing_groups = resolve_group_analysis_files(analysis_dir, groups)
     artifacts: list[dict] = []
-    missing_groups: list[str] = []
-    for group in sorted(set(groups)):
-        source = analysis_dir / f"{group}.md"
-        if not source.is_file():
-            missing_groups.append(group)
-            continue
-        target = package_dir / source.name
-        shutil.copy2(source, target)
-        data = target.read_bytes()
-        artifacts.append(
-            {
-                "path": f"{PHASE2_ANALYSIS_SUBDIR}/{source.name}",
-                "source_path": f"_analysis/{source.name}",
-                "source_layer": "technical_analysis",
-                "artifact_type": "phase2_group_analysis",
-                "visibility": "internal",
-                "group": group,
-                "bytes": len(data),
-                "sha256": hashlib.sha256(data).hexdigest(),
-            }
-        )
+    for group in sorted(owned):
+        for source in owned[group]:
+            target = package_dir / source.name
+            shutil.copy2(source, target)
+            data = target.read_bytes()
+            artifacts.append(
+                {
+                    "path": f"{PHASE2_ANALYSIS_SUBDIR}/{source.name}",
+                    "source_path": f"_analysis/{source.name}",
+                    "source_layer": "technical_analysis",
+                    "artifact_type": "phase2_group_analysis",
+                    "visibility": "internal",
+                    "group": group,
+                    "bytes": len(data),
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                }
+            )
 
     manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
@@ -338,6 +396,12 @@ def collect_internal_artifacts(
             LAYER_EVIDENCE_SLICES,
             "evidence_slice",
             sorted((docs_dir / "_evidence_registry" / "doc_slices").glob("*.md")),
+            None,
+        ),
+        (
+            LAYER_EDITORIAL_OVERLAYS,
+            "editorial_overlay",
+            sorted((docs_dir / RAG_SUPPORT_DIRNAME / "editorial_overlays").glob("*.md")),
             None,
         ),
     ]

@@ -9,7 +9,9 @@ from intodoc.models import (
     ComponentParam,
     ContextGroup,
     ContextVariable,
+    FileType,
     ParsedJob,
+    ScannedFile,
     ScanResult,
 )
 from intodoc.scanner.credential_filter import CredentialFilter
@@ -154,6 +156,45 @@ def test_component_code_field_redacted_by_post_filter():
     result = _scan_result(jobs=[job])
     filter_scan_result(result, CredentialFilter())
     assert "srvx9999" not in (comp.code or "")
+
+
+def test_scanned_file_path_naming_credentials_does_not_fail_the_gate():
+    """A file living under a 'Credentials' directory is a structural
+    identifier, not a leaked secret -- reproduces a real composite-scan
+    false positive where `files/N/path` and `files/N/relative_path` tripped
+    the `credential_path` pattern on the path string itself. The job's own
+    `name`/`path` are deliberately free of the pattern here so only the
+    ScannedFile path fields are under test."""
+    result = _scan_result(
+        jobs=[ParsedJob(name="VaultLoader", path="process/VaultLoader_1.0.item")],
+    )
+    result.files = [
+        ScannedFile(
+            path="/repo/TalendRepos/Talend/Credentials/vault.item",
+            relative_path="TalendRepos/Talend/Credentials/vault.item",
+            file_type=FileType.JOB,
+            sha256="0" * 64,
+            size_bytes=1,
+        ),
+    ]
+    report = verify_scan_result(result, CredentialFilter())
+    assert report["passed"] is True, report
+    assert report["residual_pattern_counts"] == {}
+
+
+def test_unique_name_and_xpath_naming_credentials_does_not_fail_the_gate():
+    """Component `unique_name` and TXMLMap `xpath` are also structural
+    identifiers, not content -- same false-positive class as ScannedFile paths."""
+    job = ParsedJob(
+        name="Job1",
+        path="process/Job1_1.0.item",
+        components=[
+            Component(unique_name="tFakeCredentialsLookup_1", component_type="tFake", params=[]),
+        ],
+    )
+    report = verify_scan_result(_scan_result(jobs=[job]), CredentialFilter())
+    assert report["passed"] is True, report
+    assert report["residual_pattern_counts"] == {}
 
 
 def test_derive_code_from_params():

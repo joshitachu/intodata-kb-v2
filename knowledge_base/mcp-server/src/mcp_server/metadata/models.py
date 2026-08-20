@@ -20,7 +20,7 @@ class ModelDescriptor:
     # a credential env var is set). Cloud models with no key show unavailable.
     available: bool = True
     unavailable_reason: str | None = None
-    # Whether the RAG chat surface may offer this model (excludes claude-cli).
+    # Whether the RAG chat surface may offer this model (excludes CLI runtimes).
     rag_capable: bool = True
 
     def to_dict(self) -> dict:

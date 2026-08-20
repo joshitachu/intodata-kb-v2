@@ -49,8 +49,28 @@ class TestListRuntimeToolDefinitions:
             "get_runtime_dependency_summary",
             "list_runtime_plans",
             "list_runtime_unhealthy",
+            "get_runtime_outcome_trend",
+            "list_runtime_job_reliability",
+            "list_runtime_component_hotspots",
+            "list_runtime_job_throughput",
+            "list_runtime_error_signatures",
         }
-        assert len(definitions) == 19
+        assert len(definitions) == 24
+
+    def test_every_tool_is_dispatchable_on_the_stored_provider(self):
+        """The client dispatches via getattr(provider, tool_name).
+
+        A registered tool whose name does not match a provider method is only
+        discoverable at runtime as an UNAVAILABLE error, so assert the mapping here.
+        """
+        from src.runtime.providers.stored import provider
+
+        missing = [
+            definition.name
+            for definition in list_runtime_tool_definitions()
+            if not callable(getattr(provider, definition.name, None))
+        ]
+        assert missing == []
 
     def test_high_level_tool_descriptions_steer_model(self):
         definitions = {d.name: d for d in list_runtime_tool_definitions()}

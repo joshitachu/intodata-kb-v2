@@ -53,6 +53,39 @@ def test_incremental_staging_restores_flat_cache(tmp_path: Path, monkeypatch) ->
     assert (staging_analysis / "A.md").read_text(encoding="utf-8") == "# Group A analysis"
 
 
+def test_incremental_staging_evicts_all_part_slices_of_changed_groups(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(config, "project_root", tmp_path)
+    output_dir = tmp_path / "output" / "proj"
+    docs = output_dir / "docs"
+    support = docs / "_rag_support" / "phase2_analysis"
+    cache = output_dir / "analysis_cache"
+    support.mkdir(parents=True)
+    cache.mkdir(parents=True)
+    (docs / "01_ARCHITECTURE_MAP.md").write_text("# Architecture", encoding="utf-8")
+    for name, body in [
+        ("A.md", "# A"),
+        ("B.md", "# B"),
+        ("B_part_ci1.md", "# B case-collision slice"),
+        ("USA_part1.md", "# USA split 1"),
+        ("USA_part2.md", "# USA split 2"),
+    ]:
+        (support / name).write_text(body, encoding="utf-8")
+        (cache / name).write_text(body, encoding="utf-8")
+
+    result = setup_incremental_staging(
+        "proj", changed_groups={"B", "USA"}, is_first_push=False
+    )
+
+    staging_analysis = output_dir / "docs_staging" / "_analysis"
+    assert result.staged is True
+    assert sorted(p.name for p in staging_analysis.iterdir()) == ["A.md"], (
+        "every slice of a changed group (_part1/_part2 splits AND _part_ci "
+        "case-collision slices) must be evicted before regeneration"
+    )
+
+
 def test_incremental_staging_skips_when_cache_absent(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(config, "project_root", tmp_path)
     output_dir = _make_docs_and_support_without_cache(tmp_path, "proj")
@@ -171,6 +204,7 @@ async def test_run_git_reingestion_advances_baseline_after_successful_background
         "b" * 40,
         triggered_by="webhook",
         log_mgr=log_manager,
+        targeted_docs=["01_ARCHITECTURE_MAP"],
     )
 
     assert ok is True
@@ -243,6 +277,7 @@ async def test_run_git_reingestion_records_rebaseline_required_without_generatio
         "b" * 40,
         triggered_by="webhook",
         log_mgr=log_manager,
+        targeted_docs=["01_ARCHITECTURE_MAP"],
     )
 
     assert ok is False
@@ -366,7 +401,8 @@ async def test_run_git_reingestion_holds_sha_when_gate_fails_after_retry(
     monkeypatch.setattr(projects_mod, "_run_generate_background", generate_background_stub)
 
     ok = await run_git_reingestion(
-        "proj", "a" * 40, "b" * 40, triggered_by="webhook", log_mgr=log_manager
+        "proj", "a" * 40, "b" * 40, triggered_by="webhook", log_mgr=log_manager,
+        targeted_docs=["01_ARCHITECTURE_MAP"],
     )
 
     assert ok is False
@@ -417,7 +453,8 @@ async def test_run_git_reingestion_advances_sha_when_retry_passes(
     monkeypatch.setattr(projects_mod, "_run_generate_background", generate_background_stub)
 
     ok = await run_git_reingestion(
-        "proj", "a" * 40, "b" * 40, triggered_by="webhook", log_mgr=log_manager
+        "proj", "a" * 40, "b" * 40, triggered_by="webhook", log_mgr=log_manager,
+        targeted_docs=["01_ARCHITECTURE_MAP"],
     )
 
     assert ok is True
@@ -471,7 +508,7 @@ async def test_run_git_reingestion_threads_targeted_docs_as_scoped(
     assert seen["scoped_docs"] == {"01_ARCHITECTURE_MAP"}
 
 
-async def test_run_git_reingestion_full_regen_passes_no_scoped_docs(
+async def test_run_git_reingestion_explicit_full_rebuild_passes_no_scoped_docs(
     session_factory,
     monkeypatch,
     tmp_path: Path,
@@ -497,7 +534,8 @@ async def test_run_git_reingestion_full_regen_passes_no_scoped_docs(
     monkeypatch.setattr(projects_mod, "_run_generate_background", generate_background_stub)
 
     ok = await run_git_reingestion(
-        "proj", "a" * 40, "b" * 40, triggered_by="webhook", log_mgr=log_manager
+        "proj", "a" * 40, "b" * 40, triggered_by="manual_full_rebuild", log_mgr=log_manager,
+        full_rederive=True,
     )
 
     assert ok is True
@@ -654,7 +692,8 @@ async def test_run_git_reingestion_advances_sha_when_gate_passes_first_try(
     monkeypatch.setattr(projects_mod, "_run_generate_background", generate_background_stub)
 
     ok = await run_git_reingestion(
-        "proj", "a" * 40, "b" * 40, triggered_by="webhook", log_mgr=log_manager
+        "proj", "a" * 40, "b" * 40, triggered_by="webhook", log_mgr=log_manager,
+        targeted_docs=["01_ARCHITECTURE_MAP"],
     )
 
     assert ok is True
@@ -825,7 +864,8 @@ async def test_run_git_reingestion_proceeds_on_mixed_infra_and_source_push(
     scan_group.mkdir(parents=True)
 
     ok = await run_git_reingestion(
-        "proj", "a" * 40, "b" * 40, triggered_by="webhook", log_mgr=log_manager
+        "proj", "a" * 40, "b" * 40, triggered_by="webhook", log_mgr=log_manager,
+        targeted_docs=["01_ARCHITECTURE_MAP"],
     )
 
     assert ok is True

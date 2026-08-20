@@ -127,6 +127,17 @@ def test_generate_request_plugin_pack_id_optional():
     assert req.plugin_pack_id is None
 
 
+@pytest.mark.parametrize("method", ["custom", "opencode-cli"])
+def test_generate_request_accepts_generation_method_override(method):
+    req = GenerateRequest(project_id="p1", doc_generation_provider=method)
+    assert req.doc_generation_provider == method
+
+
+def test_generate_request_rejects_unknown_generation_method_override():
+    with pytest.raises(ValueError):
+        GenerateRequest(project_id="p1", doc_generation_provider="opencode-cli --unsafe")
+
+
 @pytest.mark.parametrize("bad", [0, -1, "abc", 1.5])
 def test_generate_request_rejects_invalid_plugin_pack_id(bad):
     with pytest.raises(ValueError):

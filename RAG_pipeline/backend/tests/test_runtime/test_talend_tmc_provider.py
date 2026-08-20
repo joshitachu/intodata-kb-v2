@@ -1,6 +1,5 @@
 """Fixture tests for the Talend TMC runtime provider adapter."""
 
-from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -366,10 +365,10 @@ class TestRuntimeBatchMapping:
             "/monitoring/executions/exec-2/logs": {
                 "data": [
                     {
-                        "execution_id": "exec-2",
-                        "timestamp": "2026-06-18T01:00:20.000Z",
-                        "level": "ERROR",
-                        "message": "[tDBInput_1] connection timeout",
+                        "executionId": "exec-2",
+                        "logTimestamp": 1781744420000,
+                        "severity": "ERROR",
+                        "logMessage": "[tDBInput_1] connection timeout",
                     }
                 ],
                 "totalSize": 1,
@@ -416,6 +415,7 @@ class TestRuntimeBatchMapping:
         assert [run.run_id for run in batch.plan_runs] == ["pexec-1"]
         assert batch.plan_runs[0].step_results[0].execution_id == "exec-1"
         assert batch.log_events[0].message == "[tDBInput_1] connection timeout"
+        assert batch.log_events[0].timestamp.isoformat() == "2026-06-18T01:00:20+00:00"
 
     async def test_sync_uses_supplied_source_credentials(self, tmc):
         seen_headers: list[str | None] = []
@@ -438,8 +438,159 @@ class TestRuntimeBatchMapping:
         assert set(seen_headers) == {"Bearer source-specific-token"}
         assert set(seen_hosts) == {"https://source-specific.example"}
 
+    async def test_werkorder_sync_scopes_tasks_history_plans_and_logs(self, tmc):
+        seen: list[tuple[str, str]] = []
+        list_fixtures: dict[str, list[dict]] = {
+            "/orchestration/environments": [{"id": "env-prod", "name": "PROD"}],
+            "/orchestration/workspaces": [
+                {
+                    "id": "ws-work",
+                    "name": "Integrations",
+                    "environment": {"id": "env-prod", "name": "PROD"},
+                },
+                {
+                    "id": "ws-hr",
+                    "name": "HR",
+                    "environment": {"id": "env-prod", "name": "PROD"},
+                },
+            ],
+            "/processing/runtimes/remote-engines": [
+                {"id": "eng-1", "name": "engine", "status": "RUNNING"}
+            ],
+            "/orchestration/artifacts": [
+                {"id": "art-work", "name": "EnterpriseExport"},
+                {"id": "art-hr", "name": "PayrollExport"},
+            ],
+            "/orchestration/connections": [
+                {"id": "conn-work", "name": "Maximo"},
+                {"id": "conn-hr", "name": "Payroll"},
+            ],
+            "/orchestration/executables/tasks": [
+                {
+                    "executable": "task-work",
+                    "name": "NightlyWorkOrderExport",
+                    "artifactId": "art-work",
+                    "connectionIds": ["conn-work"],
+                    "workspace": {
+                        "id": "ws-work",
+                        "name": "Integrations",
+                        "environment": {"id": "env-prod", "name": "PROD"},
+                    },
+                    "runtime": {"id": "eng-1"},
+                },
+                {
+                    "executable": "task-hr",
+                    "name": "PayrollExport",
+                    "artifactId": "art-hr",
+                    "connectionIds": ["conn-hr"],
+                    "workspace": {"id": "ws-hr", "name": "HR"},
+                    "runtime": {"id": "eng-1"},
+                },
+            ],
+            "/orchestration/executables/plans": [
+                {
+                    "executable": "plan-work",
+                    "name": "Work orchestration",
+                    "chart": {"flows": [{"id": "task-work"}]},
+                },
+                {
+                    "executable": "plan-hr",
+                    "name": "HR orchestration",
+                    "chart": {"flows": [{"id": "task-hr"}]},
+                },
+            ],
+            "/processing/executables/tasks/task-work/executions": [
+                {
+                    "executionId": "exec-ok",
+                    "taskId": "task-work",
+                    "status": "execution_successful",
+                    "startTimestamp": "2026-08-10T01:00:00Z",
+                    "finishTimestamp": "2026-08-10T01:01:00Z",
+                },
+                {
+                    "executionId": "exec-failed",
+                    "taskId": "task-work",
+                    "status": "execution_failed",
+                    "startTimestamp": "2026-08-11T01:00:00Z",
+                    "finishTimestamp": "2026-08-11T01:01:00Z",
+                    "errorMessage": "Maximo timeout",
+                },
+            ],
+            "/processing/executables/plans/plan-work/executions": [],
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append((request.method, request.url.path))
+            if request.url.path in {
+                "/processing/executables/tasks/task-work/executions",
+                "/processing/executables/plans/plan-work/executions",
+            }:
+                window_start = int(request.url.params["from"])
+                window_end = int(request.url.params["to"])
+                assert 0 < window_end - window_start <= 10 * 24 * 60 * 60 * 1000
+                assert "lastDays" not in request.url.params
+            if request.url.path == "/monitoring/executions/exec-failed/logs":
+                if request.method == "POST":
+                    return httpx.Response(500, json={"detail": "async logs unavailable"})
+                return httpx.Response(
+                    200,
+                    json={
+                        "data": [
+                            {
+                                "execution_id": "exec-failed",
+                                "timestamp": "2026-08-11T01:01:00Z",
+                                "level": "ERROR",
+                                "message": "Maximo timeout",
+                            }
+                        ],
+                        "totalSize": 1,
+                    },
+                )
+            if request.url.path.startswith("/monitoring/observability/executions/"):
+                return httpx.Response(200, json={"metrics": {"items": [], "total": 0}})
+            payload = list_fixtures.get(request.url.path)
+            if payload is not None:
+                return httpx.Response(200, json=payload)
+            raise AssertionError(f"Unexpected request {request.method} {request.url.path}")
+
+        batch = await tmc.provider(handler).sync(
+            credentials={
+                "api_token": "source-specific-token",
+                "base_url": "https://source-specific.example",
+            },
+            project_id="werkorder",
+        )
+
+        assert [job.job_id for job in batch.jobs] == ["task-work"]
+        assert [artifact.artifact_id for artifact in batch.artifacts] == ["art-work"]
+        assert [connection.connection_id for connection in batch.connections] == ["conn-work"]
+        assert [plan.plan_id for plan in batch.plans] == ["plan-work"]
+        assert {run.run_id for run in batch.job_runs} == {"exec-ok", "exec-failed"}
+        assert [event.execution_id for event in batch.log_events] == ["exec-failed"]
+        assert ("GET", "/processing/executables/tasks/task-hr/executions") not in seen
+        assert ("GET", "/processing/executables/plans/plan-hr/executions") not in seen
+        assert not any(path == "/monitoring/executions/exec-ok/logs" for _, path in seen)
+        assert sum(
+            path == "/processing/executables/tasks/task-work/executions" for _, path in seen
+        ) == 9
+
 
 class TestConfigAndSecretHygiene:
+    async def test_get_retries_a_transient_transport_failure(self, tmc):
+        attempts = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise httpx.ConnectError("temporary DNS failure", request=request)
+            return httpx.Response(200, json={"items": [], "total": 0})
+
+        result = await tmc.provider(handler)._get("/orchestration/environments")
+
+        assert result == {"items": [], "total": 0}
+        assert attempts == 2
+
     async def test_missing_token_file_is_provider_error(self, tmc):
         tmc.settings.talend_tmc_api_token_file = str(tmc.tmp_path / "does_not_exist")
         with pytest.raises(RuntimeProviderError):

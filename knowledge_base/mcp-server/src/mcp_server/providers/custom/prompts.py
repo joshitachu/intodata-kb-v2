@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mcp_server.providers.custom.constants import GROUP_SUMMARY_SECTION
 from mcp_server.providers.custom.doc_catalog import load_doc_catalog
 from mcp_server.providers.custom.models import FactsManifest
 from mcp_server.platforms import get_platform_strategy
@@ -15,11 +14,16 @@ from mcp_server.services.nexus_execution_contract import presentation_instructio
 from mcp_server.schemas import NexusPresentation
 
 
-def facts_summary(facts: FactsManifest) -> str:
+def facts_summary(facts: FactsManifest, unit_names: list[str] | None = None) -> str:
     groups = ", ".join(f"{name}={count}" for name, count in sorted(facts.groups.items()))
+    scoped_names = set(unit_names) if unit_names is not None else None
     units = "\n".join(
-        f"- {u.name} | group={u.group} | type={u.unit_type} | components={u.component_count}"
+        f"- {u.name} | group={u.group}"
+        f" | logical_group={u.logical_group or u.group}"
+        f" | source_root={u.source_root or 'single-root'}"
+        f" | type={u.unit_type} | components={u.component_count}"
         for u in facts.units
+        if scoped_names is None or u.name in scoped_names
     )
     return (
         f"Platform: {facts.platform}\n"
@@ -71,10 +75,11 @@ def _resolve_preamble(
 
 
 _PHASE2_PREAMBLE_DEFAULT = """\
-You are generating Phase 2 group analysis. Your output is the SOLE factual foundation for
-every documentation file produced in Phase 3. If you omit a finding here, it will be absent
-from every document. Be EXHAUSTIVE. Include every expression, every rule, every column, every risk.
-Depth over brevity. Never summarize when you can enumerate."""
+You are generating one scoped Phase 2 evidence analysis. Cover every required section and every
+assigned unit, but keep the response bounded. Record decisive facts, relationships, risks, and
+exact evidence pointers; do not copy complete scanner inventories, source files, SQL bodies, or
+configuration tables into the response. The supplied deterministic artifacts remain the evidence
+of record for later document generation and drill-down."""
 
 
 def group_analysis_prompt(
@@ -120,7 +125,18 @@ def group_analysis_prompt(
             "inventories, dependency lists, or routine maps inside the evidence. Keep your "
             "GROUP_SUMMARY scoped to the units listed above.\n"
         )
-    section_headings = "\n".join(f"- `### {name}`" for name in (*ANALYSIS_SECTION_NAMES, GROUP_SUMMARY_SECTION))
+    task_scope_note += (
+        "\nOutput-size contract: produce a compact evidence analysis, not a component-by-component "
+        "narrative. Keep the complete response below 8,000 tokens. Use at most three concise "
+        "evidence bullets per assigned unit in each required section. Name decisive components, "
+        "connections, and source paths; do not repeat complete inventories already present in the "
+        "scanner packet. When a section has no scoped evidence, write one explicit UNKNOWN line "
+        "instead of expanding or inferring. Emit every required heading before adding detail.\n"
+    )
+    # phase2_analysis.md owns the final GROUP_SUMMARY line and skeleton. Keep
+    # the substituted list to analysis sections only so the prompt does not
+    # demand the same final section twice.
+    section_headings = "\n".join(f"- `### {name}`" for name in ANALYSIS_SECTION_NAMES)
     preamble = _resolve_preamble(
         plugin_pack_dir, "phase2.md",
         pack, "phase2_preamble",
@@ -136,7 +152,7 @@ def group_analysis_prompt(
         "TASK_UNIT_COUNT": str(len(unit_names)),
         "MISSING_EVIDENCE_BLOCK": missing_block,
         "TASK_SCOPE_NOTE": task_scope_note,
-        "FACTS_SUMMARY": facts_summary(facts),
+        "FACTS_SUMMARY": facts_summary(facts, unit_names=unit_names),
         "PLATFORM_ANALYSIS_REQUIREMENTS": platform_analysis_requirements(facts),
         "SECTION_HEADINGS": section_headings,
         "PLATFORM_SECTION_DEPTH": _platform_section_depth(facts),
@@ -240,6 +256,7 @@ def doc_prompt(
     scoped_unit: str | None = None,
     nexus_presentation: NexusPresentation | None = None,
     private_analysis_instructions: str = "",
+    unit_reference: bool = False,
 ) -> str:
     required_headings = (
         (extra_section_requirements or {}).get(doc_name)
@@ -247,6 +264,27 @@ def doc_prompt(
     )
     headings_block = "\n".join(f"  ## {s}" for s in required_headings)
     doc_specific = _doc_specific_from_pack(plugin_pack_dir, doc_name) or _doc_specific_instructions(doc_name, facts)
+    if scoped_unit and unit_reference:
+        # Standard-catalog per-unit reference dossier: dedicated compact
+        # contract (opencode-shaped) instead of the enterprise doc template.
+        presentation = presentation_instructions_for_phase("phase3", nexus_presentation)
+        if presentation:
+            doc_specific = f"{presentation}\n\n{doc_specific}".rstrip()
+        if private_analysis_instructions:
+            doc_specific = f"{private_analysis_instructions}\n\n{doc_specific}".rstrip()
+        raw_preamble = _resolve_preamble(
+            plugin_pack_dir, "phase3.md",
+            pack, "phase3_preamble",
+            _PHASE3_PREAMBLE_DEFAULT,
+        )
+        return get_renderer().render("phase3_unit_doc.md", {
+            "PREAMBLE": raw_preamble.rstrip().format(doc_name=doc_name),
+            "DOC_NAME": doc_name,
+            "SCOPED_UNIT": scoped_unit,
+            "HEADINGS_BLOCK": headings_block,
+            "DOC_SPECIFIC": doc_specific,
+            "FACTS_SUMMARY": facts_summary(facts, unit_names=[scoped_unit]),
+        })
     if scoped_unit:
         doc_specific = (
             "PER-JOB DOCUMENT SCOPE (MANDATORY): This file documents exactly one scanned job: "
@@ -306,6 +344,10 @@ def _doc_specific_from_pack(plugin_pack_dir: "Path | None", doc_name: str) -> st
 
 def _doc_specific_instructions(doc_name: str, facts: FactsManifest) -> str:
     text = load_doc_catalog().doc_specific_instructions_for(doc_name)
+    if not text and "__" in doc_name:
+        # Per-unit expanded docs ({base}__{group}__{unit}) inherit the base
+        # catalog entry's instructions.
+        text = load_doc_catalog().doc_specific_instructions_for(doc_name.split("__", 1)[0])
     if doc_name == "00_AGENT_BRIEF" and text:
         text = text.format(unit_count=facts.unit_count, canonical_unit_label=facts.canonical_unit_label)
     if doc_name == "01_ARCHITECTURE_MAP" and facts.platform.lower() != "talend" and text:

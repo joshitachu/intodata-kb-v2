@@ -67,6 +67,124 @@ def test_build_manifest_metadata(tmp_path: Path) -> None:
     assert entry["sha256"] == hashlib.sha256(content).hexdigest()
 
 
+def test_build_packages_case_collision_part_ci_slices(tmp_path: Path) -> None:
+    # Case-colliding Talend groups: _preprocess_scan_data writes the later
+    # collider's slice as {group}_part_ci{k}.md, and Phase 2 analyses follow
+    # that naming (verified on the werkorder Assetcheck run, where the
+    # _part_ci analysis was dropped from the package entirely).
+    staging = tmp_path / "docs_staging"
+    analysis = staging / "_analysis"
+    analysis.mkdir(parents=True)
+    (analysis / "VISE2AssetCheck.md").write_text("# upper analysis", encoding="utf-8")
+    (analysis / "Vise2AssetCheck_part_ci1.md").write_text(
+        "# collider analysis", encoding="utf-8"
+    )
+
+    manifest = build_rag_support_package(
+        staging,
+        ["VISE2AssetCheck", "Vise2AssetCheck"],
+        project_id="proj",
+        platform="talend",
+    )
+
+    package_dir = staging / "_rag_support" / "phase2_analysis"
+    assert sorted(p.name for p in package_dir.iterdir()) == [
+        "VISE2AssetCheck.md",
+        "Vise2AssetCheck_part_ci1.md",
+    ]
+    assert manifest["missing_groups"] == []
+    by_group = {a["group"]: a for a in manifest["artifacts"]}
+    assert by_group["VISE2AssetCheck"]["path"] == "phase2_analysis/VISE2AssetCheck.md"
+    assert by_group["Vise2AssetCheck"]["path"] == (
+        "phase2_analysis/Vise2AssetCheck_part_ci1.md"
+    )
+    assert by_group["Vise2AssetCheck"]["source_path"] == (
+        "_analysis/Vise2AssetCheck_part_ci1.md"
+    )
+    # Contents must come from each group's OWN slice, not the case-colliding
+    # sibling that Path lookup would resolve to on macOS/Windows.
+    assert (package_dir / "Vise2AssetCheck_part_ci1.md").read_text(
+        encoding="utf-8"
+    ) == "# collider analysis"
+
+
+def test_build_packages_split_part_slices(tmp_path: Path) -> None:
+    # Large groups split into {group}_part1/{group}_part2 preprocess slices;
+    # each slice gets its own analysis and both belong to the group.
+    staging = tmp_path / "docs_staging"
+    analysis = staging / "_analysis"
+    analysis.mkdir(parents=True)
+    (analysis / "USA_part1.md").write_text("# part 1", encoding="utf-8")
+    (analysis / "USA_part2.md").write_text("# part 2", encoding="utf-8")
+
+    manifest = build_rag_support_package(
+        staging, ["USA"], project_id="proj", platform="talend"
+    )
+
+    package_dir = staging / "_rag_support" / "phase2_analysis"
+    assert sorted(p.name for p in package_dir.iterdir()) == [
+        "USA_part1.md",
+        "USA_part2.md",
+    ]
+    assert manifest["missing_groups"] == []
+    assert [(a["group"], a["path"]) for a in manifest["artifacts"]] == [
+        ("USA", "phase2_analysis/USA_part1.md"),
+        ("USA", "phase2_analysis/USA_part2.md"),
+    ]
+
+
+def test_build_excludes_part_files_of_nonmanifest_groups(tmp_path: Path) -> None:
+    staging = _make_staging(tmp_path)
+    analysis = staging / "_analysis"
+    (analysis / "Zed_part_ci1.md").write_text("# not a manifest group", encoding="utf-8")
+    (analysis / "C_part1.md").write_text("# C is not in the manifest", encoding="utf-8")
+
+    manifest = build_rag_support_package(
+        staging, ["A", "B"], project_id="proj", platform="talend"
+    )
+
+    package_dir = staging / "_rag_support" / "phase2_analysis"
+    assert sorted(p.name for p in package_dir.iterdir()) == ["A.md", "B.md"]
+    assert {a["group"] for a in manifest["artifacts"]} == {"A", "B"}
+
+
+def test_build_part_slice_owned_by_longest_matching_group(tmp_path: Path) -> None:
+    # "A_particular_part1" prefix-matches both "A" (via "A_part...") and
+    # "A_particular"; the longest (most specific) group must own the slice.
+    staging = tmp_path / "docs_staging"
+    analysis = staging / "_analysis"
+    analysis.mkdir(parents=True)
+    (analysis / "A.md").write_text("# A", encoding="utf-8")
+    (analysis / "A_particular_part1.md").write_text("# specific", encoding="utf-8")
+
+    manifest = build_rag_support_package(
+        staging, ["A", "A_particular"], project_id="proj", platform="talend"
+    )
+
+    by_path = {a["path"]: a["group"] for a in manifest["artifacts"]}
+    assert by_path["phase2_analysis/A_particular_part1.md"] == "A_particular"
+    assert by_path["phase2_analysis/A.md"] == "A"
+    assert manifest["missing_groups"] == []
+
+
+def test_cache_restore_preserves_part_ci_names(tmp_path: Path) -> None:
+    # End-to-end naming contract: _part_ci slice filenames flow verbatim from
+    # the published package into the flat analysis_cache/.
+    output_dir = tmp_path / "output" / "proj"
+    package_dir = output_dir / "docs" / "_rag_support" / "phase2_analysis"
+    package_dir.mkdir(parents=True)
+    (package_dir / "VISE2AssetCheck.md").write_text("# upper", encoding="utf-8")
+    (package_dir / "Vise2AssetCheck_part_ci1.md").write_text("# collider", encoding="utf-8")
+
+    assert replace_analysis_cache_from_rag_support(output_dir) is True
+
+    cache_dir = output_dir / "analysis_cache"
+    assert sorted(p.name for p in cache_dir.iterdir()) == [
+        "VISE2AssetCheck.md",
+        "Vise2AssetCheck_part_ci1.md",
+    ]
+
+
 def test_build_records_missing_groups_without_fallback(tmp_path: Path) -> None:
     staging = _make_staging(tmp_path)
 

@@ -31,27 +31,37 @@ from src.runtime.models import (
     GetRuntimeIncidentInput,
     ListExecutionsInput,
     ListRuntimeArtifactsInput,
+    ListRuntimeComponentHotspotsInput,
     ListRuntimeConnectionsInput,
     ListRuntimeDependenciesInput,
     ListRuntimeEnginesInput,
+    ListRuntimeErrorSignaturesInput,
     ListRuntimeHealthInput,
     ListRuntimeInventoryInput,
+    ListRuntimeJobReliabilityInput,
+    ListRuntimeJobThroughputInput,
     ListRuntimeJobsInput,
     ListRuntimePlansInput,
     ListRuntimeSyncStatusInput,
     RuntimeArtifact,
+    RuntimeComponentHotspot,
     RuntimeConnection,
     RuntimeDependencySummary,
     RuntimeEngine,
+    RuntimeErrorSignature,
     RuntimeExecution,
     RuntimeFailure,
     RuntimeHealthSummary,
     RuntimeJob,
     RuntimeJobDependency,
+    RuntimeJobReliability,
+    RuntimeJobThroughput,
     RuntimeLogEvent,
+    RuntimeOutcomeTrendPoint,
     RuntimePlan,
     RuntimeSource,
     RuntimeSyncState,
+    RuntimeTrendInput,
     RuntimeUnhealthySummary,
 )
 from src.runtime.providers.base import CredentialField
@@ -61,6 +71,12 @@ from src.runtime.store import RuntimeRecordNotFoundError, RuntimeStoreRepository
 _TIMELINE_SIGNAL_MAX_CHARS = 200
 _LOG_SEARCH_SNIPPET_MAX_CHARS = 360
 _LOG_SEARCH_MAX_RESULTS = 20
+# Aggregate rollups share their input models with the dashboard, whose pagination caps
+# are far larger than an LLM context can absorb. Clamping here (rather than in the
+# model) keeps the tool bound at the provider boundary, where it cannot be widened by
+# tool arguments, and mirrors how log search and timeline signals are already bounded.
+_AGGREGATE_MAX_ROWS = 25
+_TREND_MAX_POINTS = 60
 _LOG_SEARCH_FIELDS = (
     "execution_id",
     "project_id",
@@ -356,6 +372,47 @@ class StoredRuntimeProvider:
         repo = self._store_repository(context)
         return await repo.list_plans(self._scope(context), params)
 
+    async def get_runtime_outcome_trend(
+        self, params: RuntimeTrendInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeOutcomeTrendPoint]:
+        repo = self._store_repository(context)
+        bounded = params.model_copy(
+            update={"limit": min(params.limit, _TREND_MAX_POINTS)}
+        )
+        return await repo.get_outcome_trend(self._scope(context), bounded)
+
+    async def list_runtime_job_reliability(
+        self,
+        params: ListRuntimeJobReliabilityInput,
+        context: RuntimeProviderContext | None = None,
+    ) -> list[RuntimeJobReliability]:
+        repo = self._store_repository(context)
+        return await repo.list_job_reliability(self._scope(context), _bounded(params))
+
+    async def list_runtime_component_hotspots(
+        self,
+        params: ListRuntimeComponentHotspotsInput,
+        context: RuntimeProviderContext | None = None,
+    ) -> list[RuntimeComponentHotspot]:
+        repo = self._store_repository(context)
+        return await repo.list_component_hotspots(self._scope(context), _bounded(params))
+
+    async def list_runtime_job_throughput(
+        self,
+        params: ListRuntimeJobThroughputInput,
+        context: RuntimeProviderContext | None = None,
+    ) -> list[RuntimeJobThroughput]:
+        repo = self._store_repository(context)
+        return await repo.list_job_throughput(self._scope(context), _bounded(params))
+
+    async def list_runtime_error_signatures(
+        self,
+        params: ListRuntimeErrorSignaturesInput,
+        context: RuntimeProviderContext | None = None,
+    ) -> list[RuntimeErrorSignature]:
+        repo = self._store_repository(context)
+        return await repo.list_error_signatures(self._scope(context), _bounded(params))
+
     async def list_runtime_unhealthy(
         self, params: ListRuntimeInventoryInput, context: RuntimeProviderContext | None = None
     ) -> RuntimeUnhealthySummary:
@@ -408,6 +465,11 @@ class StoredRuntimeProvider:
                 if item.failed_runs > 0 or item.current_failure_streak > 0
             ][: params.limit],
         )
+
+
+def _bounded(params: Any) -> Any:
+    """Clamp a rollup input's page size to the agent-facing maximum."""
+    return params.model_copy(update={"limit": min(params.limit, _AGGREGATE_MAX_ROWS)})
 
 
 def _safe_log_search_row(row: Any) -> dict[str, Any]:

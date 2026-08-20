@@ -131,10 +131,22 @@ def component_display_label(component: dict[str, Any]) -> str:
     return re.sub(r"\s+", " ", label)[:120]
 
 
-def explain_component_type(component_type: str) -> str:
-    """Plain-language Talend component meaning, derived from its type only."""
-    if component_type in _COMPONENT_EXPLANATIONS:
+def explain_component_type(component_type: str, platform: str = "talend") -> str:
+    """Plain-language component meaning without pretending every scan is Talend."""
+    normalized_platform = platform.strip().lower()
+    if normalized_platform == "talend" and component_type in _COMPONENT_EXPLANATIONS:
         return _COMPONENT_EXPLANATIONS[component_type]
+    if normalized_platform != "talend":
+        generic_explanations = {
+            "CodeFile": "Source-code file analyzed as part of this application.",
+            "DocumentFile": "Documentation file that provides project context.",
+            "ConfigFile": "Configuration file used by the application.",
+            "DataFile": "Data file used or produced by the application.",
+        }
+        return generic_explanations.get(
+            component_type,
+            f"{component_type or 'Project artifact'} analyzed from the source project.",
+        )
     lowered = component_type.lower()
     technology = component_type.removeprefix("t") or "configured technology"
     if "connection" in lowered:
@@ -146,8 +158,16 @@ def explain_component_type(component_type: str) -> str:
     return f"Processes data using the Talend {component_type} component."
 
 
-def explain_connector(connector_name: str, is_control_flow: bool) -> str:
-    """Explain Talend's connection vocabulary without inferring business intent."""
+def explain_connector(
+    connector_name: str,
+    is_control_flow: bool,
+    platform: str = "talend",
+) -> str:
+    """Explain a technical connection without inferring business intent."""
+    if platform.strip().lower() != "talend":
+        if is_control_flow:
+            return "Controls when the following artifact is processed; carries no data."
+        return "References or depends on the following project artifact."
     normalized = connector_name.upper()
     if normalized in _CONNECTOR_EXPLANATIONS:
         return _CONNECTOR_EXPLANATIONS[normalized]
@@ -206,6 +226,7 @@ def _resolve_subjob_target(
 def _build_nodes(
     job_data: dict[str, Any],
     descriptions: dict[str, str],
+    platform: str,
 ) -> list[JobGraphNode]:
     trunjob_refs: list[dict[str, Any]] = list(job_data.get("trunjob_refs") or [])
     nodes: list[JobGraphNode] = []
@@ -221,7 +242,7 @@ def _build_nodes(
             unique_name=unique_name,
             display_label=component_display_label(comp),
             component_type=component_type,
-            type_explanation=explain_component_type(component_type),
+            type_explanation=explain_component_type(component_type, platform),
             role=derive_component_role(component_type),
             has_subgraph=component_type == _TMAP_TYPE,
             subjob_target=subjob_target,
@@ -234,7 +255,7 @@ def _build_nodes(
     return nodes
 
 
-def _build_edges(job_data: dict[str, Any]) -> list[JobGraphEdge]:
+def _build_edges(job_data: dict[str, Any], platform: str) -> list[JobGraphEdge]:
     """Edges straight from the job's connections array (never from the
     per-component incoming/outgoing fields — those are empty on real scans)."""
     edges: list[JobGraphEdge] = []
@@ -252,7 +273,7 @@ def _build_edges(job_data: dict[str, Any]) -> list[JobGraphEdge]:
             connector_name=connector_name,
             line_style=line_style,
             is_control_flow=is_control_flow,
-            explanation=explain_connector(connector_name, is_control_flow),
+            explanation=explain_connector(connector_name, is_control_flow, platform),
         ))
     return edges
 
@@ -282,6 +303,7 @@ def build_job_graph(
     group: str,
     job_data: dict[str, Any],
     descriptions: dict[str, str] | None = None,
+    platform: str = "talend",
 ) -> JobGraphResponse:
     """Transform one job's scan JSON into the Level-2 graph response.
 
@@ -293,7 +315,7 @@ def build_job_graph(
         project_id=project_id,
         job_name=job_name,
         group=group,
-        nodes=_build_nodes(job_data, descriptions or {}),
-        edges=_build_edges(job_data),
+        nodes=_build_nodes(job_data, descriptions or {}, platform),
+        edges=_build_edges(job_data, platform),
         tmap_tables=_build_tmap_tables(job_data),
     )

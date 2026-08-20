@@ -24,6 +24,17 @@ _ABSENCE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bnot\s+included\s+in\s+(?:the\s+)?scan\b", re.I),
 )
 
+# Properly-attributed PIPELINE-failure wording (Round 3): "the analysis task
+# did not complete ... (scan evidence exists at <path>)" is the required
+# rendering for an analysis-pipeline gap and explicitly asserts the evidence
+# EXISTS. It must not count as a phantom source-absence claim, or the doc
+# writer is punished for following the pipeline-gap rendering rule.
+_PIPELINE_GAP_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\banalysis\s+task\s+did\s+not\s+complete\b", re.I),
+    re.compile(r"\bdocumentation[- ]pipeline\s+gap\b", re.I),
+    re.compile(r"\bscan\s+evidence\b[^.\n]{0,80}\bexists\b", re.I),
+)
+
 # Characters around a unit mention to search for absence phrases.
 _ABSENCE_WINDOW = 300
 
@@ -116,6 +127,10 @@ class EvidenceTraceabilityValidator:
                 start = max(0, match.start() - _ABSENCE_WINDOW)
                 end = min(len(doc_text), match.end() + _ABSENCE_WINDOW)
                 window = doc_text[start:end]
+                if any(pat.search(window) for pat in _PIPELINE_GAP_PATTERNS):
+                    # Attributed pipeline gap: the text asserts the evidence
+                    # exists and blames the pipeline, not the source.
+                    continue
                 for abs_pat in _ABSENCE_PATTERNS:
                     m = abs_pat.search(window)
                     if m:

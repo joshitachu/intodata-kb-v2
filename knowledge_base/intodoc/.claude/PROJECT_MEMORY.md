@@ -65,3 +65,11 @@
   endpoint does not prove a peer system identity. Keep it as L2 mechanism or
   interface evidence until an endpoint, repository connection, context identity,
   supplied business registry, or other explicit fact establishes the peer.
+- Direct and direct-vm channel names are route-local implementation addresses,
+  never cross-project business-exchange identity. Only shared transports with
+  cross-root identity evidence, such as an exact JMS destination, may create a
+  cross-application technical edge.
+- Semantic systems/exchanges are additive proposals over raw scan evidence.
+  They must carry exact artifact/component provenance and explicit status and
+  confidence. They never replace technical facts or become `confirmed` without
+  supplied business evidence or durable human curation.

@@ -58,6 +58,15 @@ docs:
       - "Components"
       - "Dependencies"
       - "Scanner-Limited Evidence"
+    # Sections whose content scales with the unit count. When this document's
+    # expected output exceeds one model call, the task is partitioned by
+    # unit-range: every slice writes ONLY these sections for its own units;
+    # all other sections are written once by part 1.
+    unit_scoped_sections:
+      - "Canonical Unit Inventory"
+      - "Source Artifacts"
+      - "Components"
+      - "Dependencies"
     phase2_sections:
       - "COMPONENTS"
       - "SCHEMA_DICTIONARY"
@@ -98,6 +107,10 @@ docs:
       - "Transformation"
       - "Hardcoded Values"
       - "Impact"
+    unit_scoped_sections:
+      - "Business Rules"
+      - "Transformation"
+      - "Hardcoded Values"
     phase2_sections:
       - "BUSINESS_RULES"
       - "TRANSFORMATION_DETAIL"
@@ -185,9 +198,41 @@ docs:
       - "RISK_FLAGS"
     doc_specific_instructions: |
       SPECIFIC REQUIREMENTS:
-      - Include a matrix: change target | inspect first | affected units | required tests/checks | rollback risk | confidence.
+      - Include a prioritized matrix: change category/target | inspect first | affected units | required tests/checks | rollback risk | confidence.
+      - Group repeated low-level targets that share inspection, testing, and rollback guidance. Keep the matrix to at most 25 decision-useful rows and cite `change_impact_matrix.md` as the exhaustive evidence of record.
       - Cover changes to mappings/transformations, schemas/entities, config/env, connections/external systems, shared dependencies, business rules, and operational schedules/triggers.
       - Include safe-edit guidance and scanner-limited warnings when impact cannot be proven.
+
+  - name: "10_UNIT_REFERENCE"
+    bundle: "unit"
+    per_unit: true
+    required_sections:
+      - "Overview"
+      - "Protected Scanner Facts"
+      - "Callers and Callees"
+      - "Component Inventory and Implemented Behavior"
+      - "Context Variables"
+      - "Evidence Discrepancies"
+      - "Runtime Unknowns"
+    phase2_sections: []
+    doc_specific_instructions: |
+      SPECIFIC REQUIREMENTS:
+      - This is a compact per-unit reference dossier (target roughly 80 tight lines).
+      - Copy the PROTECTED SCANNER FACTS table from the evidence bundle verbatim into
+        the "Protected Scanner Facts" section as a two-column table (fact | value).
+        Never recompute, round, or restate these values differently.
+      - "Component Inventory and Implemented Behavior": one line per component with
+        its decisive behavior; quote verbatim code/tMap/SQL for the components that
+        implement logic, in fenced code blocks. Include the connection flow as a
+        single arrow chain from the COMPONENT CONNECTIONS table.
+      - "Context Variables": per-environment table with provenance exactly as given
+        in the evidence bundle (job-embedded vs shared group, DIVERGES flags).
+        Reproduce redaction markers as-is; never reconstruct redacted values.
+      - "Evidence Discrepancies": list places where evidence sources disagree
+        (documented config vs code wiring, embedded vs shared context). If none,
+        state that no discrepancy was observed in the frozen scan.
+      - "Runtime Unknowns": state explicitly what static evidence cannot prove
+        (schedules, volumes, success rates). Static evidence is not runtime proof.
 
   - name: "09_EXECUTIVE_SUMMARY"
     bundle: "executive"

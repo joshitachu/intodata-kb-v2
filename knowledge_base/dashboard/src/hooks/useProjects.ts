@@ -39,10 +39,11 @@ export function useScan() {
   });
 }
 
+/** Starts the documentation generation workflow for a project. */
 export function useGenerate() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({
+    mutationFn: ({
       projectId,
       resume = true,
       investigationModel,
@@ -50,9 +51,7 @@ export function useGenerate() {
       writeModel,
       organizationPackId = null,
       privateVersionIds = [],
-      executionEngine = "legacy",
-      openCodeProvider,
-      openCodeModel,
+      generationMethod,
     }: {
       projectId: string;
       resume?: boolean;
@@ -61,36 +60,20 @@ export function useGenerate() {
       writeModel?: string | null;
       organizationPackId?: number | null;
       privateVersionIds?: number[];
-      executionEngine?: "legacy" | "opencode" | "opencode_orchestrated" | "opencode_grounded";
-      openCodeProvider?: string;
-      openCodeModel?: string;
-    }): Promise<
-      import("../types").StatusResponse | import("../types").AgenticExperiment
-    > => executionEngine === "opencode" ||
-      executionEngine === "opencode_orchestrated" ||
-      executionEngine === "opencode_grounded"
-      ? await api.generateOpenCodeCandidate(
-          projectId,
-          executionEngine === "opencode_grounded"
-            ? "grounded"
-            : executionEngine === "opencode_orchestrated"
-              ? "orchestrated"
-              : "single_agent",
-          openCodeProvider,
-          openCodeModel,
-        )
-      : await api.generate(
-          projectId,
-          resume,
-          investigationModel,
-          model,
-          writeModel,
-          organizationPackId,
-          privateVersionIds,
-        ),
+      generationMethod?: "custom" | "opencode-cli" | null;
+    }): Promise<import("../types").StatusResponse> =>
+      api.generate(
+        projectId,
+        resume,
+        investigationModel,
+        model,
+        writeModel,
+        organizationPackId,
+        privateVersionIds,
+        generationMethod,
+      ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["projects"] });
-      qc.invalidateQueries({ queryKey: ["agentic-experiments"] });
     },
   });
 }

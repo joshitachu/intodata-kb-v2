@@ -1,11 +1,13 @@
 SECTION-BY-SECTION EXTRACTION REQUIREMENTS
-Write every section below. Be exhaustive within each -- no placeholders, no "see above", no "N/A" without justification.
+Cover every section below with concise, source-backed findings. The scanner artifacts remain the
+complete inventory; do not reproduce large dumps. Cite the decisive component, connection, query,
+code, or configuration location. State UNKNOWN with the missing evidence when a section cannot be established.
 
 ### COMPONENTS
-For EVERY job:
+For each assigned job, summarize:
 - Job name, purpose, group membership
-- All components: type (tMSSqlInput, tMap, tRunJob, etc.), unique_name, role in the job
-- All connections: source -> target, type (FLOW / SUBJOB_OK / SUBJOB_ERROR / COMPONENT_OK / COMPONENT_ERROR / ITERATE / LOOKUP / ROUTE_WHEN), label
+- The components that establish entrypoints, transformations, I/O, orchestration, or risk; cite the scanner inventory for the complete list
+- The connections that establish execution order, data direction, errors, iteration, lookups, or routing
 - tRunJob references: child job called, context variables passed, DIE_ON_CHILD_ERROR setting
 - REPOSITORY connection references: look for PROPERTY_TYPE=REPOSITORY + REPOSITORY_PROPERTY_TYPE value
 - BUILT_IN connections: note which components have hardcoded connection details
@@ -14,9 +16,9 @@ For EVERY job:
 - Missing references: REPOSITORY refs to non-existent metadata, tRunJob refs to missing jobs
 
 ### EXECUTION_FLOW
-For EVERY job:
+For each assigned job:
 - Subjob chain in numbered execution order (tPreJob first, main body, tPostJob last)
-- Every trigger connection: source subjob, target subjob, trigger type, RunIf expression (full expression if present)
+- Decisive trigger connections: source subjob, target subjob, trigger type, and a locator for any RunIf expression
 - tRunJob orchestration details: child called, vars passed, DIE_ON_CHILD_ERROR
 - Parallelism: subjobs with no trigger dependencies that could run concurrently
 - Iteration patterns: tFlowToIterate / tLoop / tForEach -- what they iterate over and with what bounds
@@ -44,12 +46,11 @@ for DI jobs. Instead document the routing semantics:
 - Route-to-route and route-to-DI-job invocation (cTalendJob, cDirect between routes)
 
 ### DATA_FLOWS
-For EVERY tMap component:
-- Source table.column -> target table.column mapping (full column-level lineage)
-- The FULL expression for every mapped column -- never truncate, even if 500+ chars
-- Human-readable explanation of what each expression computes
-- Var table entries with their full expressions
-- Filter/reject conditions: full expression text, which output table, reject=true links
+For relevant tMap components:
+- Summarize source-to-target lineage and cite the deterministic lineage artifact for the complete column map
+- Quote only short decisive expression fragments; otherwise describe the result and cite the exact mapping locator
+- Explain material expressions and variable-table logic without copying the full mapping table
+- Summarize filter/reject behavior and cite the exact output/link locator
 - Join type (INNER / LEFT OUTER / UNIQUE MATCH) and lookup model between input tables
 
 For all other data movement:
@@ -74,9 +75,9 @@ For every job with tMap or custom code transformations:
 - Lookup joins: reference table, match key, fallback when no match
 
 ### BUSINESS_RULES
-Extract EVERY business rule with this exact format:
+Extract material business rules with this exact format:
 - BR-{GROUP}-NNN (sequential, e.g. BR-DEU-001)
-- Expression: the full code implementing the rule -- NEVER truncate
+- Expression: a concise interpretation plus an exact evidence locator; include only a short decisive fragment when needed
 - Job + component: exact names
 - Domain: business area (pricing / eligibility / routing / scheduling / inventory / compliance / reporting)
 - Impact: ISOLATED / MODERATE / WIDE -- what breaks if this rule is removed
@@ -91,7 +92,7 @@ Mine every source:
 
 Parameter catalog (separate markdown table, mandatory):
 | Value | Location (job + component) | Apparent purpose | Staleness risk |
-List EVERY hardcoded date, status code, threshold, magic number, string constant.
+List material hardcoded dates, status codes, thresholds, magic numbers, and environment-specific constants; keep the scanner index as the full catalog.
 
 Conflict detection: flag explicitly where the same business concept is handled differently across jobs.
 
@@ -105,11 +106,12 @@ For EVERY table and view referenced:
 - Tables with multiple writers: flag as potential conflict and data integrity risk
 
 ### SOURCE_SQL
-Every SQL query in FULL -- never truncate a single character:
+For each materially distinct SQL operation, summarize:
 - Component and job containing it
 - Type: SELECT (source query) / lookup query / DML (INSERT/UPDATE/DELETE) / DDL
 - Tables and columns referenced
-- Dynamic parts: every context variable substitution (context.varName), string concatenation
+- Dynamic parts: context-variable substitutions and string concatenation, with an exact query locator
+- Never copy complete SQL bodies into the analysis; the scanner SQL artifact is the source of truth
 
 ### EXTERNAL_SYSTEMS
 For every external connection:
@@ -135,8 +137,8 @@ For each job document:
 - tWarn / tDie usage: what conditions trigger them
 
 ### CUSTOM_CODE
-For ALL tJava / tJavaRow / tJavaFlex components:
-- The FULL code block (begin / main / end for tJavaFlex) -- never truncate
+For material tJava / tJavaRow / tJavaFlex components:
+- Summarize begin/main/end behavior and cite the component; do not reproduce complete code blocks
 - Purpose: what business logic or transformation it implements
 - Risk checklist, evaluated for EACH block:
   - SQL injection: string concatenation building SQL? Rate HIGH/MEDIUM/LOW
@@ -148,7 +150,7 @@ For ALL tJava / tJavaRow / tJavaFlex components:
 
 For routines referenced by jobs:
 - Routine name, purpose, which jobs reference it
-- Full code listing if present in scan data
+- Exact scanner/source locator when code is present; do not duplicate the full listing
 
 ### ENVIRONMENT_CONFIG
 For EVERY context variable:

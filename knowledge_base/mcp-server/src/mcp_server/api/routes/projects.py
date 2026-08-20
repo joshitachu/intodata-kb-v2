@@ -31,7 +31,7 @@ from sqlalchemy import func, select, text
 
 from contextlib import nullcontext
 
-from mcp_server.api.permissions import require_project_access
+from mcp_server.api.permissions import require_project_access, require_project_management
 from mcp_server.config import config
 from mcp_server.repositories.doc_rag_hash_repository import DocRagHashRepository
 from mcp_server.db.session import async_session_factory
@@ -50,6 +50,10 @@ from mcp_server.schemas import (
     EvidenceDocRevertResponse,
     EvidenceDocUpdateRequest,
     EvidenceDocUpdateResponse,
+    ChatDocPatchPreviewRequest,
+    ChatDocPatchPreviewResponse,
+    ChatDocPatchActivateRequest,
+    ChatDocPatchActivateResponse,
     DocReview,
     FullRebuildRequest,
     GenerateRequest,
@@ -80,6 +84,7 @@ from mcp_server.schemas import (
     ProjectResponse,
     VerifyZipUploadRequest,
     ZipUploadReceipt,
+    ZipReplacementResponse,
     ZipUploadResponse,
     ProjectUsageResponse,
     PushToRagRequest,
@@ -133,6 +138,9 @@ from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.project_paths import repair_project_repo_path
 from mcp_server.services.rag_bridge import RagBridge
 from mcp_server.services.rag_support_package import replace_analysis_cache_from_rag_support
+from mcp_server.services.living_docs.zip_revisions import ZipRevisionService
+from mcp_server.services.living_docs.zip_patch_lifecycle import LiveZipPatchCoordinator
+from mcp_server.services.living_docs.chat_patching import ChatPatchService
 from mcp_server.utils.error_sanitizer import sanitize_git_error
 from mcp_server.services.scanner_service import ScannerService
 from mcp_server.services.scan_output_lock import ScanOutputLock, acquire_scan_output_lock
@@ -530,6 +538,50 @@ async def add_repo(req: AddRepoRequest, request: Request):
         return _project_to_response(project)
 
 
+_UPLOAD_STREAM_CHUNK_BYTES = 4 * 1024 * 1024  # 4 MiB
+
+
+async def _stream_upload_to_temp_file(
+    file: UploadFile,
+    dest_dir: Path,
+    *,
+    max_bytes: int,
+    suffix: str = ".zip",
+    chunk_bytes: int = _UPLOAD_STREAM_CHUNK_BYTES,
+) -> tuple[Path, str, int]:
+    """Stream an UploadFile to a temp file in bounded memory.
+
+    Reads in fixed-size chunks, writing and hashing incrementally so memory use
+    stays flat regardless of upload size. Aborts as soon as the running total
+    exceeds ``max_bytes``, without reading further chunks from the client, and
+    deletes the partial temp file.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    total = 0
+    handle = tempfile.NamedTemporaryFile(dir=dest_dir, suffix=suffix, delete=False)
+    temp_path = Path(handle.name)
+    try:
+        while True:
+            chunk = await file.read(chunk_bytes)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Upload too large (max {max_bytes // 1024 // 1024} MB)",
+                )
+            digest.update(chunk)
+            handle.write(chunk)
+    except Exception:
+        handle.close()
+        temp_path.unlink(missing_ok=True)
+        raise
+    handle.close()
+    return temp_path, digest.hexdigest(), total
+
+
 @router.post("/upload-zip", response_model=ZipUploadResponse)
 async def upload_zip(
     request: Request,
@@ -547,6 +599,11 @@ async def upload_zip(
     if platform not in SUPPORTED_PLATFORMS:
         raise HTTPException(400, f"Unsupported platform: {platform!r}. Must be one of {sorted(SUPPORTED_PLATFORMS)}")
 
+    # Fast-fail before accepting any archive bytes.
+    repo_dir = config.repos_dir / project_id
+    if repo_dir.exists():
+        raise HTTPException(status_code=409, detail="A source already exists for this project")
+
     # Enforce upload size limit before reading the full body
     content_length = request.headers.get("content-length")
     if content_length:
@@ -560,25 +617,12 @@ async def upload_zip(
                 detail=f"Upload too large (max {config.max_upload_zip_bytes // 1024 // 1024} MB)",
             )
 
-    # Read and validate in MCP only. Callers never pass ZIP bytes into a graph
-    # or workflow checkpoint.
-    content = await file.read()
-    if len(content) > config.max_upload_zip_bytes:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Upload too large (max {config.max_upload_zip_bytes // 1024 // 1024} MB)",
-        )
-    repo_dir = config.repos_dir / project_id
-    if repo_dir.exists():
-        raise HTTPException(status_code=409, detail="A source already exists for this project")
-
-    checksum = hashlib.sha256(content).hexdigest()
-    upload_dir = config.uploads_dir
-    upload_dir.mkdir(parents=True, exist_ok=True)
+    # Stream to disk in bounded chunks. Callers never pass ZIP bytes into a
+    # graph or workflow checkpoint.
     config.repos_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=upload_dir, suffix=".zip", delete=False) as handle:
-        handle.write(content)
-        zip_path = Path(handle.name)
+    zip_path, checksum, size_bytes = await _stream_upload_to_temp_file(
+        file, config.uploads_dir, max_bytes=config.max_upload_zip_bytes
+    )
     extract_dir = Path(tempfile.mkdtemp(prefix=f".{project_id}-", dir=config.repos_dir))
     try:
         _extract_zip_bundle(zip_path, extract_dir)
@@ -635,11 +679,11 @@ async def upload_zip(
                 project_id=project_id,
                 platform=platform,
                 filename=Path(file.filename).name,
-                size_bytes=len(content),
+                size_bytes=size_bytes,
                 sha256=checksum,
             ),
             filename=Path(file.filename).name,
-            size_bytes=len(content),
+            size_bytes=size_bytes,
             sha256=checksum,
         ),
     )
@@ -661,6 +705,77 @@ async def verify_uploaded_zip_source(req: VerifyZipUploadRequest, request: Reque
         filename=str(payload["filename"]),
         size_bytes=int(payload["size_bytes"]),
         sha256=str(payload["sha256"]),
+    )
+
+
+@router.post("/projects/{project_id}/replace-zip", response_model=ZipReplacementResponse)
+async def replace_zip_source(
+    project_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+):
+    """Stage a replacement ZIP without replacing the project's active source.
+
+    The S4 coordinator consumes the immutable candidate asynchronously.  This
+    route intentionally does not update ``Project.local_path`` or run a scan.
+    """
+    await require_project_management(request, project_id)
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="File must be a .zip")
+
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > config.max_upload_zip_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Upload too large (max {config.max_upload_zip_bytes // 1024 // 1024} MB)",
+                )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid upload content length") from exc
+
+    # Fast-fail before accepting any archive bytes.
+    async with async_session_factory() as db:
+        project = await ProjectRegistry(db).get_project(project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        if project.source_type != "zip":
+            raise HTTPException(status_code=400, detail="Project does not use a ZIP source")
+
+    zip_path, checksum, _size_bytes = await _stream_upload_to_temp_file(
+        file, config.uploads_dir, max_bytes=config.max_upload_zip_bytes
+    )
+
+    service = getattr(request.app.state, "zip_revision_service", None)
+    if service is None:
+        service = ZipRevisionService(
+            config.data_dir / "living_docs" / "zip_candidates",
+            coordinator=LiveZipPatchCoordinator(log_mgr=request.app.state.log_manager),
+        )
+    try:
+        candidate = await service.stage(
+            project_id=project_id,
+            filename=Path(file.filename).name,
+            staged_archive_path=zip_path,
+            archive_sha256=checksum,
+            extractor=_extract_zip_bundle,
+        )
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(status_code=400, detail="Invalid ZIP file") from exc
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Replacement ZIP staging failed for %s", project_id)
+        raise HTTPException(status_code=400, detail="Unable to stage replacement ZIP")
+
+    submission = await service.submit(candidate)
+    return ZipReplacementResponse(
+        project_id=project_id,
+        candidate_id=candidate.candidate_id,
+        source_revision_id=candidate.source_revision.revision_id,
+        sha256=candidate.archive_sha256,
+        status=submission.status,
+        reason_code=submission.reason_code,
     )
 
 
@@ -1018,7 +1133,11 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
         nexus_private_analysis_packs=req.nexus_private_analysis_packs,
         resume=req.resume,
         run_id_for_lock=run_id,
-        doc_generation_provider=project.doc_generation_provider,
+        doc_generation_provider=(
+            req.doc_generation_provider
+            if req.doc_generation_provider is not None
+            else project.doc_generation_provider
+        ),
         instruction_pack_dir=project.instruction_pack_dir,
         enterprise_mode=req.mode == "enterprise",
     )
@@ -1769,12 +1888,71 @@ async def _run_generate_background(
     swap is skipped, ``docs/`` is left intact, the project is marked ``error``
     with a ``manual_review`` reason, and the SHA is not advanced. Manual and
     onboarding generate paths pass no hook and are unaffected.
+
+    Composite/oversized uploads: when the deterministic partition planner
+    resolves the scan into more than one sub-project, the full-generation path
+    (no ``scoped_docs``, no reingestion gate) delegates to the partition
+    orchestrator, which runs one scoped legacy generation per sub-project into
+    ``output/{project_id}/{subproject}/docs``. Single-partition scans continue
+    below on the unchanged single-run path.
     """
     claude = DocGenerationCoordinator(log_manager=log_mgr)
     log_mgr.reset_log_file(project_id)
     current_task = asyncio.current_task()
     if current_task is not None:
         _generation_tasks[project_id] = current_task
+
+    if scoped_docs is None and pre_swap_gate is None and not partial_rag_sync:
+        from mcp_server.services.partition_orchestrator import (
+            plan_composite_generation,
+            run_partitioned_generation,
+        )
+
+        planned = plan_composite_generation(project_id)
+        if planned is not None:
+            plan, facts = planned
+            try:
+                await run_partitioned_generation(
+                    project_id,
+                    run_id,
+                    log_mgr,
+                    claude,
+                    plan=plan,
+                    facts=facts,
+                    resume=resume,
+                    generate_kwargs={
+                        "investigation_model": investigation_model,
+                        "model": model,
+                        "write_model": write_model,
+                        "plugin_pack_id": plugin_pack_id,
+                        "nexus_pack_ids": nexus_pack_ids,
+                        "nexus_pack_snapshot": nexus_pack_snapshot,
+                        "nexus_presentation": nexus_presentation,
+                        "nexus_audience_render": nexus_audience_render,
+                        "nexus_private_pack_receipts": nexus_private_pack_receipts,
+                        "nexus_private_analysis_packs": nexus_private_analysis_packs,
+                        "doc_generation_provider": doc_generation_provider,
+                        "instruction_pack_dir": instruction_pack_dir,
+                        "enterprise_mode": enterprise_mode,
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "Composite orchestration crashed for %s", project_id
+                )
+                async with async_session_factory() as db:
+                    registry = ProjectRegistry(db)
+                    await registry.update_status(
+                        project_id, "error",
+                        error_message="Composite doc generation crashed; see logs",
+                    )
+                    await db.commit()
+            finally:
+                _currently_generating.discard(project_id)
+                _generation_tasks.pop(project_id, None)
+                await log_mgr.emit_done(project_id)
+            return
+
     try:
         result = await claude.generate_docs(
             project_id, investigation_model=investigation_model, model=model,
@@ -2535,6 +2713,106 @@ async def get_doc_content(
 
 
 @router.post(
+    "/projects/{project_id}/docs/{filename}/chat-patch/preview",
+    response_model=ChatDocPatchPreviewResponse,
+)
+async def preview_chat_doc_patch(
+    project_id: str,
+    filename: str,
+    req: ChatDocPatchPreviewRequest,
+    request: Request,
+):
+    """Freeze an exact, reviewable chat patch without changing docs or RAG."""
+    await require_project_access(request, project_id)
+    if not config.living_doc_patching_enabled:
+        raise HTTPException(status_code=409, detail="Living-document patching is disabled")
+    auth_payload = getattr(request.state, "auth_payload", None) or {}
+    user_id = int(auth_payload.get("sub", 0))
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        proposal = await ChatPatchService(
+            log_manager=getattr(request.app.state, "log_manager", None)
+        ).preview(
+            project_id=project_id,
+            filename=filename,
+            section=req.section,
+            replacement_text=req.replacement_text,
+            evidence_refs=req.evidence_refs,
+            assertion_kind=req.assertion_kind,
+            requested_by_user_id=user_id,
+        )
+    except EvidenceDocUpdateError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.safe_message) from exc
+    return ChatDocPatchPreviewResponse(
+        proposal_id=proposal.proposal_id,
+        project_id=proposal.project_id,
+        filename=proposal.filename,
+        section=proposal.section,
+        assertion_kind=proposal.assertion_kind,
+        base_document_sha256=f"sha256:{proposal.base_document_sha256}",
+        base_knowledge_revision_id=proposal.base_knowledge_revision_id,
+        evidence_refs=list(proposal.evidence_refs),
+        patch_plan_hash=proposal.patch_plan_hash,
+        compact_diff=proposal.compact_diff,
+        changed_scope=list(proposal.changed_scope),
+        estimated_input_tokens=proposal.estimated_input_tokens,
+        estimated_output_tokens=proposal.estimated_output_tokens,
+        expires_at=proposal.expires_at,
+        requires_owner_approval=proposal.assertion_kind == "editorial",
+    )
+
+
+@router.post(
+    "/projects/{project_id}/docs/{filename}/chat-patch/activate",
+    response_model=ChatDocPatchActivateResponse,
+)
+async def activate_chat_doc_patch(
+    project_id: str,
+    filename: str,
+    req: ChatDocPatchActivateRequest,
+    request: Request,
+):
+    """Consume one exact approval and activate its candidate revision."""
+    await require_project_access(request, project_id)
+    if not config.living_doc_patching_enabled:
+        raise HTTPException(status_code=409, detail="Living-document patching is disabled")
+    auth_payload = getattr(request.state, "auth_payload", None) or {}
+    user_id = int(auth_payload.get("sub", 0))
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    # Activation is the content-writing authority boundary. The RAG workflow
+    # also owner-binds its interrupt, but MCP must fail closed when this endpoint
+    # is called directly or when role information is ambiguous.
+    await require_project_management(request, project_id)
+    service = ChatPatchService(log_manager=getattr(request.app.state, "log_manager", None))
+    try:
+        proposal = service.get_proposal(req.proposal_id)
+        if proposal.project_id != project_id or proposal.filename != filename:
+            raise EvidenceDocUpdateError(404, "Documentation patch proposal not found.")
+        result = await service.activate(
+            proposal_id=req.proposal_id,
+            expected_patch_plan_hash=req.patch_plan_hash,
+            approver_user_id=user_id,
+            editorial_approval_authorized=proposal.assertion_kind == "editorial",
+        )
+    except EvidenceDocUpdateError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.safe_message) from exc
+    return ChatDocPatchActivateResponse(
+        proposal_id=result.proposal_id,
+        candidate_id=result.candidate_id,
+        knowledge_revision_id=result.knowledge_revision_id,
+        filename=result.filename,
+        before_sha=result.before_sha,
+        after_sha=result.after_sha,
+        assertion_kind=result.assertion_kind,
+        changed_logical_ids=list(result.changed_logical_ids),
+        embedded_content_count=result.embedded_content_count,
+        reused_content_count=result.reused_content_count,
+    )
+
+
+@router.post(
     "/projects/{project_id}/docs/{filename}/evidence-update",
     response_model=EvidenceDocUpdateResponse,
 )
@@ -2667,6 +2945,7 @@ def _run_to_response(r) -> GenerateRunResponse:
         id=r.id,
         project_id=r.project_id,
         triggered_by=r.triggered_by,
+        partition_name=getattr(r, "partition_name", None),
         status=r.status,
         started_at=r.started_at,
         completed_at=r.completed_at,
@@ -3557,12 +3836,12 @@ async def get_project_graph(project_id: str, request: Request):
     response_model=ProjectLandscapeResponse,
 )
 async def get_project_landscape(project_id: str, request: Request):
-    """Return the deterministic L1/L2 landscape computed during scanning.
+    """Return scanner facts plus the current validated business overlay.
 
-    The endpoint is deliberately read-only: it never rebuilds a scan, derives
-    identities at request time, or mutates curation state. Every returned edge
-    therefore retains the scanner-produced provenance used to drill back to
-    job/component/lineage evidence.
+    The endpoint is deliberately read-only. It never derives identities at
+    request time: scanner facts come from ``scan/landscape.json`` and the
+    optional business view comes from the atomically published documentation
+    run. A missing, invalid, or stale overlay never hides the technical graph.
     """
     await require_project_access(request, project_id)
 
@@ -3577,6 +3856,16 @@ async def get_project_landscape(project_id: str, request: Request):
 
     try:
         payload = json.loads(landscape_path.read_text(encoding="utf-8"))
+        # Older scans may still contain the retired deterministic semantic
+        # projection. Never serve those filename-based proposals as business
+        # truth; the agent-authored artifact below is the only semantic layer.
+        payload.pop("semantic_topology", None)
+        business_topology, topology_state, topology_evidence = _load_published_business_topology(
+            project_id
+        )
+        payload["business_topology"] = business_topology
+        payload["topology_evidence"] = topology_evidence
+        payload["topology_state"] = topology_state
         return ProjectLandscapeResponse.model_validate(payload)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         logger.error(
@@ -3588,6 +3877,515 @@ async def get_project_landscape(project_id: str, request: Request):
             status_code=500,
             detail="Landscape data is invalid; rescan the project",
         ) from exc
+
+
+def _load_published_business_topology(
+    project_id: str,
+) -> tuple[dict | None, dict, dict]:
+    """Load only a validated topology for the exact current scan fingerprint."""
+
+    topology_dir = (
+        config.project_root / "output" / project_id / "docs" / "_topology"
+    )
+    topology_path = topology_dir / "business_topology.json"
+    report_path = topology_dir / "validation_report.json"
+    missing_state = {
+        "available": False,
+        "validated": False,
+        "stale": False,
+        "source": "none",
+        "message": "Business topology has not been generated for this project.",
+    }
+    if not topology_path.is_file():
+        # Composite uploads publish per-partition topologies under
+        # output/{pid}/{subproject}/docs/_topology/ and have no upload-level
+        # docs/ tree. Merge them into one org-level topology on request so the
+        # landscape endpoint returns a valid object instead of null.
+        composite = _load_composite_business_topology(project_id)
+        if composite is not None:
+            return composite
+        return None, missing_state, {}
+
+    invalid_state = {
+        "available": True,
+        "validated": False,
+        "stale": False,
+        "source": "documentation_topology_agent",
+        "message": "The latest business topology did not pass validation.",
+    }
+    if not report_path.is_file():
+        return None, invalid_state, {}
+
+    try:
+        topology = json.loads(topology_path.read_text(encoding="utf-8"))
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if not isinstance(topology, dict) or not isinstance(report, dict):
+            return None, invalid_state, {}
+        if report.get("validated") is not True:
+            return None, invalid_state, {}
+
+        from mcp_server.services.business_topology import (
+            BusinessTopology,
+            compute_scan_fingerprint,
+            load_business_topology_evidence,
+        )
+        from mcp_server.services.business_topology.validation import (
+            validate_business_topology,
+        )
+
+        # Treat the publication report as necessary but not sufficient: a
+        # manually edited or partially copied artifact must still satisfy the
+        # strict contract at read time.
+        topology_model = BusinessTopology.model_validate(topology)
+
+        current_fingerprint = compute_scan_fingerprint(
+            config.intodoc_output_dir / project_id
+        )
+        topology_fingerprint = str(
+            topology.get("scan_fingerprint")
+            or (topology.get("metadata") or {}).get("scan_fingerprint")
+            or ""
+        )
+        report_fingerprint = str(report.get("scan_fingerprint") or "")
+        if report.get("project_id") != project_id:
+            return None, invalid_state, {}
+        if (
+            not topology_fingerprint
+            or topology_fingerprint != current_fingerprint
+            or report_fingerprint != current_fingerprint
+        ):
+            return None, {
+                "available": True,
+                "validated": False,
+                "stale": True,
+                "source": "documentation_topology_agent",
+                "message": (
+                    "Business topology belongs to an older scan; regenerate "
+                    "documentation to refresh it."
+                ),
+            }, {}
+
+        bundle = load_business_topology_evidence(topology_dir)
+        if bundle.scan_fingerprint != current_fingerprint:
+            return None, invalid_state, {}
+        supplied_coverage = dict(topology.get("coverage") or {})
+        fresh_report = validate_business_topology(
+            topology_model,
+            bundle=bundle,
+            project_id=project_id,
+        )
+        if not fresh_report.validated:
+            return None, invalid_state, {}
+        recalculated_coverage = topology_model.coverage.model_dump(mode="json")
+        if any(
+            recalculated_coverage.get(key) != value
+            for key, value in supplied_coverage.items()
+        ):
+            return None, invalid_state, {}
+
+        return topology, {
+            "available": True,
+            "validated": True,
+            "stale": False,
+            "source": "documentation_topology_agent",
+            "message": "Validated business topology is available.",
+        }, _load_topology_evidence_catalog(topology_dir, topology)
+    except (OSError, json.JSONDecodeError, ValueError, FileNotFoundError) as exc:
+        logger.warning(
+            "Business topology unavailable for project %s: %s",
+            project_id,
+            type(exc).__name__,
+        )
+        return None, invalid_state, {}
+
+
+def _load_composite_business_topology(
+    project_id: str,
+) -> tuple[dict | None, dict, dict] | None:
+    """Build+serve the org-level topology for a composite (multi-ZIP) upload.
+
+    Returns ``None`` when the project is not a composite upload (so the caller
+    falls back to its ``missing`` state). Otherwise returns the standard
+    ``(topology, state, evidence)`` triple. The merged object is deterministic
+    (union of validated per-partition topologies + the cross-project index) and
+    is persisted under ``output/{pid}/topology/`` so a later reload -- or an
+    operator inspecting the artifact -- sees the same JSON that was served.
+    """
+
+    from mcp_server.services.business_topology import (
+        build_composite_org_topology,
+        compute_scan_fingerprint,
+    )
+
+    topology_dir = config.project_root / "output" / project_id / "topology"
+    current_fingerprint = compute_scan_fingerprint(
+        config.intodoc_output_dir / project_id
+    )
+
+    # Prefer an analyst-curated overlay when present and current. The curated
+    # file is the deterministic merge with real system roles + named streams
+    # written back in place (same schema, same scan_fingerprint). It exists only
+    # for projects an analyst has enriched; everything else falls through to the
+    # deterministic merge below.
+    curated_path = topology_dir / "business_topology.curated.json"
+    if curated_path.is_file():
+        try:
+            curated = json.loads(curated_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Unreadable curated business topology for %s: %s", project_id, exc
+            )
+            curated = None
+        if isinstance(curated, dict):
+            curated_fp = str(curated.get("scan_fingerprint") or "")
+            if curated_fp and curated_fp == current_fingerprint:
+                return curated, {
+                    "available": True,
+                    "validated": True,
+                    "stale": False,
+                    "source": "analyst_curated",
+                    "message": (
+                        "Analyst-curated organization business topology is "
+                        "available."
+                    ),
+                }, _composite_topology_evidence(
+                    project_id, curated, topology_dir, current_fingerprint
+                )
+            logger.info(
+                "Curated topology for %s ignored (fingerprint mismatch: "
+                "curated=%s current=%s)",
+                project_id,
+                curated_fp[:12],
+                current_fingerprint[:12],
+            )
+
+    try:
+        topology_model = build_composite_org_topology(
+            project_id, project_root=config.project_root
+        )
+    except Exception as exc:  # noqa: BLE001 - additive overlay must not 500 the graph
+        logger.warning(
+            "Composite business topology build failed for %s: %s",
+            project_id,
+            type(exc).__name__,
+        )
+        return None
+    if topology_model is None:
+        return None
+
+    topology = topology_model.model_dump(mode="json")
+
+    topology_fingerprint = str(topology.get("scan_fingerprint") or "")
+    if not topology_fingerprint or topology_fingerprint != current_fingerprint:
+        return None, {
+            "available": True,
+            "validated": False,
+            "stale": True,
+            "source": "composite_org_merge",
+            "message": (
+                "Organization topology belongs to an older scan; regenerate "
+                "documentation to refresh it."
+            ),
+        }, {}
+
+    # Persist the served artifact (best-effort; serving never depends on it).
+    try:
+        topology_dir.mkdir(parents=True, exist_ok=True)
+        (topology_dir / "business_topology.json").write_text(
+            json.dumps(topology, indent=2), encoding="utf-8"
+        )
+        (topology_dir / "validation_report.json").write_text(
+            json.dumps(
+                {
+                    "validated": True,
+                    "scan_fingerprint": current_fingerprint,
+                    "project_id": project_id,
+                    "errors": [],
+                    "warnings": topology.get("coverage", {}).get("notes", []),
+                    "generated_by": "composite_org_merge",
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning(
+            "Could not persist composite topology for %s: %s", project_id, exc
+        )
+
+    return topology, {
+        "available": True,
+        "validated": True,
+        "stale": False,
+        "source": "composite_org_merge",
+        "message": "Organization-level business topology is available.",
+    }, _composite_topology_evidence(
+        project_id, topology, topology_dir, current_fingerprint
+    )
+
+
+def _composite_topology_evidence(
+    project_id: str,
+    topology: dict,
+    topology_dir: Path,
+    scan_fingerprint: str,
+) -> dict:
+    """Build + load the org-level evidence catalog for a composite upload.
+
+    Composite projects publish per-partition evidence under
+    ``output/{pid}/{subproject}/docs/_topology/evidence/`` but no org-level
+    catalogue, so the L1/L2 -> L3/L4 drill-down cannot resolve implementing
+    designs. This merges the partition catalogues into
+    ``output/{pid}/topology/evidence/`` (fingerprint-gated, idempotent) and then
+    reads it through the same ``_load_topology_evidence_catalog`` used by the
+    single-run path. Best-effort: any failure returns ``{}`` so the graph still
+    serves without design provenance rather than 500-ing.
+    """
+
+    try:
+        from mcp_server.services.business_topology import (
+            build_composite_evidence_catalog,
+        )
+
+        if build_composite_evidence_catalog(
+            config.project_root, project_id, scan_fingerprint
+        ):
+            return _load_topology_evidence_catalog(topology_dir, topology)
+    except Exception as exc:  # noqa: BLE001 - drill-down evidence is additive
+        logger.warning(
+            "Composite evidence catalog unavailable for %s: %s",
+            project_id,
+            type(exc).__name__,
+        )
+    return {}
+
+
+# Non-production Talend folder/group markers. A design in one of these folders
+# is developer scratch / test / PoC / TBD work, not a production integration, so
+# it must never be surfaced as an implementing design of a business data stream.
+# Matched on GROUP or first PATH segment only (never the job name), so real
+# groups like "maximoFourps" are never caught.
+_NONPRODUCTION_FOLDER = re.compile(
+    r"^(playground|scratch(pad)?|sandbox|poc|proof.?of.?concept|demo|"
+    r"test\w*|dev(_\w+)?|util(s|ities)?|\w*_tbd)$",
+    re.IGNORECASE,
+)
+# Talend auto-prefixes a copied job with "Copy_of_" -- a deterministic duplicate
+# marker (not fuzzy name matching), so it is safe to treat as non-production.
+_NONPRODUCTION_NAME = re.compile(r"^copy[_ ]of[_ ]", re.IGNORECASE)
+
+
+def _is_nonproduction_artifact(value: dict) -> bool:
+    """True for scratch/test/PoC/utility/duplicate designs.
+
+    Classified by Talend folder (group / first path segment) plus the
+    deterministic ``Copy_of_`` duplicate prefix -- never by fuzzy job-name
+    matching, so a real job that merely contains "test" in its name is kept.
+    """
+
+    name = str(value.get("name") or "").strip()
+    if name and _NONPRODUCTION_NAME.match(name):
+        return True
+    group = str(value.get("group") or "").strip()
+    path = str(value.get("path") or "")
+    first_segment = path.split("/", 1)[0].strip() if "/" in path else ""
+    return bool(group and _NONPRODUCTION_FOLDER.match(group)) or bool(
+        first_segment and _NONPRODUCTION_FOLDER.match(first_segment)
+    )
+
+
+def _load_topology_evidence_catalog(topology_dir: Path, topology: dict) -> dict:
+    """Return a bounded, identity-only map for resolving L1/L2 to L3/L4.
+
+    Non-production designs (Playground/Scratchpad/PoC/dev_*_tbd folders) are
+    excluded from the artifact catalogue so the drill-down never presents
+    developer scratch or test jobs as implementing designs of a business stream.
+    """
+
+    evidence_dir = topology_dir / "evidence"
+
+    def read_jsonl(
+        name: str,
+        allowed: tuple[str, ...],
+        wanted_ids: set[str],
+        exclude: "Callable[[dict], bool] | None" = None,
+    ) -> list[dict]:
+        path = evidence_dir / name
+        if not path.is_file() or not wanted_ids:
+            return []
+        rows: list[dict] = []
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                value = json.loads(line)
+                if isinstance(value, dict) and value.get("id") in wanted_ids:
+                    if exclude is not None and exclude(value):
+                        continue
+                    rows.append({key: value.get(key) for key in allowed if key in value})
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Unreadable business-topology evidence catalogue: %s", name)
+            return []
+        return rows
+
+    def read_jsonl_matching(
+        name: str,
+        allowed: tuple[str, ...],
+        predicate: "Callable[[dict], bool]",
+        *,
+        limit: int = 2_000,
+        exclude: "Callable[[dict], bool] | None" = None,
+    ) -> list[dict]:
+        """Read a bounded evidence projection selected by stable row fields."""
+
+        path = evidence_dir / name
+        if not path.is_file():
+            return []
+        rows: list[dict] = []
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                value = json.loads(line)
+                if not isinstance(value, dict) or not predicate(value):
+                    continue
+                if exclude is not None and exclude(value):
+                    continue
+                rows.append({key: value.get(key) for key in allowed if key in value})
+                if len(rows) >= limit:
+                    break
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Unreadable business-topology evidence catalogue: %s", name)
+            return []
+        return rows
+
+    wanted_artifacts = {
+        str(artifact_id)
+        for items in (
+            topology.get("data_streams") or [],
+            topology.get("integration_solutions") or [],
+        )
+        for item in items
+        if isinstance(item, dict)
+        for artifact_id in item.get("artifact_ids") or []
+    }
+    wanted_artifacts.update(
+        str(item.get("artifact_id"))
+        for item in topology.get("artifact_annotations") or []
+        if isinstance(item, dict) and item.get("artifact_id")
+    )
+    wanted_components = {
+        str(item.get("component_id"))
+        for item in topology.get("component_annotations") or []
+        if isinstance(item, dict) and item.get("component_id")
+    }
+    wanted_lineage = {
+        str(item.get("lineage_id"))
+        for item in topology.get("lineage_annotations") or []
+        if isinstance(item, dict) and item.get("lineage_id")
+    }
+    artifacts = read_jsonl(
+        "artifacts.jsonl",
+        (
+            "id",
+            "name",
+            "job_id",
+            "source_root",
+            "artifact_kind",
+            "artifact_role",
+        ),
+        wanted_artifacts,
+        exclude=_is_nonproduction_artifact,
+    )
+    artifact_names = {
+        str(value)
+        for artifact in artifacts
+        for value in (artifact.get("name"), artifact.get("job_id"))
+        if value
+    }
+    relations = read_jsonl_matching(
+        "relations.jsonl",
+        ("id", "source", "target", "relation_type", "component_name", "resolution"),
+        lambda value: str(value.get("source") or "") in artifact_names,
+        limit=500,
+    )
+    related_names = {
+        str(relation.get("target"))
+        for relation in relations
+        if relation.get("target")
+    }
+    source_roots = {str(artifact.get("source_root") or "") for artifact in artifacts}
+    related_candidates = read_jsonl_matching(
+        "artifacts.jsonl",
+        (
+            "id", "name", "job_id", "source_root", "artifact_kind", "artifact_role",
+        ),
+        lambda value: (
+            str(value.get("name") or value.get("job_id") or "") in related_names
+        ),
+        limit=500,
+        exclude=_is_nonproduction_artifact,
+    )
+    related_artifacts: list[dict] = []
+    for related_name in sorted(related_names):
+        candidates = [
+            value for value in related_candidates
+            if related_name in {str(value.get("name") or ""), str(value.get("job_id") or "")}
+        ]
+        same_root = [
+            value for value in candidates
+            if str(value.get("source_root") or "") in source_roots
+        ]
+        resolved = same_root if len(same_root) == 1 else candidates if len(candidates) == 1 else []
+        for artifact in resolved:
+            if artifact not in related_artifacts:
+                related_artifacts.append(artifact)
+    for artifact in related_artifacts:
+        if artifact not in artifacts:
+            artifacts.append(artifact)
+        if artifact.get("id"):
+            wanted_artifacts.add(str(artifact["id"]))
+        artifact_names.update(
+            str(value)
+            for value in (artifact.get("name"), artifact.get("job_id"))
+            if value
+        )
+    components = read_jsonl_matching(
+        "components.jsonl",
+        ("id", "artifact_id", "name", "component_type"),
+        lambda value: (
+            str(value.get("artifact_id") or "") in wanted_artifacts
+            or str(value.get("id") or "") in wanted_components
+        ),
+    )
+    wanted_artifacts.update(
+        str(item["artifact_id"])
+        for item in components
+        if item.get("artifact_id")
+    )
+
+    return {
+        "artifacts": artifacts,
+        "components": components,
+        "lineage": read_jsonl_matching(
+            "lineage.jsonl",
+            (
+                "id",
+                "job_name",
+                "source_table",
+                "source_column",
+                "source_component",
+                "target_table",
+                "target_column",
+                "target_component",
+            ),
+            lambda value: (
+                str(value.get("id") or "") in wanted_lineage
+                or str(value.get("job_name") or "") in artifact_names
+            ),
+        ),
+        "relations": relations,
+    }
 
 
 def _load_job_scan(project_id: str, job_name: str) -> tuple[str, dict, Path]:
@@ -3692,6 +4490,15 @@ async def get_job_graph(project_id: str, job_name: str, request: Request):
     # credential-filtered inventory doc (no LLM call). Empty map when no docs
     # exist -> every node's description defaults to "" (anti-fabrication).
     descriptions = parse_component_descriptions(project_id, job_name)
+    platform = ""
+    meta_path = config.intodoc_output_dir / project_id / "scan" / "meta.json"
+    if meta_path.exists():
+        try:
+            platform = str(
+                json.loads(meta_path.read_text(encoding="utf-8")).get("platform") or ""
+            )
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Unreadable scan metadata for project %s", project_id)
 
     return build_job_graph(
         project_id=project_id,
@@ -3699,6 +4506,7 @@ async def get_job_graph(project_id: str, job_name: str, request: Request):
         group=group,
         job_data=scan_data,
         descriptions=descriptions,
+        platform=platform or "talend",
     )
 
 

@@ -9,7 +9,8 @@ import { useCallback, useMemo, useState } from "react";
 export type IntegrationSelection =
   | { kind: "application"; applicationId: string }
   | { kind: "system"; systemId: string }
-  | { kind: "edge"; edgeKey: string };
+  | { kind: "edge"; edgeKey: string }
+  | { kind: "relationship"; source: string; target: string; streamKeys: string[] };
 
 export type TopologyLevel =
   | { kind: "project" }

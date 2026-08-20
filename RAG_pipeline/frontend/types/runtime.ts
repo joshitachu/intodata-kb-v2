@@ -43,6 +43,9 @@ export const RuntimeLogEventSchema = z.object({
   timestamp: z.string(),
   severity: RuntimeLogSeveritySchema,
   message: z.string(),
+  // Position is part of a line's identity: repeated messages are valid log data,
+  // so consumers must key on (execution_id, line_ordinal), not on the message.
+  line_ordinal: z.number().optional().default(0),
 });
 export type RuntimeLogEvent = z.infer<typeof RuntimeLogEventSchema>;
 
@@ -522,6 +525,9 @@ export const RuntimeExecutionSummaryInsightSchema = z.object({
   primary_error_code: z.string().nullable().optional(),
   primary_exception_class: z.string().nullable().optional(),
   summary_text: z.string().nullable().optional(),
+  // The log's own diagnostic sentence, credential-redacted. Absent until the
+  // backend persists it (migration 081); optional so consumers degrade cleanly.
+  causal_message: z.string().nullable().optional(),
   evidence_refs: z.array(z.number()).nullable().optional(),
   state: z.string().nullable().optional(),
   started_at: z.string().nullable().optional(),
@@ -571,6 +577,13 @@ export const RuntimeIncidentInsightSchema = z.object({
   symptom_summary: z.string().nullable().optional(),
   root_cause_candidate: z.string().nullable().optional(),
   confidence: z.string().nullable().optional(),
+  // "deterministic" (rule engine) or "llm_fallback". Zod strips unknown keys, so
+  // omitting this silently dropped the field the UI needs to distinguish an
+  // inferred cause from a derived one.
+  cause_origin: z.string().nullable().optional(),
+  pattern_id: z.string().nullable().optional(),
+  // See RuntimeExecutionSummaryInsightSchema.causal_message.
+  causal_message: z.string().nullable().optional(),
   first_bad_at: z.string().nullable().optional(),
   last_healthy_at: z.string().nullable().optional(),
   next_checks: z.array(z.string()),
@@ -645,3 +658,130 @@ export const IncidentSimilarResponseSchema = z.object({
   similar_incidents: z.array(RuntimeSimilarIncidentSchema),
 });
 export type IncidentSimilarResponse = z.infer<typeof IncidentSimilarResponseSchema>;
+
+// --- Aggregate rollups ---
+// SQL-computed rollups over run facts and component metrics. Unlike the entity
+// lists above these responses carry no offset/limit echo, so they are typed
+// exactly as the backend returns them.
+
+export const RuntimeTrendBucketSchema = z.enum(["hour", "day", "week"]);
+export type RuntimeTrendBucket = z.infer<typeof RuntimeTrendBucketSchema>;
+
+export const RuntimeOutcomeTrendPointSchema = z.object({
+  bucket_start: z.string(),
+  total_runs: z.number(),
+  success_runs: z.number(),
+  failed_runs: z.number(),
+  running_runs: z.number(),
+  unknown_runs: z.number(),
+  failure_rate: z.number(),
+  p50_duration_ms: z.number().nullable().optional(),
+  p95_duration_ms: z.number().nullable().optional(),
+  max_duration_ms: z.number().nullable().optional(),
+});
+export type RuntimeOutcomeTrendPoint = z.infer<typeof RuntimeOutcomeTrendPointSchema>;
+
+export const RuntimeTrendResponseSchema = z.object({
+  bucket: RuntimeTrendBucketSchema,
+  points: z.array(RuntimeOutcomeTrendPointSchema),
+  total: z.number(),
+});
+export type RuntimeTrendResponse = z.infer<typeof RuntimeTrendResponseSchema>;
+
+export const RuntimeJobReliabilitySchema = z.object({
+  project_id: z.string(),
+  source_key: z.string(),
+  job_name: z.string(),
+  total_runs: z.number(),
+  success_runs: z.number(),
+  failed_runs: z.number(),
+  // Runs with no ended_at: never-completed work the run list reports as success.
+  unfinished_runs: z.number(),
+  failure_rate: z.number(),
+  current_failure_streak: z.number(),
+  first_run_at: z.string().nullable().optional(),
+  last_run_at: z.string().nullable().optional(),
+  latest_state: RuntimeExecutionStateSchema.nullable().optional(),
+  p50_duration_ms: z.number().nullable().optional(),
+  p95_duration_ms: z.number().nullable().optional(),
+  max_duration_ms: z.number().nullable().optional(),
+});
+export type RuntimeJobReliability = z.infer<typeof RuntimeJobReliabilitySchema>;
+
+export const RuntimeJobReliabilityResponseSchema = z.object({
+  jobs: z.array(RuntimeJobReliabilitySchema),
+  total: z.number(),
+});
+export type RuntimeJobReliabilityResponse = z.infer<
+  typeof RuntimeJobReliabilityResponseSchema
+>;
+
+export const RuntimeComponentHotspotSchema = z.object({
+  project_id: z.string(),
+  source_key: z.string(),
+  component_key: z.string(),
+  component_type: z.string().nullable().optional(),
+  source_connector_type: z.string().nullable().optional(),
+  target_connector_type: z.string().nullable().optional(),
+  executions: z.number(),
+  rows_total: z.number().nullable().optional(),
+  rows_rejected: z.number().nullable().optional(),
+  reject_ratio: z.number().nullable().optional(),
+  avg_duration_ms: z.number().nullable().optional(),
+  p95_duration_ms: z.number().nullable().optional(),
+  max_duration_ms: z.number().nullable().optional(),
+  last_measured_at: z.string().nullable().optional(),
+});
+export type RuntimeComponentHotspot = z.infer<typeof RuntimeComponentHotspotSchema>;
+
+export const RuntimeComponentHotspotResponseSchema = z.object({
+  components: z.array(RuntimeComponentHotspotSchema),
+  total: z.number(),
+});
+export type RuntimeComponentHotspotResponse = z.infer<
+  typeof RuntimeComponentHotspotResponseSchema
+>;
+
+export const RuntimeJobThroughputSchema = z.object({
+  project_id: z.string(),
+  source_key: z.string(),
+  job_name: z.string(),
+  executions_with_metrics: z.number(),
+  component_count: z.number(),
+  rows_total: z.number().nullable().optional(),
+  rows_rejected: z.number().nullable().optional(),
+  reject_ratio: z.number().nullable().optional(),
+  last_measured_at: z.string().nullable().optional(),
+});
+export type RuntimeJobThroughput = z.infer<typeof RuntimeJobThroughputSchema>;
+
+export const RuntimeJobThroughputResponseSchema = z.object({
+  jobs: z.array(RuntimeJobThroughputSchema),
+  total: z.number(),
+});
+export type RuntimeJobThroughputResponse = z.infer<
+  typeof RuntimeJobThroughputResponseSchema
+>;
+
+export const RuntimeErrorSignatureSchema = z.object({
+  project_id: z.string(),
+  signature_hash: z.string(),
+  error_code: z.string().nullable().optional(),
+  exception_class: z.string().nullable().optional(),
+  component_name: z.string().nullable().optional(),
+  summary_text: z.string().nullable().optional(),
+  // See RuntimeExecutionSummaryInsightSchema.causal_message.
+  causal_message: z.string().nullable().optional(),
+  occurrence_count: z.number(),
+  first_seen_at: z.string().nullable().optional(),
+  last_seen_at: z.string().nullable().optional(),
+});
+export type RuntimeErrorSignature = z.infer<typeof RuntimeErrorSignatureSchema>;
+
+export const RuntimeErrorSignatureResponseSchema = z.object({
+  signatures: z.array(RuntimeErrorSignatureSchema),
+  total: z.number(),
+});
+export type RuntimeErrorSignatureResponse = z.infer<
+  typeof RuntimeErrorSignatureResponseSchema
+>;

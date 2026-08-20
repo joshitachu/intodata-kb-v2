@@ -13,6 +13,7 @@ from mcp_server.model_strategies.strategies import (
     ModelDescriptorData,
     ModelProviderStrategy,
     OllamaModelStrategy,
+    OpenCodeCliStrategy,
     OpenAIModelStrategy,
     Route33ModelStrategy,
 )
@@ -25,6 +26,7 @@ class GenerationModelResolution:
     write_model: str
     uses_custom_harness: bool
     uses_claude_cli: bool
+    uses_opencode_cli: bool = False
 
 
 _STRATEGIES: tuple[ModelProviderStrategy, ...] = (
@@ -36,6 +38,7 @@ _STRATEGIES: tuple[ModelProviderStrategy, ...] = (
     GoogleModelStrategy(),
     OllamaModelStrategy(),
     ClaudeCliStrategy(),
+    OpenCodeCliStrategy(),
 )
 
 
@@ -115,6 +118,25 @@ def resolve_generation_models(
             write_model=write_model or default_write_model,
             uses_custom_harness=False,
             uses_claude_cli=True,
+            uses_opencode_cli=False,
+        )
+
+    if resolved_provider == "opencode-cli":
+        requested_model = normalize_model_id(model or "")
+        if requested_model in {"", "opencode", "opencode-cli"}:
+            requested_model = ""
+        elif "/" not in requested_model:
+            raise ValueError(
+                "OpenCode requires a provider/model route, for example "
+                "'openai/gpt-5.6-sol'."
+            )
+        return GenerationModelResolution(
+            provider_type="opencode-cli",
+            analysis_model=requested_model or "opencode",
+            write_model=requested_model or "opencode",
+            uses_custom_harness=False,
+            uses_claude_cli=False,
+            uses_opencode_cli=True,
         )
 
     if model and "/" in model:
@@ -154,6 +176,7 @@ def resolve_generation_models(
         write_model=resolved_write_model,
         uses_custom_harness=True,
         uses_claude_cli=False,
+        uses_opencode_cli=False,
     )
 
 
@@ -161,5 +184,5 @@ def _unsupported_model_message(model_id: str) -> str:
     return (
         f"Unsupported model/provider: {model_id!r}. "
         "Supported: 'custom', 'openai/<model>', 'deepseek/<model>', 'route33/<model>', "
-        "'anthropic/<model>', 'google/<model>', 'ollama/<model>', or 'claude-cli'."
+        "'anthropic/<model>', 'google/<model>', 'ollama/<model>', 'claude-cli', or 'opencode-cli'."
     )

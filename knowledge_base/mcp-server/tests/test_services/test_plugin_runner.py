@@ -15,8 +15,13 @@ from mcp_server.providers.custom.models import ModelOptions, ModelResult
 from mcp_server.providers.custom.doc_catalog import load_doc_catalog as _load_test_catalog
 
 _test_catalog = _load_test_catalog()
-REQUIRED_DOCS = _test_catalog.required_docs
-DOC_ASSIGNMENTS = _test_catalog.doc_assignments
+# Per-unit catalog entries expand at run start; the base name is not a doc.
+_per_unit_base = {d.name for d in _test_catalog.per_unit_docs}
+REQUIRED_DOCS = [d for d in _test_catalog.required_docs if d not in _per_unit_base]
+DOC_ASSIGNMENTS = {
+    bundle: [d for d in docs if d not in _per_unit_base]
+    for bundle, docs in _test_catalog.doc_assignments.items()
+}
 from mcp_server.services.plugin_schema import (
     DocDefinition,
     PluginPackManifest,

@@ -162,6 +162,7 @@ async def test_generate_dispatch_preserves_governed_stack_contract(client, monke
         "/mcp/generate",
         json={
             "project_id": "governed-dispatch",
+            "doc_generation_provider": "opencode-cli",
             "nexus_pack_ids": [
                 "style.operations",
                 "foundation.core",
@@ -182,6 +183,7 @@ async def test_generate_dispatch_preserves_governed_stack_contract(client, monke
     ]
     assert captured["nexus_pack_snapshot"] == snapshot
     assert captured["nexus_presentation"] == presentation
+    assert captured["doc_generation_provider"] == "opencode-cli"
 
 
 # --- Upload ZIP ---
@@ -249,6 +251,91 @@ async def test_upload_zip_rejects_oversized_archive(client, monkeypatch):
     )
 
     assert resp.status_code == 413
+
+
+async def test_upload_zip_rejects_duplicate_project_before_streaming(client, tmp_path):
+    """Fast-fail: a conflicting project_id is rejected before any bytes stream."""
+    from mcp_server.config import config
+
+    first_buf = io.BytesIO()
+    with zipfile.ZipFile(first_buf, "w") as zf:
+        zf.writestr("readme.txt", "hello")
+    first_buf.seek(0)
+    created = await client.post(
+        "/mcp/upload-zip",
+        files={"file": ("test.zip", first_buf, "application/zip")},
+        data={"project_id": "dupe-project", "platform": "talend"},
+    )
+    assert created.status_code == 200
+
+    uploads_before = list(config.uploads_dir.iterdir())
+
+    second_buf = io.BytesIO()
+    with zipfile.ZipFile(second_buf, "w") as zf:
+        zf.writestr("readme.txt", "world")
+    second_buf.seek(0)
+    resp = await client.post(
+        "/mcp/upload-zip",
+        files={"file": ("test.zip", second_buf, "application/zip")},
+        data={"project_id": "dupe-project", "platform": "talend"},
+    )
+
+    assert resp.status_code == 409
+    # No new temp upload was written for the rejected, conflicting request.
+    uploads_after = list(config.uploads_dir.iterdir())
+    assert uploads_after == uploads_before
+
+
+class _FakeUploadFile:
+    """Minimal async-read stand-in for Starlette's UploadFile.
+
+    Lets tests exercise the chunked-read loop precisely (call count, partial
+    reads) without depending on multipart/HTTP internals.
+    """
+
+    def __init__(self, data: bytes) -> None:
+        self._buffer = io.BytesIO(data)
+        self.read_calls: list[int] = []
+
+    async def read(self, size: int = -1) -> bytes:
+        self.read_calls.append(size)
+        return self._buffer.read(size)
+
+
+async def test_stream_upload_to_temp_file_chunks_and_hashes_correctly(tmp_path):
+    import hashlib
+
+    from mcp_server.api.routes.projects import _stream_upload_to_temp_file
+
+    payload = bytes(range(256)) * 50  # 12_800 bytes
+    fake_file = _FakeUploadFile(payload)
+
+    path, checksum, size = await _stream_upload_to_temp_file(
+        fake_file, tmp_path / "uploads", max_bytes=len(payload) + 1, chunk_bytes=1000
+    )
+
+    assert size == len(payload)
+    assert checksum == hashlib.sha256(payload).hexdigest()
+    assert path.read_bytes() == payload
+    # Multiple chunked reads occurred -- never a single full-body read.
+    assert len(fake_file.read_calls) >= 12
+
+
+async def test_stream_upload_to_temp_file_aborts_inline_when_over_limit(tmp_path):
+    from mcp_server.api.routes.projects import _stream_upload_to_temp_file
+
+    payload = bytes(range(256)) * 50  # 12_800 bytes, well over the limit below
+    fake_file = _FakeUploadFile(payload)
+    dest = tmp_path / "uploads"
+
+    with pytest.raises(Exception) as exc_info:
+        await _stream_upload_to_temp_file(fake_file, dest, max_bytes=1000, chunk_bytes=1000)
+
+    assert getattr(exc_info.value, "status_code", None) == 413
+    # Aborted mid-stream: did not read the whole 13-chunk payload.
+    assert len(fake_file.read_calls) < 13
+    # No partial temp file left behind.
+    assert list(dest.iterdir()) == []
 
 
 async def test_upload_zip_rejects_unsafe_member_path(client):

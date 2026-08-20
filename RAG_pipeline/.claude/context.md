@@ -1,5 +1,13 @@
 # Current State
 
+**Status (2026-08-11, scoped WerkOrder TMC runtime sync deployed without schema migration):** The Talend TMC source connector no longer sweeps every tenant task/run. Project `werkorder` defaults to a bounded task/artifact/connection vocabulary, retains only related inventory and plans, reads 90 days as nine API-compliant windows of at most 10 days, limits each executable to 250 runs, fetches logs only for the 25 most recent failures, fetches component metrics for at most 50 recent runs, uses concurrency 5, and retries transient transport failures three times. Source 13 (`vw_TMC`) is explicitly disabled after validation and remains at a 60-second configured interval.
+
+**Last completed:** focused TMC suite **21 passed**; complete runtime suite **341 passed**; scoped Ruff, compilation, and diff checks passed. Live deployment exposes the new constants and `/health` responds; the backend is temporarily launched directly with uvicorn because the dirty worktree contains multiple Alembic heads and the normal `alembic upgrade head` entrypoint cannot start.
+
+**Immediate next:** resolve the unrelated Alembic multiple-head condition, raise source 13's interval before enabling it, then run one operator-controlled sync and inspect matched task names/counts plus API call volume. Do not re-enable `vw_TMC` until that review. Ollama remains unavailable, so overall `/health` is degraded although database, Qdrant, Hindsight, and the API are available.
+
+**Resolved blockers:** tenant-wide sequential log/metric sweep; unsupported `lastDays=90`; single transient `ConnectError` without retry; scope matching when the business/system name appears only on a TMC connection.
+
 **Status (2026-07-30, L1/L2 topology frontend implemented and locally deployed):** `/topology` now opens on the scanner-computed application/system landscape when a project exposes `landscape.json`, with an evidence-preserving L2 relationship drill-down before existing Job/Route and mapping/lineage levels. The legacy Talend functional-group canvas stays available only for pre-landscape rescans and as an application's Designs view. The contract is typed end-to-end through the BFF and does not merge labels or use redacted channel values to infer peers.
 
 **Last completed:** 440 frontend tests and production build pass; frontend and MCP Docker containers are healthy. The real composite `topology` payload is 14 applications, 123 systems, 185 edges, 1,115 channels, 146 interfaces, 38 diagnostics, and 15 unmapped records.
@@ -335,19 +343,36 @@ See `PROJECT_MEMORY.md` for architecture decisions and `PROGRESS_LOG.md` for ses
 - **Live proof**: Conversation 112 produced a complete ESB_PROD runtime report under workflow 72. Its "show me the results then?" follow-up returned the same report in 12 ms with workflow 72, no new workflow, and no runtime tool calls. Migration 057 is applied and the backend is healthy with zero restarts.
 - **Resolved blockers**: Runtime entities are no longer treated as project IDs; slot replies no longer replace the original objective; runtime plans are execution obligations; duplicate evidence/continuation rows no longer produce 500s; and the model can no longer claim a runtime capability was unavailable after Nexus already executed it.
 - **Immediate next steps**: Define and implement the contract for global/cross-project runtime queries; add production connector adapters and persistent LangGraph checkpointing/asynchronous workflow reconciliation; run the complete backend suite in an environment where tokenizer assets are cached or network access is available; review and commit the uncommitted harness batch without including unrelated working-tree changes.
-## Latest completed (2026-07-30 topology readability)
+## Latest completed (2026-07-30 semantic topology)
 
-- L1 defaults to connected data/integration flow rather than all configuration.
-- L2 and evidence panels render entity names instead of internal graph IDs.
-- Job nodes show Talend human labels, technical identity second, and concise
-  deterministic explanations; lookup/control/logging are visually distinct.
-- Frontend production image rebuilt successfully and container is healthy.
+- L1 now renders evidence-backed organization systems and named data exchanges,
+  not Talend projects, source roots, or configuration utilities.
+- Proposed semantic facts are visually distinct and remain traceable to exact
+  scanner evidence; Talend projects are retained as implementing solutions.
+- L2 explains one exchange in terms of source, target, payloads, observed
+  transports, reliability, implementing designs, confidence, and limitations.
+- Full frontend: 445 passed; production build passed; container healthy.
 
 ## Immediate next
 
 - Perform an authenticated visual acceptance pass in the user's browser.
-- Treat semantic business enrichment/curation as a separate later layer.
+- Add the supplied-business-data curation/confirmation registry later; never
+  silently promote a scanner proposal to confirmed organization truth.
 
 ## Resolved blockers
 
-- Unbounded orphan nodes, raw L2 IDs, and unexplained Talend graph vocabulary.
+- Unbounded orphan nodes, raw L2 IDs, unexplained Talend graph vocabulary, and
+  Talend-project-as-business-application presentation.
+
+## Latest Runtime State (2026-08-11 WerkOrder TMC)
+
+- `vw_TMC` source 13 is enabled and successful on a 3,600-second schedule.
+- Default scope is business-object-only: WerkOrder(s)/WorkOrder(s). The live
+  selection is 8 task records (6 distinct names), down from 64 tenant-wide tasks.
+- The first committed 90-day sync persisted 765 job runs, 250 plan runs, 113
+  failures, 4,768 log events, and 593 component metrics.
+- Standard Compose startup is restored (`alembic upgrade head && uvicorn`). The
+  single Alembic head is `080_runtime_duration_bigint`; runtime durations are
+  `bigint` to preserve long-running TMC executions without truncation.
+- The backend API is reachable. Overall `/health` is degraded only because the
+  local Ollama dependency is unavailable; database, Qdrant, and Hindsight pass.

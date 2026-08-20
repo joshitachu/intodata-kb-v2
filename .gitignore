@@ -96,6 +96,9 @@ mission_control/snapshots/
 knowledge_base/dashboard/tsconfig.tsbuildinfo
 .claude/.session_end_nudge
 
+# Local database dumps — may contain client data, and are far too large for git
+/.backups/
+
 # GitHub App private key (runtime secret — never commit)
 knowledge_base/mcp-server/data/*.pem
 *.private-key.pem

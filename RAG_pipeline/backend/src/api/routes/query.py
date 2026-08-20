@@ -34,6 +34,7 @@ from src.memory.hindsight_client import (
 from src.rbac.permissions import get_user_groups, get_user_project_ids
 from src.retrieval.embedder import embed_text, get_last_embed_tokens
 from src.retrieval.search import merge_sources_by_document
+from src.retrieval.knowledge_revisions import active_knowledge_revisions
 from src.retrieval.vector_store import COLLECTION_NAME
 from src.schemas import (
     DebugSearchRequest,
@@ -64,6 +65,7 @@ async def query(
         if project_ids is not None and body.project_id not in project_ids:
             raise api_error(403, "forbidden", "No access to this project")
         project_ids = [body.project_id]
+    knowledge_revisions = await active_knowledge_revisions(db, project_ids)
     try:
         return await run_rag_query(
             request=body,
@@ -72,6 +74,7 @@ async def query(
             qdrant=qdrant,
             db=db,
             project_ids=project_ids,
+            knowledge_revisions=knowledge_revisions,
         )
     except RuntimeError as e:
         logger.error("RAG query failed: %s", e)
@@ -91,13 +94,16 @@ async def query_debug(
     """Return raw Qdrant scores without threshold filtering for diagnostics."""
     user_groups = get_user_groups(user)
     project_ids = await get_user_project_ids(user, db)
+    knowledge_revisions = await active_knowledge_revisions(db, project_ids)
 
     embed_start = time.perf_counter()
     query_embedding = await embed_text(body.query)
     embedding_ms = int((time.perf_counter() - embed_start) * 1000)
 
     from src.retrieval.search import _build_search_filter
-    search_filter = _build_search_filter(user_groups, project_ids=project_ids)
+    search_filter = _build_search_filter(
+        user_groups, project_ids=project_ids, knowledge_revisions=knowledge_revisions
+    )
     rbac_filter_applied = search_filter is not None
 
     results = await qdrant.query_points(
@@ -153,6 +159,7 @@ async def query_stream(
         if project_ids is not None and body.project_id not in project_ids:
             raise api_error(403, "forbidden", "No access to this project")
         project_ids = [body.project_id]
+    knowledge_revisions = await active_knowledge_revisions(db, project_ids)
     start = time.perf_counter()
     uid = str(user.id)
 
@@ -180,7 +187,7 @@ async def query_stream(
             logger.warning("Stream: Failed to fetch system knowledge: %s", e)
 
     sources, auxiliary_sources = await _execute_role_aware_search(
-        body.query, body, user_groups, qdrant, project_ids,
+        body.query, body, user_groups, qdrant, project_ids, knowledge_revisions,
     )
 
     if sources or auxiliary_sources:

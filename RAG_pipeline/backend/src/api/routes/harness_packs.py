@@ -6,7 +6,7 @@ import asyncio
 import datetime
 import hashlib
 import json
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -192,6 +192,7 @@ class DocumentationPackWorkspaceRequest(BaseModel):
 
 class DocumentationPackGenerationRequest(DocumentationPackWorkspaceRequest):
     resume: bool = True
+    doc_generation_provider: Literal["custom", "opencode-cli"] | None = None
     investigation_model: str | None = Field(default=None, max_length=200)
     model: str | None = Field(default=None, max_length=200)
     write_model: str | None = Field(default=None, max_length=200)
@@ -787,6 +788,7 @@ async def generate_with_documentation_packs(
                 arguments={
                     "project_id": project_id,
                     "resume": payload.resume,
+                    "doc_generation_provider": payload.doc_generation_provider,
                     "investigation_model": payload.investigation_model,
                     "model": payload.model,
                     "write_model": payload.write_model,

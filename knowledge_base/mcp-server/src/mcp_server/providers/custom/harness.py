@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 import shutil
 import time
@@ -42,16 +43,31 @@ from mcp_server.providers.custom.debug_artifacts import (
 )
 from mcp_server.providers.custom.transient_artifacts import transient_dir, transient_write
 from mcp_server.providers.custom.evidence_bundles import CATEGORY_PATTERNS, EvidenceBundleBuilder
+from mcp_server.providers.custom.doc_slice_merge import (
+    dedupe_document,
+    duplicate_heading_errors,
+    merge_sectioned_doc_outputs,
+    merge_sliced_doc_outputs,
+)
 from mcp_server.providers.custom.fabrication_validators import (
     availability_claim_errors,
     component_reference_errors,
     extract_component_refs,
     job_scoped_component_reference_errors,
+    protected_fact_errors,
+    unit_count_claim_errors,
 )
 from mcp_server.providers.custom.target_evidence import (
     TargetEvidence,
     TargetEvidenceBuilder,
+    build_unit_index,
     filter_fact_table,
+    load_jobs,
+)
+from mcp_server.providers.custom.noncode_evidence import (
+    NonCodeAssociationPlan,
+    NonCodeLimits,
+    build_noncode_context,
 )
 from mcp_server.providers.custom.talend_intelligence import write_talend_intelligence
 from mcp_server.providers.custom.agent_runtime import (
@@ -76,7 +92,11 @@ from mcp_server.providers.custom.models import (
     ProviderCallLog,
 )
 from mcp_server.providers.custom.doc_catalog import load_doc_catalog
-from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES, materialize_prompt_packs
+from mcp_server.providers.custom.prompt_packs import (
+    ANALYSIS_SECTION_NAMES,
+    REQUIRED_SECTION_NAMES,
+    materialize_prompt_packs,
+)
 from mcp_server.providers.custom.prompts import (
     doc_prompt,
     facts_summary,
@@ -119,8 +139,32 @@ from mcp_server.providers.custom.constants import (
 )
 from mcp_server.providers.custom.evidence_tasks import (
     EvidenceTask,
+    count_evidence_tasks,
     job_section_texts,
     plan_evidence_tasks,
+)
+from mcp_server.providers.custom.phase2_context import build_phase2_context_packet
+from mcp_server.providers.custom.phase3_context import compact_change_impact_matrix
+from mcp_server.providers.custom.phase3_slices import (
+    Phase3PlanInputs,
+    Phase3TaskPlan,
+    plan_phase3_document,
+    plan_phase3_slices,
+)
+from mcp_server.providers.custom.unit_naming import resolve_unit_display_names
+from mcp_server.providers.custom.phase2_claims import (
+    ClaimTaskSpec,
+    Phase2ClaimBatch,
+    apply_claim_floors,
+    claim_task_prompt,
+    parse_claim_batch,
+    plan_claim_tasks,
+    render_claims_as_markdown,
+    salvage_claim_batch,
+    split_claim_task,
+    unknown_batch,
+    validate_claim_batch,
+    write_claim_ledger,
 )
 
 
@@ -311,6 +355,33 @@ def _empty_group_stub(group: str, units: list[str]) -> str:
     )
 
 
+def _partial_group_stub(group: str, units: list[str], reason: str) -> str:
+    """Structurally valid PARTIAL Phase 2 analysis for a group whose analysis
+    failed (budget exhaustion, provider failure, unexpected crash).
+
+    Salvage-first (P0.2): the failed group is marked PARTIAL instead of
+    aborting the run. The stub carries coverage markers with an explicit
+    analysis-unavailable statement per unit (mirroring the claims path's
+    unknown batches) but deliberately omits the required analysis sections so
+    ``group_analysis_is_complete`` stays False and a resume run retries the
+    group instead of reusing the stub.
+    """
+    covered = "\n".join(f"- COVERED: {u}" for u in units)
+    unit_lines = "\n".join(
+        f"- {u}: analysis unavailable in this run; retry via resume" for u in units
+    )
+    return (
+        f"# Phase 2 Analysis: {group}\n\n"
+        "## Coverage\n\n"
+        f"{covered}\n\n"
+        "## Model Analysis\n\n"
+        f"PARTIAL: Phase 2 analysis for group `{group}` did not complete in this "
+        f"run ({reason}). Deterministic scanner evidence remains the source of "
+        "record; documents referencing this group carry an evidence notice.\n\n"
+        f"Units:\n{unit_lines}\n"
+    )
+
+
 def _groups_from_errors(errors: list[str], known_groups: set[str]) -> set[str]:
     """Extract group names explicitly mentioned in validator error strings.
 
@@ -423,6 +494,15 @@ class ToolPolicy:
     enabled: bool
     max_input_tokens: int
     max_calls: int
+
+
+@dataclass(frozen=True)
+class _ModelBudgetReservation:
+    """One atomic reservation for a physical provider request."""
+
+    call_index: int
+    input_tokens: int
+    output_tokens: int
 
 
 class _PipelineLog:
@@ -572,8 +652,16 @@ class CustomHarnessProvider(DocGenerationProvider):
         self.plugin_pack_dir = plugin_pack_dir
 
         _catalog = load_doc_catalog()
-        self._required_docs: list[str] = list(_catalog.required_docs)
-        self._doc_assignments: dict[str, list[str]] = dict(_catalog.doc_assignments)
+        # Per-unit catalog entries are expanded at run start (one doc per
+        # scanned unit); the base entry name is never itself a document.
+        self._required_docs: list[str] = [
+            d.name for d in _catalog.docs if not d.per_unit
+        ]
+        _per_unit_base = {d.name for d in _catalog.per_unit_docs}
+        self._doc_assignments: dict[str, list[str]] = {
+            bundle: [d for d in docs if d not in _per_unit_base]
+            for bundle, docs in _catalog.doc_assignments.items()
+        }
         self._doc_bundle_map: dict[str, str] = dict(_catalog.doc_bundle_map)
         self._doc_section_bundle_map: dict[str, set[str]] = dict(_catalog.doc_section_bundle_map)
         self._doc_section_requirements_extra: dict[str, list[str]] = {}
@@ -586,6 +674,10 @@ class CustomHarnessProvider(DocGenerationProvider):
         # builder instance caching the loaded scan for the current staging dir.
         self._target_evidence: dict[str, TargetEvidence] = {}
         self._target_evidence_builder: TargetEvidenceBuilder | None = None
+        # Tier-3 non-code documented-context plan (built once per staging dir).
+        # ``False`` means "attempted, unavailable" so we do not retry per doc.
+        self._noncode_plan: NonCodeAssociationPlan | None | bool = None
+        self._noncode_plan_staging: Path | None = None
         self._pack_evidence_paths: dict[str, dict[str, str]] = {}
         self._evidence_registry_paths: dict[str, str] = {}
         self._phase_model_overrides: dict[str, str] = {}
@@ -630,9 +722,14 @@ class CustomHarnessProvider(DocGenerationProvider):
         Resolution order:
         1. Explicit phases block in the manifest.
         2. Backward-compat: if evidence_profiles are present → skip all phases.
-        3. No pack or no manifest → run all phases (enterprise default).
+        3. No pack or no manifest → run all phases (enterprise default),
+           except the advisory LLM scorecard, which is config-gated
+           (R2.2: default off; a deterministic omitted-scorecard marker is
+           written instead).
         """
         if not self._plugin_mode or self._plugin_manifest is None:
+            if phase == "scorecard" and not config.docgen_llm_scorecard_enabled:
+                return "skip"
             return "run"
         declared = getattr(self._plugin_manifest, "phases", None)
         if declared is not None:
@@ -761,6 +858,14 @@ class CustomHarnessProvider(DocGenerationProvider):
                 max_calls=config.agent_max_tool_calls,
             )
         if phase.startswith("phase1") or phase.startswith("phase2") or phase in {"scorecard", "phase2.6"}:
+            return ToolPolicy(enabled=False, max_input_tokens=0, max_calls=0)
+        # Business topology is PUSH-evidence, not agentic: the high-signal scanner
+        # evidence is injected directly into the model context (see
+        # services/business_topology/context.py). Pulling it via budget-limited
+        # tools was the verified starvation that made the model fabricate an
+        # evidence-less topology; keep tools off so the tool budget can never be
+        # the blocker for this single JSON synthesis call.
+        if phase == "business_topology":
             return ToolPolicy(enabled=False, max_input_tokens=0, max_calls=0)
         if self._plugin_mode and phase.startswith(("phase2", "phase3")):
             return ToolPolicy(enabled=False, max_input_tokens=0, max_calls=0)
@@ -968,6 +1073,15 @@ Fallback plan example:
     def _classify_failure(result: ModelResult) -> FailureKind | None:
         """Normalize provider-specific failures into harness retry decisions."""
 
+        # Provider transport success is not content completeness.  Several
+        # OpenAI-compatible APIs return non-empty text with ``success=true`` and
+        # ``finish_reason=length``; accepting that before inspecting metadata
+        # allowed truncated 32K outputs into deterministic assembly.
+        finish_reason = (result.metadata or {}).get("finish_reason", "")
+        incomplete_reason = (result.metadata or {}).get("incomplete_reason", "")
+        if finish_reason in {"length", "max_tokens"} or incomplete_reason == "length":
+            return FailureKind.INCOMPLETE
+
         if result.success and result.text.strip():
             return None
 
@@ -1016,12 +1130,8 @@ Fallback plan example:
 
         # Detect output truncation: check metadata first, then fall through to text heuristics.
         # Metadata is populated by all provider implementations; text heuristics catch edge cases.
-        finish_reason = (result.metadata or {}).get("finish_reason", "")
-        incomplete_reason = (result.metadata or {}).get("incomplete_reason", "")
         if (
-            finish_reason in {"length", "max_tokens"}
-            or incomplete_reason == "length"
-            or re.search(
+            re.search(
                 r"incomplete:.*max.{0,10}tokens|max.{0,10}tokens.{0,20}reached",
                 evidence,
                 re.IGNORECASE,
@@ -1041,6 +1151,16 @@ Fallback plan example:
         )
 
     def _run_model_call_budget(self, state: HarnessRunState) -> int:
+        # R2.1: when a work plan exists, the enforced ceiling is the configured
+        # hard cap -- the plan sum is a reservation guide, never the ceiling.
+        # Verified failure (Assetcheck, 73 units / 17 groups): the run enforced
+        # the plan sum (179) and blocked Phase 3 at 180/179 while the true cap
+        # (250) had ~71 calls unused; real consumption was ~197 < 250, so docs
+        # 04-09 + topology shipped as stubs for no reason. Late-phase
+        # starvation is prevented by the phase floors in _reserve_model_budget,
+        # not by capping at the plan.
+        if state.planned_call_budget is not None:
+            return config.docgen_max_run_calls
         group_count = max(1, len(state.facts_manifest.groups))
         required_doc_count = max(1, len(self._required_docs))
         allowed_slices = max(1, config.docgen_allowed_slices_per_doc)
@@ -1049,7 +1169,352 @@ Fallback plan example:
             + group_count * config.docgen_call_budget_per_group
             + required_doc_count * allowed_slices
         )
-        return max(config.docgen_min_run_call_budget, dynamic_budget)
+        return min(
+            config.docgen_max_run_calls,
+            max(config.docgen_min_run_call_budget, dynamic_budget),
+        )
+
+    def _plan_call_budget(self, ctx: DocGenContext, state: HarnessRunState) -> dict[str, int]:
+        """Size the run call plan from the deterministic work plan (P0.1/R2.1).
+
+        Counts, before the first LLM call:
+        - evidence-agent calls (one per resolved agent; 0 on standard runs
+          unless docgen_default_evidence_agents_enabled);
+        - Phase 1 investigation tasks (job-boundary bin packing; ~2 calls per
+          group when the agentic chunk-manifest investigator is enabled);
+        - Phase 2 claim tasks (bin packing with the per-task unit cap) plus one
+          synthesis-headroom call per multi-task group, plus a repair-retry
+          allowance (docgen_phase2_retry_allowance x tasks; verified ~29%
+          retries pre-demotion);
+        - Phase 2.6 scorecard: 0 when skipped; otherwise slices + reducer.
+          Slices page over the per-group analysis outputs, ~3 groups per 4
+          slices on the verified Assetcheck run (17 groups -> 12 slices + 1
+          reducer), so the estimate is 1 + ceil(0.75 x groups) -- not a flat
+          allowed_slices;
+        - Phase 3: allowed_slices per group-level doc, 2 calls per per-unit doc
+          (one write + one bounded repair);
+        - a small constant for Phase 3.7 business topology.
+
+        R2.1: ``planned`` is a guide; the ENFORCED ceiling is
+        ``docgen_max_run_calls``. Phase 3 and topology get guaranteed floors
+        (their planned call counts) recorded in ``state.planned_phase_floors``
+        so earlier-phase overruns can never starve document writing.
+        """
+        preprocess_dir = ctx.staging_dir / "_preprocess"
+        allowed_slices = max(1, config.docgen_allowed_slices_per_doc)
+        evidence_agent_calls = len(
+            resolve_evidence_agents(self._plugin_manifest, self.plugin_pack_dir).agents
+        )
+        phase1_tasks = 0
+        phase2_tasks = 0
+        phase2_synthesis = 0
+        investigation_runs = self._phase_policy("investigation") != "skip" and (
+            state.facts_manifest.unit_count > config.small_project_threshold
+        )
+        for group in ctx.preprocess_groups:
+            group_file = preprocess_dir / f"{group}.md"
+            group_units = self._group_units(state, group)
+            if investigation_runs:
+                if config.agent_phase1_agentic:
+                    # Chunk-manifest investigator: ~2 calls per group
+                    # (manifest planning + extraction).
+                    phase1_tasks += 2
+                else:
+                    phase1_tasks += count_evidence_tasks(
+                        group_file, group_units, config.phase2_task_evidence_bytes
+                    )
+            group_tasks = count_evidence_tasks(
+                group_file,
+                group_units,
+                config.phase2_task_evidence_bytes,
+                max_units_per_task=max(1, config.phase2_claim_units_per_task),
+            )
+            phase2_tasks += group_tasks
+            if group_tasks > 1:
+                phase2_synthesis += 1
+        phase2_retries = math.ceil(
+            phase2_tasks * max(0.0, config.docgen_phase2_retry_allowance)
+        )
+        unit_doc_count = len(self._per_job_doc_units)
+        group_doc_count = max(0, len(self._required_docs) - unit_doc_count)
+        phase3_calls = group_doc_count * allowed_slices + unit_doc_count * 2
+        group_count = max(1, len(ctx.preprocess_groups))
+        scorecard_calls = (
+            1 + math.ceil(group_count * 3 / 4)
+            if self._phase_policy("scorecard") != "skip"
+            else 0
+        )
+        topology_calls = 2
+        planned = (
+            config.docgen_call_budget_base
+            + evidence_agent_calls
+            + phase1_tasks
+            + phase2_tasks
+            + phase2_retries
+            + phase2_synthesis
+            + scorecard_calls
+            + phase3_calls
+            + topology_calls
+        )
+        ceiling = config.docgen_max_run_calls
+        state.planned_call_budget = max(config.docgen_min_run_call_budget, planned)
+        state.planned_phase1_tasks = phase1_tasks
+        state.planned_phase2_tasks = phase2_tasks
+        # Guaranteed late-phase floors: never larger than what would leave the
+        # earlier phases nothing (floors are clamped to the ceiling).
+        state.planned_phase_floors = {
+            "phase3": min(phase3_calls, ceiling),
+            "business_topology": min(topology_calls, max(0, ceiling - phase3_calls)),
+        }
+        return {
+            "evidence_agent_calls": evidence_agent_calls,
+            "phase1_tasks": phase1_tasks,
+            "phase2_tasks": phase2_tasks,
+            "phase2_retries": phase2_retries,
+            "phase2_synthesis": phase2_synthesis,
+            "scorecard_calls": scorecard_calls,
+            "phase3_calls": phase3_calls,
+            "topology_calls": topology_calls,
+            "planned": planned,
+            "budget": state.planned_call_budget,
+            "ceiling": ceiling,
+            "phase3_floor": state.planned_phase_floors["phase3"],
+            "topology_floor": state.planned_phase_floors["business_topology"],
+        }
+
+    def _doc_output_ceiling(self, doc_name: str, state: HarnessRunState) -> int:
+        """Per-doc-type output token ceiling (P0.3 output governance).
+
+        A per-unit dossier must be small; a brief/summary is bounded; an
+        inventory scales with unit count. Everything else keeps the phase-wide
+        ceiling. Reservations use this per doc-task so one document can never
+        starve the run's output budget.
+        """
+        if doc_name in self._per_job_doc_units:
+            return max(1_200, config.docgen_unit_doc_output_tokens)
+        base = doc_name.split("__", 1)[0]
+        if base in {"00_AGENT_BRIEF", "09_EXECUTIVE_SUMMARY"}:
+            return min(config.phase3_max_tokens, max(2_000, config.docgen_brief_output_tokens))
+        if base == "02_COMPONENT_INVENTORY":
+            scaled = (
+                config.docgen_inventory_output_tokens_base
+                + state.facts_manifest.unit_count
+                * config.docgen_inventory_output_tokens_per_unit
+            )
+            return min(config.phase3_max_tokens, max(2_000, scaled))
+        return config.phase3_max_tokens
+
+    def _doc_expected_output_tokens(self, doc_name: str, state: HarnessRunState) -> int:
+        """Expected OUTPUT size of one document (slicing-redesign driver).
+
+        The per-doc-type ceiling (`_doc_output_ceiling`) is a safety cap, not
+        an estimate: fixed-shape docs land around 7-16K deduplicated tokens
+        regardless of evidence volume (verified across the werkorder run),
+        while inventories and rule catalogs scale with rows-to-emit (unit
+        count). The planner writes a doc in ONE call when this estimate fits
+        `phase3_single_call_output_tokens`, and partitions the task by
+        section/unit-range only when it does not.
+        """
+        if doc_name in self._per_job_doc_units:
+            return max(1_200, config.docgen_unit_doc_output_tokens)
+        base = doc_name.split("__", 1)[0]
+        if base in {"00_AGENT_BRIEF", "09_EXECUTIVE_SUMMARY"}:
+            return max(2_000, config.docgen_brief_output_tokens)
+        if base == "02_COMPONENT_INVENTORY":
+            return max(
+                2_000,
+                config.docgen_inventory_output_tokens_base
+                + state.facts_manifest.unit_count
+                * config.docgen_inventory_output_tokens_per_unit,
+            )
+        if base == "04_BUSINESS_RULES_AND_TRANSFORMATIONS":
+            return max(
+                2_000,
+                config.docgen_rules_output_tokens_base
+                + state.facts_manifest.unit_count
+                * config.docgen_rules_output_tokens_per_unit,
+            )
+        return max(2_000, config.docgen_doc_expected_output_tokens)
+
+    def _phase3_plan_inputs(
+        self, state: HarnessRunState, doc_name: str
+    ) -> Phase3PlanInputs:
+        """Doc-level facts for the output-sized Phase 3 planner."""
+        required = (
+            (self._doc_section_requirements_extra or {}).get(doc_name)
+            or load_doc_catalog().section_requirements.get(doc_name.split("__", 1)[0], [])
+        )
+        unit_scoped: list[str] = []
+        if doc_name not in self._per_job_doc_units:
+            unit_scoped = load_doc_catalog().unit_scoped_sections_map.get(
+                doc_name.split("__", 1)[0], []
+            )
+        return Phase3PlanInputs(
+            doc_name=doc_name,
+            expected_output_tokens=self._doc_expected_output_tokens(doc_name, state),
+            single_call_output_tokens=min(
+                config.phase3_max_tokens,
+                max(2_000, config.phase3_single_call_output_tokens),
+            ),
+            required_sections=tuple(required),
+            unit_scoped_sections=tuple(unit_scoped),
+            units=tuple(
+                (unit.name, unit.group) for unit in state.facts_manifest.units
+            ),
+        )
+
+    def _run_input_token_budget(self, state: HarnessRunState) -> int:
+        if config.docgen_max_run_input_tokens <= 0:
+            return 0
+        unit_count = max(state.facts_manifest.unit_count, len(state.facts_manifest.units))
+        dynamic_budget = (
+            config.docgen_input_token_budget_base
+            + unit_count * config.docgen_input_token_budget_per_unit
+            + len(self._required_docs) * config.docgen_input_token_budget_per_doc
+        )
+        return min(config.docgen_max_run_input_tokens, dynamic_budget)
+
+    def _run_output_token_budget(self, state: HarnessRunState) -> int:
+        # P0.1: sized per doc-task (sum of per-doc output ceilings), not per
+        # unit. When the work plan is known, Phase 1/2 output allowances come
+        # from the planned task counts times their per-call ceilings; the base
+        # term keeps headroom for the scorecard, synthesis, and repairs. Each
+        # Phase 3 doc contributes twice its own ceiling (slices/repairs reserve
+        # per call and settle to actual usage). The configured cap stays a
+        # runaway ceiling only, not a work bound.
+        if state.planned_phase2_tasks is not None:
+            phase12_allowance = (
+                (state.planned_phase1_tasks or 0) * config.investigation_max_tokens
+                + state.planned_phase2_tasks * config.phase2_claim_max_tokens
+            )
+            dynamic_budget = (
+                config.docgen_output_token_budget_base
+                + phase12_allowance
+                + sum(
+                    self._doc_output_ceiling(doc_name, state) * 2
+                    for doc_name in self._required_docs
+                )
+            )
+            return min(config.docgen_max_run_output_tokens, dynamic_budget)
+        unit_count = max(state.facts_manifest.unit_count, len(state.facts_manifest.units))
+        dynamic_budget = (
+            config.docgen_output_token_budget_base
+            + unit_count * config.docgen_output_token_budget_per_unit
+            + len(self._required_docs) * config.docgen_output_token_budget_per_doc
+        )
+        return min(config.docgen_max_run_output_tokens, dynamic_budget)
+
+    @staticmethod
+    def _budget_class(phase: str) -> str:
+        """Map a model-call phase string to its budget class.
+
+        ``phase3`` covers doc writing, its repairs, and phase3.5 critics;
+        ``business_topology`` covers Phase 3.7. Everything else shares the
+        early-phase pool and may not consume another class's reserved floor.
+        """
+        if phase.startswith("phase3"):
+            return "phase3"
+        if phase == "business_topology":
+            return "business_topology"
+        return "shared"
+
+    async def _reserve_model_budget(
+        self,
+        state: HarnessRunState,
+        *,
+        estimated_input_tokens: int,
+        max_output_tokens: int,
+        phase: str = "shared",
+    ) -> tuple[_ModelBudgetReservation | None, str | None]:
+        """Atomically reserve one request against run-level cost ceilings.
+
+        R2.1 floor protection: a call is blocked only when it would exceed the
+        hard ceiling MINUS the still-unused floors reserved for OTHER budget
+        classes. Phase 3 doc calls therefore cannot be starved by Phase 1/2/
+        scorecard overruns, and topology's small floor survives Phase 3.
+        """
+
+        input_reserve = max(
+            1,
+            math.ceil(
+                estimated_input_tokens
+                * max(1.0, config.docgen_token_estimate_safety_factor)
+            ),
+        )
+        output_reserve = max(1, max_output_tokens)
+        call_budget = self._run_model_call_budget(state)
+        input_budget = self._run_input_token_budget(state)
+        output_budget = self._run_output_token_budget(state)
+        budget_class = self._budget_class(phase)
+        async with state.budget_lock:
+            consumed_calls = max(state.budget_consumed_calls, len(state.calls))
+            consumed_input = max(state.budget_consumed_input_tokens, state.input_tokens)
+            consumed_output = max(state.budget_consumed_output_tokens, state.output_tokens)
+            call_index = consumed_calls + state.pending_model_calls + 1
+            projected_input = consumed_input + state.pending_input_tokens + input_reserve
+            projected_output = consumed_output + state.pending_output_tokens + output_reserve
+            reserved_floor_for_others = sum(
+                max(0, floor - state.floor_class_calls.get(cls, 0))
+                for cls, floor in state.planned_phase_floors.items()
+                if cls != budget_class
+            )
+            effective_budget = call_budget - reserved_floor_for_others
+            if call_index > effective_budget:
+                if reserved_floor_for_others > 0:
+                    return None, (
+                        f"model call budget would be exceeded: {call_index}/{effective_budget} "
+                        f"({call_budget} ceiling minus {reserved_floor_for_others} calls "
+                        "reserved for pending later phases)"
+                    )
+                return None, f"model call budget would be exceeded: {call_index}/{call_budget}"
+            if input_budget > 0 and projected_input > input_budget:
+                return None, (
+                    "input token budget would be exceeded: "
+                    f"{projected_input}/{input_budget} estimated tokens"
+                )
+            if projected_output > output_budget:
+                return None, (
+                    "output token budget would be exceeded: "
+                    f"{projected_output}/{output_budget} reserved tokens"
+                )
+            state.pending_model_calls += 1
+            state.pending_input_tokens += input_reserve
+            state.pending_output_tokens += output_reserve
+            # Every reservation is settled as exactly one consumed call
+            # (settle runs in a finally), so counting at reserve time is an
+            # accurate per-class call ledger for floor accounting.
+            state.floor_class_calls[budget_class] = (
+                state.floor_class_calls.get(budget_class, 0) + 1
+            )
+            return (
+                _ModelBudgetReservation(
+                    call_index=call_index,
+                    input_tokens=input_reserve,
+                    output_tokens=output_reserve,
+                ),
+                None,
+            )
+
+    @staticmethod
+    async def _settle_model_budget(
+        state: HarnessRunState,
+        reservation: _ModelBudgetReservation,
+        result: ModelResult | None,
+    ) -> None:
+        """Release a reservation and commit provider-reported usage atomically."""
+
+        async with state.budget_lock:
+            state.pending_model_calls = max(0, state.pending_model_calls - 1)
+            state.pending_input_tokens = max(
+                0, state.pending_input_tokens - reservation.input_tokens
+            )
+            state.pending_output_tokens = max(
+                0, state.pending_output_tokens - reservation.output_tokens
+            )
+            state.budget_consumed_calls += 1
+            if result is not None:
+                state.budget_consumed_input_tokens += max(0, result.input_tokens)
+                state.budget_consumed_output_tokens += max(0, result.output_tokens)
 
     def _doc_budget_key(self, target: str) -> str:
         for doc_name in self._required_docs:
@@ -1121,6 +1586,9 @@ Fallback plan example:
         from mcp_server.providers.custom.pipeline.phases.phase26_scorecard import Phase26Scorecard
         from mcp_server.providers.custom.pipeline.phases.phase28_bundles import Phase28Bundles
         from mcp_server.providers.custom.pipeline.phases.phase3_docs import Phase3Docs
+        from mcp_server.providers.custom.pipeline.phases.phase37_business_topology import (
+            Phase37BusinessTopology,
+        )
         from mcp_server.providers.custom.pipeline.phases.phase4_cleanup import Phase4Cleanup
         from mcp_server.providers.custom.pipeline.evidence_quality_gate import EvidenceQualityGate
 
@@ -1141,10 +1609,36 @@ Fallback plan example:
                 f"Scan output is missing or corrupt for project {ctx.project_id!r}. "
                 "Re-run the scan and try again."
             ) from exc
+
+        # Composite sub-project scoping: when this run is bound to one partition,
+        # filter the facts manifest to that sub-project's units/groups before any
+        # phase, coverage check, or call-budget computation runs. Downstream code
+        # keys everything off ``state.facts_manifest`` so this single filter
+        # scopes the entire pipeline. Non-partitioned runs are unaffected.
+        if ctx.partition is not None:
+            from mcp_server.providers.custom.partition_planner import filter_manifest
+
+            scoped = filter_manifest(facts, ctx.partition)
+            await log_cb(
+                ctx.project_id,
+                f"[custom] partition {ctx.partition.name!r}: "
+                f"{scoped.unit_count}/{facts.unit_count} units, "
+                f"{len(scoped.groups)}/{len(facts.groups)} groups",
+                "info",
+            )
+            facts = scoped
+
         state = HarnessRunState(project_id=ctx.project_id, facts_manifest=facts)
         facts_path = ctx.staging_dir / "facts_manifest.json"
         facts.write(facts_path)
         self._expand_per_job_docs(facts)
+
+        # Partition-scoped runs must not leak sibling sub-projects' units into
+        # scan-wide derived artifacts; every service below that re-reads the raw
+        # scan gets the scoped unit allowlist. ``None`` => whole scan, unchanged.
+        partition_allowlist: set[str] | None = (
+            facts.unit_names() if ctx.partition is not None else None
+        )
 
         # Talend-specific intelligence: ESB detection + activity flags.
         if facts.platform.lower() == "talend":
@@ -1152,6 +1646,14 @@ Fallback plan example:
                 scan_json_path = scan_output_dir / "scan_result.json"
                 if scan_json_path.exists():
                     scan_result = json.loads(scan_json_path.read_text(encoding="utf-8", errors="replace"))
+                    if partition_allowlist is not None:
+                        scan_result = {
+                            **scan_result,
+                            "jobs": [
+                                job for job in scan_result.get("jobs", []) or []
+                                if str(job.get("job_id") or job.get("name") or "") in partition_allowlist
+                            ],
+                        }
                     write_talend_intelligence(scan_result, ctx.staging_dir)
             except Exception as exc:
                 logger.warning("[custom] Talend intelligence extraction failed (non-fatal): %s", exc)
@@ -1161,10 +1663,17 @@ Fallback plan example:
             scan_output_dir=scan_output_dir,
             facts_manifest=facts,
             staging_dir=ctx.staging_dir,
+            unit_allowlist=partition_allowlist,
         )
         state.engineering_fact_artifacts = [
             path.name for path in engineering_artifacts if path.parent == ctx.staging_dir
         ]
+        # Composite sub-project runs: surface this partition's deterministic
+        # cross-project references (job-call edges, shared systems) as an
+        # engineering-fact artifact so Phase 2/3 document them as external
+        # links without loading any other sub-project's content.
+        if ctx.partition is not None:
+            self._materialize_cross_project_refs(ctx, state)
         materialize_prompt_packs(ctx.staging_dir, ctx.analysis_guide_file)
         if self._plugin_mode:
             self._prepare_pack_artifacts(ctx)
@@ -1200,6 +1709,41 @@ Fallback plan example:
         # scoped subset and preserve all unaffected baseline docs byte-stable.
         if ctx.scoped_docs is not None:
             await self._apply_scoped_docs(ctx, log_cb)
+
+        # P0.1: size the run budget from the actual bin-packed work plan
+        # (must run after per-job expansion and scoped-doc narrowing so the
+        # required-doc set is final).
+        budget_plan = self._plan_call_budget(ctx, state)
+        await log_cb(
+            ctx.project_id,
+            "[custom] call budget plan: "
+            f"agents={budget_plan['evidence_agent_calls']} "
+            f"phase1={budget_plan['phase1_tasks']} phase2={budget_plan['phase2_tasks']} "
+            f"retries={budget_plan['phase2_retries']} "
+            f"synthesis={budget_plan['phase2_synthesis']} scorecard={budget_plan['scorecard_calls']} "
+            f"phase3={budget_plan['phase3_calls']} topology={budget_plan['topology_calls']} "
+            f"base={config.docgen_call_budget_base} planned={budget_plan['planned']} "
+            f"ceiling={budget_plan['ceiling']} "
+            f"phase3_floor={budget_plan['phase3_floor']} "
+            f"topology_floor={budget_plan['topology_floor']} "
+            f"output_budget={self._run_output_token_budget(state)}",
+            "info",
+        )
+        # R2.2: standard runs with the LLM scorecard disabled publish a
+        # deterministic omitted-scorecard marker so every consumer degrades
+        # gracefully: the 07 doc and executive summary receive it as context,
+        # and the enterprise doc-set validator (which requires a scorecard
+        # file) passes without an LLM call. Plugin packs manage their own
+        # scorecard policy and artifacts.
+        if not self._plugin_mode and self._phase_policy("scorecard") == "skip":
+            self._write_omitted_scorecard_marker(ctx, state)
+            await log_cb(
+                ctx.project_id,
+                "[custom] Phase 2.6 LLM scorecard disabled "
+                "(MCP_DOCGEN_LLM_SCORECARD_ENABLED=0); deterministic "
+                "omitted-scorecard marker written",
+                "info",
+            )
 
         # ── Resolve investigation and analysis policies ───────────────────────
         investigation_policy = self._phase_policy("investigation")
@@ -1276,6 +1820,7 @@ Fallback plan example:
             Phase28Bundles(helpers),
             EvidenceQualityGate(),
             Phase3Docs(helpers, execution_plan=dag_execution_plan),
+            Phase37BusinessTopology(helpers),
             Phase4Cleanup(helpers),
         ]
 
@@ -1472,11 +2017,61 @@ Fallback plan example:
             *[_process_group(group) for group in ctx.preprocess_groups],
             return_exceptions=True,
         )
-        group_errors = [r for r in gather_results if isinstance(r, BaseException)]
-        if group_errors:
-            for exc in group_errors:
-                await log_cb(ctx.project_id, f"[custom] Phase 2 group failed: {exc}", "error")
-            raise group_errors[0]
+        await self._contain_phase2_group_failures(
+            ctx, state, list(zip(ctx.preprocess_groups, gather_results)), log_cb
+        )
+
+    async def _contain_phase2_group_failures(
+        self,
+        ctx: DocGenContext,
+        state: HarnessRunState,
+        results: list[tuple[str, object]],
+        log_cb: LogCallback,
+    ) -> None:
+        """Salvage-first containment for per-group Phase 2 failures (P0.2).
+
+        Replaces the fail-closed ``raise group_errors[0]`` chain: a failed
+        group becomes a PARTIAL stub (coverage markers + explicit
+        analysis-unavailable statements), joins ``state.thin_bundle_groups``
+        (Phase 3 prepends the evidence notice) and ``state.partial_groups``,
+        and the run continues so accepted sibling groups still ship. The stub
+        intentionally fails ``group_analysis_is_complete`` so resume retries
+        exactly the failed groups.
+        """
+        analysis_dir = ctx.staging_dir / "_analysis"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+        failed = [(g, r) for g, r in results if isinstance(r, BaseException)]
+        if not failed:
+            return
+        for group, exc in failed:
+            await log_cb(
+                ctx.project_id,
+                f"[custom] Phase 2 group {group} failed ({exc}); marking PARTIAL "
+                "and continuing -- resume retries this group",
+                "error",
+            )
+            units = self._group_units(state, group)
+            analysis_path = analysis_dir / f"{group}.md"
+            if not analysis_path.exists() or analysis_path.stat().st_size == 0:
+                analysis_path.write_text(
+                    _partial_group_stub(group, units, str(exc)[:300]), encoding="utf-8"
+                )
+            self._write_phase2_coverage_record(
+                ctx, group, units, analysis_path, status="partial"
+            )
+            if group not in state.thin_bundle_groups:
+                state.thin_bundle_groups.append(group)
+            if group not in state.partial_groups:
+                state.partial_groups.append(group)
+            state.warnings.append(
+                f"Phase 2 group {group} is PARTIAL in this run: {str(exc)[:200]}"
+            )
+        await log_cb(
+            ctx.project_id,
+            f"[custom] Phase 2 salvage: {len(failed)}/{len(results)} group(s) "
+            "PARTIAL; accepted groups proceed to Phase 3 with an evidence notice",
+            "warning",
+        )
 
     def _phase2_pack_contract_records(
         self,
@@ -1520,6 +2115,469 @@ Fallback plan example:
         log_cb: LogCallback,
         phase_name: str = "phase2",
     ) -> None:
+        """Run the claim-ledger Phase 2 architecture for one scanner group."""
+
+        await self._phase2_group_claims(
+            ctx,
+            state,
+            runtime,
+            group,
+            shared_context,
+            analysis_dir,
+            preprocess_dir,
+            log_cb,
+            phase_name=phase_name,
+        )
+
+    async def _phase2_group_claims(
+        self,
+        ctx: DocGenContext,
+        state: HarnessRunState,
+        runtime: AgentTaskRuntime,
+        group: str,
+        shared_context: list[Path],
+        analysis_dir: Path,
+        preprocess_dir: Path,
+        log_cb: LogCallback,
+        phase_name: str = "phase2",
+    ) -> None:
+        """Extract validated claims and render the Phase 2 compatibility view.
+
+        Rich scanner output remains on disk.  Each paid request receives one
+        canonical unit task and one bounded documentation concern.  The
+        accepted JSON claim ledger is authoritative; Markdown is a
+        deterministic compatibility projection for the existing Phase 3
+        bundle and validation pipeline.
+        """
+
+        analysis_path = analysis_dir / f"{group}.md"
+        if (
+            ctx.resume_state is not None or ctx.scoped_docs is not None
+        ) and analysis_path.exists() and analysis_path.stat().st_size > 500:
+            if group_analysis_is_complete(
+                analysis_path,
+                state.facts_manifest.platform,
+                require_sections=not self._plugin_mode,
+            ):
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] REUSE: skipping Phase 2 claims for {group} (accepted ledger view)",
+                    "info",
+                )
+                self._write_phase2_coverage_record(
+                    ctx, group, self._group_units(state, group), analysis_path
+                )
+                return
+
+        group_units = self._group_units(state, group)
+        if not group_units:
+            raise RuntimeError(
+                "Phase 2 scanner contract mismatch: preprocess group "
+                f"{group!r} has no canonical units in facts_manifest"
+            )
+        group_file = preprocess_dir / f"{group}.md"
+        if not group_file.exists():
+            raise RuntimeError(
+                f"Phase 2 source group file missing: "
+                f"{group_file.relative_to(ctx.staging_dir).as_posix()}"
+            )
+        if group_file.stat().st_size < config.min_investigation_content_bytes:
+            analysis_path.write_text(_empty_group_stub(group, group_units), encoding="utf-8")
+            self._write_phase2_coverage_record(
+                ctx, group, group_units, analysis_path, status="scanner_limited"
+            )
+            return
+
+        tasks = plan_evidence_tasks(
+            group,
+            group_file,
+            group_units,
+            analysis_dir,
+            config.phase2_task_evidence_bytes,
+            max_units_per_task=max(1, config.phase2_claim_units_per_task),
+        )
+        if not tasks:
+            raise RuntimeError(f"Phase 2 evidence task planning produced no tasks for {group}")
+        record_manifest_chunks(
+            ctx.staging_dir, phase="phase2_claims", group=group, chunks=[task.path for task in tasks]
+        )
+        investigation_context = self._investigation_context(ctx, group)
+        batches: list[Phase2ClaimBatch] = []
+        planned_specs: list[ClaimTaskSpec] = []
+        for task in tasks:
+            planned_specs.extend(
+                plan_claim_tasks(
+                    task,
+                    evidence_bytes=task.path.stat().st_size,
+                    dense_threshold_bytes=config.phase2_dense_unit_bytes,
+                    max_output_tokens=config.phase2_claim_max_tokens,
+                )
+            )
+
+        await log_cb(
+            ctx.project_id,
+            f"[custom] Phase 2 claim plan: {group} -> {len(tasks)} unit packet(s), "
+            f"{len(planned_specs)} concern task(s)",
+            "info",
+        )
+        for spec in planned_specs:
+            batches.extend(
+                await self._run_phase2_claim_spec(
+                    ctx,
+                    state,
+                    runtime,
+                    group,
+                    spec,
+                    shared_context,
+                    investigation_context,
+                    log_cb,
+                    phase_name=phase_name,
+                )
+            )
+
+        claim_dir = analysis_dir / "_claims"
+        ledger_path = claim_dir / f"{self._safe_name(group)}.jsonl"
+        write_claim_ledger(
+            ledger_path,
+            group=group,
+            unit_names=group_units,
+            batches=batches,
+        )
+        model_analysis = render_claims_as_markdown(
+            group=group,
+            unit_names=group_units,
+            batches=batches,
+        )
+        coverage_block = "\n".join(f"- COVERED: {name}" for name in group_units)
+        content = (
+            f"# Phase 2 Analysis: {group}\n\n"
+            "## Coverage\n\n"
+            f"{coverage_block}\n\n"
+            "## Model Analysis\n\n"
+            f"{model_analysis}"
+        )
+        analysis_path.write_text(content, encoding="utf-8")
+        receipt = {
+            "schema_version": "phase2-claims-v1",
+            "group": group,
+            "unit_count": len(group_units),
+            "physical_evidence_tasks": len(tasks),
+            "planned_concern_tasks": len(planned_specs),
+            "accepted_or_fallback_batches": len(batches),
+            "claim_count": sum(len(batch.claims) for batch in batches),
+            "unknown_claim_count": sum(
+                claim.kind == "unknown" for batch in batches for claim in batch.claims
+            ),
+            "ledger": ledger_path.relative_to(ctx.staging_dir).as_posix(),
+        }
+        (claim_dir / f"{self._safe_name(group)}.receipt.json").write_text(
+            json.dumps(receipt, indent=2), encoding="utf-8"
+        )
+        self._write_phase2_coverage_record(ctx, group, group_units, analysis_path)
+        await log_cb(
+            ctx.project_id,
+            f"[custom] Phase 2 claims complete: {group} "
+            f"({receipt['claim_count']} claims, {receipt['unknown_claim_count']} unknowns)",
+            "info",
+        )
+
+    async def _run_phase2_claim_spec(
+        self,
+        ctx: DocGenContext,
+        state: HarnessRunState,
+        runtime: AgentTaskRuntime,
+        group: str,
+        spec: ClaimTaskSpec,
+        shared_context: list[Path],
+        investigation_context: list[Path],
+        log_cb: LogCallback,
+        *,
+        phase_name: str,
+    ) -> list[Phase2ClaimBatch]:
+        """Run one claim spec, recursively re-planning provider truncation."""
+
+        allowed_units = spec.task.all_units
+        evidence_slice = EvidenceRegistryBuilder(ctx.staging_dir).build_phase2_slice(
+            spec.target_id, allowed_units
+        )
+        evidence_brief = ctx.staging_dir / "_evidence_registry" / "evidence_brief.md"
+        packet = build_phase2_context_packet(
+            staging_dir=ctx.staging_dir,
+            facts=state.facts_manifest,
+            group=group,
+            task_id=spec.target_id,
+            unit_names=allowed_units,
+            task_evidence=spec.task.path,
+            shared_context=[path for path in shared_context if path != evidence_brief],
+            investigation_context=investigation_context,
+            scoped_evidence=evidence_slice,
+            max_bytes=config.phase2_task_context_bytes,
+            max_scoped_artifact_bytes=config.phase2_filtered_map_bytes,
+            artifact_names=spec.artifact_names,
+            include_prompt_pack=False,
+            include_investigation=True,
+        )
+        context_files = list(packet.files)
+        prompt = claim_task_prompt(
+            facts=state.facts_manifest,
+            group=group,
+            spec=spec,
+        )
+        opts = ModelOptions(
+            max_tokens=min(config.phase2_claim_max_tokens, spec.max_output_tokens),
+            temperature=0.0,
+            # One adapter-level retry is reserved for retryable transport or
+            # rate-limit failures. Content-completeness failures (including
+            # finish_reason=length) return immediately from the adapter.
+            retries=1,
+            timeout_s=300.0,
+            json_mode=True,
+            provider_options=self._provider_options(
+                self.model_provider, phase="phase2_claim"
+            ),
+        )
+        contract = AgentTaskContract(
+            phase="phase2_group",
+            target_id=spec.target_id,
+            allowed_units=allowed_units,
+            allowed_groups=[group],
+            allowed_categories=self._default_evidence_categories(),
+            starter_context_files=[
+                path.relative_to(ctx.staging_dir).as_posix()
+                for path in context_files
+                if path.exists()
+            ],
+            tool_budget=default_tool_budget(),
+            input_budget=default_input_budget(),
+            expected_artifact="phase2 evidence claim JSON",
+            max_attempts=min(2, config.agent_max_task_attempts),
+        )
+        try:
+            task_evidence_text = spec.task.path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            task_evidence_text = ""
+
+        async def _floored(batch: Phase2ClaimBatch) -> list[Phase2ClaimBatch]:
+            """Apply the deterministic per-claim demotion floor (R2.4)."""
+            adjusted, notes = apply_claim_floors(batch, task_evidence_text or None)
+            if notes:
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] Phase 2 claim floor for {spec.target_id}: "
+                    f"{len(notes)} claim(s) demoted/coerced "
+                    f"(first: {notes[0]})",
+                    "info",
+                )
+            return [adjusted]
+
+        cached = runtime.accepted_output(contract) if ctx.resume_state is not None else None
+        if cached is not None:
+            try:
+                return await _floored(
+                    parse_claim_batch(
+                        cached,
+                        expected_group=group,
+                        expected_task_id=spec.target_id,
+                        expected_concern=spec.concern,
+                    )
+                )
+            except (json.JSONDecodeError, ValueError):
+                pass
+        if ctx.resume_state is not None:
+            status_path = runtime.task_dir(contract) / "status.json"
+            try:
+                prior_status = json.loads(status_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                prior_status = {}
+            if prior_status.get("incomplete_reason") == "length":
+                children = split_claim_task(spec)
+                if children is not None:
+                    await log_cb(
+                        ctx.project_id,
+                        f"[custom] RESUME: reusing length signal for {spec.target_id}; "
+                        "continuing with its smaller semantic children",
+                        "info",
+                    )
+                    resumed_batches: list[Phase2ClaimBatch] = []
+                    for child in children:
+                        resumed_batches.extend(
+                            await self._run_phase2_claim_spec(
+                                ctx,
+                                state,
+                                runtime,
+                                group,
+                                child,
+                                shared_context,
+                                investigation_context,
+                                log_cb,
+                                phase_name=phase_name,
+                            )
+                        )
+                    return resumed_batches
+
+        async def _dispatch(
+            contract_task: AgentTaskContract, tools: ScopedEvidenceTools
+        ) -> ModelResult:
+            # R2.6 cache-friendly retry composition: providers concatenate
+            # prompt + context files into one user message, so appending the
+            # validation-gap feedback to the PROMPT shifted every evidence
+            # byte after it and invalidated the provider prefix cache for the
+            # whole packet on the repair attempt. The prompt and the evidence
+            # packet stay byte-stable; gap feedback is a transient file
+            # appended at the TAIL (same pattern as the slice instruction).
+            effective_context = context_files
+            if contract_task.attempt > 1:
+                gaps = "\n".join(
+                    f"- {gap}" for gap in contract_task.validation_gaps
+                ) or "- Previous JSON failed validation."
+                repair_tail = transient_dir(
+                    ctx.staging_dir, "claim_repair", phase_name
+                ) / f"{self._safe_name(contract_task.target_id)}__attempt_{contract_task.attempt}.md"
+                transient_write(
+                    repair_tail,
+                    "REPAIR INSTRUCTION: Return a complete corrected replacement "
+                    f"JSON object. Fix only these validation gaps:\n{gaps}",
+                )
+                effective_context = [*context_files, repair_tail]
+            return await self._complete_core_generation(
+                ctx,
+                state,
+                provider=self.model_provider,
+                phase=f"{phase_name}.claims",
+                target=contract_task.target_id,
+                prompt=prompt,
+                context_files=effective_context,
+                opts=opts,
+                log_cb=log_cb,
+                task_contract=contract_task,
+                scoped_tools=tools,
+            )
+
+        allowed_refs = self._allowed_component_refs(context_files)
+
+        def _validate(text: str) -> dict:
+            report = validate_claim_batch(
+                text,
+                facts=state.facts_manifest,
+                group=group,
+                spec=spec,
+                evidence_text=task_evidence_text or None,
+            )
+            return self._merge_component_ref_errors(
+                report,
+                text,
+                allowed_refs,
+                "this claim task's scoped evidence",
+            )
+
+        task_result = await runtime.run(contract, _dispatch, _validate)
+        if task_result.accepted:
+            return await _floored(
+                parse_claim_batch(
+                    task_result.result.text,
+                    expected_group=group,
+                    expected_task_id=spec.target_id,
+                    expected_concern=spec.concern,
+                )
+            )
+
+        if task_result.incomplete_reason == "length":
+            children = split_claim_task(spec)
+            if children is not None:
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] Phase 2 claim task {spec.target_id} reached its output limit; "
+                    f"re-planning into {children[0].target_id} and {children[1].target_id}",
+                    "warning",
+                )
+                batches: list[Phase2ClaimBatch] = []
+                for child in children:
+                    batches.extend(
+                        await self._run_phase2_claim_spec(
+                            ctx,
+                            state,
+                            runtime,
+                            group,
+                            child,
+                            shared_context,
+                            investigation_context,
+                            log_cb,
+                            phase_name=phase_name,
+                        )
+                    )
+                return batches
+
+        reason = (
+            task_result.incomplete_reason
+            or task_result.result.raw_error
+            or "claim validation failed"
+        )
+        # Round 3 salvage-first terminal path (verified failure: ONE invalid
+        # claim structurally rejected the whole batch and blanked every unit
+        # in the bin-packed task to UNKNOWN). When the final output parses as
+        # JSON, keep its individually valid claims and drop only the
+        # offenders; the honest unknown_batch remains the fallback for truly
+        # unparseable output.
+        final_text = (task_result.result.text or "").strip()
+        if final_text:
+            salvaged, salvage_notes = salvage_claim_batch(
+                final_text,
+                facts=state.facts_manifest,
+                group=group,
+                spec=spec,
+                allowed_component_refs=allowed_refs,
+            )
+            if salvaged is not None and salvaged.claims:
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] Phase 2 claim task {spec.target_id} rejected "
+                    f"({reason}); salvaged {len(salvaged.claims)} valid claim(s), "
+                    f"{len(salvage_notes)} adjustment(s)"
+                    + (f" (first: {salvage_notes[0]})" if salvage_notes else ""),
+                    "warning",
+                )
+                state.warnings.append(
+                    f"Phase 2 claim scope {spec.target_id} was salvaged per-claim "
+                    f"after terminal rejection ({reason}): "
+                    f"{len(salvaged.claims)} claim(s) kept"
+                )
+                # The group stays PARTIAL: content was dropped, the operator
+                # must see the gap, and resume retries the task.
+                if group not in state.thin_bundle_groups:
+                    state.thin_bundle_groups.append(group)
+                if group not in state.partial_groups:
+                    state.partial_groups.append(group)
+                return await _floored(salvaged)
+        await log_cb(
+            ctx.project_id,
+            f"[custom] Phase 2 claim task {spec.target_id} unavailable; "
+            f"recording explicit pipeline-gap unknowns: {reason}",
+            "warning",
+        )
+        state.warnings.append(
+            f"Phase 2 claim scope {spec.target_id} did not complete ({reason}); "
+            "scan evidence for its units exists — pipeline gap, not source absence"
+        )
+        # P0.2: a degraded claim scope marks its group PARTIAL so Phase 3
+        # carries the evidence notice and the operator sees the gap.
+        if group not in state.thin_bundle_groups:
+            state.thin_bundle_groups.append(group)
+        if group not in state.partial_groups:
+            state.partial_groups.append(group)
+        return [unknown_batch(group=group, spec=spec, reason=reason)]
+
+    async def _phase2_group_agent_legacy(
+        self,
+        ctx: DocGenContext,
+        state: HarnessRunState,
+        runtime: AgentTaskRuntime,
+        group: str,
+        shared_context: list[Path],
+        analysis_dir: Path,
+        preprocess_dir: Path,
+        log_cb: LogCallback,
+        phase_name: str = "phase2",
+    ) -> None:
             analysis_path = analysis_dir / f"{group}.md"
             # Reuse an existing group analysis when resuming a prior run OR when this
             # is a scoped reingestion (incremental staging restored the unchanged
@@ -1537,12 +2595,16 @@ Fallback plan example:
                 await log_cb(ctx.project_id, f"[custom] REUSE: cached Phase 2 for {group} is incomplete, regenerating", "info")
 
             group_units = self._group_units(state, group)
+            if not group_units:
+                raise RuntimeError(
+                    "Phase 2 scanner contract mismatch: preprocess group "
+                    f"{group!r} has no canonical units in facts_manifest"
+                )
             group_file = preprocess_dir / f"{group}.md"
             if not group_file.exists():
                 raise RuntimeError(f"Phase 2 source group file missing: {group_file.relative_to(ctx.staging_dir).as_posix()}")
-            file_bytes = group_file.stat().st_size if group_file.exists() else 0
             opts = ModelOptions(
-                max_tokens=min(config.phase3_max_tokens, max(config.phase2_max_tokens, file_bytes // 4)),
+                max_tokens=min(config.phase2_max_tokens, config.phase2_task_max_tokens),
                 temperature=0.1,
                 retries=1,
                 timeout_s=300.0,
@@ -1582,9 +2644,22 @@ Fallback plan example:
                 task_evidence = (
                     [evidence_slice]
                     if evidence_slice is not None
-                    else ([evidence_brief] if evidence_brief.exists() else [])
+                    else []
                 )
-                context_files = [*base_context, *task_evidence, *investigation_context, task.path]
+                packet = build_phase2_context_packet(
+                    staging_dir=ctx.staging_dir,
+                    facts=state.facts_manifest,
+                    group=group,
+                    task_id=target,
+                    unit_names=allowed_units,
+                    task_evidence=task.path,
+                    shared_context=base_context,
+                    investigation_context=investigation_context,
+                    scoped_evidence=task_evidence[0] if task_evidence else None,
+                    max_bytes=config.phase2_task_context_bytes,
+                    max_scoped_artifact_bytes=config.phase2_filtered_map_bytes,
+                )
+                context_files = list(packet.files)
                 contract = AgentTaskContract(
                     phase="phase2_group",
                     target_id=target,
@@ -1604,13 +2679,23 @@ Fallback plan example:
                     continue
 
                 async def _dispatch(contract_task: AgentTaskContract, tools: ScopedEvidenceTools) -> ModelResult:
+                    effective_prompt = prompt
+                    if contract_task.attempt > 1:
+                        gaps = "\n".join(
+                            f"- {gap}" for gap in contract_task.validation_gaps
+                        ) or "- Previous output failed validation."
+                        effective_prompt += (
+                            "\n\nThis is the single bounded replacement attempt. Return a complete "
+                            "replacement within the same compact output contract. Correct these "
+                            f"validation gaps directly:\n{gaps}"
+                        )
                     return await self._complete_core_generation(
                         ctx,
                         state,
                         provider=self.model_provider,
                         phase=phase_name,
                         target=contract_task.target_id,
-                        prompt=prompt,
+                        prompt=effective_prompt,
                         context_files=context_files,
                         opts=opts,
                         log_cb=log_cb,
@@ -1622,7 +2707,7 @@ Fallback plan example:
                 # own evidence (task file + investigation context) actually names.
                 # Anything else is fabrication (verified failure mode: invented
                 # component numbering for jobs outside the agent's evidence).
-                allowed_refs = self._allowed_component_refs([task.path, *investigation_context])
+                allowed_refs = self._allowed_component_refs(context_files)
                 # Bin-packed tasks (>1 job in one call) get job-scoped checking on
                 # top of the task-wide fallback: a component real for one job in
                 # the batch must not be accepted when attributed to a sibling job
@@ -1637,17 +2722,58 @@ Fallback plan example:
                     contract,
                     _dispatch,
                     lambda text, units=contract.allowed_units, refs=allowed_refs, jrefs=job_refs: self._merge_component_ref_errors(
-                        self._validate_agent_markdown(text, units),
+                        self._validate_phase2_task_output(
+                            text,
+                            units,
+                            platform=state.facts_manifest.platform,
+                            require_sections=not self._plugin_mode,
+                        ),
                         text,
                         refs,
                         "this task's evidence file",
                         job_refs=jrefs,
                     ),
                 )
-                if not task_result.result.success:
-                    raise RuntimeError(f"Phase 2 failed for {group}: {task_result.result.raw_error}")
                 if not task_result.accepted:
-                    await log_cb(ctx.project_id, f"[custom] Phase 2 task {target} has validation gaps; using repair ladder", "warning")
+                    # Salvage-first (P0.2): an unaccepted task marks its group
+                    # PARTIAL instead of aborting the run. Non-trivial output
+                    # is kept flagged; otherwise the task's units get an
+                    # explicit analysis-unavailable note. The group joins
+                    # thin_bundle_groups so Phase 3 carries the evidence notice.
+                    reason = (
+                        task_result.incomplete_reason
+                        or task_result.result.raw_error
+                        or task_result.status
+                    )
+                    await log_cb(
+                        ctx.project_id,
+                        f"[custom] Phase 2 task {target} was not accepted ({reason}); "
+                        "keeping partial output and continuing",
+                        "warning",
+                    )
+                    salvage_text = task_result.result.text.strip()
+                    if len(salvage_text.encode("utf-8")) >= 200:
+                        task_outputs.append(
+                            f"> PARTIAL (unvalidated) task output for {target}: {reason}\n\n"
+                            + salvage_text
+                        )
+                    else:
+                        unavailable = "\n".join(
+                            f"- {u}: analysis unavailable in this run ({reason})"
+                            for u in (task.all_units if multi_task else group_units)
+                        )
+                        task_outputs.append(
+                            f"### GROUP_SUMMARY\n\nPARTIAL: task {target} produced no "
+                            f"usable analysis.\n\n{unavailable}"
+                        )
+                    if group not in state.thin_bundle_groups:
+                        state.thin_bundle_groups.append(group)
+                    if group not in state.partial_groups:
+                        state.partial_groups.append(group)
+                    state.warnings.append(
+                        f"Phase 2 task {target} is PARTIAL in this run: {str(reason)[:200]}"
+                    )
+                    continue
                 task_outputs.append(task_result.result.text.strip())
 
             if multi_task:
@@ -1787,14 +2913,18 @@ Fallback plan example:
         synthesis_input = transient_dir(
             ctx.staging_dir, f"phase2_synthesis_{self._safe_name(group)}.md"
         )
+        summary_source = summary_fallback.strip() or (
+            "### GROUP_SUMMARY\n\nCanonical units in this group:\n"
+            + "\n".join(f"- {name}" for name in group_units)
+        )
         transient_write(
             synthesis_input,
-            "# Assembled Per-Job Phase 2 Analysis\n\n"
-            f"{assembled_analysis.strip()}\n",
+            "# Accepted Per-Task Phase 2 Summaries\n\n"
+            f"{summary_source}\n",
         )
         prompt = (
-            f"The supplied file contains the assembled per-job Phase 2 analysis sections for group "
-            f"`{group}`, preserved verbatim from per-job analysis tasks. Write ONLY the two "
+            f"The supplied packet contains accepted scoped summaries and deterministic relationship "
+            f"facts for group `{group}`. Write ONLY the two "
             "group-level markdown sections below, in this order, headed exactly as shown. Use only "
             "the supplied evidence. Preserve exact canonical unit names. Do not invent facts and do "
             "not restate the per-job sections.\n\n"
@@ -1810,13 +2940,26 @@ Fallback plan example:
             + "\n".join(f"- {name}" for name in group_units)
         )
         synthesis_opts = ModelOptions(
-            max_tokens=min(config.phase3_max_tokens, max(8_000, config.phase2_max_tokens // 2)),
+            max_tokens=min(config.phase2_synthesis_max_tokens, config.phase2_max_tokens),
             temperature=0.1,
             retries=1,
             timeout_s=opts.timeout_s,
             provider_options=opts.provider_options,
         )
-        context_files = [*shared_context, *investigation_context, synthesis_input]
+        synthesis_packet = build_phase2_context_packet(
+            staging_dir=ctx.staging_dir,
+            facts=state.facts_manifest,
+            group=group,
+            task_id=f"{group}_synthesis",
+            unit_names=group_units,
+            task_evidence=synthesis_input,
+            shared_context=shared_context,
+            investigation_context=investigation_context,
+            scoped_evidence=None,
+            max_bytes=config.phase2_synthesis_context_bytes,
+            max_scoped_artifact_bytes=config.phase2_filtered_map_bytes,
+        )
+        context_files = list(synthesis_packet.files)
         result = await self._complete_core_generation(
             ctx,
             state,
@@ -1910,11 +3053,9 @@ Fallback plan example:
             *[_process_group(group) for group in ctx.preprocess_groups],
             return_exceptions=True,
         )
-        group_errors = [r for r in gather_results if isinstance(r, BaseException)]
-        if group_errors:
-            for exc in group_errors:
-                await log_cb(ctx.project_id, f"[custom] Phase 2 direct group failed: {exc}", "error")
-            raise group_errors[0]
+        await self._contain_phase2_group_failures(
+            ctx, state, list(zip(ctx.preprocess_groups, gather_results)), log_cb
+        )
 
     async def _phase2_analysis_dag_tiered(
         self,
@@ -1975,11 +3116,9 @@ Fallback plan example:
             *[_process_group(group) for group in ctx.preprocess_groups],
             return_exceptions=True,
         )
-        errors = [r for r in results if isinstance(r, BaseException)]
-        if errors:
-            for exc in errors:
-                await log_cb(ctx.project_id, f"[custom] DAG Phase 2 group failed: {exc}", "error")
-            raise errors[0]
+        await self._contain_phase2_group_failures(
+            ctx, state, list(zip(ctx.preprocess_groups, results)), log_cb
+        )
 
     def _phase2_skeleton_payload(
         self,
@@ -2039,6 +3178,11 @@ Fallback plan example:
             await log_cb(ctx.project_id, f"[custom] REUSE: cached Phase 2 for {group} is incomplete, regenerating", "info")
 
         group_units = self._group_units(state, group)
+        if not group_units:
+            raise RuntimeError(
+                "Phase 2 scanner contract mismatch: preprocess group "
+                f"{group!r} has no canonical units in facts_manifest"
+            )
         group_file = preprocess_dir / f"{group}.md"
         if not group_file.exists():
             raise RuntimeError(
@@ -2056,8 +3200,53 @@ Fallback plan example:
             )
             return
 
+        # Standard generation has one Phase 2 evidence contract regardless of
+        # whether the planner labels a project "small" or "enterprise".  This
+        # avoids the historical cliff where small projects received one broad,
+        # exhaustive prose request while larger projects used bounded tasks.
+        # Explicit bounded plugin packs keep their authored Phase 2 contract.
+        pack_phase2_override = (
+            self.plugin_pack_dir / "prompts" / "phase2.md"
+            if self.plugin_pack_dir and self._phase_policy("analysis") == "bounded"
+            else None
+        )
+        if not (pack_phase2_override and pack_phase2_override.exists()):
+            await self._phase2_group_agent(
+                ctx,
+                state,
+                AgentTaskRuntime(ctx.staging_dir, state.facts_manifest),
+                group,
+                shared_context,
+                analysis_dir,
+                preprocess_dir,
+                log_cb,
+            )
+            return
+
+        # The direct path is an optimization, not a separate evidence contract.
+        # If one group no longer fits a single bounded source packet, promote it
+        # to the same unit-boundary planner used by enterprise/composite scans.
+        if file_bytes > config.phase2_task_evidence_bytes:
+            await log_cb(
+                ctx.project_id,
+                f"[custom] Phase 2 direct: promoting {group} to bounded unit tasks "
+                f"({file_bytes} source bytes)",
+                "info",
+            )
+            await self._phase2_group_agent(
+                ctx,
+                state,
+                AgentTaskRuntime(ctx.staging_dir, state.facts_manifest),
+                group,
+                shared_context,
+                analysis_dir,
+                preprocess_dir,
+                log_cb,
+            )
+            return
+
         opts = ModelOptions(
-            max_tokens=min(config.phase3_max_tokens, max(config.phase2_max_tokens, file_bytes // 4)),
+            max_tokens=min(config.phase2_max_tokens, config.phase2_task_max_tokens),
             temperature=0.1,
             retries=1,
             timeout_s=300.0,
@@ -2068,11 +3257,6 @@ Fallback plan example:
         # Pack authors write exactly what they want analysed — no mandatory enterprise
         # section structure appended. Unit names and facts summary are always appended
         # so the model knows what it is covering.
-        pack_phase2_override = (
-            self.plugin_pack_dir / "prompts" / "phase2.md"
-            if self.plugin_pack_dir and self._phase_policy("analysis") == "bounded"
-            else None
-        )
         if pack_phase2_override and pack_phase2_override.exists():
             unit_list = "\n".join(f"- {u}" for u in group_units)
             prompt = (
@@ -2094,12 +3278,25 @@ Fallback plan example:
                 required_docs=self._required_docs,
             )
 
-        investigation_summary = ctx.staging_dir / "_investigation" / "_summary.md"
-        context_files = [
-            *shared_context,
-            *([investigation_summary] if investigation_summary.exists() else []),
-            group_file,
-        ]
+        investigation_context = self._investigation_context(ctx, group)
+        evidence_slice = EvidenceRegistryBuilder(ctx.staging_dir).build_phase2_slice(
+            f"direct_{self._safe_name(group)}", group_units
+        )
+        evidence_brief = ctx.staging_dir / "_evidence_registry" / "evidence_brief.md"
+        packet = build_phase2_context_packet(
+            staging_dir=ctx.staging_dir,
+            facts=state.facts_manifest,
+            group=group,
+            task_id=f"direct_{group}",
+            unit_names=group_units,
+            task_evidence=group_file,
+            shared_context=[path for path in shared_context if path != evidence_brief],
+            investigation_context=investigation_context,
+            scoped_evidence=evidence_slice,
+            max_bytes=config.phase2_task_context_bytes,
+            max_scoped_artifact_bytes=config.phase2_filtered_map_bytes,
+        )
+        context_files = list(packet.files)
 
         result = await self._complete_core_generation(
             ctx,
@@ -2120,6 +3317,17 @@ Fallback plan example:
             result.text.strip(),
             shared_context, [], group_file, opts, log_cb,
         )
+        validation = self._validate_phase2_task_output(
+            text,
+            group_units,
+            platform=state.facts_manifest.platform,
+            require_sections=not self._plugin_mode,
+        )
+        if not validation["ok"]:
+            raise RuntimeError(
+                f"Phase 2 direct output for {group} failed validation: "
+                + "; ".join(validation["errors"][:10])
+            )
         analysis_path.write_text(text, encoding="utf-8")
         self._write_phase2_coverage_record(ctx, group, group_units, analysis_path)
         await log_cb(ctx.project_id, f"[custom] Phase 2 direct complete: {group}", "info")
@@ -2292,6 +3500,34 @@ Fallback plan example:
                 await log_cb(ctx.project_id, f"[custom] Phase 2 targeted repair appended to {target.name}", "info")
 
         await asyncio.gather(*[_repair_group(group, units) for group, units in units_by_group.items()])
+
+    @staticmethod
+    def _write_omitted_scorecard_marker(ctx: DocGenContext, state: HarnessRunState) -> None:
+        """Write the deterministic marker replacing the disabled LLM scorecard (R2.2).
+
+        Pure Python (no LLM, no invented scores): states canonical inventory
+        facts and instructs downstream doc writers to mark scorecard-derived
+        dimensions as not computed. Satisfies the enterprise doc-set validator
+        (which requires a non-trivial ``_assessment/scorecard.md``) and feeds
+        the 07 doc / executive summary context so they degrade explicitly
+        instead of fabricating scores.
+        """
+        assessment_dir = ctx.staging_dir / "_assessment"
+        assessment_dir.mkdir(parents=True, exist_ok=True)
+        (assessment_dir / "scorecard.md").write_text(
+            "# Assessment Scorecard\n\n"
+            f"Canonical inventory: {state.facts_manifest.unit_count} "
+            f"{state.facts_manifest.canonical_unit_label} across "
+            f"{len(state.facts_manifest.groups)} groups.\n\n"
+            "> **SCORECARD OMITTED:** the LLM quality/risk scorecard is "
+            "disabled for this run (MCP_DOCGEN_LLM_SCORECARD_ENABLED=0). "
+            "No dimension scores, ratings, or rankings were computed. "
+            "Documents must present risk and quality findings directly from "
+            "the Phase 2 evidence (RISK_FLAGS claims, engineering fact maps, "
+            "known_risks) and must mark scorecard-derived dimensions as not "
+            "computed rather than inventing scores.\n",
+            encoding="utf-8",
+        )
 
     async def _reduce_split_scorecard(
         self,
@@ -2641,19 +3877,22 @@ Fallback plan example:
     ) -> None:
         self._apply_private_analysis_packs(ctx)
         scorecard = ctx.staging_dir / "_assessment" / "scorecard.md"
+        # Whole-partition deterministic facts shared by every doc writer (and
+        # every slice of a partitioned doc) so no two outputs can disagree on
+        # scanner-derived counts.
+        self._write_cross_cutting_facts(ctx, state)
         _doc_write_provider = self._provider_for_phase("doc_write")
-        opts = ModelOptions(
-            max_tokens=config.phase3_max_tokens,
-            temperature=0.1,
-            retries=1,
-            timeout_s=300.0,
-            provider_options=self._provider_options(_doc_write_provider),
-        )
 
         _calls_lock = asyncio.Lock()
         runtime = AgentTaskRuntime(ctx.staging_dir, state.facts_manifest)
 
         async def _write_one(doc_name: str) -> None:
+            """Write one document. Salvage-first: NEVER raises for a per-doc
+            failure -- a failed/rejected doc becomes a stub (or a truncated
+            accepted doc on an output-cap hit), an ``_assessment`` record, and
+            a resume marker (the task's non-accepted status), and the run
+            continues. One bad document must not sink its accepted siblings.
+            """
             doc_prompt_text = doc_prompt(
                 state.facts_manifest,
                 doc_name,
@@ -2663,6 +3902,16 @@ Fallback plan example:
                 scoped_unit=self._per_job_doc_units.get(doc_name),
                 nexus_presentation=ctx.nexus_presentation,
                 private_analysis_instructions=self._private_analysis_instructions.get(doc_name, ""),
+                unit_reference=(
+                    doc_name in self._per_job_doc_units and self._plugin_manifest is None
+                ),
+            )
+            opts = ModelOptions(
+                max_tokens=self._doc_output_ceiling(doc_name, state),
+                temperature=0.1,
+                retries=1,
+                timeout_s=300.0,
+                provider_options=self._provider_options(_doc_write_provider),
             )
             context_files = self._phase3_context_files(ctx, doc_name)
             if scorecard.exists() and not self._pack_contract_mode:
@@ -2703,11 +3952,20 @@ Fallback plan example:
                 task_result = await runtime.run(
                     contract,
                     _dispatch,
-                    lambda text, doc=doc_name: self._validate_phase3_doc(text, doc),
+                    lambda text, doc=doc_name: self._validate_phase3_doc(text, doc, state),
                 )
                 result = task_result.result
             if not result.success:
-                raise RuntimeError(f"Doc generation failed for {doc_name}: {result.raw_error}")
+                self._salvage_failed_doc(ctx, state, doc_name, result)
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] Phase 3 doc {doc_name} did not complete "
+                    f"({(result.metadata or {}).get('incomplete_reason') or 'failed'}): "
+                    f"{result.raw_error}; salvage disposition="
+                    f"{state.failed_docs[-1]['disposition']} -- run continues",
+                    "warning",
+                )
+                return
             # Fast-fail near-empty output before expensive validators run on it.
             quick = self._validate_agent_markdown(result.text, [], min_bytes=150)
             if not quick["ok"]:
@@ -2723,30 +3981,196 @@ Fallback plan example:
             (ctx.staging_dir / f"{doc_name}.md").write_text(content, encoding="utf-8")
             await log_cb(ctx.project_id, f"[custom] Phase 3 doc complete: {doc_name}", "info")
 
+        async def _run_batches(doc_names: list[str]) -> None:
+            i = 0
+            while i < len(doc_names):
+                batch_size = 1 if state.adaptive_serial_generation else max(1, self._concurrency_for_phase("doc_write", config.agent_phase3_concurrency))
+                batch = doc_names[i : i + batch_size]
+                batch_results = await asyncio.gather(
+                    *[_write_one(d) for d in batch], return_exceptions=True,
+                )
+                for doc_name, res in zip(batch, batch_results):
+                    if isinstance(res, BaseException):
+                        # Unexpected exception (not a provider failure): same
+                        # salvage path -- stub + record + continue.
+                        await log_cb(
+                            ctx.project_id,
+                            f"[custom] Phase 3 doc write crashed for {doc_name}: {res} -- "
+                            "writing stub, run continues",
+                            "error",
+                        )
+                        self._salvage_failed_doc(
+                            ctx, state, doc_name,
+                            ModelResult(success=False, raw_error=str(res)),
+                        )
+                i += batch_size
+
         # Executive summary must be dispatched last — its context is the other completed docs.
         executive_summary_doc = "09_EXECUTIVE_SUMMARY"
         docs_without_summary = [d for d in self._required_docs if d != executive_summary_doc]
         has_executive_summary = executive_summary_doc in self._required_docs
 
-        _i = 0
-        while _i < len(docs_without_summary):
-            batch_size = 1 if state.adaptive_serial_generation else max(1, self._concurrency_for_phase("doc_write", config.agent_phase3_concurrency))
-            batch_results = await asyncio.gather(
-                *[_write_one(d) for d in docs_without_summary[_i : _i + batch_size]],
-                return_exceptions=True,
-            )
-            batch_errors = [r for r in batch_results if isinstance(r, BaseException)]
-            if batch_errors:
-                for exc in batch_errors:
-                    await log_cb(ctx.project_id, f"[custom] Phase 3 doc write failed: {exc}", "error")
-                raise batch_errors[0]
-            _i += batch_size
+        # Units-first wiring (P1.6): per-unit dossiers are written first; the
+        # catalog/summary docs then synthesize from the finished unit docs (a
+        # bounded deterministic digest) plus the analysis layer.
+        unit_docs = [d for d in docs_without_summary if d in self._per_job_doc_units]
+        group_docs = [d for d in docs_without_summary if d not in self._per_job_doc_units]
+
+        if unit_docs:
+            await _run_batches(unit_docs)
+            digest_path = self._build_unit_docs_digest(ctx, unit_docs)
+            if digest_path is not None:
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] unit-docs digest written for summary synthesis: "
+                    f"{digest_path.relative_to(ctx.staging_dir).as_posix()} "
+                    f"({digest_path.stat().st_size} bytes)",
+                    "info",
+                )
+        await _run_batches(group_docs)
 
         # Write executive summary last, after all other docs are complete.
         if has_executive_summary and not self._plugin_mode:
-            exec_result = await asyncio.gather(_write_one(executive_summary_doc), return_exceptions=True)
-            if exec_result and isinstance(exec_result[0], BaseException):
-                await log_cb(ctx.project_id, f"[custom] Phase 3 executive summary failed (non-fatal): {exec_result[0]}", "warning")
+            await _run_batches([executive_summary_doc])
+
+        if state.failed_docs:
+            report_path = ctx.staging_dir / "_assessment" / "failed_docs.json"
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(
+                json.dumps(state.failed_docs, indent=2), encoding="utf-8"
+            )
+            await log_cb(
+                ctx.project_id,
+                f"[custom] Phase 3 salvage summary: {len(state.failed_docs)} of "
+                f"{len(self._required_docs)} docs shipped as stubs/truncated "
+                "(see _assessment/failed_docs.json); accepted docs publish normally "
+                "and a resume/regenerate retries the flagged ones",
+                "warning",
+            )
+
+        # R2.1: doc dispatch is finished -- release the unused remainder of
+        # the Phase 3 floor so later consumers (business topology, critics)
+        # are not locked out of the shared pool by a reservation nothing will
+        # claim anymore. (If this phase raises, the run aborts, so a release
+        # on the failure path is moot.)
+        state.planned_phase_floors.pop("phase3", None)
+
+    def _salvage_failed_doc(
+        self,
+        ctx: DocGenContext,
+        state: HarnessRunState,
+        doc_name: str,
+        result: ModelResult,
+    ) -> None:
+        """Salvage-first disposition for one failed Phase 3 doc (P0.2/P0.3).
+
+        Output-cap hits with usable text are truncate-flag-ACCEPTED; everything
+        else becomes an explicit stub. Both are recorded in
+        ``state.failed_docs`` (persisted to ``_assessment/failed_docs.json``)
+        and both leave the agent task in a non-accepted status so a resume run
+        retries exactly these documents.
+        """
+        reason = result.raw_error or "doc generation failed"
+        incomplete = str((result.metadata or {}).get("incomplete_reason") or "")
+        text = (result.text or "").strip()
+        if text and incomplete == "length":
+            disposition = "truncated_accepted"
+            content = self._final_doc_content(state, doc_name, text).rstrip() + (
+                "\n\n---\n\n> **TRUNCATION NOTICE:** generation reached this "
+                "document's output ceiling; the content above is complete as "
+                "written but the document may end early. A resume run will "
+                "regenerate it in full.\n"
+            )
+        else:
+            disposition = "stub"
+            unit_name = self._per_job_doc_units.get(doc_name)
+            scope_line = (
+                f"- Scoped unit: `{unit_name}`\n" if unit_name else ""
+            )
+            content = (
+                f"# {doc_name.replace('_', ' ').title()}\n\n"
+                "> **GENERATION GAP:** this document could not be generated in "
+                "this run and is published as a stub so the remaining "
+                "documentation set ships. Trigger generation again to resume "
+                "and fill this document.\n\n"
+                f"- Failure: {reason}\n"
+                f"{scope_line}"
+                "- Deterministic evidence of record: `_analysis/` evidence "
+                "bundles and the engineering fact maps remain available.\n"
+            )
+        (ctx.staging_dir / f"{doc_name}.md").write_text(content, encoding="utf-8")
+        state.failed_docs.append({
+            "doc": doc_name,
+            "disposition": disposition,
+            "reason": reason[:500],
+            "incomplete_reason": incomplete or None,
+        })
+
+    def _build_unit_docs_digest(self, ctx: DocGenContext, unit_docs: list[str]) -> Path | None:
+        """Deterministic bounded digest of finished unit docs for summary docs.
+
+        Per unit doc: the Overview section and the Protected Scanner Facts
+        table (the fact ledger), bounded by ``phase3_unit_digest_bytes`` in
+        total. Group/summary writers receive this digest so they synthesize
+        FROM the finished unit docs instead of re-deriving from the analysis
+        layer alone (the verified shallow-summary root cause).
+        """
+        budget = max(10_000, config.phase3_unit_digest_bytes)
+        parts: list[str] = [
+            "# Unit Docs Digest",
+            "",
+            "Deterministic extract of the finished per-unit reference docs "
+            "(Overview + Protected Scanner Facts). Quote these facts as-is; "
+            "never recompute them. The full dossiers ship alongside this "
+            "document set.",
+            "",
+        ]
+        used = sum(len(p.encode("utf-8")) + 1 for p in parts)
+        truncated = 0
+        for doc_name in unit_docs:
+            doc_path = ctx.staging_dir / f"{doc_name}.md"
+            if not doc_path.exists():
+                continue
+            text = doc_path.read_text(encoding="utf-8", errors="replace")
+            unit = self._per_job_doc_units.get(doc_name, doc_name)
+            extract = self._extract_unit_digest_sections(text)
+            entry = f"## {unit}\n\n{extract}\n"
+            entry_bytes = len(entry.encode("utf-8"))
+            if used + entry_bytes > budget:
+                truncated += 1
+                continue
+            parts.append(entry)
+            used += entry_bytes
+        if len(parts) <= 4:
+            return None
+        if truncated:
+            parts.append(
+                f"\n> NOTE: {truncated} unit extract(s) omitted at the digest "
+                "byte budget; their full dossiers are in the document set."
+            )
+        digest_path = ctx.staging_dir / "_analysis" / "_unit_docs_digest.md"
+        digest_path.parent.mkdir(parents=True, exist_ok=True)
+        digest_path.write_text("\n".join(parts).rstrip() + "\n", encoding="utf-8")
+        return digest_path
+
+    @staticmethod
+    def _extract_unit_digest_sections(text: str) -> str:
+        """Pull the Overview + Protected Scanner Facts sections from a unit doc."""
+        wanted = ("overview", "protected scanner facts")
+        out: list[str] = []
+        keep = False
+        for line in text.splitlines():
+            heading = re.match(r"^##\s+(.+?)\s*$", line)
+            if heading is not None:
+                keep = heading.group(1).strip().lower() in wanted
+                continue
+            if keep and line.strip():
+                out.append(line)
+        if out:
+            return "\n".join(out)
+        # Fallback: first 20 non-empty lines after the title.
+        body = [ln for ln in text.splitlines()[1:] if ln.strip()]
+        return "\n".join(body[:20])
 
     @staticmethod
     def _strip_llm_preamble(content: str) -> str:
@@ -2772,6 +4196,11 @@ Fallback plan example:
 
     def _final_doc_content(self, state: HarnessRunState, doc_name: str, body: str) -> str:
         content = self._strip_llm_preamble(body.strip())
+        # Last-resort structural repair (deterministic selection, no new
+        # prose): a document that still carries restarted/repeated structure
+        # collapses to one copy of each section before publication.
+        if duplicate_heading_errors(content):
+            content = dedupe_document(content)
         canonical_title = doc_name.replace("_", " ").title()
         first_heading = re.search(r"^#\s+(.+)$", content, re.MULTILINE)
         if not first_heading or canonical_title.lower() not in first_heading.group(1).lower():
@@ -2783,6 +4212,28 @@ Fallback plan example:
                 f"Canonical inventory: {state.facts_manifest.unit_count} "
                 f"{state.facts_manifest.canonical_unit_label}.\n\n"
                 f"{self._unit_catalog_markdown(state)}"
+            )
+        scanner_limited_disclosures = {
+            "03_DATA_FLOWS_AND_LINEAGE": (
+                "Scanner-Limited: schemas, field-level lineage, transformations, and validation "
+                "details not established by the cited scanner evidence remain unknown and must "
+                "not be inferred."
+            ),
+            "05_RUNTIME_CONFIG_AND_EXTERNALS": (
+                "Scanner-Limited: runtime, configuration, and external-system details not "
+                "established by the cited scanner evidence remain unknown and must not be inferred."
+            ),
+        }
+        disclosure = scanner_limited_disclosures.get(doc_name)
+        if disclosure and not re.search(r"\bScanner\-Limited\b", content, re.IGNORECASE):
+            # The authoritative Phase 3 prompt requires this literal evidence
+            # classification. Models sometimes convey the limitation correctly
+            # but vary the label (for example, "scanner limits"). Normalize only
+            # the label and a conservative unknown boundary; never invent facts.
+            content = (
+                f"{content.rstrip()}\n\n"
+                "## Scanner-Limited Evidence\n\n"
+                f"{disclosure}\n"
             )
         return content.rstrip() + "\n"
 
@@ -2993,6 +4444,7 @@ Fallback plan example:
         calls_lock: asyncio.Lock | None = None,
         task_contract: AgentTaskContract | None = None,
         scoped_tools: ScopedEvidenceTools | None = None,
+        phase3_inputs: Phase3PlanInputs | None = None,
     ):
         """Run a Phase 2/3 model call with explicit bounded files and slice caching."""
 
@@ -3020,10 +4472,54 @@ Fallback plan example:
                     sep = "\n\n" if existing else ""
                     opts = opts.model_copy(update={"system_prompt": existing + sep + combined})
             context_files = []
-        estimated = estimate_input_tokens(prompt, context_files)
+        estimate_prompt = (
+            f"{opts.system_prompt}\n\n{prompt}" if opts.system_prompt else prompt
+        )
+        estimated = estimate_input_tokens(estimate_prompt, context_files)
         hard = config.core_context_hard_ceiling_tokens
         soft = config.core_context_soft_target_tokens
-        if estimated <= hard:
+
+        # Slicing redesign: Phase 3 documents are planned by expected OUTPUT
+        # size. Most doc types fit ONE call (their evidence is bounded to the
+        # context ceiling by priority trimming); only genuinely large docs
+        # (unit-scaled inventories / rule catalogs) are partitioned by
+        # section/unit-range with a shared skeleton -- every slice writes ONLY
+        # its assigned sections and units, so there are no whole-document
+        # restarts to merge and no blind-sibling contradictions.
+        sectioned: Phase3TaskPlan | None = None
+        if phase3_inputs is not None and phase.startswith("phase3") and not use_tools:
+            doc_plan = plan_phase3_document(
+                ctx.staging_dir,
+                phase=phase,
+                target=target,
+                prompt=estimate_prompt,
+                context_files=context_files,
+                hard_tokens=hard,
+                soft_tokens=soft,
+                shared_file_max_bytes=config.phase3_shared_context_file_bytes,
+                inputs=phase3_inputs,
+            )
+            if doc_plan is not None and doc_plan.mode == "single":
+                context_files = doc_plan.slices[0].files
+                estimated = estimate_input_tokens(estimate_prompt, context_files)
+                if doc_plan.trimmed_bytes:
+                    self._record_context_trim_flag(
+                        ctx, phase, target, doc_plan.trimmed_bytes, doc_plan.trimmed_sources
+                    )
+                    await log_cb(
+                        ctx.project_id,
+                        f"[custom] single-call plan for {phase}/{target}: trimmed "
+                        f"{doc_plan.trimmed_bytes} evidence bytes from "
+                        f"{', '.join(doc_plan.trimmed_sources)} to fit the context ceiling",
+                        "warning",
+                    )
+            elif doc_plan is not None and doc_plan.mode == "sections":
+                sectioned = doc_plan
+                if doc_plan.trimmed_bytes:
+                    self._record_context_trim_flag(
+                        ctx, phase, target, doc_plan.trimmed_bytes, doc_plan.trimmed_sources
+                    )
+        if estimated <= hard and sectioned is None:
             result = await self._call_model_with_logging(
                 ctx,
                 state,
@@ -3051,17 +4547,79 @@ Fallback plan example:
             else:
                 return result
 
-        slices = self._split_context_pack(ctx, phase, target, prompt, context_files, hard, soft)
+        # R2.5: Phase 3 documents get INPUT-PARTITIONED slices (like Phase 2
+        # evidence tasks): each slice receives only its own portion of the
+        # evidence plus a small byte-stable shared skeleton, so total input is
+        # ~1x the pack split across slices instead of N x the pack, and every
+        # unit's evidence is covered instead of being dropped at the slice
+        # cap. The generic splitter remains the fallback for other phases and
+        # for contexts the partitioner cannot help with.
+        slice_instructions: list[str | None] | None = None
+        if sectioned is not None:
+            partitioned = [list(s.files) for s in sectioned.slices]
+            slice_instructions = [s.instruction for s in sectioned.slices]
+            slices = partitioned
+        else:
+            partitioned = (
+                plan_phase3_slices(
+                    ctx.staging_dir,
+                    phase=phase,
+                    target=target,
+                    prompt=estimate_prompt,
+                    context_files=context_files,
+                    hard_tokens=hard,
+                    soft_tokens=soft,
+                    max_slices=max(1, config.docgen_allowed_slices_per_doc),
+                    shared_file_max_bytes=config.phase3_shared_context_file_bytes,
+                )
+                if phase.startswith("phase3")
+                else None
+            )
+            slices = partitioned if partitioned is not None else self._split_context_pack(
+                ctx, phase, target, estimate_prompt, context_files, hard, soft
+            )
         if phase in {"phase2", "phase2_group"} and len(slices) > config.agent_phase2_max_slices:
             raise RuntimeError(
                 f"Context slicing exceeded agent_phase2_max_slices={config.agent_phase2_max_slices} "
                 f"({len(slices)} slices for {phase}/{target}). Reduce context size before proceeding."
             )
+        # P0.3: hard-enforce the per-doc slice allowance for doc-level phases.
+        # Verified failure: 00_AGENT_BRIEF ran 13 slices (each reserving a full
+        # output ceiling) and exhausted the run output budget. On cap-hit the
+        # excess evidence slices are dropped, the assembled output is flagged,
+        # and the call is ACCEPTED (truncate-flag-accept, never reject-abort).
+        # Input-partitioned Phase 3 plans (R2.5) are exempt: their slice count
+        # is already balanced for full coverage and each extra slice re-sends
+        # only the shared skeleton, not the whole pack.
+        allowed_slices = max(1, config.docgen_allowed_slices_per_doc)
+        slice_cap_note: str | None = None
+        if (
+            partitioned is None
+            and not phase.startswith(("phase2", "phase1"))
+            and len(slices) > allowed_slices
+        ):
+            dropped = len(slices) - allowed_slices
+            slices = slices[:allowed_slices]
+            slice_cap_note = (
+                f"> **SLICE CAP NOTICE:** context for `{target}` exceeded the "
+                f"per-document slice allowance ({allowed_slices}); {dropped} "
+                "evidence slice(s) were not processed in this run. Facts from "
+                "the dropped slices remain in the deterministic evidence "
+                "artifacts of record."
+            )
+            self._record_slice_cap_flag(ctx, phase, target, dropped, allowed_slices)
+            await log_cb(
+                ctx.project_id,
+                f"[custom] slice cap enforced for {phase}/{target}: "
+                f"{allowed_slices} of {allowed_slices + dropped} slices run; "
+                "output will carry a slice-cap notice",
+                "warning",
+            )
         await log_cb(
             ctx.project_id,
             f"[custom] split decision: phase={phase} target={target} "
             f"original_est_tokens={estimated} split_count={len(slices)} "
-            f"slice_est_tokens={[estimate_input_tokens(prompt, s) for s in slices]}",
+            f"slice_est_tokens={[estimate_input_tokens(estimate_prompt, s) for s in slices]}",
             "info",
         )
         cache_dir = ctx.staging_dir / "_model_slices" / phase
@@ -3075,11 +4633,35 @@ Fallback plan example:
             if ctx.resume_state is not None and cache_file.exists() and cache_file.stat().st_size > 100:
                 await log_cb(ctx.project_id, f"[custom] RESUME: skipping {phase} {slice_id} (slice cache exists)", "info")
                 return idx, cache_file.read_text(encoding="utf-8", errors="replace"), []
-            slice_prompt = (
-                f"{prompt}\n\n"
-                f"You are processing slice {idx} of {len(slices)} for target {target}. "
-                "Use only this slice's evidence. Preserve exact names and mark any unresolved coverage as scanner-limited."
+            # P2.7 cache-friendly composition: the prompt and the shared
+            # (common) context files stay BYTE-STABLE across slices; the
+            # slice-specific instruction is appended at the TAIL as the last
+            # context file. Injecting the slice index into the prompt head --
+            # the previous shape -- invalidated the provider prefix cache for
+            # the entire shared bundle on every slice.
+            slice_prompt = prompt
+            tail = transient_dir(ctx.staging_dir, "context_slices", phase) / (
+                f"{self._safe_name(slice_id)}__instruction.md"
             )
+            if slice_instructions is not None and slice_instructions[idx - 1]:
+                # Section-partitioned plan: the tail carries this part's
+                # explicit section + unit assignment (write ONLY those).
+                instruction_text = slice_instructions[idx - 1]
+            else:
+                instruction_text = (
+                    f"SLICE INSTRUCTION: You are processing slice {idx} of {len(slices)} "
+                    f"for target {target}. Use only this slice's evidence. Preserve exact "
+                    "names and mark any unresolved coverage as scanner-limited. The slices "
+                    "are merged by section afterwards: write only sections this slice's "
+                    "evidence supports, do not restate content that needs no evidence, and "
+                    + (
+                        "include the title and Table of Contents."
+                        if idx == 1
+                        else "do NOT include a Table of Contents."
+                    )
+                )
+            transient_write(tail, instruction_text)
+            slice_files = [*slice_files, tail]
             async with semaphore:
                 result = await self._call_model_with_logging(
                     ctx,
@@ -3167,10 +4749,32 @@ Fallback plan example:
         total_input_tokens = sum(c.result.input_tokens for c in new_calls)
         total_output_tokens = sum(c.result.output_tokens for c in new_calls)
 
+        # Verified correctness bug: each document slice RESTARTS the whole
+        # document from its own evidence page; concatenating restarts shipped
+        # the same structure N times (VQ 01_ARCHITECTURE_MAP: 11 copies).
+        # Phase 3 slice outputs are merged by section deterministically --
+        # one title, one TOC, each H2 exactly once, duplicate blocks dropped.
+        if phase.startswith("phase3") and len(outputs) > 1:
+            if sectioned is not None:
+                # Output-partitioned plan (slicing redesign): each slice wrote
+                # its OWN distinct sections/units (no whole-document restarts),
+                # so assemble heading-once in catalog section order rather than
+                # deduping N restarts.
+                assembled = merge_sectioned_doc_outputs(
+                    outputs, preferred_order=sectioned.section_order
+                )
+            else:
+                assembled = merge_sliced_doc_outputs(outputs)
+            if slice_cap_note is not None:
+                assembled = assembled.rstrip() + "\n\n" + slice_cap_note
+        else:
+            if slice_cap_note is not None:
+                outputs.append(slice_cap_note)
+            assembled = "\n\n---\n\n".join(outputs)
         if failures:
             return ModelResult(
                 success=False,
-                text="\n\n---\n\n".join(outputs),
+                text=assembled,
                 model_name=getattr(provider, "model_name", ""),
                 input_tokens=total_input_tokens,
                 output_tokens=total_output_tokens,
@@ -3179,12 +4783,34 @@ Fallback plan example:
             )
         return ModelResult(
             success=True,
-            text="\n\n---\n\n".join(outputs),
+            text=assembled,
             model_name=getattr(provider, "model_name", ""),
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
             metadata={"phase": phase, "target": target, "slices": len(slices)},
         )
+
+    @staticmethod
+    def _record_slice_cap_flag(
+        ctx: DocGenContext, phase: str, target: str, dropped: int, allowed: int
+    ) -> None:
+        """Append a slice-cap event to _assessment/slice_cap_flags.json."""
+        path = ctx.staging_dir / "_assessment" / "slice_cap_flags.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            entries = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(entries, list):
+                entries = []
+        except (OSError, json.JSONDecodeError):
+            entries = []
+        entries.append({
+            "phase": phase,
+            "target": target,
+            "allowed_slices": allowed,
+            "dropped_slices": dropped,
+            "at": time.time(),
+        })
+        path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
 
     async def _call_model_with_logging(
         self,
@@ -3201,8 +4827,13 @@ Fallback plan example:
         calls_lock: asyncio.Lock | None = None,
         scoped_tools: ScopedEvidenceTools | None = None,
     ):
-        estimated = estimate_input_tokens(prompt, context_files)
-        total_bytes = context_bytes(context_files)
+        estimate_prompt = (
+            f"{opts.system_prompt}\n\n{prompt}" if opts.system_prompt else prompt
+        )
+        estimated = estimate_input_tokens(estimate_prompt, context_files)
+        total_bytes = context_bytes(context_files) + len(
+            (opts.system_prompt or "").encode("utf-8")
+        )
         budget_key = self._doc_budget_key(target)
         if state.total_empty_outputs >= config.docgen_empty_outputs_per_run_limit:
             message = (
@@ -3220,51 +4851,68 @@ Fallback plan example:
             await log_cb(ctx.project_id, f"[custom] {message}", "error")
             return self._failure_result(provider, phase, target, message, FailureKind.EMPTY_OUTPUT)
 
-        budget = self._run_model_call_budget(state)
-        current_calls = len(state.calls)
-        if current_calls >= budget:
+        reservation, budget_error = await self._reserve_model_budget(
+            state,
+            estimated_input_tokens=estimated,
+            max_output_tokens=opts.max_tokens,
+            phase=phase,
+        )
+        if reservation is None:
             message = (
-                f"model call budget exceeded before {phase} {target}: "
-                f"{current_calls}/{budget} calls; groups={len(state.facts_manifest.groups)} "
-                f"docs={len(self._required_docs)}"
+                f"run budget blocked {phase} {target}: {budget_error}; "
+                f"groups={len(state.facts_manifest.groups)} "
+                f"units={state.facts_manifest.unit_count} docs={len(self._required_docs)}"
             )
             await log_cb(ctx.project_id, f"[custom] {message}", "error")
             return self._failure_result(provider, phase, target, message, FailureKind.BUDGET_EXCEEDED)
 
+        budget = self._run_model_call_budget(state)
+        input_budget = self._run_input_token_budget(state)
+        input_budget_label = str(input_budget) if input_budget > 0 else "unlimited"
         await log_cb(
             ctx.project_id,
             f"[custom] model call start: phase={phase} target={target} split_id={target} "
             f"est_input_tokens={estimated} context_files={len(context_files)} context_bytes={total_bytes} "
-            f"call_budget={current_calls + 1}/{budget}",
+            f"call_budget={reservation.call_index}/{budget} "
+            f"input_budget={state.budget_consumed_input_tokens + state.pending_input_tokens}/"
+            f"{input_budget_label} output_budget="
+            f"{state.budget_consumed_output_tokens + state.pending_output_tokens}/"
+            f"{self._run_output_token_budget(state)}",
             "info",
         )
-        snapshot_dir, debug_snapshot_dir = self._write_model_input_snapshot(
-            ctx,
-            provider=provider,
-            phase=phase,
-            target=target,
-            prompt=prompt,
-            context_files=context_files,
-            opts=opts,
-            estimated_tokens=estimated,
-            total_bytes=total_bytes,
-            call_index=current_calls + 1,
-        )
-        tool_policy = self._tool_policy(provider, phase)
-        if tool_policy.enabled:
-            tool_opts = opts.model_copy(update={
-                "tool_input_token_cap": tool_policy.max_input_tokens,
-                "tool_phase": phase,
-                "tool_target": target,
-            })
-            result = await provider.complete_with_tools(
-                _with_tool_instructions(prompt, ctx.staging_dir),
-                ctx.staging_dir,
-                tool_opts,
-                scoped_tools=scoped_tools,
+        result: ModelResult | None = None
+        try:
+            snapshot_dir, debug_snapshot_dir = self._write_model_input_snapshot(
+                ctx,
+                provider=provider,
+                phase=phase,
+                target=target,
+                prompt=prompt,
+                context_files=context_files,
+                opts=opts,
+                estimated_tokens=estimated,
+                total_bytes=total_bytes,
+                call_index=reservation.call_index,
             )
-        else:
-            result = await provider.complete(prompt, context_files, opts)
+            tool_policy = self._tool_policy(provider, phase)
+            if tool_policy.enabled:
+                tool_opts = opts.model_copy(update={
+                    "tool_input_token_cap": tool_policy.max_input_tokens,
+                    "tool_phase": phase,
+                    "tool_target": target,
+                })
+                result = await provider.complete_with_tools(
+                    _with_tool_instructions(prompt, ctx.staging_dir),
+                    ctx.staging_dir,
+                    tool_opts,
+                    scoped_tools=scoped_tools,
+                )
+            else:
+                result = await provider.complete(prompt, context_files, opts)
+        finally:
+            await self._settle_model_budget(state, reservation, result)
+        if result is None:
+            raise RuntimeError(f"Provider returned no result for {phase}/{target}")
         self._write_model_response_snapshot(snapshot_dir, debug_snapshot_dir, result)
         failure_kind = self._classify_failure(result)
         if failure_kind is not None:
@@ -3288,97 +4936,95 @@ Fallback plan example:
                 kind=failure_kind,
                 log_cb=log_cb,
             )
-            # When the provider cut off mid-generation, attempt a no-tools completion
-            # on the same provider so it can write out a coherent final response.
-            # INCOMPLETE is not retryable_with_fallback, so the fallback block below
-            # will not fire regardless of whether the force-conclude succeeds.
-            if failure_kind == FailureKind.INCOMPLETE and scoped_tools is not None:
+            # A length stop proves this exact task cannot fit its output ceiling.
+            # Never repeat the same prompt/context: it doubles cost and normally
+            # truncates at the same place. Phase planners must shrink evidence or
+            # split the document before dispatch instead.
+            if failure_kind == FailureKind.INCOMPLETE:
                 await log_cb(
                     ctx.project_id,
                     f"[custom] output truncated ({self._describe_provider(provider)}); "
-                    "attempting force-conclude without tools",
+                    "identical retry suppressed; task requires bounded evidence or section planning",
                     "warning",
                 )
-                conclude_prompt = (
-                    "The previous generation run was cut off at the token limit before "
-                    "producing complete final output. Using the context files and facts "
-                    "provided, write the complete final output now. "
-                    "Do not use any tools — write your complete response directly.\n\n"
-                    f"Original task:\n{prompt}"
-                )
-                conclude_result = await provider.complete(
-                    conclude_prompt,
-                    context_files,
-                    opts.model_copy(update={"retries": 0}),
-                )
-                conclude_kind = self._classify_failure(conclude_result)
-                if conclude_kind is None:
-                    await log_cb(
-                        ctx.project_id,
-                        f"[custom] force-conclude succeeded: {self._describe_provider(provider)} "
-                        f"tokens={conclude_result.output_tokens}",
-                        "info",
-                    )
-                    result = conclude_result
-                    failure_kind = None
-                else:
-                    await log_cb(
-                        ctx.project_id,
-                        f"[custom] force-conclude also failed ({conclude_kind.value}): "
-                        f"{self._describe_provider(provider)}",
-                        "warning",
-                    )
             if (
                 not result.success
                 and self.fallback_provider is not None
                 and failure_kind is not None
                 and failure_kind.is_retryable_with_fallback
             ):
-                # Record primary failure before result is overwritten by fallback, so
-                # tokens and failure reason are not lost from state.calls.
-                primary_call = ProviderCallLog(phase=phase, target=target, result=result)
-                if calls_lock is None:
-                    state.calls.append(primary_call)
-                else:
-                    async with calls_lock:
-                        state.calls.append(primary_call)
                 await log_cb(
                     ctx.project_id,
                     f"[custom] primary failed ({failure_kind.value}); retrying with fallback "
                     f"{self._describe_provider(self.fallback_provider)}",
                     "warning",
                 )
-                fallback_policy = self._tool_policy(self.fallback_provider, phase)
-                if fallback_policy.enabled:
-                    fallback_opts = opts.model_copy(update={
-                        "tool_input_token_cap": fallback_policy.max_input_tokens,
-                        "tool_phase": phase,
-                        "tool_target": target,
-                    })
-                    fallback_result = await self.fallback_provider.complete_with_tools(
-                        _with_tool_instructions(prompt, ctx.staging_dir),
-                        ctx.staging_dir,
-                        fallback_opts,
-                        scoped_tools=scoped_tools,
-                    )
-                else:
-                    fallback_result = await self.fallback_provider.complete(prompt, context_files, opts)
-                fallback_kind = self._classify_failure(fallback_result)
-                if fallback_kind is None:
+                fallback_reservation, fallback_budget_error = await self._reserve_model_budget(
+                    state,
+                    estimated_input_tokens=estimated,
+                    max_output_tokens=opts.max_tokens,
+                    phase=phase,
+                )
+                if fallback_reservation is None:
                     await log_cb(
                         ctx.project_id,
-                        f"[custom] fallback succeeded: {self._describe_provider(self.fallback_provider)} "
-                        f"tokens={fallback_result.output_tokens}",
-                        "info",
-                    )
-                    result = fallback_result
-                else:
-                    await log_cb(
-                        ctx.project_id,
-                        f"[custom] fallback also failed ({fallback_kind.value}): "
-                        f"{self._describe_provider(self.fallback_provider)}",
+                        f"[custom] fallback blocked by run budget: {fallback_budget_error}",
                         "warning",
                     )
+                else:
+                    # The fallback is a second physical request. Record the
+                    # primary only after its replacement has passed the budget
+                    # gate so a blocked fallback cannot duplicate usage.
+                    primary_call = ProviderCallLog(
+                        phase=phase, target=target, result=result
+                    )
+                    if calls_lock is None:
+                        state.calls.append(primary_call)
+                    else:
+                        async with calls_lock:
+                            state.calls.append(primary_call)
+                    fallback_result: ModelResult | None = None
+                    try:
+                        fallback_policy = self._tool_policy(self.fallback_provider, phase)
+                        if fallback_policy.enabled:
+                            fallback_opts = opts.model_copy(update={
+                                "tool_input_token_cap": fallback_policy.max_input_tokens,
+                                "tool_phase": phase,
+                                "tool_target": target,
+                            })
+                            fallback_result = await self.fallback_provider.complete_with_tools(
+                                _with_tool_instructions(prompt, ctx.staging_dir),
+                                ctx.staging_dir,
+                                fallback_opts,
+                                scoped_tools=scoped_tools,
+                            )
+                        else:
+                            fallback_result = await self.fallback_provider.complete(
+                                prompt, context_files, opts
+                            )
+                    finally:
+                        await self._settle_model_budget(
+                            state, fallback_reservation, fallback_result
+                        )
+                    if fallback_result is not None:
+                        fallback_kind = self._classify_failure(fallback_result)
+                        if fallback_kind is None:
+                            await log_cb(
+                                ctx.project_id,
+                                f"[custom] fallback succeeded: {self._describe_provider(self.fallback_provider)} "
+                                f"tokens={fallback_result.output_tokens}",
+                                "info",
+                            )
+                            result = fallback_result
+                        else:
+                            result = fallback_result
+                            failure_kind = fallback_kind
+                            await log_cb(
+                                ctx.project_id,
+                                f"[custom] fallback also failed ({fallback_kind.value}): "
+                                f"{self._describe_provider(self.fallback_provider)}",
+                                "warning",
+                            )
         call = ProviderCallLog(phase=phase, target=target, result=result)
         if calls_lock is None:
             state.calls.append(call)
@@ -3462,6 +5108,7 @@ Fallback plan example:
             "call_index": call_index,
             "estimated_input_tokens": estimated_tokens,
             "context_bytes": total_bytes,
+            "system_prompt_bytes": len((opts.system_prompt or "").encode("utf-8")),
             "context_file_count": len(context_files),
             "options": {
                 "max_tokens": opts.max_tokens,
@@ -3964,6 +5611,68 @@ Allowed docs:
         return "\n".join(lines)
 
     @staticmethod
+    def _cross_cutting_facts_markdown(state: HarnessRunState) -> str:
+        """Deterministic whole-partition facts shared by every Phase 3 writer.
+
+        Kills cross-slice contradictions at the source (verified failure: one
+        doc set claimed 0, 1 AND 2 tLogCatcher jobs because each evidence
+        slice was blind to the others): every doc call -- and every slice of a
+        partitioned doc -- receives the same scanner-derived component census,
+        group sizes, and key systems. Python renders manifest facts verbatim;
+        no prose.
+        """
+        facts = state.facts_manifest
+        units_containing: dict[str, int] = {}
+        for unit in facts.units:
+            for component_type in unit.component_types:
+                units_containing[component_type] = units_containing.get(component_type, 0) + 1
+        lines = [
+            "# Cross-Cutting Facts (deterministic, whole partition)",
+            "",
+            "Scanner-derived facts of record for this partition. Quote these",
+            "counts as-is; never recompute them. A claim that a component type",
+            "is absent from the partition is FALSE if it appears in this census.",
+            "",
+            "## Partition Scope",
+            "",
+            f"- Canonical inventory: {facts.unit_count} {facts.canonical_unit_label}",
+            "- Groups: "
+            + (", ".join(f"{g}={n}" for g, n in sorted(facts.groups.items())) or "none"),
+            "",
+            "## Component Census",
+            "",
+            "| Component Type | Total Occurrences | Units Containing It |",
+            "|----------------|-------------------|---------------------|",
+        ]
+        totals = dict(facts.component_counts)
+        for component_type, unit_hits in sorted(units_containing.items()):
+            totals.setdefault(component_type, 0)
+        for component_type in sorted(totals):
+            lines.append(
+                f"| {component_type} | {totals[component_type]} | "
+                f"{units_containing.get(component_type, 0)} |"
+            )
+        lines.extend([
+            "",
+            "## Key Systems (scanner landscape)",
+            "",
+        ])
+        lines.extend(f"- {system}" for system in facts.key_systems)
+        if not facts.key_systems:
+            lines.append("- None identified in scanner facts")
+        return "\n".join(lines) + "\n"
+
+    def _write_cross_cutting_facts(self, ctx: DocGenContext, state: HarnessRunState) -> Path | None:
+        """Write `_analysis/_cross_cutting_facts.md` once per run (never raises)."""
+        try:
+            path = ctx.staging_dir / "_analysis" / "_cross_cutting_facts.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(self._cross_cutting_facts_markdown(state), encoding="utf-8")
+            return path
+        except OSError:
+            return None
+
+    @staticmethod
     def _load_investigation_artifact(investigation_dir: Path, chunk_name: str) -> InvestigationReport | None:
         safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", chunk_name)
         path = investigation_dir / f"{safe_name}.json"
@@ -4025,10 +5734,24 @@ Allowed docs:
         return [path for path in files if path.exists()]
 
     @staticmethod
-    def _provider_options(provider: ModelProvider) -> dict:
+    def _provider_options(provider: ModelProvider, *, phase: str = "extraction") -> dict:
         provider_name = getattr(provider, "provider_name", "")
         if provider_name == "ollama":
             return {"options": {"num_ctx": 32768}}
+        if provider_name == "deepseek" and str(getattr(provider, "model_name", "")).startswith("deepseek-v4"):
+            # DeepSeek V4 defaults to thinking mode. Make phase behavior
+            # explicit so a vendor default cannot silently consume the final
+            # answer budget. Only bounded, higher-level synthesis opts in.
+            thinking_phases = {
+                "phase2_synthesis",
+                "business_topology",
+                "project_synthesis",
+            }
+            return {
+                "thinking": {
+                    "type": "enabled" if phase in thinking_phases else "disabled"
+                }
+            }
         return {}
 
     @staticmethod
@@ -4048,16 +5771,48 @@ Allowed docs:
             "operations",
         ]
 
-    def _validate_phase3_doc(self, text: str, doc_name: str) -> dict:
+    def _validate_phase3_doc(
+        self, text: str, doc_name: str, state: HarnessRunState | None = None
+    ) -> dict:
         """Markdown sanity plus fabrication checks against the target evidence bundle.
 
         Runs pre-acceptance so failures land in ``validation_gaps`` and drive
-        the repair attempt; docs without a unit-scoped bundle keep the plain
-        markdown validation.
+        the repair attempt. Unit-scoped docs additionally enforce the
+        protected-fact ledger (P1.5: facts copied verbatim, never recomputed);
+        group/summary docs get the unit-count recompute check.
         """
         report = self._validate_agent_markdown(text, [], min_bytes=200)
+        # Post-assembly guard (verified failure: slice restarts shipped the
+        # same document structure 11x): repeated H1/H2 structure is deniable
+        # here because _final_doc_content dedupes deterministically -- but a
+        # doc that still repeats structure after merge must drive a repair.
+        structure_errors = duplicate_heading_errors(text)
+        if structure_errors and duplicate_heading_errors(dedupe_document(text)):
+            errors = list(report.get("errors") or []) + structure_errors
+            report = {**report, "ok": not errors, "errors": errors}
         evidence = self._target_evidence.get(doc_name)
         if evidence is None:
+            if state is not None and self._plugin_manifest is None:
+                facts = state.facts_manifest
+                # ADVISORY ONLY -- never blocks, never triggers a repair pass.
+                # The check cannot reliably distinguish a project TOTAL from a
+                # legitimate per-group / per-layer / route sub-count (verified:
+                # it false-flagged "18 jobs in the fourps group", "16 routes
+                # (16 jobs)", "MonitoringLogger used by ~20 jobs"), and jobs vs
+                # routes vs units are used interchangeably in the prose. The
+                # repair it used to force never fixed anything -- docs shipped
+                # regardless -- so it only annotates now.
+                count_notes = unit_count_claim_errors(
+                    text,
+                    unit_count=facts.unit_count,
+                    canonical_unit_label=facts.canonical_unit_label,
+                    allowed_counts=frozenset(facts.groups.values()),
+                )
+                if count_notes:
+                    report = {
+                        **report,
+                        "warnings": list(report.get("warnings") or []) + count_notes,
+                    }
             return report
         errors = list(report.get("errors") or [])
         errors.extend(
@@ -4066,6 +5821,8 @@ Allowed docs:
             )
         )
         errors.extend(availability_claim_errors(text, evidence.categories))
+        if doc_name in self._per_job_doc_units and self._plugin_manifest is None:
+            errors.extend(protected_fact_errors(text, evidence.protected_facts))
         return {**report, "ok": not errors, "errors": errors}
 
     @staticmethod
@@ -4097,6 +5854,46 @@ Allowed docs:
             return report
         errors = list(report.get("errors") or []) + ref_errors
         return {**report, "ok": False, "errors": errors}
+
+    @classmethod
+    def _validate_phase2_task_output(
+        cls,
+        text: str,
+        required_units: list[str],
+        *,
+        platform: str,
+        require_sections: bool,
+    ) -> dict:
+        """Reject structurally incomplete task output before group assembly.
+
+        A response may be non-empty and mention every unit while still omitting
+        late required sections. Accepting that output simply moves the failure to
+        synthesis, where missing evidence cannot safely be reconstructed.
+        """
+
+        report = cls._validate_agent_markdown(text, required_units)
+        if not require_sections:
+            return report
+        required = (
+            (*REQUIRED_SECTION_NAMES, GROUP_SUMMARY_SECTION)
+            if platform == "talend"
+            else (GROUP_SUMMARY_SECTION,)
+        )
+        parsed = cls._parse_phase2_sections(text)
+        missing_sections = [name for name in required if name not in parsed]
+        if not missing_sections:
+            return report
+        errors = list(report.get("errors") or [])
+        errors.append(
+            "artifact is missing required Phase 2 sections: "
+            + ", ".join(missing_sections)
+        )
+        return {
+            **report,
+            "ok": False,
+            "errors": errors,
+            "missing_sections": missing_sections,
+        }
 
     @staticmethod
     def _allowed_component_refs(files: list[Path]) -> frozenset[str]:
@@ -4419,8 +6216,16 @@ Allowed docs:
         return self._plugin_doc_definitions.get(doc_name)
 
     def _expand_per_job_docs(self, facts) -> None:
-        """Expand pack documents marked ``per_job`` into one file per scanned job."""
+        """Expand documents marked per-unit into one file per scanned unit.
+
+        Plugin packs use the ``per_job`` flag on their manifest docs (existing
+        behavior, unchanged). Standard-catalog runs expand entries marked
+        ``per_unit`` (e.g. 10_UNIT_REFERENCE) the same way: the per-unit docs
+        become the Phase 3 unit contract, are written first, and the catalog
+        summary docs synthesize from them (P1.4/P1.6).
+        """
         if self._plugin_manifest is None:
+            self._expand_catalog_per_unit_docs(facts)
             return
         base_docs = list(getattr(self._plugin_manifest, "docs", None) or [])
         if not any(getattr(doc, "per_job", False) for doc in base_docs):
@@ -4467,6 +6272,37 @@ Allowed docs:
                 "docs": expanded,
                 "quality_gates": updated_gates,
             })
+
+    def _expand_catalog_per_unit_docs(self, facts) -> None:
+        """Expand standard-catalog ``per_unit`` entries into one doc per unit.
+
+        Mirrors the plugin per_job expansion: the base catalog name is replaced
+        in ``_required_docs`` by ``{base}__{group}__{unit}`` names; each carries
+        the base entry's required sections (via the extra-requirements map the
+        doc prompt already prefers) and bundle/phase2-section routing.
+        """
+        if not config.docgen_unit_docs_enabled:
+            return
+        per_unit_entries = load_doc_catalog().per_unit_docs
+        if not per_unit_entries:
+            return
+        self._per_job_doc_units = {}
+        expanded_required = list(self._required_docs)
+        for entry in per_unit_entries:
+            for unit in facts.units:
+                suffix = f"{self._safe_name(unit.group)}__{self._safe_name(unit.name)}"
+                expanded_name = f"{entry.name}__{suffix}"
+                if expanded_name in expanded_required:
+                    continue
+                expanded_required.append(expanded_name)
+                self._per_job_doc_units[expanded_name] = unit.name
+                self._doc_section_requirements_extra[expanded_name] = list(entry.required_sections)
+                self._doc_bundle_map[expanded_name] = entry.bundle
+                self._doc_section_bundle_map[expanded_name] = set(entry.phase2_sections)
+                self._doc_assignments.setdefault(entry.bundle, [])
+                if expanded_name not in self._doc_assignments[entry.bundle]:
+                    self._doc_assignments[entry.bundle].append(expanded_name)
+        self._required_docs = expanded_required
 
     def _phase2_shared_context(self, ctx: DocGenContext, facts_path: Path) -> list[Path]:
         preprocess_dir = ctx.staging_dir / "_preprocess"
@@ -4550,6 +6386,84 @@ Allowed docs:
             units = [u.name for u in state.facts_manifest.units if u.group == group]
         return units
 
+    def _resolve_source_root(self, ctx: DocGenContext) -> Path | None:
+        """Locate the project's source tree for the non-code walk.
+
+        The scan cache records the absolute ``repo_root`` the scanner walked;
+        prefer it when present, else fall back to the standard uploaded-repo
+        location. A missing source tree is not an error -- non-code context is
+        additive -- so this returns ``None`` and the caller skips silently.
+        """
+        scan_output_dir = config.intodoc_output_dir / ctx.project_id
+        scan_result = scan_output_dir / "scan_result.json"
+        if scan_result.exists():
+            try:
+                repo_root = json.loads(
+                    scan_result.read_text(encoding="utf-8", errors="replace")
+                ).get("repo_root")
+            except (json.JSONDecodeError, OSError):
+                repo_root = None
+            if repo_root and Path(repo_root).is_dir():
+                return Path(repo_root)
+        fallback = config.repos_dir / ctx.project_id
+        return fallback if fallback.is_dir() else None
+
+    def _ensure_noncode_plan(self, ctx: DocGenContext) -> NonCodeAssociationPlan | None:
+        """Build (once per staging dir) the Tier-3 non-code association plan.
+
+        Deterministic, no LLM in the path. Any failure is logged and degrades to
+        no non-code context -- documentation still generates from scanner facts.
+        """
+        if self._noncode_plan_staging == ctx.staging_dir:
+            return self._noncode_plan or None  # cached (plan or False)
+        self._noncode_plan_staging = ctx.staging_dir
+        self._noncode_plan = False
+        source_root = self._resolve_source_root(ctx)
+        if source_root is None:
+            logger.info("noncode: no source tree for %s; skipping Tier-3 context", ctx.project_id)
+            return None
+        scan_output_dir = config.intodoc_output_dir / ctx.project_id
+        scan_result = scan_output_dir / "scan_result.json"
+        try:
+            scan_files = json.loads(
+                scan_result.read_text(encoding="utf-8", errors="replace")
+            ).get("files", []) if scan_result.exists() else []
+            units = build_unit_index(load_jobs(scan_output_dir))
+            plan, extraction = build_noncode_context(
+                source_root=source_root,
+                scan_files=scan_files,
+                units=units,
+                limits=NonCodeLimits(),
+                unit_token_df_threshold=config.noncode_unit_token_df_threshold,
+                min_distinctive_overlap=config.noncode_min_distinctive_overlap,
+            )
+        except Exception:  # additive lane must never break doc generation
+            logger.exception("noncode: Tier-3 context build failed for %s", ctx.project_id)
+            return None
+        if plan.total_items == 0:
+            logger.info("noncode: no preparable non-code material for %s", ctx.project_id)
+            return None
+        self._noncode_plan = plan
+        # Persist the project-tier section (full set) for the summary docs and a
+        # skip ledger so caps/unsupported files are never a silent drop.
+        analysis_dir = ctx.staging_dir / "_analysis"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+        project_section = plan.project_section(max_bytes=config.phase3_noncode_project_bytes)
+        if project_section:
+            (analysis_dir / "_noncode_project_context.md").write_text(
+                project_section, encoding="utf-8"
+            )
+        if extraction.skipped:
+            (analysis_dir / "_noncode_skipped.json").write_text(
+                json.dumps(list(extraction.skipped), indent=2), encoding="utf-8"
+            )
+        logger.info(
+            "noncode: %s prepared %d item(s), %d matched a unit, %d project-only, %d skipped",
+            ctx.project_id, plan.total_items, len(plan.matched_item_ids),
+            len(plan.project_only_ids), len(extraction.skipped),
+        )
+        return plan
+
     def _build_target_evidence(self, ctx: DocGenContext, doc_name: str) -> TargetEvidence | None:
         """Build (and cache) the deterministic evidence bundle for a unit-scoped doc.
 
@@ -4565,10 +6479,13 @@ Allowed docs:
             self._target_evidence_builder is None
             or self._target_evidence_builder.staging_dir != ctx.staging_dir
         ):
+            plan = self._ensure_noncode_plan(ctx)
             self._target_evidence_builder = TargetEvidenceBuilder(
                 scan_output_dir=config.intodoc_output_dir / ctx.project_id,
                 staging_dir=ctx.staging_dir,
                 max_bytes=config.phase3_target_evidence_bytes,
+                noncode_plan=plan or None,
+                noncode_section_bytes=config.phase3_noncode_evidence_bytes,
             )
         evidence = self._target_evidence_builder.build(doc_name, unit_name)
         if evidence is not None:
@@ -4599,6 +6516,26 @@ Allowed docs:
         target_evidence = self._build_target_evidence(ctx, doc_name)
         if target_evidence is not None:
             files.append(target_evidence.path)
+        else:
+            # Group/summary docs are not unit-scoped, so they get the project-tier
+            # non-code documented context (the full prepared set, including items
+            # that matched no single unit) instead of a per-unit bundle.
+            self._ensure_noncode_plan(ctx)
+            noncode_project = ctx.staging_dir / "_analysis" / "_noncode_project_context.md"
+            if noncode_project.exists():
+                files.append(noncode_project)
+            # Units-first wiring (P1.6): summaries synthesize FROM the finished
+            # unit docs. The bounded digest is written after the per-unit batch
+            # completes, before any group/summary doc is dispatched.
+            unit_digest = ctx.staging_dir / "_analysis" / "_unit_docs_digest.md"
+            if unit_digest.exists():
+                files.append(unit_digest)
+        # Whole-partition cross-cutting facts (deterministic census; small, so
+        # it stays SHARED across any slicing) -- every doc writer sees the same
+        # scanner-derived counts.
+        cross_cutting = ctx.staging_dir / "_analysis" / "_cross_cutting_facts.md"
+        if cross_cutting.exists():
+            files.append(cross_cutting)
         # Pack path: analysis was skipped — Phase 3 writes from evidence bundle +
         # investigation output (when investigation: run).
         # bounded/run analysis falls through to the enterprise context path below.
@@ -4681,7 +6618,8 @@ Allowed docs:
         """Remove prompt-pack files from context_files and return their combined text.
 
         Prompt-pack files are static per call. Moving them to the provider's system_prompt
-        channel keeps them out of slice-size accounting and enables Anthropic prompt caching.
+        channel enables provider prompt caching. Their bytes still count toward context and
+        run-token budgets; the transport channel does not make them free.
         Returns (content_or_None, remaining_files).
         """
         pack_files = [f for f in context_files if "_prompt_pack" in f.name and f.suffix == ".md"]
@@ -4705,6 +6643,56 @@ Allowed docs:
         if evidence_brief.exists():
             return evidence_brief
         return None
+
+    @staticmethod
+    def _materialize_cross_project_refs(ctx: DocGenContext, state: HarnessRunState) -> None:
+        """Stage this partition's cross-project references for Phase 2/3 + topology.
+
+        Reads the deterministic upload-level cross-project index (written by the
+        composite orchestrator before any partition run) and materializes:
+
+        * ``cross_project_refs.md`` in the staging root -- registered as an
+          engineering-fact artifact so both Phase 2 shared context and Phase 3
+          doc context include it; the doc writers then NOTE external callers/
+          callees and shared systems without other sub-projects' content.
+        * ``_topology/cross_project_index.json`` -- consumed by the business
+          topology starter pack so the sub-project L1/L2 overlay can describe
+          its connective edges to sibling sub-projects.
+
+        Missing index (e.g. a manually triggered partition run) is non-fatal:
+        the run proceeds without cross-references. Never raises.
+        """
+        from mcp_server.providers.custom.partition_planner import (
+            cross_project_index_path,
+            render_cross_project_refs_md,
+        )
+
+        try:
+            index_path = cross_project_index_path(ctx.project_id)
+            if not index_path.exists():
+                return
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+            topology_dir = ctx.staging_dir / "_topology"
+            topology_dir.mkdir(parents=True, exist_ok=True)
+            (topology_dir / "cross_project_index.json").write_text(
+                json.dumps(index, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            # Size-split partitions (ETTM_part1 ...) reference the index at
+            # their zip-level parent -- the connective layer is per zip.
+            index_name = getattr(ctx.partition, "parent", None) or ctx.partition.name
+            rendered = render_cross_project_refs_md(index, index_name)
+            if rendered is None:
+                return
+            (ctx.staging_dir / "cross_project_refs.md").write_text(rendered, encoding="utf-8")
+            if "cross_project_refs.md" not in state.engineering_fact_artifacts:
+                state.engineering_fact_artifacts.append("cross_project_refs.md")
+        except Exception as exc:  # noqa: BLE001 - additive context, never blocks a run
+            logger.warning(
+                "[custom] cross-project refs staging failed (non-fatal) for %s/%s: %s",
+                ctx.project_id,
+                getattr(ctx.partition, "name", "?"),
+                exc,
+            )
 
     # Derived fact maps that dwarf a single unit's share of them. For
     # unit-scoped docs these are delivered as unit-filtered copies so raw
@@ -4742,7 +6730,22 @@ Allowed docs:
                 names.extend(["test_coverage_map.md", "known_risks.md"])
             else:
                 names.extend(["dependency_map.md", "known_risks.md", "config_runtime_map.md"])
+        # Composite partition runs stage this small deterministic file; it only
+        # exists when a cross-project index was available, so non-partitioned
+        # runs are byte-identical.
+        names.append("cross_project_refs.md")
         paths = [ctx.staging_dir / name for name in names if (ctx.staging_dir / name).exists()]
+        if doc_name == "08_CHANGE_PLAYBOOK" and unit_name is None:
+            paths = [
+                compact_change_impact_matrix(
+                    path,
+                    ctx.staging_dir / "_analysis" / "_phase3_views",
+                    max_bytes=config.phase3_change_impact_view_bytes,
+                )
+                if path.name == "change_impact_matrix.md"
+                else path
+                for path in paths
+            ]
         if unit_name is None:
             return paths
         filtered_paths: list[Path] = []
@@ -4774,11 +6777,21 @@ Allowed docs:
         finish_reason = meta.get("finish_reason")
         finish = f" finish={finish_reason}" if finish_reason else ""
         failure = f" failure_kind={meta.get('failure_kind')}" if meta.get("failure_kind") else ""
+        # R2.6 cache audit: surface the provider-reported cache-hit split per
+        # call (aggregates live in _assessment/phase_costs.json). in= is the
+        # real billed input when the provider reported usage.
+        cache = ""
+        if result.input_tokens:
+            cache = (
+                f" in={result.input_tokens}"
+                f" cache_read={result.cache_read_tokens}"
+                f" cache_miss={max(0, result.input_tokens - result.cache_read_tokens)}"
+            )
         await log_cb(
             ctx.project_id,
             f"[custom] call metrics: {target} model={result.model_name} "
             f"in~{estimated} out={result.output_tokens} context_bytes={context_bytes} "
-            f"ctx={configured or 'default'} latency_ms={result.latency_ms}{finish}{failure}",
+            f"ctx={configured or 'default'} latency_ms={result.latency_ms}{cache}{finish}{failure}",
             "info",
         )
 

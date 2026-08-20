@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { api, openCodeRuntimeModelId } from "../api/client";
+import { api } from "../api/client";
 
 describe("API client", () => {
   beforeEach(() => {
@@ -40,8 +40,62 @@ describe("API client", () => {
           created_at: null,
           updated_at: null,
         },
+        {
+          id: "scanned-project",
+          display_name: "Scanned Project",
+          repo_url: null,
+          local_path: "/data/repos/scanned-project",
+          platform: "talend",
+          doc_generation_provider: null,
+          source_type: "upload",
+          status: "scanned",
+          last_scan_at: "2026-08-04T10:00:00Z",
+          last_generate_at: null,
+          last_rag_push_at: null,
+          job_count: 12,
+          doc_count: 0,
+          error_message: null,
+          last_ingested_commit_sha: null,
+          auto_reingest_enabled: false,
+          auto_reingest_last_checked_at: null,
+          auto_reingest_error: null,
+          git_update_summary: null,
+          has_github_token: false,
+          webhook_status: null,
+          instruction_pack_dir: null,
+          plugin_pack_id: null,
+          created_at: null,
+          updated_at: null,
+        },
+        {
+          id: "error-project",
+          display_name: "Error Project",
+          repo_url: null,
+          local_path: "/data/repos/error-project",
+          platform: "generic",
+          doc_generation_provider: null,
+          source_type: "upload",
+          status: "error",
+          last_scan_at: null,
+          last_generate_at: null,
+          last_rag_push_at: null,
+          job_count: 0,
+          doc_count: 0,
+          error_message: "scan failed",
+          last_ingested_commit_sha: null,
+          auto_reingest_enabled: false,
+          auto_reingest_last_checked_at: null,
+          auto_reingest_error: null,
+          git_update_summary: null,
+          has_github_token: false,
+          webhook_status: null,
+          instruction_pack_dir: null,
+          plugin_pack_id: null,
+          created_at: null,
+          updated_at: null,
+        },
       ],
-      total: 1,
+      total: 3,
     };
 
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
@@ -52,8 +106,13 @@ describe("API client", () => {
     );
 
     const result = await api.listProjects();
-    expect(result.projects).toHaveLength(1);
+    expect(result.projects).toHaveLength(3);
     expect(result.projects[0].id).toBe("test-project");
+    expect(result.projects.map((project) => project.status)).toEqual([
+      "ready",
+      "scanned",
+      "error",
+    ]);
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "/mcp/projects",
       expect.objectContaining({ credentials: "include" })
@@ -118,18 +177,6 @@ describe("API client", () => {
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "/mcp/models",
       expect.objectContaining({ credentials: "include" })
-    );
-  });
-
-  it("splits canonical catalogue routes into OpenCode provider-local model IDs", () => {
-    expect(
-      openCodeRuntimeModelId("deepseek", "deepseek/deepseek-v4-pro"),
-    ).toBe("deepseek-v4-pro");
-    expect(
-      openCodeRuntimeModelId("route33", "route33/z-ai/glm-5.2"),
-    ).toBe("z-ai/glm-5.2");
-    expect(openCodeRuntimeModelId("provider", "already-local")).toBe(
-      "already-local",
     );
   });
 
@@ -208,19 +255,30 @@ describe("API client", () => {
       }),
     );
 
-    await api.generate("p1", true, "investigator", "analyst", "writer", 10, [21]);
+    await api.generate(
+      "p1",
+      true,
+      "investigator",
+      "analyst",
+      "writer",
+      10,
+      [21],
+      "opencode-cli",
+    );
 
     const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
     expect(fetchCall[0]).toBe("/nexus-api/harness/packs/projects/p1/generate");
     expect(JSON.parse(fetchCall[1]?.body as string)).toMatchObject({
-      project_id: "p1",
       resume: true,
       investigation_model: "investigator",
       model: "analyst",
       write_model: "writer",
+      doc_generation_provider: "opencode-cli",
       organization_pack_id: 10,
       private_version_ids: [21],
     });
+    expect(JSON.parse(fetchCall[1]?.body as string)).not.toHaveProperty("project_id");
     expect(JSON.parse(fetchCall[1]?.body as string)).not.toHaveProperty("plugin_pack_id");
   });
+
 });

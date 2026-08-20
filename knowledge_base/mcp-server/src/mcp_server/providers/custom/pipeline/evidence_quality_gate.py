@@ -43,7 +43,12 @@ class EvidenceQualityGate(Phase):
                     context={"group": group, "size_bytes": size, "threshold": self.THIN_THRESHOLD_BYTES},
                 )
 
-        state.thin_bundle_groups = thin
+        # Merge, never overwrite: Phase 2 salvage containment (P0.2) marks
+        # failed groups PARTIAL by adding them to thin_bundle_groups before
+        # this gate runs; clobbering them would drop the evidence notice for
+        # exactly the groups whose analysis is unreliable.
+        merged = list(dict.fromkeys([*state.thin_bundle_groups, *thin]))
+        state.thin_bundle_groups = merged
 
         assessment_dir = ctx.staging_dir / "_assessment"
         assessment_dir.mkdir(parents=True, exist_ok=True)
@@ -51,8 +56,9 @@ class EvidenceQualityGate(Phase):
             json.dumps(
                 {
                     "schema_version": 1,
-                    "thin_groups": thin,
+                    "thin_groups": merged,
                     "threshold_bytes": self.THIN_THRESHOLD_BYTES,
+                    "partial_groups": list(state.partial_groups),
                 },
                 indent=2,
             ),

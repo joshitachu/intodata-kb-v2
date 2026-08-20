@@ -31,6 +31,8 @@ __all__ = [
     "component_reference_errors",
     "job_scoped_component_reference_errors",
     "availability_claim_errors",
+    "protected_fact_errors",
+    "unit_count_claim_errors",
     "extract_component_refs",
     "COMPONENT_REF_RE",
     "UNAVAILABILITY_PHRASES",
@@ -201,6 +203,106 @@ def job_scoped_component_reference_errors(
                 "\n".join(unattributed), fallback_refs, source_label=source_label
             )
         )
+    return errors
+
+
+_FACT_ROW_RE = re.compile(r"^\|\s*([^|]+?)\s*\|\s*(.*?)\s*\|\s*$", re.MULTILINE)
+
+
+def protected_fact_errors(
+    text: str,
+    protected_facts: dict[str, str],
+) -> list[str]:
+    """Enforce the protected-fact ledger on a per-unit document (P1.5).
+
+    The unit doc must contain a ``Protected Scanner Facts`` section whose rows
+    echo the deterministic ledger values verbatim. A missing section, a
+    missing fact row, or a value that differs from the ledger is an error --
+    protected facts are copied from evidence, never recomputed by the model.
+    Numeric facts (component_count, connection_count) are additionally checked
+    even when the fact-name column was reworded, so a recomputed count cannot
+    hide behind a renamed row.
+    """
+    if not protected_facts:
+        return []
+    errors: list[str] = []
+    lowered = text.lower()
+    if "protected scanner facts" not in lowered:
+        return [
+            "output is missing the 'Protected Scanner Facts' section. Copy the "
+            "PROTECTED SCANNER FACTS table from the evidence bundle verbatim."
+        ]
+    doc_rows: dict[str, str] = {}
+    for match in _FACT_ROW_RE.finditer(text):
+        name = match.group(1).strip().lower()
+        value = match.group(2).strip()
+        if name and name not in {"fact", "---", ""}:
+            doc_rows.setdefault(name, value)
+    for fact, expected in protected_facts.items():
+        stated = doc_rows.get(fact.lower())
+        if stated is None:
+            errors.append(
+                f"protected fact '{fact}' is missing from the Protected Scanner "
+                f"Facts table; copy it verbatim from the evidence bundle "
+                f"(expected value: {expected})"
+            )
+            continue
+        # Strip trailing evidence/fact tags like [fact:unit.X.group] before comparing.
+        stated_value = re.sub(r"\s*\[(?:fact|evidence):[^\]]*\]\s*$", "", stated).strip()
+        if stated_value.replace("\\|", "|") != expected:
+            errors.append(
+                f"protected fact '{fact}' was restated as '{stated_value}' but the "
+                f"scanner ledger says '{expected}'. Protected facts must be copied "
+                "verbatim, never recomputed."
+            )
+    return errors
+
+
+def unit_count_claim_errors(
+    text: str,
+    *,
+    unit_count: int,
+    canonical_unit_label: str,
+    allowed_counts: frozenset[int] | set[int] = frozenset(),
+) -> list[str]:
+    """Flag canonical-unit-count claims that match no scanner-derived count.
+
+    Summary/catalog docs must quote unit counts from evidence (the facts
+    manifest total or a per-group count), never recompute them by inference.
+    Only counts adjacent to the canonical unit label are checked, so unrelated
+    quantities ("3 external systems") are never flagged.
+    """
+    label = re.escape(canonical_unit_label.rstrip("s"))
+    pattern = re.compile(rf"\b(\d{{1,5}})\s+(?:canonical\s+)?{label}s?\b", re.IGNORECASE)
+    allowed = {unit_count, *allowed_counts}
+    lowered = (text or "").lower()
+    # Only a count presented as the whole-project / canonical TOTAL may be
+    # flagged. Legitimate per-group or per-layer sub-counts ("4 jobs in the
+    # routing layer", "8 jobs in this group") are not fabrications and must not
+    # trip a hard validation error (which forces a full, wasteful doc repair).
+    total_terms = (
+        "total", "canonical", "all ", "entire", "whole", "altogether",
+        "in all", "combined", "project contains", "project has",
+        "suite of", "comprising", "consists of", "consist of",
+    )
+    errors: list[str] = []
+    seen: set[int] = set()
+    for match in pattern.finditer(text or ""):
+        value = int(match.group(1))
+        if value in allowed or value in seen:
+            continue
+        window = lowered[max(0, match.start() - 60): match.end() + 20]
+        if not any(term in window for term in total_terms):
+            continue
+        seen.add(value)
+        errors.append(
+            f"output claims '{match.group(0)}' as a project total but no "
+            f"scanner-derived total equals {value} (canonical total: "
+            f"{unit_count}). Quote the total from the facts manifest; never "
+            "recompute it."
+        )
+        if len(errors) >= _MAX_REPORTED_CLAIMS:
+            break
     return errors
 
 

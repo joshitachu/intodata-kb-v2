@@ -11,7 +11,13 @@ def test_unsupported_file_type_raises():
 
 
 def test_supported_types():
-    assert SUPPORTED_TYPES == {"pdf", "docx", "pptx", "xlsx"}
+    assert SUPPORTED_TYPES == {"pdf", "docx", "pptx", "xlsx", "md"}
+
+
+def test_parse_markdown_preserves_structure():
+    markdown = "# Heading\n\nSome **important** content.\n"
+
+    assert parse_file(markdown.encode(), "notes.md") == markdown
 
 
 def test_parse_docx():

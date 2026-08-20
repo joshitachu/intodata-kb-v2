@@ -197,8 +197,25 @@ class Phase2Analysis(Phase):
                 guide_sections.model_dump_json(indent=2), encoding="utf-8"
             )
         if not guide_sections.ok:
-            raise RuntimeError("; ".join(guide_sections.errors) or "Phase 2 guide-section mismatch")
-        await log_cb(ctx.project_id, "[custom] Phase 2 guide-section gate passed", "info")
+            # Salvage-first (P0.2): a residual guide-section mismatch after the
+            # deterministic patch is a quality warning, not a reason to discard
+            # every accepted analysis. PARTIAL groups (containment stubs)
+            # legitimately lack sections; resume retries them.
+            await state.warning_collector.emit(
+                "phase2",
+                WarningCode.PHASE2_DEPTH_PARTIAL,
+                "; ".join(guide_sections.errors) or "Phase 2 guide-section mismatch",
+                {"groups": len(facts.groups)},
+            )
+            await log_cb(
+                ctx.project_id,
+                "[custom] Phase 2 guide-section gate: residual mismatch recorded "
+                "as warning (run continues): "
+                + ("; ".join(guide_sections.errors[:3]) or "mismatch"),
+                "warning",
+            )
+        else:
+            await log_cb(ctx.project_id, "[custom] Phase 2 guide-section gate passed", "info")
 
         return PhaseResult(
             phase_name=self.name,

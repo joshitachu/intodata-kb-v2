@@ -15,6 +15,7 @@ import type {
   RuntimeTimelineEvent,
 } from "@/types";
 import { cn } from "@/lib/utils";
+import { CauseOriginBadge, PatternIdTag, SeverityChip } from "./runtime-ui";
 
 interface RuntimeInsightPanelProps {
   executionId: string;
@@ -61,13 +62,13 @@ export function RuntimeInsightPanel({ executionId }: RuntimeInsightPanelProps) {
       <div className="px-4 py-3 space-y-2">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
           {s.warning_count > 0 && (
-            <span className="flex items-center gap-1 text-amber-600">
+            <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400">
               <AlertTriangle className="h-3.5 w-3.5" />
               {s.warning_count} warning{s.warning_count !== 1 ? "s" : ""}
             </span>
           )}
           {s.error_count > 0 && (
-            <span className="flex items-center gap-1 text-red-600">
+            <span className="flex items-center gap-1 text-destructive">
               <AlertTriangle className="h-3.5 w-3.5" />
               {s.error_count} error{s.error_count !== 1 ? "s" : ""}
             </span>
@@ -81,6 +82,13 @@ export function RuntimeInsightPanel({ executionId }: RuntimeInsightPanelProps) {
         </div>
         {s.summary_text && (
           <p className="text-sm">{s.summary_text}</p>
+        )}
+        {/* The log's own diagnostic sentence. It states the fault in the emitting
+            runtime's words, so it outranks any composed summary above. */}
+        {s.causal_message && (
+          <pre className="min-w-0 whitespace-pre-wrap break-words rounded-md bg-muted/60 px-2.5 py-2 font-mono text-xs leading-relaxed text-foreground">
+            {s.causal_message}
+          </pre>
         )}
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-1 text-xs mt-1">
           {s.failed_component && (
@@ -129,22 +137,39 @@ export function RuntimeInsightPanel({ executionId }: RuntimeInsightPanelProps) {
                   {incident.data.incident.symptom_summary}
                 </p>
               )}
+              {incident.data.incident.causal_message && (
+                <pre className="min-w-0 whitespace-pre-wrap break-words rounded-md bg-muted/60 px-2.5 py-2 font-mono text-xs leading-relaxed text-foreground">
+                  {incident.data.incident.causal_message}
+                </pre>
+              )}
               {incident.data.incident.root_cause_candidate && (
                 <div className="space-y-0.5">
                   <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                     Likely Cause
                   </p>
                   <p className="text-sm flex items-start gap-1.5">
-                    <HelpCircle className="h-3.5 w-3.5 text-amber-500 mt-0.5 shrink-0" />
+                    <HelpCircle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
                     <span>
                       {incident.data.incident.root_cause_candidate}
                       {incident.data.incident.confidence && (
                         <span className="ml-1.5 text-xs text-muted-foreground">
-                          ({incident.data.incident.confidence} confidence — probable, not confirmed)
+                          (
+                          {incident.data.incident.confidence === "low"
+                            ? // "low" is the catalog's fallback tier: no cause was
+                              // derived. Saying "probable" would overstate it.
+                              "low confidence — no cause was derived from the available evidence"
+                            : `${incident.data.incident.confidence} confidence — probable, not confirmed`}
+                          )
                         </span>
                       )}
                     </span>
                   </p>
+                  {/* Who produced the cause, and which rule matched. Always
+                      stated: quiet for the rule engine, loud for an LLM. */}
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pl-5">
+                    <CauseOriginBadge origin={incident.data.incident.cause_origin} />
+                    <PatternIdTag patternId={incident.data.incident.pattern_id} />
+                  </div>
                 </div>
               )}
               {incident.data.incident.next_checks.length > 0 && (
@@ -155,7 +180,7 @@ export function RuntimeInsightPanel({ executionId }: RuntimeInsightPanelProps) {
                   <ul className="space-y-0.5">
                     {incident.data.incident.next_checks.map((check, i) => (
                       <li key={i} className="flex items-start gap-1.5 text-sm">
-                        <CheckCircle className="h-3.5 w-3.5 text-blue-500 mt-0.5 shrink-0" />
+                        <CheckCircle className="h-3.5 w-3.5 text-primary mt-0.5 shrink-0" />
                         {check}
                       </li>
                     ))}
@@ -263,13 +288,13 @@ function formatEngine(context: RuntimeFailureEstateContext): string {
 function RecurringBadge({ isRecurring, count }: { isRecurring: boolean; count: number }) {
   if (isRecurring) {
     return (
-      <span className="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-800 border border-amber-200">
+      <span className="inline-flex items-center rounded border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
         Recurring · {count}×
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">
+    <span className="inline-flex items-center rounded border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
       First occurrence
     </span>
   );
@@ -279,7 +304,7 @@ function SimilarTable({ incidents }: { incidents: RuntimeSimilarIncident[] }) {
   return (
     <table className="w-full text-xs border-collapse mt-2">
       <thead>
-        <tr className="border-b border-slate-200 text-left text-muted-foreground">
+        <tr className="border-b border-border text-left text-muted-foreground">
           <th className="py-1 pr-3 font-medium">When</th>
           <th className="py-1 pr-3 font-medium">Component</th>
           <th className="py-1 font-medium">Likely cause</th>
@@ -287,7 +312,7 @@ function SimilarTable({ incidents }: { incidents: RuntimeSimilarIncident[] }) {
       </thead>
       <tbody>
         {incidents.map((inc) => (
-          <tr key={inc.incident_id} className="border-b border-slate-100 align-top">
+          <tr key={inc.incident_id} className="border-b border-border/70 align-top">
             <td className="py-1 pr-3 text-muted-foreground whitespace-nowrap">
               {inc.first_bad_at ? new Date(inc.first_bad_at).toLocaleDateString() : "—"}
             </td>
@@ -429,25 +454,6 @@ function FactRow({
   );
 }
 
-function SeverityChip({ severity }: { severity: string }) {
-  const styles: Record<string, string> = {
-    error: "bg-red-100 text-red-700",
-    warning: "bg-amber-100 text-amber-700",
-    info: "bg-slate-100 text-slate-600",
-    debug: "bg-gray-100 text-gray-500",
-  };
-  return (
-    <span
-      className={cn(
-        "px-1 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wide",
-        styles[severity] ?? "bg-gray-100 text-gray-500",
-      )}
-    >
-      {severity}
-    </span>
-  );
-}
-
 function InsightSection({
   children,
   error,
@@ -464,7 +470,7 @@ function InsightSection({
       className={cn(
         "px-4 text-sm",
         small ? "py-2" : "py-3",
-        error && "text-red-600",
+        error && "text-destructive",
         !error && muted && "text-muted-foreground",
       )}
     >

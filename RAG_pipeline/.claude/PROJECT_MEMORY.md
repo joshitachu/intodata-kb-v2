@@ -448,3 +448,10 @@ intodata-kb/
   unconnected/configuration evidence remains searchable and available through
   “All technical dependencies.” Human labels never replace the technical IDs
   used for navigation and lineage.
+- **Semantic topology is a projection, not scanner authority (2026-07-30):**
+  Organization systems and exchanges may be proposed only from bounded,
+  cited scan evidence. L1 renders the semantic projection when it exists;
+  Talend projects remain implementation solutions. Raw technical nodes, edges,
+  stable IDs, provenance, and L3/L4 drill-down remain intact. A proposal stays
+  visibly proposed until confirmed by supplied business data or human curation.
+- **TMC runtime ingestion is a scoped evidence collection, not a tenant mirror (2026-08-11):** Default scope terms must name the business object itself (`WerkOrder(s)` / `WorkOrder(s)`); application names such as Maximo, RHM, and FourPS require an explicit operator override because they also identify unrelated flows. Fail closed when a configured scope matches nothing. Current Talend Cloud task-execution filters permit at most ten days per request; longer retention must use bounded `from`/`to` windows with execution-ID deduplication. Cap runs and detail enrichment, fetch full logs only for failures, use at most 200 log rows per page, accept epoch-millisecond log timestamps, and keep transport retries bounded. Runtime duration persistence is 64-bit because real TMC executions can exceed the 32-bit millisecond range.

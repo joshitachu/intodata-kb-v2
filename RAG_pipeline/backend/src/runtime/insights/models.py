@@ -30,6 +30,10 @@ class RuntimeExecutionSummaryInsight(BaseModel):
     primary_error_code: str | None
     primary_exception_class: str | None
     summary_text: str | None
+    # The runtime's own diagnostic sentence, credential-redacted. Quoted verbatim
+    # rather than reconstructed from signals, so the UI can show what the log
+    # actually said. None when no causal line could be resolved.
+    causal_message: str | None = None
     evidence_refs: list[int] | None
     # Joined from RuntimeExecutionRow
     state: str | None
@@ -86,6 +90,10 @@ class RuntimeIncidentInsight(BaseModel):
     signature_hash: str | None
     symptom_summary: str | None
     root_cause_candidate: str | None
+    # The runtime's own diagnostic sentence, credential-redacted. Distinct from
+    # root_cause_candidate, which is a rendered catalog template: this is what the
+    # log actually said. None when no causal line could be resolved.
+    causal_message: str | None = None
     confidence: str | None
     # "deterministic" (default) or "llm_fallback" (Slice 4). Lets callers tell
     # whether the root cause came from the rule engine or the LLM fallback.

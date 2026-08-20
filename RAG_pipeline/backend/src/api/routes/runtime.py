@@ -37,21 +37,27 @@ from src.runtime.models import (
     GetExecutionDetailsInput,
     GetExecutionLogsInput,
     ListRuntimeArtifactsInput,
+    ListRuntimeComponentHotspotsInput,
     ListRuntimeConnectionsInput,
     ListRuntimeDependenciesInput,
     ListRuntimeEnginesInput,
+    ListRuntimeErrorSignaturesInput,
     ListRuntimeInventoryInput,
     ListRuntimeJobRunsInput,
+    ListRuntimeJobReliabilityInput,
+    ListRuntimeJobThroughputInput,
     ListRuntimeJobsInput,
     ListRuntimePlanRunsInput,
     ListRuntimePlansInput,
     ListExecutionsInput,
     RuntimeArtifact,
+    RuntimeComponentHotspot,
     RuntimeConnection,
     RuntimeDependencySummary,
     RuntimeEngine,
     RuntimeEngineHealth,
     RuntimeEngineStatus,
+    RuntimeErrorSignature,
     RuntimeEstateOverview,
     RuntimeExecution,
     RuntimeExecutionState,
@@ -60,15 +66,20 @@ from src.runtime.models import (
     RuntimeJob,
     RuntimeJobDependency,
     RuntimeJobHealth,
+    RuntimeJobReliability,
     RuntimeJobRun,
+    RuntimeJobThroughput,
     RuntimeLogEvent,
     RuntimeLogSeverity,
+    RuntimeOutcomeTrendPoint,
     RuntimePlan,
     RuntimePlanHealth,
     RuntimePlanRun,
     RuntimeSourceRead,
     RuntimeSyncState,
     RuntimeStatusResponse,
+    RuntimeTrendBucket,
+    RuntimeTrendInput,
 )
 from src.runtime.status import get_runtime_status
 from src.runtime.store import ProjectScope, RuntimeRecordNotFoundError, RuntimeStoreRepository
@@ -198,6 +209,32 @@ class RuntimePlanHealthResponse(BaseModel):
     total: int
 
 
+class RuntimeTrendResponse(BaseModel):
+    bucket: RuntimeTrendBucket
+    points: list[RuntimeOutcomeTrendPoint]
+    total: int
+
+
+class RuntimeJobReliabilityResponse(BaseModel):
+    jobs: list[RuntimeJobReliability]
+    total: int
+
+
+class RuntimeComponentHotspotResponse(BaseModel):
+    components: list[RuntimeComponentHotspot]
+    total: int
+
+
+class RuntimeJobThroughputResponse(BaseModel):
+    jobs: list[RuntimeJobThroughput]
+    total: int
+
+
+class RuntimeErrorSignatureResponse(BaseModel):
+    signatures: list[RuntimeErrorSignature]
+    total: int
+
+
 # --- Scope helper ------------------------------------------------------------
 
 
@@ -285,12 +322,23 @@ async def list_executions(
     state: RuntimeExecutionState | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
+    min_duration_ms: int | None = Query(default=None, ge=0),
+    unfinished: bool | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> ExecutionListResponse:
     scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    params = ListExecutionsInput(job_name=job_name, state=state, since=since, until=until, limit=limit, offset=offset)
+    params = ListExecutionsInput(
+        job_name=job_name,
+        state=state,
+        since=since,
+        until=until,
+        min_duration_ms=min_duration_ms,
+        unfinished=unfinished,
+        limit=limit,
+        offset=offset,
+    )
     executions = await repo.list_executions(
         _intersect_scope(scope, project_id),
         params,
@@ -387,6 +435,179 @@ async def list_failures(
         params,
     )
     return FailureListResponse(failures=failures, total=await repo.count_failures(_intersect_scope(scope, project_id), params))
+
+
+@router.get(
+    "/trend",
+    response_model=RuntimeTrendResponse,
+    summary="Get bucketed run-outcome and duration trend",
+)
+async def get_runtime_trend(
+    user: CurrentUser,
+    db: DBSession,
+    project_id: str | None = None,
+    source_key: str | None = None,
+    job_name: str | None = None,
+    bucket: RuntimeTrendBucket = RuntimeTrendBucket.DAY,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = Query(default=90, ge=1, le=400),
+) -> RuntimeTrendResponse:
+    scope = await get_user_project_ids(user, db)
+    repo = RuntimeStoreRepository(db)
+    points = await repo.get_outcome_trend(
+        _intersect_scope(scope, project_id),
+        RuntimeTrendInput(
+            project_id=project_id,
+            source_key=source_key,
+            job_name=job_name,
+            bucket=bucket,
+            since=since,
+            until=until,
+            limit=limit,
+        ),
+    )
+    return RuntimeTrendResponse(bucket=bucket, points=points, total=len(points))
+
+
+@router.get(
+    "/job-reliability",
+    response_model=RuntimeJobReliabilityResponse,
+    summary="List per-job reliability and latency rollups",
+)
+async def list_runtime_job_reliability(
+    user: CurrentUser,
+    db: DBSession,
+    project_id: str | None = None,
+    source_key: str | None = None,
+    job_name: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> RuntimeJobReliabilityResponse:
+    scope = await get_user_project_ids(user, db)
+    repo = RuntimeStoreRepository(db)
+    selected_scope = _intersect_scope(scope, project_id)
+    params = ListRuntimeJobReliabilityInput(
+        project_id=project_id,
+        source_key=source_key,
+        job_name=job_name,
+        since=since,
+        until=until,
+        limit=limit,
+        offset=offset,
+    )
+    return RuntimeJobReliabilityResponse(
+        jobs=await repo.list_job_reliability(selected_scope, params),
+        total=await repo.count_job_reliability(selected_scope, params),
+    )
+
+
+@router.get(
+    "/component-hotspots",
+    response_model=RuntimeComponentHotspotResponse,
+    summary="List per-component throughput and latency hotspots",
+)
+async def list_runtime_component_hotspots(
+    user: CurrentUser,
+    db: DBSession,
+    project_id: str | None = None,
+    source_key: str | None = None,
+    component_key: str | None = None,
+    component_type: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> RuntimeComponentHotspotResponse:
+    scope = await get_user_project_ids(user, db)
+    repo = RuntimeStoreRepository(db)
+    selected_scope = _intersect_scope(scope, project_id)
+    params = ListRuntimeComponentHotspotsInput(
+        project_id=project_id,
+        source_key=source_key,
+        component_key=component_key,
+        component_type=component_type,
+        since=since,
+        until=until,
+        limit=limit,
+        offset=offset,
+    )
+    return RuntimeComponentHotspotResponse(
+        components=await repo.list_component_hotspots(selected_scope, params),
+        total=await repo.count_component_hotspots(selected_scope, params),
+    )
+
+
+@router.get(
+    "/job-throughput",
+    response_model=RuntimeJobThroughputResponse,
+    summary="List rows moved per job from component metrics",
+)
+async def list_runtime_job_throughput(
+    user: CurrentUser,
+    db: DBSession,
+    project_id: str | None = None,
+    source_key: str | None = None,
+    job_name: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> RuntimeJobThroughputResponse:
+    scope = await get_user_project_ids(user, db)
+    repo = RuntimeStoreRepository(db)
+    selected_scope = _intersect_scope(scope, project_id)
+    params = ListRuntimeJobThroughputInput(
+        project_id=project_id,
+        source_key=source_key,
+        job_name=job_name,
+        since=since,
+        until=until,
+        limit=limit,
+        offset=offset,
+    )
+    return RuntimeJobThroughputResponse(
+        jobs=await repo.list_job_throughput(selected_scope, params),
+        total=await repo.count_job_throughput(selected_scope, params),
+    )
+
+
+@router.get(
+    "/error-signatures",
+    response_model=RuntimeErrorSignatureResponse,
+    summary="List recurring runtime error signatures",
+)
+async def list_runtime_error_signatures(
+    user: CurrentUser,
+    db: DBSession,
+    project_id: str | None = None,
+    error_code: str | None = None,
+    exception_class: str | None = None,
+    component_name: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> RuntimeErrorSignatureResponse:
+    scope = await get_user_project_ids(user, db)
+    repo = RuntimeStoreRepository(db)
+    selected_scope = _intersect_scope(scope, project_id)
+    params = ListRuntimeErrorSignaturesInput(
+        project_id=project_id,
+        error_code=error_code,
+        exception_class=exception_class,
+        component_name=component_name,
+        since=since,
+        until=until,
+        limit=limit,
+        offset=offset,
+    )
+    return RuntimeErrorSignatureResponse(
+        signatures=await repo.list_error_signatures(selected_scope, params),
+        total=await repo.count_error_signatures(selected_scope, params),
+    )
 
 
 @router.get("/sync-status", response_model=SyncStatusResponse, summary="List runtime sync status")
@@ -559,20 +780,23 @@ async def list_runtime_artifacts(
     workspace_id: str | None = None,
     artifact_type: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> RuntimeArtifactListResponse:
     scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    artifacts = await repo.list_artifacts(
-        _intersect_scope(scope, project_id),
-        ListRuntimeArtifactsInput(
-            project_id=project_id,
-            source_key=source_key,
-            workspace_id=workspace_id,
-            artifact_type=artifact_type,
-            limit=limit,
-        ),
+    selected_scope = _intersect_scope(scope, project_id)
+    params = ListRuntimeArtifactsInput(
+        project_id=project_id,
+        source_key=source_key,
+        workspace_id=workspace_id,
+        artifact_type=artifact_type,
+        limit=limit,
+        offset=offset,
     )
-    return RuntimeArtifactListResponse(artifacts=artifacts, total=len(artifacts))
+    return RuntimeArtifactListResponse(
+        artifacts=await repo.list_artifacts(selected_scope, params),
+        total=await repo.count_artifacts(selected_scope, params),
+    )
 
 
 @router.get("/connections", response_model=RuntimeConnectionListResponse, summary="List runtime connections")
@@ -584,20 +808,23 @@ async def list_runtime_connections(
     workspace_id: str | None = None,
     connection_type: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> RuntimeConnectionListResponse:
     scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    connections = await repo.list_connections(
-        _intersect_scope(scope, project_id),
-        ListRuntimeConnectionsInput(
-            project_id=project_id,
-            source_key=source_key,
-            workspace_id=workspace_id,
-            connection_type=connection_type,
-            limit=limit,
-        ),
+    selected_scope = _intersect_scope(scope, project_id)
+    params = ListRuntimeConnectionsInput(
+        project_id=project_id,
+        source_key=source_key,
+        workspace_id=workspace_id,
+        connection_type=connection_type,
+        limit=limit,
+        offset=offset,
     )
-    return RuntimeConnectionListResponse(connections=connections, total=len(connections))
+    return RuntimeConnectionListResponse(
+        connections=await repo.list_connections(selected_scope, params),
+        total=await repo.count_connections(selected_scope, params),
+    )
 
 
 @router.get("/dependencies", response_model=RuntimeDependencyListResponse, summary="List runtime dependencies")
@@ -610,21 +837,24 @@ async def list_runtime_dependencies(
     dependency_id: str | None = None,
     job_id: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> RuntimeDependencyListResponse:
     scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    dependencies = await repo.list_job_dependencies(
-        _intersect_scope(scope, project_id),
-        ListRuntimeDependenciesInput(
-            project_id=project_id,
-            source_key=source_key,
-            dependency_type=dependency_type,
-            dependency_id=dependency_id,
-            job_id=job_id,
-            limit=limit,
-        ),
+    selected_scope = _intersect_scope(scope, project_id)
+    params = ListRuntimeDependenciesInput(
+        project_id=project_id,
+        source_key=source_key,
+        dependency_type=dependency_type,
+        dependency_id=dependency_id,
+        job_id=job_id,
+        limit=limit,
+        offset=offset,
     )
-    return RuntimeDependencyListResponse(dependencies=dependencies, total=len(dependencies))
+    return RuntimeDependencyListResponse(
+        dependencies=await repo.list_job_dependencies(selected_scope, params),
+        total=await repo.count_job_dependencies(selected_scope, params),
+    )
 
 
 @router.get(
@@ -660,23 +890,26 @@ async def list_runtime_job_runs(
     since: datetime | None = None,
     until: datetime | None = None,
     limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> RuntimeJobRunListResponse:
     scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    runs = await repo.list_job_runs(
-        _intersect_scope(scope, project_id),
-        ListRuntimeJobRunsInput(
-            project_id=project_id,
-            source_key=source_key,
-            job_id=job_id,
-            engine_id=engine_id,
-            state=state,
-            since=since,
-            until=until,
-            limit=limit,
-        ),
+    selected_scope = _intersect_scope(scope, project_id)
+    params = ListRuntimeJobRunsInput(
+        project_id=project_id,
+        source_key=source_key,
+        job_id=job_id,
+        engine_id=engine_id,
+        state=state,
+        since=since,
+        until=until,
+        limit=limit,
+        offset=offset,
     )
-    return RuntimeJobRunListResponse(runs=runs, total=len(runs))
+    return RuntimeJobRunListResponse(
+        runs=await repo.list_job_runs(selected_scope, params),
+        total=await repo.count_job_runs(selected_scope, params),
+    )
 
 
 @router.get("/job-health", response_model=RuntimeJobHealthResponse, summary="List runtime job health")
@@ -748,22 +981,25 @@ async def list_runtime_plan_runs(
     since: datetime | None = None,
     until: datetime | None = None,
     limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> RuntimePlanRunListResponse:
     scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    runs = await repo.list_plan_runs(
-        _intersect_scope(scope, project_id),
-        ListRuntimePlanRunsInput(
-            project_id=project_id,
-            source_key=source_key,
-            plan_id=plan_id,
-            state=state,
-            since=since,
-            until=until,
-            limit=limit,
-        ),
+    selected_scope = _intersect_scope(scope, project_id)
+    params = ListRuntimePlanRunsInput(
+        project_id=project_id,
+        source_key=source_key,
+        plan_id=plan_id,
+        state=state,
+        since=since,
+        until=until,
+        limit=limit,
+        offset=offset,
     )
-    return RuntimePlanRunListResponse(runs=runs, total=len(runs))
+    return RuntimePlanRunListResponse(
+        runs=await repo.list_plan_runs(selected_scope, params),
+        total=await repo.count_plan_runs(selected_scope, params),
+    )
 
 
 @router.get("/plan-health", response_model=RuntimePlanHealthResponse, summary="List runtime plan health")

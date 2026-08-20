@@ -70,6 +70,29 @@ class CredentialFilter:
         # Generic connection strings with user:pass@
         (re.compile(r"://[^\s\"'<>]+:[^\s\"'<>]+@[^\s\"'<>]+"),
          "[CONNECTION_STRING_REDACTED]", RedactionLevel.STANDARD),
+        # Credential query-parameters inside URI/code strings. Verified leak:
+        # a Camel FTP URI built from concatenated Java strings carried
+        # `?password=RAW(<plaintext>)&fileName=...`; the URL pattern redacted
+        # the host string but the query fragment lived in a SEPARATE string
+        # literal and survived. Query-string context (`?`/`&`/`;` before the
+        # key) is required so ordinary code assignments such as
+        # `String password = decoded.substring(0, i)` are never mangled.
+        (re.compile(
+            r"([?&;](?:amp;)?\s*(?:password|passwd|pwd|secret|token|apikey|"
+            r"api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|"
+            r"auth[_-]?token|passphrase|credential)\s*=\s*)"
+            r"(?:RAW\([^)\n]*\)|(?!\[)[^\s&\"'<>;,\n]+)",
+            re.IGNORECASE,
+        ), r"\1[CREDENTIAL_PARAM_REDACTED]", RedactionLevel.STANDARD),
+        # Camel `key=RAW(value)` wrapper outside query-string context: RAW()
+        # exists precisely to mark a literal (usually secret) value, so a
+        # credential key with a RAW value is a leak by definition.
+        (re.compile(
+            r"(\b(?:password|passwd|pwd|secret|token|apikey|api[_-]?key|"
+            r"client[_-]?secret|access[_-]?token|refresh[_-]?token|"
+            r"auth[_-]?token|passphrase|credential)\s*=\s*)RAW\([^)\n]*\)",
+            re.IGNORECASE,
+        ), r"\1[CREDENTIAL_PARAM_REDACTED]", RedactionLevel.STANDARD),
         # Credential file paths (always, even at standard)
         (re.compile(
             r"[^\s\"'<>]*(Credentials|gcp\.json|service_account|\.pem|\.key)[^\s\"'<>]*",

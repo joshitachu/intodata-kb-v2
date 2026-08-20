@@ -1,26 +1,4 @@
 services:
-  opencode-runtime:
-    pull_policy: build
-    build:
-      context: ./knowledge_base/opencode-runtime
-      dockerfile: Dockerfile
-    environment:
-      DEEPSEEK_API_KEY: ${MCP_DOC_GENERATION_DEEPSEEK_API_KEY:-}
-      OPENCODE_SERVER_USERNAME: ${MCP_AGENTIC_OPENCODE_USERNAME:-opencode}
-      OPENCODE_SERVER_PASSWORD: ${MCP_AGENTIC_OPENCODE_PASSWORD:-nexus-opencode-local-only}
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /var/lib/opencode:uid=10001,gid=10001,mode=0700
-    volumes:
-      - ./knowledge_base/agentic-workspaces:/runtime/workspaces
-    mem_limit: 1g
-    cpus: 1.0
-    restart: unless-stopped
-
   postgres:
     image: postgres:16-alpine
     ports:
@@ -171,7 +149,7 @@ services:
       RUNTIME_STATUS_TIMEOUT: ${RUNTIME_STATUS_TIMEOUT:-5.0}
       RUNTIME_TOOL_TIMEOUT: ${RUNTIME_TOOL_TIMEOUT:-10.0}
       RUNTIME_TOOL_RESULT_MAX_CHARS: ${RUNTIME_TOOL_RESULT_MAX_CHARS:-12000}
-      RUNTIME_SYNC_SCHEDULER_ENABLED: ${RUNTIME_SYNC_SCHEDULER_ENABLED:-false}
+      RUNTIME_SYNC_SCHEDULER_ENABLED: ${RUNTIME_SYNC_SCHEDULER_ENABLED:-true}
       RUNTIME_SYNC_INTERVAL_SECONDS: ${RUNTIME_SYNC_INTERVAL_SECONDS:-60}
       RUNTIME_SYNC_SOURCE_KEY: ${RUNTIME_SYNC_SOURCE_KEY:-}
       RUNTIME_SYNC_PROJECT_IDS: ${RUNTIME_SYNC_PROJECT_IDS:-}
@@ -246,6 +224,8 @@ services:
     build:
       context: ./knowledge_base
       dockerfile: mcp-server/Dockerfile
+      args:
+        OPENCODE_VERSION: ${MCP_OPENCODE_VERSION:-1.18.7}
     command:
       - sh
       - -c
@@ -273,11 +253,24 @@ services:
       MCP_INTODOC_COMMAND: intodoc
       MCP_CLAUDE_COMMAND: ${MCP_CLAUDE_COMMAND:-claude}
       MCP_CLAUDE_MODEL: ${MCP_CLAUDE_MODEL:-sonnet}
+      # OpenCode is pinned in the image; the operator supplies its model route
+      # and any provider/MCP connector configuration.
+      MCP_OPENCODE_COMMAND: ${MCP_OPENCODE_COMMAND:-opencode}
+      MCP_OPENCODE_CONFIG_PATH: ${MCP_OPENCODE_CONFIG_PATH:-}
+      MCP_OPENCODE_MODEL: ${MCP_OPENCODE_MODEL:-}
+      MCP_OPENCODE_PRIMARY_AGENT: ${MCP_OPENCODE_PRIMARY_AGENT:-build}
+      MCP_OPENCODE_VERSION: ${MCP_OPENCODE_VERSION:-1.18.7}
+      MCP_OPENCODE_AUTO_APPROVE: ${MCP_OPENCODE_AUTO_APPROVE:-true}
+      MCP_OPENCODE_TIMEOUT_SECONDS: ${MCP_OPENCODE_TIMEOUT_SECONDS:-1800}
+      MCP_OPENCODE_OLLAMA_BASE_URL: ${MCP_OPENCODE_OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+      MCP_OPENCODE_MCP_READ_ALLOWLIST_JSON: ${MCP_OPENCODE_MCP_READ_ALLOWLIST_JSON:-{}}
       MCP_DATA_DIR: /app/data
       MCP_INTODOC_OUTPUT_DIR: /app/intodoc-output
       MCP_PROJECT_ROOT: /app/workspace
       MCP_HINDSIGHT_ENABLED: "true"
       MCP_HINDSIGHT_URL: http://hindsight:8888
+      MCP_LIVING_DOC_PATCHING_ENABLED: ${MCP_LIVING_DOC_PATCHING_ENABLED:-true}
+      MCP_LIVING_DOC_ROLLOUT_STAGE: ${MCP_LIVING_DOC_ROLLOUT_STAGE:-approval_only}
       MCP_IMPACT_ROUTING_ENABLED: ${MCP_IMPACT_ROUTING_ENABLED:-false}
       MCP_LOG_LEVEL: ${MCP_LOG_LEVEL:-INFO}
       MCP_JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production-use-a-strong-random-key}
@@ -288,6 +281,9 @@ services:
       MCP_APP_ENV: ${MCP_APP_ENV:-${APP_ENV:-production}}
       MCP_GITHUB_WEBHOOK_SECRET: ${MCP_GITHUB_WEBHOOK_SECRET:-}
       MCP_PIPELINE_DEBUG: "1"
+      MCP_MAX_UPLOAD_ZIP_BYTES: ${MCP_MAX_UPLOAD_ZIP_BYTES:-3221225472}
+      MCP_MAX_UPLOAD_ZIP_UNCOMPRESSED_BYTES: ${MCP_MAX_UPLOAD_ZIP_UNCOMPRESSED_BYTES:-6442450944}
+      MCP_MAX_UPLOAD_ZIP_ENTRIES: ${MCP_MAX_UPLOAD_ZIP_ENTRIES:-300000}
       MCP_DEV_WEBHOOK_SKIP_SIGNATURE: ${MCP_DEV_WEBHOOK_SKIP_SIGNATURE:-false}
       MCP_TOKEN_ENCRYPTION_KEY: ${MCP_TOKEN_ENCRYPTION_KEY:-}
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-${PUBLIC_APP_URL:-}}
@@ -312,19 +308,6 @@ services:
       MCP_DOC_GENERATION_ROUTE33_API_KEY: ${MCP_DOC_GENERATION_ROUTE33_API_KEY:-}
       MCP_DOC_GENERATION_ROUTE33_BASE_URL: ${MCP_DOC_GENERATION_ROUTE33_BASE_URL:-https://api.route33.ai/v1}
       MCP_MODEL_PRICING_JSON: ${MCP_MODEL_PRICING_JSON:-}
-      # Additive A/B documentation experiments. Both gates default off; enabling
-      # paid execution also requires task/runtime secrets and a positive ceiling.
-      MCP_AGENTIC_EXPERIMENTS_ENABLED: ${MCP_AGENTIC_EXPERIMENTS_ENABLED:-false}
-      MCP_AGENTIC_PAID_EXECUTION_ENABLED: ${MCP_AGENTIC_PAID_EXECUTION_ENABLED:-false}
-      MCP_AGENTIC_OPENCODE_BASE_URL: ${MCP_AGENTIC_OPENCODE_BASE_URL:-http://opencode-runtime:4096}
-      MCP_AGENTIC_OPENCODE_USERNAME: ${MCP_AGENTIC_OPENCODE_USERNAME:-opencode}
-      MCP_AGENTIC_OPENCODE_PASSWORD: ${MCP_AGENTIC_OPENCODE_PASSWORD:-nexus-opencode-local-only}
-      MCP_AGENTIC_OPENCODE_VERSION: ${MCP_AGENTIC_OPENCODE_VERSION:-1.18.4}
-      MCP_AGENTIC_RECIPE_ROOT: ${MCP_AGENTIC_RECIPE_ROOT:-/app/data/agentic_recipes}
-      MCP_AGENTIC_WORKSPACE_ROOT: ${MCP_AGENTIC_WORKSPACE_ROOT:-/app/agentic-workspaces}
-      MCP_AGENTIC_TASK_TOKEN_SECRET: ${MCP_AGENTIC_TASK_TOKEN_SECRET:-}
-      MCP_AGENTIC_MAX_COST_USD: ${MCP_AGENTIC_MAX_COST_USD:-0}
-      MCP_AGENTIC_GOVERNED_SOURCE_ROOTS_JSON: ${MCP_AGENTIC_GOVERNED_SOURCE_ROOTS_JSON:-[]}
       MCP_AGENT_PHASE1_AGENTIC: "true"
       MCP_DEEP_DIVE_ENGINE: ${MCP_DEEP_DIVE_ENGINE:-repo_agent}
       MCP_DEEP_DIVE_MODEL: ${MCP_DEEP_DIVE_MODEL:-anthropic/claude-sonnet-4-6}
@@ -345,7 +328,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./knowledge_base/agentic-workspaces:/app/agentic-workspaces
       - ./knowledge_base/mcp-server/data:/app/data
       - ./knowledge_base/intodoc-output:/app/intodoc-output
       - ./knowledge_base/output:/app/workspace/output
@@ -363,9 +345,7 @@ services:
         condition: service_healthy
       hindsight:
         condition: service_healthy
-      opencode-runtime:
-        condition: service_healthy
-    mem_limit: 1g
+    mem_limit: 3g
     cpus: 2.0
     restart: unless-stopped
 
@@ -399,7 +379,6 @@ services:
       args:
         VITE_LOGIN_URL: ${VITE_LOGIN_URL:-${PUBLIC_APP_URL:-http://localhost:3000}/login}
         VITE_FLEET_ENABLED: ${FLEET_ENABLED:-true}
-        VITE_AGENTIC_EXPERIMENTS_ENABLED: ${VITE_AGENTIC_EXPERIMENTS_ENABLED:-false}
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-8001}:8001"
     environment:

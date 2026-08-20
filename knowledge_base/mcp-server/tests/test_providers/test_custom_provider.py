@@ -44,7 +44,9 @@ from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES, mat
 from mcp_server.providers.custom.doc_catalog import load_doc_catalog as _load_test_catalog
 from mcp_server.providers.custom.prompts import doc_prompt
 
-REQUIRED_DOCS = _load_test_catalog().required_docs
+# Per-unit catalog entries expand at run start ({base}__{group}__{unit});
+# the base name never exists as a file.
+REQUIRED_DOCS = [d.name for d in _load_test_catalog().docs if not d.per_unit]
 from mcp_server.providers.custom.providers import OpenAICompatibleProvider, _execute_staging_tool
 from mcp_server.providers.custom.validators import (
     build_facts_manifest,
@@ -2061,6 +2063,73 @@ async def test_provider_adapter_normalizes_success(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_provider_adapter_preserves_reasoning_usage_and_never_retries_length(monkeypatch):
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {
+                            "content": "partial JSON",
+                            "reasoning_content": "internal reasoning",
+                        },
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 120,
+                    "completion_tokens": 32_000,
+                    "completion_tokens_details": {"reasoning_tokens": 27_500},
+                },
+            }
+
+    class _Client:
+        calls = 0
+        last_payload = None
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            _Client.calls += 1
+            _Client.last_payload = kwargs.get("json")
+            return _Response()
+
+    monkeypatch.setattr("mcp_server.providers.custom.providers.httpx.AsyncClient", _Client)
+    provider = OpenAICompatibleProvider(
+        "deepseek-v4-flash",
+        api_key="key",
+        base_url="https://api.deepseek.com/v1",
+        provider_name="deepseek",
+    )
+
+    result = await provider.complete(
+        "extract claims",
+        options=ModelOptions(
+            retries=3,
+            provider_options={"thinking": {"type": "disabled"}},
+        ),
+    )
+
+    assert not result.success
+    assert _Client.calls == 1
+    assert result.output_tokens == 32_000
+    assert result.metadata["reasoning_tokens"] == 27_500
+    assert result.metadata["reasoning_content_bytes"] > 0
+    assert result.metadata["incomplete_reason"] == "length"
+    assert _Client.last_payload["thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.asyncio
 async def test_provider_adapter_normalizes_error(monkeypatch):
     class _Client:
         def __init__(self, *args, **kwargs):
@@ -2307,6 +2376,47 @@ class _FakeProvider:
                 model_name=self.model_name,
                 input_tokens=12,
                 output_tokens=24,
+            )
+
+        if '"schema_version": "phase2-claims-v1"' in prompt:
+            def _json_contract_value(name: str) -> str:
+                match = re.search(rf'"{name}":\s*("(?:[^"\\]|\\.)*")', prompt)
+                return json.loads(match.group(1)) if match else "unknown"
+
+            units_block = prompt.split("ASSIGNED CANONICAL UNITS", 1)[1].split(
+                "ALLOWED SECTIONS", 1
+            )[0]
+            units = [line[2:].strip() for line in units_block.splitlines() if line.startswith("- ")]
+            sections_block = prompt.split("ALLOWED SECTIONS", 1)[1].split("\nRULES\n", 1)[0]
+            sections = [
+                line[2:].strip() for line in sections_block.splitlines() if line.startswith("- ")
+            ]
+            return ModelResult(
+                success=True,
+                text=json.dumps(
+                    {
+                        "schema_version": "phase2-claims-v1",
+                        "group": _json_contract_value("group"),
+                        "task_id": _json_contract_value("task_id"),
+                        "concern": _json_contract_value("concern"),
+                        "claims": [
+                            {
+                                "section": section,
+                                "kind": "unknown",
+                                "unit_names": units,
+                                "related_units": [],
+                                "statement": f"No fixture evidence for {section}.",
+                                "evidence_refs": [],
+                                "confidence": "unknown",
+                                "claim_id": "",
+                            }
+                            for section in sections
+                        ],
+                    }
+                ),
+                model_name=self.model_name,
+                input_tokens=10,
+                output_tokens=100,
             )
 
         if "You are a documentation critic" in prompt:
@@ -2633,6 +2743,28 @@ def test_final_doc_content_only_adds_unit_inventory_to_component_inventory():
     assert "Unit A" in inventory
     assert "## Canonical Unit Inventory" not in brief
     assert "Unit A" not in brief
+
+
+def test_final_doc_content_adds_scanner_limited_contract_marker_once():
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    harness = CustomHarnessProvider(
+        OpenAICompatibleProvider(
+            "fake", api_key="test", base_url="http://example.test/v1"
+        )
+    )
+    state = HarnessRunState(project_id="p", facts_manifest=facts)
+    body = (
+        "# 03 Data Flows And Lineage\n\n"
+        "## Unknowns And Risk Boundaries\n\n"
+        "Field-level lineage is not established by scanner evidence."
+    )
+
+    first = harness._final_doc_content(state, "03_DATA_FLOWS_AND_LINEAGE", body)
+    second = harness._final_doc_content(state, "03_DATA_FLOWS_AND_LINEAGE", first)
+
+    assert first.count("## Scanner-Limited Evidence") == 1
+    assert "must not be inferred" in first
+    assert second == first
 
 
 def test_final_doc_content_strips_llm_preamble():
@@ -3459,6 +3591,10 @@ async def test_core_generation_runs_split_slices_concurrently_in_order(tmp_path,
     monkeypatch.setattr(config, "core_context_soft_target_tokens", 120)
     monkeypatch.setattr(config, "core_context_hard_ceiling_tokens", 180)
     monkeypatch.setattr(config, "core_slice_concurrency", 3)
+    # This test deliberately creates ~80 microscopic slices to exercise
+    # concurrency ordering; production-sized slices remain run-budgeted.
+    monkeypatch.setattr(config, "docgen_min_run_call_budget", 200)
+    monkeypatch.setattr(config, "docgen_max_run_calls", 200)
     staging = tmp_path / "docs_staging"
     staging.mkdir()
     large_md = staging / "group.md"
@@ -3476,7 +3612,15 @@ async def test_core_generation_runs_split_slices_concurrently_in_order(tmp_path,
             self.targets: list[str] = []
 
         async def complete(self, prompt: str, context_files: list[Path] | None = None, options=None):
-            target = re.search(r"slice (\d+) of", prompt)
+            # P2.7: the slice instruction is a byte-stable-prefix-preserving
+            # TAIL context file, not a prompt-head mutation. The prompt itself
+            # must therefore be identical across slices.
+            assert "slice" not in prompt.lower()
+            tail_text = ""
+            for f in context_files or []:
+                if f.name.endswith("__instruction.md"):
+                    tail_text = f.read_text(encoding="utf-8")
+            target = re.search(r"slice (\d+) of", tail_text)
             slice_no = target.group(1) if target else "0"
             self.targets.append(slice_no)
             self.active += 1
@@ -3965,12 +4109,18 @@ async def test_agent_task_runtime_rejects_length_and_marks_incomplete(tmp_path):
         allowed_units=["Unit A"],
         allowed_groups=["A"],
         expected_artifact="analysis markdown",
-        max_attempts=1,
+        max_attempts=2,
     )
 
+    dispatch_count = 0
+
     async def dispatch(task, tools):
+        nonlocal dispatch_count
+        dispatch_count += 1
         return ModelResult(
-            success=False,
+            # OpenAI-compatible providers may report transport success while
+            # still terminating a non-empty response at the output ceiling.
+            success=True,
             text="partial Unit A",
             model_name="fake/model",
             raw_error="incomplete: provider stopped because max tokens were reached",
@@ -3982,6 +4132,7 @@ async def test_agent_task_runtime_rejects_length_and_marks_incomplete(tmp_path):
     assert not result.accepted
     assert result.status == "incomplete"
     assert result.incomplete_reason == "length"
+    assert dispatch_count == 1
     status = json.loads((runtime.task_dir(contract) / "status.json").read_text(encoding="utf-8"))
     assert status["status"] == "incomplete"
     assert status["incomplete_reason"] == "length"
@@ -4342,6 +4493,9 @@ async def test_custom_harness_generates_valid_staging(tmp_path, monkeypatch):
     ])
     monkeypatch.setattr(config, "intodoc_output_dir", tmp_path / "intodoc")
     monkeypatch.setattr(config, "model_pricing_json", '{"fake/model":{"input":1,"output":2}}')
+    # This end-to-end test exercises the FULL pipeline including the LLM
+    # scorecard, which is config-gated OFF by default since R2.2.
+    monkeypatch.setattr(config, "docgen_llm_scorecard_enabled", True)
 
     staging = tmp_path / "output" / project_id / "docs_staging"
     (staging / "_preprocess").mkdir(parents=True)
@@ -4407,12 +4561,20 @@ async def test_custom_harness_generates_valid_staging(tmp_path, monkeypatch):
     report = validate_docs(staging, build_facts_manifest(project_id, scan_dir), required_docs=expected_docs)
     assert report.ok
     assert any("resolved providers" in message for _, message, _ in logs)
-    # Prompt pack files are now extracted to system_prompt, not context_names.
-    # _write_pack writes "## Source: {source_file}" headers, so check for the source filename.
-    assert any(
-        call["system_prompt"] and "_analysis_guide" in call["system_prompt"]
-        for call in provider.calls
+    claim_calls = [
+        call for call in provider.calls
+        if '"schema_version": "phase2-claims-v1"' in call["prompt"]
+    ]
+    assert len(claim_calls) == 2
+    # Extraction is governed by the compact claim schema, not the historical
+    # exhaustive analysis guide that caused unbounded prose responses.
+    assert all(
+        not call["system_prompt"] or "_analysis_guide" not in call["system_prompt"]
+        for call in claim_calls
     )
+    topology_claims = staging / "_topology" / "evidence" / "phase2_claims.jsonl"
+    assert topology_claims.exists()
+    assert len(topology_claims.read_text(encoding="utf-8").splitlines()) > 0
     assert any("quick_scan.md" in call["context_names"] for call in provider.calls)
     assert any(
         call["system_prompt"] and "_scoring_rubric" in call["system_prompt"]
@@ -4527,6 +4689,16 @@ def test_classify_failure_detects_incomplete_via_metadata(metadata, expected):
         assert CustomHarnessProvider._classify_failure(result) == expected
 
 
+def test_classify_failure_rejects_successful_nonempty_truncated_response():
+    result = ModelResult(
+        success=True,
+        text="## Partial\n\nNon-empty but truncated output.",
+        metadata={"finish_reason": "length"},
+    )
+
+    assert CustomHarnessProvider._classify_failure(result) == FailureKind.INCOMPLETE
+
+
 def test_incomplete_failure_kind_not_retryable_with_fallback():
     assert not FailureKind.INCOMPLETE.is_retryable_with_fallback
     assert FailureKind.RATE_LIMIT.is_retryable_with_fallback
@@ -4536,13 +4708,13 @@ def test_incomplete_failure_kind_not_retryable_with_fallback():
 
 
 # ---------------------------------------------------------------------------
-# P2.4 — Force-conclude on INCOMPLETE
+# P2.4 — Never repeat a request that proved too large
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_force_conclude_fires_and_succeeds_on_incomplete(tmp_path, monkeypatch):
-    # Force-conclude only applies on the tool path; phase3 is single-shot by default,
-    # so opt back into tools to exercise the incomplete->force-conclude fallback.
+async def test_incomplete_phase3_suppresses_identical_force_conclude(tmp_path, monkeypatch):
+    # Even on the tool path, a length stop must not trigger the same oversized
+    # prompt/context again. The Phase 3 planner owns evidence reduction/splitting.
     from mcp_server.config import config
     monkeypatch.setattr(config, "agent_phase3_first_pass_tools", True)
     staging = tmp_path / "docs_staging"
@@ -4618,10 +4790,9 @@ async def test_force_conclude_fires_and_succeeds_on_incomplete(tmp_path, monkeyp
         scoped_tools=tools,
     )
 
-    assert result.success
-    assert len(complete_calls) == 1
-    assert "Original task:" in complete_calls[0]
-    assert any("force-conclude succeeded" in msg for _, msg, _ in logs)
+    assert not result.success
+    assert len(complete_calls) == 0
+    assert any("identical retry suppressed" in msg for _, msg, _ in logs)
     assert not any("retrying with fallback" in msg for _, msg, _ in logs)
 
 
@@ -4958,14 +5129,19 @@ def test_phase_policy_explicit_phases_override_backward_compat(tmp_path):
     assert provider._pack_contract_mode is False
 
 
-def test_phase_policy_no_pack_always_run():
-    """No plugin_pack_dir → all phases run (enterprise default)."""
+def test_phase_policy_no_pack_always_run(monkeypatch):
+    """No plugin_pack_dir → all phases run (enterprise default), except the
+    advisory LLM scorecard which is config-gated OFF by default (R2.2)."""
+    from mcp_server.config import config
+
     provider = CustomHarnessProvider(MagicMock(model_name="m"))
     assert provider._phase_policy("investigation") == "run"
     assert provider._phase_policy("analysis") == "run"
-    assert provider._phase_policy("scorecard") == "run"
+    assert provider._phase_policy("scorecard") == "skip"  # config-gated default
     assert provider._phase_policy("doc_bundles") == "run"
     assert provider._pack_contract_mode is False
+    monkeypatch.setattr(config, "docgen_llm_scorecard_enabled", True)
+    assert provider._phase_policy("scorecard") == "run"
 
 
 def test_phase_policy_schema_defaults():
@@ -6090,3 +6266,69 @@ def test_response_snapshot_writes_usage_always_on(tmp_path):
     assert usage["input_cache_read_tokens"] == 30_000
     assert usage["input_cache_miss_tokens"] == 50_000
     assert not (tmp_path / "_debug" / "response.json").exists()
+
+
+# --------------------------------------------------------------------------- #
+# Composite partition runs — cross-project refs staging
+# --------------------------------------------------------------------------- #
+
+def _partition_stub(name: str):
+    from mcp_server.providers.custom.partition_planner import Partition
+
+    return Partition(
+        name=name, source_roots=(f"B/{name}.__intodoc_zip__/{name.upper()}",),
+        unit_names=("u1",), unit_count=1, groups=("G",), group_count=1,
+        call_budget=24, budget_fits=True,
+    )
+
+
+def test_materialize_cross_project_refs_stages_md_and_index(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "project_root", tmp_path)
+    index = {
+        "subprojects": {"Alpha": {}, "Beta": {}},
+        "call_edges": [{
+            "from_subproject": "Alpha", "to_subproject": "Beta",
+            "caller": "A_Main", "callee": "B_Worker", "resolution": "resolved",
+        }],
+        "shared_systems": {},
+        "shared_landscape_systems": {},
+        "application_edges": [],
+    }
+    topo_dir = tmp_path / "output" / "proj" / "topology"
+    topo_dir.mkdir(parents=True)
+    (topo_dir / "cross_project_index.json").write_text(json.dumps(index), encoding="utf-8")
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    ctx = SimpleNamespace(project_id="proj", staging_dir=staging, partition=_partition_stub("Alpha"))
+    state = SimpleNamespace(engineering_fact_artifacts=[])
+
+    CustomHarnessProvider._materialize_cross_project_refs(ctx, state)
+
+    refs = staging / "cross_project_refs.md"
+    assert refs.exists()
+    assert "B_Worker" in refs.read_text(encoding="utf-8")
+    assert "cross_project_refs.md" in state.engineering_fact_artifacts
+    # Index copied for the business-topology starter pack.
+    assert (staging / "_topology" / "cross_project_index.json").exists()
+
+
+def test_materialize_cross_project_refs_missing_index_is_noop(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "project_root", tmp_path)
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    ctx = SimpleNamespace(project_id="proj", staging_dir=staging, partition=_partition_stub("Alpha"))
+    state = SimpleNamespace(engineering_fact_artifacts=[])
+
+    CustomHarnessProvider._materialize_cross_project_refs(ctx, state)
+
+    assert not (staging / "cross_project_refs.md").exists()
+    assert state.engineering_fact_artifacts == []

@@ -189,3 +189,78 @@ class TestStoredProviderEstateTools:
         assert summary.connections_total == 1
         assert summary.dependencies_total == 1
         assert "schedules" in summary.availability.unavailable
+
+
+class TestAggregateRollupTools:
+    """The rollup tools share input models with the dashboard, whose page caps are far
+    larger than a tool result should be. The provider must clamp regardless of the
+    arguments a model supplies, and must still pass scope straight through."""
+
+    async def _seed_runs(self, session, project_id, count):
+        repo = RuntimeStoreRepository(session)
+        for index in range(count):
+            await repo.upsert_execution(
+                project_id,
+                RuntimeExecution(
+                    execution_id=f"{project_id}-run-{index}",
+                    job_name=f"job-{index}",
+                    state=RuntimeExecutionState.SUCCESS,
+                    started_at=_T0 + datetime.timedelta(hours=index),
+                    ended_at=_T0 + datetime.timedelta(hours=index),
+                    duration_ms=index + 1,
+                ),
+                "src-1",
+                _T0,
+            )
+        await session.flush()
+
+    async def test_job_reliability_is_clamped_to_agent_maximum(self, db_session):
+        from src.runtime.providers.stored import _AGGREGATE_MAX_ROWS
+        from src.runtime.models import ListRuntimeJobReliabilityInput
+
+        await self._seed_runs(db_session, "p1", _AGGREGATE_MAX_ROWS + 10)
+        provider = StoredRuntimeProvider()
+        ctx = RuntimeProviderContext(project_scope=None, db=db_session)
+        rows = await provider.list_runtime_job_reliability(
+            ListRuntimeJobReliabilityInput(limit=500), ctx
+        )
+        assert len(rows) == _AGGREGATE_MAX_ROWS
+
+    async def test_trend_is_clamped_to_agent_maximum(self, db_session):
+        from src.runtime.providers.stored import _TREND_MAX_POINTS
+        from src.runtime.models import RuntimeTrendBucket, RuntimeTrendInput
+
+        await self._seed_runs(db_session, "p1", _TREND_MAX_POINTS + 5)
+        provider = StoredRuntimeProvider()
+        ctx = RuntimeProviderContext(project_scope=None, db=db_session)
+        points = await provider.get_runtime_outcome_trend(
+            RuntimeTrendInput(bucket=RuntimeTrendBucket.HOUR, limit=400), ctx
+        )
+        assert len(points) == _TREND_MAX_POINTS
+
+    async def test_scope_is_passed_through_not_taken_from_arguments(self, db_session):
+        from src.runtime.models import ListRuntimeJobReliabilityInput
+
+        await self._seed_runs(db_session, "p1", 2)
+        await self._seed_runs(db_session, "p2", 2)
+        provider = StoredRuntimeProvider()
+        scoped_ctx = RuntimeProviderContext(project_scope=["p1"], db=db_session)
+        # project_id is an in-scope filter, never an authorization source: asking for
+        # p2 while scoped to p1 must return nothing rather than p2's rows.
+        rows = await provider.list_runtime_job_reliability(
+            ListRuntimeJobReliabilityInput(project_id="p2", limit=50), scoped_ctx
+        )
+        assert rows == []
+        allowed = await provider.list_runtime_job_reliability(
+            ListRuntimeJobReliabilityInput(limit=50), scoped_ctx
+        )
+        assert {row.project_id for row in allowed} == {"p1"}
+
+    async def test_rollup_tools_require_a_db_session(self):
+        from src.runtime.models import ListRuntimeErrorSignaturesInput
+
+        provider = StoredRuntimeProvider()
+        with pytest.raises(RuntimeProviderError):
+            await provider.list_runtime_error_signatures(
+                ListRuntimeErrorSignaturesInput(), None
+            )

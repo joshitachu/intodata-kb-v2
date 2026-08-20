@@ -62,6 +62,15 @@ def test_phase2_and_scorecard_unchanged(monkeypatch) -> None:
         assert policy.enabled is False, f"{phase} must stay disabled"
 
 
+def test_business_topology_is_push_evidence_not_agentic() -> None:
+    """Topology must not pull evidence via budget-limited tools (starvation fix)."""
+    harness = CustomHarnessProvider(MagicMock())
+    policy = harness._tool_policy(_tool_capable_provider(), "business_topology")
+    assert policy.enabled is False
+    assert policy.max_input_tokens == 0
+    assert policy.max_calls == 0
+
+
 def test_phase3_opt_in_does_not_change_phase2_or_scorecard(monkeypatch) -> None:
     monkeypatch.setattr(config, "agent_phase3_first_pass_tools", True)
     harness = CustomHarnessProvider(MagicMock())

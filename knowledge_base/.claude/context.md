@@ -1,5 +1,74 @@
 # KB Sub-project Context
 
+## Current State (2026-08-19) -- OpenCode / agentic experiment surfaces removed
+
+**Last completed**: removed every OpenCode, agentic-experiment, and
+documentation-job surface from the platform, returning doc generation to the
+legacy scanner + 7-phase pipeline only. Deleted the `experiments/` and
+`documentation_jobs/` backend packages, their API routes, tests, data
+(`agentic_recipes/`, `documentation_jobs/`), the `opencode-runtime/` container,
+and `agentic-workspaces/` run output. Stripped `agentic_*`/`docjob_*` config,
+the experiment/docjob wiring in `api/app.py`, the 16 experiment/documentation-job
+ORM classes, and the OpenCode patch-task contract in
+`services/living_docs/patch_worker.py` (the deterministic patch machinery is
+retained). Dashboard is back to the legacy Generate dialog (no engine selector),
+legacy-only Run History, and no Experiments nav entry. Compose/Dockerfile/env
+templates no longer carry `MCP_AGENTIC_*`, `MCP_DOCJOB_*`, or the two `VITE_*`
+build args.
+
+**Verification**: `mcp_server.api.app` imports (87 routes); backend suite runs
+with no import or collection errors; dashboard `tsc -b` clean and 13 tests pass;
+`docker compose config` valid.
+
+**Note**: the corresponding Postgres tables (8 `generation_*` experiment tables,
+8 `documentation_job*` tables) still exist in the live database. Dropping them is
+a separate operational decision and was NOT done here.
+
+**Immediate next**: the agentic idea is being restarted from scratch; nothing
+from the removed attempts should be revived from this tree.
+
+## Current State (2026-08-03) -- scanner-aware standard doc generation deployed
+
+The standard custom-harness documentation path now consumes composite scanner
+output through bounded, typed Phase 2 packets. Canonical analysis groups come
+from `manifest.job_files`, so two roots may contain identical logical group/job
+names without being merged; human logical groups and source roots remain on each
+unit fact. Task source evidence is planned on unit boundaries, project-wide maps
+are filtered to relationships touching the assigned units, and direct-mode
+groups are promoted to the same planner when they exceed the packet threshold.
+
+Phase 2 task output is capped at 10K tokens and synthesis at 6K. Required
+sections are validated before deterministic assembly. A provider response ending
+with `finish_reason=length` is rejected even when transport success and non-empty
+text are reported, is not retried identically, and cannot enter synthesis.
+Atomic run-level call/output reservations bound concurrent requests and record
+all physical fallback calls. Input tokens remain fully accounted, but the
+cumulative input ceiling is unlimited by default; a positive
+`MCP_DOCGEN_MAX_RUN_INPUT_TOKENS` explicitly restores an operator cap. A
+provider length stop is never retried with the identical prompt/context.
+
+Phase 3 narrative prompts now define completeness as decision coverage plus
+traceability, not wholesale evidence duplication. Oversized change-impact maps
+are grouped deterministically into a bounded narrative view while the complete
+matrix remains the evidence of record. On `assetcheck_tester`, the Phase 3 `08`
+context fell from 257 KB to 125 KB and its 1,001-row/158 KB matrix became a
+23 KB grouped view.
+
+**Real failed-run regression:** `assetcheck_tester` now resolves 10 canonical
+Jobs across the same two collision-safe preprocess groups. Its stored source
+replans into nine correctly assigned packets of 89-130 KB, all below the 140 KB
+cap; the failed run had sent roughly 303-335 KB to each Phase 2 attempt and had
+zero canonical task assignments because group identities did not match.
+
+**Verification:** 256 focused provider/prompt tests passed; the full MCP suite
+reached 1,666 passed with the same three unrelated baseline failures. Scoped
+compile and Ruff passed. The MCP image was rebuilt/recreated and `/health` is OK.
+
+**Immediate next:** resume `assetcheck_tester`; accepted Phase 3 documents `00`-
+`07` remain checkpointed and document `08` will use the bounded evidence view.
+Inspect final playbook quality and provider-reported total usage. No paid
+generation was started automatically.
+
 ## Current State (2026-07-29) -- topology roadmap backend complete
 
 IntoDoc now produces approved scan, manifest, L4 lineage, and deterministic
@@ -21,67 +90,6 @@ out of scope.
 
 **Resolved blockers**: Slice 3b backend endpoint, scan/publication integrity,
 composite landscape rollup, and Runtime static-snapshot handoff.
-
-## Current State (2026-07-29) -- Nexus-staged Grounded OpenCode v2 deployed
-
-Generate Docs still offers four independent paths: unchanged legacy generation,
-single-agent OpenCode, the original OpenCode-parent orchestrated Candidate C, and
-the recommended `OpenCode grounded` candidate. Grounded no longer relies on a
-parent model to dispatch or finalize. Nexus compiles the selected recipe into a
-strict role DAG, creates one physically separate OpenCode workspace/session per
-role, schedules ready roles up to the pack concurrency limit, and copies only
-validated upstream artifacts into downstream packets. Task/subagent dispatch is
-disabled for every Grounded session.
-
-Before OpenCode health or session creation, Nexus checks frozen source item/byte
-budgets, requires the approved scanner redaction receipt, rejects credential-shaped
-source values without echoing them, compiles `FACT_LEDGER.json` from logical source
-paths (frozen payloads are physically `.bin`), and fails closed on missing scanner
-jobs, manifest/unit reconciliation errors, or incomplete component inventories.
-Intermediate and final artifacts pass exact ownership, non-empty/JSON, secret,
-reproduced-secret, evidence-locator, and deterministic protected-claim gates.
-Unaccepted files are never propagated. Each role has one bounded repair attempt;
-finalization is based on Nexus-owned files and state, not an agent final message.
-
-The AlitaLand legacy-equivalence pack instantiates seven roles and preserves the
-same Phase 2/scorecard/Phase 3 prompt and context files. A separate logistics recipe
-instantiates four roles and two documents, proving the runner and pack compiler are
-not tied to Talend, one job, or ten outputs. The quick Generate Docs route currently
-freezes the approved IntoDoc source set; generic directory, tabular, mapping, and
-runtime sources remain available through the experiment compose/compile surface.
-Legacy publication and RAG remain untouched; every candidate stays isolated.
-
-A strict no-provider recovery endpoint was added for already completed failed
-orchestrated sessions. It verifies exact session ID/title/directory/runtime/model,
-idle state, child completions, workspace outputs, and secret isolation before
-indexing. Candidate C could not be recovered after deployment because rebuilding
-OpenCode cleared its ephemeral session store; the guard rejected recovery before
-copying/indexing artifacts. Its original workspace remains intact and the experiment
-remains failed with zero indexed candidate artifacts.
-
-Verification: 292 experiment/API tests passed; 21 dashboard tests passed; Ruff,
-Python compile, scoped diff checks, Compose config, and production Vite build passed.
-The delegated full MCP run reached 1611 passed with three unrelated existing
-environment/catalogue failures. OpenCode 1.18.4, MCP, dashboard, backend, and
-mission-control are healthy; all required Grounded agents and both reference packs
-are visible in the live runtime. No model prompt was submitted during validation.
-
-**Immediate next:** create a new approved/redacted AlitaLand scan: the current
-snapshot is rejected by the fail-closed trust gate for credential-shaped values in
-scanner JSON, before any provider request. Then choose Generate Docs → `OpenCode
-grounded` → select the connected DeepSeek route → `Start Grounded Candidate`. Judge
-the same ten outputs against the latest legacy baseline using
-factual accuracy/coverage first, then latency, aggregate role tokens/cache reads,
-and billed cost. No paid Grounded run was started during implementation.
-
-## Previous State (2026-07-27) -- second OpenCode candidate with bounded subagents
-
-Candidate C introduced a broad multi-session OpenCode orchestrator with evidence,
-analysis, referee, per-document writer, and reviewer agents. It generated all ten
-AlitaLand documents but failed final indexing because the validator expected array
-shapes for two execution-plan fields that the contract had not typed. The validator
-now accepts non-empty arrays or objects, but the generated run was not trusted after
-its runtime session provenance disappeared.
 
 ## Previous State (2026-07-19) -- governed Packs plus unified Nexus agent path, locally deployed
 
@@ -519,18 +527,20 @@ Enterprise documentation quality gates and verdicts: enterprise mode is now the 
 - Updates require the expected base SHA, return version/reconciliation receipts, and restore the prior file when RAG indexing fails. Revert validates the receipt against the document/version and is itself rollback-protected.
 - Focused update/revert/RBAC tests: 78 passed. Full MCP suite: 1098 passed with one unrelated catalogue assertion for `route33/z-ai/glm-4.7-flash`.
 - Live update/revert restored `final_agentic_e2e/00_AGENT_BRIEF.md` to its exact original SHA. No temporary evidence marker remains.
-## Latest completed (2026-07-30 topology readability)
+## Latest completed (2026-07-30 semantic topology)
 
-- Job graph API exposes Talend author labels, stable technical IDs, component
-  explanations, and data-versus-trigger connector explanations.
-- Landscape response exposes canonical project identity plus all imported roots.
-- MCP server and frontend were rebuilt and are healthy.
+- MCP now explicitly serves semantic systems, integration solutions, exchanges,
+  proposal status/confidence, payloads, mechanisms, and exact provenance.
+- The API does not discard the additive scanner semantic layer.
+- Landscape API tests pass; rebuilt MCP/frontend containers are healthy.
 
 ## Immediate next
 
-- Authenticated product review of the regenerated topology.
-- Business alias/ownership enrichment remains later work and must be additive.
+- Authenticated product review of the regenerated L1/L2.
+- Business alias/ownership confirmation remains later work and must be additive.
+- Add governed runtime connectors only after their credentials, schemas, refresh policy, and redaction boundaries are agreed.
 
 ## Resolved blockers
 
-- Opaque component labels and unexplained FLOW/SUBJOB_OK semantics.
+- Opaque component labels, unexplained FLOW/SUBJOB_OK semantics, and semantic
+  topology being stripped at the MCP response boundary.

@@ -26,7 +26,7 @@ export function DocsProjectSelector() {
 
   if (!data || data.projects.length === 0) {
     return (
-      <span className="text-xs text-muted-foreground px-2">No projects with docs</span>
+      <span className="text-xs text-muted-foreground px-2">No projects available</span>
     );
   }
 
@@ -46,7 +46,7 @@ export function DocsProjectSelector() {
         <option value="">Select a project...</option>
         {data.projects.map((project) => (
           <option key={project.id} value={project.id}>
-            {project.display_name} ({project.doc_count} docs)
+            {project.display_name} ({project.doc_count} {project.doc_count === 1 ? "doc" : "docs"})
           </option>
         ))}
       </select>

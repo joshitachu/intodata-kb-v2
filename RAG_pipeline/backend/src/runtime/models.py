@@ -435,6 +435,106 @@ class RuntimeHealthSummary(BaseModel):
     signature_hash: str | None = None
 
 
+# --- Aggregate rollups (SQL-computed) ---
+#
+# These are derived views over run/metric facts that previously had no read path.
+# Duration percentiles are discrete (nearest observed value at the ceil-ranked
+# position), matching the semantics used elsewhere in this module, so a reported
+# percentile is always a real measured duration rather than an interpolation.
+
+
+class RuntimeTrendBucket(str, Enum):
+    HOUR = "hour"
+    DAY = "day"
+    WEEK = "week"
+
+
+class RuntimeOutcomeTrendPoint(BaseModel):
+    """One time bucket of run outcomes plus duration percentiles."""
+
+    bucket_start: datetime
+    total_runs: int
+    success_runs: int
+    failed_runs: int
+    running_runs: int
+    unknown_runs: int
+    failure_rate: float
+    p50_duration_ms: int | None = None
+    p95_duration_ms: int | None = None
+    max_duration_ms: int | None = None
+
+
+class RuntimeJobReliability(BaseModel):
+    """Per-job reliability and latency rollup over the requested window."""
+
+    project_id: str
+    source_key: str
+    job_name: str
+    total_runs: int
+    success_runs: int
+    failed_runs: int
+    unfinished_runs: int
+    failure_rate: float
+    current_failure_streak: int
+    first_run_at: datetime | None = None
+    last_run_at: datetime | None = None
+    latest_state: RuntimeExecutionState | None = None
+    p50_duration_ms: int | None = None
+    p95_duration_ms: int | None = None
+    max_duration_ms: int | None = None
+
+
+class RuntimeComponentHotspot(BaseModel):
+    """Per-component throughput and latency rollup across executions."""
+
+    project_id: str
+    source_key: str
+    component_key: str
+    component_type: str | None = None
+    source_connector_type: str | None = None
+    target_connector_type: str | None = None
+    executions: int
+    rows_total: int | None = None
+    rows_rejected: int | None = None
+    reject_ratio: float | None = None
+    avg_duration_ms: int | None = None
+    p95_duration_ms: int | None = None
+    max_duration_ms: int | None = None
+    last_measured_at: datetime | None = None
+
+
+class RuntimeJobThroughput(BaseModel):
+    """Rows moved per job, joined from run facts to component metrics."""
+
+    project_id: str
+    source_key: str
+    job_name: str
+    executions_with_metrics: int
+    component_count: int
+    rows_total: int | None = None
+    rows_rejected: int | None = None
+    reject_ratio: float | None = None
+    last_measured_at: datetime | None = None
+
+
+class RuntimeErrorSignature(BaseModel):
+    """A recurring fault fingerprint with its observed occurrence window."""
+
+    project_id: str
+    signature_hash: str
+    error_code: str | None = None
+    exception_class: str | None = None
+    component_name: str | None = None
+    summary_text: str | None = None
+    # A representative diagnostic sentence from the runtime itself,
+    # credential-redacted. summary_text is only "<code> / <exception> / <component>",
+    # so without this the signature carries no human-readable fault description.
+    causal_message: str | None = None
+    occurrence_count: int
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+
+
 # --- Normalized execution/log models (EP-004 slice 2) ---
 
 
@@ -481,6 +581,11 @@ class ListExecutionsInput(BaseModel):
     state: RuntimeExecutionState | None = None
     since: datetime | None = None
     until: datetime | None = None
+    # Duration/completion filters surface implausibly long and never-completed runs,
+    # which a state filter alone cannot find: a run stuck for days is still reported
+    # by the source as "success" or "unknown".
+    min_duration_ms: int | None = Field(default=None, ge=0)
+    unfinished: bool | None = None
     limit: int = Field(default=20, ge=1, le=200)
     offset: int = Field(default=0, ge=0)
 
@@ -548,6 +653,55 @@ class ListRuntimeHealthInput(BaseModel):
 class ListRuntimeInventoryInput(BaseModel):
     source_key: str | None = None
     project_id: str | None = None
+    limit: int = Field(default=100, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+
+
+class RuntimeTrendInput(ListRuntimeInventoryInput):
+    """Time-bucketed outcome trend over run facts."""
+
+    bucket: RuntimeTrendBucket = RuntimeTrendBucket.DAY
+    job_name: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+    # A trend is a bounded series, not a page of rows: the cap is the number of
+    # buckets returned (most recent first).
+    limit: int = Field(default=90, ge=1, le=400)
+
+
+class ListRuntimeJobReliabilityInput(ListRuntimeInventoryInput):
+    job_name: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+
+
+class ListRuntimeComponentHotspotsInput(ListRuntimeInventoryInput):
+    component_key: str | None = None
+    component_type: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+
+
+class ListRuntimeJobThroughputInput(ListRuntimeInventoryInput):
+    job_name: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+
+
+class ListRuntimeErrorSignaturesInput(BaseModel):
+    """Error signatures are keyed by (project, signature) only.
+
+    Deliberately does not inherit the inventory input: signature rows carry no
+    source_key, and silently ignoring such a filter would return rows the caller
+    believes were excluded.
+    """
+
+    project_id: str | None = None
+    error_code: str | None = None
+    exception_class: str | None = None
+    component_name: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
     limit: int = Field(default=100, ge=1, le=500)
     offset: int = Field(default=0, ge=0)
 

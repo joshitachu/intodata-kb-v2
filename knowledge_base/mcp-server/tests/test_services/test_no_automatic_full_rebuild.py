@@ -13,11 +13,9 @@ Two complementary proofs, per plan.md / critique.md (Attack 1):
    literal cannot see; walking the AST and flagging ANY call site that
    passes the ``full_rederive`` keyword at all, outside the one approved
    site, catches that).
-2. Behavioral: the deterministic router's automatic strategies
-   (``scoped_regen`` / ``full_regen`` chosen by ``ReingestionRouter.decide``)
-   drive ``_scoped_regen``, which must never forward ``full_rederive`` to
-   ``run_git_reingestion`` -- verified by inspecting the actual call
-   arguments at runtime, not just the source text.
+2. Behavioral: an injected legacy ``full_regen`` decision cannot reach
+   ``run_git_reingestion`` at all. It is converted to a terminal held result
+   before a generation tool can run.
 """
 
 from __future__ import annotations
@@ -137,13 +135,11 @@ def test_default_full_rederive_parameter_is_false():
     assert sig.parameters["full_rederive"].default is False
 
 
-async def test_scoped_regen_never_forwards_full_rederive_to_run_git_reingestion(
+async def test_empty_automatic_target_scope_is_held_before_reingestion(
     session_factory, monkeypatch, tmp_path
 ):
-    """Behavioral proof: the automatic router-driven regeneration path
-    (_scoped_regen, reached from scoped_regen/full_regen router strategies)
-    must never pass full_rederive at all -- confirmed by inspecting the
-    real call arguments, not just asserting on source text."""
+    """The old ``None means every document`` convention cannot reach the
+    automatic reingestion helper."""
     import mcp_server.services.auto_doc_update as auto_doc_update_module
     from mcp_server.config import config
     from mcp_server.services.auto_doc_update import AutoDocAgentRuntime, AutoDocUpdateContext
@@ -151,26 +147,8 @@ async def test_scoped_regen_never_forwards_full_rederive_to_run_git_reingestion(
 
     monkeypatch.setattr(config, "project_root", tmp_path)
 
-    # Satisfy the targeted-regen cache-readiness preflight so _scoped_regen
-    # actually reaches run_git_reingestion rather than short-circuiting to
-    # _manual (a vacuous pass would prove nothing).
-    output_dir = tmp_path / "output" / "proj"
-    docs = output_dir / "docs"
-    support = docs / "_rag_support" / "phase2_analysis"
-    cache = output_dir / "analysis_cache"
-    support.mkdir(parents=True)
-    cache.mkdir(parents=True)
-    (docs / "01_ARCHITECTURE_MAP.md").write_text("# Architecture", encoding="utf-8")
-    (support / "A.md").write_text("# Group A analysis", encoding="utf-8")
-    (cache / "A.md").write_text("# Group A analysis", encoding="utf-8")
-
-    captured: dict[str, object] = {}
-
     async def fake_run_git_reingestion(project_id, before_sha, after_sha, **kwargs):
-        captured.update(kwargs)
-        captured["before_sha"] = before_sha
-        captured["after_sha"] = after_sha
-        return True
+        raise AssertionError("automatic full regeneration must not be dispatched")
 
     monkeypatch.setattr(auto_doc_update_module, "run_git_reingestion", fake_run_git_reingestion)
 
@@ -187,8 +165,8 @@ async def test_scoped_regen_never_forwards_full_rederive_to_run_git_reingestion(
         last_ingested_commit_sha="a" * 40,
     )
     decision = RoutingDecision(
-        strategy="full_regen",
-        affected_docs=["01_ARCHITECTURE_MAP"],
+        strategy="scoped_regen",
+        affected_docs=[],
         changed_groups=["A"],
         reason="affected set wider than breadth threshold",
     )
@@ -200,15 +178,9 @@ async def test_scoped_regen_never_forwards_full_rederive_to_run_git_reingestion(
         "webhook",
         {"changed_groups": ["A"]},
         decision,
-        "test: automatic full_regen strategy",
+        "test: empty automatic scope",
         targeted_docs=None,
     )
 
-    assert captured, (
-        "preflight must have passed and reached run_git_reingestion -- "
-        f"got result.summary={result.summary!r} instead"
-    )
-    assert "full_rederive" not in captured, (
-        "the automatic router-driven full_regen strategy must never forward "
-        "full_rederive -- only the explicit manual-rebuild trigger may"
-    )
+    assert result.action == "held"
+    assert result.summary["reason_code"] == "empty_target_scope"

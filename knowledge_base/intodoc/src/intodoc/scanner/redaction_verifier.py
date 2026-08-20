@@ -60,12 +60,32 @@ def _check_named_value(
         findings.append(_finding("unredacted_sensitive_name", location, name, value))
 
 
+# Structural identifier fields: filesystem/schema locations the scanner
+# assigns itself (never passed through the filter, since a file's own path
+# is not sensitive content). Matched by exact key, not substring, so an
+# unrelated field like `critical_path` (a dependency-chain list) is not
+# swept up by accident. Excluded from the leaf sweep because they can
+# innocently contain a credential-pattern substring -- e.g. a Talend job or
+# file legitimately named `LoadCredentialsTable` -- without carrying any
+# actual secret; the filter passes correctly never touch these fields, so
+# the verifier must not either or it flags a false positive on every scan
+# that happens to contain such a name.
+_STRUCTURAL_LEAF_KEYS = frozenset({
+    "path", "relative_path", "file_path", "unique_name", "xpath",
+})
+
+
 def _walk_strings(node: Any, path: str, out: list[tuple[str, str]]) -> None:
-    """Collect (path, string) leaves from a model_dump tree."""
+    """Collect (path, string) leaves from a model_dump tree.
+
+    Skips `_STRUCTURAL_LEAF_KEYS` entirely -- see module comment above.
+    """
     if isinstance(node, str):
         out.append((path, node))
     elif isinstance(node, dict):
         for k, v in node.items():
+            if k in _STRUCTURAL_LEAF_KEYS:
+                continue
             _walk_strings(v, f"{path}/{k}", out)
     elif isinstance(node, (list, tuple)):
         for i, v in enumerate(node):

@@ -364,9 +364,15 @@ class ConversationTaskService:
         )
         await self._db.commit()
         try:
-            base_version = await self._docs.get_document_version(
+            preview = await self._docs.preview_chat_patch(
                 project_id=project_id,
                 filename=target_doc,
+                section=str(request.arguments.get("section") or ""),
+                replacement_text=str(request.arguments["evidence_text"]),
+                evidence_refs=[
+                    str(item) for item in request.arguments.get("evidence_refs", [])
+                ],
+                assertion_kind=str(request.arguments.get("assertion_kind") or "editorial"),
                 access_token=context.access_token,
             )
             arguments = {
@@ -376,9 +382,16 @@ class ConversationTaskService:
                     str(item) for item in request.arguments.get("evidence_refs", [])
                 ],
                 "evidence_text": str(request.arguments["evidence_text"]),
-                "expected_base_sha": base_version.sha256,
+                "expected_base_sha": preview.base_document_sha256,
                 "section": request.arguments.get("section"),
                 "workflow_run_id": str(run.id),
+                "proposal_id": preview.proposal_id,
+                "patch_plan_hash": preview.patch_plan_hash,
+                "base_knowledge_revision_id": preview.base_knowledge_revision_id,
+                "compact_diff": preview.compact_diff,
+                "changed_scope": preview.changed_scope,
+                "assertion_kind": preview.assertion_kind,
+                "expires_at": preview.expires_at,
             }
             result = await default_documentation_update_workflow().run(
                 DocumentationUpdateRequest(
@@ -387,8 +400,15 @@ class ConversationTaskService:
                     target_doc=target_doc,
                     evidence_refs=arguments["evidence_refs"],
                     evidence_text=arguments["evidence_text"],
-                    expected_base_sha=base_version.sha256,
+                    expected_base_sha=arguments["expected_base_sha"],
                     section=arguments["section"],
+                    proposal_id=arguments["proposal_id"],
+                    patch_plan_hash=arguments["patch_plan_hash"],
+                    base_knowledge_revision_id=arguments["base_knowledge_revision_id"],
+                    compact_diff=arguments["compact_diff"],
+                    changed_scope=arguments["changed_scope"],
+                    assertion_kind=arguments["assertion_kind"],
+                    expires_at=arguments["expires_at"],
                 ),
                 executor=self._subordinate_executor(),
                 context=context.model_copy(update={"project_scope": [project_id]}),
@@ -444,6 +464,12 @@ class ConversationTaskService:
                     "section": arguments["section"],
                     "evidence_refs": arguments["evidence_refs"],
                     "expected_base_sha": arguments["expected_base_sha"],
+                    "base_knowledge_revision_id": arguments["base_knowledge_revision_id"],
+                    "patch_plan_hash": arguments["patch_plan_hash"],
+                    "compact_diff": arguments["compact_diff"],
+                    "changed_scope": arguments["changed_scope"],
+                    "assertion_kind": arguments["assertion_kind"],
+                    "expires_at": arguments["expires_at"],
                 },
                 "interrupt": {
                     "langgraph_interrupt_id": result.interrupt_id,
