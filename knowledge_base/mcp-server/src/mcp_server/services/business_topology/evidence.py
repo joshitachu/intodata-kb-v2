@@ -525,7 +525,7 @@ def build_business_topology_evidence(
         lineage_rows.append(record)
         records.append(record)
 
-    connection_rows: list[dict[str, Any]] = []
+    connection_rows_by_id: dict[str, dict[str, Any]] = {}
     for item in scan.get("metadata_connections") or []:
         if not isinstance(item, dict):
             continue
@@ -540,8 +540,16 @@ def build_business_topology_evidence(
             "host_redaction": item.get("host_redaction"),
         }
         record = {"id": _evidence_id("connection", safe_item), "type": "scanner_connection", **safe_item}
-        connection_rows.append(record)
+        existing = connection_rows_by_id.get(record["id"])
+        if existing is not None:
+            if existing != record:
+                raise ValueError(
+                    f"conflicting scanner connection evidence ID: {record['id']}"
+                )
+            continue
+        connection_rows_by_id[record["id"]] = record
         records.append(record)
+    connection_rows = list(connection_rows_by_id.values())
 
     document_records = _document_records(staging_dir)
     records.extend(document_records)

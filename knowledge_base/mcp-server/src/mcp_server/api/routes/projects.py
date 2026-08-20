@@ -1133,7 +1133,11 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
         nexus_private_analysis_packs=req.nexus_private_analysis_packs,
         resume=req.resume,
         run_id_for_lock=run_id,
-        doc_generation_provider=project.doc_generation_provider,
+        doc_generation_provider=(
+            req.doc_generation_provider
+            if req.doc_generation_provider is not None
+            else project.doc_generation_provider
+        ),
         instruction_pack_dir=project.instruction_pack_dir,
         enterprise_mode=req.mode == "enterprise",
     )

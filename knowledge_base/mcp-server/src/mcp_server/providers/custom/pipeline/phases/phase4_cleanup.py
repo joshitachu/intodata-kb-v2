@@ -17,8 +17,14 @@ if TYPE_CHECKING:
 
 
 class Phase4Cleanup(Phase):
-    def __init__(self, helpers: "HarnessHelpersImpl") -> None:
+    def __init__(
+        self,
+        helpers: "HarnessHelpersImpl",
+        *,
+        provider_id: str = "custom",
+    ) -> None:
         self._helpers = helpers
+        self._provider_id = provider_id
 
     @property
     def name(self) -> str:
@@ -47,7 +53,7 @@ class Phase4Cleanup(Phase):
             "canonical_unit_label": state.facts_manifest.canonical_unit_label,
             "docs": self._helpers.required_docs_list,
             "engineering_facts": archived_engineering_facts,
-            "provider": "custom",
+            "provider": self._provider_id,
             "model": self._helpers.model_provider.model_name,
             "write_model": self._helpers.write_provider.model_name,
             "generated_at": time.time(),
@@ -85,7 +91,7 @@ class Phase4Cleanup(Phase):
         if package_manifest["missing_groups"]:
             await log_cb(
                 ctx.project_id,
-                "[custom] RAG support package missing group analyses: "
+                f"[{self._provider_id}] RAG support package missing group analyses: "
                 + ", ".join(package_manifest["missing_groups"]),
                 "warning",
             )
@@ -101,7 +107,7 @@ class Phase4Cleanup(Phase):
         ts = int(time.time())
         (logs_dir / f"run_{ctx.project_id}_{ts}.log").write_text(
             f"project_id: {ctx.project_id}\n"
-            f"provider: custom\n"
+            f"provider: {self._provider_id}\n"
             f"model: {self._helpers.model_provider.model_name}\n"
             f"write_model: {self._helpers.write_provider.model_name}\n"
             f"unit_count: {state.facts_manifest.unit_count}\n"

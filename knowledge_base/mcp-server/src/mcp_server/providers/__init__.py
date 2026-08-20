@@ -9,6 +9,7 @@ from mcp_server.providers.base import DocGenerationProvider
 
 def get_provider(
     provider_type: str | None = None,
+    model: str | None = None,
     investigation_model: str | None = None,
     write_model: str | None = None,
     log_manager=None,
@@ -27,6 +28,7 @@ def get_provider(
       - "google/<model>"     — custom harness + Gemini OpenAI-compatible adapter
       - "ollama/<model>"     — custom harness + Ollama-compatible adapter
       - "claude-cli"         — legacy Claude Code CLI subprocess fallback
+      - "opencode-cli"       — one-session OpenCode three-phase runtime
 
     investigation_model: optional override for Phase 1 investigation model.
     write_model: optional override for Phase 3 doc-writing model (must be "provider/model" format).
@@ -38,7 +40,7 @@ def get_provider(
 
     resolution = resolve_generation_models(
         provider_type=provider_type,
-        model=None,
+        model=model,
         write_model=write_model,
         default_provider=config.doc_generation_provider,
         default_analysis_model=config.doc_generation_model,
@@ -49,6 +51,14 @@ def get_provider(
     if resolution.uses_claude_cli:
         from mcp_server.providers.claude_cli import ClaudeCliProvider
         return ClaudeCliProvider()
+
+    if resolution.uses_opencode_cli:
+        from mcp_server.providers.opencode_cli import OpenCodeCliProvider
+        route = resolution.analysis_model
+        return OpenCodeCliProvider(
+            model_route=None if route == "opencode" else route,
+            plugin_pack_dir=plugin_pack_dir,
+        )
 
     if resolution.uses_custom_harness:
         from mcp_server.providers.custom import build_custom_provider
@@ -72,5 +82,5 @@ def get_provider(
     raise ValueError(
         f"Unknown doc generation provider: {provider_type or config.doc_generation_provider!r}. "
         f"Supported: 'custom', 'openai/<model>', 'deepseek/<model>', 'route33/<model>', "
-        f"'anthropic/<model>', 'google/<model>', 'ollama/<model>', or 'claude-cli'."
+        f"'anthropic/<model>', 'google/<model>', 'ollama/<model>', 'claude-cli', or 'opencode-cli'."
     )

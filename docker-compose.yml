@@ -224,6 +224,8 @@ services:
     build:
       context: ./knowledge_base
       dockerfile: mcp-server/Dockerfile
+      args:
+        OPENCODE_VERSION: ${MCP_OPENCODE_VERSION:-1.18.7}
     command:
       - sh
       - -c
@@ -251,6 +253,17 @@ services:
       MCP_INTODOC_COMMAND: intodoc
       MCP_CLAUDE_COMMAND: ${MCP_CLAUDE_COMMAND:-claude}
       MCP_CLAUDE_MODEL: ${MCP_CLAUDE_MODEL:-sonnet}
+      # OpenCode is pinned in the image; the operator supplies its model route
+      # and any provider/MCP connector configuration.
+      MCP_OPENCODE_COMMAND: ${MCP_OPENCODE_COMMAND:-opencode}
+      MCP_OPENCODE_CONFIG_PATH: ${MCP_OPENCODE_CONFIG_PATH:-}
+      MCP_OPENCODE_MODEL: ${MCP_OPENCODE_MODEL:-}
+      MCP_OPENCODE_PRIMARY_AGENT: ${MCP_OPENCODE_PRIMARY_AGENT:-build}
+      MCP_OPENCODE_VERSION: ${MCP_OPENCODE_VERSION:-1.18.7}
+      MCP_OPENCODE_AUTO_APPROVE: ${MCP_OPENCODE_AUTO_APPROVE:-true}
+      MCP_OPENCODE_TIMEOUT_SECONDS: ${MCP_OPENCODE_TIMEOUT_SECONDS:-1800}
+      MCP_OPENCODE_OLLAMA_BASE_URL: ${MCP_OPENCODE_OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+      MCP_OPENCODE_MCP_READ_ALLOWLIST_JSON: ${MCP_OPENCODE_MCP_READ_ALLOWLIST_JSON:-{}}
       MCP_DATA_DIR: /app/data
       MCP_INTODOC_OUTPUT_DIR: /app/intodoc-output
       MCP_PROJECT_ROOT: /app/workspace

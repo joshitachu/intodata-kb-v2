@@ -36,7 +36,9 @@ function renderWithClient(ui: ReactElement) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
+  );
 }
 
 const runs = {
@@ -96,20 +98,22 @@ const runs = {
 };
 
 const neutralModels = {
-  models: [{
-    id: "provider-neutral-test/model-neutral-test",
-    provider: "provider-neutral-test",
-    label: "Neutral Test Model",
-    supports_analysis: true,
-    supports_writing: true,
-    is_default_analysis: true,
-    is_default_investigation: true,
-    is_default_writing: true,
-    is_local: false,
-    available: true,
-    unavailable_reason: null,
-    rag_capable: true,
-  }],
+  models: [
+    {
+      id: "provider-neutral-test/model-neutral-test",
+      provider: "provider-neutral-test",
+      label: "Neutral Test Model",
+      supports_analysis: true,
+      supports_writing: true,
+      is_default_analysis: true,
+      is_default_investigation: true,
+      is_default_writing: true,
+      is_local: false,
+      available: true,
+      unavailable_reason: null,
+      rag_capable: true,
+    },
+  ],
 };
 
 const workspaceProject: Project = {
@@ -177,8 +181,23 @@ describe("EP-000 dashboard panels", () => {
         auto_verdict: null,
         auto_baseline_run_id: null,
       },
-      delta: { doc_count: 0, quality: -0.6, cost_usd: 1, duration_ms: 200, input_tokens: 20, output_tokens: 10, num_turns: null },
-      delta_pct: { quality: -13.33, cost_usd: 100, duration_ms: 20, input_tokens: 20, output_tokens: 20, num_turns: null },
+      delta: {
+        doc_count: 0,
+        quality: -0.6,
+        cost_usd: 1,
+        duration_ms: 200,
+        input_tokens: 20,
+        output_tokens: 10,
+        num_turns: null,
+      },
+      delta_pct: {
+        quality: -13.33,
+        cost_usd: 100,
+        duration_ms: 20,
+        input_tokens: 20,
+        output_tokens: 20,
+        num_turns: null,
+      },
       quality_delta: -0.6,
       quality_delta_pct: -13.33,
       verdict: "FAIL",
@@ -201,7 +220,9 @@ describe("EP-000 dashboard panels", () => {
     vi.mocked(api.getQuestionnaire).mockResolvedValue({
       project_id: "p1",
       run_id: 1,
-      questions: [{ id: "sections_present", question: "Sections present", score: 0 }],
+      questions: [
+        { id: "sections_present", question: "Sections present", score: 0 },
+      ],
     });
     vi.mocked(api.getReviews).mockResolvedValue({
       project_id: "p1",
@@ -217,7 +238,9 @@ describe("EP-000 dashboard panels", () => {
 
     expect(await screen.findByText("Sections present")).toBeInTheDocument();
     expect(await screen.findByText("8.00")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Submit Review" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Submit Review" }),
+    ).toBeDisabled();
   });
 
   it("renders instruction pack metadata in project settings", async () => {
@@ -275,7 +298,9 @@ describe("EP-000 dashboard panels", () => {
 
     renderWithClient(<ProjectSettings project={project} />);
 
-    await waitFor(() => expect(screen.getByText("Instruction Pack")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText("Instruction Pack")).toBeInTheDocument(),
+    );
     expect(await screen.findByText("v-test")).toBeInTheDocument();
     expect(screen.getByText("phase2_preamble (7 chars)")).toBeInTheDocument();
   });
@@ -298,7 +323,10 @@ describe("EP-000 dashboard panels", () => {
       selected_organization_pack_id: 10,
       selected_private_version_ids: [],
     };
-    vi.mocked(api.listProjects).mockResolvedValue({ projects: [workspaceProject], total: 1 });
+    vi.mocked(api.listProjects).mockResolvedValue({
+      projects: [workspaceProject],
+      total: 1,
+    });
     vi.mocked(api.getPackWorkspace).mockResolvedValue(workspace);
     vi.mocked(api.updatePackWorkspace).mockResolvedValue({
       ...workspace,
@@ -315,7 +343,9 @@ describe("EP-000 dashboard panels", () => {
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     expect(screen.queryByText(/Advanced\/admin/)).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Save pack selection" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save pack selection" }),
+    );
 
     await waitFor(() => {
       // Existing private selections are preserved untouched (empty here).
@@ -337,7 +367,10 @@ describe("EP-000 dashboard panels", () => {
     };
     vi.mocked(api.listModels).mockResolvedValue({ models: [] });
     vi.mocked(api.getPackWorkspace).mockResolvedValue(workspace);
-    vi.mocked(api.generate).mockResolvedValue({ status: "started", message: "ok" });
+    vi.mocked(api.generate).mockResolvedValue({
+      status: "started",
+      message: "ok",
+    });
 
     renderWithClient(
       <GenerateDialog project={workspaceProject} open onClose={vi.fn()} />,
@@ -347,8 +380,154 @@ describe("EP-000 dashboard panels", () => {
     fireEvent.click(screen.getByRole("button", { name: "Generate" }));
 
     await waitFor(() => {
-      expect(api.generate).toHaveBeenCalledWith("p1", true, null, null, null, 10, [21]);
+      expect(api.generate).toHaveBeenCalledWith(
+        "p1",
+        true,
+        null,
+        null,
+        null,
+        10,
+        [21],
+        "custom",
+      );
     });
   });
 
+  it("uses one actual model for the complete OpenCode session", async () => {
+    const openCodeProject = {
+      ...workspaceProject,
+      doc_generation_provider: "opencode-cli",
+    };
+    const workspace = {
+      project_id: "p1",
+      organization_packs: [],
+      personal_packs: [],
+      selected_organization_pack_id: null,
+      selected_private_version_ids: [],
+    };
+    const descriptor = (id: string, label: string) => ({
+      id,
+      provider: id.split("/")[0],
+      label,
+      supports_analysis: true,
+      supports_writing: true,
+      is_default_analysis: id === "opencode-cli",
+      is_default_investigation: false,
+      is_default_writing: false,
+      is_local: false,
+      available: true,
+      unavailable_reason: null,
+      rag_capable: id !== "opencode-cli",
+    });
+    vi.mocked(api.listModels).mockResolvedValue({
+      models: [
+        descriptor("opencode-cli", "OpenCode CLI"),
+        descriptor("openai/gpt-5.6-luna", "OpenAI GPT-5.6 Luna"),
+        descriptor("openai/gpt-5.6-sol", "OpenAI GPT-5.6 Sol"),
+        descriptor("openai/gpt-5.6-terra", "OpenAI GPT-5.6 Terra"),
+      ],
+    });
+    vi.mocked(api.getPackWorkspace).mockResolvedValue(workspace);
+    vi.mocked(api.generate).mockResolvedValue({
+      status: "started",
+      message: "ok",
+    });
+
+    renderWithClient(
+      <GenerateDialog project={openCodeProject} open onClose={vi.fn()} />,
+    );
+
+    expect(
+      await screen.findByText("OpenCode Session Model"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Phase 1 — Investigation"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Phase 3 — Doc Writing")).not.toBeInTheDocument();
+    await screen.findByRole("option", { name: /OpenAI GPT-5.6 Sol/ });
+    const generateButton = await screen.findByRole("button", {
+      name: "Generate",
+    });
+    expect(generateButton).toBeDisabled();
+
+    fireEvent.change(
+      screen.getByLabelText("Select OpenCode session model (required)"),
+      { target: { value: "openai/gpt-5.6-sol" } },
+    );
+    fireEvent.click(generateButton);
+
+    await waitFor(() => {
+      expect(api.generate).toHaveBeenCalledWith(
+        "p1",
+        true,
+        null,
+        "openai/gpt-5.6-sol",
+        null,
+        null,
+        [],
+        "opencode-cli",
+      );
+    });
+  });
+
+  it("separates the OpenCode method from its session model", async () => {
+    const workspace = {
+      project_id: "p1",
+      organization_packs: [],
+      personal_packs: [],
+      selected_organization_pack_id: null,
+      selected_private_version_ids: [],
+    };
+    const descriptor = (
+      id: string,
+      label: string,
+      isDefaultAnalysis = false,
+    ) => ({
+      id,
+      provider: id.split("/")[0],
+      label,
+      supports_analysis: true,
+      supports_writing: true,
+      is_default_analysis: isDefaultAnalysis,
+      is_default_investigation: isDefaultAnalysis,
+      is_default_writing: isDefaultAnalysis,
+      is_local: false,
+      available: true,
+      unavailable_reason: null,
+      rag_capable: id !== "opencode-cli",
+    });
+    vi.mocked(api.listModels).mockResolvedValue({
+      models: [
+        descriptor("opencode-cli", "OpenCode CLI"),
+        descriptor("openai/gpt-5.6-luna", "OpenAI GPT-5.6 Luna", true),
+      ],
+    });
+    vi.mocked(api.getPackWorkspace).mockResolvedValue(workspace);
+
+    renderWithClient(
+      <GenerateDialog project={workspaceProject} open onClose={vi.fn()} />,
+    );
+
+    const openCodeTab = await screen.findByRole("tab", { name: "OpenCode" });
+    expect(
+      screen.getByRole("tab", { name: "Legacy Pipeline" }),
+    ).toHaveAttribute("aria-selected", "true");
+    expect(
+      screen.queryByRole("option", { name: /OpenCode CLI/ }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(openCodeTab);
+
+    expect(
+      await screen.findByText("OpenCode Session Model"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Phase 1 — Investigation"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Phase 2 — Analysis")).not.toBeInTheDocument();
+    expect(screen.queryByText("Phase 3 — Doc Writing")).not.toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Select OpenCode session model (required)"),
+    ).toBeInTheDocument();
+    expect(openCodeTab).toHaveAttribute("aria-selected", "true");
+  });
 });

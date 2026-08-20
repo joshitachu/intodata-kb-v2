@@ -14,6 +14,10 @@ from mcp_server.model_strategies.registry import create_model_provider
 
 def test_model_registry_exposes_current_discovery_models():
     assert supported_model_ids() == frozenset({
+        "openai/gpt-5.6",
+        "openai/gpt-5.6-luna",
+        "openai/gpt-5.6-sol",
+        "openai/gpt-5.6-terra",
         "openai/gpt-5.5",
         "openai/gpt-5.4",
         "openai/gpt-5.4-mini",
@@ -46,6 +50,7 @@ def test_model_registry_exposes_current_discovery_models():
         "ollama/gemma3:12b",
         "ollama/gemma3:4b",
         "claude-cli",
+        "opencode-cli",
     })
 
 
@@ -80,6 +85,8 @@ def test_descriptors_keep_claude_cli_and_ollama_capabilities():
     assert "custom" not in descriptors
     assert descriptors["claude-cli"].supports_analysis is True
     assert descriptors["claude-cli"].supports_writing is True
+    assert descriptors["opencode-cli"].supports_analysis is True
+    assert descriptors["opencode-cli"].rag_capable is False
     assert descriptors["ollama/gemma3:12b"].is_local is True
 
 
@@ -235,6 +242,73 @@ def test_claude_cli_resolution_uses_configured_cli_model():
     assert resolved.provider_type == "claude-cli"
     assert resolved.analysis_model == "opus"
     assert resolved.uses_claude_cli is True
+
+
+def test_opencode_cli_resolution_skips_custom_and_claude_harnesses():
+    resolved = resolve_generation_models(
+        provider_type="opencode-cli",
+        model=None,
+        write_model=None,
+        default_provider="custom",
+        default_analysis_model="anthropic/claude-sonnet-4-6",
+        default_write_model="anthropic/claude-sonnet-4-6",
+    )
+
+    assert resolved.provider_type == "opencode-cli"
+    assert resolved.uses_custom_harness is False
+    assert resolved.uses_claude_cli is False
+    assert resolved.uses_opencode_cli is True
+
+
+def test_opencode_cli_stale_runtime_override_uses_configured_default_model():
+    resolved = resolve_generation_models(
+        provider_type="opencode-cli",
+        model="opencode-cli",
+        write_model="opencode-cli",
+        default_provider="custom",
+        default_analysis_model="anthropic/claude-sonnet-4-6",
+        default_write_model="anthropic/claude-sonnet-4-6",
+    )
+
+    assert resolved.analysis_model == "opencode"
+    assert resolved.write_model == "opencode"
+
+
+def test_opencode_cli_rejects_non_model_runtime_override():
+    with pytest.raises(ValueError, match="provider/model route"):
+        resolve_generation_models(
+            provider_type="opencode-cli",
+            model="claude-cli",
+            write_model=None,
+            default_provider="custom",
+            default_analysis_model="anthropic/claude-sonnet-4-6",
+            default_write_model="anthropic/claude-sonnet-4-6",
+        )
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "openai/gpt-5.6",
+        "openai/gpt-5.6-luna",
+        "openai/gpt-5.6-sol",
+        "openai/gpt-5.6-terra",
+    ],
+)
+def test_opencode_cli_preserves_per_run_openai_model_route(model_id):
+    resolved = resolve_generation_models(
+        provider_type="opencode-cli",
+        model=model_id,
+        write_model="anthropic/claude-opus-4-7",
+        default_provider="custom",
+        default_analysis_model="anthropic/claude-sonnet-4-6",
+        default_write_model="anthropic/claude-sonnet-4-6",
+    )
+
+    assert resolved.provider_type == "opencode-cli"
+    assert resolved.analysis_model == model_id
+    assert resolved.write_model == model_id
+    assert resolved.uses_opencode_cli is True
 
 
 def test_resolution_accepts_google_provider():

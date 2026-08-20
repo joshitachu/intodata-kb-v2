@@ -162,6 +162,7 @@ async def test_generate_dispatch_preserves_governed_stack_contract(client, monke
         "/mcp/generate",
         json={
             "project_id": "governed-dispatch",
+            "doc_generation_provider": "opencode-cli",
             "nexus_pack_ids": [
                 "style.operations",
                 "foundation.core",
@@ -182,6 +183,7 @@ async def test_generate_dispatch_preserves_governed_stack_contract(client, monke
     ]
     assert captured["nexus_pack_snapshot"] == snapshot
     assert captured["nexus_presentation"] == presentation
+    assert captured["doc_generation_provider"] == "opencode-cli"
 
 
 # --- Upload ZIP ---

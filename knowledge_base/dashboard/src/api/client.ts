@@ -431,6 +431,7 @@ export const api = {
     writeModel?: string | null,
     organizationPackId: number | null = null,
     privateVersionIds: number[] = [],
+    generationMethod?: "custom" | "opencode-cli" | null,
   ) =>
     request<import("../types").StatusResponse>(
       `/nexus-api/harness/packs/projects/${encodeURIComponent(projectId)}/generate`,
@@ -441,6 +442,7 @@ export const api = {
           investigation_model: investigationModel ?? null,
           model: model ?? null,
           write_model: writeModel ?? null,
+          doc_generation_provider: generationMethod ?? null,
           organization_pack_id: organizationPackId,
           private_version_ids: privateVersionIds,
         }),

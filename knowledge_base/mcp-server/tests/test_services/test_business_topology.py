@@ -22,6 +22,7 @@ from mcp_server.services.business_topology.evidence import (
     component_evidence_id,
     compute_scan_fingerprint,
     lineage_evidence_id,
+    load_business_topology_evidence,
 )
 from mcp_server.services.business_topology.validation import (
     parse_and_validate_business_topology,
@@ -413,6 +414,41 @@ def test_evidence_is_factual_and_validation_resolves_ids(tmp_path: Path) -> None
     )
     assert segment_report.validated is False
     assert any("segment:orders-rest has no directional scanner evidence" in error for error in segment_report.errors)
+
+
+def test_duplicate_scanner_connections_are_materialized_once(tmp_path: Path) -> None:
+    scan_root = tmp_path / "scan-output"
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    _write_scan(scan_root)
+    scan_path = scan_root / "scan_result.json"
+    scan = json.loads(scan_path.read_text(encoding="utf-8"))
+    connection = {
+        "name": "CommonDbConnection",
+        "connection_type": "Microsoft SQL Server",
+        "host": "[HOST_REDACTED]",
+        "port": "context.DbPort",
+        "database": "context.DbName",
+        "schema_name": "context.DbSchema",
+        "file_path": "",
+        "host_redaction": {"host_present": True},
+    }
+    scan["metadata_connections"] = [connection, dict(connection)]
+    scan_path.write_text(json.dumps(scan), encoding="utf-8")
+
+    bundle = build_business_topology_evidence(
+        project_id="demo", scan_output_dir=scan_root, staging_dir=staging
+    )
+    rows = [
+        json.loads(line)
+        for line in (bundle.root / "evidence" / "connections.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+
+    assert len(rows) == 1
+    assert load_business_topology_evidence(bundle.root).evidence_ids == bundle.evidence_ids
 
 
 def test_confirmed_claim_without_business_declaration_is_rejected(tmp_path: Path) -> None:

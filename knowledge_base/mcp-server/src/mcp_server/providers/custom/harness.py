@@ -4213,6 +4213,28 @@ Fallback plan example:
                 f"{state.facts_manifest.canonical_unit_label}.\n\n"
                 f"{self._unit_catalog_markdown(state)}"
             )
+        scanner_limited_disclosures = {
+            "03_DATA_FLOWS_AND_LINEAGE": (
+                "Scanner-Limited: schemas, field-level lineage, transformations, and validation "
+                "details not established by the cited scanner evidence remain unknown and must "
+                "not be inferred."
+            ),
+            "05_RUNTIME_CONFIG_AND_EXTERNALS": (
+                "Scanner-Limited: runtime, configuration, and external-system details not "
+                "established by the cited scanner evidence remain unknown and must not be inferred."
+            ),
+        }
+        disclosure = scanner_limited_disclosures.get(doc_name)
+        if disclosure and not re.search(r"\bScanner\-Limited\b", content, re.IGNORECASE):
+            # The authoritative Phase 3 prompt requires this literal evidence
+            # classification. Models sometimes convey the limitation correctly
+            # but vary the label (for example, "scanner limits"). Normalize only
+            # the label and a conservative unknown boundary; never invent facts.
+            content = (
+                f"{content.rstrip()}\n\n"
+                "## Scanner-Limited Evidence\n\n"
+                f"{disclosure}\n"
+            )
         return content.rstrip() + "\n"
 
     async def _phase35_critic_expander(

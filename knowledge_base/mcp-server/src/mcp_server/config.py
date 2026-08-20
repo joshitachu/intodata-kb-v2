@@ -32,6 +32,24 @@ class MCPServerConfig(BaseSettings):
     # Claude Code use its own configured default.
     claude_model: str = "sonnet"
 
+    # OpenCode CLI (documentation generation only). The command is configurable
+    # because OpenCode is an operator-owned runtime, not a bundled SDK.
+    opencode_command: str = "opencode"
+    opencode_config_path: str = ""
+    opencode_model: str = ""
+    opencode_primary_agent: str = "build"
+    opencode_version: str = "1.18.7"
+    # The backend dispatches each phase step once. OpenCode/provider transport
+    # retry behavior remains owned by the configured OpenCode provider.
+    opencode_auto_approve: bool = True
+    opencode_timeout_seconds: int = 1800
+    # OpenCode treats Ollama as a custom OpenAI-compatible provider. This URL
+    # is reachable from the Docker service and can be overridden by operators.
+    opencode_ollama_base_url: str = "http://host.docker.internal:11434/v1"
+    # JSON object: {"server-id": ["read_tool", ...]}. Empty is deny-all.
+    # It is never passed to the subprocess argv or persisted in run receipts.
+    opencode_mcp_read_allowlist_json: str = "{}"
+
     # Base data directory for logs, uploads, repos
     data_dir: Path = Path(__file__).resolve().parent.parent.parent / "data"
 
@@ -110,7 +128,7 @@ class MCPServerConfig(BaseSettings):
     doc_generation_provider: str = "custom"
     # Supported values:
     #   "custom" | "openai/<model>" | "anthropic/<model>" | "google/<model>" | "ollama/<model>"
-    #   "claude-cli" (legacy subprocess fallback)
+    #   "claude-cli" (legacy subprocess fallback) | "opencode-cli" (OpenCode runtime)
 
     # "single_shot" — Python pre-reads files, model extracts evidence in one call (works with any model)
     # "agentic"     — multi-turn action loop (requires Claude-level instruction following)
@@ -534,7 +552,7 @@ def check_provider_credentials() -> list[str]:
     warnings_out: list[str] = []
     seen: set[str] = set()
     for model_str in model_fields:
-        if not model_str or model_str == "claude-cli":
+        if not model_str or model_str in {"claude-cli", "opencode-cli"}:
             continue
         prefix = model_str.split("/")[0].lower()
         required_vars = _PROVIDER_KEY_MAP.get(prefix)

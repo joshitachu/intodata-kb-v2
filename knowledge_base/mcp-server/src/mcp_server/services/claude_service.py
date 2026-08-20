@@ -1446,6 +1446,7 @@ Required sections:
 
         provider = get_provider(
             provider_type=resolved_provider,
+            model=effective_model,
             investigation_model=investigation_model,
             write_model=effective_write_model,
             log_manager=self.log_manager,
@@ -1453,7 +1454,7 @@ Required sections:
             plugin_pack_dir=plugin_pack_dir,
         )
 
-        if plugin_pack_dir is not None:
+        if plugin_pack_dir is not None and not model_resolution.uses_opencode_cli:
             provider = build_plugin_runner(
                 plugin_pack_dir,
                 inner_provider=provider,
@@ -1475,6 +1476,13 @@ Required sections:
         )
         main_model_name = getattr(resolved_main_model, "model_name", effective_model)
         write_model_name = getattr(resolved_write_model_obj, "model_name", effective_write_model)
+        if model_resolution.uses_opencode_cli:
+            # OpenCode owns one orchestrator session for all three phases. Its
+            # selected route is therefore the effective model throughout; the
+            # legacy per-phase defaults are not consulted by this provider.
+            investigation_model_name = effective_model
+            main_model_name = effective_model
+            write_model_name = effective_model
         provider_details = (
             f"provider={resolved_provider} "
             f"phase1={investigation_model_name} "

@@ -1,6 +1,10 @@
 {
   "_comment": "Canonical model catalogue — single source of truth for the models offered by document generation AND RAG chat. Loaded by MCP (model_strategies.catalogue). The RAG backend routes by parsing the provider/model id and does not read this file; provider client construction stays in code (per-service adapters). 'credential_env' lists env vars any of which, when set, make a cloud model available; local models need none. 'rag_capable' marks models the RAG chat surface may offer (excludes doc-gen-only mechanisms like claude-cli, defined in code).",
   "models": [
+    { "id": "openai/gpt-5.6", "provider": "openai", "label": "OpenAI GPT-5.6", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["OPENAI_API_KEY"], "rag_capable": true },
+    { "id": "openai/gpt-5.6-luna", "provider": "openai", "label": "OpenAI GPT-5.6 Luna", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["OPENAI_API_KEY"], "rag_capable": true },
+    { "id": "openai/gpt-5.6-sol", "provider": "openai", "label": "OpenAI GPT-5.6 Sol", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["OPENAI_API_KEY"], "rag_capable": true },
+    { "id": "openai/gpt-5.6-terra", "provider": "openai", "label": "OpenAI GPT-5.6 Terra", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["OPENAI_API_KEY"], "rag_capable": true },
     { "id": "openai/gpt-5.5", "provider": "openai", "label": "OpenAI GPT-5.5", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["OPENAI_API_KEY"], "rag_capable": true },
     { "id": "openai/gpt-5.4", "provider": "openai", "label": "OpenAI GPT-5.4", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["OPENAI_API_KEY"], "rag_capable": true },
     { "id": "openai/gpt-5.4-mini", "provider": "openai", "label": "OpenAI GPT-5.4 Mini", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["OPENAI_API_KEY"], "rag_capable": true },
@@ -36,6 +40,8 @@
     { "id": "google/gemini-2.5-flash", "provider": "google", "label": "Gemini 2.5 Flash", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["GOOGLE_API_KEY", "GEMINI_API_KEY"], "rag_capable": true },
 
     { "id": "ollama/gemma3:12b", "provider": "ollama", "label": "Ollama Gemma 3 12B (local)", "supports_analysis": true, "supports_writing": true, "is_local": true, "credential_env": [], "rag_capable": true },
-    { "id": "ollama/gemma3:4b", "provider": "ollama", "label": "Ollama Gemma 3 4B (local)", "supports_analysis": true, "supports_writing": true, "is_local": true, "credential_env": [], "rag_capable": true }
+    { "id": "ollama/gemma3:4b", "provider": "ollama", "label": "Ollama Gemma 3 4B (local)", "supports_analysis": true, "supports_writing": true, "is_local": true, "credential_env": [], "rag_capable": true },
+    { "id": "ollama/qwen2.5:14b", "provider": "ollama", "label": "Ollama Qwen 2.5 14B (local)", "supports_analysis": true, "supports_writing": true, "is_local": true, "credential_env": [], "rag_capable": true },
+    { "id": "ollama/hermes3:8b", "provider": "ollama", "label": "Ollama Hermes 3 8B (local)", "supports_analysis": true, "supports_writing": true, "is_local": true, "credential_env": [], "rag_capable": true }
   ]
 }

@@ -255,7 +255,16 @@ describe("API client", () => {
       }),
     );
 
-    await api.generate("p1", true, "investigator", "analyst", "writer", 10, [21]);
+    await api.generate(
+      "p1",
+      true,
+      "investigator",
+      "analyst",
+      "writer",
+      10,
+      [21],
+      "opencode-cli",
+    );
 
     const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
     expect(fetchCall[0]).toBe("/nexus-api/harness/packs/projects/p1/generate");
@@ -264,6 +273,7 @@ describe("API client", () => {
       investigation_model: "investigator",
       model: "analyst",
       write_model: "writer",
+      doc_generation_provider: "opencode-cli",
       organization_pack_id: 10,
       private_version_ids: [21],
     });

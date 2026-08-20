@@ -700,6 +700,10 @@ class GenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     project_id: StrippedStr = Field(..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN)
+    doc_generation_provider: Literal["custom", "opencode-cli"] | None = Field(
+        None,
+        description="One-off generation method override; does not change project settings",
+    )
     investigation_model: str | None = Field(None, description="Investigation model override (Phase 1) — 'provider/model' format")
     model: str | None = Field(None, description="Analysis model override (Phase 2) — 'provider/model' format")
     write_model: str | None = Field(None, description="Doc-writing model override (Phase 3) — 'provider/model' format")

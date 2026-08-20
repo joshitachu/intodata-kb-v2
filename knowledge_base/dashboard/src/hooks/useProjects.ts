@@ -51,6 +51,7 @@ export function useGenerate() {
       writeModel,
       organizationPackId = null,
       privateVersionIds = [],
+      generationMethod,
     }: {
       projectId: string;
       resume?: boolean;
@@ -59,6 +60,7 @@ export function useGenerate() {
       writeModel?: string | null;
       organizationPackId?: number | null;
       privateVersionIds?: number[];
+      generationMethod?: "custom" | "opencode-cli" | null;
     }): Promise<import("../types").StatusResponse> =>
       api.generate(
         projectId,
@@ -68,6 +70,7 @@ export function useGenerate() {
         writeModel,
         organizationPackId,
         privateVersionIds,
+        generationMethod,
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["projects"] });

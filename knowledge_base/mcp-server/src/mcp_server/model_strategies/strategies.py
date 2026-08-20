@@ -19,7 +19,7 @@ class ModelDescriptorData:
     # local models). Populated from data/model_catalogue.json.
     credential_env: tuple[str, ...] = ()
     # Whether the RAG chat surface may offer this model (doc-gen-only mechanisms
-    # such as claude-cli are False).
+    # such as Claude/OpenCode CLI are False).
     rag_capable: bool = True
 
 
@@ -241,6 +241,30 @@ class ClaudeCliStrategy(ModelProviderStrategy):
                 id="claude-cli",
                 provider=self.provider_id,
                 label="Claude Code CLI",
+                supports_analysis=True,
+                supports_writing=True,
+                rag_capable=False,
+            )
+        ]
+
+
+class OpenCodeCliStrategy(ModelProviderStrategy):
+    """OpenCode is a documentation runtime, not a direct API model provider."""
+
+    provider_id = "opencode-cli"
+
+    def owns(self, model_id: str) -> bool:
+        return model_id == self.provider_id
+
+    def create_model_provider(self, model_id: str, **_kwargs):
+        raise ValueError("opencode-cli is resolved by the documentation provider adapter")
+
+    def descriptors(self) -> list[ModelDescriptorData]:
+        return [
+            ModelDescriptorData(
+                id="opencode-cli",
+                provider=self.provider_id,
+                label="OpenCode CLI",
                 supports_analysis=True,
                 supports_writing=True,
                 rag_capable=False,

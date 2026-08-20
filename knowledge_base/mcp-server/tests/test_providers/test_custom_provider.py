@@ -2745,6 +2745,28 @@ def test_final_doc_content_only_adds_unit_inventory_to_component_inventory():
     assert "Unit A" not in brief
 
 
+def test_final_doc_content_adds_scanner_limited_contract_marker_once():
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    harness = CustomHarnessProvider(
+        OpenAICompatibleProvider(
+            "fake", api_key="test", base_url="http://example.test/v1"
+        )
+    )
+    state = HarnessRunState(project_id="p", facts_manifest=facts)
+    body = (
+        "# 03 Data Flows And Lineage\n\n"
+        "## Unknowns And Risk Boundaries\n\n"
+        "Field-level lineage is not established by scanner evidence."
+    )
+
+    first = harness._final_doc_content(state, "03_DATA_FLOWS_AND_LINEAGE", body)
+    second = harness._final_doc_content(state, "03_DATA_FLOWS_AND_LINEAGE", first)
+
+    assert first.count("## Scanner-Limited Evidence") == 1
+    assert "must not be inferred" in first
+    assert second == first
+
+
 def test_final_doc_content_strips_llm_preamble():
     facts = build_facts_manifest_from_units("proj", ["Unit A"])
     harness = CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))
