@@ -21,6 +21,7 @@ from mcp_server.services.git_diff_patcher import (
     parse_name_status,
 )
 from mcp_server.services.true_patch_executor import TruePatchExecutor
+from mcp_server.services.git_credentials import GitCredentialProvider, provider_for_project
 from mcp_server.services.git_remote_service import fetch_remote, pull_remote_ff_only
 from mcp_server.services.git_reingestion import (
     ChangedFile,
@@ -50,7 +51,7 @@ class AutoDocUpdateContext:
     project_id: str
     local_path: str
     doc_generation_provider: str | None
-    github_token_enc: str | None
+    credential: GitCredentialProvider | None
     last_ingested_commit_sha: str | None = None
 
 
@@ -239,7 +240,7 @@ class AutoDocAgentRuntime:
         before_sha: str,
         after_sha: str,
     ) -> dict[str, Any]:
-        await fetch_remote(ctx.local_path, ctx.github_token_enc, git_func=_git)
+        await fetch_remote(ctx.local_path, ctx.credential, git_func=_git)
         name_status = await _git(ctx.local_path, "diff", "--name-status", before_sha, after_sha)
         changes = parse_name_status(name_status)
         changed_files = [change.path for change in changes]
@@ -374,7 +375,7 @@ class AutoDocAgentRuntime:
                 doc_generation_provider=ctx.doc_generation_provider,
                 log_mgr=self.log_mgr,
                 trigger=trigger,
-                github_token_enc=ctx.github_token_enc,
+                credential=ctx.credential,
                 impact_plan={**decision.to_impact_dict(), "mode": "tool_loop_agent"},
             )
             last_result = patch_result
@@ -627,7 +628,7 @@ class AutoDocAgentRuntime:
         reason: str,
     ) -> DiffPatchResult:
         self._record_tool("finish", {"action": "skipped", "reason": reason})
-        await pull_remote_ff_only(ctx.local_path, ctx.github_token_enc, git_func=_git)
+        await pull_remote_ff_only(ctx.local_path, ctx.credential, git_func=_git)
         await self.log_mgr.emit(ctx.project_id, f"Git update skipped: {reason}", "info")
         return DiffPatchResult(
             action="skipped",
@@ -908,7 +909,7 @@ class AutoDocUpdateService:
                 project_id=project.id,
                 local_path=project.local_path,
                 doc_generation_provider=project.doc_generation_provider,
-                github_token_enc=getattr(project, "github_token_enc", None),
+                credential=provider_for_project(project),
                 last_ingested_commit_sha=project.last_ingested_commit_sha,
             )
 

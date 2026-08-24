@@ -3,8 +3,7 @@
 import { useEffect, useState } from "react";
 import { FileArchive, GitBranch } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { fetchDocumentationPacks } from "@/lib/harnessPacks";
-import type { DocumentationPack } from "@/types";
+import { listPacks, type Pack } from "@/lib/packs";
 
 interface OnboardingLauncherProps {
   onStart: (message: string) => void;
@@ -22,14 +21,14 @@ export function OnboardingLauncher({ onStart }: OnboardingLauncherProps) {
   const [sourceType, setSourceType] = useState<"git" | "zip">("git");
   const [repoUrl, setRepoUrl] = useState("");
   const [platform, setPlatform] = useState("generic");
-  const [packs, setPacks] = useState<DocumentationPack[]>([]);
+  const [packs, setPacks] = useState<Pack[]>([]);
   const [packId, setPackId] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void fetchDocumentationPacks()
-      .then((catalog) => setPacks(catalog.packs))
-      .catch(() => setError("Documentation Packs could not be loaded."));
+    void listPacks()
+      .then(setPacks)
+      .catch(() => setError("Packs could not be loaded."));
   }, []);
 
   function start() {

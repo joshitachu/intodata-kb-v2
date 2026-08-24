@@ -1,0 +1,17 @@
+import { NextRequest } from "next/server";
+import { proxyMcpJson } from "../_proxy";
+
+export const dynamic = "force-dynamic";
+
+export async function GET(request: NextRequest) {
+  return proxyMcpJson(request, "/mcp/connectors", { cache: "no-store" });
+}
+
+export async function POST(request: NextRequest) {
+  const body = await request.text();
+  return proxyMcpJson(request, "/mcp/connectors", {
+    method: "POST",
+    body,
+    headers: { "Content-Type": "application/json" },
+  });
+}

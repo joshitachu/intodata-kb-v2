@@ -1,4 +1,4 @@
-"""Company-level onboarding wizard endpoints (admin only for writes)."""
+"""Company-level onboarding wizard endpoints (Owner only for writes)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 
-from src.api.dependencies import AdminUser, CurrentUser, DBSession
+from src.api.dependencies import CurrentUser, DBSession, OwnerUser
 from src.db.session import async_session_factory
 from src.services.system_config_service import (
     SystemConfigService,
@@ -97,7 +97,7 @@ async def get_company_status(_user: CurrentUser, db: DBSession) -> CompanyStatus
 
 
 @router.put("/step/workspace", response_model=CompanyStatusResponse)
-async def save_workspace(body: WorkspaceStepBody, _admin: AdminUser, db: DBSession):
+async def save_workspace(body: WorkspaceStepBody, _owner: OwnerUser, db: DBSession):
     svc = SystemConfigService(db)
     try:
         row = await svc.save_step("workspace", {"workspace_name": body.workspace_name})
@@ -107,7 +107,7 @@ async def save_workspace(body: WorkspaceStepBody, _admin: AdminUser, db: DBSessi
 
 
 @router.put("/step/platforms", response_model=CompanyStatusResponse)
-async def save_platforms(body: PlatformsStepBody, _admin: AdminUser, db: DBSession):
+async def save_platforms(body: PlatformsStepBody, _owner: OwnerUser, db: DBSession):
     svc = SystemConfigService(db)
     try:
         row = await svc.save_step("platforms", {"platforms": body.platforms})
@@ -117,7 +117,7 @@ async def save_platforms(body: PlatformsStepBody, _admin: AdminUser, db: DBSessi
 
 
 @router.put("/step/comm_tools", response_model=CompanyStatusResponse)
-async def save_comm_tools(body: CommToolsStepBody, _admin: AdminUser, db: DBSession):
+async def save_comm_tools(body: CommToolsStepBody, _owner: OwnerUser, db: DBSession):
     svc = SystemConfigService(db)
     try:
         row = await svc.save_step("comm_tools", {"comm_tools": body.comm_tools})
@@ -127,7 +127,7 @@ async def save_comm_tools(body: CommToolsStepBody, _admin: AdminUser, db: DBSess
 
 
 @router.put("/step/source", response_model=CompanyStatusResponse)
-async def save_source(body: SourceStepBody, _admin: AdminUser, db: DBSession):
+async def save_source(body: SourceStepBody, _owner: OwnerUser, db: DBSession):
     svc = SystemConfigService(db)
     try:
         row = await svc.save_step(
@@ -145,7 +145,7 @@ async def save_source(body: SourceStepBody, _admin: AdminUser, db: DBSession):
 
 @router.post("/complete", response_model=CompleteWizardResponse)
 async def complete_wizard(
-    _admin: AdminUser, db: DBSession, bg: BackgroundTasks
+    _owner: OwnerUser, db: DBSession, bg: BackgroundTasks
 ) -> CompleteWizardResponse:
     svc = SystemConfigService(db)
     row = await svc.get()
@@ -170,8 +170,8 @@ async def setup_status(_user: CurrentUser, db: DBSession) -> SetupStatusResponse
 
 
 @router.post("/reset", status_code=204)
-async def reset_company_onboarding(_admin: AdminUser, db: DBSession):
-    """Admin: wipe company onboarding so the admin wizard shows again."""
+async def reset_company_onboarding(_owner: OwnerUser, db: DBSession):
+    """Owner: wipe company onboarding so the company wizard shows again."""
     svc = SystemConfigService(db)
     await svc.reset()
     return None

@@ -22,7 +22,6 @@ from mcp_server.providers.custom.doc_catalog import load_doc_catalog
 
 logger = logging.getLogger(__name__)
 
-
 # Baseline minimum line counts calibrated at 50 units (jobs/recipes).
 # Scaled at score time by unit_count — see _scaled_min_lines().
 _BASE_MIN_LINES_AT_50: dict[str, int] = {
@@ -36,8 +35,69 @@ _BASE_MIN_LINES_AT_50: dict[str, int] = {
     "07_QUALITY_SECURITY_RISK_SCORECARD": 900,
     "08_CHANGE_PLAYBOOK": 800,
 }
+# Retained for backwards compatibility with existing imports/tests. The scorer
+# itself is contract-driven (One Pack decision D2): it scores every published
+# top-level document rather than filtering against the default catalog, so
+# pack-named document sets (e.g. INJECTION_FINDINGS.md) score normally instead
+# of returning overall=0.0 with an empty doc list.
 _PUBLISHABLE_DOC_KEYS = frozenset(load_doc_catalog().required_docs)
 _SCALE_REFERENCE_UNITS = 50
+
+# Non-document top-level markdown files that must never be scored as product
+# docs (support artifacts that legitimately live at the docs root).
+_NON_PRODUCT_DOC_KEYS = frozenset({"CROSS_PROJECT_TOPOLOGY", "README"})
+
+# Engineering-fact support artifacts (engineering_facts.md, dependency_map.md,
+# sql_usage.md, ...) are all-lowercase snake_case at the docs root on older
+# runs; product docs -- legacy numbered and pack-declared alike -- carry an
+# uppercase or numbered key.
+_SUPPORT_ARTIFACT_KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def is_support_artifact_filename(filename: str) -> bool:
+    """True when a top-level ``docs/*.md`` file is an engineering-fact artifact.
+
+    These are deterministic derived fact maps (``engineering_facts.md``,
+    ``dependency_map.md``, ``sql_usage.md``, ...), not generated documents.
+    """
+    return bool(_SUPPORT_ARTIFACT_KEY_RE.match(_doc_key(filename)))
+
+
+def is_published_doc_filename(filename: str) -> bool:
+    """True when a top-level ``docs/*.md`` file belongs to the published set.
+
+    Single definition of the publication predicate, shared with
+    ``services.rag_bridge._read_md_files`` (One Pack decisions D45/R8): a
+    pack's declared document names are authoritative, so neither a numeric
+    ``NN_`` prefix nor a catalog allowlist may gate publication. Only two
+    classes are excluded:
+
+    * ``_``-prefixed internal artifacts -- pushed separately as internal RAG
+      layers by ``RagBridge.sync_internal_layers``.
+    * lowercase snake_case engineering-fact support artifacts.
+
+    ``CROSS_PROJECT_TOPOLOGY.md`` and ``README.md`` ARE published (the
+    partition orchestrator pushes the former deliberately); they are excluded
+    only from *scoring* and from patch targeting -- see
+    :func:`is_product_doc_filename`.
+    """
+    if not filename.endswith(".md") or filename.startswith("_"):
+        return False
+    return not is_support_artifact_filename(filename)
+
+
+def is_product_doc_filename(filename: str) -> bool:
+    """True when a top-level ``docs/*.md`` file is a generated product document.
+
+    Narrower than :func:`is_published_doc_filename`: also excludes the
+    non-product markdown that legitimately lives at the docs root
+    (``CROSS_PROJECT_TOPOLOGY.md``, ``README.md``). Used where a document is
+    *scored* or *rewritten* -- the quality scorer and the diff patcher -- and
+    deliberately NOT used on the RAG push path, which must stay a superset.
+    """
+    if not is_published_doc_filename(filename):
+        return False
+    return _doc_key(filename) not in _NON_PRODUCT_DOC_KEYS
 
 
 def _scaled_min_lines(doc_key: str, unit_count: int) -> int:
@@ -366,7 +426,6 @@ def score_doc(path: Path, unit_count: int = _SCALE_REFERENCE_UNITS) -> DocScore:
         + 0.15 * risk_score
         + 0.25 * usefulness_score
     )
-
     flags: list[str] = []
     if lines < min_lines:
         flags.append("below_min_lines")
@@ -400,15 +459,26 @@ class DocQualityScorer:
 def score_project(
     project_id: str,
     docs_dir: Path | None = None,
+    allowed_docs: frozenset[str] | set[str] | None = None,
 ) -> RunQualityReport:
-    """Score all docs in a project's docs/ directory."""
+    """Score all published docs in a project's docs/ directory.
+
+    ``allowed_docs`` restricts scoring to an explicit doc-name set (the active
+    pack's declared docs). Without it every non-underscore top-level markdown
+    file is scored -- the published product set, whatever pack produced it
+    (same name-agnostic pattern as ``partition_orchestrator._count_public_docs``).
+    """
     if docs_dir is None:
         docs_dir = config.project_root / "output" / project_id / "docs"
 
-    doc_files = sorted(
-        p for p in docs_dir.glob("*.md")
-        if _doc_key(p.name) in _PUBLISHABLE_DOC_KEYS
-    )
+    def _is_product_doc(p: Path) -> bool:
+        if not p.is_file() or not is_product_doc_filename(p.name):
+            return False
+        if allowed_docs is not None:
+            return _doc_key(p.name) in allowed_docs
+        return True
+
+    doc_files = sorted(p for p in docs_dir.glob("*.md") if _is_product_doc(p))
 
     if not doc_files:
         return RunQualityReport(

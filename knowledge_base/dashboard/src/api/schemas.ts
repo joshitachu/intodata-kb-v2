@@ -25,7 +25,14 @@ export const ProjectSchema = z.object({
   auto_reingest_error: z.string().nullable(),
   git_update_summary: z.record(z.string(), z.unknown()).nullable(),
   has_github_token: z.boolean(),
-  connection_kind: z.enum(["pat", "app"] as const).default("pat"),
+  // Deliberately a plain string, not an enum. This is branching/display metadata,
+  // and `ProjectListResponseSchema` validates an ARRAY of these, so a single
+  // project carrying a kind the dashboard has not been taught yet rejects the
+  // whole list and blanks EVERY project on the page -- which is what happened
+  // when the backend gained "azure_devops" alongside "pat" and "app". Known
+  // values are `ConnectionKind` in types.ts; an unknown one must fall through to
+  // the default branch, never fail the parse.
+  connection_kind: z.string().default("pat"),
   github_account_login: z.string().nullable().default(null),
   webhook_status: z.enum(["active", "not_registered", "unknown"] as const).nullable(),
   instruction_pack_dir: z.string().nullable(),
@@ -306,6 +313,7 @@ export const PluginPackSchema = z.object({
   origin: z.string(),
   certification_status: z.string(),
   certification_provenance: z.string().nullable().optional(),
+  usable: z.boolean().default(true),
   mutable: z.boolean(),
   blocked_reason: z.string().nullable().optional(),
 });
@@ -337,25 +345,6 @@ export const PluginPackBranchDiscoverySchema = z.object({
   branches: z.array(PluginPackBranchSchema),
 });
 
-const NexusPackCatalogItemSchema = z.object({
-  id: z.number(),
-  name: z.string(),
-  version: z.string(),
-  description: z.string().nullable().optional(),
-});
-
-const NexusPersonalPackSchema = NexusPackCatalogItemSchema.extend({
-  output_documents: z.array(z.string()),
-});
-
-export const NexusPackWorkspaceSchema = z.object({
-  project_id: z.string(),
-  organization_packs: z.array(NexusPackCatalogItemSchema),
-  personal_packs: z.array(NexusPersonalPackSchema),
-  selected_organization_pack_id: z.number().nullable(),
-  selected_private_version_ids: z.array(z.number()),
-});
-
 export const WebhookStatusSchema = z.object({
   project_id: z.string(),
   webhook_status: z.string(),
@@ -383,4 +372,141 @@ export const GenerateAssessmentResponseSchema = z.object({
 export const SubmitReviewResponseSchema = z.object({
   status: z.string(),
   path: z.string(),
+});
+
+// Connector contracts deliberately contain safe metadata only. In particular,
+// none of these schemas model credential fields returned by the server.
+export const ConnectorCapabilitySchema = z.object({
+  id: z.string(),
+  label: z.string().optional().default(""),
+  description: z.string().nullable().optional().default(null),
+  read_only: z.boolean().optional().default(true),
+  gather_eligible: z.boolean().optional().default(true),
+});
+
+export const ConnectorProviderSchema = z.object({
+  provider_id: z.string(),
+  label: z.string(),
+  version: z.string().nullable().optional().default(null),
+  authentication_types: z.array(z.string()).optional().default([]),
+  capabilities: z.array(ConnectorCapabilitySchema).optional().default([]),
+  enabled: z.boolean().optional().default(true),
+  // Directory presentation, served from the provider manifest so adding a
+  // connector needs no dashboard change. Defaults keep older servers working.
+  kind: z.enum(["live_evidence", "runtime_sync"]).optional().default("live_evidence"),
+  build_state: z.enum(["available", "coming_soon"]).optional().default("available"),
+  description: z.string().optional().default(""),
+});
+
+export const ConnectorCatalogResponseSchema = z.object({
+  providers: z.array(ConnectorProviderSchema),
+});
+
+export const ConnectorStatusSchema = z.enum([
+  "connected",
+  "degraded",
+  "not_connected",
+  "disabled",
+  "unknown",
+]);
+
+export const ConnectorInstanceSchema = z.object({
+  id: z.string(),
+  provider_id: z.string(),
+  display_name: z.string(),
+  ownership_scope: z.string().optional().default("workspace"),
+  enabled: z.boolean().optional().default(true),
+  status: ConnectorStatusSchema.optional().default("unknown"),
+  last_checked_at: z.string().nullable().optional().default(null),
+  health_code: z.string().nullable().optional().default(null),
+  provider_version: z.string().nullable().optional().default(null),
+  redaction_policy_version: z.string().nullable().optional().default(null),
+  has_credential: z.boolean().optional().default(false),
+  has_kibana_credential: z.boolean().optional().default(false),
+  created_at: z.string().nullable().optional().default(null),
+  updated_at: z.string().nullable().optional().default(null),
+});
+
+export const ConnectorListResponseSchema = z.object({
+  connectors: z.array(ConnectorInstanceSchema),
+  total: z.number().optional(),
+});
+
+export const ConnectorSourceSchema = z.object({
+  id: z.string(),
+  connector_instance_id: z.string(),
+  source_type: z.string(),
+  display_label: z.string(),
+  enabled: z.boolean().optional().default(true),
+  field_profile: z.record(z.string(), z.unknown()).optional().default({}),
+  discovered_at: z.string().nullable().optional().default(null),
+});
+
+export const ConnectorSourceListResponseSchema = z.object({
+  connector_instance_id: z.string(),
+  sources: z.array(ConnectorSourceSchema),
+  total: z.number().optional(),
+});
+
+export const KibanaSpaceListResponseSchema = z.object({
+  spaces: z.array(z.object({ id: z.string(), name: z.string() })),
+});
+
+export const KibanaDataViewListResponseSchema = z.object({
+  data_views: z.array(z.object({ id: z.string(), title: z.string() })),
+});
+
+export const ProjectAvailableConnectorSchema = z.object({
+  connector: ConnectorInstanceSchema,
+  sources: z.array(ConnectorSourceSchema),
+});
+
+export const ProjectAvailableConnectorListResponseSchema = z.object({
+  connectors: z.array(ProjectAvailableConnectorSchema),
+});
+
+export const ProjectConnectorBindingSchema = z.object({
+  id: z.string(),
+  project_id: z.string(),
+  connector_instance_id: z.string(),
+  connector_display_name: z.string().nullable().optional().default(null),
+  connector_provider_id: z.string().nullable().optional().default(null),
+  source_ids: z.array(z.string()).optional().default([]),
+  capability_ids: z.array(z.string()).optional().default([]),
+  budgets: z.record(z.string(), z.number()).optional().default({}),
+  max_time_window_days: z.number().nullable().optional().default(null),
+  enabled: z.boolean().optional().default(true),
+  version: z.number().optional().default(1),
+});
+
+export const ProjectConnectorBindingListResponseSchema = z.object({
+  project_id: z.string(),
+  bindings: z.array(ProjectConnectorBindingSchema),
+});
+
+export const ConnectorTestResultSchema = z.object({
+  status: z.string(),
+  message: z.string().nullable().optional().default(null),
+  checked_at: z.string().nullable().optional().default(null),
+  details: z.record(z.string(), z.unknown()).optional().default({}),
+});
+
+export const ConnectorEvidenceFindingSchema = z.object({
+  evidence_id: z.string(),
+  classification: z.string(),
+  summary: z.string().nullable().optional().default(null),
+});
+
+export const ConnectorEvidenceSummarySchema = z.object({
+  run_id: z.number(),
+  available: z.boolean().optional().default(false),
+  connector_count: z.number().optional().default(0),
+  successful_calls: z.number().optional().default(0),
+  failed_calls: z.number().optional().default(0),
+  denied_calls: z.number().optional().default(0),
+  truncated_calls: z.number().optional().default(0),
+  observation_from: z.string().nullable().optional().default(null),
+  observation_to: z.string().nullable().optional().default(null),
+  limitations: z.array(z.string()).optional().default([]),
+  findings: z.array(ConnectorEvidenceFindingSchema).optional().default([]),
 });

@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -29,10 +30,19 @@ from src.harness.models import (
 )
 from src.harness.capability_runtime import CapabilityExecutionContext
 from src.harness.providers.mcp_docs import McpDocumentationProvider, McpDocumentationProviderError
-from src.harness.trusted_answer import TrustedAnswerSink, TrustedRagAnswer
+from src.harness.trusted_answer import (
+    AnswerDeltaSink,
+    TrustedAnswerSink,
+    TrustedRagAnswer,
+)
 from src.generation.rag_chain import _execute_search, run_rag_query
+from src.generation.llm_client import get_documentation_provider_trace
 from src.schemas import QueryRequest
 from src.retrieval.search import search_and_rerank, search_similar
+from src.retrieval.topology_hints import (
+    TopologyRetrievalHints,
+    resolve_topology_retrieval_hints,
+)
 from src.retrieval.metadata_retriever import (
     get_document_list,
     get_document_stats,
@@ -53,6 +63,9 @@ from src.runtime.models import (
     ListRuntimeSyncStatusInput,
     RuntimeExecutionState,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 async def search_document_evidence(
@@ -116,6 +129,8 @@ async def answer_document_question_evidence(
     project_ids: list[str] | None,
     top_k: int = 8,
     trusted_answer_sink: TrustedAnswerSink,
+    answer_delta_sink: AnswerDeltaSink | None = None,
+    topology_hints: TopologyRetrievalHints | None = None,
 ) -> EvidenceQueryResult:
     """Answer one documentation question through the existing deterministic RAG pipeline.
 
@@ -125,16 +140,45 @@ async def answer_document_question_evidence(
     handed to ``trusted_answer_sink`` so the read-only turn loop can adopt it
     directly as the turn's final output, bypassing the grounding-validation step
     for this capability only.
+
+    ``answer_delta_sink`` streams that answer as it is generated. This is the only
+    capability allowed to do so, and for the same reason the validator is skipped:
+    the answer is already deterministically cited, so nothing downstream rewrites
+    it and the streamed text is byte-identical to the persisted one. The equality
+    is asserted below rather than assumed.
     """
     request = QueryRequest(query=query, top_k=top_k)
-    response = await run_rag_query(
-        request,
-        user_groups=user_groups,
-        user_id=user_id,
-        qdrant=qdrant,
-        db=db,
-        project_ids=project_ids,
-    )
+    streaming = answer_delta_sink is not None and answer_delta_sink.enabled
+    try:
+        response = await run_rag_query(
+            request,
+            user_groups=user_groups,
+            user_id=user_id,
+            qdrant=qdrant,
+            db=db,
+            project_ids=project_ids,
+            on_delta=answer_delta_sink.emit if streaming else None,
+            topology_hints=topology_hints,
+        )
+    finally:
+        # This sink is request-scoped. Capturing in ``finally`` preserves the
+        # exhausted-provider audit even when no trusted answer was produced.
+        trusted_answer_sink.documentation_provider_trace = (
+            get_documentation_provider_trace()
+        )
+    if streaming:
+        assert answer_delta_sink is not None
+        if answer_delta_sink.streamed != response.answer:
+            # Defensive: the streamed text is the concatenation of the same chunks
+            # the answer is built from, so this cannot happen without a provider
+            # or batching bug. Log loudly -- the authoritative replayable deltas
+            # emitted after persistence will correct the display either way.
+            logger.error(
+                "Streamed answer diverged from the persisted answer "
+                "(streamed %d chars, answer %d chars)",
+                len(answer_delta_sink.streamed),
+                len(response.answer),
+            )
     trusted_answer_sink.answer = TrustedRagAnswer(
         content=response.answer, document_sources=response.sources
     )
@@ -325,6 +369,7 @@ def build_registered_read_adapters(
     conversation_history: list[dict[str, Any]],
     conversation_id: int,
     trusted_answer_sink: TrustedAnswerSink,
+    answer_delta_sink: AnswerDeltaSink | None = None,
 ) -> dict[
     str,
     Callable[[dict[str, Any], CapabilityExecutionContext], Awaitable[EvidenceQueryResult]],
@@ -353,6 +398,25 @@ def build_registered_read_adapters(
             project_reference=str(project_id) if project_id is not None else None,
             authorized_scope=context.project_scope,
         )
+        # This is addressing, not evidence: MCP resolves names using the request
+        # token inside the already-authorized exact project.  A missing token,
+        # multi-project scope, or provider failure returns no hints and normal
+        # documentation retrieval continues unchanged.
+        topology_hints = await resolve_topology_retrieval_hints(
+            query=str(arguments["query"]),
+            project_ids=selected,
+            access_token=context.access_token,
+        )
+        if topology_hints is not None:
+            logger.info(
+                "Topology-assisted document addressing project=%s strength=%s "
+                "entities=%d jobs=%d source_roots=%d",
+                topology_hints.project_id,
+                topology_hints.strength.value,
+                len(topology_hints.matched_entity_ids),
+                len(topology_hints.job_names),
+                len(topology_hints.source_roots),
+            )
         return await answer_document_question_evidence(
             qdrant=qdrant,
             db=db,
@@ -362,6 +426,8 @@ def build_registered_read_adapters(
             project_ids=selected,
             top_k=int(arguments.get("top_k", 8) or 8),
             trusted_answer_sink=trusted_answer_sink,
+            answer_delta_sink=answer_delta_sink,
+            topology_hints=topology_hints,
         )
 
     async def read_adapter(arguments, context):  # noqa: ANN001

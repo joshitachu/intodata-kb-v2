@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.harness.capability_runtime import CapabilityObservation
+from src.harness.evidence_summary import EvidenceSummary, build_evidence_summary
 from src.harness.workflow_projection import WorkflowCard
 
 
@@ -206,6 +207,7 @@ class TypedAgentResponse(BaseModel):
     workflow_cards: list[WorkflowCard] = Field(default_factory=list, max_length=20)
     stop_reason: str = Field(min_length=1, max_length=80)
     factual_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    evidence_summary: EvidenceSummary = Field(default_factory=EvidenceSummary)
 
 
 def build_response_fact_catalog(
@@ -380,6 +382,7 @@ def render_typed_response(
             synthesis_source=SynthesisSource.DIRECT,
             stop_reason=stop_reason,
             factual_fingerprint=fingerprint,
+            evidence_summary=build_evidence_summary(observations),
         )
 
     valid_plan = _valid_plan(plan, catalog)
@@ -404,6 +407,7 @@ def render_typed_response(
         workflow_cards=cards,
         stop_reason=stop_reason,
         factual_fingerprint=fingerprint,
+        evidence_summary=build_evidence_summary(observations),
     )
 
 

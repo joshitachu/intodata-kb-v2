@@ -16,11 +16,11 @@ type PermissionCodename =
   | "create_projects";
 
 interface UsePermissionsReturn {
-  /** Check if the current user has a specific permission (superadmin bypasses). */
+  /** Check if the current user has a specific permission (Owner bypasses). */
   hasPermission: (codename: PermissionCodename) => boolean;
-  /** True if the user is a superadmin. */
-  isSuperadmin: boolean;
-  /** True if the user should see admin UI (superadmin or admin role). */
+  /** True for the deployment Owner (persisted as is_superadmin). */
+  isOwner: boolean;
+  /** True if the user should see admin UI (Owner or Admin role). */
   hasAnyAdminPermission: boolean;
   canManageUsers: boolean;
   canManageRoles: boolean;
@@ -39,12 +39,12 @@ export function usePermissions(): UsePermissionsReturn {
     return user.permissions?.includes(codename) ?? false;
   };
 
-  const isSuperadmin = user?.is_superadmin ?? false;
+  const isOwner = user?.is_superadmin ?? false;
 
   return {
     hasPermission,
-    isSuperadmin,
-    hasAnyAdminPermission: isSuperadmin || (user?.roles?.includes("admin") ?? false),
+    isOwner,
+    hasAnyAdminPermission: isOwner || (user?.roles?.includes("admin") ?? false),
     canManageUsers: hasPermission("manage_users"),
     canManageRoles: hasPermission("manage_roles"),
     canAssignProjects: hasPermission("assign_projects"),

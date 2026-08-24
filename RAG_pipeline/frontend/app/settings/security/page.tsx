@@ -75,11 +75,17 @@ export default function SecuritySettingsPage() {
     setLoading(true);
     setMessage(null);
     try {
+      const refreshedUser = await refreshUser();
       if (setupOnly) {
+        if (
+          refreshedUser &&
+          !refreshedUser.has_password &&
+          !refreshedUser.sso_provider
+        ) {
+          router.push("/settings/profile");
+          return;
+        }
         await completeOnboarding.mutateAsync();
-      }
-      await refreshUser();
-      if (setupOnly) {
         startTour();
         router.push("/");
       } else {

@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-import pytest
 from fastapi import Request
 from sqlalchemy import text
 
@@ -69,6 +68,14 @@ class TestPut:
             )
         assert resp.status_code == 400
         assert "Unknown model id" in resp.text
+
+    async def test_put_accepts_dedicated_pack_author_model(self, client):
+        resp = await client.put(
+            "/mcp/admin/instance-settings",
+            json={"settings": {"pack_author_model": "kimi/kimi-k2.5"}},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["settings"]["pack_author_model"] == "kimi/kimi-k2.5"
 
     async def test_put_writes_and_audits(self, client, db_session):
         resp = await client.put(

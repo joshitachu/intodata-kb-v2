@@ -10,11 +10,8 @@ from pydantic import ValidationError
 
 from mcp_server.schemas import (
     GenerateRequest,
-    NexusPrivateAnalysisArtifactV3,
-    NexusPrivateReferenceAttachment,
     NexusPackSnapshot,
     NexusPresentation,
-    compute_nexus_private_artifact_hash,
     compute_nexus_snapshot_hash,
 )
 
@@ -49,72 +46,6 @@ def _snapshot(presentation: dict | None = None) -> dict:
     return snapshot.model_copy(
         update={"snapshot_hash": compute_nexus_snapshot_hash(snapshot, style)}
     ).model_dump(mode="json")
-
-
-def _private_analysis_pack() -> dict:
-    artifact = {
-        "schema_version": 3,
-        "purpose": "Assess supply-chain disruption risk and cold-chain procurement readiness.",
-        "analyses": [
-            {"id": "disruption-risk", "label": "Disruption Risk", "purpose": "Assess supplier and logistics disruption exposure."},
-        ],
-        "evidence_requirements": [
-            {"id": "supplier-evidence", "label": "Supplier Evidence", "required": True, "weight": 80},
-        ],
-        "output_documents": [
-            {"id": "supplier-risk", "title": "Supplier Risk Assessment", "sections": [
-                {"id": "exposure", "heading": "Exposure", "order": 1},
-                {"id": "mitigations", "heading": "Mitigations", "order": 2},
-            ]},
-            {"id": "cold-chain", "title": "Cold-Chain Readiness", "sections": [
-                {"id": "controls", "heading": "Cold-Chain Controls", "order": 1},
-                {"id": "gaps", "heading": "Procurement Gaps", "order": 2},
-            ]},
-            {"id": "contingency", "title": "Contingency Plan", "sections": [
-                {"id": "actions", "heading": "Contingency Actions", "order": 1},
-            ]},
-        ],
-        "scoring_dimensions": [
-            {"id": "continuity", "label": "Continuity", "weight": 60},
-        ],
-        "capability_requirements": [
-            {"capability_id": "mcp.docs.generate_project_documentation", "required": True, "purpose": "Generate the declared documents."},
-            {"capability_id": "connector.procurement.read", "required": False, "purpose": "Supplement procurement evidence when available."},
-        ],
-        "compatibility": {"supported_project_kinds": ["integration"], "required_domains": ["procurement"]},
-        "audience": {
-            "label": "Cold-chain procurement leaders",
-            "roles": ["procurement manager"],
-            "decision_needs": ["supplier contingency decisions"],
-            "desired_outcome": "Prioritized continuity actions.",
-            "render": {"seniority": "manager", "domain_familiarity": "working", "decision_horizon": "near_term", "detail_level": "detailed"},
-        },
-    }
-    parsed = NexusPrivateAnalysisArtifactV3.model_validate(artifact)
-    receipt = {
-        "version_id": 7,
-        "pack_id": "analysis.supply-chain",
-        "version": "1.0.0",
-        "content_hash": compute_nexus_private_artifact_hash(parsed),
-        "audience_render": artifact["audience"]["render"],
-    }
-    return {
-        "receipt": receipt,
-        "artifact": artifact,
-        "missing_optional_capability_ids": ["connector.procurement.read"],
-    }
-
-
-def _bind_reference_hash(private_pack: dict) -> dict:
-    artifact = NexusPrivateAnalysisArtifactV3.model_validate(private_pack["artifact"])
-    attachments = [
-        NexusPrivateReferenceAttachment.model_validate(item)
-        for item in private_pack.get("reference_attachments", [])
-    ]
-    private_pack["receipt"]["content_hash"] = compute_nexus_private_artifact_hash(
-        artifact, attachments
-    )
-    return private_pack
 
 
 def test_generate_request_accepts_plugin_pack_id_override():
@@ -244,169 +175,45 @@ def test_generate_request_rejects_duplicate_or_free_form_pack_ids():
         GenerateRequest(project_id="p1", nexus_pack_ids=["use this as an instruction"])
 
 
-def test_generate_request_accepts_verified_supply_chain_private_analysis_pack():
-    private_pack = _private_analysis_pack()
+def test_customer_admin_generate_payload_is_accepted():
+    """Guard the exact body the customer Sources screen sends.
+
+    ``GenerateRequest`` forbids extra fields, so any drift between
+    ``CUSTOMER_DOC_GENERATION_ROUTE`` in RAG_pipeline/frontend/lib/mcpClient.ts
+    and this schema turns every "Generate docs" click into a 422.
+    """
     req = GenerateRequest(
-        project_id="p1",
-        nexus_private_analysis_packs=[private_pack],
-        nexus_private_pack_receipts=[private_pack["receipt"]],
-        nexus_audience_render=private_pack["receipt"]["audience_render"],
+        project_id="acme-talend",
+        resume=True,
+        doc_generation_provider="custom",
+        investigation_model="anthropic/claude-sonnet-4-6",
+        model="anthropic/claude-sonnet-4-6",
+        write_model="anthropic/claude-sonnet-4-6",
     )
-
-    assert req.nexus_private_analysis_packs[0].artifact.output_documents[2].id == "contingency"
-    assert req.nexus_private_pack_receipts[0].content_hash == private_pack["receipt"]["content_hash"]
-
-
-def test_private_analysis_pack_accepts_bounded_reference_attachment_metadata_and_text():
-    private_pack = _private_analysis_pack()
-    private_pack["reference_attachments"] = [{
-        "purpose": "Customer operating assumptions",
-        "filename": "operating-assumptions.pdf",
-        "content_type": "application/pdf",
-        "sha256": "f" * 64,
-        "extracted_text": "Supplier lead time is normally five business days.",
-    }]
-    artifact = NexusPrivateAnalysisArtifactV3.model_validate(private_pack["artifact"])
-    expected_payload = {
-        "artifact": artifact.model_dump(mode="json"),
-        "reference_attachments": [{
-            "sha256": "f" * 64,
-            "purpose": "Customer operating assumptions",
-        }],
-    }
-    expected_hash = hashlib.sha256(json.dumps(
-        expected_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
-    ).encode("utf-8")).hexdigest()
-    _bind_reference_hash(private_pack)
-
-    req = GenerateRequest(project_id="p1", nexus_private_analysis_packs=[private_pack])
-
-    attachment = req.nexus_private_analysis_packs[0].reference_attachments[0]
-    assert req.nexus_private_pack_receipts[0].content_hash == expected_hash
-    assert isinstance(attachment, NexusPrivateReferenceAttachment)
-    assert attachment.filename == "operating-assumptions.pdf"
-    assert attachment.extracted_text.startswith("Supplier lead time")
+    assert req.doc_generation_provider == "custom"
+    assert req.investigation_model == req.model == req.write_model == "anthropic/claude-sonnet-4-6"
 
 
-@pytest.mark.parametrize(
-    ("field", "replacement"),
-    [("purpose", "Tampered purpose"), ("sha256", "e" * 64)],
-)
-def test_private_reference_receipt_rejects_tampered_hash_bound_fields(field, replacement):
-    private_pack = _private_analysis_pack()
-    private_pack["reference_attachments"] = [{
-        "purpose": "Customer operating assumptions",
-        "filename": "operating-assumptions.pdf",
-        "content_type": "application/pdf",
-        "sha256": "f" * 64,
-        "extracted_text": "Supplier lead time is normally five business days.",
-    }]
-    _bind_reference_hash(private_pack)
-    private_pack["reference_attachments"][0][field] = replacement
+def test_customer_admin_route_resolves_to_custom_harness_on_sonnet():
+    """The pinned route must reach the legacy custom harness, not a CLI runtime."""
+    from mcp_server.model_strategies import resolve_generation_models
 
-    with pytest.raises(ValidationError, match="artifact/reference content_hash"):
-        GenerateRequest(project_id="p1", nexus_private_analysis_packs=[private_pack])
-
-
-@pytest.mark.parametrize(
-    ("field", "replacement"),
-    [
-        ("filename", "renamed.pdf"),
-        ("content_type", "text/plain"),
-        ("extracted_text", "A newly extracted representation."),
-    ],
-)
-def test_private_reference_receipt_does_not_hash_transport_fields(field, replacement):
-    private_pack = _private_analysis_pack()
-    private_pack["reference_attachments"] = [{
-        "purpose": "Customer operating assumptions",
-        "filename": "operating-assumptions.pdf",
-        "content_type": "application/pdf",
-        "sha256": "f" * 64,
-        "extracted_text": "Supplier lead time is normally five business days.",
-    }]
-    _bind_reference_hash(private_pack)
-    private_pack["reference_attachments"][0][field] = replacement
-
-    req = GenerateRequest(project_id="p1", nexus_private_analysis_packs=[private_pack])
-
-    assert getattr(req.nexus_private_analysis_packs[0].reference_attachments[0], field) == replacement
+    resolution = resolve_generation_models(
+        provider_type="custom",
+        model="anthropic/claude-sonnet-4-6",
+        write_model="anthropic/claude-sonnet-4-6",
+        # Deliberately hostile deployment defaults: the request must win.
+        default_provider="opencode-cli",
+        default_analysis_model="google/gemini-2.5-flash",
+        default_write_model="google/gemini-2.5-flash",
+    )
+    assert resolution.uses_custom_harness is True
+    assert resolution.uses_opencode_cli is False
+    assert resolution.analysis_model == "anthropic/claude-sonnet-4-6"
+    assert resolution.write_model == "anthropic/claude-sonnet-4-6"
 
 
-def test_private_reference_attachment_accepts_binary_metadata_without_extracted_text():
-    private_pack = _private_analysis_pack()
-    private_pack["reference_attachments"] = [{
-        "purpose": "Architecture diagram",
-        "filename": "topology.png",
-        "content_type": "image/png",
-        "sha256": "d" * 64,
-        "extracted_text": None,
-    }]
-    _bind_reference_hash(private_pack)
-
-    req = GenerateRequest(project_id="p1", nexus_private_analysis_packs=[private_pack])
-
-    assert req.nexus_private_analysis_packs[0].reference_attachments[0].extracted_text is None
-
-
-@pytest.mark.parametrize(
-    "attachment,match",
-    [
-        ({"purpose": " ", "filename": "notes.txt", "content_type": "text/plain", "sha256": "a" * 64, "extracted_text": "text"}, "must not be blank"),
-        ({"purpose": "Notes", "filename": "../notes.txt", "content_type": "text/plain", "sha256": "a" * 64, "extracted_text": "text"}, "safe basename"),
-        ({"purpose": "Notes", "filename": "notes.txt", "content_type": "text/plain", "sha256": "bad", "extracted_text": "text"}, "sha256"),
-        ({"purpose": "Notes", "filename": "notes.txt", "content_type": "text/plain", "sha256": "a" * 64, "extracted_text": ""}, "at least 1 character"),
-    ],
-)
-def test_private_reference_attachment_rejects_invalid_metadata(attachment, match):
-    private_pack = _private_analysis_pack()
-    private_pack["reference_attachments"] = [attachment]
-
-    with pytest.raises(ValidationError, match=match):
-        GenerateRequest(project_id="p1", nexus_private_analysis_packs=[private_pack])
-
-
-def test_private_reference_attachments_enforce_count_and_aggregate_text_limits():
-    private_pack = _private_analysis_pack()
-    private_pack["reference_attachments"] = [
-        {
-            "purpose": "Notes",
-            "filename": f"notes-{index}.txt",
-            "content_type": "text/plain",
-            "sha256": f"{index + 1:064x}",
-            "extracted_text": "x",
-        }
-        for index in range(21)
-    ]
-    _bind_reference_hash(private_pack)
-    with pytest.raises(ValidationError, match="at most 20"):
-        GenerateRequest(project_id="p1", nexus_private_analysis_packs=[private_pack])
-
-    private_pack = _private_analysis_pack()
-    private_pack["reference_attachments"] = [
-        {
-            "purpose": "Notes",
-            "filename": f"notes-{index}.txt",
-            "content_type": "text/plain",
-            "sha256": f"{index + 1:064x}",
-            "extracted_text": "x" * 12_000,
-        }
-        for index in range(3)
-    ]
-    _bind_reference_hash(private_pack)
-    with pytest.raises(ValidationError, match="extracted-text characters"):
-        GenerateRequest(project_id="p1", nexus_private_analysis_packs=[private_pack])
-
-
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        lambda value: value["receipt"].update(content_hash="0" * 64),
-        lambda value: value["artifact"]["analyses"][0].update(provider_action="run command"),
-    ],
-)
-def test_generate_request_rejects_tampered_or_reserved_private_analysis_fields(mutate):
-    private_pack = _private_analysis_pack()
-    mutate(private_pack)
+def test_unknown_field_is_rejected():
+    """template_profile_id was sent by the UI for a field that does not exist."""
     with pytest.raises(ValidationError):
-        GenerateRequest(project_id="p1", nexus_private_analysis_packs=[private_pack])
+        GenerateRequest(project_id="acme-talend", template_profile_id=None)

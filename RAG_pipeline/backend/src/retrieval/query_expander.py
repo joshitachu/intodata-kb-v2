@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 
 from src.config import settings
+from src.turn_timings import measure_model
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +61,13 @@ async def expand_query(query: str, force: bool = False) -> list[str]:
     try:
         from src.generation.llm_client import generate_answer
 
-        raw = (await generate_answer([
-            {"role": "user", "content": EXPAND_PROMPT.format(query=query)},
-        ])).strip()
+        # Inference, even though it runs inside retrieval. `measure_search`
+        # subtracts nested model time, so this lands in `llm_ms` exactly once and
+        # is not also billed to `search_ms`.
+        with measure_model():
+            raw = (await generate_answer([
+                {"role": "user", "content": EXPAND_PROMPT.format(query=query)},
+            ])).strip()
 
         # Parse alternatives (one per line)
         alternatives = [

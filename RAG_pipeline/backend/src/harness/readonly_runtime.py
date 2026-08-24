@@ -13,11 +13,14 @@ fact-ID renderer, and constructs (not modifies) the ``AgentLoopResult`` type.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from langchain.agents import create_agent
@@ -32,12 +35,14 @@ from src.harness.agent_loop import (
     AgentUsage,
     response_fingerprint,
 )
+from src.harness.agent_runs import sanitize_public_payload
 from src.harness.capability_runtime import (
     CapabilityExecutionContext,
     CapabilityObservation,
     CapabilityObservationStatus,
 )
 from src.harness.executor import HarnessCapabilityExecutor
+from src.harness.evidence_summary import EvidenceSummary, build_evidence_summary
 from src.harness.interaction_protocol import (
     INTERACTION_PROTOCOL_PROMPT,
     TURN_ASSESSMENT_TOOL_NAME,
@@ -51,6 +56,7 @@ from src.harness.grounding import (
     GroundingVerdict,
 )
 from src.harness.manifest import ManifestScope
+from src.harness.model_usage import token_usage_from_messages
 from src.harness.models import DOCUMENT_SEARCH_CAPABILITY
 from src.harness.registry import CapabilityRegistry
 from src.harness.semantic_tools import (
@@ -72,13 +78,19 @@ from src.harness.run_budgets import (
     LayeredBudgetController,
     LayeredModelBudgetMiddleware,
 )
+from src.harness.topology_capability import (
+    TOPOLOGY_STRUCTURE_CAPABILITY,
+    topology_targets,
+)
 from src.harness.trusted_answer import TrustedAnswerSink
+from src.harness.turn_instrumentation import ModelLatencyMiddleware
 from src.schemas import DocumentSource
+from src.turn_progress import turn_progress_scope
 
 logger = logging.getLogger(__name__)
 
 READONLY_RUNTIME_RELEASE = "slice-3-readonly-primary-v1"
-READONLY_PROMPT_VERSION = "slice-3-readonly-primary-v4"
+READONLY_PROMPT_VERSION = "evidence-fusion-source-ownership-v1"
 READONLY_MODEL_PROFILE = "kimi/kimi-k2.5"
 
 _KIMI_BASE_URL = "https://api.moonshot.ai/v1"
@@ -99,8 +111,9 @@ observation before the next. A normal assistant message ends the turn; there is
 no response tool.
 
 Answer greetings, capability questions, and how-to guidance directly, with no
-tool. When the user restricts scope, forbids acting, or only wants an
-explanation, do not call any tool. You cannot perform or propose consequential
+tool. When the user forbids acting, do not call a consequential tool. A request
+for an explanation about project facts still requires the appropriate read
+evidence. You cannot perform or propose consequential
 actions (creating, saving, generating, onboarding, cancelling, updating); if
 asked, explain the read-only boundary instead.
 
@@ -124,18 +137,41 @@ documentation search; it is not a request to recap this conversation and not a
 request for live runtime state, executions, or logs unless the user's own words
 ask about runtime, operational, or log evidence.
 
-Use documentation search for every request about project documentation content,
-including summaries, available documentation, job or component names, and facts
-inside or across documents. Do not substitute active workflows, runtime evidence,
-logs, generated-document inventories, or direct file reads for indexed RAG. For a
-concise request, begin with at most 8 search results. If those results answer the
-question, stop gathering evidence and answer.
+Choose evidence by question shape. Published topology owns complete inventory and
+counts, connections, dependency traversal, and which jobs or components
+structurally implement a flow. Indexed documentation owns purpose, why, business
+meaning, explanatory implementation, business rules, and mapping explanation.
+Runtime records and logs own present-tense executions, failures, health, and
+timestamps. One source may complement another but must never silently substitute
+for a missing, failed, or excluded source.
 
-Use documentation search for exhaustive inventories and complex questions across
-the selected project's indexed documentation. Make the search query preserve the
-user's requested entities and completeness requirement, and use a larger bounded
-top_k when broader recall is needed. Do not bypass indexed RAG by listing or
-opening generated Markdown files.
+Use documentation search for every request about project documentation content:
+project-content explanations and facts inside or across documents. Do not
+substitute active workflows, runtime evidence, logs, generated-document
+inventories, or direct file reads for indexed RAG. For a concise request, begin
+with at most 8 search results. If those results answer the question, stop
+gathering evidence and answer.
+
+Use documentation search for exhaustive inventories of facts explicitly contained
+in documentation and for complex explanatory questions across the selected
+project's indexed documentation. Use topology, not similarity search, for
+exhaustive structural inventories, counts, connections, and dependency traversal.
+Preserve the requested entities in a documentation search query and use a larger
+bounded top_k when broader recall is needed. Do not bypass indexed RAG by listing
+or opening generated Markdown files.
+
+For mixed questions, call every needed topology and runtime read before the
+terminal answer_from_documentation capability. This ordering keeps every source
+in the current turn's evidence summary. Runtime evidence must not be inferred
+from documented design, and business purpose must not be inferred from topology
+structure.
+
+Honor explicit source instructions. If the user says not to use topology,
+documentation, runtime records, or logs, do not call that source. If the excluded
+source is necessary for a complete or reliable answer, answer only the supported
+portion and name what cannot be grounded, or ask permission to use it. A failed or
+unavailable source does not cancel this rule and does not authorize silent
+substitution.
 
 If the conversation explicitly says there are multiple possible targets and the
 user replies only with an unresolved pronoun such as "that one", ask one bounded
@@ -168,6 +204,332 @@ _SAFE_FALLBACK_TEXT = (
     "I ran into a problem completing this request and could not produce a "
     "grounded answer. Please try again, and rephrase if the issue continues."
 )
+
+#: Minimum gap between two live progress events. Almost all of a turn's wall time
+#: is model decode, during which the graph emits no node update at all, so the
+#: client used to sit on a static status line for 20s or more. One event every
+#: couple of seconds is enough for the status line to visibly move; shorter
+#: intervals buy nothing and every event is a durable, sequenced public event.
+PROGRESS_INTERVAL_SECONDS = 2.0
+
+#: Server-authored labels for each observable phase. These strings are the *only*
+#: thing published while the model is generating -- see ``_LiveProgressReporter``.
+#:
+#: Phases below ``reading_evidence`` are reported by the work itself, from inside
+#: a tool call, via :func:`src.turn_progress.report_phase`. That matters because
+#: on the dominant chat path a single ``answer_from_documentation`` call *is* the
+#: turn: the outer model finishes in ~2s and the tool then runs the whole RAG
+#: pipeline. Without those inner phases the status line has nothing to say for the
+#: entire wait.
+_PROGRESS_LABELS: dict[str, str] = {
+    "thinking": "Waiting on the model",
+    "selecting_tool": "Choosing the next step",
+    "reading_evidence": "Reading the evidence",
+    "searching_documents": "Searching the documentation",
+    "generating_answer": "Writing the answer from the sources",
+    "writing_answer": "Writing the answer",
+    "validating_answer": "Checking the answer against its sources",
+    "finalizing_answer": "Finishing up",
+}
+
+#: Label for a phase name this module does not know. Deliberately vague: an
+#: unrecognized phase means some layer reported work this module cannot describe,
+#: and a vague truth beats a specific guess. ``thinking`` has its own, sharper
+#: label ("waiting on the model") precisely because that phase *is* verified --
+#: it is only ever reported while a model call is outstanding.
+_GENERIC_PROGRESS_LABEL = "Working on it"
+
+#: Hard ceiling on the label half of a ``summary``. The status line is one short
+#: line in a ~360px panel, and the summary is a public payload: bounding it here
+#: keeps a long composed label from ever becoming a wall of text downstream.
+#: :func:`sanitize_public_payload` still redacts and re-bounds the final value.
+_MAX_PROGRESS_LABEL_CHARS = 120
+
+#: Verb for a topology operation whose work is not plain reading. The noun comes
+#: from ``_VISIBLE_TOOL_LABELS`` (the humanizer), so this map holds only the verb
+#: and cannot drift from the source names the humanizer publishes. Anything not
+#: listed reads: an unknown or model-garbled operation therefore degrades to
+#: "Reading the project topology", which is true of every topology call.
+_TOPOLOGY_OPERATION_VERBS: dict[str, str] = {
+    "find_topology_node": "Searching",
+    "list_topology_dependencies": "Traversing",
+    # Field lineage walks source column -> target column, so "reading" would
+    # understate a call that can take noticeably longer than a rollup read.
+    "get_field_lineage": "Tracing",
+}
+
+_PHASE_ARTICLE_RE = re.compile(r"^(?:the|a|an)\s+")
+_PHASE_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+@dataclass(frozen=True, slots=True)
+class _ProgressPhase:
+    """One publishable progress state.
+
+    ``phase`` is the stable machine-readable name the client keys on; ``label``
+    is the human sentence that goes into ``summary``. Both are server-authored:
+    ``label`` is composed only from constants in this module and integers derived
+    from server-computed observation fields, never from model output, tool
+    arguments, or any free text a capability returned.
+    """
+
+    phase: str
+    label: str
+
+
+def _phase_slug(label: str) -> str:
+    """Derive a stable machine-readable phase fragment from a human label."""
+
+    return _PHASE_SLUG_RE.sub("_", _PHASE_ARTICLE_RE.sub("", label.casefold())).strip("_")
+
+
+def _source_read_phase(
+    semantic_name: str, arguments: dict[str, Any] | None
+) -> _ProgressPhase | None:
+    """Name the source a single in-flight read is about to touch.
+
+    Returns ``None`` when the capability has no human-facing source label, so the
+    caller falls back to the generic ``reading_evidence`` phase. A semantic name
+    is an implementation detail and never reaches the payload, not even as a
+    phase slug.
+    """
+
+    source = _VISIBLE_TOOL_LABELS.get(semantic_name)
+    if source is None:
+        return None
+    verb = "Reading"
+    if semantic_name == TOPOLOGY_STRUCTURE_CAPABILITY.semantic_name:
+        # The operation the model asked for is what the executor is about to run,
+        # so naming it describes the call in flight. It is matched against a
+        # closed allowlist rather than echoed, so a garbled value cannot mislead.
+        operation = (arguments or {}).get("operation")
+        if isinstance(operation, str):
+            verb = _TOPOLOGY_OPERATION_VERBS.get(operation, verb)
+    return _ProgressPhase(
+        phase=f"{verb.casefold()}_{_phase_slug(source)}",
+        label=f"{verb} {source}",
+    )
+
+
+def _read_batch_phase(
+    calls: list[tuple[str, str, dict[str, Any]]],
+) -> _ProgressPhase:
+    """Name the phase for one batch of freshly proposed read calls.
+
+    A single call can be named exactly. Two calls of the same capability are
+    still that capability's source, but their operations may differ, so the
+    operation is dropped. A mixed batch has no single true answer and falls back
+    to the generic phase rather than naming whichever call happened to be first.
+    """
+
+    names = {name for name, _call_ref, _arguments in calls}
+    if len(names) == 1:
+        arguments = calls[0][2] if len(calls) == 1 else None
+        named = _source_read_phase(next(iter(names)), arguments)
+        if named is not None:
+            return named
+    return _ProgressPhase("reading_evidence", _PROGRESS_LABELS["reading_evidence"])
+
+
+def _ambiguous_candidate_count(data: dict[str, Any]) -> int | None:
+    """Count the candidates a topology read refused to guess between.
+
+    Both flags are computed server-side by the topology tools (more than one
+    exact-name match, or an unresolved name), so the count is a fact about the
+    observation rather than an inference about the model. Cheap by construction:
+    two dict lookups and one ``len``, no walk of the observation.
+    """
+
+    content = data.get("content")
+    if not isinstance(content, dict):
+        return None
+    unresolved = content.get("resolved") is False and content.get("reason") == "ambiguous"
+    if not (content.get("ambiguous") is True or unresolved):
+        return None
+    candidates = content.get("candidates")
+    if not isinstance(candidates, list) or len(candidates) < 2:
+        return None
+    return len(candidates)
+
+
+def _post_read_phase(envelope: ToolEnvelope | None) -> _ProgressPhase:
+    """Name what happens once a read has returned.
+
+    Control is back with the model either way; the ambiguity case says what the
+    model has been handed, which is the one thing about that wait a user can act
+    on ("it found several things called that").
+    """
+
+    if envelope is not None:
+        count = _ambiguous_candidate_count(envelope.data)
+        if count is not None:
+            return _ProgressPhase(
+                "resolving_candidates", f"Resolving {count} candidate matches"
+            )
+    return _ProgressPhase("thinking", _PROGRESS_LABELS["thinking"])
+
+
+class _LiveProgressReporter:
+    """Publish server-authored progress while the turn is still working.
+
+    HARD CONSTRAINT: not one character of model output passes through here. The
+    grounding validator has not yet accepted the text the model is streaming, so
+    only the phase, a server-authored label and the elapsed time are published.
+    A label is either a ``_PROGRESS_LABELS`` constant or one composed from this
+    module's constants plus an integer the server itself computed (see
+    ``_source_read_phase`` and ``_post_read_phase``) -- never observation prose,
+    tool arguments, or a semantic capability name. Answer prose stays gated behind
+    validation and is delivered afterwards by the caller.
+
+    Two independent drivers, because either alone leaves the user staring at a
+    frozen line:
+
+    * **Phase changes**, reported inline from the working task.
+    * **Elapsed time**, from :meth:`running`'s background ticker. A model chunk is
+      not a usable clock -- a turn whose work is one long tool call produces no
+      chunks at all -- so the ticker re-publishes the current phase on a timer.
+
+    The ticker emits through ``heartbeat_callback`` rather than through
+    ``event_callback``, because it runs *concurrently* with the turn's own database
+    session: that session may be mid-query inside a tool call, and committing on it
+    from another task is a correctness hazard, not just a race. With no
+    ``heartbeat_callback`` the ticker simply does not run.
+    """
+
+    __slots__ = (
+        "_clock",
+        "_emit",
+        "_heartbeat_emit",
+        "_interval",
+        "_label",
+        "_last_emit",
+        "_phase",
+        "_started",
+    )
+
+    def __init__(
+        self,
+        event_callback: Callable[[str, dict[str, Any]], Awaitable[None]],
+        *,
+        heartbeat_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        interval: float | None = None,
+    ) -> None:
+        self._emit = event_callback
+        self._heartbeat_emit = heartbeat_callback
+        self._clock = clock
+        # Resolved at construction, not as a default argument, so the module
+        # constant stays the single knob (and is patchable in tests).
+        self._interval = max(
+            0.0, PROGRESS_INTERVAL_SECONDS if interval is None else interval
+        )
+        self._started = clock()
+        self._last_emit: float | None = None
+        self._phase = ""
+        self._label = ""
+
+    def _payload(self, phase: str, label: str, *, now: float) -> dict[str, Any]:
+        elapsed_ms = max(0, int((now - self._started) * 1_000))
+        # Bounded here, then run through the same allowlist/redaction the durable
+        # public event goes through. `label` is server-authored by construction,
+        # so this is defence in depth rather than the primary guarantee -- but it
+        # means no future caller can widen the payload or smuggle a credential
+        # through the one channel that fires dozens of times a turn.
+        summary = f"{label[:_MAX_PROGRESS_LABEL_CHARS]}... {elapsed_ms // 1_000}s"
+        return sanitize_public_payload(
+            "assistant.progress",
+            {
+                "status": "running",
+                "phase": phase,
+                "summary": summary,
+                "elapsed_ms": elapsed_ms,
+            },
+        )
+
+    async def note_phase(
+        self, phase: str, *, label: str | None = None, force: bool = False
+    ) -> None:
+        """Emit progress for ``phase`` when it is new or the interval elapsed.
+
+        ``label`` overrides the static wording for phases whose sentence depends
+        on real in-flight state (which source is being read, how many candidates
+        came back). Omitted, the phase's own server-authored label is used.
+        """
+
+        now = self._clock()
+        resolved = label or _PROGRESS_LABELS.get(phase, _GENERIC_PROGRESS_LABEL)
+        # A relabelled phase is a state change too: "resolving 4 candidate
+        # matches" must not wait out the interval behind a stale "reading".
+        changed = phase != self._phase or resolved != self._label
+        due = self._last_emit is None or (now - self._last_emit) >= self._interval
+        if not (force or changed or due):
+            return
+        self._phase = phase
+        self._label = resolved
+        self._last_emit = now
+        await self._emit("assistant.progress", self._payload(phase, resolved, now=now))
+
+    async def note_state(self, state: _ProgressPhase, *, force: bool = False) -> None:
+        """Emit a phase whose label was derived from real in-flight state."""
+
+        await self.note_phase(state.phase, label=state.label, force=force)
+
+    async def note_model_chunk(self, chunk: AIMessageChunk) -> None:
+        """Classify one streamed model chunk into a publishable phase."""
+
+        if getattr(chunk, "tool_call_chunks", None):
+            await self.note_phase("selecting_tool")
+        elif _safe_text(chunk.content).strip():
+            await self.note_phase("writing_answer")
+        else:
+            await self.note_phase("thinking")
+
+    async def beat(self) -> None:
+        """Re-publish the current phase with a fresh elapsed time.
+
+        Called only by the ticker. It does not change ``_phase``, so it cannot
+        misreport what the turn is doing -- it only refreshes the clock the user
+        is watching.
+        """
+
+        if self._heartbeat_emit is None:
+            return
+        now = self._clock()
+        if self._last_emit is not None and (now - self._last_emit) < self._interval:
+            return
+        self._last_emit = now
+        phase = self._phase or "thinking"
+        label = self._label or _PROGRESS_LABELS.get(phase, _GENERIC_PROGRESS_LABEL)
+        await self._heartbeat_emit(
+            "assistant.progress", self._payload(phase, label, now=now)
+        )
+
+    @asynccontextmanager
+    async def running(self) -> AsyncIterator[None]:
+        """Run the elapsed-time ticker for the duration of the block."""
+
+        if self._heartbeat_emit is None or self._interval <= 0:
+            yield
+            return
+        task = asyncio.create_task(self._tick_forever(), name="nexus_turn_progress")
+        try:
+            yield
+        finally:
+            task.cancel()
+            # Await the cancellation so the ticker cannot emit after the answer.
+            # `_tick_forever` swallows its own failures, so CancelledError is the
+            # only thing that can escape here.
+            with suppress(asyncio.CancelledError):
+                await task
+
+    async def _tick_forever(self) -> None:
+        while True:
+            await asyncio.sleep(self._interval)
+            try:
+                await self.beat()
+            except Exception:
+                # A cosmetic heartbeat must never take the turn down with it.
+                logger.debug("Progress heartbeat failed", exc_info=True)
 
 
 def grounding_failure_answer() -> GroundedAnswer:
@@ -207,6 +569,9 @@ class ReadOnlyTurnResult:
     consequential_executions: int
     allowed_evidence: tuple[str, ...] = field(default_factory=tuple)
     document_sources: list[DocumentSource] = field(default_factory=list)
+    #: Topology navigation targets observed this turn, in call order, verbatim.
+    topology_targets: list[dict[str, Any]] = field(default_factory=list)
+    evidence_summary: EvidenceSummary = field(default_factory=EvidenceSummary)
 
 
 MODEL_FACING_READ_EXCLUSIONS = frozenset({DOCUMENT_SEARCH_CAPABILITY.id})
@@ -283,7 +648,9 @@ def build_readonly_primary_runtime(
     prompt = READ_ONLY_PRIMARY_SYSTEM_PROMPT
     if system_prompt_suffix.strip():
         prompt = f"{prompt}\nAdditional turn context:\n{system_prompt_suffix.strip()}"
-    middlewares: list[Any] = [middleware]
+    # Timing is unconditional: it must be recorded on every turn, not only when
+    # the canary-gated budget controller happens to be installed.
+    middlewares: list[Any] = [ModelLatencyMiddleware(), middleware]
     if budget_controller is not None:
         middlewares.append(LayeredModelBudgetMiddleware(
             budget_controller,
@@ -375,16 +742,87 @@ async def run_readonly_primary_turn(
     prior_response_fingerprints: set[str] | None = None,
     max_corrections: int = 1,
     event_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+    heartbeat_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     emit_answer_deltas: bool = True,
     budget_controller: LayeredBudgetController | None = None,
     trusted_answer_sink: TrustedAnswerSink | None = None,
+    suppress_structural_citations: bool = False,
 ) -> ReadOnlyTurnResult:
-    """Run the read-only graph with a bounded grounding-correction loop."""
+    """Run the read-only graph with a bounded grounding-correction loop.
+
+    ``suppress_structural_citations`` is set when the turn came from the topology
+    canvas; it reaches `_humanize_visible_content` and drops structural references
+    from the prose the user reads. It never affects grounding validation, which
+    reads the structured citation block instead.
+    """
 
     validator = GroundingValidator()
     prior = prior_response_fingerprints or set()
     messages: list[Any] = list(conversation_seed or [])
     messages.append({"role": "user", "content": user_message})
+    # One reporter for the whole turn, so its elapsed clock is the turn's clock
+    # and a grounding correction round does not restart the user's timer.
+    progress = (
+        _LiveProgressReporter(event_callback, heartbeat_callback=heartbeat_callback)
+        if event_callback is not None
+        else None
+    )
+    if progress is None:
+        return await _run_readonly_attempts(
+            graph=graph,
+            ledger=ledger,
+            snapshot=snapshot,
+            messages=messages,
+            validator=validator,
+            prior=prior,
+            state_version=state_version,
+            max_corrections=max_corrections,
+            event_callback=event_callback,
+            emit_answer_deltas=emit_answer_deltas,
+            budget_controller=budget_controller,
+            trusted_answer_sink=trusted_answer_sink,
+            progress=None,
+        )
+    # The ticker and the phase sink share one lifetime: nested work can report a
+    # phase, and the ticker keeps that phase's clock visibly moving even when the
+    # work makes no further announcements for half a minute.
+    async with progress.running():
+        with turn_progress_scope(progress.note_phase):
+            return await _run_readonly_attempts(
+                graph=graph,
+                ledger=ledger,
+                snapshot=snapshot,
+                messages=messages,
+                validator=validator,
+                prior=prior,
+                state_version=state_version,
+                max_corrections=max_corrections,
+                event_callback=event_callback,
+                emit_answer_deltas=emit_answer_deltas,
+                budget_controller=budget_controller,
+                trusted_answer_sink=trusted_answer_sink,
+                progress=progress,
+            )
+
+
+async def _run_readonly_attempts(
+    *,
+    graph: Runnable,
+    ledger: SemanticEventLedger,
+    snapshot: SemanticToolSnapshot,
+    messages: list[Any],
+    validator: GroundingValidator,
+    prior: set[str],
+    state_version: str,
+    max_corrections: int,
+    event_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
+    emit_answer_deltas: bool,
+    budget_controller: LayeredBudgetController | None,
+    trusted_answer_sink: TrustedAnswerSink | None,
+    progress: _LiveProgressReporter | None,
+    suppress_structural_citations: bool = False,
+) -> ReadOnlyTurnResult:
+    """The bounded attempt loop, split out so the caller owns progress lifetime."""
 
     usage = AgentUsage()
     envelopes: list[ToolEnvelope] = []
@@ -402,6 +840,7 @@ async def run_readonly_primary_turn(
                 {"messages": messages},
                 event_callback=event_callback,
                 trusted_answer_sink=trusted_answer_sink,
+                progress=progress,
             )
         except AgentBudgetStop as exc:
             budget_stop = exc.reason
@@ -427,13 +866,28 @@ async def run_readonly_primary_turn(
             )
             outcome_verdict = GroundingVerdict.VALID
             outcome_reason_code = "trusted_deterministic_answer"
+            if progress is not None:
+                # This path deliberately skips the grounding validator (the answer
+                # is already deterministically cited), so claiming a validating
+                # phase here would be a lie. Report what actually happens next.
+                await progress.note_phase("finalizing_answer", force=True)
             break
+        if progress is not None:
+            # The validator gate is itself user-visible dead time on a long
+            # answer; name it rather than leaving the status line stale.
+            await progress.note_phase("validating_answer", force=True)
         allowed = validator.allowed_evidence(envelopes)
         requirement = validator.required_state(envelopes)
         final_text = _final_assistant_text(new_messages)
         grounded = _parse_grounded_answer(final_text, requirement=requirement)
         grounded = grounded.model_copy(
-            update={"content": _humanize_visible_content(grounded.content, envelopes)}
+            update={
+                "content": _humanize_visible_content(
+                    grounded.content,
+                    envelopes,
+                    suppress_structural=suppress_structural_citations,
+                )
+            }
         )
         if not grounded.content.strip():
             # An empty terminal message is not an answer; force a rewrite.
@@ -464,7 +918,9 @@ async def run_readonly_primary_turn(
             }
         )
 
+    collected_targets = _collect_topology_targets(messages)
     read_observations = _collect_observations(ledger, ledger_len_before)
+    evidence_observations = _collect_envelope_observations(messages, snapshot)
     executor_read_calls = len(read_observations)
     consequential_executions = _count_consequential_executions(
         ledger, snapshot, ledger_len_before
@@ -541,7 +997,7 @@ async def run_readonly_primary_turn(
         stop_reason = AgentStopReason.REPEATED_RESPONSE
 
     if event_callback is not None and emit_answer_deltas:
-        for chunk in _public_answer_chunks(grounded.content):
+        for chunk in public_answer_chunks(grounded.content):
             await event_callback("assistant.delta", {"content": chunk})
 
     result = AgentLoopResult(
@@ -569,6 +1025,15 @@ async def run_readonly_primary_turn(
         consequential_executions=consequential_executions,
         allowed_evidence=allowed_refs,
         document_sources=document_sources,
+        topology_targets=collected_targets,
+        evidence_summary=build_evidence_summary(
+            evidence_observations,
+            documentation_trace=(
+                trusted_answer_sink.documentation_provider_trace
+                if trusted_answer_sink is not None
+                else None
+            ),
+        ),
     )
 
 
@@ -578,20 +1043,97 @@ _VISIBLE_TOOL_LABELS = {
     "list_project_documents": "generated document inventory",
     "read_document": "indexed document",
     "read_generated_document": "generated document",
+    "read_topology_structure": "the project topology",
 }
 _VISIBLE_EVIDENCE_KEY_RE = re.compile(
-    r"(?:metadata:[a-z0-9_.:-]+|mcp-doc(?:-content)?:[a-z0-9_.:/-]+|doc:\d+:\d+)\b",
+    r"(?:metadata:[a-z0-9_.:-]+|mcp-doc(?:-content)?:[a-z0-9_.:/-]+|doc:\d+:\d+"
+    r"|topology:[a-z0-9_.:-]+)\b",
     re.IGNORECASE,
+)
+
+#: Every way a structural reference reaches the prose. Both halves matter: the
+#: raw evidence key, AND the friendly label the humanizer would otherwise
+#: substitute for it. In observed output the friendly form dominated -- five of
+#: eight answers said "(from the project topology)" and only two leaked a raw id --
+#: so suppressing keys alone would have missed the actual defect. The reader's
+#: opaque node ids and the tool's own semantic name are included for the same
+#: reason: relabelling them here would just reintroduce the phrase being removed.
+_STRUCTURAL_REF = (
+    r"(?:topology:[a-z0-9_.:-]+"
+    r"|landscape-(?:application|system|group):[a-z0-9]+"
+    r"|read_topology_structure"
+    r"|the\s+project\s+topology)"
+)
+
+#: Wording models put in front of a reference. "topology node" and "node" are
+#: here because the observed leak was "*from topology node landscape-...*", where
+#: removing only the id leaves a dangling preposition.
+_STRUCTURAL_LEADIN = (
+    r"(?:(?:from|in|per|via|using|source|sources|evidence|evidence_id|evidence_ids|ref|refs)"
+    r"(?:\s+topology\s+node|\s+node)?\s*:?\s*)?"
+)
+
+#: A whole bracketed aside whose only content is structural references. Deleting
+#: just the reference would leave "(from )", which reads worse than the citation.
+#: Anything else inside the brackets means real prose is in there too, and only
+#: the reference itself is taken.
+_STRUCTURAL_CITATION_PAREN_RE = re.compile(
+    r"\s*[(\[]\s*[*_]{0,2}\s*"
+    + _STRUCTURAL_LEADIN
+    + _STRUCTURAL_REF
+    + r"(?:\s*(?:[,;/&]|and)\s*"
+    + _STRUCTURAL_REF
+    + r")*"
+    + r"\s*[*_]{0,2}\s*[)\]]",
+    re.IGNORECASE,
+)
+
+#: The same reference sitting in running prose or a table cell rather than in
+#: brackets, with its lead-in.
+_STRUCTURAL_REFERENCE_RE = re.compile(
+    r"[*_]{0,2}\s*" + _STRUCTURAL_LEADIN + _STRUCTURAL_REF + r"\s*[*_]{0,2}",
+    re.IGNORECASE,
+)
+
+#: Debris a removal can strand: an emptied bracket, a conjunction or separator now
+#: leading the bracket it used to join inside, orphaned emphasis markers, and the
+#: em-dash or colon that used to introduce the reference at end of line or cell.
+_SUPPRESSION_CLEANUPS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"[(\[]\s*(?:and|,|;|/|&)\s*"), "("),
+    (re.compile(r"[(\[]\s*[)\]]"), ""),
+    (re.compile(r"\s*[-\u2013\u2014:]\s*(?=\|)"), " "),
+    (re.compile(r"\s*[-\u2013\u2014:]\s*$", re.MULTILINE), ""),
+    (re.compile(r"[ \t]{2,}"), " "),
+    (re.compile(r" +([,.;:)\]])"), r"\1"),
+    (re.compile(r"\|\s+\|"), "| |"),
 )
 
 
 def _humanize_visible_content(
-    content: str, envelopes: list[ToolEnvelope]
+    content: str, envelopes: list[ToolEnvelope], *, suppress_structural: bool = False
 ) -> str:
     """Render model-visible implementation references as human source labels.
 
     Machine evidence keys remain untouched in the parsed grounding block and
     therefore retain citation integrity. Only the user-facing prose is changed.
+
+    ``suppress_structural`` removes structural references from the prose instead of
+    relabelling them, and is set when the turn came from the topology canvas. There
+    the label is tautology -- the user is looking at the artifact, so "(from the
+    project topology)" states only that a topology fact came from the topology, and
+    it does so in the space the explanation needed.
+
+    Suppression happens HERE rather than by prompt rule alone because the prompt
+    cannot win this argument on its own. `GroundingValidator` rejects a materially
+    factual grounded answer that cites nothing, so a model told "do not cite" is
+    also being told "cite or your answer is discarded" and will hedge by citing in
+    both places. The validator reads the structured grounding block, never this
+    prose, so dropping references here costs no citation integrity: the answer is
+    validated first and only then humanized for display.
+
+    Only the topology surface suppresses. In plain chat there is no diagram on
+    screen, so the same label is the only thing separating published structure from
+    a document or a log line, which is why the default is ``False``.
     """
 
     titles: dict[str, str] = {}
@@ -609,7 +1151,22 @@ def _humanize_visible_content(
 
     visible = content
     for semantic_name, label in _VISIBLE_TOOL_LABELS.items():
+        # On the canvas the topology reader's own name is suppressed with its
+        # references; relabelling it to "the project topology" would reintroduce
+        # exactly the phrase being removed.
+        if suppress_structural and semantic_name == "read_topology_structure":
+            continue
         visible = re.sub(rf"\b{re.escape(semantic_name)}\b", label, visible)
+
+    if suppress_structural:
+        # Order matters: whole brackets first, so "(from topology:x)" goes entirely
+        # rather than collapsing to "(from )"; then references left in running
+        # prose; then the debris either pass can strand.
+        visible = _STRUCTURAL_CITATION_PAREN_RE.sub("", visible)
+        visible = _STRUCTURAL_REFERENCE_RE.sub("", visible)
+        for pattern, replacement in _SUPPRESSION_CLEANUPS:
+            visible = pattern.sub(replacement, visible)
+        return visible.strip()
 
     def evidence_label(match: re.Match[str]) -> str:
         key = match.group(0)
@@ -621,6 +1178,8 @@ def _humanize_visible_content(
             return "project metadata"
         if lowered.startswith("mcp-doc"):
             return "generated documentation"
+        if lowered.startswith("topology:"):
+            return "the project topology"
         return "indexed document passage"
 
     return _VISIBLE_EVIDENCE_KEY_RE.sub(evidence_label, visible)
@@ -632,6 +1191,7 @@ async def _invoke_graph(
     *,
     event_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
     trusted_answer_sink: TrustedAnswerSink | None = None,
+    progress: _LiveProgressReporter | None = None,
 ) -> dict[str, Any]:
     if trusted_answer_sink is not None and trusted_answer_sink.answer is not None:
         return {"messages": list(input_value.get("messages", []))}
@@ -640,14 +1200,40 @@ async def _invoke_graph(
     seen_messages: list[BaseMessage] = []
     finalized_messages: list[BaseMessage] = []
     proposed_call_refs: set[str] = set()
+    if progress is None:
+        progress = _LiveProgressReporter(event_callback)
+    await progress.note_phase("thinking", force=True)
+
+    def completed_state() -> dict[str, Any]:
+        """Return the full graph state, not only this invocation's deltas.
+
+        LangGraph's ``updates`` stream contains node deltas. A grounding
+        correction invokes the graph again with the prior messages as input; if
+        this function returns only the new deltas, the caller replaces the turn
+        history and loses every successful ToolMessage (and therefore its
+        evidence) from the first attempt.
+        """
+
+        prior_messages = list(input_value.get("messages", []))
+        produced_messages = finalized_messages or seen_messages
+        return {"messages": [*prior_messages, *produced_messages]}
 
     async def emit_proposals(message: AIMessage) -> None:
+        fresh: list[tuple[str, str, dict[str, Any]]] = []
         for call in message.tool_calls:
             name = str(call.get("name") or "").strip()
             call_ref = str(call.get("id") or "").strip()
             if not name or not call_ref or call_ref in proposed_call_refs:
                 continue
             proposed_call_refs.add(call_ref)
+            fresh.append((name, call_ref, dict(call.get("args") or {})))
+        if not fresh:
+            return
+        # One phase for the whole batch, decided before the first proposal goes
+        # out: the calls in it run together, so naming them one at a time would
+        # leave the status line on whichever happened to be last.
+        await progress.note_state(_read_batch_phase(fresh), force=True)
+        for name, call_ref, arguments in fresh:
             await event_callback(
                 "tool.proposed",
                 {
@@ -657,7 +1243,7 @@ async def _invoke_graph(
                     "call_ref": call_ref[:160],
                     # Private callback-only data. PublicAgentEvent sanitization
                     # removes it before persistence/SSE projection.
-                    "arguments": dict(call.get("args") or {}),
+                    "arguments": arguments,
                 },
             )
 
@@ -670,12 +1256,16 @@ async def _invoke_graph(
                 seen_messages.append(message)
             if isinstance(message, AIMessageChunk):
                 # Tool-call chunks can arrive before their JSON arguments are
-                # complete. The finalized model update below is authoritative.
+                # complete. The finalized model update below is authoritative, so
+                # the chunk itself is never published -- it is only used as a
+                # liveness signal for the throttled, server-authored progress
+                # event. This is the one thing that moves during a long decode.
+                await progress.note_model_chunk(message)
                 continue
             if isinstance(message, AIMessage) and message.tool_calls:
                 await emit_proposals(message)
             elif isinstance(message, ToolMessage):
-                await _emit_tool_event(message, event_callback)
+                envelope = await _emit_tool_event(message, event_callback)
                 if (
                     trusted_answer_sink is not None
                     and trusted_answer_sink.answer is not None
@@ -685,7 +1275,8 @@ async def _invoke_graph(
                     # trusted answer and its completion event is visible, the
                     # answer is terminal: do not ask the outer agent model to
                     # rewrite it or risk discarding it at the turn deadline.
-                    return {"messages": finalized_messages or seen_messages}
+                    return completed_state()
+                await progress.note_state(_post_read_phase(envelope), force=True)
         elif mode == "updates":
             phases: set[str] = set()
             trusted_tool_completed = False
@@ -718,16 +1309,22 @@ async def _invoke_graph(
                     {"status": "running", "phase": phase, "summary": f"{phase.title()} step completed."},
                 )
             if trusted_tool_completed:
-                return {"messages": finalized_messages or seen_messages}
-    return {"messages": finalized_messages or seen_messages}
+                return completed_state()
+    return completed_state()
 
 
 async def _emit_tool_event(
     message: ToolMessage,
     event_callback: Callable[[str, dict[str, Any]], Awaitable[None]],
-) -> None:
+) -> ToolEnvelope | None:
+    """Publish one tool result and return its envelope for progress reporting.
+
+    ``None`` means there is no safe observation to describe: the assessment tool,
+    or a result that would not parse.
+    """
+
     if str(getattr(message, "name", "")) == TURN_ASSESSMENT_TOOL_NAME:
-        return
+        return None
     try:
         envelope = ToolEnvelope.model_validate_json(str(message.content))
     except ValueError:
@@ -735,7 +1332,7 @@ async def _emit_tool_event(
             "tool.completed",
             {"tool_label": "Tool", "status": "failed", "summary": "The tool returned an invalid safe observation."},
         )
-        return
+        return None
     label = str(getattr(message, "name", None) or "Tool").replace("_", " ")[:120]
     if envelope.status == "approval_required":
         event_type = "tool.awaiting_approval"
@@ -762,6 +1359,12 @@ async def _emit_tool_event(
             receipt_ref=envelope.receipt_ref,
             workflow_ref=envelope.workflow_ref,
         )
+        # Topology navigation targets, verbatim. The canvas consumes them live to
+        # highlight and navigate; they are also persisted on the assistant message
+        # so the non-streaming transport and a reload see the same targets.
+        targets = topology_targets(envelope.data)
+        if targets:
+            payload["targets"] = targets
     await event_callback(event_type, payload)
     if envelope.workflow_ref:
         workflow_id = envelope.workflow_ref.get("workflow_run_id")
@@ -784,9 +1387,17 @@ async def _emit_tool_event(
                 "summary": envelope.summary,
             },
         )
+    return envelope
 
 
-def _public_answer_chunks(content: str, *, size: int = 96) -> list[str]:
+def public_answer_chunks(content: str, *, size: int = 96) -> list[str]:
+    """Slice one *already validated* answer into transport-sized deltas.
+
+    Answer text is only ever chunked after the grounding validator has accepted
+    it. Slicing is a transport concern, not a generation one -- these are not
+    model deltas, and nothing here may be fed unvalidated draft prose.
+    """
+
     if not content:
         return []
     return [content[index : index + size] for index in range(0, len(content), size)]
@@ -809,17 +1420,20 @@ def _budget_fallback(reason: BudgetStopReason | None) -> str:
 
 
 def _accumulate_usage(usage: AgentUsage, messages: list[Any]) -> AgentUsage:
-    input_tokens = usage.input_tokens
-    output_tokens = usage.output_tokens
-    for message in messages:
-        if not isinstance(message, AIMessage):
-            continue
-        meta = message.usage_metadata or {}
-        if isinstance(meta.get("input_tokens"), int):
-            input_tokens += int(meta["input_tokens"])
-        if isinstance(meta.get("output_tokens"), int):
-            output_tokens += int(meta["output_tokens"])
-    return AgentUsage(input_tokens=input_tokens, output_tokens=output_tokens)
+    """Fold this attempt's model token usage into the turn's running total.
+
+    Carries the cache breakdown, not just the two headline counts: the prompt
+    prefix is what a multi-tool turn re-sends on every model call, so on this path
+    most of ``input_tokens`` is typically ``cached_input_tokens``.
+    """
+
+    tokens = token_usage_from_messages(messages)
+    return AgentUsage(
+        input_tokens=usage.input_tokens + tokens.input_tokens,
+        output_tokens=usage.output_tokens + tokens.output_tokens,
+        cached_input_tokens=usage.cached_input_tokens + tokens.cached_input_tokens,
+        cache_write_tokens=usage.cache_write_tokens + tokens.cache_write_tokens,
+    )
 
 
 def _collect_envelopes(messages: list[Any]) -> list[ToolEnvelope]:
@@ -836,6 +1450,38 @@ def _collect_envelopes(messages: list[Any]) -> list[ToolEnvelope]:
         except ValueError:
             continue
     return envelopes
+
+
+def _collect_topology_targets(messages: list[Any]) -> list[dict[str, Any]]:
+    """Collect this turn's topology navigation targets in call order.
+
+    Matched on the topology tool's own semantic name rather than on payload shape,
+    so no other tool's data can be mistaken for navigation targets. Ids are passed
+    through verbatim — the two id spaces (overlay and scanner) have no bridge, so
+    normalizing or re-deriving an id here would produce a chip that navigates
+    nowhere. Duplicates across calls are collapsed, order preserved.
+    """
+
+    collected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for message in messages:
+        if not isinstance(message, ToolMessage):
+            continue
+        if str(getattr(message, "name", "")) != TOPOLOGY_STRUCTURE_CAPABILITY.semantic_name:
+            continue
+        try:
+            payload = json.loads(str(message.content))
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for target in topology_targets(payload.get("data")):
+            key = json.dumps(target, sort_keys=True, default=str)
+            if key in seen:
+                continue
+            seen.add(key)
+            collected.append(target)
+    return collected
 
 
 def _final_assistant_text(messages: list[Any]) -> str:
@@ -939,6 +1585,56 @@ def _collect_observations(
     return observations
 
 
+def _collect_envelope_observations(
+    messages: list[Any], snapshot: SemanticToolSnapshot
+) -> list[CapabilityObservation]:
+    """Rehydrate sanitized current-turn tool envelopes for provenance only.
+
+    Conversation seeds contain plain role/content dictionaries, whereas executed
+    tools are ``ToolMessage`` instances. Consequently this cannot inherit an old
+    turn's evidence or failure even when the prose history mentions one.
+    """
+
+    observations: list[CapabilityObservation] = []
+    for message in messages:
+        if not isinstance(message, ToolMessage):
+            continue
+        try:
+            envelope = ToolEnvelope.model_validate_json(str(message.content))
+        except ValueError:
+            continue
+        semantic_name = str(getattr(message, "name", "") or "")
+        semantic_to_canonical = getattr(snapshot, "semantic_to_canonical", {})
+        capability_id = semantic_to_canonical.get(semantic_name, semantic_name or "unknown")
+        status = (
+            CapabilityObservationStatus.SUCCEEDED
+            if envelope.status in {"succeeded", "triggered"}
+            else CapabilityObservationStatus.NEEDS_INPUT
+            if envelope.status in {"needs_input", "correction_required", "validation_failed"}
+            else CapabilityObservationStatus.DENIED
+            if envelope.status in {"denied", "approval_required"}
+            else CapabilityObservationStatus.FAILED
+        )
+        error_code = envelope.error.get("code") if envelope.error else None
+        observations.append(
+            CapabilityObservation(
+                capability_id=capability_id,
+                status=status,
+                summary=envelope.summary,
+                data=envelope.data,
+                evidence_refs=envelope.evidence_refs,
+                retryable=envelope.retryable,
+                error_code=error_code,
+                error_message=(
+                    envelope.summary
+                    if status.value not in {"succeeded", "triggered"}
+                    else None
+                ),
+            )
+        )
+    return observations
+
+
 def _count_consequential_executions(
     ledger: SemanticEventLedger,
     snapshot: SemanticToolSnapshot,
@@ -968,6 +1664,7 @@ def render_safe_fallback_envelope() -> str:
 
 __all__ = [
     "MODEL_FACING_READ_EXCLUSIONS",
+    "PROGRESS_INTERVAL_SECONDS",
     "READONLY_MODEL_PROFILE",
     "READONLY_PROMPT_VERSION",
     "READONLY_RUNTIME_RELEASE",
@@ -977,6 +1674,7 @@ __all__ = [
     "build_readonly_primary_chat_model",
     "build_readonly_primary_runtime",
     "grounding_failure_answer",
+    "public_answer_chunks",
     "readonly_manifest_partition",
     "run_readonly_primary_turn",
 ]

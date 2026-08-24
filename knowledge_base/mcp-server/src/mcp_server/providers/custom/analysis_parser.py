@@ -8,6 +8,7 @@ pulling in the full harness dependency tree.
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES
 from mcp_server.providers.custom.constants import (
@@ -15,6 +16,9 @@ from mcp_server.providers.custom.constants import (
     GROUP_SUMMARY_SECTION,
     LEGACY_CROSS_CHUNK_SECTION,
 )
+
+if TYPE_CHECKING:
+    from mcp_server.providers.custom.pack_contract import PackContract
 
 ADDITIONAL_FINDINGS_SECTION = "UNCLASSIFIED_OR_EXTRA_FINDINGS"
 
@@ -32,6 +36,8 @@ PHASE2_SECTION_NAMES: tuple[str, ...] = (
 def parse_phase2_sections(
     text: str,
     extra_section_names: frozenset[str] = frozenset(),
+    *,
+    contract: "PackContract | None" = None,
 ) -> dict[str, str]:
     """Parse a Phase 2 analysis text into a dict of {section_name: content}.
 
@@ -43,8 +49,16 @@ def parse_phase2_sections(
     The returned dict includes only non-empty sections.  The heading line itself is
     NOT included in the section content (caller must add ``### NAME`` back when
     reassembling).
+
+    When a ``contract`` is given, its section universe replaces the module
+    constant: for ``mode: replace`` packs the recognised names are exactly the
+    declared sections plus the structural floor -- no union with the legacy 16
+    (the analysis_parser.py:47 pivot of docs/one-pack-program.md).
     """
-    section_names: set[str] = set(PHASE2_SECTION_NAMES) | extra_section_names
+    base_names: tuple[str, ...] = (
+        contract.ordered_names if contract is not None else PHASE2_SECTION_NAMES
+    )
+    section_names: set[str] = set(base_names) | extra_section_names
     sections: dict[str, list[str]] = {name: [] for name in section_names}
     current: str = ADDITIONAL_FINDINGS_SECTION
     heading_re = re.compile(r"^### ([A-Z][A-Z0-9_ ]+)\s*$")

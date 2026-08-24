@@ -11,6 +11,7 @@ import {
   getGithubAppInstallUrl,
   listGithubAppInstallations,
   listGithubAppRepos,
+  McpRequestError,
   type GithubAppInstallation,
   type GithubAppRepo,
   type SourceProject,
@@ -74,8 +75,9 @@ export function GithubAppConnectPanel({
   const [projectName, setProjectName] = useState("");
   const [platform, setPlatform] = useState(defaultPlatform);
   const [loadingRepos, setLoadingRepos] = useState(false);
-  const [installations, setInstallations] = useState<GithubAppInstallation[]>([]);
-  const [loadingInstallations, setLoadingInstallations] = useState(false);
+  const [installations, setInstallations] = useState<GithubAppInstallation[] | null>(null);
+  const [loadingInstallations, setLoadingInstallations] = useState(true);
+  const [installationError, setInstallationError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -84,7 +86,9 @@ export function GithubAppConnectPanel({
     [existingProjects],
   );
   const selectedRepoConnected = connectedRepoKeys.has(canonicalRepoUrl(selectedRepo));
-  const primaryInstallation = installations[0];
+  const primaryInstallation = installations?.[0];
+  const hasInstallations = Boolean(installations?.length);
+  const installationStatusUnavailable = installations == null && installationError != null;
 
   // Detect the post-install redirect (?installation_id=...&connected=1).
   useEffect(() => {
@@ -95,7 +99,35 @@ export function GithubAppConnectPanel({
     }
     const connectError = params.get("connect_error");
     if (connectError) {
-      setError(`GitHub App callback failed (${connectError}). Start the connection again.`);
+      const detail = params.get("connect_message");
+      setError(
+        detail
+          ? `GitHub App connection failed (${connectError}): ${detail}`
+          : `GitHub App callback failed (${connectError}). Start the connection again.`,
+      );
+    }
+  }, []);
+
+  const clearInstallParam = useCallback(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("installation_id");
+    url.searchParams.delete("connected");
+    url.searchParams.delete("connect_error");
+    url.searchParams.delete("connect_message");
+    window.history.replaceState({}, "", url.toString());
+  }, []);
+
+  // The server reconciles bindings against GitHub on every read, so this list is
+  // the source of truth for whether an App connection still exists.
+  const loadInstallations = useCallback(async () => {
+    setLoadingInstallations(true);
+    try {
+      setInstallations(await listGithubAppInstallations());
+      setInstallationError(null);
+    } catch (err) {
+      setInstallationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingInstallations(false);
     }
   }, []);
 
@@ -111,7 +143,22 @@ export function GithubAppConnectPanel({
         setAccountLogin(data.account_login);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (cancelled) return;
+        if (err instanceof McpRequestError && err.status === 404) {
+          // The App was uninstalled on GitHub and the server has dropped the
+          // binding. Leave the picker and re-read the (now shorter) list so the
+          // card stops claiming a connection.
+          setInstallationId(null);
+          setRepos([]);
+          setAccountLogin(null);
+          clearInstallParam();
+          setError(
+            "This GitHub App installation no longer exists on GitHub. Connect with the GitHub App again.",
+          );
+          void loadInstallations();
+          return;
+        }
+        setError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
         if (!cancelled) setLoadingRepos(false);
@@ -119,36 +166,14 @@ export function GithubAppConnectPanel({
     return () => {
       cancelled = true;
     };
-  }, [installationId]);
+  }, [clearInstallParam, installationId, loadInstallations]);
 
   // Load the installation's repos once we have an id.
   useEffect(() => loadRepos(), [loadRepos]);
 
   useEffect(() => {
-    let cancelled = false;
-    setLoadingInstallations(true);
-    listGithubAppInstallations()
-      .then((items) => {
-        if (!cancelled) setInstallations(items);
-      })
-      .catch(() => {
-        if (!cancelled) setInstallations([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingInstallations(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const clearInstallParam = useCallback(() => {
-    const url = new URL(window.location.href);
-    url.searchParams.delete("installation_id");
-    url.searchParams.delete("connected");
-    url.searchParams.delete("connect_error");
-    window.history.replaceState({}, "", url.toString());
-  }, []);
+    void loadInstallations();
+  }, [loadInstallations]);
 
   function selectRepo(repoUrl: string) {
     setSelectedRepo(repoUrl);
@@ -220,8 +245,8 @@ export function GithubAppConnectPanel({
   // Repo-picker mode (post-install).
   if (installationId != null) {
     return (
-      <Card>
-        <CardHeader>
+      <Card className="rounded-none border-x-0 shadow-none">
+        <CardHeader className="px-1">
           <div className="flex items-center gap-3">
             <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
               <Github className="h-4 w-4" aria-hidden />
@@ -235,7 +260,7 @@ export function GithubAppConnectPanel({
             </div>
           </div>
         </CardHeader>
-        <CardBody className="space-y-3">
+        <CardBody className="space-y-3 px-1">
           {loadingRepos ? (
             <p className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" /> Loading repositories&hellip;
@@ -342,8 +367,8 @@ export function GithubAppConnectPanel({
 
   // Entry mode (pre-install).
   return (
-    <Card>
-      <CardBody className="space-y-4">
+    <Card className="rounded-none border-x-0 shadow-none">
+      <CardBody className="space-y-3 px-1 py-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex min-w-0 gap-3">
             <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -352,7 +377,13 @@ export function GithubAppConnectPanel({
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-base font-semibold">GitHub App</h2>
-                {installations.length > 0 ? (
+                {loadingInstallations && installations == null ? (
+                  <Badge variant="muted">
+                    <Loader2 className="h-3 w-3 animate-spin" /> Checking
+                  </Badge>
+                ) : installationStatusUnavailable ? (
+                  <Badge variant="muted">Status unavailable</Badge>
+                ) : hasInstallations ? (
                   <Badge variant="success">
                     <CheckCircle2 className="h-3 w-3" /> Connected
                   </Badge>
@@ -361,20 +392,30 @@ export function GithubAppConnectPanel({
                 )}
               </div>
               <p className="mt-1 text-sm text-muted-foreground">
-                {installations.length > 0
+                {installationStatusUnavailable
+                  ? "Nexus could not verify the GitHub App connection right now. Retry without starting a second installation."
+                  : hasInstallations
                   ? "Nexus can use this installation to list granted repositories and clone them without storing a token."
                   : "Install IntoData's GitHub App on your org, grant repositories, then return here to choose one."}
               </p>
             </div>
           </div>
 
-          {installations.length > 0 ? (
+          {hasInstallations ? (
             <Button
               size="md"
               onClick={() => primaryInstallation && useInstallation(primaryInstallation)}
               disabled={!primaryInstallation}
             >
               <Github className="h-4 w-4" /> Choose repository
+            </Button>
+          ) : installationStatusUnavailable ? (
+            <Button size="md" variant="secondary" isLoading={loadingInstallations} onClick={loadInstallations}>
+              <RotateCw className="h-4 w-4" /> Retry status
+            </Button>
+          ) : loadingInstallations ? (
+            <Button size="md" variant="secondary" isLoading disabled>
+              Checking connection
             </Button>
           ) : (
             <Button size="md" isLoading={starting || loadingInstallations} onClick={startInstall}>
@@ -383,7 +424,7 @@ export function GithubAppConnectPanel({
           )}
         </div>
 
-        {installations.length > 0 && (
+        {hasInstallations && installations && (
           <div className="rounded-md border border-emerald-200 bg-emerald-50/70 p-3">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -436,12 +477,11 @@ export function GithubAppConnectPanel({
           </div>
         )}
 
-        {installations.length === 0 && (
-          <p className="text-xs text-muted-foreground">
-            After GitHub grants access, this card will show a connected account and a repository picker.
+        {installationError && installations != null && (
+          <p className="text-xs text-amber-700">
+            The last connection refresh failed. Keeping the previously verified connection.
           </p>
         )}
-
         {error && <p className="text-xs text-destructive">{error}</p>}
       </CardBody>
     </Card>

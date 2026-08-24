@@ -57,6 +57,26 @@ def _mock_regular_user():
     return user
 
 
+def _mock_role_admin_user():
+    """Create a day-to-day Admin without deployment Owner authority."""
+    role = MagicMock(spec=Role)
+    role.id = 1
+    role.name = "admin"
+    perm = MagicMock(spec=Permission)
+    perm.codename = "manage_users"
+    role.permissions = [perm]
+
+    user = MagicMock(spec=User)
+    user.id = 3
+    user.username = "org-admin"
+    user.email = "org-admin@test.com"
+    user.is_active = True
+    user.is_superadmin = False
+    user.roles = [role]
+    user.last_login_at = None
+    return user
+
+
 @pytest.fixture
 def mock_admin_deps():
     """Override dependencies with an admin user."""
@@ -82,6 +102,23 @@ def mock_noauth_deps():
     mock_db = AsyncMock()
     mock_qdrant = AsyncMock()
     user = _mock_regular_user()
+
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_qdrant] = lambda: mock_qdrant
+    app.dependency_overrides[get_current_user] = lambda: user
+
+    yield {"db": mock_db, "qdrant": mock_qdrant, "user": user}
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def mock_role_admin_deps():
+    """Override dependencies with a non-Owner user holding manage_users."""
+    from src.api.dependencies import get_current_user, get_db, get_qdrant
+
+    mock_db = AsyncMock()
+    mock_qdrant = AsyncMock()
+    user = _mock_role_admin_user()
 
     app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_qdrant] = lambda: mock_qdrant
@@ -121,6 +158,100 @@ class TestListUsers:
 
         assert resp.status_code == 403
 
+    async def test_list_users_as_non_owner_admin(self, mock_role_admin_deps):
+        mock_db = mock_role_admin_deps["db"]
+        users_result = MagicMock()
+        users_result.scalars.return_value.all.return_value = []
+        total_result = MagicMock()
+        total_result.scalar_one.return_value = 0
+        mock_db.execute = AsyncMock(side_effect=[users_result, total_result])
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/v1/admin/users")
+
+        assert resp.status_code == 200
+
+
+class TestOwnerHierarchy:
+    @pytest.mark.parametrize(
+        ("method", "path", "body"),
+        [
+            ("PUT", "/api/v1/admin/users/1", {"email": "changed@test.com"}),
+            ("DELETE", "/api/v1/admin/users/1", None),
+            (
+                "POST",
+                "/api/v1/admin/users/1/reset-password",
+                {"new_password": "twelve-chars-or-more"},
+            ),
+        ],
+    )
+    async def test_admin_cannot_manage_owner(
+        self, mock_role_admin_deps, method, path, body
+    ):
+        mock_db = mock_role_admin_deps["db"]
+        owner_result = MagicMock()
+        owner_result.scalar_one_or_none.return_value = _mock_admin_user()
+        mock_db.execute = AsyncMock(return_value=owner_result)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.request(
+                method,
+                path,
+                json=body,
+                headers=CSRF_HEADERS,
+            )
+
+        assert resp.status_code == 403
+        assert "owner" in resp.json()["detail"].lower()
+
+    async def test_admin_can_list_roles_but_cannot_edit_definitions(
+        self, mock_role_admin_deps
+    ):
+        mock_db = mock_role_admin_deps["db"]
+        roles_result = MagicMock()
+        roles_result.scalars.return_value.all.return_value = []
+        mock_db.execute = AsyncMock(return_value=roles_result)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            listing = await client.get("/api/v1/admin/roles")
+            mutation = await client.post(
+                "/api/v1/admin/roles",
+                json={"name": "custom", "permission_ids": []},
+                headers=CSRF_HEADERS,
+            )
+            permissions = await client.get("/api/v1/admin/permissions")
+
+        assert listing.status_code == 200
+        assert mutation.status_code == 403
+        assert permissions.status_code == 403
+
+    async def test_admin_can_review_access_requests(self, mock_role_admin_deps):
+        mock_db = mock_role_admin_deps["db"]
+        empty = MagicMock()
+        empty.scalars.return_value.all.return_value = []
+        mock_db.execute = AsyncMock(side_effect=[empty, empty])
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/v1/admin/access-requests")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"requests": [], "invites": []}
+
+    async def test_admin_cannot_use_owner_only_smtp_test(self, mock_role_admin_deps):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/admin/email/test",
+                json={"to": "target@test.com"},
+                headers=CSRF_HEADERS,
+            )
+
+        assert resp.status_code == 403
+
 
 class TestCreateUser:
     async def test_create_user(self, mock_admin_deps):
@@ -153,7 +284,7 @@ class TestCreateUser:
                     json={
                         "username": "newuser",
                         "email": "new@test.com",
-                        "password": "securepass",
+                        "password": "secure-password",
                     },
                     headers=CSRF_HEADERS,
                 )

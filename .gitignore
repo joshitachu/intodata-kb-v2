@@ -111,3 +111,19 @@ knowledge_base/mcp-server/data/*.pem
 /POC_Werkorder/
 /*.zip
 knowledge_base/mcp-server/data/plugin_packs/swap-pack-starter__vw-reverse-engineering__936afbd014/
+
+# Local DB snapshots (pre-migration safety dumps)
+.backups/
+deploy/backups/
+
+# Runtime caches and per-run state under the MCP data dir — regenerated at
+# runtime, not source. opencode_cache holds a multi-MB provider model catalog.
+knowledge_base/mcp-server/data/opencode_cache/
+knowledge_base/mcp-server/data/pack_architect_sessions/
+
+# Cloned pack working copies. These are independent git checkouts; committing
+# them would land broken gitlinks instead of files. The pack *sources* under
+# data/plugin_packs stay tracked.
+knowledge_base/pack-repos/nexus-baseline/
+knowledge_base/mcp-server/data/plugin_packs/swap-pack-starter__main__a4308c2e2a/
+knowledge_base/mcp-server/data/plugin_packs/users/

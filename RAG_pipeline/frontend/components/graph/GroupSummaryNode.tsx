@@ -9,6 +9,7 @@ import {
   SUBTLE_TEXT_COLOR,
   TITLE_COLOR,
   accentBarStyle,
+  assistantRoleShadow,
   cardShadow,
 } from "@/lib/nodeStyles";
 
@@ -27,6 +28,7 @@ export interface GroupSummaryNodeData {
   connectionCount: number;
   dimmed?: boolean;
   highlighted?: boolean;
+  assistantVisualRole?: string;
   // Runtime-health overlay (S3): the worst effective status across members.
   worstStatus?: EffectiveStatus;
 }
@@ -51,12 +53,14 @@ function GroupSummaryNodeComponent({ data }: { data: GroupSummaryNodeData }) {
 
   return (
     <div
+      data-assistant-role={data.assistantVisualRole}
       className="topo-node rounded-xl overflow-hidden cursor-pointer relative"
       style={{
         width: 240,
         background: "white",
         border: meta ? `2px solid ${meta.color}` : CARD_BORDER,
-        boxShadow: meta ? CARD_SHADOW : cardShadow(data.highlighted === true, accent),
+        boxShadow: assistantRoleShadow(data.assistantVisualRole)
+          ?? (meta ? CARD_SHADOW : cardShadow(data.highlighted === true, accent)),
         ...(data.dimmed ? DIMMED_STYLE : { opacity: 1 }),
       }}
     >

@@ -39,6 +39,8 @@ def _mock_conversation(id: int = 1, user_id: int = 1, title: str = "Test Chat"):
     conv.user_id = user_id
     conv.title = title
     conv.messages = []
+    conv.origin_surface = "chat"
+    conv.visible_in_chat = True
     conv.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
     conv.updated_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
     return conv
@@ -279,6 +281,33 @@ class TestCreateConversation:
 
         assert resp.status_code == 201
 
+    async def test_create_topology_thread_hidden_from_chat(self, mock_deps):
+        mock_db = mock_deps["db"]
+        created = None
+
+        def capture_add(obj):
+            nonlocal created
+            created = obj
+            obj.id = 3
+            obj.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
+            obj.updated_at = obj.created_at
+
+        mock_db.add = capture_add
+        mock_db.flush = AsyncMock()
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/conversations",
+                json={"surface": "topology"},
+                headers=CSRF_HEADERS,
+            )
+
+        assert resp.status_code == 201
+        assert created.origin_surface == "topology"
+        assert created.visible_in_chat is False
+        assert resp.json()["visible_in_chat"] is False
+
 
 class TestGetConversation:
     async def test_get_success(self, mock_deps):
@@ -286,6 +315,11 @@ class TestGetConversation:
 
         conv = _mock_conversation(id=1, user_id=1)
         msg1 = _mock_message(id=1, role="user", content="Question")
+        msg1.page_scope = {
+            "surface": "topology",
+            "project_id": "werkorder",
+            "level": {"kind": "project"},
+        }
         msg2 = _mock_message(id=2, role="assistant", content="Answer")
         msg2.sources = [
             {
@@ -327,6 +361,7 @@ class TestGetConversation:
         assert data["messages"][1]["sources"][0]["document_role"] == "policy"
         assert data["messages"][1]["structured_answer"] is None
         assert data["messages"][1]["content"] == "Answer"
+        assert data["messages"][0]["page_scope"]["surface"] == "topology"
 
     async def test_get_not_found(self, mock_deps):
         mock_db = mock_deps["db"]
@@ -1078,6 +1113,49 @@ async def test_soft_deleted_conversation_not_in_list(db_session):
     assert "Live" in titles
     assert "Dead" not in titles
     assert resp.json()["total"] == 1
+
+
+async def test_topology_conversation_hidden_until_explicitly_promoted(db_session):
+    from src.api.dependencies import get_current_user, get_db
+    from src.auth.security import hash_password
+
+    user = User(
+        username="topology-thread-user",
+        email="topology-thread@example.com",
+        password_hash=hash_password("pw"),
+        is_superadmin=True,
+    )
+    db_session.add(user)
+    await db_session.flush()
+    conversation = Conversation(
+        title="Embedded topology thread",
+        user_id=user.id,
+        origin_surface="topology",
+        visible_in_chat=False,
+    )
+    db_session.add(conversation)
+    await db_session.commit()
+
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            before = await client.get("/api/v1/conversations")
+            promoted = await client.patch(
+                f"/api/v1/conversations/{conversation.id}",
+                json={"visible_in_chat": True},
+                headers=CSRF_HEADERS,
+            )
+            after = await client.get("/api/v1/conversations")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert before.status_code == 200
+    assert before.json()["conversations"] == []
+    assert promoted.status_code == 200
+    assert promoted.json()["visible_in_chat"] is True
+    assert [item["id"] for item in after.json()["conversations"]] == [conversation.id]
 
 
 async def test_conversation_messages_soft_deleted_on_cascade(db_session):

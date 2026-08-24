@@ -38,6 +38,20 @@ class TrustedPackSource:
 
 @dataclass(frozen=True)
 class PackGovernanceDecision:
+    """What a caller may do with a pack.
+
+    The three flags are deliberately independent, because the old code conflated
+    them: ``certified`` was used both to permit generation and to forbid
+    editing, which left no room for a personal pack -- something a user must be
+    able to both run and edit.
+
+    * ``usable``   -- may drive document generation.
+    * ``mutable``  -- may be edited in-app.
+    * ``certified``-- came from a reviewed commit in the shared pack
+                      repository. Display and audit only.
+    """
+
+    usable: bool
     certified: bool
     origin: str
     mutable: bool
@@ -154,12 +168,30 @@ def _in_bundled_root(pack: PluginPack) -> bool:
 
 
 class PackGovernanceService:
-    """The only service allowed to approve a Pack for governed generation."""
+    """The only service allowed to approve a Pack for document generation."""
 
     async def evaluate(self, pack: PluginPack, *, verify_integrity: bool = True) -> PackGovernanceDecision:
         manifest = _safe_manifest(pack)
         if manifest is None:
-            return PackGovernanceDecision(False, pack.origin, False, "Pack manifest is invalid or unavailable.")
+            return PackGovernanceDecision(
+                False, False, pack.origin, False,
+                "Pack manifest is invalid or unavailable.",
+            )
+
+        # A personal pack is its owner's own working copy. It is usable (that is
+        # the whole point of authoring one) and mutable, and it is deliberately
+        # NOT certified: certification means "a reviewer merged this into the
+        # shared repository", which by definition has not happened yet. Access
+        # control -- only the owner may see or select it -- is enforced at the
+        # API boundary, which is the only layer that knows the caller.
+        if pack.owner_user_id is not None:
+            return PackGovernanceDecision(
+                usable=True,
+                certified=False,
+                origin="personal",
+                mutable=True,
+                provenance=None,
+            )
 
         source: TrustedPackSource | None
         expected_origin: str
@@ -172,8 +204,8 @@ class PackGovernanceService:
 
         if source is None:
             return PackGovernanceDecision(
-                False, pack.origin, pack.origin not in {"git", "bundled"},
-                "Pack is not certified by configured Git/PR provenance.",
+                False, False, pack.origin, pack.origin not in {"git", "bundled"},
+                "Pack is not certified by the configured pack repository.",
             )
 
         declared_provenance = manifest.certification.provenance if manifest.certification else None
@@ -197,47 +229,49 @@ class PackGovernanceService:
         if declared_provenance != source.provenance and not (
             legacy_migration or persisted_legacy_baseline
         ):
-            return PackGovernanceDecision(False, pack.origin, False, "Pack manifest provenance is not certified.")
+            return PackGovernanceDecision(False, False, pack.origin, False, "Pack manifest provenance is not certified.")
 
         if pack.origin not in {expected_origin, "legacy"}:
-            return PackGovernanceDecision(False, pack.origin, False, "Pack origin is not eligible for certification.")
+            return PackGovernanceDecision(False, False, pack.origin, False, "Pack origin is not eligible for certification.")
 
         if expected_origin == "git":
             if not pack.last_commit_sha or len(pack.last_commit_sha) != 40:
-                return PackGovernanceDecision(False, pack.origin, False, "Pack does not pin a reviewed Git commit.")
+                return PackGovernanceDecision(False, False, pack.origin, False, "Pack does not pin a reviewed Git commit.")
             if verify_integrity:
                 try:
                     head = await run_git(pack.path, "rev-parse", "HEAD", strip=True)
                     dirty = await run_git(pack.path, "status", "--porcelain", strip=True)
                 except Exception:
-                    return PackGovernanceDecision(False, pack.origin, False, "Pack Git checkout cannot be verified.")
+                    return PackGovernanceDecision(False, False, pack.origin, False, "Pack Git checkout cannot be verified.")
                 if head != pack.last_commit_sha or dirty:
-                    return PackGovernanceDecision(False, pack.origin, False, "Pack checkout changed outside its reviewed Git commit.")
+                    return PackGovernanceDecision(False, False, pack.origin, False, "Pack checkout changed outside its reviewed Git commit.")
 
         try:
             actual_digest = _tree_sha256(Path(pack.path))
         except OSError:
-            return PackGovernanceDecision(False, pack.origin, False, "Pack content is unavailable.")
+            return PackGovernanceDecision(False, False, pack.origin, False, "Pack content is unavailable.")
 
         if pack.content_sha256 and pack.content_sha256 != actual_digest:
-            return PackGovernanceDecision(False, pack.origin, False, "Pack content changed outside certified Git/PR control.")
+            return PackGovernanceDecision(False, False, pack.origin, False, "Pack content changed outside reviewed pull-request control.")
         if not pack.content_sha256 and not legacy_migration:
-            return PackGovernanceDecision(False, pack.origin, False, "Pack has no certified content digest.")
+            return PackGovernanceDecision(False, False, pack.origin, False, "Pack has no certified content digest.")
 
         return PackGovernanceDecision(
-            True,
-            expected_origin,
-            False,
+            usable=True,
+            certified=True,
+            origin=expected_origin,
+            mutable=False,
             provenance=source.provenance,
             content_sha256=actual_digest,
         )
 
     async def require_generation_authority(self, pack: PluginPack) -> PackGovernanceDecision:
+        """Permit generation. Personal packs qualify; broken shared packs do not."""
         decision = await self.evaluate(pack)
-        if not decision.certified:
+        if not decision.usable:
             raise PackGovernanceDenied(
-                f"Pack '{pack.name}' cannot be used for governed document generation: "
-                f"{decision.blocked_reason or 'certification is required'} Submit changes through Git/PR."
+                f"Pack '{pack.name}' cannot be used for document generation: "
+                f"{decision.blocked_reason or 'it is not a valid pack'}"
             )
         return decision
 

@@ -18,6 +18,11 @@ from src.services.audit_service import AuditService
 router = APIRouter(tags=["documents"])
 
 
+def _is_public_document() -> object:
+    """SQL predicate excluding generated RAG support-layer artifacts."""
+    return Document.filename.not_like("%/_internal/%")
+
+
 @router.get("/documents", response_model=DocumentListResponse, summary="List documents scoped to the caller")
 async def list_documents(
     db: DBSession,
@@ -33,10 +38,13 @@ async def list_documents(
     This replaces the previous project-membership filter, which surfaced
     shared uploads from other users to anyone assigned to the same project.
     """
-    count_query = select(func.count(Document.id)).where(Document.deleted_at.is_(None))
+    count_query = select(func.count(Document.id)).where(
+        Document.deleted_at.is_(None),
+        _is_public_document(),
+    )
     list_query = (
         select(Document)
-        .where(Document.deleted_at.is_(None))
+        .where(Document.deleted_at.is_(None), _is_public_document())
         .order_by(Document.created_at.desc())
     )
 

@@ -176,6 +176,25 @@ function systemNodeId(systemId: string): string {
   return SUPPORTING_SYSTEM_IDS.has(systemId) ? SUPPORTING_GROUP_ID : `system:${systemId}`;
 }
 
+/**
+ * The canvas node id this artifact system is drawn as.
+ *
+ * Exported because the assistant's emphasis is computed from ARTIFACT ids
+ * (`sys-afas`) while this canvas draws NODE ids (`system:sys-afas`, or the
+ * collapsed supporting group). Without a shared mapping the emphasis silently
+ * matched nothing, and a non-empty emphasis map with no matches dims the entire
+ * diagram -- the answer named AFAS and AFAS was the one thing greyed out.
+ */
+export function architectureSystemNodeId(systemId: string): string {
+  return systemNodeId(systemId);
+}
+
+/** The unordered pair-edge id for two NODE ids, as `architectureRelationshipPairs` mints it. */
+export function architecturePairId(first: string, second: string): string {
+  const endpoints = [first, second].sort();
+  return `pair:${endpoints[0]}<->${endpoints[1]}`;
+}
+
 function columnForSystem(systemId: string, layer: ArchitectureLayer): ArchitectureColumn {
   return WERKORDER_COLUMNS[systemId] ?? (layer === "supporting" ? "supporting" : layer === "integration" ? "integration" : "secondary");
 }
@@ -361,8 +380,7 @@ export function architectureRelationshipPairs(
 ): ArchitecturePairRelationship[] {
   const groups = new Map<string, ArchitectureRelationship[]>();
   for (const relationship of model.relationships) {
-    const endpoints = [relationship.source, relationship.target].sort();
-    const id = `pair:${endpoints[0]}<->${endpoints[1]}`;
+    const id = architecturePairId(relationship.source, relationship.target);
     groups.set(id, [...(groups.get(id) ?? []), relationship]);
   }
   return [...groups.entries()].map(([id, directions]) => ({

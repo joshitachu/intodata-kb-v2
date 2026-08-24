@@ -15,17 +15,12 @@ import {
   Loader2,
   Trash2,
   Users,
-  UserPlus,
-  KeyRound,
-  FolderKanban,
   BarChart3,
-  FlaskConical,
   Brain,
   HelpCircle,
   Database,
   ScrollText,
   Radio,
-  Settings2,
   User,
   Waypoints,
 } from "lucide-react";
@@ -34,7 +29,6 @@ import { useAuthContext } from "@/components/AuthProvider";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useChatContext } from "@/contexts/ChatContext";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { UserGuideDialog } from "@/components/UserGuideDialog";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
 import type { ConversationResponse } from "@/types";
 
@@ -78,23 +72,20 @@ interface AdminSubLink {
   href: string;
   label: string;
   icon: typeof Users;
-  adminOnly?: boolean;
-  superadminOnly?: boolean;
+  ownerOnly?: boolean;
   perm?: PermissionCodename;
+  /** Visible when the user holds at least one of these permissions. */
+  anyPerm?: PermissionCodename[];
 }
 
 const adminSubLinks: AdminSubLink[] = [
-  { href: "/settings/sources", label: "Sources", icon: Database, adminOnly: true },
-  { href: "/admin/users", label: "Users", icon: Users, superadminOnly: true },
-  { href: "/admin/access-requests", label: "Access", icon: UserPlus, superadminOnly: true },
-  { href: "/admin/roles", label: "Roles", icon: KeyRound, superadminOnly: true },
-  { href: "/admin/project-assignments", label: "Projects", icon: FolderKanban, perm: "create_projects" },
-  { href: "/admin/application-profile", label: "Profiles", icon: Settings2, perm: "manage_projects" },
+  { href: "/settings/sources", label: "Sources", icon: Database, perm: "manage_projects" },
+  // Users, access requests, roles and project assignments are one dashboard.
+  { href: "/admin/organization", label: "Organization", icon: Users, anyPerm: ["manage_users", "create_projects"] },
   { href: "/admin/usage", label: "Usage", icon: BarChart3, perm: "view_audit_logs" },
   { href: "/admin/logs", label: "Logs", icon: ScrollText, perm: "view_audit_logs" },
   { href: "/admin/runtime", label: "Runtime Sources", icon: Radio, perm: "view_audit_logs" },
   { href: "/admin/agent-traces", label: "Agent Traces", icon: Waypoints, perm: "view_audit_logs" },
-  { href: "/admin/benchmark", label: "Benchmark", icon: FlaskConical, perm: "view_audit_logs" },
   { href: "/admin/hindsight", label: "Memory", icon: Brain, perm: "view_audit_logs" },
 ];
 
@@ -102,20 +93,18 @@ export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout } = useAuthContext();
-  const { hasAnyAdminPermission, hasPermission, isSuperadmin } =
+  const { hasAnyAdminPermission, hasPermission, isOwner } =
     usePermissions();
   const chat = useChatContext();
 
   const [expanded, setExpanded] = useLocalExpand();
   const [deleteTarget, setDeleteTarget] = useState<ConversationResponse | null>(null);
-  const [guideOpen, setGuideOpen] = useState(false);
-
   const isChatPage = pathname === "/";
   const isAdminSection = pathname.startsWith("/admin") || pathname === "/settings/sources";
 
   const visibleAdminLinks = adminSubLinks.filter((link) => {
-    if (link.adminOnly) return hasAnyAdminPermission;
-    if (link.superadminOnly) return isSuperadmin;
+    if (link.ownerOnly) return isOwner;
+    if (link.anyPerm) return link.anyPerm.some(hasPermission);
     if (link.perm) return hasPermission(link.perm);
     return false;
   });
@@ -192,17 +181,17 @@ export function Sidebar() {
               <Shield className="h-4 w-4" />
             </Link>
           )}
-          <button
-            onClick={() => setGuideOpen(true)}
-            title="User Guide"
-            aria-label="User Guide"
-            className="flex items-center justify-center w-8 h-8 rounded-md transition-colors text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            <HelpCircle className="h-4 w-4" />
-          </button>
         </nav>
 
         <div className="p-2 border-t flex flex-col items-center gap-1">
+          <a
+            href="/guide"
+            className="p-1.5 text-muted-foreground hover:text-foreground"
+            title="Documentation"
+            aria-label="Documentation"
+          >
+            <HelpCircle className="h-3.5 w-3.5" />
+          </a>
           {user && (
             <>
               <NotificationBell />
@@ -226,7 +215,6 @@ export function Sidebar() {
           )}
         </div>
 
-        <UserGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} />
       </aside>
     );
   }
@@ -319,13 +307,6 @@ export function Sidebar() {
               )}
           </>
         )}
-        <button
-          onClick={() => setGuideOpen(true)}
-          className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm transition-colors text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          <HelpCircle className="h-4 w-4" />
-          User Guide
-        </button>
       </nav>
 
       <div className="mx-3 my-2 border-t" />
@@ -362,6 +343,14 @@ export function Sidebar() {
             >
               {user.username}
             </Link>
+            <a
+              href="/guide"
+              className="p-1 text-muted-foreground hover:text-foreground"
+              title="Documentation"
+              aria-label="Documentation"
+            >
+              <HelpCircle className="h-3.5 w-3.5" />
+            </a>
             <NotificationBell />
             <button
               onClick={logout}
@@ -374,8 +363,6 @@ export function Sidebar() {
           </div>
         )}
       </div>
-
-      <UserGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} />
 
       <ConfirmDialog
         open={deleteTarget !== null}

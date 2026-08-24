@@ -45,17 +45,45 @@ logger = logging.getLogger(__name__)
 log_manager = LogManager()
 
 
+#: Pack audit columns on ``generate_runs`` (docs/one-pack-program.md section 9).
+#: ``None`` as the DDL type means "dialect-dependent timestamp"; SQLite does not
+#: parse ``TIMESTAMP WITH TIME ZONE``.
+_GENERATE_RUN_PACK_AUDIT_COLUMNS: tuple[tuple[str, str | None], ...] = (
+    ("pack_id", "VARCHAR(200)"),
+    ("pack_version", "VARCHAR(64)"),
+    ("pack_content_hash", "VARCHAR(64)"),
+    ("pack_activated_by", "VARCHAR(200)"),
+    ("pack_activated_at", None),
+)
+
+
 def _apply_column_migrations(sync_conn: Any) -> None:
     """Idempotent in-place column migrations for existing deployments.
 
-    This repo bootstraps its schema with ``create_all`` (no alembic), which
-    never alters existing tables. Runs inside the startup engine transaction.
+    Schema is bootstrapped with ``create_all``, which never alters existing
+    tables, and alembic is the migration of record for new deployments. This
+    function exists for deployments that predate alembic adoption and would
+    otherwise keep a stale ``generate_runs`` shape. Every statement here has a
+    matching alembic revision; the two must agree. Runs inside the startup
+    engine transaction.
 
     - ``generate_runs.partition_name`` (VARCHAR(100), nullable): composite
       child runs record their sub-project partition here instead of encoding
       it into ``triggered_by`` (which overflowed its VARCHAR(20)).
     - ``generate_runs.triggered_by`` / ``scan_runs.triggered_by`` widened to
       VARCHAR(40) so every trigger-source label fits.
+    - ``generate_runs.pack_id`` / ``pack_version`` / ``pack_content_hash`` /
+      ``pack_activated_by`` / ``pack_activated_at`` (all nullable): the pack
+      audit record that binds a client deliverable to the exact pack version
+      which produced it. Mirrors alembic revision
+      ``026_generate_run_pack_audit``.
+    - ``projects.azure_devops_connection_id`` (VARCHAR(36), nullable) and
+      ``projects.connection_kind`` widened to VARCHAR(32) so the new
+      ``azure_devops`` connection kind fits. Mirrors alembic revision
+      ``029_add_azure_devops_connections``.
+
+    Every ``ADD COLUMN`` is guarded on the live column set from the inspector, so
+    re-running the function is a no-op.
     """
     from sqlalchemy import text as sa_text
 
@@ -70,6 +98,19 @@ def _apply_column_migrations(sync_conn: Any) -> None:
             sa_text("ALTER TABLE generate_runs ADD COLUMN partition_name VARCHAR(100)")
         )
         logger.info("[startup] added generate_runs.partition_name")
+    timestamp_type = (
+        "TIMESTAMP WITH TIME ZONE" if dialect == "postgresql" else "TIMESTAMP"
+    )
+    for column_name, ddl_type in _GENERATE_RUN_PACK_AUDIT_COLUMNS:
+        if column_name in gen_columns:
+            continue
+        sync_conn.execute(
+            sa_text(
+                f"ALTER TABLE generate_runs ADD COLUMN {column_name} "
+                f"{ddl_type or timestamp_type}"
+            )
+        )
+        logger.info("[startup] added generate_runs.%s", column_name)
     if dialect == "postgresql":
         # SQLite ignores VARCHAR lengths; only Postgres needs the widening.
         for table in ("generate_runs", "scan_runs"):
@@ -78,6 +119,21 @@ def _apply_column_migrations(sync_conn: Any) -> None:
                     f"ALTER TABLE {table} ALTER COLUMN triggered_by TYPE VARCHAR(40)"
                 )
             )
+
+    try:
+        project_columns = {c["name"] for c in inspector.get_columns("projects")}
+    except Exception:  # table absent (fresh DB handled by create_all)
+        return
+    if "azure_devops_connection_id" not in project_columns:
+        sync_conn.execute(
+            sa_text("ALTER TABLE projects ADD COLUMN azure_devops_connection_id VARCHAR(36)")
+        )
+        logger.info("[startup] added projects.azure_devops_connection_id")
+    if dialect == "postgresql":
+        # "azure_devops" does not fit the original VARCHAR(10) connection_kind.
+        sync_conn.execute(
+            sa_text("ALTER TABLE projects ALTER COLUMN connection_kind TYPE VARCHAR(32)")
+        )
 
 
 def _pid_alive(pid: int) -> bool:
@@ -89,7 +145,13 @@ def _pid_alive(pid: int) -> bool:
 
 
 async def _reconcile_orphaned_runs() -> None:
-    """Mark GenerateRun rows left in status='running' at crash time as failed."""
+    """Fail orphaned runs and remove locks owned by terminal runs.
+
+    Composite children keep their staging area below ``<project>/<partition>``.
+    Startup recovery must inspect that same path and must remove the lock after
+    declaring its owner orphaned; otherwise Resume is blocked until the normal
+    two-hour stale timeout expires.
+    """
     output_root = config.project_root / "output"
     now = datetime.datetime.now(datetime.timezone.utc)
     async with async_session_factory() as session:
@@ -97,11 +159,12 @@ async def _reconcile_orphaned_runs() -> None:
             select(GenerateRun).where(GenerateRun.status == "running")
         )
         runs = result.scalars().all()
-        if not runs:
-            return
         orphaned_ids: list[int] = []
         for run in runs:
-            staging_dir = output_root / run.project_id / "docs_staging"
+            staging_dir = output_root / run.project_id
+            if run.partition_name:
+                staging_dir = staging_dir / run.partition_name
+            staging_dir = staging_dir / "docs_staging"
             lock_data = read_json_file(lock_path(staging_dir))
             if lock_data is None:
                 orphaned_ids.append(run.id)
@@ -128,6 +191,36 @@ async def _reconcile_orphaned_runs() -> None:
                 "[startup] marked %d orphaned generate_run(s) as failed: ids=%s",
                 len(orphaned_ids), orphaned_ids,
             )
+
+        # Locks can outlive their DB row's running state when a container is
+        # restarted or killed before the generation context manager releases
+        # them. Clean only locks whose recorded owner is absent or terminal;
+        # locks for genuinely running rows remain untouched.
+        recorded_locks: list[tuple[Path, int]] = []
+        for path in output_root.glob("**/docs_staging/.generation.lock"):
+            lock_data = read_json_file(path)
+            run_id = lock_data.get("run_id") if lock_data else None
+            if isinstance(run_id, int):
+                recorded_locks.append((path, run_id))
+        if recorded_locks:
+            lock_run_ids = {run_id for _, run_id in recorded_locks}
+            lock_rows = await session.execute(
+                select(GenerateRun.id, GenerateRun.status).where(
+                    GenerateRun.id.in_(lock_run_ids)
+                )
+            )
+            status_by_id = dict(lock_rows.all())
+            removed: list[str] = []
+            for path, run_id in recorded_locks:
+                if status_by_id.get(run_id) != "running":
+                    path.unlink(missing_ok=True)
+                    removed.append(str(path))
+            if removed:
+                logger.warning(
+                    "[startup] removed %d orphaned generation lock(s): %s",
+                    len(removed),
+                    removed,
+                )
 
 
 @asynccontextmanager
@@ -292,7 +385,7 @@ app.add_middleware(
 )
 
 # Import and register routes
-from mcp_server.api.routes import discovery, estimate as estimate_routes, generate_runs, health, instance_settings, logs, ops_control, plugins, projects, webhook  # noqa: E402
+from mcp_server.api.routes import azure_devops, connectors, discovery, estimate as estimate_routes, generate_runs, health, instance_settings, logs, ops_control, plugins, projects, webhook  # noqa: E402
 
 app.include_router(health.router)  # /health stays open
 app.include_router(ops_control.router)  # Mission Control triggers — own Bearer auth
@@ -318,6 +411,16 @@ app.include_router(
 )
 app.include_router(
     plugins.router,
+    prefix="/mcp",
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    connectors.router,
+    prefix="/mcp",
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    azure_devops.router,
     prefix="/mcp",
     dependencies=[Depends(require_auth)],
 )

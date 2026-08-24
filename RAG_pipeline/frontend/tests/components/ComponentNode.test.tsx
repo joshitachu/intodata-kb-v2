@@ -31,6 +31,25 @@ function makeData(overrides: Partial<ComponentNodeData> = {}): ComponentNodeData
 }
 
 describe("ComponentNode", () => {
+  it("renders primary emphasis more strongly than path and supporting roles", () => {
+    const { container, rerender } = render(
+      <ComponentNode data={makeData({ highlighted: true, assistantVisualRole: "primary" })} />,
+    );
+    const node = container.firstElementChild as HTMLElement;
+    const primaryShadow = node.style.boxShadow;
+    expect(node).toHaveAttribute("data-assistant-role", "primary");
+
+    rerender(<ComponentNode data={makeData({ highlighted: true, assistantVisualRole: "path" })} />);
+    const pathShadow = node.style.boxShadow;
+    expect(node).toHaveAttribute("data-assistant-role", "path");
+    expect(pathShadow).not.toBe(primaryShadow);
+
+    rerender(<ComponentNode data={makeData({ highlighted: true, assistantVisualRole: "supporting" })} />);
+    expect(node).toHaveAttribute("data-assistant-role", "supporting");
+    expect(node.style.boxShadow).not.toBe(primaryShadow);
+    expect(node.style.boxShadow).not.toBe(pathShadow);
+  });
+
   it("renders the component name, type, and role badge", () => {
     render(<ComponentNode data={makeData()} />);
     expect(screen.getByText("tMap_1")).toBeInTheDocument();

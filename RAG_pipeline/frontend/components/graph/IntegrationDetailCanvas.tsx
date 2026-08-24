@@ -2,18 +2,20 @@
 
 import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 import { ArrowLeft, Box, ChevronRight, Code2, FileWarning, Network, X } from "lucide-react";
-import { Background, BackgroundVariant, Controls, Handle, MiniMap, Position, ReactFlow, type NodeMouseHandler, useEdgesState, useNodesState } from "@xyflow/react";
+import { Background, BackgroundVariant, Controls, Handle, MiniMap, Position, ReactFlow, type NodeMouseHandler, type ReactFlowInstance, useEdgesState, useNodesState } from "@xyflow/react";
 import { implementingDesignDetail, integrationDetailForEdge, type ImplementingDesignDetail } from "@/lib/integrationDetailTransform";
 import type { LandscapeProvenance, ProjectLandscapeResponse } from "@/types/landscape";
 import { connectedEdges, landscapeEntityLabel, resolveRelationshipEdges, topologyTerm, type TopologyEdge } from "@/lib/landscapeTransform";
+import type { AssistantCanvasEmphasis, AssistantFocusRequest, CopilotViewContext } from "@/types/copilot";
+import { assistantRoleShadow } from "@/lib/nodeStyles";
 
 function BoundaryNode({ data }: { data: { label: string; side: string } }) {
   return <div className="relative w-[220px] rounded-xl border border-sky-200 bg-white px-4 py-3 shadow-sm">{data.side === "target" && <Handle type="target" position={Position.Left} className="!h-2.5 !w-2.5 !border-2 !border-white !bg-sky-500" />}<p className="text-[10px] font-bold uppercase tracking-wide text-sky-700">{data.side} system</p><p className="mt-1 truncate text-sm font-bold text-slate-800" title={data.label}>{data.label}</p><p className="mt-2 text-[10px] text-slate-500">{data.side === "source" ? "Produces this data" : "Receives this data"}</p>{data.side === "source" && <Handle type="source" position={Position.Right} className="!h-2.5 !w-2.5 !border-2 !border-white !bg-sky-500" />}</div>;
 }
 
-function ArtifactNode({ data }: { data: { record: LandscapeProvenance; selected?: boolean } }) {
+function ArtifactNode({ data }: { data: { record: LandscapeProvenance; selected?: boolean; dimmed?: boolean; assistantVisualRole?: string } }) {
   const record = data.record;
-  return <div className={`relative w-[280px] rounded-xl border bg-white px-4 py-3 shadow-sm transition ${data.selected ? "border-cyan-500 ring-4 ring-cyan-100" : "border-cyan-200"}`}><Handle type="target" position={Position.Left} className="!h-2.5 !w-2.5 !border-2 !border-white !bg-cyan-500" /><p className="text-[10px] font-bold uppercase tracking-wide text-cyan-700">Implementing design</p><p className="mt-1 line-clamp-2 text-sm font-bold text-slate-800">{record.artifact_id}</p><p className="mt-1 text-[10px] leading-snug text-slate-500">Select to inspect purpose and mappings.</p>{record.component_name && <p className="mt-1 truncate rounded bg-cyan-50 px-1.5 py-0.5 text-[9px] text-cyan-800">{record.component_name}</p>}<Handle type="source" position={Position.Right} className="!h-2.5 !w-2.5 !border-2 !border-white !bg-cyan-500" /></div>;
+  return <div data-assistant-role={data.assistantVisualRole} style={{ boxShadow: assistantRoleShadow(data.assistantVisualRole) }} className={`relative w-[280px] rounded-xl border bg-white px-4 py-3 shadow-sm transition ${data.selected && !data.assistantVisualRole ? "border-cyan-500 ring-4 ring-cyan-100" : data.assistantVisualRole ? "border-cyan-500" : "border-cyan-200"} ${data.dimmed ? "opacity-20" : "opacity-100"}`}><Handle type="target" position={Position.Left} className="!h-2.5 !w-2.5 !border-2 !border-white !bg-cyan-500" /><p className="text-[10px] font-bold uppercase tracking-wide text-cyan-700">Implementing design</p><p className="mt-1 line-clamp-2 text-sm font-bold text-slate-800">{record.artifact_id}</p><p className="mt-1 text-[10px] leading-snug text-slate-500">Select to inspect purpose and mappings.</p>{record.component_name && <p className="mt-1 truncate rounded bg-cyan-50 px-1.5 py-0.5 text-[9px] text-cyan-800">{record.component_name}</p>}<Handle type="source" position={Position.Right} className="!h-2.5 !w-2.5 !border-2 !border-white !bg-cyan-500" /></div>;
 }
 const nodeTypes = { integrationBoundary: memo(BoundaryNode), integrationArtifact: memo(ArtifactNode) };
 
@@ -127,10 +129,11 @@ function DesignExplanationPanel({
   );
 }
 
-export function IntegrationDetailCanvas({ landscape, edge, onBack, onOpenArtifact }: { landscape: ProjectLandscapeResponse; edge: TopologyEdge; onBack: () => void; onOpenArtifact: (record: LandscapeProvenance) => void }) {
+export function IntegrationDetailCanvas({ landscape, edge, onBack, onOpenArtifact, assistantEmphasis, assistantFocusRequest, onContextChange }: { landscape: ProjectLandscapeResponse; edge: TopologyEdge; onBack: () => void; onOpenArtifact: (record: LandscapeProvenance) => void; assistantEmphasis?: AssistantCanvasEmphasis | null; assistantFocusRequest?: AssistantFocusRequest | null; onContextChange?: (context: CopilotViewContext) => void }) {
   const [tab, setTab] = useState<"flow" | "delivery" | "controls" | "evidence" | "designs">("flow");
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [explanationOpen, setExplanationOpen] = useState(true);
+  const [instance, setInstance] = useState<ReactFlowInstance | null>(null);
   const detail = useMemo(() => integrationDetailForEdge(landscape, edge), [landscape, edge]);
   const designs = useMemo(() => {
     const unique = new Map(detail.provenance.map((record) => [record.qualified_artifact_id, record]));
@@ -145,10 +148,43 @@ export function IntegrationDetailCanvas({ landscape, edge, onBack, onOpenArtifac
   useEffect(() => {
     setNodes(detail.nodes.map((node) => ({
       ...node,
-      data: { ...node.data, selected: node.id === `artifact:${selectedArtifactId}` },
+      data: {
+        ...node.data,
+        selected: node.id === `artifact:${selectedArtifactId}`,
+        dimmed: Boolean(assistantEmphasis?.nodeRoles.size) && !assistantEmphasis?.nodeRoles.has(node.id),
+        assistantVisualRole: assistantEmphasis?.nodeRoles.get(node.id),
+      },
     })));
-    setEdges(detail.edges);
-  }, [detail, selectedArtifactId, setNodes, setEdges]);
+    setEdges(detail.edges.map((flowEdge) => ({
+      ...flowEdge,
+      style: {
+        ...flowEdge.style,
+        opacity: assistantEmphasis?.edgeRoles.size
+          ? assistantEmphasis.edgeRoles.has(flowEdge.id) ? 1 : 0.12
+          : undefined,
+      },
+    })));
+  }, [detail, selectedArtifactId, assistantEmphasis, setNodes, setEdges]);
+  useEffect(() => {
+    if (!assistantFocusRequest || !instance || tab !== "flow") return;
+    const focusNodes = nodes.filter((node) => assistantFocusRequest.nodeIds.includes(node.id));
+    if (focusNodes.length > 0) void instance.fitView({ nodes: focusNodes, padding: 0.35, duration: 450 });
+  }, [assistantFocusRequest, instance, nodes, tab]);
+  useEffect(() => {
+    const record = detail.provenance.find((item) => item.qualified_artifact_id === selectedArtifactId);
+    onContextChange?.({
+      // The BARE design name, not `qualified_artifact_id`. The qualified form is
+      // this canvas's own key (`<root>/<zip>/<group>::<name>`); the design index
+      // the assistant reads is keyed on the name alone, and its substring tier
+      // tests needle-in-name rather than name-in-needle -- so the long form can
+      // never match and every question asked with a design selected resolved to
+      // nothing.
+      selectedEntity: record
+        ? { kind: "job", label: record.artifact_id, entity_id: record.artifact_id }
+        : undefined,
+      activeDetailTab: tab,
+    });
+  }, [selectedArtifactId, detail.provenance, tab, onContextChange]);
   useEffect(() => {
     setSelectedArtifactId(null);
     setExplanationOpen(true);
@@ -162,7 +198,7 @@ export function IntegrationDetailCanvas({ landscape, edge, onBack, onOpenArtifac
   };
   const implementations = stream?.integration_solution_ids.map((id) => landscape.business_topology?.integration_solutions.find((item) => item.id === id)?.name).filter(Boolean) ?? [];
   const content = tab === "delivery" ? <DeliveryPanel landscape={landscape} edge={edge} /> : tab === "controls" ? <ControlsPanel landscape={landscape} edge={edge} /> : tab === "evidence" ? <section className="mx-auto max-w-4xl p-5"><h2 className="flex items-center gap-2 text-sm font-bold text-slate-800"><Network className="h-4 w-4" /> Technical evidence</h2><ArtifactList provenance={detail.provenance} onOpen={onOpenArtifact} /><h3 className="mt-5 text-xs font-bold text-slate-700">Channels and endpoints</h3><EndpointEvidence landscape={landscape} edge={edge} />{detail.diagnostics.map((item, index) => <p key={index} className="mt-3 rounded border border-amber-100 bg-amber-50 p-2 text-xs text-amber-900"><FileWarning className="mr-1 inline h-3.5 w-3.5" />{item.description}</p>)}</section> : tab === "designs" ? <section className="p-5"><h2 className="text-sm font-bold text-slate-800">Implementing designs</h2><p className="mt-1 text-xs text-slate-500">Open a design to view the scanner-authored job or route graph.</p><ArtifactList provenance={detail.provenance} onOpen={onOpenArtifact} /></section> : null;
-  return <div className="absolute inset-0" data-testid="integration-detail-canvas"><div className="absolute inset-x-0 top-0 z-20 border-b border-slate-200 bg-white/95 px-4 py-2 shadow-sm backdrop-blur"><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={onBack} className="inline-flex items-center gap-1 rounded border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"><ArrowLeft className="h-3.5 w-3.5" /> Landscape</button><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-slate-800">{sourceLabel} <span className="text-slate-400">→</span> {targetLabel}</p><p className="text-[10px] text-slate-500">L2 data stream · {stream?.name || topologyTerm(edge.dependency_type)}</p></div>{(["flow", "delivery", "controls", "evidence", "designs"] as const).map((item) => <button key={item} type="button" onClick={() => setTab(item)} className={`rounded px-2 py-1 text-[11px] font-semibold capitalize ${tab === item ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"}`}>{item}</button>)}{tab === "flow" && !explanationOpen && <button type="button" onClick={() => setExplanationOpen(true)} className="rounded border border-cyan-200 px-2 py-1 text-[11px] font-semibold text-cyan-700 hover:bg-cyan-50">Explain</button>}</div>{stream && <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 border-t border-slate-100 pt-2 text-[10px] text-slate-600"><span><b>Purpose:</b> {stream.business_summary || "Not established"}</span><span><b>Implemented by:</b> {implementations.join(", ") || "Not established"}</span></div>}</div><div className={tab === "flow" ? `absolute bottom-0 left-0 top-[102px] transition-[right] ${explanationOpen ? "right-[410px]" : "right-0"}` : "absolute inset-x-0 bottom-0 top-[102px] overflow-auto bg-slate-50"}>{tab === "flow" ? <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={onNodeClick} onNodeDoubleClick={onDoubleClick} fitView minZoom={0.1} maxZoom={3} panActivationKeyCode={null} onlyRenderVisibleElements proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={24} size={0.8} color="#cbd5e1" className="opacity-20" /><Controls showInteractive={false} /><MiniMap /></ReactFlow> : content}</div>{tab === "flow" && explanationOpen && <DesignExplanationPanel designs={designs} selected={selectedDesign} sourceLabel={sourceLabel} targetLabel={targetLabel} streamSummary={stream?.business_summary || ""} onSelect={(design) => setSelectedArtifactId(design.record.qualified_artifact_id)} onClose={() => setExplanationOpen(false)} onOpen={onOpenArtifact} />}</div>;
+  return <div className="absolute inset-0" data-testid="integration-detail-canvas"><div className="absolute inset-x-0 top-0 z-20 border-b border-slate-200 bg-white/95 px-4 py-2 shadow-sm backdrop-blur"><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={onBack} className="inline-flex items-center gap-1 rounded border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"><ArrowLeft className="h-3.5 w-3.5" /> Landscape</button><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-slate-800">{sourceLabel} <span className="text-slate-400">→</span> {targetLabel}</p><p className="text-[10px] text-slate-500">L2 data stream · {stream?.name || topologyTerm(edge.dependency_type)}</p></div>{(["flow", "delivery", "controls", "evidence", "designs"] as const).map((item) => <button key={item} type="button" onClick={() => setTab(item)} className={`rounded px-2 py-1 text-[11px] font-semibold capitalize ${tab === item ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"}`}>{item}</button>)}{tab === "flow" && !explanationOpen && <button type="button" onClick={() => setExplanationOpen(true)} className="rounded border border-cyan-200 px-2 py-1 text-[11px] font-semibold text-cyan-700 hover:bg-cyan-50">Explain</button>}</div>{stream && <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 border-t border-slate-100 pt-2 text-[10px] text-slate-600"><span><b>Purpose:</b> {stream.business_summary || "Not established"}</span><span><b>Implemented by:</b> {implementations.join(", ") || "Not established"}</span></div>}</div><div className={tab === "flow" ? `absolute bottom-0 left-0 top-[102px] transition-[right] ${explanationOpen ? "right-[410px]" : "right-0"}` : "absolute inset-x-0 bottom-0 top-[102px] overflow-auto bg-slate-50"}>{tab === "flow" ? <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={onNodeClick} onNodeDoubleClick={onDoubleClick} onInit={setInstance} fitView minZoom={0.1} maxZoom={3} panActivationKeyCode={null} onlyRenderVisibleElements proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={24} size={0.8} color="#cbd5e1" className="opacity-20" /><Controls showInteractive={false} /><MiniMap /></ReactFlow> : content}</div>{tab === "flow" && explanationOpen && <DesignExplanationPanel designs={designs} selected={selectedDesign} sourceLabel={sourceLabel} targetLabel={targetLabel} streamSummary={stream?.business_summary || ""} onSelect={(design) => setSelectedArtifactId(design.record.qualified_artifact_id)} onClose={() => setExplanationOpen(false)} onOpen={onOpenArtifact} />}</div>;
 }
 
 /**

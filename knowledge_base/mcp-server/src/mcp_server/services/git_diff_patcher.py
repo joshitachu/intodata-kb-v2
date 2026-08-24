@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,9 +18,11 @@ from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
 from mcp_server.model_strategies.registry import create_model_provider, normalize_model_id
 from mcp_server.providers.custom.models import ModelOptions
+from mcp_server.services.doc_quality_scorer import is_product_doc_filename
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.rag_bridge import RagBridge, rag_push_succeeded
+from mcp_server.services.git_credentials import GitCredentialProvider, provider_for_project
 from mcp_server.services.git_remote_service import (
     fetch_remote,
     git_subprocess_env,
@@ -242,7 +245,7 @@ async def run_webhook_diff_update(
             return False
         local_path = project.local_path
         doc_generation_provider = project.doc_generation_provider
-        github_token_enc = getattr(project, "github_token_enc", None)
+        credential = provider_for_project(project)
 
     await log_mgr.emit(project_id, f"GitHub push detected: {before_sha[:12]}..{after_sha[:12]}", "info")
 
@@ -254,7 +257,7 @@ async def run_webhook_diff_update(
         doc_generation_provider=doc_generation_provider,
         log_mgr=log_mgr,
         trigger=trigger,
-        github_token_enc=github_token_enc,
+        credential=credential,
         impact_plan=impact_plan,
     )
 
@@ -288,7 +291,7 @@ async def _run_diff_patch(
     doc_generation_provider: str | None,
     log_mgr: LogManager,
     trigger: str,
-    github_token_enc: str | None = None,
+    credential: GitCredentialProvider | None = None,
     impact_plan: dict[str, Any] | None = None,
 ) -> DiffPatchResult:
     base_summary = {
@@ -329,7 +332,7 @@ async def _run_diff_patch(
         if impact_plan and impact_plan.get("strategy") == "targeted_regen":
             return _manual(base_summary, str(impact_plan.get("reason") or "Impact agent requested targeted regeneration"))
 
-        await fetch_remote(local_path, github_token_enc, git_func=_git)
+        await fetch_remote(local_path, credential, git_func=_git)
         name_status = await _git(local_path, "diff", "--name-status", before_sha, after_sha)
         changes = parse_name_status(name_status)
         base_summary["changed_files"] = [c.path for c in changes]
@@ -344,7 +347,7 @@ async def _run_diff_patch(
                 base_summary,
                 decision,
                 log_mgr,
-                github_token_enc=github_token_enc,
+                credential=credential,
             )
 
         full_diff_text = await _git(
@@ -369,7 +372,7 @@ async def _run_diff_patch(
                 base_summary,
                 ("skipped", "No relevant changed hunks in push"),
                 log_mgr,
-                github_token_enc=github_token_enc,
+                credential=credential,
             )
         obligations = _build_doc_obligations(changes, full_diff_text)
         base_summary["obligations"] = [obligation.to_prompt() for obligation in obligations]
@@ -383,7 +386,10 @@ async def _run_diff_patch(
         )
         base_summary["candidate_docs"] = sorted({s.filename for s in candidate_sections})
         planned_docs = _coerce_string_list(impact_plan.get("affected_docs") if impact_plan else None)
-        preferred_docs = planned_docs or _preferred_docs_for_diff(changes, full_diff_text)
+        active_docs = _active_doc_names(docs_dir)
+        preferred_docs = planned_docs or _preferred_docs_for_diff(
+            changes, full_diff_text, available_docs=active_docs
+        )
         sections = await asyncio.to_thread(
             lambda: _select_doc_sections(
                 candidate_sections,
@@ -709,11 +715,11 @@ async def _manual_or_skip(
     summary: dict[str, Any],
     decision: tuple[str, str],
     log_mgr: LogManager,
-    github_token_enc: str | None = None,
+    credential: GitCredentialProvider | None = None,
 ) -> DiffPatchResult:
     action, reason = decision
     if action == "skipped":
-        await pull_remote_ff_only(local_path, github_token_enc, git_func=_git)
+        await pull_remote_ff_only(local_path, credential, git_func=_git)
         await log_mgr.emit(project_id, f"Git diff skipped: {reason}", "info")
         return DiffPatchResult(
             action="skipped",
@@ -739,11 +745,25 @@ def _failed(summary: dict[str, Any], reason: str) -> DiffPatchResult:
     )
 
 
+def _active_doc_names(docs_dir: Path) -> tuple[str, ...]:
+    """Product documents present in this project's ``docs/`` tree.
+
+    The ACTIVE document set is the authority for every doc-selection decision
+    on the diff path -- a pack's declared names are not knowable from a
+    filename convention (One Pack decision D35).
+    """
+    if not docs_dir.is_dir():
+        return ()
+    return tuple(
+        sorted(p.name for p in docs_dir.glob("*.md") if is_product_doc_filename(p.name))
+    )
+
+
 def _match_doc_sections(docs_dir: Path, changes: list[FileChange], diff_text: str) -> list[DocSection]:
     terms = _impact_terms(changes, diff_text)
     scored_sections: list[tuple[int, DocSection]] = []
     for md_file in sorted(docs_dir.glob("*.md")):
-        if not md_file.name[0].isdigit():
+        if not is_product_doc_filename(md_file.name):
             continue
         text = md_file.read_text(encoding="utf-8", errors="replace")
         for section in _sections_in_doc(md_file.name, text):
@@ -791,14 +811,59 @@ def _select_doc_sections(
     return selected
 
 
-def _preferred_docs_for_diff(changes: list[FileChange], diff_text: str) -> list[str]:
+# Diff-signal -> document routing, expressed as (default document name, name
+# tokens identifying the same role in ANY document set). The default name keeps
+# behaviour identical when the active set is unknown; the tokens resolve the
+# same role in a pack-declared set without naming any pack anywhere -- so a
+# pack whose change document is "MIGRATION_PLAYBOOK.md" is routed exactly like
+# "08_CHANGE_PLAYBOOK.md" (One Pack decision D35).
+_DOC_ROLE_TOKENS: dict[str, tuple[str, ...]] = {
+    "08_CHANGE_PLAYBOOK.md": ("CHANGE", "PLAYBOOK"),
+    "01_ARCHITECTURE_MAP.md": ("ARCHITECTURE", "TOPOLOGY"),
+    "00_AGENT_BRIEF.md": ("AGENT_BRIEF", "BRIEF", "ONBOARD"),
+    "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md": ("BUSINESS", "RULE", "TRANSFORM"),
+    "03_DATA_FLOWS_AND_LINEAGE.md": ("DATA_FLOW", "LINEAGE"),
+    "06_OPERATIONS_TESTING_AND_DEBUGGING.md": ("OPERATION", "TESTING", "DEBUG"),
+    "07_QUALITY_SECURITY_RISK_SCORECARD.md": ("QUALITY", "SECURITY", "RISK"),
+}
+
+
+def _resolve_doc_role(default_name: str, available_docs: Sequence[str] | None) -> list[str]:
+    """Map one routing role onto the documents that actually exist.
+
+    ``available_docs is None`` means the active set is unknown -- the legacy
+    default name is returned unchanged. When the set is known, an exact match
+    wins; otherwise every document whose name carries one of the role tokens is
+    returned, so pack-declared names participate instead of being excluded by
+    construction.
+    """
+    if available_docs is None:
+        return [default_name]
+    if default_name in available_docs:
+        return [default_name]
+    tokens = _DOC_ROLE_TOKENS.get(default_name, ())
+    if not tokens:
+        return []
+    return sorted(
+        name for name in available_docs
+        if any(token in Path(name).stem.upper() for token in tokens)
+    )
+
+
+def _preferred_docs_for_diff(
+    changes: list[FileChange],
+    diff_text: str,
+    available_docs: Sequence[str] | None = None,
+) -> list[str]:
+    """Order candidate documents by diff signal, resolved against the active set."""
     paths = " ".join(c.path for c in changes).lower()
     lowered_diff = diff_text.lower()
     preferred: list[str] = []
 
-    def add(filename: str) -> None:
-        if filename not in preferred:
-            preferred.append(filename)
+    def add(default_name: str) -> None:
+        for filename in _resolve_doc_role(default_name, available_docs):
+            if filename not in preferred:
+                preferred.append(filename)
 
     if "/patterns/" in paths or "design patterns" in lowered_diff:
         add("08_CHANGE_PLAYBOOK.md")
@@ -818,7 +883,7 @@ def _preferred_docs_for_diff(changes: list[FileChange], diff_text: str) -> list[
 
 def _fallback_section_for_doc(docs_dir: Path, filename: str) -> DocSection | None:
     path = docs_dir / filename
-    if not path.exists() or not path.name[0].isdigit():
+    if not path.exists() or not is_product_doc_filename(path.name):
         return None
     text = path.read_text(encoding="utf-8", errors="replace")
     sections = _sections_in_doc(filename, text)
@@ -1268,24 +1333,9 @@ def _patch_provider(doc_generation_provider: str | None):
 
 
 def _provider_config(model_id: str) -> dict[str, str | None]:
-    model_id = normalize_model_id(model_id)
-    provider = model_id.partition("/")[0]
-    if provider == "deepseek":
-        return {
-            "api_key": config.doc_generation_deepseek_api_key or config.doc_generation_api_key,
-            "base_url": config.doc_generation_deepseek_base_url or config.doc_generation_base_url,
-        }
-    if provider == "route33":
-        return {
-            "api_key": config.doc_generation_route33_api_key or config.doc_generation_api_key,
-            "base_url": config.doc_generation_route33_base_url,
-        }
-    if provider in {"openai", "anthropic", "google"}:
-        return {"api_key": None, "base_url": None}
-    return {
-        "api_key": config.doc_generation_api_key,
-        "base_url": config.doc_generation_base_url,
-    }
+    from mcp_server.model_strategies import provider_connection_config
+
+    return provider_connection_config(model_id)
 
 
 def _parse_agent_json(text: str) -> dict[str, Any]:
@@ -1383,7 +1433,7 @@ def _apply_patches_with_backup(docs_dir: Path, patches: list[dict[str, str]]) ->
         if not filename or not replacement or "/" in filename or "\\" in filename:
             continue
         path = docs_dir / filename
-        if not path.exists() or not path.name[0].isdigit():
+        if not path.exists() or not is_product_doc_filename(path.name):
             continue
         original = path.read_text(encoding="utf-8", errors="replace")
         if not _replacement_markdown_is_complete(original, heading, replacement):
@@ -1397,9 +1447,12 @@ def _apply_patches_with_backup(docs_dir: Path, patches: list[dict[str, str]]) ->
 
 
 def _restore_docs(docs_dir: Path, originals: dict[str, str]) -> None:
+    # Must use the same predicate as _apply_patches_with_backup: a document the
+    # patcher is allowed to write MUST be a document it can roll back, or a
+    # failed patch leaves it permanently modified.
     for filename, original in originals.items():
         path = docs_dir / filename
-        if path.exists() and path.name[0].isdigit():
+        if path.exists() and is_product_doc_filename(path.name):
             path.write_text(original, encoding="utf-8")
 
 
@@ -1477,7 +1530,7 @@ def _docs_with_stale_count_claim(
     stale_docs: list[str] = []
     for filename in filenames:
         path = docs_dir / filename
-        if not path.exists() or not path.name[0].isdigit():
+        if not path.exists() or not is_product_doc_filename(path.name):
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         lowered = text.lower()

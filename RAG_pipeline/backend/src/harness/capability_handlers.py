@@ -40,9 +40,8 @@ from src.harness.models import (
     METADATA_QUERY_CAPABILITY,
     PACK_CREATE_CAPABILITY,
     PACK_DRAFT_ABANDON_CAPABILITY,
-    PACK_DRAFT_CONFIGURE_CAPABILITY,
     PACK_DRAFT_CREATE_CAPABILITY,
-    PACK_DRAFT_MUTATE_CAPABILITY,
+    PACK_DRAFT_REFINE_CAPABILITY,
     PACK_DRAFT_READ_CAPABILITY,
     PACK_DRAFT_SAVE_CAPABILITY,
     PACK_DRAFT_VALIDATE_CAPABILITY,
@@ -58,6 +57,7 @@ from src.harness.models import (
     CapabilityDefinition,
 )
 from src.harness.packs.draft_service import (
+    SavedPackRecord,
     DraftNotFoundError,
     DraftRecord,
     DraftServiceError,
@@ -65,6 +65,7 @@ from src.harness.packs.draft_service import (
     PackDraftService,
 )
 from src.harness.packs.builder_workflow import PackBuilderWorkflow
+from src.harness.providers.mcp_packs import McpPackProvider, McpPackProviderError
 from src.harness.connectors.models import ConnectorQuery
 from src.harness.providers.mcp_docs import McpDocumentationProvider
 from src.harness.providers.mcp_projects import McpProjectsProvider
@@ -146,20 +147,8 @@ class DocumentationGenerationHandler:
             "model": request.arguments.get("model"),
             "write_model": request.arguments.get("write_model"),
         }
-        # Pack authority is compiled by the server. Request arguments never
-        # replace the governed semantic/presentation stack.
-        selected_pack_ids = capability.metadata.get("nexus_pack_ids")
-        if selected_pack_ids:
-            generation_arguments["nexus_pack_ids"] = list(selected_pack_ids)
-        pack_snapshot = capability.metadata.get("nexus_pack_snapshot")
-        if isinstance(pack_snapshot, dict) and "policy_id" in pack_snapshot:
-            generation_arguments["nexus_pack_snapshot"] = pack_snapshot
-        presentation = capability.metadata.get("nexus_pack_presentation")
-        if isinstance(presentation, dict):
-            generation_arguments["nexus_presentation"] = presentation
-        private_analysis_packs = capability.metadata.get("nexus_private_analysis_packs")
-        if isinstance(private_analysis_packs, list):
-            generation_arguments["nexus_private_analysis_packs"] = private_analysis_packs
+        # MCP resolves the project's single persisted ``plugin_pack_id``.
+        # Chat never transports the retired governed-stack metadata.
         plugin_pack_id = request.arguments.get("plugin_pack_id")
         if plugin_pack_id is not None:
             generation_arguments["plugin_pack_id"] = plugin_pack_id
@@ -293,23 +282,26 @@ class DocumentationPackCatalogHandler:
                     }
                 )
         if scope in {"all", "private"}:
-            if services.pack_draft_service is None:
+            # Personal packs live in MCP, which owns the one pack format. There
+            # is no second registry here to read.
+            try:
+                packs = await McpPackProvider().list_packs(
+                    access_token=context.access_token
+                )
+            except McpPackProviderError:
                 if scope == "private":
-                    raise RuntimeError("Private Pack catalog execution is not configured")
-                versions = []
-            else:
-                versions = await services.pack_draft_service.list_versions(context.user_id)
-            latest_by_pack: dict[str, Any] = {}
-            for version in versions:
-                latest_by_pack.setdefault(version.pack_id, version)
-            for version in latest_by_pack.values():
+                    raise
+                packs = []
+            for pack in packs:
+                if not pack.personal:
+                    continue
                 items.append(
                     {
                         "kind": "private",
-                        "name": version.name,
-                        "version": version.version,
-                        "description": version.artifact.purpose,
-                        "adds": [document.title for document in version.artifact.output_documents],
+                        "name": pack.name,
+                        "version": pack.version,
+                        "description": pack.description or "",
+                        "usable": pack.usable,
                     }
                 )
         return CapabilityObservation(
@@ -833,120 +825,29 @@ def _pack_reference_id(value: str, *, suffix: str, ordinal: int) -> str:
     return f"{base[: 159 - len(tail)]}{tail}"
 
 
-def friendly_pack_configuration_patch(arguments: dict[str, Any]) -> dict[str, Any]:
-    """Translate the small agent contract into a valid internal artifact patch."""
+def _saved_from_receipt(domain_ref: dict[str, Any]) -> SavedPackRecord:
+    """Rebuild the saved-pack record from an effect receipt.
 
-    patch: dict[str, Any] = {}
-    purpose = arguments.get("purpose")
-    if isinstance(purpose, str):
-        patch["purpose"] = purpose
-
-    audience = arguments.get("audience")
-    if isinstance(audience, dict):
-        render_keys = (
-            "seniority",
-            "domain_familiarity",
-            "decision_horizon",
-            "detail_level",
-        )
-        render = {
-            key: audience[key]
-            for key in render_keys
-            if key in audience and audience[key] is not None
-        }
-        translated_audience: dict[str, Any] = {
-            key: audience[key]
-            for key in ("label", "roles", "decision_needs", "desired_outcome")
-            if key in audience and audience[key] is not None
-        }
-        if render:
-            translated_audience["render"] = render
-        patch["audience"] = translated_audience
-
-    focus_components = arguments.get("focus_components")
-    if isinstance(focus_components, list) and focus_components:
-        focus_purpose = (
-            purpose.rstrip(" .") if isinstance(purpose, str) else "the Pack's stated purpose"
-        )
-        weight = max(1, 100 // len(focus_components))
-        patch["analyses"] = [
-            {
-                "id": _pack_reference_id(str(component), suffix="analysis", ordinal=index),
-                "label": f"{component} analysis"[:120],
-                "purpose": f"Analyze {component} in support of {focus_purpose}."[:500],
-            }
-            for index, component in enumerate(focus_components, start=1)
-        ]
-        patch["evidence_requirements"] = [
-            {
-                "id": _pack_reference_id(str(component), suffix="evidence", ordinal=index),
-                "label": f"Evidence for {component}"[:120],
-                "required": True,
-                "weight": weight,
-            }
-            for index, component in enumerate(focus_components, start=1)
-        ]
-
-    output_documents = arguments.get("output_documents")
-    if isinstance(output_documents, list) and output_documents:
-        translated_documents: list[dict[str, Any]] = []
-        for document_index, document in enumerate(output_documents, start=1):
-            title = str(document["title"])
-            headings = document.get("sections") or list(_DEFAULT_PACK_OUTPUT_SECTIONS)
-            translated_documents.append(
-                {
-                    "id": _pack_reference_id(title, suffix="document", ordinal=document_index),
-                    "title": title,
-                    "sections": [
-                        {
-                            "id": _pack_reference_id(
-                                str(heading),
-                                suffix=f"section_{document_index}",
-                                ordinal=section_index,
-                            ),
-                            "heading": str(heading),
-                            "order": section_index,
-                        }
-                        for section_index, heading in enumerate(headings, start=1)
-                    ],
-                }
-            )
-        patch["output_documents"] = translated_documents
-
-    compatibility = {
-        key: arguments[key]
-        for key in ("supported_project_kinds", "required_domains")
-        if key in arguments
-    }
-    if compatibility:
-        patch["compatibility"] = compatibility
-    if patch:
-        patch["schema_version"] = 3
-    return patch
-
-
-def _pack_generation_instruction(arguments: dict[str, Any]) -> str:
-    """Preserve the complete model-facing brief for the shared Pack builder."""
-
-    brief = {
-        key: arguments[key]
-        for key in (
-            "name",
-            "purpose",
-            "audience",
-            "focus_components",
-            "output_documents",
-            "supported_project_kinds",
-            "required_domains",
-        )
-        if key in arguments
-    }
-    return (
-        "Create the complete private Analysis Pack described by this authoritative, "
-        "user-approved brief. Preserve every stated requirement and use the full Pack "
-        "contract to supply substantive analyses, evidence requirements, audience context, "
-        "and ordered document sections.\n\n"
-        f"Pack brief: {json.dumps(brief, ensure_ascii=True, sort_keys=True)}"
+    Replay must be free of side effects, so it reads the receipt rather than
+    re-authoring or re-saving. A receipt missing its pack identity is a real
+    integrity failure, not something to paper over with a default.
+    """
+    pack_id = domain_ref.get("mcp_pack_id")
+    name = domain_ref.get("name")
+    version = domain_ref.get("version")
+    if not isinstance(pack_id, int) or not isinstance(name, str) or not isinstance(version, str):
+        raise RuntimeError("Saved pack receipt is missing its pack authority")
+    documents = domain_ref.get("documents")
+    return SavedPackRecord(
+        mcp_pack_id=pack_id,
+        name=name,
+        version=version,
+        documents=tuple(d for d in documents if isinstance(d, str))
+        if isinstance(documents, list)
+        else (),
+        content_hash=domain_ref.get("content_hash")
+        if isinstance(domain_ref.get("content_hash"), str)
+        else "",
     )
 
 
@@ -1112,30 +1013,35 @@ class PackCreateHandler(_PackDraftHandler):
     task_types = tuple(PACK_CREATE_CAPABILITY.task_types)
 
     @staticmethod
-    def _saved_observation(capability, version) -> CapabilityObservation:  # noqa: ANN001
+    def _saved_observation(capability, saved) -> CapabilityObservation:  # noqa: ANN001
+        documents = ", ".join(saved.documents) or "no documents"
         return CapabilityObservation(
             capability_id=capability.id,
             status="succeeded",
             output_type=capability.output_type,
-            summary=(f"Created private Analysis Pack {version.name} version {version.version}."),
+            summary=(
+                f"Created pack {saved.name} version {saved.version} "
+                f"producing {documents}."
+            ),
             data={
-                "private_pack_version_id": version.id,
-                "pack_id": version.pack_id,
-                "name": version.name,
-                "version": version.version,
-                "content_hash": version.content_hash,
+                "mcp_pack_id": saved.mcp_pack_id,
+                "name": saved.name,
+                "version": saved.version,
+                "documents": list(saved.documents),
+                "content_hash": saved.content_hash,
             },
             artifact_links=[
                 {
-                    "label": version.name,
+                    "label": saved.name,
                     "url": "/pack?tab=library",
-                    "kind": "private_pack",
+                    "kind": "pack",
                 }
             ],
             receipt_ref={
-                "private_pack_version_id": version.id,
-                "pack_id": version.pack_id,
-                "content_hash": version.content_hash,
+                "mcp_pack_id": saved.mcp_pack_id,
+                "name": saved.name,
+                "version": saved.version,
+                "content_hash": saved.content_hash,
             },
         )
 
@@ -1150,48 +1056,38 @@ class PackCreateHandler(_PackDraftHandler):
             authority_hint={"kind": "pack_create"},
         )
         if replay is not None:
-            version_id = replay.domain_ref.get("private_pack_version_id")
-            if not isinstance(version_id, int):
-                raise RuntimeError("Created Pack receipt is missing its version authority")
-            version = await draft_service.get_version(version_id, context.user_id)
-            return self._saved_observation(capability, version)
+            # The receipt IS the authority: the pack lives in MCP, so there is
+            # nothing local to re-read and replay must not re-author.
+            saved = _saved_from_receipt(replay.domain_ref)
+            return self._saved_observation(capability, saved)
 
         arguments = dict(request.arguments)
         generation = await PackBuilderWorkflow().generate(
-            query=_pack_generation_instruction(arguments)
+            query=str(arguments["brief"]),
+            platform=arguments.get("platform"),
+            access_token=context.access_token,
         )
         if not generation.generated:
+            # The pack author either drafts or fails; it has no clarification
+            # channel, so there is no needs_input outcome here. A vague brief
+            # comes back as an authoring failure the user retries.
+            message = generation.error_message or "The pack author did not produce a valid pack."
             await state_repo.abort_effect(
                 claim_id=claim_id,
                 lease_token=token,
                 call_key=call_key,
                 capability_id=capability.id,
-                reason=(
-                    generation.question
-                    or generation.error_message
-                    or "Pack generation did not produce an artifact"
-                ),
+                reason=message,
             )
-            if generation.question is not None:
-                return CapabilityObservation(
-                    capability_id=capability.id,
-                    status="needs_input",
-                    output_type=capability.output_type,
-                    summary=generation.question,
-                    error_code="pack_generation_needs_input",
-                    error_message=generation.question,
-                    retryable=True,
-                    safe_details={"reason": "builder_clarification"},
-                )
-            message = generation.error_message or "The Pack builder did not produce a valid Pack."
+            summary = message.replace("The draft was not changed", "No Pack was created")
             return CapabilityObservation(
                 capability_id=capability.id,
                 status="failed",
                 output_type=capability.output_type,
-                summary=message.replace("The draft was not changed", "No Pack was created"),
+                summary=summary,
                 error_code=f"pack_generation_{generation.error_code or 'failed'}",
-                error_message=message.replace("The draft was not changed", "No Pack was created"),
-                retryable=generation.error_code in {"provider_failure", "invalid_output"},
+                error_message=summary,
+                retryable=generation.error_code in {"authoring_failed", "invalid_output"},
                 safe_details={"reason": generation.error_code or "generation_failed"},
             )
 
@@ -1199,11 +1095,12 @@ class PackCreateHandler(_PackDraftHandler):
         artifact = generation.artifact.model_dump(mode="json")
         try:
             async with draft_service.atomic():
-                draft_id, version = await draft_service.create_saved_pack(
+                draft_id, saved = await draft_service.create_saved_pack(
                     conversation_id=context.conversation_id,
                     owner_user_id=context.user_id,
                     name=str(arguments["name"]),
                     artifact=artifact,
+                    access_token=context.access_token,
                 )
                 await state_repo.record_effect(
                     claim_id=claim_id,
@@ -1216,10 +1113,11 @@ class PackCreateHandler(_PackDraftHandler):
                     domain_ref={
                         "draft_id": draft_id,
                         "status": "saved",
-                        "private_pack_version_id": version.id,
-                        "pack_id": version.pack_id,
-                        "name": version.name,
-                        "version": version.version,
+                        "mcp_pack_id": saved.mcp_pack_id,
+                        "name": saved.name,
+                        "version": saved.version,
+                        "documents": list(saved.documents),
+                        "content_hash": saved.content_hash,
                     },
                 )
         except DraftServiceError as exc:
@@ -1240,7 +1138,7 @@ class PackCreateHandler(_PackDraftHandler):
                 reason="Atomic Pack creation failed",
             )
             raise
-        return self._saved_observation(capability, version)
+        return self._saved_observation(capability, saved)
 
 
 class PackDraftCreateHandler(_PackDraftHandler):
@@ -1318,11 +1216,13 @@ class PackDraftReadHandler(_PackDraftHandler):
         )
 
 
-class PackDraftMutateHandler(_PackDraftHandler):
-    capability_id = PACK_DRAFT_MUTATE_CAPABILITY.id
-    input_schema = PACK_DRAFT_MUTATE_CAPABILITY.input_schema
-    output_type = PACK_DRAFT_MUTATE_CAPABILITY.output_type
-    task_types = tuple(PACK_DRAFT_MUTATE_CAPABILITY.task_types)
+class PackDraftRefineHandler(_PackDraftHandler):
+    """Refine a draft from a plain-language instruction via the pack author."""
+
+    capability_id = PACK_DRAFT_REFINE_CAPABILITY.id
+    input_schema = PACK_DRAFT_REFINE_CAPABILITY.input_schema
+    output_type = PACK_DRAFT_REFINE_CAPABILITY.output_type
+    task_types = tuple(PACK_DRAFT_REFINE_CAPABILITY.task_types)
 
     async def __call__(self, capability, request, context, services) -> CapabilityObservation:
         draft_service, state_repo = self._services(services)
@@ -1356,82 +1256,13 @@ class PackDraftMutateHandler(_PackDraftHandler):
                 summary_prefix="Updated",
             )
         try:
-            draft = await draft_service.mutate(
-                draft_id=draft_id,
-                owner_user_id=context.user_id,
-                expected_revision=expected,
-                patch=dict(request.arguments["artifact_patch"]),
-                name=request.arguments.get("name"),
-            )
-        except DraftServiceError as exc:
-            await state_repo.abort_effect(
-                claim_id=claim_id,
-                lease_token=token,
-                call_key=call_key,
-                capability_id=capability.id,
-                reason=str(exc),
-            )
-            raise
-        task = await self._record_active(
-            repository=state_repo,
-            claim_id=claim_id,
-            claim_token=token,
-            call_key=call_key,
-            capability_id=capability.id,
-            draft=draft,
-        )
-        return self._observation(
-            capability, draft, summary=f"Updated Pack draft {draft.name}.", task=task
-        )
-
-
-class PackDraftConfigureHandler(_PackDraftHandler):
-    capability_id = PACK_DRAFT_CONFIGURE_CAPABILITY.id
-    input_schema = PACK_DRAFT_CONFIGURE_CAPABILITY.input_schema
-    output_type = PACK_DRAFT_CONFIGURE_CAPABILITY.output_type
-    task_types = tuple(PACK_DRAFT_CONFIGURE_CAPABILITY.task_types)
-
-    async def __call__(self, capability, request, context, services) -> CapabilityObservation:
-        draft_service, state_repo = self._services(services)
-        claim_id, token, call_key = self._claim(context, request)
-        expected = int(request.arguments["expected_revision"])
-        draft_id = int(request.arguments["draft_id"])
-        await self._require_conversation_draft(
-            draft_service,
-            draft_id=draft_id,
-            owner_user_id=context.user_id,
-            conversation_id=context.conversation_id,
-        )
-        patch = friendly_pack_configuration_patch(dict(request.arguments))
-        if not patch and request.arguments.get("name") is None:
-            raise DraftValidationError("At least one Pack configuration field is required")
-        replay = await state_repo.start_effect(
-            claim_id=claim_id,
-            lease_token=token,
-            call_key=call_key,
-            capability_id=capability.id,
-            authority_hint={
-                "kind": "pack_revision",
-                "draft_id": draft_id,
-                "expected_revision": expected,
-                "target_revision": expected + 1,
-            },
-        )
-        if replay is not None:
-            return await self._replay_active(
-                receipt=replay,
+            draft, answer = await PackBuilderWorkflow().run_for_draft(
                 service=draft_service,
-                capability=capability,
-                owner_user_id=context.user_id,
-                summary_prefix="Configured",
-            )
-        try:
-            draft = await draft_service.mutate(
                 draft_id=draft_id,
                 owner_user_id=context.user_id,
+                query=str(request.arguments["instruction"]),
                 expected_revision=expected,
-                patch=patch,
-                name=request.arguments.get("name"),
+                access_token=context.access_token,
             )
         except DraftServiceError as exc:
             await state_repo.abort_effect(
@@ -1450,12 +1281,7 @@ class PackDraftConfigureHandler(_PackDraftHandler):
             capability_id=capability.id,
             draft=draft,
         )
-        return self._observation(
-            capability,
-            draft,
-            summary=f"Configured Pack draft {draft.name}.",
-            task=task,
-        )
+        return self._observation(capability, draft, summary=answer, task=task)
 
 
 class PackDraftValidateHandler(_PackDraftHandler):
@@ -1556,32 +1382,28 @@ class PackDraftSaveHandler(_PackDraftHandler):
             },
         )
         if replay is not None:
-            version_id = replay.domain_ref.get("private_pack_version_id")
-            if not isinstance(version_id, int):
-                raise RuntimeError("Saved Pack receipt is missing its version authority")
-            version = await draft_service.get_version(version_id, context.user_id)
+            saved = _saved_from_receipt(replay.domain_ref)
             return CapabilityObservation(
                 capability_id=capability.id,
                 status="succeeded",
                 output_type=capability.output_type,
-                summary=f"Saved private Analysis Pack {version.name} version {version.version}.",
+                summary=f"Saved pack {saved.name} version {saved.version}.",
                 data={
                     "draft_id": draft_id,
-                    "private_pack_version_id": version.id,
-                    "pack_id": version.pack_id,
-                    "name": version.name,
-                    "version": version.version,
+                    "mcp_pack_id": saved.mcp_pack_id,
+                    "name": saved.name,
+                    "version": saved.version,
                 },
                 artifact_links=[
-                    {"label": version.name, "url": "/pack?tab=library", "kind": "private_pack"}
+                    {"label": saved.name, "url": "/pack?tab=library", "kind": "pack"}
                 ],
             )
         try:
-            version = await draft_service.save(
+            saved = await draft_service.save(
                 draft_id=draft_id,
                 owner_user_id=context.user_id,
                 expected_revision=expected,
-                pack_id=request.arguments.get("pack_id"),
+                access_token=context.access_token,
             )
         except DraftServiceError as exc:
             await state_repo.abort_effect(
@@ -1604,30 +1426,27 @@ class PackDraftSaveHandler(_PackDraftHandler):
                 "draft_id": draft_id,
                 "revision": expected + 1,
                 "status": "saved",
-                "private_pack_version_id": version.id,
-                "pack_id": version.pack_id,
-                "name": version.name,
-                "version": version.version,
+                "mcp_pack_id": saved.mcp_pack_id,
+                "name": saved.name,
+                "version": saved.version,
+                "documents": list(saved.documents),
+                "content_hash": saved.content_hash,
             },
         )
         return CapabilityObservation(
             capability_id=capability.id,
             status="succeeded",
             output_type=capability.output_type,
-            summary=f"Saved private Analysis Pack {version.name} version {version.version}.",
+            summary=f"Saved pack {saved.name} version {saved.version}.",
             data={
                 "draft_id": draft_id,
-                "private_pack_version_id": version.id,
-                "pack_id": version.pack_id,
-                "name": version.name,
-                "version": version.version,
+                "mcp_pack_id": saved.mcp_pack_id,
+                "name": saved.name,
+                "version": saved.version,
+                "documents": list(saved.documents),
             },
             artifact_links=[
-                {
-                    "label": version.name,
-                    "url": "/pack?tab=library",
-                    "kind": "private_pack",
-                }
+                {"label": saved.name, "url": "/pack?tab=library", "kind": "pack"}
             ],
         )
 
@@ -1876,8 +1695,7 @@ def migrated_capability_handlers() -> tuple[object, ...]:
         PackCreateHandler(),
         PackDraftCreateHandler(),
         PackDraftReadHandler(),
-        PackDraftConfigureHandler(),
-        PackDraftMutateHandler(),
+        PackDraftRefineHandler(),
         PackDraftValidateHandler(),
         PackDraftSaveHandler(),
         PackDraftAbandonHandler(),

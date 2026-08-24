@@ -274,6 +274,20 @@ def test_doc_output_ceilings_by_type(monkeypatch):
     )
 
 
+def test_plugin_per_unit_docs_use_normal_phase3_ceiling():
+    facts = _facts(["Alpha"])
+    provider = _provider()
+    provider._plugin_manifest = MagicMock()
+    provider._plugin_manifest.docs = []
+    provider._per_job_doc_units = {"CUSTOM_REPORT__root__Alpha": "Alpha"}
+    state = HarnessRunState(project_id="proj", facts_manifest=facts)
+
+    assert (
+        provider._doc_output_ceiling("CUSTOM_REPORT__root__Alpha", state)
+        == config.phase3_max_tokens
+    )
+
+
 # --------------------------------------------------------------------------- #
 # P1.4/P1.6 -- standard-catalog per-unit expansion
 # --------------------------------------------------------------------------- #

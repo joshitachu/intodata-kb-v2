@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.harness.workflow_projection import WorkflowCard
 
@@ -210,6 +210,164 @@ class HealthResponse(BaseModel):
     hindsight: ServiceStatus
 
 
+# --- Page scope (the client's current viewing context) ---
+#
+# SECURITY: page_scope is client-supplied and therefore UNTRUSTED. It is a prompt
+# hint only. It must never become a retrieval filter, an authorization input, or a
+# widening of project access -- the routes' existing project checks remain the sole
+# authority. A page_scope naming an inaccessible project must grant nothing.
+#
+# The level/selection field names are deliberately camelCase rather than the
+# snake_case used elsewhere in this module: this union mirrors the frontend
+# `TopologyLevel` in `frontend/hooks/useTopologyNavigation.ts` exactly, and the same
+# shape travels back out as `targets[].level` from the topology tools straight into
+# canvas navigation. Renaming here would produce chips that navigate nowhere.
+
+# A single name/id token inside a topology level. Bounded so an oversized client
+# payload cannot inflate the persisted row or the prompt hint.
+TopologyToken = Annotated[str, Field(min_length=1, max_length=500)]
+
+
+class TopologyApplicationSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["application"]
+    applicationId: TopologyToken
+
+
+class TopologySystemSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["system"]
+    systemId: TopologyToken
+
+
+class TopologyEdgeSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["edge"]
+    edgeKey: TopologyToken
+
+
+class TopologyRelationshipSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["relationship"]
+    source: TopologyToken
+    target: TopologyToken
+    streamKeys: list[TopologyToken] = Field(default_factory=list, max_length=200)
+
+
+IntegrationSelection = Annotated[
+    TopologyApplicationSelection
+    | TopologySystemSelection
+    | TopologyEdgeSelection
+    | TopologyRelationshipSelection,
+    Field(discriminator="kind"),
+]
+
+
+class TopologyProjectLevel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["project"]
+
+
+class TopologyIntegrationLevel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["integration"]
+    selection: IntegrationSelection
+
+
+class TopologyGroupLevel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["group"]
+    groupName: TopologyToken
+    sourceRoot: TopologyToken | None = None
+
+
+class TopologyJobLevel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["job"]
+    jobName: TopologyToken
+    sourceRoot: TopologyToken | None = None
+
+
+class TopologyComponentLevel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["component"]
+    jobName: TopologyToken
+    componentName: TopologyToken
+    sourceRoot: TopologyToken | None = None
+
+
+TopologyLevel = Annotated[
+    TopologyProjectLevel
+    | TopologyIntegrationLevel
+    | TopologyGroupLevel
+    | TopologyJobLevel
+    | TopologyComponentLevel,
+    Field(discriminator="kind"),
+]
+
+
+class TopologySelectedEntity(BaseModel):
+    """The human-visible thing selected inside the current canvas level.
+
+    This is deliberately not another navigation target. It is client-supplied
+    conversational context for phrases such as "this column" and therefore has
+    no authority over access, retrieval, or canvas movement.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal[
+        "application",
+        "system",
+        "relationship",
+        "edge",
+        "group",
+        "job",
+        "component",
+        "table",
+        "column",
+        "mapping",
+    ]
+    label: str = Field(..., min_length=1, max_length=200)
+    entity_id: TopologyToken | None = None
+
+
+class TopologyPageFilter(BaseModel):
+    """One bounded, human-readable view filter supplied as prompt context."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., min_length=1, max_length=100)
+    value: str = Field(..., min_length=1, max_length=200)
+
+
+class TopologyPageScope(BaseModel):
+    """The topology canvas level the user is looking at while asking a question."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    surface: Literal["topology"]
+    project_id: str = Field(..., min_length=1, max_length=255)
+    level: TopologyLevel
+    selected_entity: TopologySelectedEntity | None = None
+    active_detail_tab: str | None = Field(default=None, min_length=1, max_length=100)
+    filters: list[TopologyPageFilter] | None = Field(default=None, max_length=12)
+
+
+# `surface` is the discriminator tag: other surfaces join this union later without
+# changing the field name on the request.
+PageScope = TopologyPageScope
+
+
 # --- Conversations ---
 
 
@@ -234,6 +392,14 @@ class ConversationMessageRequest(BaseModel):
         max_length=64,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,63}$",
         description="Stable idempotency key reused when the client retries this turn.",
+    )
+    page_scope: PageScope | None = Field(
+        default=None,
+        description=(
+            "Untrusted hint describing what the client is currently viewing. Used only "
+            "to disambiguate references like 'this' in the prompt; never an "
+            "authorization input or a retrieval filter."
+        ),
     )
 
 
@@ -304,6 +470,7 @@ class MessageResponse(BaseModel):
     harness_activities: list[MessageHarnessActivity] = Field(default_factory=list)
     workflow_cards: list["WorkflowCard"] = Field(default_factory=list)
     pending_action: MessageHarnessPendingAction | None = None
+    page_scope: PageScope | None = None
     created_at: datetime.datetime
 
     @field_validator("turn_plan", mode="before")
@@ -333,6 +500,8 @@ class ConversationResponse(BaseModel):
     id: int
     title: str | None = None
     message_count: int
+    origin_surface: Literal["chat", "topology"] = "chat"
+    visible_in_chat: bool = True
     created_at: datetime.datetime
     updated_at: datetime.datetime
 
@@ -343,6 +512,8 @@ class ConversationDetailResponse(BaseModel):
     id: int
     title: str | None = None
     messages: list[MessageResponse]
+    origin_surface: Literal["chat", "topology"] = "chat"
+    visible_in_chat: bool = True
     agent_plan: "AgentPlanProjectionResponse | None" = None
     created_at: datetime.datetime
     updated_at: datetime.datetime
@@ -390,12 +561,14 @@ class ConversationCreateRequest(BaseModel):
     """Request to create a new conversation."""
 
     title: str | None = Field(default=None, max_length=200)
+    surface: Literal["chat", "topology"] = "chat"
 
 
 class ConversationUpdateRequest(BaseModel):
     """Request to update a conversation."""
 
-    title: str = Field(..., min_length=1, max_length=200)
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    visible_in_chat: bool | None = None
 
 
 class ErrorDetail(BaseModel):

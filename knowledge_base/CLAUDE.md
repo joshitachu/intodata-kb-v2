@@ -40,12 +40,13 @@ cd ../RAG_pipeline/backend && python -m uvicorn src.api.main:app --port 8000
 5. **No intermediate files** -- only final `.md` docs in `output/{project_id}/docs/` (generated via `docs_staging/`, see Documentation Generation)
 6. **Never hardcode group names** -- use whatever `get_chunks()` returns
 7. **Never call `trigger_scan()`** unless cache is explicitly stale or missing
-8. **No workarounds** -- fixes must address the root cause, not suppress symptoms. If a proper fix requires broader changes, make them. Never ship a narrow patch when the defect pattern exists elsewhere in the codebase.
-9. **Generalize fixes** -- before fixing anything, check whether the same failure can occur in other places. Fix it at the level that prevents all recurrences. One-off special-case branches are not acceptable solutions.
-10. **Use design patterns** -- before writing a new class, service, or module, identify whether an established pattern fits (Strategy, Repository, Factory, Observer, Pipeline, etc.). Don't invent bespoke structures when a well-understood pattern solves the problem.
-11. **Full pipeline gate** -- any non-Scout change requires the full pipeline: `/grill` → `/prd` → `/slices` → `/plan` → `/plan-approve pass` → build → `/inspect` → `/validate` → commit. See root `CLAUDE.md` Development Workflow.
-12. **Inspector required** -- after building any change to harness pipeline phases or MCP API routes, run `/inspect` before committing. Max 2 block cycles before escalating to the human.
-13. **Emergency path** -- use `/lfe-force` for production emergencies only; it logs to `PROTOCOL_DEBT.md` and session-start will warn until `/debt-resolve` clears it.
+8. **Never resolve git credentials by hand** -- call `provider_for_project()` in `services/git_credentials.py`. Reading `project.github_token_enc` directly skips GitHub App and Azure DevOps connections, whose credential lives off the project row. See `.agent/system/mcp-server.md` "Git connection kinds".
+9. **No workarounds** -- fixes must address the root cause, not suppress symptoms. If a proper fix requires broader changes, make them. Never ship a narrow patch when the defect pattern exists elsewhere in the codebase.
+10. **Generalize fixes** -- before fixing anything, check whether the same failure can occur in other places. Fix it at the level that prevents all recurrences. One-off special-case branches are not acceptable solutions.
+11. **Use design patterns** -- before writing a new class, service, or module, identify whether an established pattern fits (Strategy, Repository, Factory, Observer, Pipeline, etc.). Don't invent bespoke structures when a well-understood pattern solves the problem.
+12. **Full pipeline gate** -- any non-Scout change requires the full pipeline: `/grill` → `/prd` → `/slices` → `/plan` → `/plan-approve pass` → build → `/inspect` → `/validate` → commit. See root `CLAUDE.md` Development Workflow.
+13. **Inspector required** -- after building any change to harness pipeline phases or MCP API routes, run `/inspect` before committing. Max 2 block cycles before escalating to the human.
+14. **Emergency path** -- use `/lfe-force` for production emergencies only; it logs to `PROTOCOL_DEBT.md` and session-start will warn until `/debt-resolve` clears it.
 
 ## Documentation Generation
 
@@ -209,12 +210,127 @@ This is the primary method for generating project documentation. Follow it exact
 - Python may construct contracts, constrain context/tools, validate coverage, trigger retries/repairs, and persist exact LLM output. Python must not synthesize business explanations or fill final documentation prose itself.
 - Generic `list_artifacts` / `read_artifact` tools must not be exposed to Phase 2/3 core generation without hard byte and accumulated input-token caps. Phase 2 core writing uses bounded context files by default; retrieval may be agentic only in budgeted selection/repair steps.
 - **Doc catalog**: standard document definitions are in `mcp-server/data/doc_catalog.yaml`,
-  loaded by `providers/custom/doc_catalog.py`. Plugin packs can override this with
-  their own `doc_catalog.yaml` at the pack root.
+  loaded by `providers/custom/doc_catalog.py`. Packs replace the document set via the
+  `docs:` block in `plugin.yaml` (there is NO pack-root `doc_catalog.yaml` override path).
+  The starter every pack is copied from is `mcp-server/data/swap_pack_starter/` --
+  fully commented, and asserted to compile by the pack test suite.
+- **Packs (2026-08, consolidated)**: there is exactly ONE pack format and it is
+  `plugin.yaml` (`services/plugin_schema.py`). A pack is a directory tree --
+  manifest, `prompts/`, `prompts/docs/`, `examples/` -- and it lives in one of two
+  lanes, distinguished only by `plugin_packs.owner_user_id`:
+  **personal** (authored in Nexus, stored under `data/plugin_packs/users/{uid}/`,
+  visible and usable only to its owner, git-initialised so publishing is a push) and
+  **shared** (a branch of `MCP_SWAP_PACK_STARTER_REPO_URL`, cloned into
+  `data/plugin_packs/`, available to everyone). `POST /mcp/plugins/{id}/publish`
+  pushes a personal pack as `pack/{name}` and opens a pull request -- it ASKS;
+  a human merge is what grants everyone access. `services/pack_architect.py` +
+  `/mcp/plugins/architect/sessions/*` are the interactive author: each user turn
+  edits one owner-private Pack workspace and deterministic validation gates save.
+  The single UI is `RAG_pipeline/frontend/components/packs/PackWorkbench.tsx`
+  (proxied via `app/api/packs/*`); the dashboard has no pack surface.
+  RETIRED: `pack_schema_v2.py` / `schema_version: 2` / layer+governance+capabilities,
+  the `data/packs/` + `MCP_DEFAULT_PACK_ID` activation lane, `/mcp/packs/preview`,
+  the RAG DB pack registry (`/api/v1/packs`), and ZIP pack upload.
+- **What a pack changes**: extraction is platform-owned and identical for every pack
+  (a pack cannot weaken the evidence floor). Three blocks change behaviour --
+  `phases` (whether each phase runs, with which model/concurrency), `lens`
+  (`focus` = which evidence categories are screened, `sections` = the declared
+  analysis contract + the question each section must answer, `requirements` =
+  standing prompt rules), and `docs` (the output set + `phase2_sections` routing).
+  `lens.sections.mode: replace` is the important lever: the Phase 2 prompt asks for
+  ONLY the declared sections, so a focused pack stops paying for built-in questions
+  it never wanted. `extend` keeps the old additive behaviour. A pack with no `lens`
+  behaves exactly as packs did before the block existed.
+- **Pack contract**: every run resolves a `PackContract`
+  (`providers/custom/pack_contract.py`) -- `default_contract(platform)` when no pack
+  is selected, else `contract_from_plugin_manifest(manifest, platform)` (the ONE
+  compiler). The contract owns the Phase 2 section universe, doc routing, focus
+  categories, requirements and audience; validators, prompts, claim planning, doc
+  bundles, the quality scorer and the living-docs patch lane all read it.
+  `GROUP_SUMMARY` is the protected floor no manifest can remove or declare.
+- **No loud fails (2026-08)**: an unsatisfied declared section does NOT fail
+  anything. A security pack pointed at code with no dynamic SQL *should* come back
+  empty for that section -- that is a correct result, not a defect. Such gaps are
+  recorded in `_assessment/pack_section_coverage.json` (pack, group, sections, the
+  questions that went unanswered) and the documents publish clean: no in-document
+  notice, no `completed_warnings` status, no quality penalty, no PARTIAL stub.
+  `PackContract.hard_required_names` is the split that guarantees it -- the whole
+  required set for a no-pack run (built-in Talend strictness, unchanged) and the
+  `GROUP_SUMMARY` floor alone for any pack. REMOVED with this:
+  `declared_required_names`, `sections[].required`, `required_platforms`,
+  `pack_section_failures.json`, the "Pack Section Contract Violation" notice,
+  `WarningCode.PACK_SECTION_CONTRACT`, and the -2.0 scorer penalty.
+- **Pack audience -> Phase 3 presentation**: the manifest `audience:` block compiles
+  onto `PackContract.audience` (`PackAudienceSpec`) and is injected at the Phase 3
+  rendering boundary only. `tone` / `technical_depth` / `output_organization` are
+  typed with the `Nexus*` enums (a closed whitelist, validated at load); `roles` is
+  bounded free text (max 6 x 80 chars) rendered by
+  `readership_instructions_for_phase`, never coerced into a presentation enum.
+  A request-supplied `ctx.nexus_presentation` WINS over the pack's audience -- the
+  pack supplies the default. Both `doc_prompt` injection sites (enterprise doc +
+  per-unit dossier) pass `contract=` so the paths cannot diverge silently.
+  (tests: `tests/test_providers/test_pack_contract.py`,
+  `test_pack_audience.py`, `tests/test_api/test_personal_packs.py`)
 - **Prompt templates**: prompt bodies live in `mcp-server/data/prompt_templates/`
   and are rendered via `providers/custom/prompt_renderer.py` (`${SLOT}` substitution).
-  Plugin packs can override individual phase prompts by placing `.md` files in
-  `{plugin_pack_dir}/prompts/`.
+  EVERY prompt the pipeline sends is a template file -- Phase 1's three
+  investigator prompts (`phase1_extraction.md`, `phase1_chunk_selection.md`,
+  `phase1_manifest_extraction.md`), Phase 2's claim extraction
+  (`phase2_claims.md`) and section repair (`phase2_section_repair.md`), and
+  Phase 3.7's topology synthesis (`phase37_business_topology.md`) were inline
+  f-strings until 2026-08 and are now templates. Extraction was verified
+  byte-identical to the f-strings they replaced.
+- **Two pack prompt namespaces** (do not confuse them):
+  * `{pack}/prompts/<slot>.md` -- PREAMBLES substituted into a `${PREAMBLE}`
+    slot: `phase2.md`, `phase3.md`, `scorecard.md` (`prompts._resolve_preamble`),
+    plus `investigation.md`, which is PREPENDED to Phase 1 rather than
+    substituted, and `prompts/docs/<DOC>.md` / `prompts/phase2_platform_sections/
+    <platform>.md`.
+  * `{pack}/prompts/templates/<template_name>.md` -- the whole prompt BODY,
+    named after the template it replaces, resolved generically by
+    `PromptRenderer.render(..., pack_dir=)`. A body override wins outright.
+    Separate directory because `scorecard.md` exists as both a preamble slot and
+    a template, and one namespace would make it silently shadow the other.
+  Before the body lane existed ~59% of the run's authored prompt text was
+  pack-expressible (preambles + platform skeletons + per-doc instructions);
+  the ~41% remainder was the template bodies and the Phase 1 / Phase 2-claims /
+  Phase 3.7 f-strings. It is now ~93%. What is STILL not reachable: the three
+  patch templates, `documentation_obligations()` (per-platform Python dicts
+  injected into every Phase 3 prompt), and the blocks `group_analysis_prompt`
+  assembles in Python -- notably the 521-byte output-size contract, which is
+  injected via `${TASK_SCOPE_NOTE}` and so survives a `phase2_analysis.md`
+  override. The enumeration obligation and the redaction/fabrication rules DO
+  live in the templates and are now overridable.
+- **Authoring surfaces read the overridable surface from one place**:
+  `services/pack_prompt_slots.py` (`PHASE_TEMPLATES` + `prompt_slots()`),
+  derived from the live catalog / platform strategies / template directory.
+  `scripts/generate_reference_pack.py` imports `PHASE_TEMPLATES` rather than
+  keeping a copy, and `GET /mcp/plugins/prompt-slots` (+ `/{path}` for one
+  body) serves it to the workbench. The workbench's *Add prompt override*
+  seeds a new file with the live built-in text -- a body override REPLACES the
+  built-in, so starting from an empty box silently drops the redaction and
+  enumeration rules. Tests: `tests/test_services/test_pack_prompt_slots.py`.
+- **A drafted document needs its own prompt.** `_doc_specific_instructions`
+  resolves a document name against `doc_catalog.yaml`; a pack's invented name is
+  not there, so a manifest declaring `docs: [MY_REPORT]` with no
+  `prompts/docs/MY_REPORT.md` renders Phase 3 with an EMPTY `${DOC_SPECIFIC}`
+  slot -- the document is still written, from the generic template alone.
+  `pack_architect.run_turn` therefore asks the dedicated Pack model for one
+  compact, complete design and renders the canonical manifest, prompt files,
+  README, and example deterministically. It applies that artifact atomically
+  and reports exact `pack_validation` completeness errors after every turn.
+  Pack authoring does not use OpenCode or expose tools. Tests:
+  `tests/test_services/test_pack_architect.py`.
+- **Reachability is the entry criterion for a pack prompt file.** A pack file
+  that no `render(..., pack_dir=)` call site reads is dead weight that reads as
+  authoritative. `phase2_patch.md` / `phase3_patch.md` /
+  `phase3_synthesis_patch.md` are rendered ONLY by
+  `services/true_patch_executor.py`, which builds its own `PromptRenderer` with
+  no pack context, so overriding them is not possible -- threading the project's
+  selected pack into the living-docs lane is open work.
+  `tests/test_services/test_reference_pack.py::
+  test_every_shipped_template_override_is_reachable_from_the_pipeline` is the
+  guard (it greps the source for pack-aware render calls).
 - **Talend ESB detection (`providers/custom/talend_intelligence.py`)**: Talend serializes
   DI Jobs and ESB/Camel Routes into the same `.item` format; the only signal is c-prefixed
   Camel component usage. Classification is now **scanner-computed** -- the intodoc Talend
@@ -294,6 +410,35 @@ Key files: `claude_service.py` / `DocGenerationCoordinator` (generation orchestr
 ### Debug Forensics (`MCP_PIPELINE_DEBUG`)
 
 Set `MCP_PIPELINE_DEBUG=1` to materialize the full forensic record under `docs_staging/_debug/` (per-call prompt/context/request/response snapshots, agent-task contracts/ledgers/traces, and the gated `_assessment/` advisory reports). Default runs (`MCP_PIPELINE_DEBUG=0`) keep only the always-on breadcrumb artifacts: per-call `_model_inputs/<phase>/<NNN>_<target>/manifest.json` and `_agent_tasks/<phase>/<target>/{status.json,output.md}`. Use the flag to reproduce a failed run with full traces; do not enable it for production runs (output bloat).
+
+### OpenCode Runtime Homes and Failure Diagnostics
+
+- **A failed OpenCode step now leaves evidence.** `_audit/opencode_errors.json`
+  records phase, step, model route, returncode, the *raw* error events (up to 20)
+  and stderr (up to 8 KB); the short reason is appended to the raised exception
+  and the run log. Before this, `_parse_json_event` reduced an error event to a
+  bare type, stderr was counted then discarded, and `opencode_events.json` was
+  written only on success -- a failure produced the useless line "OpenCode
+  emitted an error event (details redacted)". Keep the split: the full event goes
+  to the artifact, only a bounded excerpt (`_MAX_LOG_REASON_CHARS`) reaches the
+  log, because a provider message can quote part of the request.
+- **Every route gets private XDG homes.** `_phase_config` sets `XDG_DATA_HOME`
+  and `XDG_STATE_HOME` to per-invocation 0700 dirs under the same temp root as
+  the generated config (removed by `OpenCodePhaseConfig.cleanup`). Previously
+  only `opencode-go/` redirected them -- it needed a private `auth.json` -- so
+  every other route used the service account's ambient home and inherited
+  whatever uid last wrote there. Verified failure: root-owned
+  `/app/.home/.local/share/opencode/log` made every `appuser` run die with
+  `PermissionDenied: FileSystem.open (.../opencode.log)` before reaching the
+  model. `XDG_CACHE_HOME` stays shared at `{data_dir}/opencode_cache` (it holds
+  `models.json` and the runtime binary, worth reusing) and is created by the
+  service process, so it is always owned by the service account;
+  `_preflight` write-probes it and fails with the path rather than letting
+  OpenCode die mid-stream.
+- **`docker compose exec` runs as root.** Anything that invokes OpenCode inside
+  the container must use `-u appuser`, or it leaves root-owned state behind.
+  The XDG isolation above makes a run survive that, but the ambient home is
+  still shared with `opencode auth`/CLI use.
 
 ## Code Conventions
 

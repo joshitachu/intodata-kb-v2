@@ -6,12 +6,14 @@ from datetime import datetime, timedelta, timezone
 
 import pyotp
 import pytest
+from sqlalchemy import select
 
 from src.auth.security import create_refresh_token, hash_password, hash_token
 from src.auth.service import (
     LOCKOUT_DURATION_MINUTES,
     LOCKOUT_THRESHOLD,
     AccountLockedError,
+    ROTATION_GRACE_SECONDS,
     AuthService,
     PasswordlessAccountError,
 )
@@ -234,14 +236,72 @@ class TestRefreshTokenRotation:
         assert new_refresh
         assert returned_user.id == user.id
 
+    async def _rotated_record(self, db_session, token: str) -> RefreshToken:
+        return (
+            await db_session.execute(
+                select(RefreshToken).where(RefreshToken.token_hash == hash_token(token))
+            )
+        ).scalar_one()
+
     async def test_rotation_revokes_old_token(self, db_session) -> None:
         user = await self._create_user(db_session)
         old = await self._store_refresh_token(db_session, user)
         svc = AuthService(db_session)
         await svc.rotate_refresh_token(old)
-        # Replaying the same token must return None
+
+        record = await self._rotated_record(db_session, old)
+        assert record.revoked is True
+        assert record.rotated_at is not None
+
+    async def test_replay_inside_grace_window_succeeds(self, db_session) -> None:
+        """Two concurrent refreshes must both work.
+
+        Rotation is single-use, so the second caller presents an already-rotated
+        token. Failing it closed returned a 401 the frontend read as a logout.
+        """
+        user = await self._create_user(db_session)
+        old = await self._store_refresh_token(db_session, user)
+        svc = AuthService(db_session)
+        assert await svc.rotate_refresh_token(old) is not None
+
         result = await svc.rotate_refresh_token(old)
-        assert result is None
+        assert result is not None
+        assert result[2].id == user.id
+
+    async def test_replay_after_grace_window_returns_none(self, db_session) -> None:
+        user = await self._create_user(db_session)
+        old = await self._store_refresh_token(db_session, user)
+        svc = AuthService(db_session)
+        await svc.rotate_refresh_token(old)
+
+        record = await self._rotated_record(db_session, old)
+        record.rotated_at = datetime.now(timezone.utc) - timedelta(
+            seconds=ROTATION_GRACE_SECONDS + 1
+        )
+        await db_session.flush()
+
+        assert await svc.rotate_refresh_token(old) is None
+
+    async def test_grace_window_does_not_survive_explicit_revocation(self, db_session) -> None:
+        """A password change must end other sessions even mid-grace-window."""
+        user = await self._create_user(db_session)
+        old = await self._store_refresh_token(db_session, user)
+        svc = AuthService(db_session)
+        await svc.rotate_refresh_token(old)
+
+        await svc.revoke_all_user_tokens(user.id)
+        await db_session.flush()
+
+        assert await svc.rotate_refresh_token(old) is None
+
+    async def test_logout_revoked_token_is_never_honoured(self, db_session) -> None:
+        user = await self._create_user(db_session)
+        token = await self._store_refresh_token(db_session, user)
+        svc = AuthService(db_session)
+        await svc.revoke_refresh_token(token)
+        await db_session.flush()
+
+        assert await svc.rotate_refresh_token(token) is None
 
     async def test_nonexistent_token_returns_none(self, db_session) -> None:
         fake, _ = create_refresh_token(999)

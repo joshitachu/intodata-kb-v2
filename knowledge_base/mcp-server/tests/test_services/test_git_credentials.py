@@ -129,3 +129,134 @@ async def test_fetch_remote_for_project_injects_resolved_token(fernet_key):
     assert fetched
     assert any("resolved_pat@github.com" in u for u in set_urls)
     assert set_urls[-1] == remote_url  # clean origin restored
+
+
+# --- Azure DevOps connections -------------------------------------------------
+
+async def test_azure_devops_project_uses_connection_provider():
+    project = SimpleNamespace(
+        id="ado1",
+        github_token_enc=None,
+        github_installation_id=None,
+        azure_devops_connection_id="conn-1",
+        connection_kind="azure_devops",
+    )
+    provider = git_credentials.provider_for_project(project)
+    assert isinstance(provider, git_credentials.AzureDevOpsCredentialProvider)
+
+
+async def test_azure_devops_connection_id_without_kind_still_resolves():
+    """A connection id and no stored PAT can only mean an Azure DevOps connection."""
+    project = SimpleNamespace(
+        id="ado2",
+        github_token_enc=None,
+        github_installation_id=None,
+        azure_devops_connection_id="conn-2",
+        connection_kind="",
+    )
+    assert isinstance(
+        git_credentials.provider_for_project(project),
+        git_credentials.AzureDevOpsCredentialProvider,
+    )
+
+
+async def test_azure_devops_kind_wins_over_stored_pat():
+    project = SimpleNamespace(
+        id="ado3",
+        github_token_enc="enc",
+        github_installation_id=7,
+        azure_devops_connection_id="conn-3",
+        connection_kind="azure_devops",
+    )
+    assert isinstance(
+        git_credentials.provider_for_project(project),
+        git_credentials.AzureDevOpsCredentialProvider,
+    )
+
+
+async def test_azure_devops_kind_without_connection_id_falls_back_to_pat(fernet_key):
+    """A half-migrated row must degrade to the stored PAT, not crash the fetch."""
+    enc = encryption.encrypt_token("ghp_pat")
+    project = SimpleNamespace(
+        id="ado4",
+        github_token_enc=enc,
+        github_installation_id=None,
+        azure_devops_connection_id=None,
+        connection_kind="azure_devops",
+    )
+    provider = git_credentials.provider_for_project(project)
+    assert isinstance(provider, git_credentials.PatCredentialProvider)
+    assert await provider.get_token() == "ghp_pat"
+
+
+async def test_azure_devops_provider_decrypts_organization_pat(monkeypatch, fernet_key):
+    """The organization PAT is looked up lazily, inside get_token()."""
+    calls: list[str] = []
+
+    async def fake_resolve_pat(db, connection_id):
+        calls.append(connection_id)
+        return "ado_pat"
+
+    import mcp_server.services.azure_devops_connections as connections_mod
+
+    monkeypatch.setattr(connections_mod, "resolve_pat", fake_resolve_pat)
+
+    class _NullSessionFactory:
+        def __call__(self):
+            return self
+
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *exc):
+            return False
+
+    import mcp_server.db.session as session_mod
+
+    monkeypatch.setattr(session_mod, "async_session_factory", _NullSessionFactory())
+
+    provider = git_credentials.AzureDevOpsCredentialProvider("conn-9")
+    assert await provider.get_token() == "ado_pat"
+    assert calls == ["conn-9"]
+
+
+async def test_azure_devops_project_fetch_injects_organization_pat(monkeypatch):
+    """End-to-end: an Azure DevOps project authenticates fetch with its org PAT."""
+
+    class _StubProvider(git_credentials.GitCredentialProvider):
+        async def get_token(self):
+            return "ado_pat"
+
+    monkeypatch.setattr(
+        git_credentials, "AzureDevOpsCredentialProvider", lambda connection_id: _StubProvider()
+    )
+
+    project = SimpleNamespace(
+        id="ado5",
+        github_token_enc=None,
+        github_installation_id=None,
+        azure_devops_connection_id="conn-5",
+        connection_kind="azure_devops",
+    )
+    remote_url = "https://dev.azure.com/org/Data/_git/etl"
+    set_urls: list[str] = []
+    fetched = False
+
+    async def git_func(local_path, *args, **kwargs):
+        nonlocal fetched
+        if args == ("remote", "get-url", "origin"):
+            return remote_url
+        if args[:3] == ("remote", "set-url", "origin"):
+            set_urls.append(args[3])
+            return ""
+        if args[:1] == ("fetch",):
+            fetched = True
+            return ""
+        raise AssertionError(f"unexpected git call: {args}")
+
+    await service.fetch_remote_for_project("/repo", project, git_func=git_func)
+
+    assert fetched
+    # Azure DevOps authenticates on the password, so the PAT must land there.
+    assert any("x-access-token:ado_pat@dev.azure.com" in url for url in set_urls)
+    assert set_urls[-1] == remote_url  # clean origin restored

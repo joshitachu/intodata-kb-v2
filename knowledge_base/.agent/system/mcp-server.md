@@ -60,6 +60,36 @@ All endpoints are under `/mcp/` prefix:
 | GET | `/health` | Health check |
 | GET | `/logs/stream?project_id=...` | SSE log streaming |
 | POST | `/webhook/github/webhook` | GitHub webhook (HMAC-verified, bypasses JWT) |
+| POST | `/mcp/azure-devops/connections` | Connect an Azure DevOps organization (PAT verified, then encrypted) |
+| GET | `/mcp/azure-devops/connections` | List the caller's Azure DevOps connections (never returns tokens) |
+| POST | `/mcp/azure-devops/connections/{id}/test` | Re-verify a stored PAT against Azure DevOps |
+| GET | `/mcp/azure-devops/connections/{id}/repos` | List repositories the connection can read (repo picker) |
+| DELETE | `/mcp/azure-devops/connections/{id}` | Remove a connection and unbind its projects |
+
+## Git connection kinds
+
+`projects.connection_kind` selects how a project's git credential is resolved. All
+three resolve through one Strategy in `services/git_credentials.py`
+(`provider_for_project`) -- never branch on connection kind at a call site.
+
+| Kind | Credential source | Notes |
+|------|-------------------|-------|
+| `pat` | `projects.github_token_enc` | Legacy/fallback; per-project encrypted PAT |
+| `app` | `projects.github_installation_id` | GitHub App; short-lived token minted on demand |
+| `azure_devops` | `projects.azure_devops_connection_id` -> `azure_devops_connections.pat_enc` | One organization PAT shared by every project from that organization |
+
+Azure DevOps specifics:
+
+- No App-style install exists, so a Personal Access Token (Code: Read is enough) is
+  the only credential. It is verified against `_apis/connectionData` before it is
+  persisted, so a stored connection always worked at least once.
+- `utils/azure_devops_api.py` owns URL handling: `normalize_organization_url`
+  reduces organization / project / `/_git/` / `_apis` / `dev.azure.com` /
+  `*.visualstudio.com` / on-prem-collection URLs to one organization base.
+  `add_repo` normalizes an Azure DevOps URL BEFORE its shell-metacharacter check,
+  because browser URLs legitimately carry `?path=&version=`.
+- Auto-reingestion for Azure DevOps repositories runs through the git poller. No
+  service hook is registered (Azure DevOps service hooks have no HMAC signature).
 
 ## Configuration (.mcp.json)
 

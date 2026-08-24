@@ -334,9 +334,12 @@ export function ChatInput({
             onChange={handleZipSelect}
           />
 
-          {/* Bottom row: toolbar + image button + send button */}
-          <div className="flex items-center justify-between px-3 pb-2">
-            <div className="flex items-center gap-2">
+          {/* Bottom row: toolbar + image button + send button.
+              min-w-0 + wrapping keeps wide toolbar content (mode toggle, project
+              picker, runtime status) inside the composer instead of pushing the
+              send button past its right edge. */}
+          <div className="flex items-end justify-between gap-2 px-3 pb-2">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
               {toolbarContent}
               {!hideImagePicker && (
                 <button
@@ -345,7 +348,7 @@ export function ChatInput({
                   disabled={isLoading || disabled || images.length >= MAX_IMAGES}
                   aria-label="Attach image"
                   className={cn(
-                    "flex items-center justify-center w-7 h-7 rounded-md transition-colors",
+                    "flex shrink-0 items-center justify-center w-7 h-7 rounded-md transition-colors",
                     images.length >= MAX_IMAGES
                       ? "text-muted-foreground/40 cursor-not-allowed"
                       : "text-muted-foreground hover:text-foreground hover:bg-muted",
@@ -362,7 +365,7 @@ export function ChatInput({
                   disabled={isLoading || disabled || zipProgress !== null}
                   aria-label="Attach ZIP source"
                   title="Attach ZIP source"
-                  className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <FileArchive className="h-4 w-4" />
                 </button>
@@ -373,7 +376,7 @@ export function ChatInput({
               disabled={!canSend}
               aria-label="Send message"
               className={cn(
-                "flex items-center justify-center w-10 h-10 sm:w-8 sm:h-8 rounded-full transition-colors",
+                "flex shrink-0 items-center justify-center w-10 h-10 sm:w-8 sm:h-8 rounded-full transition-colors",
                 canSend
                   ? "bg-primary text-primary-foreground hover:bg-primary/90"
                   : "bg-muted text-muted-foreground cursor-not-allowed",

@@ -5,6 +5,7 @@ import { parseApiError } from "../lib/errors";
 
 interface Props {
   onAction: (projectId: string) => void;
+  onManageRuntimeEvidence?: (projectId: string) => void;
   activeProject?: string | null;
   onSelect: (projectId: string) => void;
   canManageProjects?: boolean;
@@ -12,6 +13,7 @@ interface Props {
 
 export default function ProjectList({
   onAction,
+  onManageRuntimeEvidence,
   activeProject,
   onSelect,
   canManageProjects = true,
@@ -62,6 +64,7 @@ export default function ProjectList({
           isActive={activeProject === p.id}
           onSelect={onSelect}
           onAction={onAction}
+          onManageRuntimeEvidence={onManageRuntimeEvidence}
           canManageProjects={canManageProjects}
         />
       ))}

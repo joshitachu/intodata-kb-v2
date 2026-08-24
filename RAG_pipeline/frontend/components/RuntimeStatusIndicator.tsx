@@ -27,7 +27,7 @@ export function RuntimeStatusIndicator() {
 
   return (
     <div
-      className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs text-muted-foreground whitespace-nowrap"
+      className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs text-muted-foreground whitespace-nowrap"
       title={label}
     >
       <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", dotClass)} />

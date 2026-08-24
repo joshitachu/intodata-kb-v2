@@ -28,6 +28,8 @@ from src.retrieval.embedder import embed_text
 from src.retrieval.search import _build_search_filter
 from src.retrieval.vector_store import COLLECTION_NAME
 from src.schemas import DocumentSource
+from src.turn_progress import report_phase
+from src.turn_timings import measure_model, record_embedding_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +73,11 @@ async def resolve_document_id(
 
     Returns (document_id, filename) or None if no match found.
     """
+    # Embeds directly rather than through `src.retrieval.search`, so it reports
+    # its own embedding time; otherwise this path's embedding would be invisible.
+    embed_start = time.perf_counter()
     query_embedding = await embed_text(query)
+    record_embedding_seconds(time.perf_counter() - embed_start)
 
     search_filter = _build_search_filter(
         user_groups,
@@ -223,26 +229,32 @@ async def run_map_reduce(
         f"(batch_size={MAP_BATCH_SIZE})"
     )
 
-    # 3. Map phase — parallel with semaphore
-    if len(batches) == 1:
-        # Single batch: skip map, go straight to a direct summary
-        summaries = [await map_summarize(batches[0], 0)]
-    else:
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT_MAP)
+    # 3. Map phase — parallel with semaphore.
+    # Measured as one span rather than per call: the batches run concurrently, so
+    # summing their individual durations would report more model time than the
+    # turn's own wall clock and break the "components are summable" invariant.
+    await report_phase("generating_answer")
+    with measure_model():
+        if len(batches) == 1:
+            # Single batch: skip map, go straight to a direct summary
+            summaries = [await map_summarize(batches[0], 0)]
+        else:
+            semaphore = asyncio.Semaphore(MAX_CONCURRENT_MAP)
 
-        async def limited_map(batch: list[str], idx: int) -> str:
-            async with semaphore:
-                return await map_summarize(batch, idx)
+            async def limited_map(batch: list[str], idx: int) -> str:
+                async with semaphore:
+                    return await map_summarize(batch, idx)
 
-        summaries = await asyncio.gather(
-            *(limited_map(batch, i) for i, batch in enumerate(batches))
-        )
+            summaries = await asyncio.gather(
+                *(limited_map(batch, i) for i, batch in enumerate(batches))
+            )
 
     # 4. Reduce phase
     if len(summaries) == 1:
         answer = summaries[0]
     else:
-        answer = await reduce_summaries(list(summaries), filename)
+        with measure_model():
+            answer = await reduce_summaries(list(summaries), filename)
 
     elapsed = int((time.perf_counter() - start) * 1000)
     logger.info(

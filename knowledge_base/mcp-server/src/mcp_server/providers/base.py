@@ -10,11 +10,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:
     from mcp_server.providers.custom.partition_planner import Partition
-    from mcp_server.schemas import NexusPresentation, NexusPrivateAnalysisPack
+    from mcp_server.schemas import NexusPresentation
 
 
 @dataclass
@@ -85,9 +85,16 @@ class DocGenContext:
     partition: "Partition | None" = None
     # Governed Style Pack output. Only Phase 3 prompt rendering may consume it.
     nexus_presentation: "NexusPresentation | None" = None
+    # False makes this a code-only run: no runtime evidence is fetched or
+    # rendered. It can only ever narrow what the project already granted.
+    live_evidence: bool = True
     # Verified V3 declarations, including metadata-only reference attachments and
     # bounded extracted text, may only be consumed by Phase 3 document rendering.
-    nexus_private_analysis_packs: tuple["NexusPrivateAnalysisPack", ...] = ()
+    # Run-scoped connector authority is optional and injected only for the
+    # OpenCode provider after project-binding preflight.  Legacy providers never
+    # resolve or consume it.  It intentionally contains no provider credential.
+    run_id: int | None = None
+    connector_runtime: Any | None = None
 
 
 # Type alias for the log callback passed to providers

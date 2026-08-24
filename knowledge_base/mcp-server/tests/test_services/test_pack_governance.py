@@ -167,7 +167,7 @@ async def test_certified_bundle_detects_direct_content_edit(tmp_path, monkeypatc
 
     assert before.certified is True
     assert after.certified is False
-    assert "changed outside certified Git/PR" in (after.blocked_reason or "")
+    assert "changed outside reviewed pull-request" in (after.blocked_reason or "")
 
 
 async def test_git_pack_requires_matching_configured_ref_and_manifest_provenance(tmp_path, monkeypatch):

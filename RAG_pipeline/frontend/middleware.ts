@@ -16,7 +16,7 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
 }
 
 export function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl;
+  const { pathname, search } = request.nextUrl;
 
   // Allow public paths
   if (PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
@@ -42,7 +42,10 @@ export function middleware(request: NextRequest) {
     const proto = request.headers.get("x-forwarded-proto") || "https";
     const host = request.headers.get("x-forwarded-host") || request.headers.get("host") || "localhost";
     const loginUrl = new URL("/login", `${proto}://${host}`);
-    loginUrl.searchParams.set("redirect", pathname);
+    // Keep the query string: third-party return trips (e.g. the GitHub App
+    // post-install redirect) carry their whole payload there, and dropping it
+    // sends the user back to a URL that can no longer do anything.
+    loginUrl.searchParams.set("redirect", `${pathname}${search}`);
     return NextResponse.redirect(loginUrl);
   }
 

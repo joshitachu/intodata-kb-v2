@@ -10,9 +10,13 @@ from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 from mcp_server.config import config
-from mcp_server.services.git_credentials import resolve_git_token
+from mcp_server.services.git_credentials import (
+    GitCredentialProvider,
+    NullCredentialProvider,
+    provider_for_project,
+)
 from mcp_server.services.rag_support_package import inspect_generation_cache_readiness
-from mcp_server.utils.encryption import inject_plaintext_token, inject_token
+from mcp_server.utils.encryption import inject_plaintext_token
 from mcp_server.utils.error_sanitizer import sanitize_git_error
 
 GitFunc = Callable[[str, str], Awaitable[str]]
@@ -78,16 +82,13 @@ def url_has_credentials(repo_url: str | None) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.username or parsed.password)
 
 
-def authenticated_url(repo_url: str, token_enc: str | None) -> str:
-    """Build an in-memory token-authenticated URL from a sanitized remote URL (encrypted PAT)."""
-    return inject_token(strip_url_credentials(repo_url) or repo_url, token_enc)
-
-
 def authenticated_url_plaintext(repo_url: str, token: str | None) -> str:
-    """Build an in-memory token-authenticated URL from a sanitized remote URL (plaintext token).
+    """Build an in-memory token-authenticated URL from a sanitized remote URL.
 
-    Uses the ``x-access-token`` username, required for GitHub App installation tokens
-    (and accepted for PATs), since this path carries provider-resolved plaintext tokens.
+    One builder for every credential kind. The ``x-access-token`` username is
+    required for GitHub App installation tokens (GitHub rejects an installation
+    token in the username position), accepted by GitHub for PATs, and ignored by
+    Azure DevOps, which authenticates on the password alone.
     """
     return inject_plaintext_token(
         strip_url_credentials(repo_url) or repo_url, token, username="x-access-token"
@@ -164,7 +165,7 @@ async def _with_temporary_origin(
     *,
     git_func: Callable[..., Awaitable[str]] = run_git,
 ) -> str | None:
-    """Origin-swap mechanics shared by the PAT and App token paths.
+    """Origin-swap mechanics for every credential kind.
 
     Restores a clean (credential-free) origin on the way in and always on the way
     out — regardless of how the authenticated URL was built.
@@ -185,22 +186,6 @@ async def _with_temporary_origin(
             await set_origin_url(local_path, clean_url, git_func=git_func)
 
 
-async def with_temporary_authenticated_origin(
-    local_path: str,
-    token_enc: str | None,
-    operation: Callable[[], Awaitable[str | None]],
-    *,
-    git_func: Callable[..., Awaitable[str]] = run_git,
-) -> str | None:
-    """Temporarily set origin to a PAT-authenticated URL and always restore clean origin."""
-    return await _with_temporary_origin(
-        local_path,
-        lambda clean: authenticated_url(clean, token_enc) if token_enc else clean,
-        operation,
-        git_func=git_func,
-    )
-
-
 async def with_temporary_authenticated_origin_token(
     local_path: str,
     token: str | None,
@@ -219,19 +204,25 @@ async def with_temporary_authenticated_origin_token(
 
 async def fetch_remote(
     local_path: str,
-    token_enc: str | None = None,
+    credential: GitCredentialProvider | None = None,
     *,
     remote: str = "origin",
     git_func: Callable[..., Awaitable[str]] = run_git,
 ) -> None:
-    """Fetch a remote with temporary auth and clean-origin restoration."""
+    """Fetch a remote with temporary auth and clean-origin restoration.
+
+    ``credential`` is a strategy from :mod:`mcp_server.services.git_credentials`,
+    so this one entry point serves stored PATs, minted GitHub App tokens and Azure
+    DevOps organization PATs alike. ``None`` means an unauthenticated (public) remote.
+    """
+    token = await (credential or NullCredentialProvider()).get_token()
 
     async def _fetch() -> str:
         return await git_func(local_path, "fetch", "--quiet", remote)
 
-    await with_temporary_authenticated_origin(
+    await with_temporary_authenticated_origin_token(
         local_path,
-        token_enc,
+        token,
         _fetch,
         git_func=git_func,
     )
@@ -239,18 +230,19 @@ async def fetch_remote(
 
 async def pull_remote_ff_only(
     local_path: str,
-    token_enc: str | None = None,
+    credential: GitCredentialProvider | None = None,
     *,
     git_func: Callable[..., Awaitable[str]] = run_git,
 ) -> None:
     """Run `git pull --ff-only` with temporary auth and clean-origin restoration."""
+    token = await (credential or NullCredentialProvider()).get_token()
 
     async def _pull() -> str:
         return await git_func(local_path, "pull", "--ff-only")
 
-    await with_temporary_authenticated_origin(
+    await with_temporary_authenticated_origin_token(
         local_path,
-        token_enc,
+        token,
         _pull,
         git_func=git_func,
     )
@@ -263,16 +255,11 @@ async def fetch_remote_for_project(
     remote: str = "origin",
     git_func: Callable[..., Awaitable[str]] = run_git,
 ) -> None:
-    """Fetch using the project's resolved credential (PAT or minted App token)."""
-    token = await resolve_git_token(project)
-
-    async def _fetch() -> str:
-        return await git_func(local_path, "fetch", "--quiet", remote)
-
-    await with_temporary_authenticated_origin_token(
+    """Fetch using the project's resolved credential."""
+    await fetch_remote(
         local_path,
-        token,
-        _fetch,
+        provider_for_project(project),
+        remote=remote,
         git_func=git_func,
     )
 
@@ -284,17 +271,7 @@ async def pull_remote_ff_only_for_project(
     git_func: Callable[..., Awaitable[str]] = run_git,
 ) -> None:
     """Run `git pull --ff-only` using the project's resolved credential."""
-    token = await resolve_git_token(project)
-
-    async def _pull() -> str:
-        return await git_func(local_path, "pull", "--ff-only")
-
-    await with_temporary_authenticated_origin_token(
-        local_path,
-        token,
-        _pull,
-        git_func=git_func,
-    )
+    await pull_remote_ff_only(local_path, provider_for_project(project), git_func=git_func)
 
 
 @dataclass(frozen=True)
@@ -466,7 +443,9 @@ async def inspect_reingestion_readiness(project) -> ReingestionReadinessReport:
         repo_url_had_credentials=repo_url_had_credentials,
         origin_had_credentials=origin_had_credentials,
         origin_matches_repo_url=origin_matches_repo_url,
-        has_github_token=bool(getattr(project, "github_token_enc", None)),
+        # "a credential is resolvable", not "a PAT column is populated": App and
+        # Azure DevOps connections carry their credential off the project row.
+        has_github_token=not isinstance(provider_for_project(project), NullCredentialProvider),
         has_last_ingested_commit=has_last_ingested_commit,
         has_docs=cache_readiness.has_docs,
         doc_count=cache_readiness.doc_count,

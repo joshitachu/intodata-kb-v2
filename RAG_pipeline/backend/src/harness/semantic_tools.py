@@ -57,7 +57,13 @@ SEMANTIC_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 CALL_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 MAX_TOOL_MESSAGE_BYTES = 16_384
 MAX_TOOL_DATA_BYTES = 12_000
-MAX_CONTAINER_DEPTH = 5
+# Seven levels, not five: a topology navigation target is a contract-shaped
+# payload six levels deep (data -> targets -> target -> level -> selection ->
+# id), and a relationship selection nests its streamKeys one deeper again.
+# Truncating those leaf ids yields a chip that navigates nowhere. Size is
+# still bounded by MAX_TOOL_DATA_BYTES, string length, and container width, so
+# the extra levels cannot be used to smuggle a large payload.
+MAX_CONTAINER_DEPTH = 7
 MAX_CONTAINER_ITEMS = 20
 MAX_STRING_CHARS = 500
 MAX_EVIDENCE_REFS = 10

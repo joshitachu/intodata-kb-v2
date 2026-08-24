@@ -11,7 +11,7 @@ ${DOC_LIST}
 
 UNIT ENUMERATION OBLIGATION (enforced before writing any section):
 The following ${TASK_UNIT_COUNT} ${CANONICAL_UNIT_LABEL} are assigned to THIS analysis task
-for group ${GROUP}. Every unit listed here MUST appear at least once in the COMPONENTS
+for group ${GROUP}. Every unit listed here MUST appear at least once in the ${ENUMERATION_SECTION}
 section with its type, purpose, and role. If a listed unit is absent from the scanner
 evidence, write its name and state exactly what evidence is missing -- do NOT silently omit
 it, and do NOT reconstruct it from indirect mentions. Analyze ONLY the units listed here.
@@ -60,9 +60,7 @@ Finish with a concise index for Phase 3. Include:
 - Top risks, unknowns, and redacted vs missing vs scanner-limited distinctions
 - Deep evidence pointers to the sections above
 
-The supplied prompt pack contains the full platform analysis guide.
-It is the authoritative reference for platform-specific patterns, component behavior, and additional depth requirements.
-Follow all extraction rules, examples, and depth requirements defined there in addition to the instructions above.
+${ANALYSIS_GUIDE_NOTE}
 Your output is the analysis body only -- the Python harness writes the coverage block and output file.
 
 BOUNDED ANALYSIS RULES (strictly enforced):

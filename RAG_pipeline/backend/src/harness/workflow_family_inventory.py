@@ -29,7 +29,7 @@ WORKFLOW_FAMILY_ADAPTERS = (
     WorkflowFamilyAdapter(
         "pack_builder",
         (
-            "nexus.packs.create", "nexus.packs.drafts.create", "nexus.packs.drafts.mutate",
+            "nexus.packs.create", "nexus.packs.drafts.create", "nexus.packs.drafts.refine",
             "nexus.packs.drafts.validate", "nexus.packs.drafts.save",
             "nexus.packs.drafts.abandon",
         ),

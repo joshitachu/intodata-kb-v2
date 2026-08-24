@@ -1,7 +1,7 @@
 "use client";
 
-import { ChevronDown, Loader2 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { FolderOpen, Loader2 } from "lucide-react";
+import { SelectMenu, type SelectMenuOption } from "@/components/ui/select-menu";
 import { useUserProjects } from "@/hooks/useUserProjects";
 import { useChatContext } from "@/contexts/ChatContext";
 
@@ -11,7 +11,7 @@ export function RagProjectSelector() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center gap-1.5 text-xs text-muted-foreground px-2 py-1">
+      <div className="flex h-7 items-center gap-1.5 px-2 text-xs text-muted-foreground">
         <Loader2 className="h-3 w-3 animate-spin" />
         <span>Projects...</span>
       </div>
@@ -20,7 +20,7 @@ export function RagProjectSelector() {
 
   if (error) {
     return (
-      <span className="text-xs text-destructive px-2">Projects unavailable</span>
+      <span className="px-2 text-xs text-destructive">Projects unavailable</span>
     );
   }
 
@@ -28,27 +28,25 @@ export function RagProjectSelector() {
     return null;
   }
 
+  const options: SelectMenuOption[] = [
+    { value: "", label: "All Projects" },
+    ...data.projects.map((project) => ({
+      value: project.id,
+      label: project.display_name,
+    })),
+  ];
+
   return (
-    <div className="relative" data-tour="project-selector">
-      <select
+    <div data-tour="project-selector">
+      <SelectMenu
         value={selectedProject}
-        onChange={(e) => setSelectedProject(e.target.value)}
-        className={cn(
-          "appearance-none cursor-pointer",
-          "rounded-full border border-input bg-muted/40 pl-3 pr-7 py-1",
-          "text-xs text-muted-foreground hover:text-foreground hover:bg-muted",
-          "focus:outline-none focus:ring-1 focus:ring-ring",
-          "transition-colors",
-        )}
-      >
-        <option value="">All Projects</option>
-        {data.projects.map((project) => (
-          <option key={project.id} value={project.id}>
-            {project.display_name}
-          </option>
-        ))}
-      </select>
-      <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+        onChange={setSelectedProject}
+        options={options}
+        placeholder="All Projects"
+        icon={FolderOpen}
+        ariaLabel="Retrieval project scope"
+        className="max-w-[12rem]"
+      />
     </div>
   );
 }

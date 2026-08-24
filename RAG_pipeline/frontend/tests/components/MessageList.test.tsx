@@ -48,6 +48,32 @@ describe("MessageList", () => {
     expect(onRetryMessage).toHaveBeenCalledOnce();
   });
 
+  it("keeps the completed stream visible while its persisted twin is handed off", () => {
+    render(
+      <MessageList
+        messages={[
+          {
+            id: 21,
+            role: "assistant",
+            content: "Persisted twin",
+            sources: null,
+            latency_ms: 20,
+            status: "completed",
+            created_at: new Date().toISOString(),
+          },
+        ]}
+        streamingMessage={streamingStream({
+          isStreaming: false,
+          content: "Completed live answer",
+          messageId: 21,
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Completed live answer")).toBeInTheDocument();
+    expect(screen.queryByText("Persisted twin")).not.toBeInTheDocument();
+  });
+
   it("renders persisted failed assistant messages after reload", () => {
     render(
       <MessageList

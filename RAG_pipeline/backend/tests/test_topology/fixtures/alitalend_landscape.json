@@ -1,0 +1,584 @@
+{
+ "applications": [
+  {
+   "artifact_count": 10,
+   "description": "",
+   "id": "talend-project:assetcheck:d3ec09658f7d",
+   "kinds_breakdown": {
+    "job": 10
+   },
+   "label": "AssetCheck",
+   "project_id": "_3kddkRZdEeqKU_MVyswKqg",
+   "role": "execution",
+   "source_root": "werkorder_bundle/ASSETCHECK",
+   "source_roots": [
+    "werkorder_bundle/ASSETCHECK"
+   ]
+  },
+  {
+   "artifact_count": 0,
+   "description": "",
+   "id": "talend-project:references:c7db6393ae51",
+   "kinds_breakdown": {},
+   "label": "References",
+   "project_id": "_VQorIYglEeyCH-SfJ5ELmQ",
+   "role": "support",
+   "source_root": "werkorder_bundle/REFERENCES",
+   "source_roots": [
+    "werkorder_bundle/REFERENCES"
+   ]
+  }
+ ],
+ "business_topology": {
+  "artifact_annotations": [],
+  "business_objects": [],
+  "component_annotations": [],
+  "conflicts": [],
+  "controls": [],
+  "coverage": {
+   "cited_artifacts": 10,
+   "cited_evidence": 17,
+   "coverage_ratio": 0.048571,
+   "grounded_technical_relationships": 2,
+   "notes": [
+    "Business semantics and runtime evidence are not established in the supplied evidence.",
+    "Deterministic post-synthesis repair applied 1 correction(s); dropped or downgraded claims are listed in the run warnings."
+   ],
+   "technical_relationships": 2,
+   "total_artifacts": 10,
+   "total_evidence": 350
+  },
+  "data_streams": [
+   {
+    "artifact_ids": [
+     "artifact:3937a2482d7d5ff54f1a",
+     "artifact:e5cf41748a381a21743e",
+     "artifact:064f84603a4bc4ce7c00",
+     "artifact:e1b859347326adc8cce1",
+     "artifact:3a6bee3ba7f463be2f32",
+     "artifact:ee2cb78c88df2f57669a"
+    ],
+    "business_object_ids": [],
+    "business_summary": "Business meaning is not established; scanner evidence establishes a database dependency.",
+    "confidence": 1.0,
+    "conflict_ids": [],
+    "control_ids": [],
+    "delivery_path_id": null,
+    "description": "Scanner-backed data dependency from AssetCheck to the first Log database identity.",
+    "destination_system_id": "landscape-system:aab3dedb92918d1cf853",
+    "evidence_ids": [
+     "landscape-edge:d8346a2c7f96fd68fe23",
+     "artifact:3937a2482d7d5ff54f1a"
+    ],
+    "id": "stream:assetcheck-to-log-0",
+    "integration_solution_ids": [
+     "integration-solution:assetcheck"
+    ],
+    "name": "AssetCheck to Log database data",
+    "protocols": [
+     "Database"
+    ],
+    "requiredness": "not_established",
+    "risk_ids": [],
+    "runtime_observation_ids": [],
+    "source_system_id": "landscape-application:1d5c0f7777b98508aec8",
+    "status": "observed",
+    "unknown_ids": [
+     "unknown:business-meaning"
+    ]
+   },
+   {
+    "artifact_ids": [
+     "artifact:e46c6ba576cc897a3e95"
+    ],
+    "business_object_ids": [],
+    "business_summary": "Business meaning is not established; scanner evidence establishes an outbound database dependency.",
+    "confidence": 1.0,
+    "conflict_ids": [],
+    "control_ids": [],
+    "delivery_path_id": null,
+    "description": "Scanner-backed outbound data dependency from AssetCheck to the second Log database identity.",
+    "destination_system_id": "landscape-system:7535d19590ac8488f941",
+    "evidence_ids": [
+     "landscape-edge:a8a781af37d4f72d71e0",
+     "artifact:e46c6ba576cc897a3e95"
+    ],
+    "id": "stream:assetcheck-to-log-1",
+    "integration_solution_ids": [
+     "integration-solution:assetcheck"
+    ],
+    "name": "AssetCheck to second Log database data",
+    "protocols": [
+     "Database"
+    ],
+    "requiredness": "not_established",
+    "risk_ids": [],
+    "runtime_observation_ids": [],
+    "source_system_id": "landscape-application:1d5c0f7777b98508aec8",
+    "status": "observed",
+    "unknown_ids": [
+     "unknown:business-meaning"
+    ]
+   }
+  ],
+  "delivery_paths": [],
+  "integration_solutions": [
+   {
+    "artifact_ids": [
+     "artifact:3937a2482d7d5ff54f1a",
+     "artifact:e5cf41748a381a21743e",
+     "artifact:064f84603a4bc4ce7c00",
+     "artifact:e1b859347326adc8cce1",
+     "artifact:d7fa7b4bfe239675d3a4",
+     "artifact:3a6bee3ba7f463be2f32",
+     "artifact:ee2cb78c88df2f57669a",
+     "artifact:96c6bcf017ced4a8e8a7",
+     "artifact:2ad472555b1a8eac949f",
+     "artifact:e46c6ba576cc897a3e95"
+    ],
+    "confidence": 1.0,
+    "description": "Scanner-identified Talend execution project.",
+    "evidence_ids": [
+     "landscape-application:1d5c0f7777b98508aec8",
+     "artifact:d7fa7b4bfe239675d3a4"
+    ],
+    "id": "integration-solution:assetcheck",
+    "name": "AssetCheck",
+    "platform": "Talend",
+    "role": "execution",
+    "status": "observed"
+   }
+  ],
+  "lineage_annotations": [],
+  "metadata": {
+   "generated_by": "documentation_topology_agent",
+   "model_name": "gpt-5.6-luna",
+   "project_id": "alitalend",
+   "scan_fingerprint": "c203140e7d7fafbd4032e56716a403c7ab5cd3f28cdd88681d21a08f87b66765"
+  },
+  "risks": [],
+  "runtime_observations": [],
+  "scan_fingerprint": "c203140e7d7fafbd4032e56716a403c7ab5cd3f28cdd88681d21a08f87b66765",
+  "schema_version": "business-topology-v1",
+  "systems": [
+   {
+    "aliases": [],
+    "confidence": 1.0,
+    "description": "Scanner-identified Talend execution application.",
+    "evidence_ids": [
+     "landscape-application:1d5c0f7777b98508aec8"
+    ],
+    "id": "landscape-application:1d5c0f7777b98508aec8",
+    "kind": "software_system",
+    "name": "AssetCheck",
+    "owner": "",
+    "purpose": "",
+    "status": "observed"
+   },
+   {
+    "aliases": [],
+    "confidence": 1.0,
+    "description": "Scanner-identified sibling Talend support application; no inter-system relationship is established in this partition.",
+    "evidence_ids": [
+     "landscape-application:a11650122d7b4db6f6e2"
+    ],
+    "id": "landscape-application:a11650122d7b4db6f6e2",
+    "kind": "software_system",
+    "name": "References",
+    "owner": "",
+    "purpose": "",
+    "status": "observed"
+   },
+   {
+    "aliases": [],
+    "confidence": 1.0,
+    "description": "Scanner-identified database system.",
+    "evidence_ids": [
+     "landscape-system:aab3dedb92918d1cf853"
+    ],
+    "id": "landscape-system:aab3dedb92918d1cf853",
+    "kind": "data_system",
+    "name": "Log",
+    "owner": "",
+    "purpose": "",
+    "status": "observed"
+   },
+   {
+    "aliases": [],
+    "confidence": 1.0,
+    "description": "Scanner-identified database system distinct from the other Log identity.",
+    "evidence_ids": [
+     "landscape-system:7535d19590ac8488f941"
+    ],
+    "id": "landscape-system:7535d19590ac8488f941",
+    "kind": "data_system",
+    "name": "Log",
+    "owner": "",
+    "purpose": "",
+    "status": "observed"
+   },
+   {
+    "aliases": [],
+    "confidence": 1.0,
+    "description": "Scanner-identified database system with no scanner edge in the supplied evidence.",
+    "evidence_ids": [
+     "landscape-system:4dbae6120cef624419bb"
+    ],
+    "id": "landscape-system:4dbae6120cef624419bb",
+    "kind": "data_system",
+    "name": "Common",
+    "owner": "",
+    "purpose": "",
+    "status": "observed"
+   }
+  ],
+  "transformations": [],
+  "unknowns": [
+   {
+    "confidence": 1.0,
+    "description": "The supplied evidence does not establish business objects, business purpose, ownership, criticality, or dependency requiredness for the scanner-backed database relationships.",
+    "evidence_ids": [
+     "landscape-edge:d8346a2c7f96fd68fe23",
+     "landscape-edge:a8a781af37d4f72d71e0"
+    ],
+    "id": "unknown:business-meaning",
+    "name": "Business meaning not established",
+    "question": "What business objects and business purposes do these database dependencies represent?",
+    "status": "not_established",
+    "stream_ids": [
+     "stream:assetcheck-to-log-0",
+     "stream:assetcheck-to-log-1"
+    ]
+   }
+  ]
+ },
+ "channels": [],
+ "diagnostics": [],
+ "edges": [
+  {
+   "confidence": "certain",
+   "dependency_type": "data",
+   "direction": "both",
+   "evidence_count": 17,
+   "mechanism": "db",
+   "provenance": [
+    {
+     "artifact_id": "AssetCheck_GetLocation",
+     "component_name": "tMSSqlInput_1",
+     "fact_type": "artifact_resource",
+     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_GetLocation",
+     "source_root": "werkorder_bundle/ASSETCHECK"
+    },
+    {
+     "artifact_id": "AssetCheck_GetLocation",
+     "component_name": "tMSSqlOutput_1",
+     "fact_type": "artifact_resource",
+     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_GetLocation",
+     "source_root": "werkorder_bundle/ASSETCHECK"
+    },
+    {
+     "artifact_id": "AssetCheck_GetLocations",
+     "component_name": "tDBInput_1",
+     "fact_type": "artifact_resource",
+     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_GetLocations",
+     "source_root": "werkorder_bundle/ASSETCHECK"
+    },
+    {
+     "artifact_id": "AssetCheck_GetLocations",
+     "component_name": "tDBOutput_1",
+     "fact_type": "artifact_resource",
+     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_GetLocations",
+     "source_root": "werkorder_bundle/ASSETCHECK"
+    },
+    {
+     "artifact_id": "AssetCheck_GetWorkOrder",
+     "component_name": "tDBOutput_1",
+     "fact_type": "artifact_resource",
+     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_GetWorkOrder",
+     "source_root": "werkorder_bundle/ASSETCHECK"
+    },
+    {
+     "artifact_id": "AssetCheck_GetWorkOrder",
+     "component_name": "tMSSqlInput_1",
+     "fact_type": "artifact_resource",
+     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_GetWorkOrder",
+     "source_root": "werkorder_bundle/ASSETCHECK"
+    },
+    {
+     "artifact_id": "AssetCheck_GetWorkOrders",
+     "component_name": "tDBOutput_1",
+     "fact_type": "artifact_resource",
+     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_GetWorkOrders",
+     "source_root": "werkorder_bundle/ASSETCHECK"
+    },
+    {
+     "artifact_id": "AssetCheck_GetWorkOrders",
+     "component_name": "tMSSqlInput_1",
+     "fact_type": "artifact_resource",
+     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_GetWorkOrders",
+     "source_root": "werkorder_bundle/ASSETCHECK"
+    },
+    {
+     "artifact_id": "AssetCheck_SendServiceRequest",
+     "component_name": "tMSSqlInput_1",
+     "fact_type": "artifact_resource",
+     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_SendServiceRequest",
+     "source_root": "werkorder_bundle/ASSETCHECK"
+    },
+    {
+     "artifact_id": "AssetCheck_SendServiceRequest",
+     "component_name": "tMSSqlOutput_1",
+     "fact_type": "artifact_resource",
+     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_SendServiceRequest",
+     "source_root": "werkorder_bundle/ASSETCHECK"
+    },
+    {
+     "artifact_id": "AssetCheck_SendWorkOrderUpdate",
+     "component_name": "tMSSqlInput_1",
+     "fact_type": "artifact_resource",
+     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_SendWorkOrderUpdate",
+     "source_root": "werkorder_bundle/ASSETCHECK"
+    },
+    {
+     "artifact_id": "AssetCheck_SendWorkOrderUpdate",
+     "component_name": "tMSSqlOutput_1",
+     "fact_type": "artifact_resource",
+     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_SendWorkOrderUpdate",
+     "source_root": "werkorder_bundle/ASSETCHECK"
+    },
+    {
+     "artifact_id": "Maximo2AssetCheck_SendLocation",
+     "component_name": "tMSSqlInput_1",
+     "fact_type": "artifact_resource",
+     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::Maximo2AssetCheck_SendLocation",
+     "source_root": "werkorder_bundle/ASSETCHECK"
+    },
+    {
+     "artifact_id": "Maximo2AssetCheck_SendLocation",
+     "component_name": "tMSSqlInput_2",
+     "fact_type": "artifact_resource",
+     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::Maximo2AssetCheck_SendLocation",
+     "source_root": "werkorder_bundle/ASSETCHECK"
+    },
+    {
+     "artifact_id": "Maximo2AssetCheck_SendLocation",
+     "component_name": "tMSSqlOutput_1",
+     "fact_type": "artifact_resource",
+     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::Maximo2AssetCheck_SendLocation",
+     "source_root": "werkorder_bundle/ASSETCHECK"
+    },
+    {
+     "artifact_id": "Maximo2AssetCheck_SendWorkOrder",
+     "component_name": "tMSSqlInput_1",
+     "fact_type": "artifact_resource",
+     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::Maximo2AssetCheck_SendWorkOrder",
+     "source_root": "werkorder_bundle/ASSETCHECK"
+    },
+    {
+     "artifact_id": "Maximo2AssetCheck_SendWorkOrder",
+     "component_name": "tMSSqlInput_2",
+     "fact_type": "artifact_resource",
+     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::Maximo2AssetCheck_SendWorkOrder",
+     "source_root": "werkorder_bundle/ASSETCHECK"
+    }
+   ],
+   "reliability": "unknown",
+   "source": "talend-project:assetcheck:d3ec09658f7d",
+   "source_kind": "application",
+   "target": "system:connection:0:log",
+   "target_kind": "system"
+  },
+  {
+   "confidence": "certain",
+   "dependency_type": "data",
+   "direction": "out",
+   "evidence_count": 1,
+   "mechanism": "db",
+   "provenance": [
+    {
+     "artifact_id": "Maximo2AssetCheck_SendWorkOrder",
+     "component_name": "tMSSqlOutput_1",
+     "fact_type": "artifact_resource",
+     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::Maximo2AssetCheck_SendWorkOrder",
+     "source_root": "werkorder_bundle/ASSETCHECK"
+    }
+   ],
+   "reliability": "unknown",
+   "source": "talend-project:assetcheck:d3ec09658f7d",
+   "source_kind": "application",
+   "target": "system:connection:1:log",
+   "target_kind": "system"
+  }
+ ],
+ "interfaces": [],
+ "summary": {
+  "application_count": 2,
+  "channel_count": 0,
+  "config_edge_count": 0,
+  "control_flow_edge_count": 0,
+  "data_edge_count": 2,
+  "diagnostic_count": 0,
+  "edge_count": 2,
+  "integration_edge_count": 0,
+  "interface_count": 0,
+  "system_count": 3,
+  "unmapped_count": 0
+ },
+ "systems": [
+  {
+   "evidence": [
+    {
+     "detail": {
+      "connection_type": "Microsoft SQL Server",
+      "source_root": "werkorder_bundle/ASSETCHECK",
+      "xmi_id": "_QOenYPBFEeOwluABMJAUrQ"
+     },
+     "label": "LogConnection",
+     "signal_type": "metadata_connection"
+    },
+    {
+     "detail": {
+      "connection_type": "Microsoft SQL Server",
+      "source_root": "werkorder_bundle/ASSETCHECK",
+      "xmi_id": "_QOenYPBFEeOwluABMJAUrQ"
+     },
+     "label": "LogConnection",
+     "signal_type": "metadata_connection"
+    }
+   ],
+   "id": "system:connection:0:log",
+   "kind": "database",
+   "name": "Log",
+   "source_roots": [
+    "werkorder_bundle/ASSETCHECK"
+   ]
+  },
+  {
+   "evidence": [
+    {
+     "detail": {
+      "connection_type": "Microsoft SQL Server",
+      "source_root": "werkorder_bundle/ASSETCHECK",
+      "xmi_id": "_bNno8BvxEeqwlth2Il2VSg"
+     },
+     "label": "LogDBConnection",
+     "signal_type": "metadata_connection"
+    },
+    {
+     "detail": {
+      "connection_type": "Microsoft SQL Server",
+      "source_root": "werkorder_bundle/ASSETCHECK",
+      "xmi_id": "_bNno8BvxEeqwlth2Il2VSg"
+     },
+     "label": "LogDBConnection",
+     "signal_type": "metadata_connection"
+    }
+   ],
+   "id": "system:connection:1:log",
+   "kind": "database",
+   "name": "Log",
+   "source_roots": [
+    "werkorder_bundle/ASSETCHECK"
+   ]
+  },
+  {
+   "evidence": [
+    {
+     "detail": {
+      "connection_type": "Microsoft SQL Server",
+      "source_root": "werkorder_bundle/ASSETCHECK",
+      "xmi_id": "_c7xBEApmEemak-xJBaXk-g"
+     },
+     "label": "CommonDbConnection",
+     "signal_type": "metadata_connection"
+    },
+    {
+     "detail": {
+      "connection_type": "Microsoft SQL Server",
+      "source_root": "werkorder_bundle/ASSETCHECK",
+      "xmi_id": "_c7xBEApmEemak-xJBaXk-g"
+     },
+     "label": "CommonDbConnection",
+     "signal_type": "metadata_connection"
+    }
+   ],
+   "id": "system:connection:2:common",
+   "kind": "database",
+   "name": "Common",
+   "source_roots": [
+    "werkorder_bundle/ASSETCHECK"
+   ]
+  }
+ ],
+ "topology_evidence": {
+  "artifacts": [
+   {
+    "artifact_kind": "job",
+    "artifact_role": "standalone",
+    "id": "artifact:3937a2482d7d5ff54f1a",
+    "job_id": "AssetCheck_GetLocation",
+    "name": "AssetCheck_GetLocation",
+    "source_root": "werkorder_bundle/ASSETCHECK"
+   },
+   {
+    "artifact_kind": "job",
+    "artifact_role": "standalone",
+    "id": "artifact:e5cf41748a381a21743e",
+    "job_id": "AssetCheck_GetLocations",
+    "name": "AssetCheck_GetLocations",
+    "source_root": "werkorder_bundle/ASSETCHECK"
+   },
+   {
+    "artifact_kind": "job",
+    "artifact_role": "standalone",
+    "id": "artifact:064f84603a4bc4ce7c00",
+    "job_id": "AssetCheck_GetWorkOrder",
+    "name": "AssetCheck_GetWorkOrder",
+    "source_root": "werkorder_bundle/ASSETCHECK"
+   },
+   {
+    "artifact_kind": "job",
+    "artifact_role": "standalone",
+    "id": "artifact:e1b859347326adc8cce1",
+    "job_id": "AssetCheck_GetWorkOrders",
+    "name": "AssetCheck_GetWorkOrders",
+    "source_root": "werkorder_bundle/ASSETCHECK"
+   },
+   {
+    "artifact_kind": "job",
+    "artifact_role": "standalone",
+    "id": "artifact:3a6bee3ba7f463be2f32",
+    "job_id": "AssetCheck_SendServiceRequest",
+    "name": "AssetCheck_SendServiceRequest",
+    "source_root": "werkorder_bundle/ASSETCHECK"
+   },
+   {
+    "artifact_kind": "job",
+    "artifact_role": "standalone",
+    "id": "artifact:ee2cb78c88df2f57669a",
+    "job_id": "AssetCheck_SendWorkOrderUpdate",
+    "name": "AssetCheck_SendWorkOrderUpdate",
+    "source_root": "werkorder_bundle/ASSETCHECK"
+   },
+   {
+    "artifact_kind": "job",
+    "artifact_role": "standalone",
+    "id": "artifact:e46c6ba576cc897a3e95",
+    "job_id": "Maximo2AssetCheck_SendWorkOrder",
+    "name": "Maximo2AssetCheck_SendWorkOrder",
+    "source_root": "werkorder_bundle/ASSETCHECK"
+   }
+  ],
+  "components": [],
+  "lineage": [],
+  "relations": []
+ },
+ "topology_state": {
+  "available": true,
+  "message": "Business topology is available and validated for the current scan.",
+  "source": "documentation_topology_agent",
+  "stale": false,
+  "validated": true
+ },
+ "unmapped": []
+}

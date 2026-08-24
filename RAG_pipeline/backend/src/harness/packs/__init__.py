@@ -18,19 +18,12 @@ from src.harness.packs.models import (
 
 FIXTURE_PACK_DIRECTORY = Path(__file__).with_name("fixtures")
 
-from src.harness.packs.project_service import (  # noqa: E402
-    DEFAULT_WORKFLOW_KEY,
-    PackServiceError,
-    ProjectPackService,
-)
-
 __all__ = [
     "FIXTURE_PACK_DIRECTORY",
     "PackActivation",
     "PackCatalog",
     "PackCatalogError",
     "PackLoadError",
-    "PackServiceError",
     "PackManifest",
     "PackReferenceSets",
     "PackSnapshot",
@@ -39,8 +32,6 @@ __all__ = [
     "PackType",
     "PackView",
     "ResolvedPackSet",
-    "ProjectPackService",
-    "DEFAULT_WORKFLOW_KEY",
     "load_pack_directory",
     "load_pack_file",
     "manifest_hash",

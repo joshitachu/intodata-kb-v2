@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import React from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import RuntimeLogsPage from "@/app/admin/logs/page";
 import RuntimeExecutionsPage from "@/app/admin/logs/executions/page";
 import RuntimePerformancePage from "@/app/admin/logs/performance/page";
@@ -28,6 +29,21 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ push: mocks.push }) }));
 
 function queryState(data: unknown) {
   return { data, isLoading: false, isError: false, isSuccess: true, refetch: vi.fn() };
+}
+
+// The console drives its own auto-refresh through the query client, so every
+// render needs a provider even though every data hook is mocked.
+function renderPage(Page: React.ComponentType) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    React.createElement(QueryClientProvider, { client }, React.createElement(Page)),
+  );
+}
+
+/** Pick an option from a SelectMenu (Radix opens on keyboard, not a click). */
+function selectOption(triggerName: string, optionName: string | RegExp) {
+  fireEvent.keyDown(screen.getByRole("button", { name: triggerName }), { key: "ArrowDown" });
+  fireEvent.keyDown(screen.getByRole("menuitem", { name: optionName }), { key: "Enter" });
 }
 
 const TREND = {
@@ -75,16 +91,50 @@ describe("RuntimeLogsPage", () => {
   beforeEach(() => { vi.clearAllMocks(); setDefaults(); });
 
   it("renders a summary-first hub and does not invoke entity inventory queries", () => {
-    render(React.createElement(RuntimeLogsPage));
-    expect(screen.getByText("Operational console")).toBeTruthy();
+    renderPage(RuntimeLogsPage);
+    expect(screen.getByRole("heading", { level: 1, name: "Runtime logs" })).toBeTruthy();
     expect(screen.getByText("Outcome trend")).toBeTruthy();
     expect(screen.getByText("Needs attention")).toBeTruthy();
     expect(mocks.useRuntimeJobs).not.toHaveBeenCalled();
     expect(mocks.useRuntimePlans).not.toHaveBeenCalled();
   });
 
+  // --- live feed -----------------------------------------------------------
+  // The console shows relative timestamps and auto-refreshes, so it must be
+  // explicit about whether data is still arriving. A pulsing "Live" pill over a
+  // three-hour-old import would be a lie.
+
+  it("reports a live feed when the newest import is within the polling window", () => {
+    mocks.useRuntimeSources.mockReturnValue(queryState({
+      sources: [{ project_id: "cdc", source_key: "tmc", label: "vw_TMC", source_type: "talend_tmc", status: "ok", enabled: true, sync_interval_seconds: 300, last_synced_at: new Date(Date.now() - 60_000).toISOString() }],
+      total: 1,
+    }));
+    renderPage(RuntimeLogsPage);
+    expect(screen.getByText(/Live · imported 1m ago/)).toBeTruthy();
+    expect(screen.queryByText(/Stale/)).toBeNull();
+  });
+
+  it("reports a stale feed when the newest import is older than three polling cycles", () => {
+    mocks.useRuntimeSources.mockReturnValue(queryState({
+      sources: [{ project_id: "cdc", source_key: "tmc", label: "vw_TMC", source_type: "talend_tmc", status: "ok", enabled: true, sync_interval_seconds: 300, last_synced_at: new Date(Date.now() - 3 * 3600_000).toISOString() }],
+      total: 1,
+    }));
+    renderPage(RuntimeLogsPage);
+    expect(screen.getByText(/Stale · 3h old/)).toBeTruthy();
+    // The banner and the header pill derive from one computation, so they agree.
+    expect(screen.getByText(/Last import 3h ago — data may be stale/)).toBeTruthy();
+  });
+
+  it("pauses and resumes the automatic refresh", () => {
+    renderPage(RuntimeLogsPage);
+    const toggle = screen.getByRole("button", { name: "Pause" });
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: "Resume" })).toHaveAttribute("aria-pressed", "false");
+  });
+
   it("opens an accessible execution drawer from a run row", () => {
-    render(React.createElement(RuntimeLogsPage));
+    renderPage(RuntimeLogsPage);
     fireEvent.click(screen.getAllByText("orders_sync")[0]);
     expect(screen.getByRole("dialog", { name: "Runtime details" })).toBeTruthy();
     expect(screen.getAllByText("exec-1").length).toBeGreaterThan(0);
@@ -92,7 +142,7 @@ describe("RuntimeLogsPage", () => {
 
   it("sends the scoped question through the shared chat context", async () => {
     mocks.handleSendMessage.mockResolvedValue(undefined);
-    render(React.createElement(RuntimeLogsPage));
+    renderPage(RuntimeLogsPage);
     fireEvent.change(screen.getByPlaceholderText("What changed in the failed runs?"), { target: { value: "Why did orders fail?" } });
     fireEvent.click(screen.getByText("Ask Nexus"));
     await vi.waitFor(() => expect(mocks.handleSendMessage).toHaveBeenCalledWith({ query: "Why did orders fail?", project_id: undefined }));
@@ -100,8 +150,8 @@ describe("RuntimeLogsPage", () => {
   });
 
   it("uses execution-only queries on the runs route and exposes the honest server total", () => {
-    render(React.createElement(RuntimeExecutionsPage));
-    expect(screen.getByText("1 records")).toBeTruthy();
+    renderPage(RuntimeExecutionsPage);
+    expect(screen.getByText("Showing 1-1 of 1 records")).toBeTruthy();
     expect(mocks.useRuntimeOverview).not.toHaveBeenCalled();
     expect(mocks.useRuntimeExecutions).toHaveBeenCalled();
   });
@@ -109,7 +159,7 @@ describe("RuntimeLogsPage", () => {
   // --- summary layer is driven by real aggregates, not by query page length ---
 
   it("derives KPI values from the window aggregate rather than the row count", () => {
-    render(React.createElement(RuntimeLogsPage));
+    renderPage(RuntimeLogsPage);
     // 70 + 72 runs in the trend, of which 4 failed => 3%, not the 12-row page size.
     expect(screen.getByText("142")).toBeTruthy();
     expect(screen.getByText("3%")).toBeTruthy();
@@ -117,19 +167,19 @@ describe("RuntimeLogsPage", () => {
   });
 
   it("scopes every hub aggregate to the selected time window", () => {
-    render(React.createElement(RuntimeLogsPage));
+    renderPage(RuntimeLogsPage);
     for (const hook of [mocks.useRuntimeTrend, mocks.useRuntimeJobReliability]) {
       const filters = hook.mock.calls[0][0] as { since?: string };
       expect(typeof filters.since).toBe("string");
     }
-    fireEvent.change(screen.getByLabelText("Time window", { selector: "select" }), { target: { value: "24h" } });
+    selectOption("Time window", /24 hours/i);
     const trendCalls = mocks.useRuntimeTrend.mock.calls;
     const last = trendCalls[trendCalls.length - 1][0] as { bucket?: string };
     expect(last.bucket).toBe("hour");
   });
 
   it("ranks needs-attention by live failure signal and shows the last run", () => {
-    render(React.createElement(RuntimeLogsPage));
+    renderPage(RuntimeLogsPage);
     expect(screen.getByText("Maximo2RHM_Workorders")).toBeTruthy();
     // A job with no failures and no unfinished runs is not an attention signal.
     expect(screen.queryByText("Quintiq2Maximo_PlannedWorkOrder")).toBeNull();
@@ -138,7 +188,7 @@ describe("RuntimeLogsPage", () => {
   });
 
   it("surfaces the run-outcome and duration series with a legend and a table view", () => {
-    render(React.createElement(RuntimeLogsPage));
+    renderPage(RuntimeLogsPage);
     expect(screen.getByText("Runs per day")).toBeTruthy();
     expect(screen.getByText("p95 duration")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "table" }));
@@ -158,11 +208,13 @@ describe("RuntimeLogsPage", () => {
       ],
       total: 2,
     }));
-    render(React.createElement(RuntimeLogsPage));
+    renderPage(RuntimeLogsPage);
     fireEvent.click(screen.getAllByText("orders_sync")[0]);
-    expect(screen.getByText("Log lines")).toBeTruthy();
+    const heading = screen.getByRole("heading", { name: /Log lines/ });
+    expect(heading).toBeTruthy();
     expect(screen.getByText("tMSSqlOutput_5 Data truncation")).toBeTruthy();
-    expect(screen.getByText("2 lines")).toBeTruthy();
+    // The captured-line count is a chip on the heading.
+    expect(within(heading).getByText("2")).toBeTruthy();
   });
 
   it("keeps repeated identical log lines distinct", () => {
@@ -172,7 +224,7 @@ describe("RuntimeLogsPage", () => {
       events: [{ ...repeated, line_ordinal: 0 }, { ...repeated, line_ordinal: 1 }],
       total: 2,
     }));
-    render(React.createElement(RuntimeLogsPage));
+    renderPage(RuntimeLogsPage);
     fireEvent.click(screen.getAllByText("orders_sync")[0]);
     expect(screen.getAllByText("Failed request")).toHaveLength(2);
   });
@@ -188,7 +240,7 @@ describe("RuntimeLogsPage", () => {
       }],
       total: 1,
     }));
-    render(React.createElement(RuntimeIncidentsPage));
+    renderPage(RuntimeIncidentsPage);
     fireEvent.click(screen.getByText("Target column rejected the value"));
     expect(screen.getByText("next checks")).toBeTruthy();
     expect(screen.getByText("Check the target column width")).toBeTruthy();
@@ -205,7 +257,7 @@ describe("RuntimeLogsPage", () => {
       }],
       total: 1,
     }));
-    render(React.createElement(RuntimeIncidentsPage));
+    renderPage(RuntimeIncidentsPage);
     expect(screen.getByText("low — not a diagnosis")).toBeTruthy();
   });
 
@@ -224,7 +276,7 @@ describe("RuntimeLogsPage", () => {
       }],
       total: 1,
     }));
-    render(React.createElement(RuntimeIncidentsPage));
+    renderPage(RuntimeIncidentsPage);
     expect(screen.getByText("Execution terminated with errors; review log events for details.")).toBeTruthy();
     expect(screen.getByText("low — not a diagnosis")).toBeTruthy();
     expect(screen.getByText("rule engine")).toBeTruthy();
@@ -242,7 +294,7 @@ describe("RuntimeLogsPage", () => {
       }],
       total: 1,
     }));
-    render(React.createElement(RuntimeIncidentsPage));
+    renderPage(RuntimeIncidentsPage);
     expect(screen.getByText("Inferred by LLM")).toBeTruthy();
     expect(screen.queryByText("rule engine")).toBeNull();
   });
@@ -265,7 +317,7 @@ describe("RuntimeLogsPage", () => {
         evidence_refs: [], estate_context: {},
       },
     }));
-    render(React.createElement(RuntimeIncidentsPage));
+    renderPage(RuntimeIncidentsPage);
     fireEvent.click(screen.getByText("Data truncation"));
     // Also present in the drawer's raw scalar dump, so match all occurrences.
     expect(screen.getAllByText("sqlserver.truncation").length).toBeGreaterThan(0);
@@ -282,7 +334,7 @@ describe("RuntimeLogsPage", () => {
       }],
       total: 1,
     }));
-    render(React.createElement(RuntimeIncidentsPage));
+    renderPage(RuntimeIncidentsPage);
     expect(screen.getByText('tBigQueryOutput_2_tBQBE Invalid dataset ID "test_ zaf_del_clean".')).toBeTruthy();
     expect(screen.queryByText("Execution terminated with MySQL error 200.")).toBeNull();
   });
@@ -290,9 +342,9 @@ describe("RuntimeLogsPage", () => {
   // --- runs route filters ---
 
   it("passes the stuck-run filters through to the executions query", () => {
-    render(React.createElement(RuntimeExecutionsPage));
-    fireEvent.change(screen.getByLabelText("Outcome"), { target: { value: "failed" } });
-    fireEvent.change(screen.getByLabelText("Minimum duration"), { target: { value: "86400000" } });
+    renderPage(RuntimeExecutionsPage);
+    selectOption("Outcome", "Failed");
+    selectOption("Minimum duration", "Longer than 24h");
     fireEvent.click(screen.getByLabelText("Never finished only"));
     const calls = mocks.useRuntimeExecutions.mock.calls;
     const last = calls[calls.length - 1][0] as Record<string, unknown>;
@@ -306,7 +358,7 @@ describe("RuntimeLogsPage", () => {
       executions: [{ execution_id: "exec-stuck", job_name: "maximoFourpsWorkOrder", state: "success", started_at: "2026-07-03T10:00:00Z", ended_at: null, duration_ms: null }],
       total: 1,
     }));
-    render(React.createElement(RuntimeExecutionsPage));
+    renderPage(RuntimeExecutionsPage);
     expect(screen.getByText("never finished")).toBeTruthy();
   });
 
@@ -317,7 +369,7 @@ describe("RuntimeLogsPage", () => {
       components: [{ project_id: "alitalend", source_key: "tmc", component_key: "tHashInput_1", component_type: "tHashInput", source_connector_type: "tHashInput", target_connector_type: "tMap", executions: 591, rows_total: 2_962_701, rows_rejected: null, avg_duration_ms: 6263, p95_duration_ms: 14000 }],
       total: 1,
     }));
-    render(React.createElement(RuntimePerformancePage));
+    renderPage(RuntimePerformancePage);
     expect(screen.getByText("Component hotspots")).toBeTruthy();
     expect(screen.getByText("Job throughput")).toBeTruthy();
     expect(screen.getByText("tHashInput_1")).toBeTruthy();
@@ -330,7 +382,7 @@ describe("RuntimeLogsPage", () => {
       signatures: [{ project_id: "werkorder", signature_hash: "abc123def456", error_code: null, exception_class: "BatchUpdateException", component_name: "tMSSqlOutput_5", summary_text: "BatchUpdateException / tMSSqlOutput_5", occurrence_count: 16, first_seen_at: "2026-07-27T00:00:00Z", last_seen_at: "2026-07-27T23:00:00Z" }],
       total: 1,
     }));
-    render(React.createElement(RuntimeSignaturesPage));
+    renderPage(RuntimeSignaturesPage);
     expect(screen.getByText("Error signatures")).toBeTruthy();
     expect(screen.getByText("BatchUpdateException / tMSSqlOutput_5")).toBeTruthy();
     expect(screen.getByText("16")).toBeTruthy();

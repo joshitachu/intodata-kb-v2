@@ -1,7 +1,8 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, Eye, EyeOff, X } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useChatContext } from "@/contexts/ChatContext";
 import {
   ReactFlow,
@@ -33,7 +34,7 @@ import { IntegrationDetailCanvas, IntegrationRelationshipChooser } from "@/compo
 import { BusinessContextBanner } from "@/components/graph/BusinessContextBanner";
 import { TopologyBreadcrumb } from "@/components/graph/TopologyBreadcrumb";
 import { LineagePathBanner } from "@/components/graph/LineagePathBanner";
-import { useTopologyNavigation } from "@/hooks/useTopologyNavigation";
+import { useTopologyNavigation, type TopologyLevel } from "@/hooks/useTopologyNavigation";
 import { useProjectLandscape, LandscapeUnavailableError } from "@/hooks/useProjectLandscape";
 import { useFieldLineage } from "@/hooks/useFieldLineage";
 import { useJobHealth } from "@/hooks/useJobHealth";
@@ -75,6 +76,56 @@ import { FocusInteractionContext, type FocusInteraction } from "@/components/gra
 import { CALL_EDGE_COLOR } from "@/lib/nodeStyles";
 import { findLandscapeEdge, landscapeEdgeKey, type TopologyEdge } from "@/lib/landscapeTransform";
 import type { LandscapeProvenance } from "@/types/landscape";
+import { PageCopilot, copilotNotice } from "@/components/PageCopilot";
+import { useProgressiveTargets } from "@/components/copilot/useProgressiveTargets";
+import { AutoNavigationBanner } from "@/components/copilot/AutoNavigationBanner";
+import { usePageCopilotChat } from "@/hooks/usePageCopilotChat";
+import { useCopilotCollapsed } from "@/hooks/useCopilotCollapsed";
+import { useLoadedJobComponents } from "@/hooks/useLoadedJobComponents";
+import {
+  activeIdSpace,
+  buildTopologyGraphData,
+  describeTopologyLevel,
+  isTopologyLevelResolvable,
+  navigateToTarget,
+  resolveTopologyTargets,
+  toCopilotTarget,
+  topologyLevelKey,
+  type ResolvedTopologyTarget,
+} from "@/lib/topologyTargets";
+import {
+  findRelationshipTarget,
+  pickMovementTarget,
+  relationshipShape,
+  selectRelevantTargets,
+  synthesizeRelationshipTarget,
+  type AutoMovementKind,
+} from "@/lib/topologyFollow";
+import {
+  buildTopologyPageScope,
+  designAssistantEmphasis,
+  highlightNodeIdsForTargets,
+  integrationAssistantEmphasis,
+  integrationSelectionEntityId,
+  jobAssistantEmphasis,
+  landscapeAssistantEmphasis,
+  mappingAssistantEmphasis,
+  readTopologyTargetsPayload,
+  topologyAnswerSource,
+  topologyCopilotScope,
+  topologyCopilotSuggestions,
+} from "@/lib/topologyCopilot";
+import {
+  TOPOLOGY_CONVERSATION_PARAM,
+  TOPOLOGY_LEVEL_PARAMS,
+  TOPOLOGY_PROJECT_PARAM,
+  parseTopologyConversationFromParams,
+  parseTopologyLevelFromParams,
+  parseTopologyProjectFromParams,
+  topologyLevelToParams,
+} from "@/lib/topologyUrl";
+import type { AssistantFocusRequest, CopilotNotice, CopilotTarget, CopilotViewContext } from "@/types/copilot";
+import type { ConversationMessageRequest, PublicAgentEvent } from "@/types";
 
 // Default focus-mode horizon: focal job ± this many dependency hops.
 const DEFAULT_FOCUS_HOPS = 2;
@@ -87,6 +138,15 @@ const DEFAULT_FOCUS_HOPS = 2;
 // floor a fit simply can't show the whole graph and the user scrolls/pans
 // instead, which is the correct tradeoff over an illegible overview.
 const FIT_MIN_ZOOM = 0.35;
+
+// Whether the docked copilot is collapsed is a preference, not incidental UI
+// state -- it survives navigation and reloads under this key.
+const COPILOT_COLLAPSED_KEY = "copilot:collapsed:topology";
+const COPILOT_FOLLOW_KEY = "copilot:follow:topology";
+
+// Shared empty list for the "no events yet" case, so `useProgressiveTargets`
+// does not see a new array reference (and re-derive) on every render.
+const NO_AGENT_EVENTS: readonly PublicAgentEvent[] = [];
 
 interface ProjectOption {
   id: string;
@@ -144,6 +204,7 @@ const nodeTypes = {
 };
 
 function TopologyContent() {
+  const router = useRouter();
   const { selectedProject: globalProject, setSelectedProject: setGlobalProject } = useChatContext();
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [selectedProject, setSelectedProjectLocal] = useState("");
@@ -190,14 +251,88 @@ function TopologyContent() {
   const [focusJobId, setFocusJobId] = useState<string | null>(null);
   const [focusHops, setFocusHops] = useState<number>(DEFAULT_FOCUS_HOPS);
 
+  // ── Page copilot emphasis state ──────────────────────────────────────────
+  // Node ids the copilot is pointing at. Declared alongside the other emphasis
+  // sources because it feeds the same dimmed/highlighted channel (see the
+  // copilot emphasis effect for the precedence rules).
+  const [copilotHighlightIds, setCopilotHighlightIds] = useState<Set<string> | null>(null);
+  // A hovered chip narrows the emphasis to exactly one target. Wrapped rather
+  // than stored bare so "hovering a chip with nothing on this canvas" is
+  // distinguishable from "not hovering" -- the former must dim nothing, not
+  // fall back to the whole answer.
+  const [copilotHover, setCopilotHover] = useState<{ ids: Set<string> } | null>(null);
+  // The project the copilot's thread belongs to. Compared against the selected
+  // project rather than assumed equal: on a project switch this still holds the
+  // OLD id for the render before the reset effect runs, which is exactly the
+  // window in which a stale chip would otherwise point into the previous
+  // project's graph.
+  const [copilotThreadProject, setCopilotThreadProject] = useState<string | null>(null);
+  const [copilotViewContext, setCopilotViewContext] = useState<CopilotViewContext>({});
+  const [assistantFocusRequest, setAssistantFocusRequest] = useState<AssistantFocusRequest | null>(null);
+
+  // ── Deep link (see lib/topologyUrl.ts for the contract) ──────────────────
+  // Read ONCE, on the first render. The URL is an opening position, not a
+  // binding: after that the address bar follows the user (see the write-back
+  // effect below), so re-reading it would make in-page navigation fight the
+  // very thing it just wrote.
+  const searchParams = useSearchParams();
+  const [deepLink] = useState(() => ({
+    level: parseTopologyLevelFromParams(searchParams),
+    projectId: parseTopologyProjectFromParams(searchParams),
+    conversationId: parseTopologyConversationFromParams(searchParams),
+  }));
+  // The level still waiting to be applied. It cannot be applied on mount: a
+  // level is only trustworthy once there is a graph to check it against.
+  const [pendingDeepLinkLevel, setPendingDeepLinkLevel] = useState<TopologyLevel | null>(
+    deepLink.level,
+  );
+  // A link that named something this scan does not have. Reported rather than
+  // silently swallowed -- the user followed a link and ended up somewhere else.
+  const [deepLinkRejected, setDeepLinkRejected] = useState(false);
+  // Consumed by the project-selection and thread effects, which own that state.
+  const pendingDeepLinkProjectRef = useRef<string | null>(deepLink.projectId);
+  const pendingDeepLinkThreadRef = useRef<number | null>(deepLink.conversationId);
+
+  // The jump an answer made on the user's behalf, and the stack to put back.
+  const [autoNavigation, setAutoNavigation] = useState<{
+    /** The answer it came from, so one answer can only ever move the view once. */
+    messageId: number;
+    label: string;
+    detail: string;
+    levelKey: string;
+    previousStack: TopologyLevel[];
+    previousViewport: { x: number; y: number; zoom: number };
+    reason: "explicit" | "follow";
+    /** What the view actually did, so the banner cannot overstate it. */
+    movement: AutoMovementKind;
+  } | null>(null);
+  // Separate from the state above so dismissing the banner cannot re-arm the
+  // jump: this records that the answer HAS been acted on, banner or not.
+  const autoNavigatedMessageRef = useRef<number | null>(null);
+
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const { fitView, fitBounds, getViewport, setViewport } = useReactFlow();
-  const { isMobile } = useViewport();
+  const { isMobile, isDesktop } = useViewport();
+  const [followConversation, setFollowConversation] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (followConversation !== null) return;
+    const saved = window.localStorage.getItem(COPILOT_FOLLOW_KEY);
+    setFollowConversation(saved === null ? isDesktop : saved === "follow");
+  }, [followConversation, isDesktop]);
+
+  const handleFollowModeChange = useCallback((follow: boolean) => {
+    setFollowConversation(follow);
+    window.localStorage.setItem(COPILOT_FOLLOW_KEY, follow ? "follow" : "stay");
+  }, []);
 
   // Drill-down navigation stack (Project > Job > ...). Level 0/1 (this
   // page's canvas) stays mounted-but-hidden while a job level is open so
   // ascending restores the prior viewport, expand state, and layout.
+  // The whole navigation object is kept (not only its members) because
+  // `navigateToTarget` dispatches a copilot chip onto it as a unit.
+  const navigation = useTopologyNavigation();
   const {
     stack: navStack,
     current: navCurrent,
@@ -209,7 +344,9 @@ function TopologyContent() {
     ascend,
     jumpTo,
     reset: resetNavigation,
-  } = useTopologyNavigation();
+    restore: restoreNavigation,
+    replaceStack: replaceNavigationStack,
+  } = navigation;
   const focusedGroupLevel = navStack.find((level) => level.kind === "group");
   const focusedGroup = focusedGroupLevel?.kind === "group" ? focusedGroupLevel.groupName : null;
   const focusedSourceRoot = focusedGroupLevel?.kind === "group" ? focusedGroupLevel.sourceRoot : undefined;
@@ -217,6 +354,9 @@ function TopologyContent() {
   const currentComponent = navCurrent.kind === "component" ? navCurrent : null;
   const atProjectLevel =
     navCurrent.kind === "project" || navCurrent.kind === "group";
+  useEffect(() => {
+    setCopilotViewContext({});
+  }, [navCurrent]);
   const landscapeQuery = useProjectLandscape(selectedProject);
   // The scanner-computed landscape supersedes the legacy group roll-up at the
   // root only. Group detail remains available as the existing Designs path.
@@ -699,6 +839,540 @@ function TopologyContent() {
     return { visibleNodes: filtered.nodes, visibleEdges: filtered.edges };
   }, [flowResult, hiddenGroups, showConnections, focusFlow]);
 
+  // ── Page copilot ─────────────────────────────────────────────────────────
+  // The assistant docked beside this canvas. Everything domain-specific is
+  // derived here and handed over as flat descriptors: the panel itself knows
+  // nothing about landscapes, manifests or id spaces (components/PageCopilot).
+
+  // Component names for the job graphs this browser has actually fetched.
+  // Read from the query cache rather than re-fetched (see the hook): job
+  // graphs load lazily, so this is normally sparse, and its sparseness is the
+  // point -- a job that IS loaded gets a strict component check, a job that is
+  // not stays `assumed` instead of being wrongly declared unknown.
+  const loadedJobComponents = useLoadedJobComponents(selectedProject);
+
+  // What a target is validated against: exactly what THIS page has loaded,
+  // filters included, so a chip can never navigate into an empty canvas.
+  const copilotGraph = useMemo(
+    () =>
+      buildTopologyGraphData({
+        landscape: landscapeQuery.data ?? null,
+        manifest: activeManifest,
+        componentNamesByJob: loadedJobComponents,
+      }),
+    [landscapeQuery.data, activeManifest, loadedJobComponents],
+  );
+
+  // Integration levels are identified by hashed ids, so the scope chip would
+  // otherwise read as a hash. The landscape artifact is the only thing that can
+  // resolve them to a name.
+  const integrationDisplayName = useMemo(() => {
+    const landscape = landscapeQuery.data;
+    if (!integrationSelection || !landscape) return undefined;
+    if (integrationSelection.kind === "application") {
+      return landscape.applications.find(
+        (item) => item.id === integrationSelection.applicationId,
+      )?.label;
+    }
+    if (integrationSelection.kind === "system") {
+      return (
+        landscape.business_topology?.systems.find(
+          (item) => item.id === integrationSelection.systemId,
+        )?.name ??
+        landscape.systems.find((item) => item.id === integrationSelection.systemId)?.name
+      );
+    }
+    return undefined;
+  }, [integrationSelection, landscapeQuery.data]);
+
+  const copilotScope = useMemo(
+    () => topologyCopilotScope(navCurrent, integrationDisplayName),
+    [navCurrent, integrationDisplayName],
+  );
+
+  // Starter prompts change as the user drills: they are the only place the
+  // panel gets to show what it can answer at this level.
+  const copilotSuggestions = useMemo(
+    () => topologyCopilotSuggestions(navCurrent),
+    [navCurrent],
+  );
+
+  // Degraded conditions, mapped from real page state. None of them implies the
+  // diagram is broken -- that has its own error states above.
+  const copilotNotices = useMemo<CopilotNotice[]>(() => {
+    const notices: CopilotNotice[] = [];
+    // Same rule the canvas uses to choose an id space: an overlay that is
+    // absent, unvalidated or stale means every name comes from the scan.
+    if (landscapeQuery.data && activeIdSpace(landscapeQuery.data) === "scanner") {
+      notices.push(copilotNotice("stale-overlay"));
+    }
+    if (landscapeUnavailable) notices.push(copilotNotice("missing-artifact"));
+    // A 404 is a documented absence (handled above); any other failure means
+    // the service serving the artifacts answers are built from did not respond.
+    if (landscapeQuery.isError && !landscapeUnavailable) {
+      notices.push(copilotNotice("service-unreachable"));
+    }
+    return notices;
+  }, [landscapeQuery.data, landscapeQuery.isError, landscapeUnavailable]);
+
+  const copilotScopeContext = useMemo<CopilotViewContext>(() => {
+    const selectedEntity = copilotViewContext.selectedEntity ?? (
+      navCurrent.kind === "group"
+        ? { kind: "group" as const, label: navCurrent.groupName, entity_id: navCurrent.groupName }
+        : navCurrent.kind === "job"
+          ? { kind: "job" as const, label: navCurrent.jobName, entity_id: navCurrent.jobName }
+          : navCurrent.kind === "component"
+            ? {
+                kind: "component" as const,
+                label: navCurrent.componentName,
+                entity_id: `${navCurrent.jobName}::${navCurrent.componentName}`,
+              }
+            : navCurrent.kind === "integration"
+              ? {
+                  kind: navCurrent.selection.kind,
+                  label: integrationDisplayName ?? describeTopologyLevel(navCurrent),
+                  // The selection's OWN identifier, not the level render key:
+                  // `integration:edge:<key>` never resolved server-side. A
+                  // relationship contributes none, because it names two systems
+                  // and `level.selection` already carries both.
+                  ...(integrationSelectionEntityId(navCurrent.selection)
+                    ? { entity_id: integrationSelectionEntityId(navCurrent.selection) }
+                    : {}),
+                }
+              : selectedJob
+                ? { kind: "job" as const, label: selectedJob, entity_id: selectedJob }
+                : undefined
+    );
+    const rootFilters = showLegacyCanvas && atProjectLevel
+      ? [
+          { name: "search", value: searchQuery || "all" },
+          { name: "artifact", value: artifactFilter },
+          { name: "connections", value: showConnections ? "shown" : "hidden" },
+        ]
+      : undefined;
+    return {
+      selectedEntity,
+      activeDetailTab: copilotViewContext.activeDetailTab,
+      filters: copilotViewContext.filters ?? rootFilters,
+    };
+  }, [
+    copilotViewContext,
+    navCurrent,
+    integrationDisplayName,
+    selectedJob,
+    showLegacyCanvas,
+    atProjectLevel,
+    searchQuery,
+    artifactFilter,
+    showConnections,
+  ]);
+
+  // The scope envelope travels with every message. It is a prompt hint only:
+  // the backend never treats it as an access or retrieval filter, and nothing
+  // in this UI implies it narrows what can be asked.
+  const buildCopilotRequest = useCallback(
+    (query: string): ConversationMessageRequest => {
+      const pageScope = buildTopologyPageScope(selectedProject, navCurrent, {
+        selected_entity: copilotScopeContext.selectedEntity,
+        active_detail_tab: copilotScopeContext.activeDetailTab,
+        filters: copilotScopeContext.filters,
+      });
+      return {
+        query,
+        project_id: selectedProject || undefined,
+        ...(pageScope ? { page_scope: pageScope } : {}),
+      };
+    },
+    [selectedProject, navCurrent, copilotScopeContext],
+  );
+
+  const copilotChat = usePageCopilotChat(buildCopilotRequest);
+  // Reference-stable, so the project-change effect can depend on them without
+  // re-running (and re-fetching the graph) on every render.
+  const {
+    startNewThread: copilotStartNewThread,
+    adoptThread: copilotAdoptThread,
+  } = copilotChat;
+
+  // Three columns only fit on a desktop-width viewport; narrower ones start as
+  // the 44px rail. There is no separate mobile form of this panel.
+  const [copilotCollapsed, setCopilotCollapsed] = useCopilotCollapsed(
+    COPILOT_COLLAPSED_KEY,
+    !isDesktop,
+  );
+
+  // The finished answer's targets come from the PERSISTED message rather than
+  // the stream buffer, so a non-streaming turn produces the same chips. Derived
+  // rather than stored: state would have to be kept in step with both the
+  // thread and the project, and effect ordering against the project reset below
+  // is not something worth reasoning about.
+  const lastAssistantMessage = useMemo(() => {
+    for (let index = copilotChat.messages.length - 1; index >= 0; index -= 1) {
+      const message = copilotChat.messages[index];
+      if (message.role === "assistant") return message;
+    }
+    return null;
+  }, [copilotChat.messages]);
+
+  const copilotResolutions = useMemo<ResolvedTopologyTarget[]>(() => {
+    if (!lastAssistantMessage || copilotThreadProject !== selectedProject) return [];
+    return resolveTopologyTargets(
+      readTopologyTargetsPayload(lastAssistantMessage.structured_answer),
+      copilotGraph,
+    );
+  }, [lastAssistantMessage, copilotThreadProject, selectedProject, copilotGraph]);
+
+  // The question the answer is answering. Needed because the SUBJECT of a turn
+  // is not always something the answer's own targets name -- "what flows from A
+  // to B" is about the A<->B relationship even when the model returned A and B
+  // as two separate entities.
+  const lastUserQuery = useMemo(() => {
+    for (let index = copilotChat.messages.length - 1; index >= 0; index -= 1) {
+      const message = copilotChat.messages[index];
+      if (message.role === "user") return message.content;
+    }
+    return null;
+  }, [copilotChat.messages]);
+
+  // The relationship this turn is about, if any, and the graph-derived target
+  // for it. Computed independently of Follow mode: Stay Put still highlights
+  // the relationship, it just does not reframe the viewport for it.
+  const copilotRelationship = useMemo(
+    () => relationshipShape({
+      resolutions: copilotResolutions,
+      selectedEntity: copilotScopeContext.selectedEntity,
+      query: lastUserQuery,
+      graph: copilotGraph,
+    }),
+    [copilotResolutions, copilotScopeContext.selectedEntity, lastUserQuery, copilotGraph],
+  );
+
+  /**
+   * The answer's targets plus the relationship it is about.
+   *
+   * Prepended rather than appended so the subject is the first chip and wins
+   * `visual_role` priority on the endpoints it shares with the answer's own
+   * targets: an endpoint the model called `supporting` is part of the primary
+   * subject here, and the canvas must not fade it.
+   */
+  const copilotAnswerResolutions = useMemo(() => {
+    if (!copilotRelationship) return copilotResolutions;
+    if (findRelationshipTarget(copilotResolutions, copilotRelationship.endpoints)) {
+      return copilotResolutions;
+    }
+    const synthesized = synthesizeRelationshipTarget(
+      copilotRelationship.endpoints,
+      copilotGraph,
+    );
+    return synthesized ? [synthesized, ...copilotResolutions] : copilotResolutions;
+  }, [copilotRelationship, copilotResolutions, copilotGraph]);
+
+  const copilotTargets = useMemo(
+    () => selectRelevantTargets(copilotAnswerResolutions).map(toCopilotTarget),
+    [copilotAnswerResolutions],
+  );
+
+  const landscapeCopilotEmphasis = useMemo(
+    () => landscapeAssistantEmphasis(copilotAnswerResolutions),
+    [copilotAnswerResolutions],
+  );
+  const designCopilotEmphasis = useMemo(
+    () => designAssistantEmphasis(copilotResolutions),
+    [copilotResolutions],
+  );
+  const integrationCopilotEmphasis = useMemo(
+    () => integrationAssistantEmphasis(
+      copilotResolutions,
+      selectedLandscapeEdge?.provenance ?? [],
+    ),
+    [copilotResolutions, selectedLandscapeEdge],
+  );
+  const jobCopilotEmphasis = useMemo(
+    () => currentJobName
+      ? jobAssistantEmphasis(copilotResolutions, currentJobName)
+      : null,
+    [copilotResolutions, currentJobName],
+  );
+  const mappingCopilotEmphasis = useMemo(
+    () => currentComponent
+      ? mappingAssistantEmphasis(
+          copilotResolutions,
+          currentComponent.jobName,
+          currentComponent.componentName,
+        )
+      : null,
+    [copilotResolutions, currentComponent],
+  );
+
+  // Progressive highlight: nodes light up as tool results arrive, about a
+  // second in, instead of after the prose finishes. Emphasis only.
+  const handleProgressiveHighlight = useCallback((resolutions: ResolvedTopologyTarget[]) => {
+    const ids = highlightNodeIdsForTargets(resolutions);
+    setCopilotHighlightIds(ids.size > 0 ? ids : null);
+  }, []);
+
+  const copilotLiveResolutions = useProgressiveTargets({
+    events: copilotChat.streamState.agentEvents ?? NO_AGENT_EVENTS,
+    graph: copilotGraph,
+    onHighlight: handleProgressiveHighlight,
+  });
+
+  // Same relevance cap as the finished answer: the progressive pass is fed by
+  // the raw retrieval step, which is where the thirty-chip panel came from.
+  const copilotLiveTargets = useMemo(
+    () => selectRelevantTargets(copilotLiveResolutions).map(toCopilotTarget),
+    [copilotLiveResolutions],
+  );
+
+  // The saved answer takes the emphasis over from the progressive pass. Set
+  // rather than cleared-and-reset so it never blinks between the last tool
+  // result and the persisted answer landing.
+  useEffect(() => {
+    const ids = highlightNodeIdsForTargets(copilotResolutions);
+    if (ids.size === 0) return;
+    setCopilotHighlightIds(ids);
+  }, [copilotResolutions]);
+
+  const copilotResolutionByKey = useMemo(() => {
+    const byKey = new Map<string, ResolvedTopologyTarget>();
+    // Answer resolutions last: once an answer is saved it supersedes the
+    // provisional resolution of the same target.
+    for (const resolution of [...copilotLiveResolutions, ...copilotAnswerResolutions]) {
+      byKey.set(resolution.key, resolution);
+    }
+    return byKey;
+  }, [copilotLiveResolutions, copilotAnswerResolutions]);
+
+  const handleCopilotTargetHover = useCallback(
+    (target: CopilotTarget | null) => {
+      if (!target) {
+        setCopilotHover(null);
+        return;
+      }
+      const resolution = copilotResolutionByKey.get(target.key);
+      setCopilotHover({
+        ids: resolution ? highlightNodeIdsForTargets([resolution]) : new Set<string>(),
+      });
+    },
+    [copilotResolutionByKey],
+  );
+
+  // What actually backed this answer. Derived here, next to the resolutions it
+  // depends on, so the panel's diagram-flavoured chrome cannot imply the
+  // diagram vouched for an answer that came from documents or runtime data.
+  const copilotAnswerSource = useMemo(
+    () =>
+      copilotThreadProject === selectedProject
+        ? topologyAnswerSource(lastAssistantMessage, copilotResolutions)
+        : null,
+    [lastAssistantMessage, copilotResolutions, copilotThreadProject, selectedProject],
+  );
+
+  // ── Evidence-driven visual follow ────────────────────────────────────────
+  // Explicit navigation remains authoritative in either preference. Follow adds
+  // at most one move per answer, and `pickMovementTarget` decides WHAT that move
+  // is about -- the relationship when the turn is relationship-shaped, the
+  // answer's one graph-confirmed primary entity otherwise, and nothing when a
+  // relationship the user is looking at cannot be grounded.
+  const movementDecision = useMemo(
+    () => pickMovementTarget({
+      resolutions: copilotAnswerResolutions,
+      graph: copilotGraph,
+      followConversation: followConversation === true,
+      selectedEntity: copilotScopeContext.selectedEntity,
+      query: lastUserQuery,
+    }),
+    [
+      copilotAnswerResolutions,
+      copilotGraph,
+      followConversation,
+      copilotScopeContext.selectedEntity,
+      lastUserQuery,
+    ],
+  );
+
+  useEffect(() => {
+    if (!lastAssistantMessage) return;
+    // `null` means the stored preference has not been read yet; acting now would
+    // move (or refuse to move) on a default the user never chose.
+    if (followConversation === null && movementDecision?.reason !== "explicit") return;
+    // One move per answer. The ref (not the banner state) is the record, so
+    // dismissing the banner, toggling Follow, or moving away cannot re-trigger
+    // the jump. Stay put consumes the answer without moving it.
+    if (autoNavigatedMessageRef.current === lastAssistantMessage.id) return;
+    autoNavigatedMessageRef.current = lastAssistantMessage.id;
+
+    if (!movementDecision) return;
+    const { target: movementTarget, reason } = movementDecision;
+    const explicit = reason === "explicit";
+    const level = movementTarget.target.level;
+    // Captured BEFORE the dispatch: this is what Undo puts back. A component
+    // jump grows the stack by two, so a single `ascend` would strand the user
+    // on a job they never asked for.
+    const previousStack = navigation.stack;
+    const previousViewport = getViewport();
+
+    // Primary entities already visible on the current canvas are focused in
+    // place. Deeper entities drill through the existing validated navigator.
+    let focusRequest: AssistantFocusRequest | null = null;
+    if (!explicit && navCurrent.kind === "project" && level.kind === "integration") {
+      // Systems, flows and relationships all live ON the landscape. Focusing
+      // them reframes the level the user is already on -- both endpoints and the
+      // connecting edge for a relationship -- and the stack does not change.
+      const emphasis = landscapeAssistantEmphasis([movementTarget]);
+      focusRequest = {
+        key: `${lastAssistantMessage.id}:${movementTarget.key}`,
+        nodeIds: [...emphasis.nodeRoles.keys()],
+        edgeIds: [...emphasis.edgeRoles.keys()],
+      };
+    } else if (
+      !explicit &&
+      showLegacyCanvas &&
+      atProjectLevel &&
+      (level.kind === "group" || level.kind === "job")
+    ) {
+      const ids = [...highlightNodeIdsForTargets([movementTarget])];
+      if (ids.length > 0) {
+        const focusNodes = nodes.filter((node) => ids.includes(node.id));
+        if (focusNodes.length > 0) void fitView({ nodes: focusNodes, padding: 0.4, duration: 450 });
+        focusRequest = { key: `${lastAssistantMessage.id}:${movementTarget.key}`, nodeIds: ids };
+      }
+    } else if (
+      !explicit &&
+      navCurrent.kind === "component" &&
+      level.kind === "component" &&
+      topologyLevelKey(navCurrent) === topologyLevelKey(level)
+    ) {
+      const emphasis = mappingAssistantEmphasis(
+        [movementTarget],
+        navCurrent.jobName,
+        navCurrent.componentName,
+      );
+      focusRequest = {
+        key: `${lastAssistantMessage.id}:${movementTarget.key}`,
+        nodeIds: [...emphasis.nodeRoles.keys()],
+        edgeIds: [...emphasis.edgeRoles.keys()],
+      };
+    }
+
+    if (focusRequest && (focusRequest.nodeIds.length > 0 || focusRequest.edgeIds?.length)) {
+      setAssistantFocusRequest(focusRequest);
+      setAutoNavigation({
+        messageId: lastAssistantMessage.id,
+        label: movementTarget.label,
+        detail: describeTopologyLevel(level),
+        // The level the user is STILL on: nothing was pushed, so the banner
+        // must be retired by a move away from here, not from the target.
+        levelKey: topologyLevelKey(navCurrent),
+        previousStack,
+        previousViewport,
+        reason,
+        movement: "focused",
+      });
+      return;
+    }
+
+    if (!navigateToTarget(movementTarget, navigation)) return;
+    setSelectedJob(null);
+    setCopilotHover(null);
+    setAutoNavigation({
+      messageId: lastAssistantMessage.id,
+      label: movementTarget.label,
+      detail: describeTopologyLevel(level),
+      levelKey: topologyLevelKey(level),
+      previousStack,
+      previousViewport,
+      reason,
+      // Descending into the detail of a landscape entity keeps the subject and
+      // changes the depth; anything else changes the subject.
+      movement: level.kind === "integration" ? "opened" : "navigated",
+    });
+  }, [
+    movementDecision,
+    followConversation,
+    lastAssistantMessage,
+    navigation,
+    navCurrent,
+    showLegacyCanvas,
+    atProjectLevel,
+    nodes,
+    fitView,
+    getViewport,
+  ]);
+
+  // The banner describes the level it put the user on. The moment they move
+  // again -- breadcrumb, Escape, another chip -- it is describing the past.
+  useEffect(() => {
+    if (!autoNavigation) return;
+    if (topologyLevelKey(navCurrent) === autoNavigation.levelKey) return;
+    setAutoNavigation(null);
+  }, [navCurrent, autoNavigation]);
+
+  const handleUndoAutoNavigation = useCallback(() => {
+    if (!autoNavigation) return;
+    replaceNavigationStack(autoNavigation.previousStack);
+    setSelectedJob(null);
+    setAssistantFocusRequest(null);
+    requestAnimationFrame(() => {
+      void setViewport(autoNavigation.previousViewport, { duration: 300 });
+    });
+    setAutoNavigation(null);
+  }, [autoNavigation, replaceNavigationStack, setViewport]);
+
+  const handleCopilotTargetClick = useCallback(
+    (target: CopilotTarget) => {
+      const resolution = copilotResolutionByKey.get(target.key);
+      if (!resolution) return;
+      // Clicking is the ONLY copilot path allowed to move the viewport, and
+      // only because the user asked for it. An unresolvable target returns
+      // false here and navigates nowhere (its chip is not even a button).
+      if (!navigateToTarget(resolution, navigation)) return;
+      setSelectedJob(null);
+      setCopilotHover(null);
+    },
+    [copilotResolutionByKey, navigation],
+  );
+
+  const handleCopilotSend = useCallback(
+    (query: string) => {
+      // A new question supersedes the previous answer: its emphasis goes with
+      // it, and the canvas falls back to whatever it showed before (the
+      // failure-focus resting dim) without the viewport moving. The previous
+      // answer's chips are hidden by the panel itself while a turn is in
+      // flight, and replaced when the new answer is saved.
+      setCopilotHighlightIds(null);
+      setCopilotHover(null);
+      setAssistantFocusRequest(null);
+      // The previous answer's jump notice belongs to the previous answer.
+      setAutoNavigation(null);
+      copilotChat.send(query);
+    },
+    [copilotChat],
+  );
+
+  const handleContinueInChat = useCallback(() => {
+    void copilotChat.continueInMainChat().then((conversationId) => {
+      if (conversationId !== null) router.push(`/?c=${conversationId}`);
+    });
+  }, [copilotChat, router]);
+
+  // The panel treats ANY non-null streamState as "this thread has something in
+  // it" and hides the idle state -- which is where the suggested prompts live.
+  // So the idle stream is reported as absent rather than as an empty object,
+  // otherwise the starter prompts would never appear at all.
+  const copilotStreamState = useMemo(() => {
+    const state = copilotChat.streamState;
+    const hasContent = Boolean(state.isStreaming || state.content || state.error);
+    return hasContent ? state : null;
+  }, [copilotChat.streamState]);
+
+  // Null or non-empty, never an empty set: an empty set would dim the entire
+  // canvas while also suppressing the resting dim underneath it.
+  const copilotEmphasisIds = useMemo(() => {
+    const ids = copilotHover ? copilotHover.ids : copilotHighlightIds;
+    return ids && ids.size > 0 ? ids : null;
+  }, [copilotHover, copilotHighlightIds]);
+
   // Fetch available projects
   useEffect(() => {
     fetch("/api/deep-dive/projects")
@@ -711,9 +1385,24 @@ function TopologyContent() {
       .catch(() => setError("Failed to load projects"));
   }, []);
 
-  // Sync with global project selection, fall back to first scanned project
+  // Sync with global project selection, fall back to first scanned project.
+  // A deep link outranks both, once -- it is the most specific statement of
+  // intent available, but only until the user picks something themselves.
   useEffect(() => {
     if (projects.length === 0) return;
+    const requested = pendingDeepLinkProjectRef.current;
+    if (requested !== null) {
+      pendingDeepLinkProjectRef.current = null;
+      if (projects.some((p) => p.id === requested)) {
+        setSelectedProjectLocal(requested);
+        setGlobalProject(requested);
+        return;
+      }
+      // Named a project this user cannot see or that no longer exists: the
+      // level cannot mean anything either, so it is not applied.
+      setPendingDeepLinkLevel(null);
+      setDeepLinkRejected(true);
+    }
     if (globalProject && projects.some((p) => p.id === globalProject)) {
       setSelectedProjectLocal(globalProject);
     } else if (!selectedProject) {
@@ -741,6 +1430,24 @@ function TopologyContent() {
     setExpandedGroups(new Set());
     setFocusJobId(null);
     setFocusHops(DEFAULT_FOCUS_HOPS);
+    // The copilot's answer was about the previous project: drop its emphasis
+    // and start a fresh thread. Re-pointing `copilotThreadProject` is what
+    // suppresses the old answer's chips; it is deliberately also read during
+    // the render BEFORE this effect runs, so there is no frame in which a chip
+    // resolves against the new project's graph.
+    setCopilotHighlightIds(null);
+    setCopilotHover(null);
+    setAssistantFocusRequest(null);
+    setAutoNavigation(null);
+    autoNavigatedMessageRef.current = null;
+    setCopilotThreadProject(selectedProject);
+    // A deep link may name the thread the level came from, so the answer that
+    // produced the link is still on screen when the page opens. Consumed once,
+    // like the level: any later project switch starts a fresh thread.
+    const adoptThreadId = pendingDeepLinkThreadRef.current;
+    pendingDeepLinkThreadRef.current = null;
+    if (adoptThreadId !== null) copilotAdoptThread(adoptThreadId);
+    else copilotStartNewThread();
     // Reset the fit-key so the new project always gets an initial fitView.
     lastFitKeyRef.current = null;
 
@@ -761,7 +1468,61 @@ function TopologyContent() {
         setFlowResult(null);
       })
       .finally(() => setLoading(false));
-  }, [selectedProject, resetNavigation]);
+  }, [selectedProject, resetNavigation, copilotStartNewThread, copilotAdoptThread]);
+
+  // Apply a deep link's level, once there is something to check it against.
+  //
+  // Deliberately gated on loaded data rather than applied on mount: the level
+  // is validated by exactly the same rules as a copilot chip (job names,
+  // component membership, source roots, the active id space), so a link naming
+  // something this scan does not have fails safe to the landscape instead of
+  // dropping the user on an empty canvas.
+  useEffect(() => {
+    if (!pendingDeepLinkLevel) return;
+    // Nothing loaded yet: wait rather than guess. The graph fetch failing
+    // leaves this pending forever, which is correct -- the page shows its own
+    // error and there is no canvas to place anyone on.
+    if (!copilotGraph.hasManifest && !copilotGraph.hasLandscape) return;
+
+    setPendingDeepLinkLevel(null);
+    if (!isTopologyLevelResolvable(pendingDeepLinkLevel, copilotGraph)) {
+      setDeepLinkRejected(true);
+      return;
+    }
+    // Restored as a normal stack position: the breadcrumb reads the same as if
+    // the user had drilled here, and Escape/ascend walks back out.
+    restoreNavigation(pendingDeepLinkLevel);
+  }, [pendingDeepLinkLevel, copilotGraph, restoreNavigation]);
+
+  // Keep the address bar on the level in view, so it stays copy-pasteable.
+  //
+  // `history.replaceState`, not `router.replace`: this fires on every
+  // drill-down, and a router navigation would re-render the route for what is
+  // only an address-bar update -- on a page whose layout effect is carefully
+  // guarded against exactly that kind of incidental re-run.
+  const lastWrittenUrlRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    // Writing before the incoming link has been applied would erase it.
+    if (pendingDeepLinkLevel) return;
+    if (!selectedProject) return;
+
+    // Start from what is there: params this page does not own stay untouched.
+    const params = new URLSearchParams(window.location.search);
+    for (const key of TOPOLOGY_LEVEL_PARAMS) params.delete(key);
+    for (const [key, value] of topologyLevelToParams(navCurrent)) params.append(key, value);
+    params.set(TOPOLOGY_PROJECT_PARAM, selectedProject);
+    if (copilotChat.conversationId) {
+      params.set(TOPOLOGY_CONVERSATION_PARAM, String(copilotChat.conversationId));
+    } else {
+      params.delete(TOPOLOGY_CONVERSATION_PARAM);
+    }
+
+    const next = `${window.location.pathname}?${params.toString()}`;
+    if (next === lastWrittenUrlRef.current) return;
+    lastWrittenUrlRef.current = next;
+    window.history.replaceState(window.history.state, "", next);
+  }, [navCurrent, selectedProject, copilotChat.conversationId, pendingDeepLinkLevel]);
 
   // Escape ascends one drill-down level (breadcrumb click does the same).
   useEffect(() => {
@@ -1183,12 +1944,19 @@ function TopologyContent() {
   // ~12-15% opacity.
   //
   // PRECEDENCE (highest wins while active): search > hover > S5 lineage >
-  // failure-focus. While any higher source owns the fields this effect no-ops;
-  // when they clear it re-runs (they are deps) and reapplies focus AFTER their
-  // reset branch (this effect is declared last), so the two never fight into an
-  // inconsistent state. A live poll changing activeFocusSet also re-runs it.
+  // copilot > failure-focus. While any higher source owns the fields this
+  // effect no-ops; when they clear it re-runs (they are all deps) and reapplies
+  // focus AFTER their reset branch, so the two never fight into an inconsistent
+  // state. A live poll changing activeFocusSet also re-runs it. This is also
+  // what "restores the prior canvas emphasis" means for a dismissed copilot
+  // answer: copilotEmphasisIds going null re-runs this effect.
   useEffect(() => {
-    if (searchMatchIds !== null || hoveredNodeId !== null || projectLineageIds !== null) {
+    if (
+      searchMatchIds !== null ||
+      hoveredNodeId !== null ||
+      projectLineageIds !== null ||
+      copilotEmphasisIds !== null
+    ) {
       return;
     }
     const focusSet = activeFocusSet;
@@ -1197,8 +1965,20 @@ function TopologyContent() {
         if (n.id.startsWith("group-bg:")) return n;
         // group:* and conn:* nodes are never dimmed by focus (isFocusDimmableNode).
         const newDimmed = focusSet && isFocusDimmableNode(n.id) ? !focusSet.has(n.id) : false;
-        if (n.data.dimmed === newDimmed && n.data.highlighted === false) return n;
-        return { ...n, data: { ...n.data, dimmed: newDimmed, highlighted: false } };
+        if (
+          n.data.dimmed === newDimmed &&
+          n.data.highlighted === false &&
+          n.data.assistantVisualRole === undefined
+        ) return n;
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            dimmed: newDimmed,
+            highlighted: false,
+            assistantVisualRole: undefined,
+          },
+        };
       }),
     );
     setEdges((eds) =>
@@ -1216,7 +1996,75 @@ function TopologyContent() {
         return { ...e, style: { ...e.style, opacity: newOpacity } };
       }),
     );
-  }, [activeFocusSet, searchMatchIds, hoveredNodeId, projectLineageIds, setNodes, setEdges]);
+  }, [
+    activeFocusSet,
+    searchMatchIds,
+    hoveredNodeId,
+    projectLineageIds,
+    copilotEmphasisIds,
+    setNodes,
+    setEdges,
+  ]);
+
+  // Copilot emphasis: the places the current answer points at.
+  //
+  // A new tier in the SAME dimmed/highlighted + edge-opacity channel as
+  // search/hover/lineage/failure-focus, not a parallel mechanism (see the
+  // precedence note above). It sits directly over the resting dim, so an
+  // answer's targets are visible by default while still yielding to whatever
+  // the user is actively doing with the mouse or the search box.
+  //
+  // NO VIEWPORT CALL ON THIS PATH, deliberately: this also fires mid-stream
+  // from useProgressiveTargets, and panning or zooming the canvas while prose
+  // is still arriving is disorienting. Only an explicit chip click navigates.
+  useEffect(() => {
+    if (copilotEmphasisIds === null) return;
+    if (searchMatchIds !== null || hoveredNodeId !== null || projectLineageIds !== null) {
+      return;
+    }
+    // Same reference-stability rule as every other emphasis effect: only nodes
+    // whose state actually changed get a new data ref, otherwise ReactFlow
+    // re-renders the whole graph (see the search effect's comment).
+    setNodes((nds) =>
+      nds.map((n) => {
+        if (n.id.startsWith("group-bg:")) return n;
+        const isMatch = copilotEmphasisIds.has(n.id);
+        const assistantVisualRole = isMatch
+          ? designCopilotEmphasis.nodeRoles.get(n.id)
+          : undefined;
+        if (
+          n.data.dimmed === !isMatch &&
+          n.data.highlighted === isMatch &&
+          n.data.assistantVisualRole === assistantVisualRole
+        ) return n;
+        return {
+          ...n,
+          data: { ...n.data, dimmed: !isMatch, highlighted: isMatch, assistantVisualRole },
+        };
+      }),
+    );
+    setEdges((eds) =>
+      eds.map((e) => {
+        const visible =
+          copilotEmphasisIds.has(e.source) && copilotEmphasisIds.has(e.target);
+        const newOpacity = visible ? undefined : 0.15;
+        if ((e.style?.opacity ?? undefined) === newOpacity) return e;
+        if (newOpacity === undefined) {
+          const { opacity: _drop, ...restStyle } = e.style ?? {};
+          return { ...e, style: restStyle };
+        }
+        return { ...e, style: { ...e.style, opacity: newOpacity } };
+      }),
+    );
+  }, [
+    copilotEmphasisIds,
+    searchMatchIds,
+    hoveredNodeId,
+    projectLineageIds,
+    designCopilotEmphasis,
+    setNodes,
+    setEdges,
+  ]);
 
   // S3: live-patch node/edge health when the poll refreshes or the overlay is
   // toggled, without a full relayout. decorateNode/decorateEdge are
@@ -1559,6 +2407,17 @@ function TopologyContent() {
           </select>
           <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
         </div>
+        <button
+          type="button"
+          aria-pressed={Boolean(followConversation)}
+          aria-label={followConversation ? "Follow conversation enabled" : "Stay put enabled"}
+          onClick={() => handleFollowModeChange(!followConversation)}
+          className="inline-flex items-center gap-1.5 rounded-full border border-input bg-muted/30 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          title={followConversation ? "Assistant may focus or drill to one exact primary target" : "Assistant highlights answers without moving the view"}
+        >
+          {followConversation ? <Eye className="h-3.5 w-3.5" aria-hidden /> : <EyeOff className="h-3.5 w-3.5" aria-hidden />}
+          {followConversation ? "Follow conversation" : "Stay put"}
+        </button>
         {navDepth > 1 && (
           <TopologyBreadcrumb
             projectLabel={
@@ -1572,6 +2431,31 @@ function TopologyContent() {
           />
         )}
       </div>
+
+      {/* A link that named something this scan does not have. Stated rather
+          than swallowed: the user followed a link and landed elsewhere, and
+          silently showing the landscape would read as the link being wrong
+          about the level rather than about the project's contents. */}
+      {deepLinkRejected && (
+        <div
+          role="status"
+          data-testid="deep-link-rejected"
+          className="flex items-start gap-2 border-b border-amber-400/50 bg-amber-400/10 px-4 py-2 text-xs text-amber-800 dark:text-amber-300"
+        >
+          <p className="min-w-0 flex-1">
+            That link points at something that is not in the topology loaded here. Showing the
+            landscape instead.
+          </p>
+          <button
+            type="button"
+            onClick={() => setDeepLinkRejected(false)}
+            aria-label="Dismiss link notice"
+            className="shrink-0 rounded p-0.5 hover:bg-amber-400/20"
+          >
+            <X className="h-3.5 w-3.5" aria-hidden />
+          </button>
+        </div>
+      )}
 
       {/* Toolbar (level 0/1 only) */}
       {flowResult && atProjectLevel && showLegacyCanvas && (
@@ -1612,8 +2496,21 @@ function TopologyContent() {
         />
       )}
 
-      {/* Graph area */}
-      <div className="flex-1 relative min-h-[500px]">
+      {/* Graph area + docked copilot.
+          A flex ROW, not a third absolute overlay. Every panel this page
+          already floats -- JobDetailPanel (`right-0`), LandscapeEvidencePanel
+          (`bottom-3 right-3`), IntegrationDetailCanvas's explanation aside --
+          is absolutely positioned against the nearest positioned ancestor,
+          which is the canvas container below (each level's canvas root is
+          `absolute inset-0` inside it). Keeping the copilot a SIBLING of that
+          container is therefore what makes those overlays anchor to the
+          canvas's right edge -- beside the panel rather than underneath it --
+          without touching a single one of them.
+          `min-h-[500px]` stays on the row so the canvas keeps its existing
+          minimum height, and the row's definite height is what lets the
+          panel's `h-full` and its internal message scroller resolve. */}
+      <div className="flex flex-1 min-h-[500px] overflow-hidden">
+        <div className="relative flex-1 min-h-0 min-w-0 overflow-hidden">
         {/* Level 0/1 canvas: kept mounted (hidden) during drill-down so
             ascending restores the prior viewport and expand state. */}
         <div className={showLegacyCanvas ? "absolute inset-0" : "absolute inset-0 hidden"}>
@@ -1758,12 +2655,27 @@ function TopologyContent() {
         )}
 
         {showLandscapeRoot && landscapeQuery.data && (
-          <LandscapeCanvas landscape={landscapeQuery.data} onExplore={handleExploreLandscape} onViewDesigns={handleViewApplicationDesigns} />
+          <LandscapeCanvas
+            landscape={landscapeQuery.data}
+            onExplore={handleExploreLandscape}
+            onViewDesigns={handleViewApplicationDesigns}
+            assistantEmphasis={landscapeCopilotEmphasis}
+            assistantFocusRequest={assistantFocusRequest}
+            onContextChange={setCopilotViewContext}
+          />
         )}
 
         {navCurrent.kind === "integration" && landscapeQuery.data && (
           selectedLandscapeEdge ? (
-            <IntegrationDetailCanvas landscape={landscapeQuery.data} edge={selectedLandscapeEdge} onBack={ascend} onOpenArtifact={handleOpenLandscapeArtifact} />
+            <IntegrationDetailCanvas
+              landscape={landscapeQuery.data}
+              edge={selectedLandscapeEdge}
+              onBack={ascend}
+              onOpenArtifact={handleOpenLandscapeArtifact}
+              assistantEmphasis={integrationCopilotEmphasis}
+              assistantFocusRequest={assistantFocusRequest}
+              onContextChange={setCopilotViewContext}
+            />
           ) : integrationSelection?.kind === "application" ? (
             <IntegrationRelationshipChooser landscape={landscapeQuery.data} entityId={integrationSelection.applicationId} title={landscapeQuery.data.applications.find((item) => item.id === integrationSelection.applicationId)?.label || integrationSelection.applicationId} onBack={ascend} onChoose={(edge) => descendToIntegration({ kind: "edge", edgeKey: landscapeEdgeKey(edge) })} />
           ) : integrationSelection?.kind === "system" ? (
@@ -1786,6 +2698,9 @@ function TopologyContent() {
             onOpenJob={descendToJob}
             onOpenComponent={descendToComponent}
             lineageComponentIds={jobLineageIds}
+            assistantEmphasis={jobCopilotEmphasis}
+            assistantFocusRequest={assistantFocusRequest}
+            onContextChange={setCopilotViewContext}
           />
           <BusinessContextBanner annotations={jobBusinessAnnotations} level="L3 job" />
           </>
@@ -1805,9 +2720,27 @@ function TopologyContent() {
             lineageQuery={lineageQuery}
             lineageHighlight={componentLineage}
             onColumnLineageClick={handleColumnLineageClick}
+            assistantEmphasis={mappingCopilotEmphasis}
+            assistantFocusRequest={assistantFocusRequest}
+            onContextChange={setCopilotViewContext}
           />
           <BusinessContextBanner annotations={[...componentBusinessAnnotations, ...lineageBusinessAnnotations]} level="L4 mapping" />
           </>
+        )}
+
+        {/* The view moved because the answer was asked to move it. Rendered
+            over whichever level's canvas is mounted, since the jump can land
+            on any of them. */}
+        {autoNavigation && (
+          <AutoNavigationBanner
+            label={autoNavigation.label}
+            detail={
+              autoNavigation.detail === autoNavigation.label ? undefined : autoNavigation.detail
+            }
+            onUndo={handleUndoAutoNavigation}
+            reason={autoNavigation.reason}
+            movement={autoNavigation.movement}
+          />
         )}
 
         {/* Field-lineage path banner (S5): floats above whichever level is
@@ -1818,6 +2751,32 @@ function TopologyContent() {
           error={lineageError}
           onClear={handleClearLineage}
         />
+        </div>
+
+        <PageCopilot
+          scope={copilotScope}
+          messages={copilotChat.messages}
+          conversationId={copilotChat.conversationId}
+          streamState={copilotStreamState}
+          pendingUserMessage={copilotChat.pendingUserMessage}
+          isSending={copilotChat.isSending}
+          onSend={handleCopilotSend}
+          onRetry={copilotChat.retry}
+          onContinueInChat={handleContinueInChat}
+          isContinuingInChat={copilotChat.isContinuingInMainChat}
+          errorMessage={copilotChat.errorMessage}
+          suggestions={copilotSuggestions}
+          onSuggestionClick={handleCopilotSend}
+          targets={copilotTargets}
+          liveTargets={copilotLiveTargets}
+          onTargetHover={handleCopilotTargetHover}
+          onTargetClick={handleCopilotTargetClick}
+          answerSource={copilotAnswerSource}
+          notices={copilotNotices}
+          collapsed={copilotCollapsed}
+          onCollapsedChange={setCopilotCollapsed}
+          placeholder="Ask about this diagram..."
+        />
       </div>
     </div>
     </FocusInteractionContext.Provider>
@@ -1825,9 +2784,13 @@ function TopologyContent() {
 }
 
 export default function TopologyPage() {
+  // Suspense because the page reads the deep link with `useSearchParams`,
+  // which opts the route into dynamic rendering unless it is bounded.
   return (
-    <ReactFlowProvider>
-      <TopologyContent />
-    </ReactFlowProvider>
+    <Suspense fallback={null}>
+      <ReactFlowProvider>
+        <TopologyContent />
+      </ReactFlowProvider>
+    </Suspense>
   );
 }

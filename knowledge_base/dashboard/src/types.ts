@@ -1,5 +1,14 @@
 export type DocSource = "published" | "staging";
 
+/**
+ * How a project's git credential is resolved, as reported by the API.
+ *
+ * `string & {}` keeps autocomplete for the known kinds while still accepting a
+ * value this build has not been taught yet: the API is free to add one, and the
+ * dashboard must degrade to its default branch rather than reject the project.
+ */
+export type ConnectionKind = "pat" | "app" | "azure_devops" | (string & {});
+
 export interface Project {
   id: string;
   display_name: string;
@@ -21,7 +30,7 @@ export interface Project {
   auto_reingest_error: string | null;
   git_update_summary: Record<string, unknown> | null;
   has_github_token: boolean;
-  connection_kind: "pat" | "app";
+  connection_kind: ConnectionKind;
   github_account_login: string | null;
   webhook_status: "active" | "not_registered" | "unknown" | null;
   instruction_pack_dir: string | null;
@@ -43,6 +52,7 @@ export interface PluginPack {
   origin: string;
   certification_status: string;
   certification_provenance?: string | null;
+  usable: boolean;
   mutable: boolean;
   blocked_reason?: string | null;
 }
@@ -71,25 +81,6 @@ export interface PluginPackBranch {
 export interface PluginPackBranchDiscovery {
   repo_url: string;
   branches: PluginPackBranch[];
-}
-
-export interface NexusPackCatalogItem {
-  id: number;
-  name: string;
-  version: string;
-  description?: string | null;
-}
-
-export interface NexusPersonalPack extends NexusPackCatalogItem {
-  output_documents: string[];
-}
-
-export interface NexusPackWorkspace {
-  project_id: string;
-  organization_packs: NexusPackCatalogItem[];
-  personal_packs: NexusPersonalPack[];
-  selected_organization_pack_id: number | null;
-  selected_private_version_ids: number[];
 }
 
 export interface PluginPackFileContent {
@@ -137,6 +128,106 @@ export interface ModelListResponse {
 export interface StatusResponse {
   status: string;
   message: string;
+}
+
+/** Safe, provider-neutral connector metadata. Credentials are intentionally absent. */
+export interface ConnectorCapability {
+  id: string;
+  label: string;
+  description: string | null;
+  read_only: boolean;
+  gather_eligible: boolean;
+}
+
+export interface ConnectorProvider {
+  provider_id: string;
+  label: string;
+  version: string | null;
+  authentication_types: string[];
+  capabilities: ConnectorCapability[];
+  enabled: boolean;
+  kind: "live_evidence" | "runtime_sync";
+  build_state: "available" | "coming_soon";
+  description: string;
+}
+
+export type ConnectorStatus = "connected" | "degraded" | "not_connected" | "disabled" | "unknown";
+
+export interface ConnectorInstance {
+  id: string;
+  provider_id: string;
+  display_name: string;
+  ownership_scope: string;
+  enabled: boolean;
+  status: ConnectorStatus;
+  last_checked_at: string | null;
+  health_code: string | null;
+  provider_version: string | null;
+  redaction_policy_version: string | null;
+  has_credential: boolean;
+  has_kibana_credential: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ConnectorSource {
+  id: string;
+  connector_instance_id: string;
+  source_type: string;
+  display_label: string;
+  enabled: boolean;
+  field_profile: Record<string, unknown>;
+  discovered_at: string | null;
+}
+
+export interface KibanaSpace { id: string; name: string; }
+export interface KibanaDataView { id: string; title: string; }
+
+/** Project-management scoped view: safe connector metadata plus only its sources. */
+export interface ProjectAvailableConnector {
+  connector: ConnectorInstance;
+  sources: ConnectorSource[];
+}
+
+export interface ProjectConnectorBinding {
+  id: string;
+  project_id: string;
+  connector_instance_id: string;
+  connector_display_name: string | null;
+  connector_provider_id: string | null;
+  source_ids: string[];
+  capability_ids: string[];
+  budgets: Record<string, number>;
+  max_time_window_days: number | null;
+  enabled: boolean;
+  version: number;
+}
+
+export interface ConnectorTestResult {
+  status: string;
+  message: string | null;
+  checked_at: string | null;
+  details: Record<string, unknown>;
+}
+
+export interface ConnectorEvidenceFinding {
+  evidence_id: string;
+  classification: "corroborates" | "operational_context" | "discrepancy" | "inconclusive" | string;
+  summary: string | null;
+}
+
+export interface ConnectorEvidenceSummary {
+  run_id: number;
+  available: boolean;
+  connector_count: number;
+  successful_calls: number;
+  failed_calls: number;
+  denied_calls: number;
+  truncated_calls: number;
+  observation_from: string | null;
+  observation_to: string | null;
+  limitations: string[];
+  findings: ConnectorEvidenceFinding[];
 }
 
 export interface LogEvent {

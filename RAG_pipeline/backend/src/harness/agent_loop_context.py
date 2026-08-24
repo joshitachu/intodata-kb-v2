@@ -411,6 +411,58 @@ def persist_grounded_agent_response(
     return structured_answer
 
 
+#: Prefixed onto a replayed assistant turn that produced no validated evidence,
+#: so its specifics cannot be read back as established fact.
+_UNVERIFIED_REPLAY_NOTE = (
+    "[UNVERIFIED EARLIER ANSWER — no validated project source supported it. Treat "
+    "every name, count, system, relationship and figure below as unconfirmed. Do not "
+    "repeat any of them as fact and do not build on them; look the subject up again "
+    "before making the claim yourself.]\n"
+)
+
+
+def _is_zero_evidence(message: Any) -> bool:
+    """Whether a stored assistant turn was produced with no validated source.
+
+    Reads the same ``evidence_summary.zero_evidence`` flag the UI renders as the
+    "No current-turn evidence" badge, so the prompt and the badge can never
+    disagree about which answers were unsupported. Absent or malformed payloads
+    read as evidenced: a missing flag is not proof of a fabrication, and marking
+    a sound answer as unverified would teach the model to distrust its own
+    grounded work.
+    """
+
+    structured = getattr(message, "structured_answer", None)
+    if not isinstance(structured, dict):
+        return False
+    summary = structured.get("evidence_summary")
+    if not isinstance(summary, dict):
+        return False
+    return summary.get("zero_evidence") is True
+
+
+def _replayed_content(message: Any) -> str:
+    """One history entry's text, with unevidenced answers marked as such.
+
+    The observed failure this closes: a turn invented two systems that do not
+    exist in the project, and three turns later those systems were restated as
+    fact, with the project's own totals silently adjusted to accommodate them.
+    Nothing distinguished that answer from an evidence-backed one once it was
+    replayed as flat text.
+
+    Marked rather than dropped. The thread's pronoun resolution is good and
+    depends on continuity ("and where does that data go next?" binding to the
+    system named one turn earlier), so removing a turn outright would break
+    something that works in order to fix something that does not. A prefix
+    keeps the shape of the conversation and removes the authority.
+    """
+
+    content = message.content
+    if message.role != "assistant" or not _is_zero_evidence(message):
+        return content
+    return f"{_UNVERIFIED_REPLAY_NOTE}{content}"
+
+
 async def build_authoritative_agent_input(
     *,
     conversation: Conversation,
@@ -432,7 +484,7 @@ async def build_authoritative_agent_input(
     )
     workflow_state = [_safe_workflow(run) for run in runs]
     messages = [
-        {"role": item.role, "content": item.content}
+        {"role": item.role, "content": _replayed_content(item)}
         for item in list(conversation.messages)[-_HISTORY_LIMIT:]
         if item.role in {"user", "assistant"}
         and item.content

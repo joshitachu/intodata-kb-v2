@@ -284,6 +284,9 @@ class TestStoredChatLoop:
             patch("src.runtime.client.settings") as mock_client_settings,
             patch("src.generation.agent_loop.settings") as mock_loop_settings,
             patch("src.generation.agent_loop.list_runtime_tools", return_value=tools),
+            # Topology tool bodies are owned by the topology layer; this test only
+            # exercises the stored runtime path, so the catalogue is stubbed empty.
+            patch("src.generation.agent_loop.list_topology_tools", return_value=[]),
             patch(
                 "src.generation.agent_loop.generate_answer_with_runtime_tools",
                 AsyncMock(side_effect=decisions),

@@ -157,3 +157,70 @@ describe("useTopologyNavigation", () => {
     expect(result.current.current).toEqual({ kind: "job", jobName: "jobA" });
   });
 });
+
+/**
+ * `restore` and `replaceStack` exist for the two cases where a level arrives
+ * from outside the canvas: a deep link, and undoing a jump an answer made.
+ * Both have to leave a stack the breadcrumb and `ascend` can walk normally --
+ * a restored position is not a special kind of position.
+ */
+describe("useTopologyNavigation restore", () => {
+  it("lands on a job as a direct child of the landscape", () => {
+    const { result } = renderHook(() => useTopologyNavigation());
+    act(() => result.current.restore({ kind: "job", jobName: "jobA", sourceRoot: "bundle" }));
+    expect(result.current.stack).toEqual([
+      { kind: "project" },
+      { kind: "job", jobName: "jobA", sourceRoot: "bundle" },
+    ]);
+  });
+
+  it("keeps a component's job crumb so ascend steps out one level", () => {
+    const { result } = renderHook(() => useTopologyNavigation());
+    act(() =>
+      result.current.restore({
+        kind: "component",
+        jobName: "jobA",
+        componentName: "tMap_1",
+        sourceRoot: "bundle",
+      }),
+    );
+    expect(result.current.depth).toBe(3);
+    act(() => result.current.ascend());
+    expect(result.current.current).toEqual({
+      kind: "job",
+      jobName: "jobA",
+      sourceRoot: "bundle",
+    });
+  });
+
+  it("replaces whatever was there rather than stacking on top of it", () => {
+    const { result } = renderHook(() => useTopologyNavigation());
+    act(() => result.current.descendToGroup("Orders"));
+    act(() => result.current.descendToJob("jobA"));
+    act(() => result.current.restore({ kind: "project" }));
+    expect(result.current.stack).toEqual([{ kind: "project" }]);
+  });
+
+  it("puts an exact previous stack back, including a group crumb", () => {
+    const { result } = renderHook(() => useTopologyNavigation());
+    act(() => result.current.descendToGroup("Orders"));
+    const previous = result.current.stack;
+
+    act(() => result.current.descendToJob("jobA"));
+    act(() => result.current.descendToComponent("tMap_1"));
+    expect(result.current.depth).toBe(4);
+
+    // One action, two levels back -- what a single `ascend` could not do.
+    act(() => result.current.replaceStack(previous));
+    expect(result.current.stack).toEqual([
+      { kind: "project" },
+      { kind: "group", groupName: "Orders", sourceRoot: undefined },
+    ]);
+  });
+
+  it("refuses to leave the stack empty", () => {
+    const { result } = renderHook(() => useTopologyNavigation());
+    act(() => result.current.replaceStack([]));
+    expect(result.current.current).toEqual({ kind: "project" });
+  });
+});

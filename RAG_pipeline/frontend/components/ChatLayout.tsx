@@ -9,9 +9,9 @@ import { useUrlConversationId, useSyncUrlConversationId } from "@/hooks/useUrlCo
 import { MobileChatList } from "./mobile/MobileChatList";
 import { MobileTopBar } from "./mobile/MobileTopBar";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
-import { PackWorkbench } from "./harness-packs/PackWorkbench";
-import { closePackWorkspaceHref } from "@/lib/packWorkspace";
+import { ArrowLeft, Package, X } from "lucide-react";
+import { PackWorkbench } from "./packs/PackWorkbench";
+import { closePackWorkbenchHref } from "@/lib/packs";
 
 export function ChatLayout() {
   const chat = useChatContext();
@@ -139,9 +139,41 @@ export function ChatLayout() {
             onCancelDeepDive={chat.onCancelDeepDive}
           /> : null}
         </div>
-        {packWorkspaceOpen && <div className={isMobile ? "absolute inset-0 z-20 h-full w-full" : "h-full w-[min(44vw,42rem)] shrink-0 border-l border-border"}>
-          <PackWorkbench initialPackId={searchParams.get("pack")} initialProjectId={searchParams.get("project")} onClose={() => router.push(closePackWorkspaceHref(searchParams))} />
-        </div>}
+        {packWorkspaceOpen && (
+          <aside
+            aria-label="Pack workbench"
+            className={
+              isMobile
+                ? "absolute inset-0 z-20 flex h-full w-full flex-col bg-background"
+                : "flex h-full w-[min(44vw,42rem)] shrink-0 flex-col border-l border-border bg-background"
+            }
+          >
+            {/* Sticky header: the workbench body scrolls a long way, and the
+                only way out used to be a bare "close" link at the very top. */}
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-4 py-3">
+              <span className="flex min-w-0 items-center gap-2">
+                <Package className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                <span className="truncate text-sm font-semibold text-foreground">
+                  Pack workbench
+                </span>
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  router.push(closePackWorkbenchHref(new URLSearchParams(searchParams.toString())))
+                }
+                aria-label="Close pack workbench"
+                title="Close"
+                className="shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              <PackWorkbench projectId={searchParams.get("project")} />
+            </div>
+          </aside>
+        )}
       </div>
     </div>
   );

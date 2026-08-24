@@ -20,6 +20,7 @@ from src.harness.readonly_runtime import ReadOnlyPrimaryRuntime
 from src.harness.registry import CapabilityRegistry
 from src.harness.semantic_tools import GatewayMode, GovernanceClass, SemanticEventLedger, SemanticToolGateway, SemanticToolMiddleware, build_semantic_structured_tools, build_semantic_tool_snapshot
 from src.harness.run_budgets import LayeredBudgetController, LayeredModelBudgetMiddleware
+from src.harness.turn_instrumentation import ModelLatencyMiddleware
 
 PLAN_CONTROL_PREFIX = "nexus.agent_plan."
 PLAN_PRIMARY_SYSTEM_PROMPT = INTERACTION_PROTOCOL_PROMPT + """
@@ -73,6 +74,6 @@ def build_planning_primary_runtime(*, model: BaseChatModel, registry: Capability
         ),
     ]
     state_text = "No active durable plan." if plan_context is None else f"Current background plan: {plan_context}"
-    middlewares = [middleware] + ([LayeredModelBudgetMiddleware(budget_controller, model_name=str(getattr(model, "model_name", getattr(model, "model", ""))))] if budget_controller else [])
+    middlewares = [ModelLatencyMiddleware(), middleware] + ([LayeredModelBudgetMiddleware(budget_controller, model_name=str(getattr(model, "model_name", getattr(model, "model", ""))))] if budget_controller else [])
     graph = create_agent(model, tools, system_prompt=f"{PLAN_PRIMARY_SYSTEM_PROMPT}\nCurrent background plan: {state_text}\nAuthoritative turn context: {turn_context}", middleware=middlewares, interrupt_before=["tools"] if interrupt_before_tools else None, name="nexus_slice_4_plan_primary")
     return ReadOnlyPrimaryRuntime(graph=graph, snapshot=snapshot, gateway=gateway, middleware=middleware, ledger=ledger, read_only_tools=tuple(item for item in model_tools if item.governance_class == GovernanceClass.READ), filtered_consequential=tuple(item.canonical_id for item in snapshot.tools if item not in model_tools))

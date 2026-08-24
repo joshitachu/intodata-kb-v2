@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 
 from fastapi import APIRouter, HTTPException, Query
@@ -14,11 +15,14 @@ from src.runtime.models import (
     RuntimeSourceRotateCredentials,
     RuntimeSourceUpdate,
 )
+from src.runtime.providers import RuntimeProviderError
 from src.runtime.providers.base import find_non_ascii_credential_field
 from src.runtime.source_registry import get_source_provider
 from src.runtime.store import ProjectScope, RuntimeDuplicateSourceError, RuntimeRecordNotFoundError, RuntimeStoreRepository
 from src.runtime.sync import run_runtime_source_sync_cycle
 from src.runtime.audit import log_runtime_source_event
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/runtime/sources", tags=["runtime-sources"])
 
@@ -95,20 +99,42 @@ async def create_runtime_source(
     if not ok:
         raise HTTPException(status_code=400, detail=_sanitize_error(error) or "Connection validation failed")
     repo = RuntimeStoreRepository(db)
-    physical_identity = provider.physical_source_identity(body.credentials)
+    try:
+        physical_identity = await provider.resolve_physical_identity(body.credentials)
+    except (RuntimeProviderError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=_sanitize_error(str(exc)) or "Could not identify the account behind these credentials",
+        )
+    endpoint_identity = provider.physical_source_identity(body.credentials)
     source_type_aliases = provider.source_type_aliases()
     if await repo.find_source_id_by_physical_identity(physical_identity) is not None:
         raise HTTPException(status_code=409, detail="That physical runtime source is already registered")
-    # The migration cannot decrypt old source credentials. Promote matching
-    # migration-era identities lazily, then enforce the same generic guard.
-    for source_id in await repo.list_legacy_source_ids(source_type_aliases):
+    # Sources registered under an older identity rule cannot be compared against
+    # a resolved identity as stored, so re-resolve each from its own credentials
+    # and repair the row before judging this registration.
+    for source_id in await repo.list_unresolved_identity_source_ids(source_type_aliases, endpoint_identity):
         try:
             credentials, _key_id = await repo.read_credentials(source_id)
-            if provider.physical_source_identity(credentials) == physical_identity:
-                await repo.promote_source_identity(source_id, physical_identity)
-                raise HTTPException(status_code=409, detail="That physical runtime source is already registered")
-        except RuntimeDuplicateSourceError as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
+            resolved = await provider.resolve_physical_identity(credentials)
+            await repo.promote_source_identity(source_id, resolved)
+        except RuntimeDuplicateSourceError:
+            # Two pre-existing rows resolve to the same tenant: the mirror this
+            # guard was built to stop, already in the data. Leave it for an
+            # operator to delete instead of blocking an unrelated registration.
+            logger.warning("Runtime source %s mirrors an already-identified source", source_id)
+            continue
+        except (RuntimeProviderError, RuntimeRecordNotFoundError, ValueError) as exc:
+            # Stored credentials may be dead (rotated, revoked). That row keeps
+            # its stale identity; it cannot collide with a narrowed one anyway.
+            logger.warning(
+                "Could not re-resolve identity for runtime source %s: %s",
+                source_id,
+                _sanitize_error(str(exc)),
+            )
+            continue
+        if resolved == physical_identity:
+            raise HTTPException(status_code=409, detail="That physical runtime source is already registered")
     try:
         source = await repo.create_source_config(
             project_id=body.project_id,
@@ -197,6 +223,22 @@ async def rotate_runtime_source_credentials(
     ok, error = await provider.validate_credentials(body.credentials)
     if not ok:
         raise HTTPException(status_code=400, detail=_sanitize_error(error) or "Connection validation failed")
+    # A rotated credential can point at a different account than the one this
+    # source was registered for. The identity has to follow the credentials,
+    # and may not land on an account another source already owns.
+    try:
+        rotated_identity = await provider.resolve_physical_identity(body.credentials)
+        await repo.promote_source_identity(source_id, rotated_identity)
+    except (RuntimeProviderError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=_sanitize_error(str(exc)) or "Could not identify the account behind these credentials",
+        )
+    except RuntimeDuplicateSourceError:
+        raise HTTPException(
+            status_code=409,
+            detail="Those credentials belong to a runtime source that is already registered",
+        )
     await repo.write_credentials(
         source_id=source_id,
         plaintext_payload=body.credentials,

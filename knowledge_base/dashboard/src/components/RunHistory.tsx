@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { useGenerateRuns } from "../hooks/useProjects";
+import { useRunConnectorEvidence } from "../hooks/useConnectors";
 import type { GenerateRun } from "../types";
 
 interface Props {
@@ -226,7 +228,36 @@ function LegacyRunRow({
             View Log
           </button>
         )}
+        <RunEvidenceButton runId={run.id} />
       </td>
     </tr>
+  );
+}
+
+function RunEvidenceButton({ runId }: { runId: number }) {
+  const [open, setOpen] = useState(false);
+  const evidence = useRunConnectorEvidence(runId, open);
+  return (
+    <div className="mt-1.5">
+      <button
+        className="text-xs font-medium text-accent-primary/70 hover:text-accent-primary transition-colors"
+        onClick={() => setOpen((current) => !current)}
+      >
+        {open ? "Hide Evidence" : "Evidence"}
+      </button>
+      {open && (
+        <div className="mt-2 min-w-64 rounded border border-white/[0.08] bg-surface-raised p-3 text-xs">
+          {evidence.isLoading && <p className="text-slate-500">Loading evidence summary…</p>}
+          {evidence.isError && <p className="text-slate-500">No connector evidence summary is available for this run.</p>}
+          {evidence.data && !evidence.data.available && <p className="text-slate-500">Runtime evidence was skipped or unavailable for this run.</p>}
+          {evidence.data?.available && <>
+            <p className="text-slate-300">{evidence.data.successful_calls} successful · {evidence.data.failed_calls} failed · {evidence.data.denied_calls} denied{evidence.data.truncated_calls ? ` · ${evidence.data.truncated_calls} truncated` : ""}</p>
+            {(evidence.data.observation_from || evidence.data.observation_to) && <p className="mt-1 text-slate-500">Observed {evidence.data.observation_from ? new Date(evidence.data.observation_from).toLocaleString() : "?"} – {evidence.data.observation_to ? new Date(evidence.data.observation_to).toLocaleString() : "?"}</p>}
+            {evidence.data.findings.length > 0 && <ul className="mt-2 space-y-1 text-slate-400">{evidence.data.findings.slice(0, 3).map((finding) => <li key={finding.evidence_id}><span className="font-mono text-slate-500">{finding.classification}</span>{finding.summary ? ` — ${finding.summary}` : ""}</li>)}</ul>}
+            {evidence.data.limitations.length > 0 && <p className="mt-2 text-amber-400">{evidence.data.limitations.join(", ")}</p>}
+          </>}
+        </div>
+      )}
+    </div>
   );
 }

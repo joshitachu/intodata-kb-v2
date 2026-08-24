@@ -1,34 +1,10 @@
-import { NextRequest, NextResponse } from "next/server";
-import { apiErrorMessage } from "@/lib/apiError";
-import { FASTAPI_URL } from "@/lib/fastapi";
+import { NextRequest } from "next/server";
+import { proxyJson } from "@/lib/backendProxy";
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-
-    const res = await fetch(`${FASTAPI_URL}/api/v1/auth/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-
-    const data = await res.json();
-
-    if (!res.ok) {
-      return NextResponse.json(
-        { error: apiErrorMessage(data.detail, "Login failed") },
-        { status: res.status },
-      );
-    }
-
-    // Forward Set-Cookie headers from FastAPI to browser
-    const response = NextResponse.json(data);
-    const setCookies = res.headers.getSetCookie();
-    for (const cookie of setCookies) {
-      response.headers.append("Set-Cookie", cookie);
-    }
-    return response;
-  } catch {
-    return NextResponse.json({ error: "Login failed" }, { status: 500 });
-  }
+  return proxyJson(request, "/api/v1/auth/login", {
+    context: "auth/login",
+    fallbackError: "Login failed",
+    forwardBody: true,
+  });
 }

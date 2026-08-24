@@ -116,6 +116,61 @@ class TrustedAnswerStreamingGraph:
         }
 
 
+class CorrectionStreamingGraph:
+    """Graph updates are deltas, as they are on the production streaming path."""
+
+    def __init__(self):
+        self.attempt = 0
+
+    async def astream(self, _input, *, stream_mode):  # noqa: ANN001
+        del stream_mode
+        self.attempt += 1
+        if self.attempt == 1:
+            yield "updates", {
+                "tools": {
+                    "messages": [
+                        ToolMessage(
+                            name="query_project_metadata",
+                            content=serialize_tool_envelope(
+                                ToolEnvelope(
+                                    status="succeeded",
+                                    summary="Read project metadata.",
+                                    evidence_refs=[
+                                        {
+                                            "evidence_id": "ev-1",
+                                            "source_type": "project_metadata",
+                                        }
+                                    ],
+                                )
+                            ),
+                            tool_call_id="read-a",
+                        )
+                    ]
+                }
+            }
+            yield "updates", {
+                "model": {
+                    "messages": [
+                        AIMessage(
+                            content="Two projects.\n"
+                            + _grounding_block("grounded", [], [])
+                        )
+                    ]
+                }
+            }
+            return
+        yield "updates", {
+            "model": {
+                "messages": [
+                    AIMessage(
+                        content="Two authorized projects.\n"
+                        + _grounding_block("grounded", ["ev-1"], [])
+                    )
+                ]
+            }
+        }
+
+
 def _context() -> CapabilityExecutionContext:
     return CapabilityExecutionContext(
         user_id=1,
@@ -452,6 +507,36 @@ async def test_bounded_correction_then_valid_rewrite() -> None:
     assert turn.grounding_verdict is GroundingVerdict.VALID
     assert turn.used_fallback is False
     assert "ev-1" in turn.grounded.cited_refs
+
+
+async def test_streaming_correction_preserves_prior_tool_evidence() -> None:
+    graph = CorrectionStreamingGraph()
+    events: list[str] = []
+
+    async def capture(event_type: str, _payload: dict) -> None:
+        events.append(event_type)
+
+    snapshot = SimpleNamespace(
+        semantic_to_canonical={"query_project_metadata": "project.metadata.query"}
+    )
+    turn = await run_readonly_primary_turn(
+        graph=graph,
+        ledger=type("Ledger", (), {"events": []})(),
+        snapshot=snapshot,
+        user_message="Which projects exist?",
+        max_corrections=1,
+        event_callback=capture,
+    )
+
+    assert graph.attempt == 2
+    assert turn.correction_rounds == 1
+    assert turn.grounding_verdict is GroundingVerdict.VALID
+    assert turn.grounded.content == "Two authorized projects."
+    assert "ev-1" in turn.grounded.cited_refs
+    assert turn.evidence_summary.evidence_step_count == 1
+    assert [source.family for source in turn.evidence_summary.successful_sources] == [
+        "metadata"
+    ]
 
 
 async def test_citation_failure_shows_written_answer_without_citations() -> None:

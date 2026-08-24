@@ -14,6 +14,7 @@ import {
   DIMMED_STYLE,
   TITLE_COLOR,
   accentBarStyle,
+  assistantRoleShadow,
   cardShadow,
 } from "@/lib/nodeStyles";
 
@@ -44,11 +45,13 @@ function TableNodeComponent({ data }: { data: TableNodeData }) {
   return (
     <div
       className="topo-node rounded-lg relative"
+      data-assistant-role={data.assistantVisualRole}
       style={{
         width: 220,
         background: "white",
         border: CARD_BORDER,
-        boxShadow: cardShadow(data.highlighted === true, color.border),
+        boxShadow: assistantRoleShadow(data.assistantVisualRole)
+          ?? cardShadow(data.highlighted === true, color.border),
         ...(data.dimmed ? DIMMED_STYLE : { opacity: 1 }),
       }}
     >
@@ -95,6 +98,8 @@ function TableNodeComponent({ data }: { data: TableNodeData }) {
         const top = TABLE_HEADER_HEIGHT + i * TABLE_ROW_HEIGHT + TABLE_ROW_HEIGHT / 2;
         const isActive = data.lineageActiveColumn === col.name;
         const isTouched = data.lineageTouchedColumns?.has(col.name) ?? false;
+        const isAssistantHighlighted = data.assistantHighlightedColumns?.has(col.name) ?? false;
+        const assistantColumnRole = data.assistantColumnRoles?.get(col.name);
         const unresolvedConfidence = data.lineageUnresolvedColumns?.get(col.name);
         // Confidence is per-EDGE (a column can be fed by several hops of
         // different confidence), so a touched-but-resolved column gets a
@@ -126,13 +131,23 @@ function TableNodeComponent({ data }: { data: TableNodeData }) {
             }`}
             style={{
               height: TABLE_ROW_HEIGHT,
-              background: isActive ? "#eef2ff" : isTouched ? `${dotColor}14` : undefined,
-              fontWeight: isActive || isTouched ? 700 : undefined,
+              background: isActive
+                ? "#eef2ff"
+                : assistantColumnRole === "primary"
+                  ? "#dbeafe"
+                  : assistantColumnRole === "path"
+                    ? "#fef3c7"
+                    : assistantColumnRole === "supporting"
+                      ? "#f1f5f9"
+                      : isTouched || isAssistantHighlighted ? `${dotColor}14` : undefined,
+              fontWeight: isActive || isTouched || isAssistantHighlighted ? 700 : undefined,
             }}
             title={col.expression ?? col.name}
             data-testid={`column-row-${col.name}`}
             data-lineage-active={isActive || undefined}
             data-lineage-touched={isTouched || undefined}
+            data-assistant-highlighted={isAssistantHighlighted || undefined}
+            data-assistant-role={assistantColumnRole}
           >
             <Handle
               type="target"

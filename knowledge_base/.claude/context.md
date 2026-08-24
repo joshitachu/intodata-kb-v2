@@ -1,5 +1,25 @@
 # KB Sub-project Context
 
+## Current State (2026-08-23) -- adaptive OpenCode Gather/Analyze sessions
+
+**Last completed**: OpenCode contracts remain independent validation and resume
+units, but Gather and group Analyze now pack unfinished contracts into
+deterministic fresh-session batches under an 80K estimated-input-token target.
+Gather and Analyze have independent concurrency ceilings; the Analyze scorecard
+starts only after every group batch completes. Produce retains its ordered
+continued-session behavior. Run logs expose contract count, batch count,
+concurrency, target, per-batch estimates, and over-target singleton markers.
+
+**Verification**: changed Python modules compile; focused OpenCode provider suite
+59 passed. Full MCP suite reached 1,863 passed / 10 unrelated failures caused by
+GitHub App test credentials, model-catalogue drift, missing `intodoc`, and absent
+real component-description fixtures. No live or paid generation was launched.
+
+**Immediate next**: run one representative OpenCode generation and compare the
+logged adaptive batch plan, duration, token usage, and instruction adherence
+against the prior one-contract-per-session run; tune
+`MCP_OPENCODE_BATCH_TARGET_INPUT_TOKENS` only from that evidence.
+
 ## Current State (2026-08-19) -- OpenCode / agentic experiment surfaces removed
 
 **Last completed**: removed every OpenCode, agentic-experiment, and
@@ -544,3 +564,17 @@ Enterprise documentation quality gates and verdicts: enterprise mode is now the 
 
 - Opaque component labels, unexplained FLOW/SUBJOB_OK semantics, and semantic
   topology being stripped at the MCP response boundary.
+## Current Pack authoring state (2026-08-23)
+
+- Pack authoring is an interactive, owner-scoped MCP Pack Architect session, not a one-shot `/plugins/draft` call.
+- The agent runs in a restricted Pack workspace through OpenCode and defaults to the configured RAG chat model (`kimi/kimi-k2.5`).
+- Every turn preserves incomplete work and exposes deterministic validation errors. A Pack can be saved only after canonical validation succeeds, through the same personal Plugin Pack store used by the rest of the product.
+- There are no product-level document/file/section-count limits. Technical payload, path-safety, and substantive-content checks remain.
+
+## Current Pack authoring state (2026-08-24, supersedes 2026-08-23 OpenCode state)
+
+- Pack Architect no longer uses OpenCode. It uses the dedicated `pack_author_model` setting (currently `kimi/kimi-k2.5`) for one compact JSON design per conversational turn.
+- MCP persists the turn before dispatch, exposes queued/preparing/authoring/applying/validating/complete/failed state, supports cancellation, and recovers the latest owner draft after reload or restart.
+- Canonical Pack files are rendered deterministically and atomically from the model design, then validated. The model is not asked to emit Markdown/YAML boilerplate and there are no hidden repair calls.
+- The 8001 Generate Docs flow and the Pack Workbench use one MCP Plugin Pack store and one `plugin_pack_id`.
+- Live deployed reference: 0.005s acceptance, 38.1s completion, 11 files, zero validation errors. Immediate next is authenticated browser acceptance and one real document-generation receipt check.

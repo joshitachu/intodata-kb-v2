@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import zipfile
 from pathlib import Path
 
 from fastapi import Request
@@ -50,13 +49,6 @@ def test_parse_remote_branch_refs_skips_head_and_preserves_slashes():
         ("main", "222"),
         ("feature/single-summary", "333"),
     ]
-
-
-def test_zip_member_is_symlink_detects_unix_symlink_metadata():
-    info = zipfile.ZipInfo("prompts/link.md")
-    info.external_attr = (0o120777 << 16)
-
-    assert plugins_mod._zip_member_is_symlink(info) is True
 
 
 def test_list_editable_pack_files_includes_agent_skill_but_skips_git(tmp_path):
@@ -111,7 +103,7 @@ async def test_configured_git_registration_returns_certified_catalog_entry(clien
 
     async def fake_certify(**_kwargs):
         return PackGovernanceDecision(
-            True, "git", False, provenance="release", content_sha256="b" * 64
+            True, True, "git", False, provenance="release", content_sha256="b" * 64
         )
 
     monkeypatch.setattr(plugins_mod, "_clone_pack", fake_clone)
@@ -216,66 +208,10 @@ async def test_discover_marks_registered_branch(client, monkeypatch, tmp_path):
     assert branch["registered_pack_id"] == pack_id
 
 
-async def test_create_documentation_pack_is_retired(client, tmp_path):
-    response = await client.post(
-        "/mcp/documentation-packs",
-        json={
-            "name": "Operations Handbook",
-            "description": "Project operations documentation",
-            "documents": [
-                {
-                    "name": "RUNBOOK",
-                    "sections": ["Overview", "Recovery", "Evidence Register"],
-                    "instructions": "Use source evidence and state unknowns explicitly.",
-                }
-            ],
-        },
-    )
-
-    assert response.status_code == 410
-    assert "Git repository and PR" in response.json()["detail"]
-
-
-async def test_create_documentation_pack_empty_payload_is_retired(client):
-    response = await client.post("/mcp/documentation-packs", json={})
-
-    assert response.status_code == 410
-
-
-async def test_create_documentation_pack_is_not_forwarded_to_legacy_validation(client):
-    response = await client.post(
-        "/mcp/documentation-packs",
-        json={
-            "name": "Duplicate Documents",
-            "documents": [
-                {"name": "SUMMARY", "sections": []},
-                {"name": "summary", "sections": []},
-            ],
-        },
-    )
-
-    assert response.status_code == 410
-
-
-async def test_zip_upload_is_retired(client):
-    response = await client.post(
-        "/mcp/plugins/upload",
-        files={"file": ("pack.zip", b"not-a-real-zip", "application/zip")},
-    )
-    assert response.status_code == 410
-    assert "Git repository and PR" in response.json()["detail"]
-
-
-async def test_zip_upload_without_file_is_retired(client):
-    response = await client.post("/mcp/plugins/upload")
-
-    assert response.status_code == 410
-
-
 async def test_local_registration_is_forbidden(client):
     response = await client.post("/mcp/plugins", json={"path": "/tmp/pack"})
     assert response.status_code == 403
-    assert "Git/PR" in response.json()["detail"]
+    assert "Git/PR" in response.json()["detail"]  # shared packs come from git only
 
 
 async def test_unconfigured_remote_is_rejected_before_clone(client, monkeypatch):
@@ -338,7 +274,7 @@ async def test_assignment_rejects_untrusted_pack(client, tmp_path):
         "/mcp/projects/pack-assignment/plugin", json={"plugin_pack_id": pack_id}
     )
     assert response.status_code == 409
-    assert "Git/PR" in response.json()["detail"]
+    assert "not certified" in response.json()["detail"]
 
 
 async def test_generation_rejects_untrusted_override(client, tmp_path):
@@ -349,34 +285,7 @@ async def test_generation_rejects_untrusted_override(client, tmp_path):
         "/mcp/generate", json={"project_id": "pack-generation", "plugin_pack_id": pack_id}
     )
     assert response.status_code == 409
-    assert "Git/PR" in response.json()["detail"]
-
-
-async def test_certified_pack_file_edit_is_forbidden(client, monkeypatch, tmp_path):
-    pack_id = await _add_untrusted_pack(tmp_path / "editable-pack")
-
-    async def certified(_pack, **_kwargs):
-        return PackGovernanceDecision(True, "git", False, provenance="release")
-
-    monkeypatch.setattr(plugins_mod.pack_governance, "evaluate", certified)
-    response = await client.put(
-        f"/mcp/plugins/{pack_id}/files/prompts/phase3.md", json={"content": "changed"}
-    )
-    assert response.status_code == 403
-    assert "Git/PR" in response.json()["detail"]
-
-
-async def test_untrusted_pack_edit_remains_untrusted(client, tmp_path):
-    pack_id = await _add_untrusted_pack(tmp_path / "untrusted-edit")
-    response = await client.put(
-        f"/mcp/plugins/{pack_id}/files/prompts/phase3.md", json={"content": "changed"}
-    )
-    assert response.status_code == 200
-
-    async with plugins_mod.async_session_factory() as db:
-        pack = (await db.execute(select(PluginPack).where(PluginPack.id == pack_id))).scalar_one()
-    assert pack.origin == "edited"
-    assert pack.certification_status == "untrusted"
+    assert "not certified" in response.json()["detail"]
 
 
 async def test_project_member_with_access_can_select_pack_and_outsider_cannot(client):
@@ -422,11 +331,3 @@ async def test_project_member_with_access_can_select_pack_and_outsider_cannot(cl
     assert member_resp.status_code == 200, member_resp.text
     assert member_resp.json() == {"project_id": "member-select", "plugin_pack_id": None}
     assert outsider_resp.status_code == 403
-
-
-async def test_patch_untrusted_pack_is_rejected_and_delete_is_retired(client, tmp_path):
-    pack_id = await _add_untrusted_pack(tmp_path / "patch-pack")
-    patch_response = await client.patch(f"/mcp/plugins/{pack_id}", json={"auto_update": False})
-    delete_response = await client.delete(f"/mcp/plugins/{pack_id}")
-    assert patch_response.status_code == 409
-    assert delete_response.status_code == 410

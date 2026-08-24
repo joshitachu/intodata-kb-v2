@@ -106,12 +106,14 @@ def _calls(*calls: tuple[str, dict[str, Any], str]) -> AIMessage:
 
 
 def _pack_arguments(name: str) -> dict[str, Any]:
+    """The create capability takes a brief; the pack author writes the manifest."""
     return {
         "name": name,
-        "purpose": "Analyze production incidents and guide prevention decisions.",
-        "audience": {"label": "Platform engineers"},
-        "focus_components": ["incident timelines", "root causes"],
-        "output_documents": [{"title": "Incident Review Report"}],
+        "brief": (
+            "Analyze production incidents and guide prevention decisions for "
+            "platform engineers, covering incident timelines and root causes; "
+            "produce an incident review report."
+        ),
     }
 
 

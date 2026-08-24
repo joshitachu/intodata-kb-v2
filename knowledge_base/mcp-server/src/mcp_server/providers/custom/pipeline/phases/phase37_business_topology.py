@@ -87,6 +87,7 @@ class Phase37BusinessTopology(Phase):
             prompt = business_topology_prompt(
                 project_id=ctx.project_id,
                 scan_fingerprint=bundle.scan_fingerprint,
+                plugin_pack_dir=self._helpers.plugin_pack_dir,
             )
             # Built once, used two ways: (a) as the floor the LLM output must
             # beat -- a schema-valid but EMPTY topology (verified pre-fix

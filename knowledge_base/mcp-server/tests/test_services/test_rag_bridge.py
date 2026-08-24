@@ -263,3 +263,152 @@ async def test_push_docs_skips_empty(bridge):
         result = await bridge.push_docs("proj", docs=docs)
         assert result["pushed"] == 0
         assert len(result["errors"]) == 2
+
+
+# --- Pack-declared doc names are authoritative on every push path (D45 / R8) ---
+
+
+LEGACY_DOC_NAMES = (
+    "00_AGENT_BRIEF.md",
+    "01_ARCHITECTURE_MAP.md",
+    "02_COMPONENT_INVENTORY.md",
+    "03_DATA_FLOWS_AND_LINEAGE.md",
+    "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md",
+    "05_RUNTIME_CONFIG_AND_EXTERNALS.md",
+    "06_OPERATIONS_TESTING_AND_DEBUGGING.md",
+    "07_QUALITY_SECURITY_RISK_SCORECARD.md",
+    "08_CHANGE_PLAYBOOK.md",
+    "09_EXECUTIVE_SUMMARY.md",
+)
+SUPPORT_ARTIFACT_NAMES = ("engineering_facts.md", "dependency_map.md", "sql_usage.md")
+
+
+def _old_digit_gate_selection(docs_dir, extra_filenames):
+    """The selection the removed ``name[0].isdigit()`` gate produced.
+
+    Kept in the test as the explicit regression oracle for the primary paths:
+    whatever the new predicate does, the primary paths must still push exactly
+    this set.
+    """
+    extra = extra_filenames or set()
+    return {
+        p.name for p in sorted(docs_dir.glob("*.md"))
+        if p.name[0].isdigit() or p.name in extra
+    }
+
+
+def _write_docs(docs_dir, names):
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (docs_dir / name).write_text(f"# {name}\n\nBody.\n", encoding="utf-8")
+
+
+def test_read_md_files_selects_pack_named_docs_and_excludes_internal(bridge, tmp_path):
+    docs_dir = tmp_path / "docs"
+    _write_docs(
+        docs_dir,
+        (
+            "00_AGENT_BRIEF.md",
+            "INJECTION_FINDINGS.md",
+            "TABLE_INVENTORY.md",
+            "CROSS_PROJECT_TOPOLOGY.md",
+            "_internal.md",
+            "engineering_facts.md",
+        ),
+    )
+
+    selected = {item["filename"] for item in bridge._read_md_files(str(docs_dir))}
+
+    # Pack-declared names are included without any caller passing them, and
+    # CROSS_PROJECT_TOPOLOGY.md (pushed deliberately by the partition
+    # orchestrator) is not newly excluded.
+    assert selected == {
+        "00_AGENT_BRIEF.md",
+        "INJECTION_FINDINGS.md",
+        "TABLE_INVENTORY.md",
+        "CROSS_PROJECT_TOPOLOGY.md",
+    }
+    # Not vacuously true: internal artifacts and engineering-fact support
+    # artifacts stay out unless a caller forces them in.
+    assert "_internal.md" not in selected
+    assert "engineering_facts.md" not in selected
+
+    forced = {item["filename"] for item in bridge._read_md_files(
+        str(docs_dir), extra_filenames={"engineering_facts.md"}
+    )}
+    assert "engineering_facts.md" in forced, "extra_filenames stays an additive superset"
+    assert "_internal.md" not in forced
+
+
+def test_read_md_files_primary_path_set_is_unchanged_for_legacy_docs_dir(bridge, tmp_path):
+    """Regression guard: the primary paths' pushed set must not change."""
+    docs_dir = tmp_path / "docs"
+    _write_docs(docs_dir, LEGACY_DOC_NAMES + SUPPORT_ARTIFACT_NAMES + ("_internal.md",))
+
+    # Generation-completion push (api/routes/projects.py): extra_doc_names are
+    # the pack-declared non-numeric names -- none for a legacy run.
+    generation = {item["filename"] for item in bridge._read_md_files(str(docs_dir))}
+    assert generation == _old_digit_gate_selection(docs_dir, None)
+    assert generation == set(LEGACY_DOC_NAMES)
+
+    # Manual re-push: every non-numeric, non-underscore *.md is passed in.
+    manual_extras = {
+        p.name for p in docs_dir.glob("*.md")
+        if not p.name[0].isdigit() and not p.name.startswith("_")
+    }
+    manual = {item["filename"] for item in bridge._read_md_files(
+        str(docs_dir), extra_filenames=manual_extras
+    )}
+    assert manual == _old_digit_gate_selection(docs_dir, manual_extras)
+    assert manual == set(LEGACY_DOC_NAMES) | set(SUPPORT_ARTIFACT_NAMES)
+
+
+async def test_push_docs_secondary_path_pushes_pack_named_doc(bridge, tmp_path):
+    """The five secondary paths pass output_dir + filenames, never extra_doc_names."""
+    docs_dir = tmp_path / "docs"
+    _write_docs(docs_dir, ("INJECTION_FINDINGS.md", "_internal.md"))
+
+    with patch.object(bridge, "push_markdown", new_callable=AsyncMock) as mock_push:
+        mock_push.return_value = {"status": "ok"}
+
+        result = await bridge.push_docs(
+            "proj",
+            output_dir=str(docs_dir),
+            filenames={"INJECTION_FINDINGS.md", "_internal.md"},
+        )
+
+    assert result["pushed"] == 1
+    assert result["errors"] == []
+    pushed = {call.kwargs["filename"] for call in mock_push.await_args_list}
+    assert pushed == {"INJECTION_FINDINGS.md"}
+
+
+async def test_evidence_doc_update_pushes_pack_named_doc(log_manager, monkeypatch, tmp_path):
+    """End-to-end on one previously-dropping path (evidence_doc_update.py)."""
+    from mcp_server.config import config
+    from mcp_server.services.evidence_doc_update import EvidenceDocUpdateService
+
+    monkeypatch.setattr(config, "project_root", tmp_path)
+    monkeypatch.setattr(config, "rag_base_url", "http://localhost:9999")
+    monkeypatch.setattr(config, "incremental_hash_skip_enabled", False)
+
+    docs_dir = tmp_path / "output" / "proj" / "docs"
+    _write_docs(docs_dir, ("INJECTION_FINDINGS.md", "_internal.md"))
+
+    with patch(
+        "mcp_server.services.rag_bridge.RagBridge.push_markdown",
+        new_callable=AsyncMock,
+    ) as mock_push:
+        mock_push.return_value = {"status": "ok"}
+
+        result = await EvidenceDocUpdateService(log_manager=log_manager).update_from_evidence(
+            project_id="proj",
+            filename="INJECTION_FINDINGS.md",
+            evidence_text="Injection sink confirmed in the order intake handler.",
+        )
+
+    assert result.status == "updated"
+    assert result.rag_result["pushed"] == 1
+    pushed = {call.kwargs["filename"] for call in mock_push.await_args_list}
+    assert pushed == {"INJECTION_FINDINGS.md"}
+    assert "_internal.md" not in pushed

@@ -187,8 +187,20 @@ def estimate_partition_calls(
     group_count: int,
     *,
     base: int | None = None,
+    doc_counts: tuple[int, int] | None = None,
 ) -> int:
     """Estimate the model calls one scoped run needs (uncapped).
+
+    ``doc_counts`` is an optional ``(group_level_docs, per_unit_docs)`` override
+    for callers that know the ACTIVE PACK's declared doc set instead of the
+    default catalog (the pack preview gate, spec section 9). When omitted the
+    counts come from the default catalog and behaviour is exactly as before.
+    When supplied, the per-unit expansion is NOT gated on
+    ``docgen_unit_docs_enabled``: that flag governs only default-catalog
+    ``per_unit`` entries (``harness._expand_catalog_per_unit_docs``), whereas a
+    pack's ``per_unit: true`` docs are expanded unconditionally
+    (``harness._expand_per_job_docs``). Gating them would hide the cost footgun
+    the preview exists to surface.
 
     Mirrors ``harness._plan_call_budget`` at planning altitude (the planner
     has unit/group counts, not evidence bytes):
@@ -221,8 +233,12 @@ def estimate_partition_calls(
     scorecard = (
         1 + math.ceil(groups * 3 / 4) if config.docgen_llm_scorecard_enabled else 0
     )
-    group_docs, per_unit_entries = _catalog_doc_counts()
-    unit_docs = units * per_unit_entries if config.docgen_unit_docs_enabled else 0
+    if doc_counts is None:
+        group_docs, per_unit_entries = _catalog_doc_counts()
+        unit_docs = units * per_unit_entries if config.docgen_unit_docs_enabled else 0
+    else:
+        group_docs, per_unit_entries = doc_counts
+        unit_docs = units * per_unit_entries
     phase3 = group_docs * allowed_slices + unit_docs * 2
     return (
         base + evidence_agents + phase1 + phase2 + phase2_retries + scorecard + phase3 + 2

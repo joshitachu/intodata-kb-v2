@@ -28,7 +28,10 @@ async def list_user_projects(user: CurrentUser, db: DBSession):
             text("""
                 SELECT p.id, p.display_name, p.platform, COUNT(d.id) AS doc_count
                 FROM projects p
-                LEFT JOIN documents d ON d.project_id = p.id
+                LEFT JOIN documents d
+                  ON d.project_id = p.id
+                 AND d.deleted_at IS NULL
+                 AND d.filename NOT LIKE '%/_internal/%'
                 GROUP BY p.id, p.display_name, p.platform
                 ORDER BY p.display_name
             """)
@@ -39,7 +42,10 @@ async def list_user_projects(user: CurrentUser, db: DBSession):
             text("""
                 SELECT p.id, p.display_name, p.platform, COUNT(d.id) AS doc_count
                 FROM projects p
-                LEFT JOIN documents d ON d.project_id = p.id
+                LEFT JOIN documents d
+                  ON d.project_id = p.id
+                 AND d.deleted_at IS NULL
+                 AND d.filename NOT LIKE '%/_internal/%'
                 WHERE p.id = ANY(:pids)
                 GROUP BY p.id, p.display_name, p.platform
                 ORDER BY p.display_name

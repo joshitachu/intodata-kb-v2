@@ -20,6 +20,7 @@ from src.harness.conversation_state import (
     ConversationTaskReference,
     TurnClaimStatus,
 )
+from src.harness.packs.draft_artifact import PackDraftArtifact
 from src.harness.packs.draft_service import PackDraftService
 from src.harness.registry import base_capability_registry
 from src.harness.repository import HarnessWorkflowRepository
@@ -295,7 +296,7 @@ async def test_stale_claim_cannot_start_effect_after_state_version_advance(db_se
             claim_id=claim.id,
             lease_token=claim.lease_token,
             call_key="pack:mutate",
-            capability_id="nexus.packs.drafts.mutate",
+            capability_id="nexus.packs.drafts.refine",
         )
         provider_called = True
 
@@ -574,7 +575,7 @@ async def test_exact_pack_revision_recovery_finalizes_without_redispatch(db_sess
         claim_id=claim.id,
         lease_token=claim.lease_token,
         call_key="mutate",
-        capability_id="nexus.packs.drafts.mutate",
+        capability_id="nexus.packs.drafts.refine",
         authority_hint={
             "kind": "pack_revision",
             "draft_id": draft.id,
@@ -582,11 +583,19 @@ async def test_exact_pack_revision_recovery_finalizes_without_redispatch(db_sess
             "target_revision": draft.revision + 1,
         },
     )
-    await service.mutate(
+    await service.replace_artifact(
         draft_id=draft.id,
         owner_user_id=user.id,
         expected_revision=draft.revision,
-        patch={"purpose": "committed exactly once"},
+        artifact=PackDraftArtifact(
+            manifest_yaml=(
+                "name: committed-once\n"
+                "version: 0.1.0\n"
+                "description: Committed exactly once by the recovery path.\n"
+                "docs:\n"
+                "  - name: REPORT\n"
+            )
+        ),
     )
     row = await db_session.get(HarnessConversationTurnClaimRow, claim.id)
     assert row is not None

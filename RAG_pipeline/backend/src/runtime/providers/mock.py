@@ -31,7 +31,7 @@ from src.runtime.models import (
     RuntimeSyncStatus,
     RuntimeWorkspace,
 )
-from src.runtime.providers.base import CredentialField
+from src.runtime.providers.base import CredentialField, SingleTenantIdentityMixin
 from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
 from src.runtime.sync import RuntimeSyncBatch
 
@@ -101,7 +101,7 @@ _LOGS: dict[str, list[RuntimeLogEvent]] = {
 _SEVERITY_RANK = list(RuntimeLogSeverity)
 
 
-class MockRuntimeProvider:
+class MockRuntimeProvider(SingleTenantIdentityMixin):
     """Deterministic fixture-backed provider. No network, no secrets."""
 
     def provider_key(self) -> str:

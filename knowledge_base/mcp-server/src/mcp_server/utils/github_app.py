@@ -213,6 +213,42 @@ async def list_installation_repositories(
     return repos
 
 
+async def installation_exists(
+    installation_id: int,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> bool:
+    """True if the App installation still exists on GitHub, False if it is gone.
+
+    An owner can uninstall the App at any time; GitHub never tells us unless we
+    ask (or an ``installation`` webhook is delivered). ``GET /app/installations/{id}``
+    answers 404 for an uninstalled/deleted installation. Transport and other HTTP
+    errors are raised so callers can distinguish "definitely gone" from
+    "could not reach GitHub" and never prune state on a transient failure.
+    """
+    app_jwt = build_app_jwt()
+    owns_client = client is None
+    client = client or httpx.AsyncClient(timeout=15.0)
+    try:
+        resp = await client.get(
+            f"{_GITHUB_API}/app/installations/{installation_id}",
+            headers=_app_headers(app_jwt),
+        )
+        if resp.status_code == 404:
+            return False
+        resp.raise_for_status()
+        return True
+    finally:
+        if owns_client:
+            await client.aclose()
+
+
+async def forget_installation_token(installation_id: int) -> None:
+    """Drop the cached installation token (call when an installation is gone)."""
+    async with _cache_lock:
+        _token_cache.pop(installation_id, None)
+
+
 async def get_installation_account_login(
     installation_id: int,
     *,
@@ -230,6 +266,48 @@ async def get_installation_account_login(
         resp.raise_for_status()
         account = resp.json().get("account") or {}
         return account.get("login")
+    finally:
+        if owns_client:
+            await client.aclose()
+
+
+async def list_app_installations(
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> list[dict[str, int | str | None]]:
+    """List every live installation belonging to this configured GitHub App.
+
+    This is an App-level operation and must only be exposed to the deployment
+    Owner. It lets Nexus recover installations that already exist on GitHub but
+    whose local ownership callback was missed (for example after restoring the
+    database or changing the App setup URL).
+    """
+    owns_client = client is None
+    client = client or httpx.AsyncClient(timeout=15.0)
+    try:
+        app_jwt = build_app_jwt()
+        installations: list[dict[str, int | str | None]] = []
+        page = 1
+        while True:
+            resp = await client.get(
+                f"{_GITHUB_API}/app/installations",
+                headers=_app_headers(app_jwt),
+                params={"per_page": 100, "page": page},
+            )
+            resp.raise_for_status()
+            items = resp.json()
+            for item in items:
+                account = item.get("account") or {}
+                installations.append(
+                    {
+                        "installation_id": int(item["id"]),
+                        "account_login": account.get("login"),
+                    }
+                )
+            if len(items) < 100:
+                break
+            page += 1
+        return installations
     finally:
         if owns_client:
             await client.aclose()

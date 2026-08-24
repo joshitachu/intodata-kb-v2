@@ -61,7 +61,13 @@ def _ctx(tmp_path: Path) -> DocGenContext:
     )
 
 
-def _mock_inner(success: bool = True, error: str | None = None) -> MagicMock:
+def _mock_inner(
+    success: bool = True,
+    error: str | None = None,
+    *,
+    model_name: str = "claude",
+    write_model_name: str | None = None,
+) -> MagicMock:
     inner = MagicMock(spec=DocGenerationProvider)
     inner.run = AsyncMock(
         return_value=AgentResult(
@@ -69,6 +75,8 @@ def _mock_inner(success: bool = True, error: str | None = None) -> MagicMock:
             error=error,
             input_tokens=100,
             output_tokens=50,
+            model_name=model_name,
+            write_model_name=write_model_name,
         )
     )
     return inner
@@ -118,11 +126,13 @@ class TestLoadPluginManifest:
         with pytest.raises(FileNotFoundError, match="plugin.yaml"):
             load_plugin_manifest(tmp_path)
 
-    def test_raises_on_missing_steps(self, tmp_path: Path):
+    def test_missing_steps_default_to_the_documentation_pipeline(self, tmp_path: Path):
+        """`steps` was boilerplate every authored pack wrote by hand; requiring
+        it only ever produced confusing registration failures."""
         data = {"name": "empty", "version": "1.0", "steps": []}
         (tmp_path / "plugin.yaml").write_text(yaml.dump(data), encoding="utf-8")
-        with pytest.raises(Exception):
-            load_plugin_manifest(tmp_path)
+        manifest = load_plugin_manifest(tmp_path)
+        assert [(s.id, s.type) for s in manifest.steps] == [("generate-docs", "harness")]
 
     def test_llm_step_requires_prompt_file(self):
         with pytest.raises(Exception, match="prompt_file"):
@@ -290,6 +300,26 @@ class TestHarnessStep:
 
         assert result.input_tokens == 100
         assert result.output_tokens == 50
+
+    @pytest.mark.asyncio
+    async def test_reports_actual_wrapped_models_not_pack_name(self, tmp_path: Path):
+        inner = _mock_inner(
+            success=True,
+            model_name="gpt-5.6-luna",
+            write_model_name="gpt-5.6-luna",
+        )
+        ctx = _ctx(tmp_path)
+        manifest = _manifest(
+            name="swap-pack-starter",
+            steps=[{"id": "full", "type": "harness"}],
+        )
+
+        result = await PluginRunnerProvider(manifest, tmp_path, inner).run(
+            ctx, AsyncMock()
+        )
+
+        assert result.model_name == "gpt-5.6-luna"
+        assert result.write_model_name == "gpt-5.6-luna"
 
 
 # ---------------------------------------------------------------------------
@@ -609,16 +639,48 @@ class TestCustomDocSet:
         assert provider._required_docs == list(REQUIRED_DOCS)
         assert provider._doc_assignments == dict(DOC_ASSIGNMENTS)
 
-    def test_per_doc_instruction_file_read(self, tmp_path: Path):
-        """_doc_specific_from_pack reads the correct file and returns empty when absent."""
+    def test_per_doc_instruction_file_read(self, tmp_path: Path, monkeypatch):
+        """Reads the right file, substitutes run facts, normalizes the newline.
+
+        The trailing newline and the `{unit_count}` substitution both exist so a
+        pack can reproduce the built-in per-document instructions byte for byte
+        (the built-in text comes from a YAML block scalar and ships
+        `{unit_count}` literally). Without them a faithful pack is impossible to
+        write -- verified against the nexus-baseline pack.
+        """
         from mcp_server.providers.custom.prompts import _doc_specific_from_pack
+
+        class _Facts:
+            unit_count = 42
+            canonical_unit_label = "jobs"
+
+        facts = _Facts()
         docs_dir = tmp_path / "prompts" / "docs"
         docs_dir.mkdir(parents=True)
-        (docs_dir / "MY_DOC.md").write_text("Custom instructions for MY_DOC", encoding="utf-8")
+        (docs_dir / "MY_DOC.md").write_text(
+            "Custom instructions for MY_DOC", encoding="utf-8"
+        )
+        (docs_dir / "COUNTED.md").write_text(
+            "Covers {unit_count} {canonical_unit_label}.", encoding="utf-8"
+        )
+        (docs_dir / "BRACES.md").write_text(
+            'Emit JSON like {"a": 1} exactly.', encoding="utf-8"
+        )
 
-        assert _doc_specific_from_pack(tmp_path, "MY_DOC") == "Custom instructions for MY_DOC"
-        assert _doc_specific_from_pack(tmp_path, "MISSING_DOC") == ""
-        assert _doc_specific_from_pack(None, "MY_DOC") == ""
+        assert (
+            _doc_specific_from_pack(tmp_path, "MY_DOC", facts)
+            == "Custom instructions for MY_DOC\n"
+        )
+        assert (
+            _doc_specific_from_pack(tmp_path, "COUNTED", facts) == "Covers 42 jobs.\n"
+        )
+        # str.replace, not str.format: an author's braces must not raise.
+        assert (
+            _doc_specific_from_pack(tmp_path, "BRACES", facts)
+            == 'Emit JSON like {"a": 1} exactly.\n'
+        )
+        assert _doc_specific_from_pack(tmp_path, "MISSING_DOC", facts) == ""
+        assert _doc_specific_from_pack(None, "MY_DOC", facts) == ""
 
     @pytest.mark.integration
     def test_integration_assessor_backward_compat(self):

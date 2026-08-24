@@ -2,6 +2,14 @@ import { type ZodType } from "zod";
 import { getLoginUrl } from "../hooks/useAuth";
 import {
   AssignPluginPackResponseSchema,
+  ConnectorCatalogResponseSchema,
+  ConnectorEvidenceSummarySchema,
+  ConnectorInstanceSchema,
+  ConnectorListResponseSchema,
+  ConnectorSourceListResponseSchema,
+  KibanaDataViewListResponseSchema,
+  KibanaSpaceListResponseSchema,
+  ConnectorTestResultSchema,
   DocContentSchema,
   DocListResponseSchema,
   GenerateAssessmentResponseSchema,
@@ -17,8 +25,10 @@ import {
   PluginPackFilesSchema,
   PluginPackListSchema,
   PluginPackSchema,
-  NexusPackWorkspaceSchema,
   ProjectListResponseSchema,
+  ProjectConnectorBindingListResponseSchema,
+  ProjectConnectorBindingSchema,
+  ProjectAvailableConnectorListResponseSchema,
   ProjectSchema,
   ProjectUsageSchema,
   QualityHistoryResponseSchema,
@@ -251,30 +261,6 @@ export const api = {
       PluginPackBranchDiscoverySchema
     ),
 
-  getPackWorkspace: (projectId: string) =>
-    request<import("../types").NexusPackWorkspace>(
-      `/nexus-api/harness/packs/projects/${encodeURIComponent(projectId)}/workspace`,
-      {},
-      NexusPackWorkspaceSchema,
-    ),
-
-  updatePackWorkspace: (
-    projectId: string,
-    organizationPackId: number | null,
-    privateVersionIds: number[],
-  ) =>
-    request<import("../types").NexusPackWorkspace>(
-      `/nexus-api/harness/packs/projects/${encodeURIComponent(projectId)}/workspace`,
-      {
-        method: "PUT",
-        body: JSON.stringify({
-          organization_pack_id: organizationPackId,
-          private_version_ids: privateVersionIds,
-        }),
-      },
-      NexusPackWorkspaceSchema,
-    ),
-
   assignPluginPack: (projectId: string, pluginPackId: number | null) =>
     request<{ project_id: string; plugin_pack_id: number | null }>(
       `/mcp/projects/${projectId}/plugin`,
@@ -423,28 +409,156 @@ export const api = {
       GenerateAssessmentResponseSchema
     ),
 
+  listConnectorCatalog: () =>
+    request<{ providers: import("../types").ConnectorProvider[] }>(
+      "/mcp/connectors/catalog",
+      {},
+      ConnectorCatalogResponseSchema,
+    ),
+
+  listConnectors: () =>
+    request<{ connectors: import("../types").ConnectorInstance[]; total?: number }>(
+      "/mcp/connectors",
+      {},
+      ConnectorListResponseSchema,
+    ),
+
+  getConnector: (connectorId: string) =>
+    request<import("../types").ConnectorInstance>(
+      `/mcp/connectors/${encodeURIComponent(connectorId)}`,
+      {},
+      ConnectorInstanceSchema,
+    ),
+
+  createConnector: (data: {
+    provider_id: string;
+    display_name: string;
+    safe_config: Record<string, unknown>;
+    credential_type: "api_key" | "basic";
+    credential: string;
+    kibana_credential?: string;
+  }) =>
+    request<import("../types").ConnectorInstance>("/mcp/connectors", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }, ConnectorInstanceSchema),
+
+  updateConnector: (connectorId: string, data: { display_name?: string; safe_config?: Record<string, unknown>; enabled?: boolean }) =>
+    request<import("../types").ConnectorInstance>(
+      `/mcp/connectors/${encodeURIComponent(connectorId)}`,
+      { method: "PATCH", body: JSON.stringify(data) },
+      ConnectorInstanceSchema,
+    ),
+
+  deleteConnector: (connectorId: string) =>
+    request<void>(`/mcp/connectors/${encodeURIComponent(connectorId)}`, { method: "DELETE" }),
+
+  testConnector: (connectorId: string) =>
+    request<import("../types").ConnectorTestResult>(
+      `/mcp/connectors/${encodeURIComponent(connectorId)}/test`,
+      { method: "POST" },
+      ConnectorTestResultSchema,
+    ),
+
+  rotateConnectorCredential: (connectorId: string, credentials: {
+    credential: string;
+    credential_type?: "api_key" | "basic";
+    kibana_credential?: string;
+    reuse_elasticsearch_credential?: boolean;
+  }) =>
+    request<import("../types").ConnectorInstance>(
+      `/mcp/connectors/${encodeURIComponent(connectorId)}/rotate-credential`,
+      { method: "POST", body: JSON.stringify(credentials) },
+      ConnectorInstanceSchema,
+    ),
+
+  listConnectorSources: (connectorId: string) =>
+    request<{ connector_instance_id: string; sources: import("../types").ConnectorSource[]; total?: number }>(
+      `/mcp/connectors/${encodeURIComponent(connectorId)}/sources`,
+      {},
+      ConnectorSourceListResponseSchema,
+    ),
+
+  discoverConnectorSources: (connectorId: string, data?: { source_ids?: string[]; include_kibana?: boolean; kibana_space?: string; data_view_id?: string }) =>
+    request<{ connector_instance_id: string; sources: import("../types").ConnectorSource[]; total?: number }>(
+      `/mcp/connectors/${encodeURIComponent(connectorId)}/discover`,
+      { method: "POST", ...(data ? { body: JSON.stringify(data) } : {}) },
+      ConnectorSourceListResponseSchema,
+    ),
+
+  listKibanaSpaces: (connectorId: string) =>
+    request<{ spaces: import("../types").KibanaSpace[] }>(
+      `/mcp/connectors/${encodeURIComponent(connectorId)}/kibana/spaces`, {}, KibanaSpaceListResponseSchema,
+    ),
+
+  listKibanaDataViews: (connectorId: string, space: string) =>
+    request<{ data_views: import("../types").KibanaDataView[] }>(
+      `/mcp/connectors/${encodeURIComponent(connectorId)}/kibana/spaces/${encodeURIComponent(space)}/data-views`, {}, KibanaDataViewListResponseSchema,
+    ),
+
+  listProjectConnectorBindings: (projectId: string) =>
+    request<{ project_id: string; bindings: import("../types").ProjectConnectorBinding[] }>(
+      `/mcp/projects/${encodeURIComponent(projectId)}/connector-bindings`,
+      {},
+      ProjectConnectorBindingListResponseSchema,
+    ),
+
+  listProjectAvailableConnectors: (projectId: string) =>
+    request<{ connectors: import("../types").ProjectAvailableConnector[] }>(
+      `/mcp/projects/${encodeURIComponent(projectId)}/available-connectors`,
+      {},
+      ProjectAvailableConnectorListResponseSchema,
+    ),
+
+  putProjectConnectorBinding: (
+    projectId: string,
+    connectorId: string,
+    data: {
+      source_ids: string[];
+      capability_ids: string[];
+      budgets?: Record<string, number>;
+      max_time_window_days?: number | null;
+      enabled: boolean;
+    },
+  ) =>
+    request<import("../types").ProjectConnectorBinding>(
+      `/mcp/projects/${encodeURIComponent(projectId)}/connector-bindings/${encodeURIComponent(connectorId)}`,
+      { method: "PUT", body: JSON.stringify(data) },
+      ProjectConnectorBindingSchema,
+    ),
+
+  deleteProjectConnectorBinding: (projectId: string, connectorId: string) =>
+    request<void>(
+      `/mcp/projects/${encodeURIComponent(projectId)}/connector-bindings/${encodeURIComponent(connectorId)}`,
+      { method: "DELETE" },
+    ),
+
+  getRunConnectorEvidence: (runId: number) =>
+    request<import("../types").ConnectorEvidenceSummary>(
+      `/mcp/generate-runs/${runId}/connector-evidence`,
+      {},
+      ConnectorEvidenceSummarySchema,
+    ),
+
   generate: (
     projectId: string,
     resume = true,
     investigationModel?: string | null,
     model?: string | null,
     writeModel?: string | null,
-    organizationPackId: number | null = null,
-    privateVersionIds: number[] = [],
     generationMethod?: "custom" | "opencode-cli" | null,
   ) =>
     request<import("../types").StatusResponse>(
-      `/nexus-api/harness/packs/projects/${encodeURIComponent(projectId)}/generate`,
+      "/mcp/generate",
       {
         method: "POST",
         body: JSON.stringify({
+          project_id: projectId,
           resume,
           investigation_model: investigationModel ?? null,
           model: model ?? null,
           write_model: writeModel ?? null,
           doc_generation_provider: generationMethod ?? null,
-          organization_pack_id: organizationPackId,
-          private_version_ids: privateVersionIds,
         }),
       },
       StatusResponseSchema,

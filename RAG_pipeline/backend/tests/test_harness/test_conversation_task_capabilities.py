@@ -42,14 +42,15 @@ from src.harness.models import (
     DOCUMENT_UPDATE_PROPOSAL_CAPABILITY,
     PACK_CREATE_CAPABILITY,
     PACK_DRAFT_CREATE_CAPABILITY,
-    PACK_DRAFT_CONFIGURE_CAPABILITY,
-    PACK_DRAFT_MUTATE_CAPABILITY,
+    PACK_DRAFT_REFINE_CAPABILITY,
     PACK_DRAFT_READ_CAPABILITY,
     PROJECT_ONBOARDING_CAPABILITY,
     ONBOARDING_RESUME_CAPABILITY,
     WorkflowRunCreate,
 )
-from src.harness.packs.draft_service import PackDraftService
+from src.harness.packs.builder_workflow import PackBuilderWorkflow, PackGenerationResult
+from src.harness.packs.draft_artifact import PackDraftArtifact
+from src.harness.packs.draft_service import PackDraftService, SavedPackRecord
 from src.harness.providers.mcp_docs import (
     McpDocumentationGenerationResult,
     McpDocumentationGenerationStatus,
@@ -324,11 +325,11 @@ async def test_stale_pack_call_is_typed_and_aborts_without_task_effect(db_sessio
     )
     observation = await executor.execute(
         CapabilityExecutionRequest(
-            capability_id=PACK_DRAFT_MUTATE_CAPABILITY.id,
+            capability_id=PACK_DRAFT_REFINE_CAPABILITY.id,
             arguments={
                 "draft_id": draft.id,
                 "expected_revision": draft.revision + 10,
-                "artifact_patch": {"purpose": "never applied"},
+                "instruction": "never applied",
             },
             idempotency_key="call:stale-mutate",
         ),
@@ -370,25 +371,25 @@ async def test_pack_mutation_denies_same_owner_cross_conversation_before_effect(
         name="Other conversation",
     )
     mutated = False
-    original = service.mutate
+    original = service.replace_artifact
 
     async def counted_mutate(**kwargs):
         nonlocal mutated
         mutated = True
         return await original(**kwargs)
 
-    monkeypatch.setattr(service, "mutate", counted_mutate)
+    monkeypatch.setattr(service, "replace_artifact", counted_mutate)
     observation = await HarnessCapabilityExecutor(
         registry,
         pack_draft_service=service,
         conversation_state_repository=state_repo,
     ).execute(
         CapabilityExecutionRequest(
-            capability_id=PACK_DRAFT_MUTATE_CAPABILITY.id,
+            capability_id=PACK_DRAFT_REFINE_CAPABILITY.id,
             arguments={
                 "draft_id": draft.id,
                 "expected_revision": draft.revision,
-                "artifact_patch": {"purpose": "must not apply"},
+                "instruction": "must not apply",
             },
             idempotency_key="call:cross-convo",
         ),
@@ -415,7 +416,7 @@ async def test_pack_call_key_cannot_be_rebound_to_another_capability(db_session)
             claim_id=claim.id,
             lease_token=claim.lease_token,
             call_key="same-key",
-            capability_id=PACK_DRAFT_MUTATE_CAPABILITY.id,
+            capability_id=PACK_DRAFT_REFINE_CAPABILITY.id,
         )
 
 
@@ -850,28 +851,56 @@ class _ScriptedModel:
 
 
 def _complete_pack_arguments(name: str) -> dict:
+    """The model supplies a brief, not a structured artifact."""
     return {
         "name": name,
-        "purpose": "Assess disruption and support rapid allocation decisions.",
-        "audience": {
-            "label": "Directors",
-            "roles": ["director"],
-            "decision_needs": ["rapid allocation"],
-            "desired_outcome": "protect supply",
-            "seniority": "director",
-            "domain_familiarity": "expert",
-            "decision_horizon": "immediate",
-            "detail_level": "brief",
-        },
-        "focus_components": ["Exposure"],
-        "output_documents": [
-            {"title": "Decision Brief", "sections": ["Summary"]}
-        ],
+        "brief": (
+            "Assess disruption exposure and support rapid allocation decisions "
+            "for directors; produce one decision brief."
+        ),
     }
+
+
+_STUB_MANIFEST = """\
+name: stub-pack
+version: 0.1.0
+description: A deterministic pack used to exercise the agent loop.
+docs:
+  - name: STUB_REPORT
+"""
+
+
+@pytest.fixture
+def stub_pack_authoring(monkeypatch):
+    """Author and save without a network round-trip."""
+
+    async def generate(self, **kwargs):  # noqa: ANN001, ANN202
+        del self, kwargs
+        return PackGenerationResult(
+            artifact=PackDraftArtifact(manifest_yaml=_STUB_MANIFEST), name="stub-pack"
+        )
+
+    async def save(self, *, draft_id, owner_user_id, expected_revision, **kwargs):  # noqa: ANN001, ANN202
+        del kwargs
+        row = await self._owned_active_draft(draft_id, owner_user_id)
+        row.status = "saved"
+        row.revision += 1
+        await self._db.flush()
+        return SavedPackRecord(
+            mcp_pack_id=7,
+            name=row.name,
+            version="1.0.0",
+            documents=("STUB_REPORT",),
+            content_hash="b" * 64,
+        )
+
+    monkeypatch.setattr(PackBuilderWorkflow, "generate", generate)
+    monkeypatch.setattr(PackDraftService, "save", save)
 
 
 async def test_authoritative_loop_does_not_repeat_saved_pack_for_unrelated_question(
     db_session,
+    stub_pack_authoring,
 ) -> None:
     user, conversation, first_message, _, state_repo = await _unclaimed_turn(
         db_session, "pack"
@@ -920,7 +949,8 @@ async def test_authoritative_loop_does_not_repeat_saved_pack_for_unrelated_quest
         conversation_id=conversation.id, owner_user_id=user.id
     )
     assert state.active_tasks == []
-    assert len(await draft_service.list_versions(user.id)) == 1
+    # The pack was saved into MCP; locally the draft is what closes out.
+    assert (await draft_service.get_draft(1, user.id)).status == "saved"
 
     unrelated = ConversationMessage(
         conversation_id=conversation.id,
@@ -959,7 +989,8 @@ async def test_authoritative_loop_does_not_repeat_saved_pack_for_unrelated_quest
         conversation_id=conversation.id, owner_user_id=user.id
     )
     assert after.active_tasks == []
-    assert len(await draft_service.list_versions(user.id)) == 1
+    # Key property: the unrelated turn does not re-run pack creation.
+    assert (await draft_service.get_draft(1, user.id)).status == "saved"
     replay = await run_authoritative_agent_turn(
         conversation=conversation,
         query=unrelated.content,
@@ -1366,11 +1397,11 @@ async def test_pack_read_or_mutate_observation_refocuses_pack_through_loop(
     else:
         tool = AgentDecision(
             action=AgentBoundaryAction.CALL_CAPABILITY,
-            capability_id=PACK_DRAFT_CONFIGURE_CAPABILITY.id,
+            capability_id=PACK_DRAFT_REFINE_CAPABILITY.id,
             arguments={
                 "draft_id": draft.id,
                 "expected_revision": draft.revision,
-                "purpose": "Focused mutation",
+                "instruction": "Focus it on a single mitigation document",
             },
         )
     result = await run_authoritative_agent_turn(
@@ -1408,7 +1439,9 @@ async def test_pack_read_or_mutate_observation_refocuses_pack_through_loop(
     ]
 
 
-async def test_model_facing_pack_creation_runs_in_one_bounded_loop(db_session) -> None:
+async def test_model_facing_pack_creation_runs_in_one_bounded_loop(
+    db_session, stub_pack_authoring
+) -> None:
     user, conversation, message, _, state_repo = await _unclaimed_turn(
         db_session, "full-pack"
     )
@@ -1451,17 +1484,23 @@ async def test_model_facing_pack_creation_runs_in_one_bounded_loop(db_session) -
     assert [item.capability_id for item in result.observations] == [
         PACK_CREATE_CAPABILITY.id
     ]
-    assert all(item.succeeded for item in result.observations)
+    assert all(item.succeeded for item in result.observations), [
+        (item.capability_id, item.error_code, item.error_message)
+        for item in result.observations
+    ]
     state = await state_repo.load(
         conversation_id=conversation.id,
         owner_user_id=user.id,
     )
     assert state.active_tasks == []
     assert state.objective is None
-    versions = await draft_service.list_versions(user.id)
-    assert len(versions) == 1
-    assert versions[0].name == "Full Lifecycle"
+    # The saved pack lives in MCP now, so the local evidence is the draft
+    # transition plus the receipt the observation carries.
     assert (await draft_service.get_draft(1, user.id)).status == "saved"
+    created = result.observations[0]
+    assert created.data["name"] == "Full Lifecycle"
+    assert created.data["mcp_pack_id"] == 7
+    assert created.data["documents"] == ["STUB_REPORT"]
 
 
 async def test_onboarding_interrupt_allows_unrelated_answer_then_exact_resume(

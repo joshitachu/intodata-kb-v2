@@ -23,6 +23,7 @@ from src.harness.semantic_tools import (
     build_semantic_tool_snapshot,
 )
 from src.harness.run_budgets import LayeredBudgetController, LayeredModelBudgetMiddleware
+from src.harness.turn_instrumentation import ModelLatencyMiddleware
 
 
 EFFECT_PRIMARY_SYSTEM_PROMPT = """
@@ -86,6 +87,7 @@ def build_effect_primary_runtime(
     effect_operation_service: EffectOperationService,
     agent_plan_service=None,  # noqa: ANN001
     background_context: dict | None = None,
+    turn_guidance: str = "",
     interrupt_before_tools: bool = False,
     budget_controller: LayeredBudgetController | None = None,
 ) -> ReadOnlyPrimaryRuntime:
@@ -135,11 +137,16 @@ def build_effect_primary_runtime(
     )
     tools = build_semantic_structured_tools(model_facing_snapshot, gateway)
     background = json.dumps(background_context or {}, sort_keys=True, default=str)
-    middlewares = [middleware] + ([LayeredModelBudgetMiddleware(budget_controller, model_name=str(getattr(model, "model_name", getattr(model, "model", ""))))] if budget_controller else [])
+    middlewares = [ModelLatencyMiddleware(), middleware] + ([LayeredModelBudgetMiddleware(budget_controller, model_name=str(getattr(model, "model_name", getattr(model, "model", ""))))] if budget_controller else [])
+    # Turn guidance is prose, so it stays out of the JSON background state; the
+    # background state is a machine projection the model is told to trust as fact.
+    prompt = f"{EFFECT_PRIMARY_SYSTEM_PROMPT}\nAuthoritative background state: {background}"
+    if turn_guidance.strip():
+        prompt = f"{prompt}\n{turn_guidance.strip()}"
     graph = create_agent(
         model,
         tools,
-        system_prompt=f"{EFFECT_PRIMARY_SYSTEM_PROMPT}\nAuthoritative background state: {background}",
+        system_prompt=prompt,
         middleware=middlewares,
         interrupt_before=["tools"] if interrupt_before_tools else None,
         name="nexus_slice_5_effect_primary",

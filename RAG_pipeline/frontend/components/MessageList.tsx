@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { MessageBubble } from "./MessageBubble";
 import { DeepDiveChatBubble } from "./DeepDiveChatBubble";
 import { SUGGESTIONS } from "@/lib/constants";
+import { STREAM_REVEAL_KEY, messageRevealKey } from "@/lib/answerReveal";
 import type { MessageResponse } from "@/types";
 import type { StreamState } from "@/hooks/useStreamMessage";
 import type { DeepDiveState } from "@/hooks/useDeepDive";
@@ -19,6 +20,22 @@ interface MessageListProps {
   deepDiveState?: DeepDiveState | null;
   onCancelDeepDive?: () => void;
   onSuggestionClick?: (suggestion: string) => void;
+  /**
+   * Render topology targets as links to `/topology` (see `MessageBubble`).
+   * Set by the chat page, which has no canvas of its own; left off by the
+   * docked copilot, which renders them as chips against the canvas beside it.
+   */
+  showTopologyLinks?: boolean;
+  topologyProjectId?: string | null;
+  /**
+   * Progressive reveal state from the host (`hooks/useProgressiveReveal`).
+   *
+   * `key` names which bubble it applies to -- the live stream, or one persisted
+   * message -- so a reveal survives the hand-off from the stream buffer to the
+   * saved answer without this component needing to know a turn happened. Absent
+   * means no pacing: every bubble renders its full text.
+   */
+  revealedAnswer?: { key: string; text: string; isRevealing: boolean } | null;
 }
 
 export function MessageList({
@@ -30,6 +47,9 @@ export function MessageList({
   deepDiveState,
   onCancelDeepDive,
   onSuggestionClick,
+  showTopologyLinks,
+  topologyProjectId,
+  revealedAnswer,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -44,8 +64,16 @@ export function MessageList({
     scrollToBottom();
   }, [
     messages,
+    // The just-sent question renders before any message or delta exists, so
+    // omitting it left the view parked on the previous turn: the question the
+    // user had just asked, and then the whole answer, arrived off-screen below
+    // with no indication anything had happened.
+    pendingUserMessage,
     streamingMessage?.content,
     streamingMessage?.typedResponse,
+    // Revealed text grows after the last delta has landed, so the thread has to
+    // follow the reveal, not just the buffer.
+    revealedAnswer?.text,
     deepDiveState?.content,
     deepDiveState?.thinking,
     scrollToBottom,
@@ -76,6 +104,7 @@ export function MessageList({
   const latestMessage = messages.at(-1);
   const liveErrorHasPersistedMessage =
     Boolean(streamingMessage?.error) && latestMessage?.status === "failed";
+  const persistedStreamMessageId = streamingMessage?.messageId ?? null;
 
   // Empty conversation state
   if (
@@ -117,14 +146,32 @@ export function MessageList({
   return (
     <div ref={scrollContainerRef} className="relative flex-1 overflow-y-auto">
       <div className="max-w-3xl mx-auto px-6 py-6 space-y-6">
-        {messages.map((message) => (
+        {messages
+          // During the stream-to-query hand-off, render the completed stream
+          // until the host resets it. Hiding its persisted twin for this one
+          // render prevents duplicate bubbles and lets progressive reveal carry
+          // across the source swap without a blank frame.
+          .filter((message) => message.id !== persistedStreamMessageId)
+          .map((message) => (
           <MessageBubble
             key={message.id}
             message={message}
             conversationId={conversationId ?? null}
+            revealedContent={
+              revealedAnswer?.key === messageRevealKey(message.id)
+                ? revealedAnswer.text
+                : undefined
+            }
+            isRevealing={
+              revealedAnswer?.key === messageRevealKey(message.id)
+                ? revealedAnswer.isRevealing
+                : undefined
+            }
             harnessActivities={message.harness_activities}
             pendingAction={message.pending_action}
             workflowCards={message.workflow_cards}
+            showTopologyLinks={showTopologyLinks}
+            topologyProjectId={topologyProjectId}
             onRetry={
               liveErrorHasPersistedMessage && message.id === latestMessage?.id
                 ? onRetryMessage
@@ -179,6 +226,16 @@ export function MessageList({
               }}
               isStreaming={streamingMessage.isStreaming}
               streamingStatus={streamingMessage.progress}
+              streamProgress={streamingMessage.progressDetail ?? null}
+              streamEvents={streamingMessage.agentEvents}
+              revealedContent={
+                revealedAnswer?.key === STREAM_REVEAL_KEY ? revealedAnswer.text : undefined
+              }
+              isRevealing={
+                revealedAnswer?.key === STREAM_REVEAL_KEY
+                  ? revealedAnswer.isRevealing
+                  : undefined
+              }
               workflowCards={streamingMessage.typedResponse?.workflow_cards}
               onRetry={streamingMessage.error ? onRetryMessage : undefined}
             />

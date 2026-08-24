@@ -34,6 +34,7 @@ describe("API client", () => {
           auto_reingest_error: null,
           git_update_summary: null,
           has_github_token: false,
+          connection_kind: "azure_devops",
           webhook_status: null,
           instruction_pack_dir: null,
           plugin_pack_id: null,
@@ -108,6 +109,7 @@ describe("API client", () => {
     const result = await api.listProjects();
     expect(result.projects).toHaveLength(3);
     expect(result.projects[0].id).toBe("test-project");
+    expect(result.projects[0].connection_kind).toBe("azure_devops");
     expect(result.projects.map((project) => project.status)).toEqual([
       "ready",
       "scanned",
@@ -228,26 +230,7 @@ describe("API client", () => {
     expect(body.force).toBe(true);
   });
 
-  it("loads the Nexus pack workspace through the dashboard prefix", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify({
-        project_id: "p1",
-        organization_packs: [],
-        personal_packs: [],
-        selected_organization_pack_id: null,
-        selected_private_version_ids: [],
-      }), { status: 200, headers: { "Content-Type": "application/json" } }),
-    );
-
-    await api.getPackWorkspace("p1");
-
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "/nexus-api/harness/packs/projects/p1/workspace",
-      expect.objectContaining({ credentials: "include" }),
-    );
-  });
-
-  it("sends unified pack selections to Nexus generation", async () => {
+  it("starts generation through the canonical MCP contract", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify({ status: "generation_started", message: "ok" }), {
         status: 200,
@@ -261,24 +244,99 @@ describe("API client", () => {
       "investigator",
       "analyst",
       "writer",
-      10,
-      [21],
       "opencode-cli",
     );
 
     const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
-    expect(fetchCall[0]).toBe("/nexus-api/harness/packs/projects/p1/generate");
+    expect(fetchCall[0]).toBe("/mcp/generate");
     expect(JSON.parse(fetchCall[1]?.body as string)).toMatchObject({
+      project_id: "p1",
       resume: true,
       investigation_model: "investigator",
       model: "analyst",
       write_model: "writer",
       doc_generation_provider: "opencode-cli",
-      organization_pack_id: 10,
-      private_version_ids: [21],
     });
-    expect(JSON.parse(fetchCall[1]?.body as string)).not.toHaveProperty("project_id");
+    expect(JSON.parse(fetchCall[1]?.body as string)).not.toHaveProperty("organization_pack_id");
+    expect(JSON.parse(fetchCall[1]?.body as string)).not.toHaveProperty("private_version_ids");
     expect(JSON.parse(fetchCall[1]?.body as string)).not.toHaveProperty("plugin_pack_id");
+  });
+
+  it("uses the connector catalogue endpoint and accepts safe connector metadata only", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        connectors: [{
+          id: "con_1",
+          provider_id: "elasticsearch",
+          display_name: "Production logs",
+          status: "connected",
+          enabled: true,
+        }],
+        total: 1,
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    const result = await api.listConnectors();
+
+    expect(result.connectors[0]).toMatchObject({ id: "con_1", display_name: "Production logs" });
+    expect(result.connectors[0]).not.toHaveProperty("credentials");
+    expect(globalThis.fetch).toHaveBeenCalledWith("/mcp/connectors", expect.objectContaining({ credentials: "include" }));
+  });
+
+  it("writes Elastic credentials only in the create request and never expects them in the response", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        id: "con_1", provider_id: "elasticsearch", display_name: "Production logs", enabled: true, status: "not_connected",
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    const result = await api.createConnector({
+      provider_id: "elasticsearch",
+      display_name: "Production logs",
+      safe_config: { endpoint: "https://elastic.example.test", auth_type: "api_key" },
+      credential_type: "api_key",
+      credential: "test-write-only-credential",
+    });
+    const body = JSON.parse(vi.mocked(globalThis.fetch).mock.calls[0][1]?.body as string);
+
+    expect(body.credential).toBe("test-write-only-credential");
+    expect(result).not.toHaveProperty("credential");
+    expect(result).not.toHaveProperty("credentials");
+  });
+
+  it("loads project-scoped available connectors for binding without workspace credential access", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        connectors: [{
+          connector: { id: "con_1", provider_id: "elasticsearch", display_name: "Production logs", enabled: true, status: "connected" },
+          sources: [{ id: "src_1", connector_instance_id: "con_1", source_type: "data_stream", display_label: "Production events", enabled: true }],
+        }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    const result = await api.listProjectAvailableConnectors("p1");
+
+    expect(result.connectors[0].sources[0].display_label).toBe("Production events");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/mcp/projects/p1/available-connectors",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+
+  it("does not submit legacy per-run connector settings", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ status: "generation_started", message: "ok" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await api.generate("p1", true, null, "openai/gpt-5.6", null, "opencode-cli");
+
+    expect(JSON.parse(vi.mocked(globalThis.fetch).mock.calls[0][1]?.body as string)).toMatchObject({
+      doc_generation_provider: "opencode-cli",
+    });
+    expect(JSON.parse(vi.mocked(globalThis.fetch).mock.calls[0][1]?.body as string)).not.toHaveProperty("use_connectors");
   });
 
 });

@@ -186,6 +186,288 @@ async def test_generate_dispatch_preserves_governed_stack_contract(client, monke
     assert captured["doc_generation_provider"] == "opencode-cli"
 
 
+# --- Pack audit record on GenerateRun (one-pack-program.md section 9) ---
+
+
+async def _dispatch_generate(client, monkeypatch, project_id: str, payload: dict):
+    """POST /mcp/generate with the background task stubbed out; return run_id."""
+    import mcp_server.api.routes.projects as projects_mod
+
+    async def fake_background(_project_id, _run_id, _log_mgr, **_kwargs):
+        return None
+
+    monkeypatch.setattr(projects_mod, "_run_generate_background", fake_background)
+    response = await client.post(
+        "/mcp/generate", json={"project_id": project_id, **payload}
+    )
+    projects_mod._currently_generating.discard(project_id)
+    assert response.status_code == 200, response.text
+    return response.json()["run_id"]
+
+
+async def test_generate_records_pack_audit_from_snapshot(client, monkeypatch):
+    """Identity is derived from the hash-verified snapshot; actor from the request."""
+    import datetime
+
+    from mcp_server.db.models import GenerateRun
+    from mcp_server.schemas import NexusPackSnapshot, compute_nexus_snapshot_hash
+
+    await client.post(
+        "/mcp/add-repo",
+        json={"url": "zip", "project_id": "pack-audit", "platform": "talend"},
+    )
+    snapshot = NexusPackSnapshot.model_validate({
+        "policy_id": "org.default",
+        "policy_hash": "a" * 64,
+        "foundation_pack_id": "foundation.core",
+        "functional_pack_ids": ["user.42.sql-review"],
+        "style_pack_ids": [],
+        "resolved_packs": [
+            {"id": "foundation.core", "version": "1.0.0", "content_hash": "b" * 64},
+            {"id": "user.42.sql-review", "version": "0.3.0", "content_hash": "c" * 64},
+        ],
+        "snapshot_hash": "0" * 64,
+    })
+    snapshot = snapshot.model_copy(
+        update={"snapshot_hash": compute_nexus_snapshot_hash(snapshot, None)}
+    )
+    activated_at = datetime.datetime(2026, 8, 20, 9, 30, tzinfo=datetime.timezone.utc)
+
+    run_id = await _dispatch_generate(
+        client,
+        monkeypatch,
+        "pack-audit",
+        {
+            "nexus_pack_snapshot": snapshot.model_dump(mode="json"),
+            # Deliberately WRONG duplicates: the snapshot must win.
+            "pack_id": "spoofed.pack",
+            "pack_version": "9.9.9",
+            "pack_content_hash": "d" * 64,
+            "pack_activated_by": "user:42",
+            "pack_activated_at": activated_at.isoformat(),
+        },
+    )
+
+    import mcp_server.api.routes.projects as projects_mod
+
+    async with projects_mod.async_session_factory() as session:
+        run = (
+            await session.execute(select(GenerateRun).where(GenerateRun.id == run_id))
+        ).scalar_one()
+        assert run.pack_id == "user.42.sql-review"
+        assert run.pack_version == "0.3.0"
+        assert run.pack_content_hash == "c" * 64
+        assert run.pack_activated_by == "user:42"
+        assert run.pack_activated_at is not None
+
+
+async def test_generate_records_explicit_pack_audit_without_snapshot(client, monkeypatch):
+    """No snapshot: the explicit request fields are the fallback identity source."""
+    from mcp_server.db.models import GenerateRun
+
+    await client.post(
+        "/mcp/add-repo",
+        json={"url": "zip", "project_id": "pack-audit-explicit", "platform": "talend"},
+    )
+    run_id = await _dispatch_generate(
+        client,
+        monkeypatch,
+        "pack-audit-explicit",
+        {
+            "pack_id": "user.42.sql-review",
+            "pack_version": "0.3.0",
+            "pack_content_hash": "e" * 64,
+            "pack_activated_by": "user:42",
+            "pack_activated_at": "2026-08-20T09:30:00+00:00",
+        },
+    )
+
+    import mcp_server.api.routes.projects as projects_mod
+
+    async with projects_mod.async_session_factory() as session:
+        run = (
+            await session.execute(select(GenerateRun).where(GenerateRun.id == run_id))
+        ).scalar_one()
+        assert run.pack_id == "user.42.sql-review"
+        assert run.pack_version == "0.3.0"
+        assert run.pack_content_hash == "e" * 64
+        assert run.pack_activated_by == "user:42"
+        assert run.pack_activated_at is not None
+
+
+async def test_generate_without_pack_identity_leaves_audit_fields_null(client, monkeypatch):
+    from mcp_server.db.models import GenerateRun
+
+    await client.post(
+        "/mcp/add-repo",
+        json={"url": "zip", "project_id": "pack-audit-none", "platform": "talend"},
+    )
+    run_id = await _dispatch_generate(client, monkeypatch, "pack-audit-none", {})
+
+    import mcp_server.api.routes.projects as projects_mod
+
+    async with projects_mod.async_session_factory() as session:
+        run = (
+            await session.execute(select(GenerateRun).where(GenerateRun.id == run_id))
+        ).scalar_one()
+        assert run.pack_id is None
+        assert run.pack_version is None
+        assert run.pack_content_hash is None
+        assert run.pack_activated_by is None
+        assert run.pack_activated_at is None
+
+
+async def test_generate_records_resolved_plugin_pack_identity(
+    client, monkeypatch, session_factory, tmp_path
+):
+    """The selected central PluginPack and its immutable hash are the run receipt."""
+    from mcp_server.api.routes import projects as projects_mod
+    from mcp_server.db.models import GenerateRun, PluginPack
+    from mcp_server.services.pack_governance import PackGovernanceDecision
+
+    await client.post(
+        "/mcp/add-repo",
+        json={"url": "zip", "project_id": "plugin-pack-audit", "platform": "talend"},
+    )
+    pack_dir = tmp_path / "audit-pack"
+    pack_dir.mkdir()
+    (pack_dir / "plugin.yaml").write_text(
+        "name: audit-pack\nversion: 2.4.0\nsteps:\n  - id: generate-docs\n    type: harness\n",
+        encoding="utf-8",
+    )
+    async with session_factory() as session:
+        pack = PluginPack(
+            name="Audit Pack",
+            manifest_name="audit-pack",
+            version="2.4.0",
+            path=str(pack_dir),
+            owner_user_id=42,
+            auto_update=False,
+            origin="personal",
+            certification_status="personal",
+            content_sha256="f" * 64,
+        )
+        session.add(pack)
+        await session.commit()
+        pack_id = pack.id
+
+    async def allow_pack(_pack):
+        return PackGovernanceDecision(True, False, "personal", True)
+
+    captured: dict = {}
+
+    async def fake_background(_project_id, _run_id, _log_mgr, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(
+        projects_mod.pack_governance, "require_generation_authority", allow_pack
+    )
+    monkeypatch.setattr(projects_mod, "_run_generate_background", fake_background)
+    response = await client.post(
+        "/mcp/generate",
+        json={"project_id": "plugin-pack-audit", "plugin_pack_id": pack_id},
+    )
+    projects_mod._currently_generating.discard("plugin-pack-audit")
+
+    assert response.status_code == 200, response.text
+    assert captured["plugin_pack_id"] == pack_id
+    async with session_factory() as session:
+        run = (
+            await session.execute(
+                select(GenerateRun).where(GenerateRun.id == response.json()["run_id"])
+            )
+        ).scalar_one()
+        assert run.pack_id == str(pack_id)
+        assert run.pack_version == "2.4.0"
+        assert run.pack_content_hash == "f" * 64
+        assert run.pack_activated_at is not None
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "SECURITY_REVIEW.md").write_text("# Review\n", encoding="utf-8")
+    await projects_mod._write_plugin_pack_execution_receipt(
+        staging,
+        run_id=response.json()["run_id"],
+        plugin_pack_id=pack_id,
+        model_name="gpt-5.6-luna",
+        write_model_name="gpt-5.6-luna",
+    )
+    receipt = json.loads(
+        (staging / "_audit" / "plugin_pack_execution_receipt.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert receipt["plugin_pack"]["id"] == pack_id
+    assert receipt["plugin_pack"]["manifest_name"] == "audit-pack"
+    assert receipt["models"] == {
+        "analysis": "gpt-5.6-luna",
+        "writing": "gpt-5.6-luna",
+    }
+    assert receipt["generated_documents"] == ["SECURITY_REVIEW.md"]
+
+
+async def test_pack_audit_column_migration_is_idempotent(engine):
+    """Running the startup migration twice against a live table is a no-op."""
+    from sqlalchemy import inspect as sa_inspect
+
+    from mcp_server.api.app import (
+        _GENERATE_RUN_PACK_AUDIT_COLUMNS,
+        _apply_column_migrations,
+    )
+
+    expected = {name for name, _ in _GENERATE_RUN_PACK_AUDIT_COLUMNS}
+
+    def _columns(sync_conn):
+        return {c["name"] for c in sa_inspect(sync_conn).get_columns("generate_runs")}
+
+    async with engine.begin() as conn:
+        # create_all already produced the columns; the guard must skip them.
+        assert expected <= await conn.run_sync(_columns)
+        await conn.run_sync(_apply_column_migrations)
+        await conn.run_sync(_apply_column_migrations)
+        after = await conn.run_sync(_columns)
+
+    assert expected <= after
+
+
+async def test_pack_audit_column_migration_adds_missing_columns(engine):
+    """The migration is the path for deployments that never ran alembic."""
+    from sqlalchemy import inspect as sa_inspect, text
+
+    from mcp_server.api.app import (
+        _GENERATE_RUN_PACK_AUDIT_COLUMNS,
+        _apply_column_migrations,
+    )
+
+    expected = [name for name, _ in _GENERATE_RUN_PACK_AUDIT_COLUMNS]
+
+    def _columns(sync_conn):
+        return {c["name"] for c in sa_inspect(sync_conn).get_columns("generate_runs")}
+
+    async with engine.begin() as conn:
+        # SQLite cannot DROP COLUMN on older versions; rebuild a legacy-shaped
+        # table instead so the ADD COLUMN branch is genuinely exercised.
+        await conn.execute(text("DROP TABLE generate_runs"))
+        await conn.execute(
+            text(
+                "CREATE TABLE generate_runs ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "project_id VARCHAR(100) NOT NULL, "
+                "triggered_by VARCHAR(40) NOT NULL, "
+                "status VARCHAR(20))"
+            )
+        )
+        assert not (set(expected) & await conn.run_sync(_columns))
+        await conn.run_sync(_apply_column_migrations)
+        added = await conn.run_sync(_columns)
+        await conn.run_sync(_apply_column_migrations)
+        again = await conn.run_sync(_columns)
+
+    assert set(expected) <= added
+    assert added == again
+    assert "partition_name" in added
+
+
 # --- Upload ZIP ---
 
 

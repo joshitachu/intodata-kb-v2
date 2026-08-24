@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -482,6 +482,52 @@ class RuntimeJobReliability(BaseModel):
     p50_duration_ms: int | None = None
     p95_duration_ms: int | None = None
     max_duration_ms: int | None = None
+
+
+class RuntimeDocEvidenceFailure(BaseModel):
+    """One redacted failure headline, with how often that failure recurred.
+
+    Distinct failure MODES, not individual incidents: a job that fails the same
+    way 700 times has one story to tell, and listing near-identical lines would
+    crowd out the rarer failures that are usually the interesting ones.
+    """
+
+    failed_at: datetime
+    error_summary: str
+    occurrences: int = 1
+
+
+class RuntimeDocEvidence(BaseModel):
+    """Runtime execution profile for ONE scanned unit, safe for LLM context.
+
+    Aggregates only.  Raw log lines never appear here: a document needs to say
+    how often a job runs and how it fails, not to replay its output, and the
+    narrower payload keeps the redaction surface to `error_summary` alone.
+    """
+
+    unit_name: str
+    job_name: str
+    source_key: str
+    resolved_by: Literal["scan_map", "exact_name"]
+    environments: list[str] = Field(default_factory=list)
+    total_runs: int
+    success_runs: int
+    failed_runs: int
+    unfinished_runs: int
+    failure_rate: float
+    current_failure_streak: int
+    first_run_at: datetime | None = None
+    last_run_at: datetime | None = None
+    runs_per_day: float | None = None
+    # Latency over SUCCESSFUL, completed runs only. Hung and abandoned
+    # executions keep a duration and would otherwise dominate the percentiles
+    # (verified: a 13-day p95 in werkorder), which is not what "how long does
+    # this job take" means to a reader.
+    p50_duration_ms: int | None = None
+    p95_duration_ms: int | None = None
+    max_duration_ms: int | None = None
+    plans: list[str] = Field(default_factory=list)
+    recent_failures: list[RuntimeDocEvidenceFailure] = Field(default_factory=list)
 
 
 class RuntimeComponentHotspot(BaseModel):

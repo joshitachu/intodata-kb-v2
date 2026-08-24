@@ -51,12 +51,10 @@ def test_encrypt_decrypt_roundtrip(fernet_key):
     assert encryption.decrypt_token(enc) == "secret-pat"
 
 
-def test_inject_token_decrypts_then_injects(fernet_key):
-    enc = encryption.encrypt_token("ghp_pat")
-    out = encryption.inject_token("https://github.com/acme/repo.git", enc)
-    assert out == "https://ghp_pat@github.com/acme/repo.git"
-
-
-def test_inject_token_noop_without_token():
-    url = "https://github.com/acme/repo.git"
-    assert encryption.inject_token(url, None) == url
+def test_inject_plaintext_token_with_username_uses_password_position():
+    # One builder serves GitHub PATs, GitHub App installation tokens and Azure
+    # DevOps PATs: the token goes in the password position.
+    out = encryption.inject_plaintext_token(
+        "https://dev.azure.com/org/proj/_git/repo", "ado_pat", username="x-access-token"
+    )
+    assert out == "https://x-access-token:ado_pat@dev.azure.com/org/proj/_git/repo"

@@ -1,18 +1,21 @@
 """Tests for auth API endpoints (src/api/routes/auth.py)."""
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import Response
+from fastapi import Request, Response
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from src.api.main import app
-from src.auth.security import hash_password, hash_token
+from src.auth.security import hash_password, hash_token, verify_password
 from src.db.models import (
     AccessRequest,
+    AuditLog,
     EmailOTPCode,
     Permission,
+    RefreshToken,
     Role,
     User,
     UserInvite,
@@ -133,6 +136,45 @@ class TestLogin:
         assert "access_token" not in resp.cookies
         mock_svc.create_tokens.assert_not_called()
 
+    async def test_mfa_completion_reports_passwordless_account(self, mock_auth_deps):
+        user = _mock_user(mfa_enabled=True)
+        user.password_hash = None
+        user.totp_secret = "secret"
+        user.totp_last_code = None
+        user.totp_last_code_used_at = None
+
+        user_result = MagicMock()
+        user_result.scalar_one_or_none.return_value = user
+        onboarding_result = MagicMock()
+        onboarding_result.scalar_one_or_none.return_value = None
+        mock_auth_deps["db"].execute = AsyncMock(
+            side_effect=[user_result, onboarding_result]
+        )
+
+        with (
+            patch("src.api.routes.auth._decode_mfa_token", return_value=user.id),
+            patch("src.api.routes.auth.verify_totp", return_value=True),
+            patch("src.api.routes.auth.AuthService") as mock_svc_cls,
+            patch("src.api.routes.auth.AuditService") as mock_audit_cls,
+        ):
+            mock_svc = MagicMock()
+            mock_svc.create_tokens = AsyncMock(return_value=("access_tok", "refresh_tok"))
+            mock_svc_cls.return_value = mock_svc
+            mock_audit = MagicMock()
+            mock_audit.log = AsyncMock()
+            mock_audit_cls.return_value = mock_audit
+
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/auth/verify-mfa",
+                    json={"mfa_token": "challenge", "code": "123456"},
+                )
+
+        assert resp.status_code == 200
+        assert resp.json()["user"]["has_password"] is False
+        assert "access_token" in resp.cookies
+
     async def test_login_wrong_password(self, mock_auth_deps):
         with patch("src.api.routes.auth.AuthService") as mock_svc_cls:
             mock_svc = MagicMock()
@@ -220,7 +262,10 @@ class TestLogin:
         assert resp.status_code == 401
         detail = resp.json()["detail"]
         assert detail["code"] == "passwordless_account"
-        assert "password" in detail["message"].lower()
+        message = detail["message"].lower()
+        assert "email code" in message
+        assert "create a password" in message
+        assert "this account" not in message
 
     async def test_login_locked_account_returns_403(self, mock_auth_deps):
         from datetime import datetime, timezone
@@ -366,6 +411,7 @@ class TestEmailOTPLogin:
 
         assert resp.status_code == 200
         assert resp.json()["user"]["email"] == "otp@example.com"
+        assert resp.json()["user"]["has_password"] is False
         assert "access_token" in resp.cookies
         otp = (await db_session.execute(select(EmailOTPCode))).scalar_one()
         assert otp.consumed_at is not None
@@ -457,6 +503,170 @@ class TestMandatoryMFA:
         assert resp.status_code == 403
         assert resp.json()["detail"]["code"] == "mfa_required"
 
+    async def test_passwordless_user_is_limited_to_password_setup_after_mfa(
+        self, mock_auth_deps
+    ):
+        mock_db = mock_auth_deps["db"]
+        user = _mock_user(mfa_enabled=True)
+        user.password_hash = None
+
+        user_result = MagicMock()
+        user_result.scalar_one_or_none.return_value = user
+        mock_db.execute = AsyncMock(return_value=user_result)
+
+        with patch("src.api.dependencies.decode_token") as mock_decode:
+            mock_decode.return_value = {"sub": "1", "type": "access"}
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.get(
+                    "/api/v1/admin/users",
+                    headers={"cookie": "access_token=access_tok"},
+                )
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["code"] == "password_setup_required"
+
+    async def test_sso_only_user_is_not_forced_to_create_a_password(self):
+        from src.api.dependencies import get_current_user
+
+        user = _mock_user(mfa_enabled=True)
+        user.password_hash = None
+        user.sso_provider = "microsoft"
+        user_result = MagicMock()
+        user_result.scalar_one_or_none.return_value = user
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=user_result)
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/api/v1/documents",
+                "headers": [],
+                "query_string": b"",
+                "server": ("test", 80),
+                "client": ("127.0.0.1", 123),
+                "scheme": "http",
+            }
+        )
+
+        with patch("src.api.dependencies.decode_token") as mock_decode:
+            mock_decode.return_value = {"sub": "1", "type": "access"}
+            resolved = await get_current_user(request, db, "access_tok")
+
+        assert resolved is user
+
+
+class TestFirstPasswordSetup:
+    @staticmethod
+    def _csrf_headers() -> dict[str, str]:
+        return {
+            "cookie": "csrf_token=test_csrf; refresh_token=current_refresh",
+            "X-CSRF-Token": "test_csrf",
+        }
+
+    async def test_passwordless_user_can_create_first_password(self, db_session):
+        from src.api.dependencies import get_current_user, get_db
+
+        user = User(
+            username="first-password",
+            email="first-password@example.com",
+            password_hash=None,
+            mfa_enabled=True,
+        )
+        db_session.add(user)
+        await db_session.flush()
+        current_session = RefreshToken(
+            token_hash=hash_token("current_refresh"),
+            user_id=user.id,
+            expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        )
+        other_session = RefreshToken(
+            token_hash=hash_token("other_refresh"),
+            user_id=user.id,
+            expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        )
+        db_session.add_all([current_session, other_session])
+        await db_session.commit()
+
+        app.dependency_overrides[get_db] = lambda: db_session
+        app.dependency_overrides[get_current_user] = lambda: user
+        try:
+            transport = ASGITransport(app=app, client=("127.0.0.9", 123))
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/auth/set-password",
+                    headers=self._csrf_headers(),
+                    json={"new_password": "A-secure-first-password"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        assert resp.json() == {"message": "Password created."}
+        await db_session.refresh(user)
+        assert verify_password("A-secure-first-password", user.password_hash)
+        audit = (
+            await db_session.execute(
+                select(AuditLog).where(AuditLog.action == "password_created")
+            )
+        ).scalar_one()
+        assert audit.user_id == user.id
+        assert audit.ip_address == "127.0.0.9"
+        await db_session.refresh(current_session)
+        await db_session.refresh(other_session)
+        assert current_session.revoked is False
+        assert other_session.revoked is True
+
+    async def test_set_password_cannot_replace_an_existing_password(self, db_session):
+        from src.api.dependencies import get_current_user, get_db
+
+        original_hash = hash_password("original-password")
+        user = User(
+            username="existing-password",
+            email="existing-password@example.com",
+            password_hash=original_hash,
+            mfa_enabled=True,
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        app.dependency_overrides[get_db] = lambda: db_session
+        app.dependency_overrides[get_current_user] = lambda: user
+        try:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/auth/set-password",
+                    headers=self._csrf_headers(),
+                    json={"new_password": "replacement-password"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["code"] == "password_already_set"
+        await db_session.refresh(user)
+        assert user.password_hash == original_hash
+
+    @pytest.mark.parametrize(
+        "password",
+        ["short", "x" * 129],
+    )
+    async def test_set_password_enforces_length_bounds(
+        self, mock_authed_deps, password
+    ):
+        user = mock_authed_deps["user"]
+        user.password_hash = None
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/auth/set-password",
+                headers=self._csrf_headers(),
+                json={"new_password": password},
+            )
+
+        assert resp.status_code == 422
+
 
 class TestCSRFExemptions:
     def test_authenticated_auth_mutations_are_not_csrf_exempt(self):
@@ -464,6 +674,7 @@ class TestCSRFExemptions:
 
         sensitive_paths = {
             "/api/v1/auth/change-password",
+            "/api/v1/auth/set-password",
             "/api/v1/auth/totp/disable",
         }
 
@@ -785,6 +996,7 @@ class TestAccessRequestsAndInvites:
         req = AccessRequest(email="invitee@example.com", status="pending")
         db_session.add_all([admin, non_admin, req])
         await db_session.commit()
+        await db_session.refresh(non_admin, ["roles"])
 
         app.dependency_overrides[get_db] = lambda: db_session
         app.dependency_overrides[get_current_user] = lambda: non_admin
@@ -865,3 +1077,41 @@ class TestRefresh:
         assert resp.status_code == 200
         data = resp.json()
         assert data["message"] == "Token refreshed"
+
+    @staticmethod
+    def _cleared_cookie_names(resp) -> set[str]:
+        """Names the response asks the browser to drop."""
+        cleared = set()
+        for header in resp.headers.get_list("set-cookie"):
+            name, _, rest = header.partition("=")
+            value = rest.split(";", 1)[0]
+            if value in ("", '""'):
+                cleared.add(name)
+        return cleared
+
+    async def test_refresh_without_token_clears_session_cookies(self, mock_auth_deps):
+        """Raising HTTPException used to discard the injected Response, so the
+        cookie deletions never reached the browser. Stale cookies then kept
+        middleware.ts admitting a dead session on every navigation."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/api/v1/auth/refresh")
+
+        assert resp.status_code == 401
+        assert {"access_token", "refresh_token", "csrf_token"} <= self._cleared_cookie_names(resp)
+
+    async def test_refresh_with_dead_token_clears_session_cookies(self, mock_auth_deps):
+        with patch("src.api.routes.auth.AuthService") as mock_svc_cls:
+            mock_svc = MagicMock()
+            mock_svc.rotate_refresh_token = AsyncMock(return_value=None)
+            mock_svc_cls.return_value = mock_svc
+
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/auth/refresh",
+                    headers={"cookie": "refresh_token=revoked_tok"},
+                )
+
+        assert resp.status_code == 401
+        assert {"access_token", "refresh_token", "csrf_token"} <= self._cleared_cookie_names(resp)

@@ -92,6 +92,15 @@ services:
       APP_ENV: ${APP_ENV:-production}
       VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
       KIMI_API_KEY: ${KIMI_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # Documentation answers may fail over only to this explicit, ordered list.
+      # Keep the default empty until a contract-compatible model is approved.
+      RAG_APPROVED_FALLBACK_MODELS: ${RAG_APPROVED_FALLBACK_MODELS:-[]}
+      RAG_DOCUMENTATION_PROVIDER_MAX_RETRIES: ${RAG_DOCUMENTATION_PROVIDER_MAX_RETRIES:-1}
       MCP_INGEST_API_KEY: ${MCP_INGEST_API_KEY:-}
       MCP_DOCS_BASE_URL: ${MCP_DOCS_BASE_URL:-http://mcp-server:8002/mcp}
       MCP_DOCS_RECONCILIATION_SERVICE_TOKEN: ${MCP_DOCS_RECONCILIATION_SERVICE_TOKEN:-}
@@ -106,7 +115,9 @@ services:
       # Unified bounded agent-loop limits. Chat has one production route.
       AGENT_CHAT_MAX_ITERATIONS: ${AGENT_CHAT_MAX_ITERATIONS:-6}
       AGENT_CHAT_MAX_TOOL_CALLS: ${AGENT_CHAT_MAX_TOOL_CALLS:-4}
-      AGENT_CHAT_DEADLINE_SECONDS: ${AGENT_CHAT_DEADLINE_SECONDS:-30}
+      # 30s sat below the 38.7s p50 of a documentation answer, so it killed most
+      # of them outright. Restored to the code default in src/config.py.
+      AGENT_CHAT_DEADLINE_SECONDS: ${AGENT_CHAT_DEADLINE_SECONDS:-120}
       AGENT_CHAT_MAX_COST_USD: ${AGENT_CHAT_MAX_COST_USD:-0.25}
       AGENT_RUNTIME_V2_CANARY_STAGE: ${AGENT_RUNTIME_V2_CANARY_STAGE:-off}
       AGENT_RUNTIME_V2_ENABLED: ${AGENT_RUNTIME_V2_ENABLED:-false}
@@ -127,8 +138,13 @@ services:
       AGENT_RUNTIME_V2_READ_TOOL_TIMEOUT_SECONDS: ${AGENT_RUNTIME_V2_READ_TOOL_TIMEOUT_SECONDS:-90}
       AGENT_RUNTIME_V2_WRITE_TOOL_TIMEOUT_SECONDS: ${AGENT_RUNTIME_V2_WRITE_TOOL_TIMEOUT_SECONDS:-30}
       AGENT_RUNTIME_V2_WORKFLOW_HANDOFF_TIMEOUT_SECONDS: ${AGENT_RUNTIME_V2_WORKFLOW_HANDOFF_TIMEOUT_SECONDS:-15}
-      AGENT_RUNTIME_V2_SOFT_DEADLINE_SECONDS: ${AGENT_RUNTIME_V2_SOFT_DEADLINE_SECONDS:-45}
-      AGENT_RUNTIME_V2_HARD_DEADLINE_SECONDS: ${AGENT_RUNTIME_V2_HARD_DEADLINE_SECONDS:-120}
+      # Restored to the code defaults in src/config.py. The prior 45/120 pair sat
+      # close to this path's p90 of 57.4s (max observed 86.8s), so turns that had
+      # already produced an answer were being discarded. `reconcile_turn_deadlines`
+      # raises the soft deadline to `hard - model_timeout` and the read-tool
+      # timeout to `hard`, and clamps provider sockets down to `hard`.
+      AGENT_RUNTIME_V2_SOFT_DEADLINE_SECONDS: ${AGENT_RUNTIME_V2_SOFT_DEADLINE_SECONDS:-180}
+      AGENT_RUNTIME_V2_HARD_DEADLINE_SECONDS: ${AGENT_RUNTIME_V2_HARD_DEADLINE_SECONDS:-300}
       AGENT_RUNTIME_V2_MAX_MODEL_CALLS: ${AGENT_RUNTIME_V2_MAX_MODEL_CALLS:-8}
       AGENT_RUNTIME_V2_SYNTHESIS_RESERVE_CALLS: ${AGENT_RUNTIME_V2_SYNTHESIS_RESERVE_CALLS:-2}
       AGENT_RUNTIME_V2_PROVIDER_MAX_RETRIES: ${AGENT_RUNTIME_V2_PROVIDER_MAX_RETRIES:-1}
@@ -250,6 +266,18 @@ services:
       # investigation + Phase 2 tool loops). Lowered to 5 so 10-unit scoped
       # projects still run full Phase 1 investigation.
       MCP_SMALL_PROJECT_THRESHOLD: ${MCP_SMALL_PROJECT_THRESHOLD:-5}
+      # One Pack activation (docs/one-pack-program.md section 5). EMPTY = the
+      # legacy path: a run with no pack builds its section contract from the
+      # module constants + data/doc_catalog.yaml, exactly as before. Set to
+      # "intodata.engineering-handover" to make that pack the source of the
+      # contract for every no-pack run -- the switch that turns the legacy
+      # 10-doc output into a pack you can swap rather than the platform.
+      #
+      # Contract SHAPE is proven identical on all four platforms
+      # (tests/test_services/test_default_pack_parity.py). What changes is the
+      # FAILURE MODE: a missing required section is published with a loud,
+      # named warning instead of silently becoming a PARTIAL stub. Clear this
+      # variable to revert every run -- no migration, no data change.
       MCP_INTODOC_COMMAND: intodoc
       MCP_CLAUDE_COMMAND: ${MCP_CLAUDE_COMMAND:-claude}
       MCP_CLAUDE_MODEL: ${MCP_CLAUDE_MODEL:-sonnet}
@@ -262,7 +290,10 @@ services:
       MCP_OPENCODE_VERSION: ${MCP_OPENCODE_VERSION:-1.18.7}
       MCP_OPENCODE_AUTO_APPROVE: ${MCP_OPENCODE_AUTO_APPROVE:-true}
       MCP_OPENCODE_TIMEOUT_SECONDS: ${MCP_OPENCODE_TIMEOUT_SECONDS:-1800}
+      MCP_OPENCODE_PHASE_MAX_FOLLOWUPS: ${MCP_OPENCODE_PHASE_MAX_FOLLOWUPS:-1}
+      MCP_OPENCODE_PRODUCE_CONCURRENCY: ${MCP_OPENCODE_PRODUCE_CONCURRENCY:-2}
       MCP_OPENCODE_OLLAMA_BASE_URL: ${MCP_OPENCODE_OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+      MCP_OPENCODE_GO_API_KEY: ${MCP_OPENCODE_GO_API_KEY:-}
       MCP_OPENCODE_MCP_READ_ALLOWLIST_JSON: ${MCP_OPENCODE_MCP_READ_ALLOWLIST_JSON:-{}}
       MCP_DATA_DIR: /app/data
       MCP_INTODOC_OUTPUT_DIR: /app/intodoc-output
@@ -307,6 +338,8 @@ services:
       MCP_DOC_GENERATION_DEEPSEEK_BASE_URL: ${MCP_DOC_GENERATION_DEEPSEEK_BASE_URL:-}
       MCP_DOC_GENERATION_ROUTE33_API_KEY: ${MCP_DOC_GENERATION_ROUTE33_API_KEY:-}
       MCP_DOC_GENERATION_ROUTE33_BASE_URL: ${MCP_DOC_GENERATION_ROUTE33_BASE_URL:-https://api.route33.ai/v1}
+      MCP_DOC_GENERATION_OPENROUTER_API_KEY: ${MCP_DOC_GENERATION_OPENROUTER_API_KEY:-}
+      MCP_DOC_GENERATION_OPENROUTER_BASE_URL: ${MCP_DOC_GENERATION_OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
       MCP_MODEL_PRICING_JSON: ${MCP_MODEL_PRICING_JSON:-}
       MCP_AGENT_PHASE1_AGENTIC: "true"
       MCP_DEEP_DIVE_ENGINE: ${MCP_DEEP_DIVE_ENGINE:-repo_agent}
@@ -320,11 +353,16 @@ services:
       MCP_OPS_TELEMETRY_API_KEY: ${MCP_OPS_TELEMETRY_API_KEY:-}
       MCP_OPS_TELEMETRY_INTERVAL_SECONDS: ${MCP_OPS_TELEMETRY_INTERVAL_SECONDS:-300}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      KIMI_API_KEY: ${KIMI_API_KEY:-}
+      MCP_PACK_AUTHOR_MODEL: ${MCP_PACK_AUTHOR_MODEL:-kimi/kimi-k2.5}
+      MCP_PACK_AUTHOR_TIMEOUT_SECONDS: ${MCP_PACK_AUTHOR_TIMEOUT_SECONDS:-120}
+      MCP_PACK_AUTHOR_MAX_OUTPUT_TOKENS: ${MCP_PACK_AUTHOR_MAX_OUTPUT_TOKENS:-32768}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       ROUTE33_API_KEY: ${ROUTE33_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

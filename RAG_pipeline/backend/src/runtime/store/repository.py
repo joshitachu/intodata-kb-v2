@@ -15,10 +15,12 @@ import datetime
 import hashlib
 import json
 import math
+import re
 import uuid
 from collections import defaultdict
+from collections.abc import Sequence
 
-from sqlalchemy import and_, case, delete, func, select
+from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models.runtime_data import (
@@ -43,6 +45,7 @@ from src.db.models.runtime_data import (
     RuntimeWorkspaceRow,
 )
 from src.db.models.runtime_insights import RuntimeErrorSignatureRow, RuntimeIncidentRow
+from src.db.models.runtime_topology import RuntimeJobScanMapRow
 from src.runtime.models import (
     DetectFailuresInput,
     GetExecutionDetailsInput,
@@ -79,6 +82,8 @@ from src.runtime.models import (
     RuntimeJob,
     RuntimeJobDependency,
     RuntimeJobHealth,
+    RuntimeDocEvidence,
+    RuntimeDocEvidenceFailure,
     RuntimeJobReliability,
     RuntimeJobRun,
     RuntimeJobThroughput,
@@ -108,6 +113,7 @@ from src.runtime.secrets import (
     encrypt,
 )
 from src.runtime.insights.parser import redact_credentials
+from src.runtime.redaction import sanitize_sync_error
 from src.runtime.store import ProjectScope, RuntimeDuplicateSourceError, RuntimeRecordNotFoundError
 
 # Severity ordering for min_severity filtering (low -> high).
@@ -184,6 +190,46 @@ def _ratio(numerator: int | None, denominator: int | None) -> float | None:
     if numerator is None or not denominator:
         return None
     return numerator / denominator
+
+
+_FAILURE_VOLATILE_RE = re.compile(
+    r"""
+    [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}  # uuid
+    | \b[0-9a-f]{16,}\b                                            # long hex id
+    | \b\d{3,}\b                                                   # counters, ports, ids
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _failure_signature(summary: str) -> str:
+    """Group key for "the same failure, different incident".
+
+    Deliberately NOT the incident `signature_hash` from
+    `runtime/insights/builder.py`: that one composes parsed log fields (error
+    code, exception class, failed component) and needs ingested log events.
+    This works on the provider's headline string alone, which is all the
+    documentation path has, so it only strips the parts that vary per
+    occurrence -- execution ids and numeric counters.
+    """
+    return _FAILURE_VOLATILE_RE.sub("#", summary.casefold()).strip()
+
+
+def _observed_runs_per_day(rollup: RuntimeJobReliability) -> float | None:
+    """Observed cadence, derived from run timestamps rather than a schedule.
+
+    TMC exposes no schedule expression on a run, so frequency is what actually
+    happened over the observed span.  A single run, or runs inside one day, give
+    no span to divide by and yield None -- reporting "1 run/day" from one sample
+    would read as a cadence the evidence does not support.
+    """
+    first, last = rollup.first_run_at, rollup.last_run_at
+    if first is None or last is None or rollup.total_runs < 2:
+        return None
+    span_days = (last - first).total_seconds() / 86_400
+    if span_days < 1:
+        return None
+    return round(rollup.total_runs / span_days, 2)
 
 
 def _as_utc(value: datetime.datetime | None) -> datetime.datetime | None:
@@ -606,12 +652,26 @@ class RuntimeStoreRepository:
             RuntimeSourceRow.physical_identity == physical_identity,
         ))).scalar_one_or_none()
 
-    async def list_legacy_source_ids(self, source_types: set[str]) -> list[int]:
+    async def list_unresolved_identity_source_ids(
+        self, source_types: set[str], endpoint_identity: str | None = None
+    ) -> list[int]:
+        """Return sources whose stored identity predates the current identity rule.
+
+        Two generations qualify: migration-era rows the migration could not
+        decrypt (``legacy:``), and rows written when the identity was the bare
+        endpoint, before it was narrowed to a tenant. Both must be re-resolved
+        from their own credentials before a new registration can be judged a
+        duplicate, otherwise a second tenant on the same endpoint is rejected
+        for colliding with the first one registered.
+        """
         if not source_types:
             return []
+        conditions = [RuntimeSourceRow.physical_identity.startswith("legacy:")]
+        if endpoint_identity:
+            conditions.append(RuntimeSourceRow.physical_identity == endpoint_identity)
         return list((await self._session.execute(select(RuntimeSourceRow.id).where(
             RuntimeSourceRow.source_type.in_(source_types),
-            RuntimeSourceRow.physical_identity.startswith("legacy:"),
+            or_(*conditions),
         ))).scalars().all())
 
     async def list_source_configs(
@@ -1730,6 +1790,278 @@ class RuntimeStoreRepository:
             select(base.c.project_id, base.c.source_key, base.c.job_name).distinct().subquery()
         )
         return int((await self._session.execute(select(func.count()).select_from(groups))).scalar_one())
+
+    async def list_doc_evidence(
+        self,
+        scope: ProjectScope,
+        *,
+        project_id: str,
+        unit_names: Sequence[str],
+        since: datetime.datetime,
+        max_failures_per_unit: int = 5,
+    ) -> tuple[list[RuntimeDocEvidence], list[str]]:
+        """Runtime profiles for scanned units, plus the units with no data.
+
+        Unit-to-runtime resolution is EXACT, never substring: a scan commonly
+        holds sibling units whose names differ by one character (verified in
+        werkorder: `AssetCheck_GetLocation` alongside `AssetCheck_GetLocations`),
+        and a prefix match would silently attribute one job's failures to the
+        other.  An explicit `runtime_job_scan_maps` row wins over name equality
+        so a deployment whose runtime task was renamed can still be mapped by
+        hand; the table is empty in practice today, which is why name equality
+        is the working path rather than the fallback.
+
+        Returns aggregates only.  Callers get no log lines, and the single free
+        text field (`error_summary`) is redacted before it leaves.
+        """
+        requested = list(dict.fromkeys(name for name in unit_names if name))
+        if self._denies_all(scope) or not requested:
+            return [], requested
+
+        overrides = await self._doc_evidence_scan_map(scope, project_id, requested)
+        # A mapped unit is looked up by its runtime name; everything else by its
+        # own name.  Both directions are needed because one runtime job may back
+        # several units and the response is keyed by unit.
+        lookup: dict[str, list[tuple[str, str]]] = {}
+        for unit in requested:
+            runtime_name = overrides.get(unit)
+            resolved_by = "scan_map" if runtime_name else "exact_name"
+            lookup.setdefault(runtime_name or unit, []).append((unit, resolved_by))
+
+        reliability = await self.list_job_reliability(
+            scope,
+            ListRuntimeJobReliabilityInput(
+                project_id=project_id,
+                since=since,
+                # Bounded by the runtime vocabulary of one project, not by the
+                # scan: a project mirrors tens of jobs, not hundreds.
+                limit=500,
+            ),
+        )
+        matched = {row.job_name: row for row in reliability if row.job_name in lookup}
+        if not matched:
+            return [], requested
+
+        job_names = list(matched)
+        durations = await self._doc_evidence_durations(scope, project_id, job_names, since)
+        environments = await self._doc_evidence_environments(scope, project_id, job_names, since)
+        plans = await self._doc_evidence_plans(scope, project_id, job_names)
+        failures = await self._doc_evidence_failures(
+            scope, project_id, job_names, since, max_failures_per_unit
+        )
+
+        evidence: list[RuntimeDocEvidence] = []
+        for job_name, rollup in matched.items():
+            p50, p95, max_duration_ms = durations.get(job_name, (None, None, None))
+            for unit_name, resolved_by in lookup[job_name]:
+                evidence.append(
+                    RuntimeDocEvidence(
+                        unit_name=unit_name,
+                        job_name=job_name,
+                        source_key=rollup.source_key,
+                        resolved_by=resolved_by,
+                        environments=environments.get(job_name, []),
+                        total_runs=rollup.total_runs,
+                        success_runs=rollup.success_runs,
+                        failed_runs=rollup.failed_runs,
+                        unfinished_runs=rollup.unfinished_runs,
+                        failure_rate=rollup.failure_rate,
+                        current_failure_streak=rollup.current_failure_streak,
+                        first_run_at=rollup.first_run_at,
+                        last_run_at=rollup.last_run_at,
+                        runs_per_day=_observed_runs_per_day(rollup),
+                        p50_duration_ms=p50,
+                        p95_duration_ms=p95,
+                        max_duration_ms=max_duration_ms,
+                        plans=plans.get(job_name, []),
+                        recent_failures=failures.get(job_name, []),
+                    )
+                )
+        evidence.sort(key=lambda item: item.unit_name)
+        covered = {item.unit_name for item in evidence}
+        return evidence, [unit for unit in requested if unit not in covered]
+
+    async def _doc_evidence_scan_map(
+        self, scope: ProjectScope, project_id: str, unit_names: Sequence[str]
+    ) -> dict[str, str]:
+        """Explicit static-unit -> runtime-job-name overrides, when any exist."""
+        stmt = (
+            select(RuntimeJobScanMapRow.static_job_id, RuntimeJobRunRow.job_name)
+            .join(
+                RuntimeJobRunRow,
+                and_(
+                    RuntimeJobRunRow.project_id == RuntimeJobScanMapRow.project_id,
+                    RuntimeJobRunRow.source_key == RuntimeJobScanMapRow.source_key,
+                    RuntimeJobRunRow.job_id == RuntimeJobScanMapRow.runtime_job_id,
+                ),
+            )
+            .where(RuntimeJobScanMapRow.project_id == project_id)
+            .where(RuntimeJobScanMapRow.static_job_id.in_(unit_names))
+            .distinct()
+        )
+        stmt = self._apply_scope(stmt, RuntimeJobScanMapRow.project_id, scope)
+        rows = (await self._session.execute(stmt)).all()
+        return {static_job_id: job_name for static_job_id, job_name in rows}
+
+    async def _doc_evidence_durations(
+        self,
+        scope: ProjectScope,
+        project_id: str,
+        job_names: Sequence[str],
+        since: datetime.datetime,
+    ) -> dict[str, tuple[int | None, int | None, int | None]]:
+        """Duration percentiles over SUCCESSFUL runs only, as p50/p95/max.
+
+        The reliability rollup measures every run, which is right for an
+        operations console but wrong for a document: a hung or abandoned
+        execution still carries a `duration_ms`, and it dominates the
+        percentiles.  Verified in werkorder -- `Maximo2Quintiq_Workorder_Route`
+        reports a p95 of 1_141_724_496 ms (13 days) and `maximoFourpsWorkOrder`
+        a p50 of 1.7 days, neither of which describes how long the job takes.
+        Restricting to completed successes gives the figure a reader expects
+        from "how long does this job run".
+        """
+        base = select(
+            RuntimeExecutionRow.project_id.label("project_id"),
+            RuntimeExecutionRow.job_name.label("job_name"),
+            RuntimeExecutionRow.duration_ms.label("duration_ms"),
+        ).where(
+            RuntimeExecutionRow.project_id == project_id,
+            RuntimeExecutionRow.job_name.in_(job_names),
+            RuntimeExecutionRow.started_at >= since,
+            RuntimeExecutionRow.state == RuntimeExecutionState.SUCCESS.value,
+            RuntimeExecutionRow.ended_at.is_not(None),
+            RuntimeExecutionRow.duration_ms.is_not(None),
+        )
+        base = self._apply_scope(base, RuntimeExecutionRow.project_id, scope).subquery()
+        group = [base.c.project_id, base.c.job_name]
+        percentiles = self._duration_percentiles(base, group)
+        maxima = (
+            select(*group, func.max(base.c.duration_ms).label("max_duration_ms"))
+            .group_by(*group)
+            .subquery()
+        )
+        stmt = select(
+            maxima.c.job_name, percentiles.c.p50, percentiles.c.p95, maxima.c.max_duration_ms
+        ).join(
+            percentiles,
+            and_(
+                percentiles.c.project_id == maxima.c.project_id,
+                percentiles.c.job_name == maxima.c.job_name,
+            ),
+            isouter=True,
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return {job_name: (p50, p95, max_ms) for job_name, p50, p95, max_ms in rows}
+
+    async def _doc_evidence_environments(
+        self,
+        scope: ProjectScope,
+        project_id: str,
+        job_names: Sequence[str],
+        since: datetime.datetime,
+    ) -> dict[str, list[str]]:
+        """Environments each job was observed running in, most frequent first."""
+        stmt = (
+            select(
+                RuntimeJobRunRow.job_name,
+                RuntimeJobRunRow.environment_name,
+                func.count().label("runs"),
+            )
+            .where(RuntimeJobRunRow.project_id == project_id)
+            .where(RuntimeJobRunRow.job_name.in_(job_names))
+            .where(RuntimeJobRunRow.started_at >= since)
+            .where(RuntimeJobRunRow.environment_name.is_not(None))
+            .group_by(RuntimeJobRunRow.job_name, RuntimeJobRunRow.environment_name)
+            .order_by(func.count().desc())
+        )
+        stmt = self._apply_scope(stmt, RuntimeJobRunRow.project_id, scope)
+        result: dict[str, list[str]] = {}
+        for job_name, environment_name, _runs in (await self._session.execute(stmt)).all():
+            result.setdefault(job_name, []).append(environment_name)
+        return result
+
+    async def _doc_evidence_plans(
+        self, scope: ProjectScope, project_id: str, job_names: Sequence[str]
+    ) -> dict[str, list[str]]:
+        """Orchestration plans that reference each job as one of their steps.
+
+        `steps` is provider JSON, so membership is resolved in Python against
+        the step's own `job_name` field rather than through a JSON containment
+        query -- the column is portable JSON on SQLite in tests and JSONB in
+        production, and the plan inventory per project is tens of rows.
+        """
+        stmt = (
+            select(RuntimePlanRow.name, RuntimePlanRow.display_name, RuntimePlanRow.steps)
+            .where(RuntimePlanRow.project_id == project_id)
+            .where(RuntimePlanRow.steps.is_not(None))
+        )
+        stmt = self._apply_scope(stmt, RuntimePlanRow.project_id, scope)
+        wanted = set(job_names)
+        result: dict[str, list[str]] = {}
+        for name, display_name, steps in (await self._session.execute(stmt)).all():
+            if not isinstance(steps, list):
+                continue
+            label = display_name or name
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                step_job = step.get("job_name")
+                if step_job in wanted and label not in result.setdefault(step_job, []):
+                    result[step_job].append(label)
+        return result
+
+    async def _doc_evidence_failures(
+        self,
+        scope: ProjectScope,
+        project_id: str,
+        job_names: Sequence[str],
+        since: datetime.datetime,
+        max_per_job: int,
+    ) -> dict[str, list[RuntimeDocEvidenceFailure]]:
+        """Distinct failure MODES per job, most recent first, redacted and capped.
+
+        Grouped rather than listed: verified in werkorder, the five most recent
+        failures of `RHM2Smartflow_Workorders` are the same
+        `tMSSqlConnection_2` network error under five execution ids.  Listing
+        them fills the section with one story and hides every rarer failure.
+        Each group reports its occurrence count and its most recent wording.
+        """
+        stmt = (
+            select(
+                RuntimeFailureRow.job_name,
+                RuntimeFailureRow.failed_at,
+                RuntimeFailureRow.error_summary,
+            )
+            .where(RuntimeFailureRow.project_id == project_id)
+            .where(RuntimeFailureRow.job_name.in_(job_names))
+            .where(RuntimeFailureRow.failed_at >= since)
+            .order_by(RuntimeFailureRow.failed_at.desc(), RuntimeFailureRow.id.desc())
+        )
+        stmt = self._apply_scope(stmt, RuntimeFailureRow.project_id, scope)
+        # job -> signature -> accumulating entry, insertion-ordered so the first
+        # sighting of each signature (the most recent, given the ORDER BY) keeps
+        # its position and its wording.
+        grouped: dict[str, dict[str, RuntimeDocEvidenceFailure]] = {}
+        for job_name, failed_at, error_summary in (await self._session.execute(stmt)).all():
+            # Reuse the sync-path redactor rather than a second implementation:
+            # one filter means one place to strengthen when a new secret shape
+            # shows up in provider error text.
+            summary = sanitize_sync_error(error_summary)
+            if not summary:
+                continue
+            buckets = grouped.setdefault(job_name, {})
+            signature = _failure_signature(summary)
+            existing = buckets.get(signature)
+            if existing is not None:
+                existing.occurrences += 1
+                continue
+            if len(buckets) >= max_per_job:
+                continue
+            buckets[signature] = RuntimeDocEvidenceFailure(
+                failed_at=_as_utc(failed_at), error_summary=summary
+            )
+        return {job_name: list(buckets.values()) for job_name, buckets in grouped.items()}
 
     def _scoped_metric_base(
         self,

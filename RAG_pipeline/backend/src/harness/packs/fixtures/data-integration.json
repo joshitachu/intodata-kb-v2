@@ -77,6 +77,17 @@
       "entity_type_ids": ["integration.flow", "integration.execution"],
       "connector_requirement_ids": [],
       "artifact_template_ids": ["integration.investigation-report"]
+    },
+    {
+      "id": "integration.explore-topology",
+      "label": "Explore integration topology",
+      "description": "Read the published integration landscape: what exists and what depends on what.",
+      "capability_ids": [
+        "topology.landscape.read_structure"
+      ],
+      "entity_type_ids": ["integration.project", "integration.flow"],
+      "connector_requirement_ids": [],
+      "artifact_template_ids": []
     }
   ],
   "evidence_ranking": [

@@ -314,264 +314,60 @@ def _closed_object(
     return schema
 
 
-def _pack_draft_patch_schema() -> dict[str, Any]:
-    """Closed partial projection of the PackArtifactV3 data-only contract."""
+def _pack_brief_schema() -> dict[str, Any]:
+    """Model-facing contract for authoring a pack: say what you want to know.
 
-    reference_id = {"type": "string", "pattern": r"^[a-z][a-z0-9_.:-]{1,159}$"}
-    analysis = _closed_object(
+    There is one pack format (``plugin.yaml``) and one author (the MCP pack
+    author). The model therefore supplies a BRIEF, not a structured artifact:
+    it never hand-writes manifest keys, section ids, or evidence objects. That
+    is what let a second, weaker pack format grow here in the first place.
+    """
+    return _closed_object(
         {
-            "id": reference_id,
-            "label": {"type": "string", "minLength": 1, "maxLength": 120},
-            "purpose": {"type": "string", "minLength": 1, "maxLength": 500},
-        },
-        required=["id", "label", "purpose"],
-    )
-    evidence = _closed_object(
-        {
-            "id": reference_id,
-            "label": {"type": "string", "minLength": 1, "maxLength": 120},
-            "required": {"type": "boolean"},
-            "weight": {"type": "integer", "minimum": 1, "maximum": 100},
-        },
-        required=["id", "label"],
-    )
-    section = _closed_object(
-        {
-            "id": reference_id,
-            "heading": {"type": "string", "minLength": 1, "maxLength": 160},
-            "order": {"type": "integer", "minimum": 1, "maximum": 100},
-        },
-        required=["id", "heading", "order"],
-    )
-    output_document = _closed_object(
-        {
-            "id": reference_id,
-            "title": {"type": "string", "minLength": 1, "maxLength": 160},
-            "sections": {
-                "type": "array",
-                "items": section,
-                "minItems": 1,
-                "maxItems": 20,
+            "name": {"type": "string", "minLength": 1, "maxLength": 160},
+            "brief": {
+                "type": "string",
+                "minLength": 12,
+                "maxLength": 2000,
+                "description": (
+                    "What the pack should look for and what documents it should "
+                    "produce, in the user's own words."
+                ),
             },
-        },
-        required=["id", "title", "sections"],
-    )
-    scoring = _closed_object(
-        {
-            "id": reference_id,
-            "label": {"type": "string", "minLength": 1, "maxLength": 120},
-            "weight": {"type": "integer", "minimum": 1, "maximum": 100},
-        },
-        required=["id", "label", "weight"],
-    )
-    capability = _closed_object(
-        {
-            "capability_id": reference_id,
-            "required": {"type": "boolean"},
-            "purpose": {"type": "string", "minLength": 1, "maxLength": 240},
-        },
-        required=["capability_id", "purpose"],
-    )
-    render = _closed_object(
-        {
-            "seniority": {
+            "platform": {
                 "type": ["string", "null"],
-                "enum": ["executive", "director", "manager", "practitioner", None],
+                "pattern": r"^[a-z][a-z0-9_-]{0,49}$",
             },
-            "domain_familiarity": {
-                "type": ["string", "null"],
-                "enum": ["introductory", "working", "expert", None],
-            },
-            "decision_horizon": {
-                "type": ["string", "null"],
-                "enum": ["immediate", "near_term", "strategic", None],
-            },
-            "detail_level": {
-                "type": ["string", "null"],
-                "enum": ["brief", "standard", "detailed", None],
-            },
-        }
-    )
-    bounded_words = {
-        "type": "array",
-        "items": {"type": "string", "minLength": 1, "maxLength": 120},
-        "maxItems": 12,
-    }
-    audience = _closed_object(
-        {
-            "label": {"type": "string", "minLength": 1, "maxLength": 160},
-            "roles": bounded_words,
-            "decision_needs": bounded_words,
-            "domain_familiarity": {"type": ["string", "null"], "maxLength": 160},
-            "desired_outcome": {"type": ["string", "null"], "maxLength": 300},
-            "render": render,
         },
-        required=["label"],
+        required=["name", "brief"],
     )
-    compatibility = _closed_object(
-        {
-            "supported_project_kinds": {
-                "type": "array",
-                "items": {"type": "string", "minLength": 1, "maxLength": 120},
-                "maxItems": 20,
-            },
-            "required_domains": {
-                "type": "array",
-                "items": {"type": "string", "minLength": 1, "maxLength": 120},
-                "maxItems": 20,
-            },
-        }
-    )
-    return {
-        **_closed_object(
-            {
-                "schema_version": {"type": "integer", "minimum": 3, "maximum": 3},
-                "purpose": {"type": "string", "minLength": 1, "maxLength": 1000},
-                "analyses": {
-                    "type": "array",
-                    "items": analysis,
-                    "minItems": 1,
-                    "maxItems": 30,
-                },
-                "evidence_requirements": {
-                    "type": "array",
-                    "items": evidence,
-                    "minItems": 1,
-                    "maxItems": 30,
-                },
-                "output_documents": {
-                    "type": "array",
-                    "items": output_document,
-                    "minItems": 1,
-                    "maxItems": 12,
-                },
-                "scoring_dimensions": {
-                    "type": "array",
-                    "items": scoring,
-                    "maxItems": 20,
-                },
-                "capability_requirements": {
-                    "type": "array",
-                    "items": capability,
-                    "maxItems": 30,
-                },
-                "compatibility": compatibility,
-                "audience": audience,
-            }
-        ),
-        "description": (
-            "Partial declarative Analysis Pack fields. Prompts, tools, permissions, code, "
-            "commands, and executable workflow fields are rejected by the server."
-        ),
-    }
 
 
-_PACK_DRAFT_PATCH_PROPERTY = _pack_draft_patch_schema()
+_PACK_BRIEF_SCHEMA = _pack_brief_schema()
 
 
-def _pack_draft_configuration_schema() -> dict[str, Any]:
-    """Small model-facing contract translated into the private V3 artifact."""
-
-    bounded_words = {
-        "type": "array",
-        "items": {"type": "string", "minLength": 1, "maxLength": 120},
-        "maxItems": 12,
-        "uniqueItems": True,
-    }
-    audience = _closed_object(
-        {
-            "label": {"type": "string", "minLength": 1, "maxLength": 160},
-            "roles": bounded_words,
-            "decision_needs": bounded_words,
-            "desired_outcome": {"type": ["string", "null"], "maxLength": 300},
-            "seniority": {
-                "type": ["string", "null"],
-                "enum": ["executive", "director", "manager", "practitioner", None],
-            },
-            "domain_familiarity": {
-                "type": ["string", "null"],
-                "enum": ["introductory", "working", "expert", None],
-            },
-            "decision_horizon": {
-                "type": ["string", "null"],
-                "enum": ["immediate", "near_term", "strategic", None],
-            },
-            "detail_level": {
-                "type": ["string", "null"],
-                "enum": ["brief", "standard", "detailed", None],
-            },
-        },
-        required=["label"],
-    )
-    output_document = _closed_object(
-        {
-            "title": {"type": "string", "minLength": 1, "maxLength": 160},
-            "sections": {
-                "type": "array",
-                "items": {"type": "string", "minLength": 1, "maxLength": 160},
-                "maxItems": 20,
-                "uniqueItems": True,
-            },
-        },
-        required=["title"],
-    )
+def _pack_refine_schema() -> dict[str, Any]:
+    """Refinement is an instruction against an exact draft revision."""
     return _closed_object(
         {
             "draft_id": {"type": "integer", "minimum": 1},
             "expected_revision": {"type": "integer", "minimum": 1},
-            "name": {"type": ["string", "null"], "minLength": 1, "maxLength": 160},
-            "purpose": {"type": "string", "minLength": 1, "maxLength": 1000},
-            "audience": audience,
-            "focus_components": {
-                "type": "array",
-                "items": {"type": "string", "minLength": 1, "maxLength": 120},
-                "minItems": 1,
-                "maxItems": 30,
-                "uniqueItems": True,
+            "name": {"type": ["string", "null"], "maxLength": 160},
+            "instruction": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 2000,
+                "description": (
+                    "What to change about the pack, in the user's own words -- "
+                    "for example 'drop the scorecard' or 'add a DDL document'."
+                ),
             },
-            "output_documents": {
-                "type": "array",
-                "items": output_document,
-                "minItems": 1,
-                "maxItems": 12,
-            },
-            "supported_project_kinds": bounded_words,
-            "required_domains": bounded_words,
         },
-        required=["draft_id", "expected_revision"],
+        required=["draft_id", "expected_revision", "instruction"],
     )
 
 
-_PACK_DRAFT_CONFIGURATION_SCHEMA = _pack_draft_configuration_schema()
-
-
-def _pack_creation_schema() -> dict[str, Any]:
-    """Model-facing readiness contract for one complete private Analysis Pack."""
-
-    configuration = _pack_draft_configuration_schema()
-    properties = {
-        key: value
-        for key, value in configuration["properties"].items()
-        if key not in {"draft_id", "expected_revision"}
-    }
-    properties["name"] = {
-        "type": "string",
-        "minLength": 1,
-        "maxLength": 160,
-    }
-    return _closed_object(
-        properties,
-        required=[
-            "name",
-            "purpose",
-            "audience",
-            "focus_components",
-            "output_documents",
-        ],
-    )
-
-
-_PACK_CREATION_SCHEMA = _pack_creation_schema()
+_PACK_REFINE_SCHEMA = _pack_refine_schema()
 
 _STANDARD_FAILURE_RECOVERY = {
     "validation_failed": "Correct only the named invalid fields and retry once.",
@@ -599,7 +395,7 @@ PACK_CREATE_CAPABILITY = CapabilityDefinition(
     provider_type=HarnessProviderType.WORKFLOW,
     provider_id="nexus.packs",
     action="create_pack",
-    input_schema=_PACK_CREATION_SCHEMA,
+    input_schema=_PACK_BRIEF_SCHEMA,
     output_type="private_pack_version",
     risk_tier=HarnessRiskTier.REVERSIBLE_WRITE,
     required_permissions=["manage_packs"],
@@ -609,8 +405,8 @@ PACK_CREATE_CAPABILITY = CapabilityDefinition(
     use_when=[
         "The user wants a new private Analysis Pack created now and all required business "
         "details are available from the conversation or authoritative prepared action.",
-        "Copy the user's wording into the friendly fields. Do not invent artifact IDs, "
-        "analysis objects, evidence objects, section IDs, or artifact_patch.",
+        "Put the user's wording in `brief`. Do not invent manifest keys, section ids, "
+        "or document schemas -- the pack author writes the manifest.",
     ],
     do_not_use_when=[
         "Any required business detail is missing or ambiguous; prepare the action and ask "
@@ -701,74 +497,37 @@ PACK_DRAFT_READ_CAPABILITY = CapabilityDefinition(
 )
 
 
-PACK_DRAFT_MUTATE_CAPABILITY = CapabilityDefinition(
-    id="nexus.packs.drafts.mutate",
-    label="Apply a structured change to a private Analysis Pack draft",
-    semantic_name="update_pack_draft",
-    purpose="Apply a bounded declarative patch to one private Analysis Pack draft.",
-    preconditions=["The exact draft identifier and current expected revision are known."],
-    failure_recovery=_STANDARD_FAILURE_RECOVERY,
-    provider_type=HarnessProviderType.WORKFLOW,
-    provider_id="nexus.packs",
-    action="mutate_pack_draft",
-    input_schema={
-        "type": "object",
-        "required": ["draft_id", "expected_revision", "artifact_patch"],
-        "properties": {
-            "draft_id": {"type": "integer", "minimum": 1},
-            "expected_revision": {"type": "integer", "minimum": 1},
-            "name": {"type": ["string", "null"], "maxLength": 160},
-            "artifact_patch": _PACK_DRAFT_PATCH_PROPERTY,
-        },
-        "additionalProperties": False,
-    },
-    output_type="pack_draft",
-    risk_tier=HarnessRiskTier.REVERSIBLE_WRITE,
-    required_permissions=["manage_packs"],
-    packs=["core"],
-    task_types=["pack_draft"],
-    use_when=["The user supplies details or corrections for an active Pack draft."],
-    do_not_use_when=["The user asks only to inspect, validate, save, or abandon the draft."],
-    output_contracts=["pack_draft"],
-    metadata={
-        "bounded_loop_only": True,
-        "requires_turn_claim": True,
-        "agent_control_plane": True,
-        "runtime_hidden": True,
-    },
-)
-
-
-PACK_DRAFT_CONFIGURE_CAPABILITY = CapabilityDefinition(
-    id="nexus.packs.drafts.configure",
-    label="Configure a private Analysis Pack draft",
-    semantic_name="configure_pack_draft",
+PACK_DRAFT_REFINE_CAPABILITY = CapabilityDefinition(
+    id="nexus.packs.drafts.refine",
+    label="Refine a pack draft",
+    semantic_name="refine_pack_draft",
     purpose=(
-        "Configure a Pack draft using user-facing purpose, audience, focus, and output "
-        "fields; Nexus deterministically creates all internal IDs and evidence entries."
+        "Refine one pack draft from a plain-language instruction. The pack author "
+        "applies it to the draft's current manifest and returns a complete updated "
+        "manifest, so earlier choices are preserved."
     ),
     preconditions=["The exact draft identifier and current expected revision are known."],
     failure_recovery=_STANDARD_FAILURE_RECOVERY,
     provider_type=HarnessProviderType.WORKFLOW,
     provider_id="nexus.packs",
-    action="configure_pack_draft",
-    input_schema=_PACK_DRAFT_CONFIGURATION_SCHEMA,
+    action="refine_pack_draft",
+    input_schema=_PACK_REFINE_SCHEMA,
     output_type="pack_draft",
     risk_tier=HarnessRiskTier.REVERSIBLE_WRITE,
     required_permissions=["manage_packs"],
     packs=["core"],
     task_types=["pack_draft"],
     use_when=[
-        "The user supplies purpose, audience, focus components, outputs, or corrections "
-        "for an active Pack draft.",
-        "Copy the user's wording into the friendly fields. Do not invent artifact IDs, "
-        "analysis objects, evidence objects, section IDs, or artifact_patch.",
+        "The user supplies details or corrections for an active Pack draft.",
+        "Put the user's wording in `instruction`. Do not write manifest keys, "
+        "section ids, or document schemas -- the pack author writes the manifest.",
     ],
-    do_not_use_when=[
-        "The user asks only to create, inspect, validate, save, or abandon a draft.",
-        "No exact active draft identifier and revision are available.",
-    ],
+    do_not_use_when=["The user asks only to inspect, validate, save, or abandon the draft."],
     output_contracts=["pack_draft"],
+    # Model-facing: this replaced both the structured-patch primitive and the
+    # friendly `configure` capability, and `configure` was the one the agent
+    # loop used. Keeping `runtime_hidden` here would leave the loop with no way
+    # to change a draft at all.
     metadata={
         "bounded_loop_only": True,
         "requires_turn_claim": True,
@@ -1305,7 +1064,10 @@ DOCUMENT_SEARCH_CAPABILITY = CapabilityDefinition(
     id="rag.docs.search_evidence",
     label="Search indexed documentation",
     semantic_name="search_documentation",
-    purpose="Search bounded indexed project documentation for grounded evidence.",
+    purpose=(
+        "Search bounded indexed project documentation for explanatory evidence about "
+        "purpose, business meaning, implementation narrative, business rules, and mappings."
+    ),
     preconditions=["A concrete documentation question is available."],
     failure_recovery=_STANDARD_FAILURE_RECOVERY,
     provider_type=HarnessProviderType.RETRIEVAL,
@@ -1325,11 +1087,25 @@ DOCUMENT_SEARCH_CAPABILITY = CapabilityDefinition(
     risk_tier=HarnessRiskTier.READ_ONLY,
     packs=["core", "documentation"],
     use_when=[
-        "You need to inspect raw indexed passages yourself, across multiple documents, to combine them with other evidence (runtime state, logs, actions) in one answer, or to do multi-step cross-document reasoning that a single deterministic answer cannot cover."
+        "You need to inspect raw indexed passages yourself, across multiple documents, "
+        "to explain what a project entity does, why it exists, how it is implemented, "
+        "or which business rules and mappings it applies.",
+        "The answer must combine documentation with topology structure, current runtime "
+        "state, logs, or actions and therefore needs evidence from several sources in one "
+        "model-authored synthesis.",
     ],
     do_not_use_when=[
         "The user asks only for current runtime state or incident logs.",
-        "The user wants a normal written answer, explanation, deep dive, or summary about project documentation (a single topic, component, or exhaustive list) and nothing else is needed — use answer_from_documentation instead. It is the default choice for documentation questions and does not require you to write your own citations.",
+        "The user asks only for a complete inventory, count, connection, or dependency "
+        "traversal; use the project topology because similarity search cannot guarantee "
+        "structural completeness.",
+        "The user explicitly excludes documentation for this turn. Honor that exclusion; "
+        "if documentation is required for the requested explanation, disclose that the "
+        "explanatory portion cannot be grounded.",
+        "The user wants a normal written answer, explanation, deep dive, or summary "
+        "about project documentation for a single topic or component and nothing else "
+        "is needed; use answer_from_documentation instead. It is the default choice "
+        "for documentation questions and does not require you to write your own citations.",
     ],
     task_types=["document_answer"],
     evidence_sources=["indexed_documentation"],
@@ -1342,8 +1118,9 @@ DOCUMENTATION_ANSWER_CAPABILITY = CapabilityDefinition(
     label="Answer a question from indexed documentation",
     semantic_name="answer_from_documentation",
     purpose=(
-        "Answer one self-contained documentation question in a single deterministic "
-        "step, using the existing grounded retrieval-and-generation pipeline."
+        "Answer one self-contained explanatory question from indexed project "
+        "documentation in a single deterministic step, using the existing grounded "
+        "retrieval-and-generation pipeline."
     ),
     preconditions=["A concrete documentation question is available."],
     failure_recovery=_STANDARD_FAILURE_RECOVERY,
@@ -1364,18 +1141,24 @@ DOCUMENTATION_ANSWER_CAPABILITY = CapabilityDefinition(
     risk_tier=HarnessRiskTier.READ_ONLY,
     packs=["core", "documentation"],
     use_when=[
-        "This is the DEFAULT choice for any documentation question, including "
-        "explanations, deep dives, 'tell me more', and summaries of a single "
-        "topic or component. Always prefer this over search_documentation "
-        "unless one of the do_not_use_when conditions applies. Rewrite "
-        "follow-ups into a standalone question, expanding pronouns like "
-        "'those'/'it' using the conversation."
+        "This is the DEFAULT choice when the user asks what a project, system, job, "
+        "component, or integration does; why it exists; how it is implemented in "
+        "explanatory terms; or which business rules and mappings it applies.",
+        "Use it for documentation-grounded explanations, deep dives, 'tell me more', "
+        "and summaries of a single topic or component. Rewrite follow-ups into a "
+        "standalone question, expanding pronouns like 'those' or 'it' from the "
+        "conversation.",
+        "For a mixed question that also needs topology or runtime evidence, call the "
+        "needed topology and runtime tools first, then call this terminal documentation "
+        "answer only after those observations are present in the current turn.",
     ],
     do_not_use_when=[
-        "The request also needs current runtime state, incident logs, workflow "
-        "actions, or evidence from multiple documents that you must inspect and "
-        "cross-reference yourself step by step; use search_documentation and "
-        "the other read tools instead.",
+        "The request also needs topology or runtime evidence that has not been read yet; "
+        "call those read tools first because this documentation answer is terminal.",
+        "The user asks only for complete inventory, counts, connections, or dependency "
+        "traversal; use topology rather than similarity search.",
+        "The user explicitly excludes documentation for this turn. Honor the exclusion "
+        "or disclose that the requested explanatory claim cannot be grounded.",
         "The user only wants raw passages, not a written answer.",
     ],
     task_types=["document_answer"],
@@ -1582,7 +1365,10 @@ STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY = CapabilityDefinition(
     id="runtime.stored.query_evidence",
     label="Read structured runtime evidence",
     semantic_name="read_runtime_evidence",
-    purpose="Read bounded structured runtime evidence from server-owned stored records.",
+    purpose=(
+        "Read bounded present-tense operational evidence about executions, failures, "
+        "health, and synchronization from server-owned stored records."
+    ),
     preconditions=["A supported runtime evidence operation is known."],
     failure_recovery=_STANDARD_FAILURE_RECOVERY,
     provider_type=HarnessProviderType.RUNTIME,
@@ -1619,12 +1405,18 @@ STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY = CapabilityDefinition(
     risk_tier=HarnessRiskTier.READ_ONLY,
     packs=["core", "operations"],
     use_when=[
-        "The user asks for scoped runtime executions, failures, health, sync status, or source inventory.",
+        "The user asks for present-tense or time-bounded runtime executions, failures, "
+        "health, sync status, or runtime source inventory.",
         "The user asks for failure or execution facts while excluding raw log search; structured stored records remain available independently of logs.",
+        "A mixed impact question asks both what structurally depends on an entity and "
+        "whether it is healthy now; read runtime evidence as well as topology before "
+        "the terminal answer step.",
     ],
     do_not_use_when=[
         "The user asks about documented design rather than observed runtime state.",
         "The user specifically requests raw or textual log evidence rather than structured execution records.",
+        "The user explicitly excludes runtime evidence for this turn. Honor the "
+        "exclusion or disclose that present-tense claims cannot be verified.",
     ],
     task_types=["runtime_answer", "operational_investigation"],
     evidence_sources=["runtime_evidence"],
@@ -1640,7 +1432,10 @@ LOG_SEARCH_EVIDENCE_CAPABILITY = CapabilityDefinition(
     id="runtime.logs.search_evidence",
     label="Search runtime logs",
     semantic_name="search_runtime_logs",
-    purpose="Search bounded redacted runtime log evidence for an operational question.",
+    purpose=(
+        "Search bounded redacted present-tense runtime log evidence for an operational "
+        "question."
+    ),
     preconditions=["A concrete operational question is available."],
     failure_recovery=_STANDARD_FAILURE_RECOVERY,
     provider_type=HarnessProviderType.LOG,
@@ -1674,6 +1469,8 @@ LOG_SEARCH_EVIDENCE_CAPABILITY = CapabilityDefinition(
     do_not_use_when=[
         "The user needs a complete raw log dump or unredacted diagnostic payload.",
         "The question is only about documentation or runtime inventory without log content.",
+        "The user explicitly excludes logs for this turn. Honor the exclusion or "
+        "disclose that log-specific claims cannot be verified.",
     ],
     task_types=["runtime_answer", "operational_investigation"],
     evidence_sources=[EvidenceSource.RUNTIME_EVIDENCE],

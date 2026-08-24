@@ -5,6 +5,17 @@ import "@testing-library/jest-dom/vitest";
 // not implement it, so provide a minimal stub that reports desktop
 // (no matchMedia queries match by default). Tests that need to assert
 // mobile behavior can override the stub via vi.spyOn.
+// Radix popper-based primitives (SelectMenu, tooltips) observe their trigger.
+// jsdom has no ResizeObserver, so provide an inert stub.
+if (typeof globalThis !== "undefined" && !("ResizeObserver" in globalThis)) {
+  class ResizeObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver = ResizeObserverStub;
+}
+
 if (typeof window !== "undefined" && !window.matchMedia) {
   Object.defineProperty(window, "matchMedia", {
     writable: true,

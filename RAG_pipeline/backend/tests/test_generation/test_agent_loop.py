@@ -1,11 +1,14 @@
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
+from src.config import settings
 from src.generation.agent_loop import (
     RuntimeAnswerChunk,
     RuntimeLoopOutcome,
     RuntimeProgressEvent,
     _flatten_incident_detail,
-    _with_runtime_guide,
+    _with_tool_guides,
     build_runtime_tool_summary,
     run_runtime_tool_loop,
     run_runtime_tool_loop_stream,
@@ -22,6 +25,34 @@ MESSAGES = [
 TOOLS = [
     RuntimeToolDefinition(name="detect_failures", description="Detect failures", input_schema={"type": "object"}),
 ]
+
+TOPOLOGY_TOOLS = [
+    RuntimeToolDefinition(
+        name="get_topology_overview",
+        description="Project landscape overview",
+        input_schema={"type": "object"},
+    ),
+    RuntimeToolDefinition(
+        name="get_topology_node",
+        description="One node's detail",
+        input_schema={"type": "object"},
+    ),
+]
+
+
+@pytest.fixture(autouse=True)
+def runtime_and_topology_available(monkeypatch):
+    """Baseline for this module: live runtime configured, topology catalogue stubbed.
+
+    The topology tool bodies are owned by the topology layer and are stubbed here so
+    these tests exercise the loop seam, not the tool implementations. Runtime is
+    enabled because this module covers runtime tool behaviour — the runtime-disabled
+    deployment is covered explicitly in test_agent_loop_topology.py.
+    """
+    monkeypatch.setattr(
+        "src.generation.agent_loop.list_topology_tools", lambda: list(TOPOLOGY_TOOLS)
+    )
+    monkeypatch.setattr(settings, "runtime_provider_key", "mock")
 
 
 def _stream_of(*chunks: str):
@@ -130,7 +161,7 @@ class TestRuntimeToolLoopHappyPath:
 
 class TestRuntimeToolGuide:
     def test_guide_merges_into_leading_system_message(self):
-        out = _with_runtime_guide(
+        out = _with_tool_guides(
             [{"role": "system", "content": "Base prompt."}, {"role": "user", "content": "hi"}]
         )
         assert out[0]["role"] == "system"
@@ -140,7 +171,7 @@ class TestRuntimeToolGuide:
         assert out[1] == {"role": "user", "content": "hi"}  # rest untouched
 
     def test_guide_prepends_when_no_system_message(self):
-        out = _with_runtime_guide([{"role": "user", "content": "hi"}])
+        out = _with_tool_guides([{"role": "user", "content": "hi"}])
         assert out[0]["role"] == "system"
         assert "list_executions" in out[0]["content"]
         assert out[1]["role"] == "user"
@@ -148,13 +179,13 @@ class TestRuntimeToolGuide:
     def test_guide_includes_per_source_label_instruction(self):
         """Combined turns must tell the model to label each claim by origin so it
         never presents document content as live logs or vice versa."""
-        out = _with_runtime_guide([{"role": "system", "content": "Base."}])
+        out = _with_tool_guides([{"role": "system", "content": "Base."}])
         content = out[0]["content"]
         assert "(from logs)" in content
         assert "(from <doc name>)" in content
 
     def test_guide_lists_high_level_tools_with_primary_marker(self):
-        out = _with_runtime_guide([{"role": "system", "content": "Base."}])
+        out = _with_tool_guides([{"role": "system", "content": "Base."}])
         content = out[0]["content"]
         assert "analyze_execution_failure" in content
         assert "get_execution_timeline" in content
@@ -168,14 +199,14 @@ class TestRuntimeToolGuide:
         assert "PRIMARY" in content
 
     def test_guide_includes_estate_inventory_answer_discipline(self):
-        out = _with_runtime_guide([{"role": "system", "content": "Base."}])
+        out = _with_tool_guides([{"role": "system", "content": "Base."}])
         content = out[0]["content"]
         assert "which engines do we have" in content
         assert "what is broken" in content
         assert "say when a field is unknown" in content
 
     def test_guide_includes_answer_discipline_sections(self):
-        out = _with_runtime_guide([{"role": "system", "content": "Base."}])
+        out = _with_tool_guides([{"role": "system", "content": "Base."}])
         content = out[0]["content"]
         assert "Finding:" in content
         assert "Freshness:" in content
@@ -184,7 +215,7 @@ class TestRuntimeToolGuide:
         assert "Next Checks:" in content
 
     def test_guide_excludes_raw_logs_for_failure_questions(self):
-        out = _with_runtime_guide([{"role": "system", "content": "Base."}])
+        out = _with_tool_guides([{"role": "system", "content": "Base."}])
         content = out[0]["content"]
         assert "analyze_execution_failure" in content
         assert "get_execution_logs" not in content
@@ -192,17 +223,17 @@ class TestRuntimeToolGuide:
 
     def test_guide_includes_prior_runtime_summary_when_provided(self):
         summary = [{"tool_name": "detect_failures", "execution_id": "exec-7841", "job_name": "esb_order_sync_route", "state": "failed"}]
-        out = _with_runtime_guide([{"role": "system", "content": "Base."}], prior_runtime_summary=summary)
+        out = _with_tool_guides([{"role": "system", "content": "Base."}], prior_runtime_summary=summary)
         content = out[0]["content"]
         assert "Recent runtime context" in content
         assert "exec-7841" in content
         assert "esb_order_sync_route" in content
 
     def test_guide_omits_memory_note_when_no_summary(self):
-        out = _with_runtime_guide([{"role": "system", "content": "Base."}], prior_runtime_summary=None)
+        out = _with_tool_guides([{"role": "system", "content": "Base."}], prior_runtime_summary=None)
         assert "Recent runtime context" not in out[0]["content"]
         # empty list also yields no note
-        out_empty = _with_runtime_guide([{"role": "system", "content": "Base."}], prior_runtime_summary=[])
+        out_empty = _with_tool_guides([{"role": "system", "content": "Base."}], prior_runtime_summary=[])
         assert "Recent runtime context" not in out_empty[0]["content"]
 
     async def test_loop_forwards_prior_summary_into_system_message(self):

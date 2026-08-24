@@ -56,6 +56,7 @@ ALLOWED_REFERENCES = PackReferenceSets(
             "mcp.projects.read_status",
             "mcp.projects.list_active_workflows",
             "mcp.projects.publish_index",
+            "topology.landscape.read_structure",
         }
     ),
     connector_provider_keys=frozenset({"fixture_knowledge"}),
@@ -281,6 +282,7 @@ def test_catalog_views_are_sorted_safe_and_do_not_expose_policy_details():
     assert views[0].workflow_labels == (
         "Onboard project source",
         "Investigate integration failure",
+        "Explore integration topology",
     )
     dumped = views[0].model_dump(mode="json")
     assert "policy_hints" not in dumped

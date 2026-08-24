@@ -21,16 +21,9 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from mcp_server.db.models import InstanceSetting
 from mcp_server.db.session import async_session_factory
 from mcp_server.metadata.models import list_models as list_catalogue_models
-from mcp_server.services.instance_settings_service import (
-    SETTING_KEYS,
-    SETTING_REGISTRY,
-    get_all,
-    normalize_payload,
-    set_many,
-)
+from mcp_server.services.instance_settings_service import get_all, normalize_payload, set_many
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +52,12 @@ def _valid_rag_chat_model_ids() -> set[str]:
 
 
 # Keys the MCP route validates against the doc-generation catalogue.
-MCP_VALIDATED_KEYS = {"deep_dive_model", "doc_gen_analysis_model", "doc_gen_write_model"}
+MCP_VALIDATED_KEYS = {
+    "pack_author_model",
+    "deep_dive_model",
+    "doc_gen_analysis_model",
+    "doc_gen_write_model",
+}
 
 
 class InstanceSettingsResponse(BaseModel):

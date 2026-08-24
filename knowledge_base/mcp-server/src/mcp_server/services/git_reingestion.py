@@ -13,6 +13,7 @@ from pathlib import Path
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
 from mcp_server.services.doc_version_history import record_push_outcome
+from mcp_server.services.git_credentials import provider_for_project
 from mcp_server.services.git_diff_patcher import _is_ignored_path
 from mcp_server.services.git_remote_service import pull_remote_ff_only, run_git
 from mcp_server.services.log_manager import LogManager
@@ -126,12 +127,12 @@ async def run_git_reingestion(
         local_path = project.local_path
         platform = project.platform
         doc_generation_provider = project.doc_generation_provider
-        github_token_enc = getattr(project, "github_token_enc", None)
+        credential = provider_for_project(project)
         has_baseline = bool(project.last_ingested_commit_sha)
         run_id = run.id
 
     try:
-        await pull_remote_ff_only(local_path, github_token_enc)
+        await pull_remote_ff_only(local_path, credential)
     except Exception as e:
         logger.warning("git pull failed for %s: %s", project_id, sanitize_git_error(str(e)))
 

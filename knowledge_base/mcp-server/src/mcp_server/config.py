@@ -16,9 +16,7 @@ class MCPServerConfig(BaseSettings):
     )
 
     # PostgreSQL (same DB as RAG pipeline)
-    database_url: str = (
-        "postgresql+asyncpg://admin:@localhost:5432/intodata_kb"
-    )
+    database_url: str = "postgresql+asyncpg://admin:@localhost:5432/intodata_kb"
 
     # RAG pipeline base URL
     rag_base_url: str = "http://localhost:8000"
@@ -43,18 +41,69 @@ class MCPServerConfig(BaseSettings):
     # retry behavior remains owned by the configured OpenCode provider.
     opencode_auto_approve: bool = True
     opencode_timeout_seconds: int = 1800
+    # Gather and Analyze contracts are packed into adaptive, fresh-session
+    # batches under this estimated input-token target. The provider clamps
+    # non-positive values at use time. MCP_OPENCODE_BATCH_TARGET_INPUT_TOKENS.
+    opencode_batch_target_input_tokens: int = 80_000
+    # Independent provider-capacity ceilings for concurrently running adaptive
+    # batch sessions. These do not determine how many batches are planned.
+    opencode_gather_concurrency: int = 3  # MCP_OPENCODE_GATHER_CONCURRENCY
+    opencode_analyze_concurrency: int = 3  # MCP_OPENCODE_ANALYZE_CONCURRENCY
+    opencode_produce_concurrency: int = 2  # MCP_OPENCODE_PRODUCE_CONCURRENCY
+    # Tool-driven Gather is the primary runtime. Set "contracts" to retain the
+    # bounded contract-batch path. MCP_OPENCODE_GATHER_MODE.
+    opencode_gather_mode: str = "tools"
+    # Adaptive logical scopes preserve partition/group affinity while applying
+    # hard count ceilings. Non-positive ceilings clamp to one at use time.
+    opencode_scope_max_units: int = 40  # MCP_OPENCODE_SCOPE_MAX_UNITS
+    opencode_scope_max_groups: int = 6  # MCP_OPENCODE_SCOPE_MAX_GROUPS
+    # Scope sessions run independently and may receive a bounded fresh recovery
+    # session after partial progress. MCP_OPENCODE_SCOPE_CONCURRENCY and
+    # MCP_OPENCODE_SCOPE_MAX_FOLLOWUPS.
+    opencode_scope_concurrency: int = 3
+    opencode_scope_max_followups: int = 1
+    # Analyze/Produce sessions may finish after writing only part of a batch.
+    # Nexus checkpoints those files and retries only missing contracts in fresh,
+    # focused sessions. This is the bounded number of such follow-up rounds.
+    # MCP_OPENCODE_PHASE_MAX_FOLLOWUPS.
+    opencode_phase_max_followups: int = 1
     # OpenCode treats Ollama as a custom OpenAI-compatible provider. This URL
     # is reachable from the Docker service and can be overridden by operators.
     opencode_ollama_base_url: str = "http://host.docker.internal:11434/v1"
+    # OpenCode Go subscription key. Nexus materializes this as an isolated,
+    # per-phase OpenCode credential file rather than sharing a user's auth store.
+    opencode_go_api_key: str = ""
     # JSON object: {"server-id": ["read_tool", ...]}. Empty is deny-all.
     # It is never passed to the subprocess argv or persisted in run receipts.
     opencode_mcp_read_allowlist_json: str = "{}"
+    # Global kill switch for governed live evidence.  It is deliberately off by
+    # default so connector tables/configuration cannot affect legacy or normal
+    # OpenCode runs until the full Gather-only path is enabled.
+    opencode_connectors_enabled: bool = False
 
     # Base data directory for logs, uploads, repos
     data_dir: Path = Path(__file__).resolve().parent.parent.parent / "data"
 
-    # Public starter repo admins can clone and branch to create swap packs.
+    # The SHARED pack repository. Its branches are the packs available to every
+    # user; a personal pack becomes shared by being merged into it through a
+    # pull request. Also the source of the starter skeleton.
     swap_pack_starter_repo_url: str = "https://github.com/joshitachu/swap-pack-starter"
+
+    # Token used to push a personal pack's branch and open its pull request
+    # against the shared repository (MCP_PACK_REPO_TOKEN). A GitHub App
+    # installation on that repository is preferred and tried first; this is the
+    # fallback for installs that do not run the App. Publishing is unavailable
+    # -- explicitly, with instructions -- when neither is configured, rather
+    # than silently doing nothing.
+    pack_repo_token: str = ""  # MCP_PACK_REPO_TOKEN
+    # Branch prefix for published personal packs. One namespace keeps the
+    # shared repo's branch list readable and makes review scope obvious.
+    pack_publish_branch_prefix: str = "pack/"  # MCP_PACK_PUBLISH_BRANCH_PREFIX
+
+    # Dedicated direct model call used by the interactive Pack Architect. A
+    # Pack turn is one structured batch response, never an OpenCode tool loop.
+    pack_author_timeout_seconds: int = 120  # MCP_PACK_AUTHOR_TIMEOUT_SECONDS
+    pack_author_max_output_tokens: int = 32_768  # MCP_PACK_AUTHOR_MAX_OUTPUT_TOKENS
 
     # Pack Governance V1. A JSON array of explicit certification authorities.
     # Example:
@@ -68,7 +117,9 @@ class MCPServerConfig(BaseSettings):
     pack_governance_trusted_sources_json: str = ""
 
     # intodoc default output directory
-    intodoc_output_dir: Path = Path(__file__).resolve().parent.parent.parent.parent / "intodoc-output"
+    intodoc_output_dir: Path = (
+        Path(__file__).resolve().parent.parent.parent.parent / "intodoc-output"
+    )
 
     # vaxxinova project root (parent of mcp-server)
     project_root: Path = Path(__file__).resolve().parent.parent.parent.parent
@@ -83,22 +134,26 @@ class MCPServerConfig(BaseSettings):
     jwt_algorithm: str = "HS256"
     github_webhook_secret: str | None = None  # MCP_GITHUB_WEBHOOK_SECRET
     dev_webhook_skip_signature: bool = False  # MCP_DEV_WEBHOOK_SKIP_SIGNATURE
-    token_encryption_key: str = ""            # MCP_TOKEN_ENCRYPTION_KEY — Fernet key for PAT storage
-    public_url: str = ""                      # MCP_PUBLIC_URL — public-facing base URL for webhook callbacks
+    token_encryption_key: str = ""  # MCP_TOKEN_ENCRYPTION_KEY — Fernet key for PAT storage
+    public_url: str = ""  # MCP_PUBLIC_URL — public-facing base URL for webhook callbacks
 
     # GitHub App (repo connection via install flow instead of stored PATs).
     # When configured, repos connect by installing this App on the owner's org;
     # the backend stores only a non-secret installation id and mints short-lived
     # installation tokens on demand. PAT connection remains a fallback.
-    github_app_id: str = ""                   # MCP_GITHUB_APP_ID — numeric App ID (the JWT issuer)
-    github_app_slug: str = ""                 # MCP_GITHUB_APP_SLUG — App URL slug, for the install redirect
-    github_app_private_key: str = ""          # MCP_GITHUB_APP_PRIVATE_KEY — PEM (literal or with \n escapes)
-    github_app_private_key_file: str = ""     # MCP_GITHUB_APP_PRIVATE_KEY_FILE — path to PEM (preferred over inline)
+    github_app_id: str = ""  # MCP_GITHUB_APP_ID — numeric App ID (the JWT issuer)
+    github_app_slug: str = ""  # MCP_GITHUB_APP_SLUG — App URL slug, for the install redirect
+    github_app_private_key: str = (
+        ""  # MCP_GITHUB_APP_PRIVATE_KEY — PEM (literal or with \n escapes)
+    )
+    github_app_private_key_file: str = (
+        ""  # MCP_GITHUB_APP_PRIVATE_KEY_FILE — path to PEM (preferred over inline)
+    )
     # App OAuth client (user-authorization during install). Used to verify — via the
     # connecting user's own GET /user/installations — that they actually control the
     # installation before binding it. Required for multi-tenant deployments.
-    github_app_client_id: str = ""            # MCP_GITHUB_APP_CLIENT_ID
-    github_app_client_secret: str = ""        # MCP_GITHUB_APP_CLIENT_SECRET
+    github_app_client_id: str = ""  # MCP_GITHUB_APP_CLIENT_ID
+    github_app_client_secret: str = ""  # MCP_GITHUB_APP_CLIENT_SECRET
     # Frontend URL to send the browser back to after a GitHub App install. The
     # callback appends ?installation_id=... so the UI can show the repo picker.
     # Empty = the callback returns JSON instead of redirecting.
@@ -141,14 +196,14 @@ class MCPServerConfig(BaseSettings):
     doc_generation_write_model: str = "anthropic/claude-sonnet-4-6"
     # Phase 1 investigation model. Defaults to doc_generation_model if not set.
     doc_generation_investigation_model: str | None = (
-        "google/gemini-2.5-flash"
-    )  # MCP_DOC_GENERATION_INVESTIGATION_MODEL
+        "google/gemini-2.5-flash"  # MCP_DOC_GENERATION_INVESTIGATION_MODEL
+    )
     # Fallback model on provider failure (rate-limit, network, auth). No fallback if not set.
     doc_generation_fallback_model: str | None = None  # MCP_DOC_GENERATION_FALLBACK_MODEL
     doc_generation_enterprise_mode_default: bool = True
     doc_generation_quality_threshold: float = 4.0
     large_project_threshold: int = 200  # jobs; >=this splits Phase 3 into 4 agents
-    small_project_threshold: int = 5   # MCP_SMALL_PROJECT_THRESHOLD — unit count; <=this uses direct path (no Phase 1, no agent runtime for Phase 2)
+    small_project_threshold: int = 5  # MCP_SMALL_PROJECT_THRESHOLD — unit count; <=this uses direct path (no Phase 1, no agent runtime for Phase 2)
 
     # API-based providers. First-party providers read ANTHROPIC_API_KEY,
     # OPENAI_API_KEY, GOOGLE_API_KEY/GEMINI_API_KEY directly. Keep the generic
@@ -162,6 +217,11 @@ class MCPServerConfig(BaseSettings):
     # ROUTE33_API_KEY in the runtime environment.
     doc_generation_route33_api_key: str | None = None
     doc_generation_route33_base_url: str = "https://api.route33.ai/v1"
+    # OpenRouter is used through explicit openrouter/<vendor>/<model> doc-generation
+    # model ids (legacy harness) and openrouter/... OpenCode routes. Set
+    # MCP_DOC_GENERATION_OPENROUTER_API_KEY or OPENROUTER_API_KEY in the environment.
+    doc_generation_openrouter_api_key: str | None = None
+    doc_generation_openrouter_base_url: str = "https://openrouter.ai/api/v1"
     doc_generation_lock_stale_seconds: int = 7200
     # For Ollama or custom OpenAI-compatible endpoints: "http://localhost:11434"
     model_pricing_json: str = ""
@@ -224,21 +284,23 @@ class MCPServerConfig(BaseSettings):
     # Slice 3 -- Group-delta classifier threshold.
     # Fraction of a group's fields (param values) that may change while still
     # qualifying for patch mode. At or above this fraction, scoped regen is used.
-    reingestion_patch_field_edit_threshold: float = 0.20  # MCP_REINGESTION_PATCH_FIELD_EDIT_THRESHOLD
+    reingestion_patch_field_edit_threshold: float = (
+        0.20  # MCP_REINGESTION_PATCH_FIELD_EDIT_THRESHOLD
+    )
 
     # Abandoned docs_staging/ dirs older than this are GC'd at startup. Active
     # resumes bump mtime so in-flight work is safe.
     staging_gc_days: int = 7
 
     # Doc generation bundle size limits (bytes)
-    max_prompt_bundle_bytes: int = 200_000   # MCP_MAX_PROMPT_BUNDLE_BYTES
-    max_ref_bundle_bytes: int = 80_000       # MCP_MAX_REF_BUNDLE_BYTES
-    max_param_val_chars: int = 16_000        # MCP_MAX_PARAM_VAL_CHARS (was 400; raised 2026-06-10 to stop truncating Lobster field_wiring past 14 of 123 arrows)
+    max_prompt_bundle_bytes: int = 200_000  # MCP_MAX_PROMPT_BUNDLE_BYTES
+    max_ref_bundle_bytes: int = 80_000  # MCP_MAX_REF_BUNDLE_BYTES
+    max_param_val_chars: int = 16_000  # MCP_MAX_PARAM_VAL_CHARS (was 400; raised 2026-06-10 to stop truncating Lobster field_wiring past 14 of 123 arrows)
 
     # Quick scan anti-pattern thresholds (job/component counts)
-    qs_god_profile_threshold: int = 15       # MCP_QS_GOD_PROFILE_THRESHOLD
-    qs_large_job_threshold: int = 10         # MCP_QS_LARGE_JOB_THRESHOLD
-    qs_complex_tmap_threshold: int = 3       # MCP_QS_COMPLEX_TMAP_THRESHOLD
+    qs_god_profile_threshold: int = 15  # MCP_QS_GOD_PROFILE_THRESHOLD
+    qs_large_job_threshold: int = 10  # MCP_QS_LARGE_JOB_THRESHOLD
+    qs_complex_tmap_threshold: int = 3  # MCP_QS_COMPLEX_TMAP_THRESHOLD
 
     # Minimum preprocess content bytes to attempt LLM investigation.
     # Groups with stripped content below this threshold are skipped immediately
@@ -246,24 +308,24 @@ class MCPServerConfig(BaseSettings):
     min_investigation_content_bytes: int = 200  # MCP_MIN_INVESTIGATION_CONTENT_BYTES
 
     # LLM output token limits per phase
-    investigation_max_tokens: int = 10_000   # MCP_INVESTIGATION_MAX_TOKENS
-    phase2_max_tokens: int = 32_000          # MCP_PHASE2_MAX_TOKENS
+    investigation_max_tokens: int = 10_000  # MCP_INVESTIGATION_MAX_TOKENS
+    phase2_max_tokens: int = 32_000  # MCP_PHASE2_MAX_TOKENS
     # Phase 2 unit/group tasks must be materially smaller than the provider's
     # absolute response ceiling.  Large outputs are harder to validate and were
     # observed to truncate repeatedly while omitting late required sections.
-    phase2_task_max_tokens: int = 10_000     # MCP_PHASE2_TASK_MAX_TOKENS
+    phase2_task_max_tokens: int = 10_000  # MCP_PHASE2_TASK_MAX_TOKENS
     phase2_synthesis_max_tokens: int = 6_000  # MCP_PHASE2_SYNTHESIS_MAX_TOKENS
     # Claim-mode Phase 2 is the provider-neutral default. Each canonical unit
     # packet produces one compact JSON batch; semantic splitting happens only
     # when the provider proves the bounded response is still too large.
-    phase2_claim_max_tokens: int = 6_000     # MCP_PHASE2_CLAIM_MAX_TOKENS
-    phase2_dense_unit_bytes: int = 24_000    # MCP_PHASE2_DENSE_UNIT_BYTES
-    phase2_claim_units_per_task: int = 1     # MCP_PHASE2_CLAIM_UNITS_PER_TASK
-    phase3_max_tokens: int = 32_000          # MCP_PHASE3_MAX_TOKENS
-    context_max_tokens: int = 900_000        # MCP_CONTEXT_MAX_TOKENS — hard pre-flight ceiling
-    core_context_soft_target_tokens: int = 80_000   # MCP_CORE_CONTEXT_SOFT_TARGET_TOKENS
+    phase2_claim_max_tokens: int = 6_000  # MCP_PHASE2_CLAIM_MAX_TOKENS
+    phase2_dense_unit_bytes: int = 24_000  # MCP_PHASE2_DENSE_UNIT_BYTES
+    phase2_claim_units_per_task: int = 1  # MCP_PHASE2_CLAIM_UNITS_PER_TASK
+    phase3_max_tokens: int = 32_000  # MCP_PHASE3_MAX_TOKENS
+    context_max_tokens: int = 900_000  # MCP_CONTEXT_MAX_TOKENS — hard pre-flight ceiling
+    core_context_soft_target_tokens: int = 80_000  # MCP_CORE_CONTEXT_SOFT_TARGET_TOKENS
     core_context_hard_ceiling_tokens: int = 120_000  # MCP_CORE_CONTEXT_HARD_CEILING_TOKENS
-    core_slice_concurrency: int = 4       # MCP_CORE_SLICE_CONCURRENCY
+    core_slice_concurrency: int = 4  # MCP_CORE_SLICE_CONCURRENCY
     # Per-task evidence byte budget for job-boundary bin packing (Phase 1/2).
     # Whole jobs are packed into tasks up to this size; a job is never split.
     phase2_task_evidence_bytes: int = 48_000  # MCP_PHASE2_TASK_EVIDENCE_BYTES
@@ -297,6 +359,17 @@ class MCPServerConfig(BaseSettings):
     # Byte budget for the project-tier non-code documented-context section handed
     # to group/summary Phase 3 docs (the full prepared set, association-agnostic).
     phase3_noncode_project_bytes: int = 120_000  # MCP_PHASE3_NONCODE_PROJECT_BYTES
+    # Runtime execution evidence: bounded aggregates (run counts, outcomes,
+    # latency, recent redacted failure headlines) pulled from the RAG backend's
+    # runtime mirror and appended to a unit's Phase 3 bundle. This is the only
+    # part of a document grounded in what production actually did rather than in
+    # what the source code says. Aggregates only -- no log lines cross the
+    # boundary -- and the section is trimmed before verbatim scanner evidence.
+    runtime_evidence_enabled: bool = True  # MCP_RUNTIME_EVIDENCE_ENABLED
+    runtime_evidence_window_days: int = 90  # MCP_RUNTIME_EVIDENCE_WINDOW_DAYS
+    runtime_evidence_max_failures: int = 5  # MCP_RUNTIME_EVIDENCE_MAX_FAILURES
+    phase3_runtime_evidence_bytes: int = 8_000  # MCP_PHASE3_RUNTIME_EVIDENCE_BYTES
+    runtime_evidence_timeout_s: float = 20.0  # MCP_RUNTIME_EVIDENCE_TIMEOUT_S
     # A token present in more than this fraction of scanned units is treated as
     # non-distinctive (project-wide boilerplate) and is dropped from non-code
     # association, so ubiquitous identifiers do not attach an item to every unit.
@@ -313,22 +386,30 @@ class MCPServerConfig(BaseSettings):
     # relative path and size (never a silent drop). Raising max_file_bytes lets
     # bigger mapping workbooks/PDFs through; raising max_raw_bytes lifts the
     # cumulative raw-read budget. Both flow into SupportingEvidenceLimits.
-    supporting_evidence_max_file_bytes: int = 4 * 1024 * 1024  # MCP_SUPPORTING_EVIDENCE_MAX_FILE_BYTES
-    supporting_evidence_max_raw_bytes: int = 100 * 1024 * 1024  # MCP_SUPPORTING_EVIDENCE_MAX_RAW_BYTES
-    source_context_mode: str = "direct_redacted"  # MCP_SOURCE_CONTEXT_MODE: structured | direct_redacted
+    supporting_evidence_max_file_bytes: int = (
+        4 * 1024 * 1024
+    )  # MCP_SUPPORTING_EVIDENCE_MAX_FILE_BYTES
+    supporting_evidence_max_raw_bytes: int = (
+        100 * 1024 * 1024
+    )  # MCP_SUPPORTING_EVIDENCE_MAX_RAW_BYTES
+    source_context_mode: str = (
+        "direct_redacted"  # MCP_SOURCE_CONTEXT_MODE: structured | direct_redacted
+    )
     direct_source_inline_max_bytes: int = 120_000  # MCP_DIRECT_SOURCE_INLINE_MAX_BYTES
     direct_source_chunk_bytes: int = 80_000  # MCP_DIRECT_SOURCE_CHUNK_BYTES
 
     # Bounded internal multi-agent runtime
-    agent_phase1_concurrency: int = 4        # MCP_AGENT_PHASE1_CONCURRENCY
-    agent_phase1_agentic: bool = False       # MCP_AGENT_PHASE1_AGENTIC — use chunk-manifest investigator
-    agent_phase1_batch_size: int = 20        # MCP_AGENT_PHASE1_BATCH_SIZE — units per extraction call
-    agent_phase2_concurrency: int = 6        # MCP_AGENT_PHASE2_CONCURRENCY
-    agent_phase2_max_slices: int = 7         # MCP_AGENT_PHASE2_MAX_SLICES — hard cap on _split_context_pack fan-out
-    agent_phase3_concurrency: int = 4        # MCP_AGENT_PHASE3_CONCURRENCY
-    agent_repair_concurrency: int = 3        # MCP_AGENT_REPAIR_CONCURRENCY
-    agent_max_tool_calls: int = 25           # MCP_AGENT_MAX_TOOL_CALLS
-    agent_max_tool_bytes: int = 600_000      # MCP_AGENT_MAX_TOOL_BYTES
+    agent_phase1_concurrency: int = 4  # MCP_AGENT_PHASE1_CONCURRENCY
+    agent_phase1_agentic: bool = False  # MCP_AGENT_PHASE1_AGENTIC — use chunk-manifest investigator
+    agent_phase1_batch_size: int = 20  # MCP_AGENT_PHASE1_BATCH_SIZE — units per extraction call
+    agent_phase2_concurrency: int = 6  # MCP_AGENT_PHASE2_CONCURRENCY
+    agent_phase2_max_slices: int = (
+        7  # MCP_AGENT_PHASE2_MAX_SLICES — hard cap on _split_context_pack fan-out
+    )
+    agent_phase3_concurrency: int = 4  # MCP_AGENT_PHASE3_CONCURRENCY
+    agent_repair_concurrency: int = 3  # MCP_AGENT_REPAIR_CONCURRENCY
+    agent_max_tool_calls: int = 25  # MCP_AGENT_MAX_TOOL_CALLS
+    agent_max_tool_bytes: int = 600_000  # MCP_AGENT_MAX_TOOL_BYTES
     agent_max_tool_result_bytes: int = 50_000  # MCP_AGENT_MAX_TOOL_RESULT_BYTES
     agent_phase2_tool_input_token_cap: int = 180_000  # MCP_AGENT_PHASE2_TOOL_INPUT_TOKEN_CAP
     agent_phase3_tool_input_token_cap: int = 600_000  # MCP_AGENT_PHASE3_TOOL_INPUT_TOKEN_CAP
@@ -337,62 +418,75 @@ class MCPServerConfig(BaseSettings):
     # size instead of an accumulating tool conversation. Set True to restore the
     # agentic tool loop for first-pass docs (repair phases keep tools regardless).
     agent_phase3_first_pass_tools: bool = False  # MCP_AGENT_PHASE3_FIRST_PASS_TOOLS
-    agent_max_task_attempts: int = 2         # MCP_AGENT_MAX_TASK_ATTEMPTS
-    agent_max_repair_attempts: int = 3       # MCP_AGENT_MAX_REPAIR_ATTEMPTS
-    agent_max_split_depth: int = 2           # MCP_AGENT_MAX_SPLIT_DEPTH
-    agent_dag_enabled: bool = False          # MCP_AGENT_DAG_ENABLED — use validated DAG orchestration
-    agent_planner_enabled: bool = False      # MCP_AGENT_PLANNER_ENABLED — ask model for execution graph
-    agent_planner_mode: str = "llm"          # MCP_AGENT_PLANNER_MODE: llm | deterministic
-    agent_planner_max_tokens: int = 8_000    # MCP_AGENT_PLANNER_MAX_TOKENS
+    agent_max_task_attempts: int = 2  # MCP_AGENT_MAX_TASK_ATTEMPTS
+    agent_max_repair_attempts: int = 3  # MCP_AGENT_MAX_REPAIR_ATTEMPTS
+    agent_max_split_depth: int = 2  # MCP_AGENT_MAX_SPLIT_DEPTH
+    agent_dag_enabled: bool = False  # MCP_AGENT_DAG_ENABLED — use validated DAG orchestration
+    agent_planner_enabled: bool = False  # MCP_AGENT_PLANNER_ENABLED — ask model for execution graph
+    agent_planner_mode: str = "llm"  # MCP_AGENT_PLANNER_MODE: llm | deterministic
+    agent_planner_max_tokens: int = 8_000  # MCP_AGENT_PLANNER_MAX_TOKENS
     agent_planner_require_valid_json: bool = True  # MCP_AGENT_PLANNER_REQUIRE_VALID_JSON
-    agent_dag_strict_validation: bool = True # MCP_AGENT_DAG_STRICT_VALIDATION
-    agent_dag_max_nodes: int = 200           # MCP_AGENT_DAG_MAX_NODES
-    agent_dag_max_depth: int = 20            # MCP_AGENT_DAG_MAX_DEPTH
-    agent_smart_repair_enabled: bool = False # MCP_AGENT_SMART_REPAIR_ENABLED — classify failures before repair
+    agent_dag_strict_validation: bool = True  # MCP_AGENT_DAG_STRICT_VALIDATION
+    agent_dag_max_nodes: int = 200  # MCP_AGENT_DAG_MAX_NODES
+    agent_dag_max_depth: int = 20  # MCP_AGENT_DAG_MAX_DEPTH
+    agent_smart_repair_enabled: bool = (
+        False  # MCP_AGENT_SMART_REPAIR_ENABLED — classify failures before repair
+    )
 
     # Pipeline forensics: when enabled, human-only debug artifacts (model-call
     # prompt/context/request/response snapshots, agent-task traces) are written
     # under docs_staging/_debug/. Default runs persist only consumed artifacts.
-    pipeline_debug: bool = False             # MCP_PIPELINE_DEBUG
+    pipeline_debug: bool = False  # MCP_PIPELINE_DEBUG
 
     # Doc generation safety guards. These are model/provider agnostic and stop
     # runaway retry storms without reducing prompt/evidence depth.
-    docgen_empty_outputs_per_doc_limit: int = 3       # MCP_DOCGEN_EMPTY_OUTPUTS_PER_DOC_LIMIT
-    docgen_empty_outputs_per_run_limit: int = 10      # MCP_DOCGEN_EMPTY_OUTPUTS_PER_RUN_LIMIT
-    docgen_allowed_slices_per_doc: int = 4            # MCP_DOCGEN_ALLOWED_SLICES_PER_DOC
-    docgen_min_run_call_budget: int = 40              # MCP_DOCGEN_MIN_RUN_CALL_BUDGET
-    docgen_call_budget_base: int = 20                 # MCP_DOCGEN_CALL_BUDGET_BASE
-    docgen_call_budget_per_group: int = 4             # MCP_DOCGEN_CALL_BUDGET_PER_GROUP
-    docgen_max_run_calls: int = 250                   # MCP_DOCGEN_MAX_RUN_CALLS
+    docgen_empty_outputs_per_doc_limit: int = 3  # MCP_DOCGEN_EMPTY_OUTPUTS_PER_DOC_LIMIT
+    docgen_empty_outputs_per_run_limit: int = 10  # MCP_DOCGEN_EMPTY_OUTPUTS_PER_RUN_LIMIT
+    docgen_allowed_slices_per_doc: int = 4  # MCP_DOCGEN_ALLOWED_SLICES_PER_DOC
+    docgen_min_run_call_budget: int = 40  # MCP_DOCGEN_MIN_RUN_CALL_BUDGET
+    docgen_call_budget_base: int = 20  # MCP_DOCGEN_CALL_BUDGET_BASE
+    docgen_call_budget_per_group: int = 4  # MCP_DOCGEN_CALL_BUDGET_PER_GROUP
+    docgen_max_run_calls: int = 250  # MCP_DOCGEN_MAX_RUN_CALLS
     # Composite/oversized-upload orchestration: when a scan partitions into
     # more than one sub-project (composite zips, or a single root split to fit
     # the call budget), the manual/api generate path loops one scoped run per
     # partition into output/{project_id}/{subproject}/docs. Disable to force
     # the legacy single whole-upload run.
-    docgen_partition_orchestration: bool = True       # MCP_DOCGEN_PARTITION_ORCHESTRATION
+    docgen_partition_orchestration: bool = True  # MCP_DOCGEN_PARTITION_ORCHESTRATION
+    # Universal extraction cache (services/extraction_cache.py). docs_staging/
+    # _preprocess/ is a pure function of the scan artifacts + the preprocess/
+    # redaction code version + platform + the partition unit allowlist, and is
+    # independent of the pack, so a second pack over the same project reuses it
+    # instead of re-extracting. Phase 4 stores it outside docs_staging/ before
+    # the cleanup rmtree; generate_docs restores it in place of preprocessing.
+    # Disable to force a full deterministic re-extraction on every run.
+    extraction_cache_enabled: bool = True  # MCP_EXTRACTION_CACHE_ENABLED
+    extraction_cache_keep: int = 3  # MCP_EXTRACTION_CACHE_KEEP
     # Provider-neutral total-token accounting. Input usage remains recorded, but
     # the cumulative input ceiling is disabled by default because evidence-rich
     # multi-document runs legitimately reuse project facts across Phase 3. Set
     # MCP_DOCGEN_MAX_RUN_INPUT_TOKENS to a positive value to opt back into a cap.
-    docgen_input_token_budget_base: int = 150_000     # MCP_DOCGEN_INPUT_TOKEN_BUDGET_BASE
+    docgen_input_token_budget_base: int = 150_000  # MCP_DOCGEN_INPUT_TOKEN_BUDGET_BASE
     docgen_input_token_budget_per_unit: int = 25_000  # MCP_DOCGEN_INPUT_TOKEN_BUDGET_PER_UNIT
-    docgen_input_token_budget_per_doc: int = 60_000   # MCP_DOCGEN_INPUT_TOKEN_BUDGET_PER_DOC
-    docgen_max_run_input_tokens: int = 0              # MCP_DOCGEN_MAX_RUN_INPUT_TOKENS (0 = unlimited)
-    docgen_output_token_budget_base: int = 80_000     # MCP_DOCGEN_OUTPUT_TOKEN_BUDGET_BASE
-    docgen_output_token_budget_per_unit: int = 10_000 # MCP_DOCGEN_OUTPUT_TOKEN_BUDGET_PER_UNIT
+    docgen_input_token_budget_per_doc: int = 60_000  # MCP_DOCGEN_INPUT_TOKEN_BUDGET_PER_DOC
+    docgen_max_run_input_tokens: int = 0  # MCP_DOCGEN_MAX_RUN_INPUT_TOKENS (0 = unlimited)
+    docgen_output_token_budget_base: int = 80_000  # MCP_DOCGEN_OUTPUT_TOKEN_BUDGET_BASE
+    docgen_output_token_budget_per_unit: int = 10_000  # MCP_DOCGEN_OUTPUT_TOKEN_BUDGET_PER_UNIT
     docgen_output_token_budget_per_doc: int = 35_000  # MCP_DOCGEN_OUTPUT_TOKEN_BUDGET_PER_DOC
     # Runaway ceiling only. The run's real output budget is sized per doc-task
     # (base + sum of per-doc output ceilings); this cap exists to stop a
     # misconfigured run, not to bound planned work. The old 600K default
     # starved legitimate multi-doc partitions (verified: VQ_MQ2RHM blocked at
     # exactly 560664/560000 while writing accepted docs).
-    docgen_max_run_output_tokens: int = 2_000_000     # MCP_DOCGEN_MAX_RUN_OUTPUT_TOKENS
+    docgen_max_run_output_tokens: int = 2_000_000  # MCP_DOCGEN_MAX_RUN_OUTPUT_TOKENS
     # Per-doc-type output ceilings (P0.3 output governance). A brief must be
     # far smaller than an inventory; inventories scale with unit count.
-    docgen_unit_doc_output_tokens: int = 6_000        # MCP_DOCGEN_UNIT_DOC_OUTPUT_TOKENS
-    docgen_brief_output_tokens: int = 14_000          # MCP_DOCGEN_BRIEF_OUTPUT_TOKENS
-    docgen_inventory_output_tokens_base: int = 10_000 # MCP_DOCGEN_INVENTORY_OUTPUT_TOKENS_BASE
-    docgen_inventory_output_tokens_per_unit: int = 120  # MCP_DOCGEN_INVENTORY_OUTPUT_TOKENS_PER_UNIT
+    docgen_unit_doc_output_tokens: int = 6_000  # MCP_DOCGEN_UNIT_DOC_OUTPUT_TOKENS
+    docgen_brief_output_tokens: int = 14_000  # MCP_DOCGEN_BRIEF_OUTPUT_TOKENS
+    docgen_inventory_output_tokens_base: int = 10_000  # MCP_DOCGEN_INVENTORY_OUTPUT_TOKENS_BASE
+    docgen_inventory_output_tokens_per_unit: int = (
+        120  # MCP_DOCGEN_INVENTORY_OUTPUT_TOKENS_PER_UNIT
+    )
     # Output-sized Phase 3 slicing (slicing redesign). A document whose
     # expected OUTPUT fits one model call is generated in ONE call with all
     # its evidence bounded to the context ceiling (no evidence-chunk restarts,
@@ -401,21 +495,21 @@ class MCPServerConfig(BaseSettings):
     # The single-call cap reflects the OBSERVED per-call output of production
     # models (~16-18K tokens on deepseek-v4-pro), not the configured
     # phase3_max_tokens safety ceiling.
-    phase3_single_call_output_tokens: int = 16_000    # MCP_PHASE3_SINGLE_CALL_OUTPUT_TOKENS
+    phase3_single_call_output_tokens: int = 16_000  # MCP_PHASE3_SINGLE_CALL_OUTPUT_TOKENS
     # Expected output for fixed-shape docs (00,01,03,05,06,07,08 style):
     # observed real deduplicated content is ~7-16K tokens per doc.
-    docgen_doc_expected_output_tokens: int = 12_000   # MCP_DOCGEN_DOC_EXPECTED_OUTPUT_TOKENS
+    docgen_doc_expected_output_tokens: int = 12_000  # MCP_DOCGEN_DOC_EXPECTED_OUTPUT_TOKENS
     # Business-rule catalogs (04 style) scale with unit count like inventories.
-    docgen_rules_output_tokens_base: int = 4_000      # MCP_DOCGEN_RULES_OUTPUT_TOKENS_BASE
-    docgen_rules_output_tokens_per_unit: int = 150    # MCP_DOCGEN_RULES_OUTPUT_TOKENS_PER_UNIT
+    docgen_rules_output_tokens_base: int = 4_000  # MCP_DOCGEN_RULES_OUTPUT_TOKENS_BASE
+    docgen_rules_output_tokens_per_unit: int = 150  # MCP_DOCGEN_RULES_OUTPUT_TOKENS_PER_UNIT
     # Standard-catalog per-unit reference docs (deep per-unit dossiers).
     # Expanded one-per-scanned-unit from catalog entries marked per_unit; the
     # unit docs are written FIRST and the catalog/summary docs synthesize from
     # them (plus the analysis layer). Disable to restore the pre-unit-doc set.
-    docgen_unit_docs_enabled: bool = False            # MCP_DOCGEN_UNIT_DOCS_ENABLED
+    docgen_unit_docs_enabled: bool = False  # MCP_DOCGEN_UNIT_DOCS_ENABLED
     # Byte budget for the deterministic digest of finished unit docs handed to
     # the group/summary Phase 3 writers (units-first wiring).
-    phase3_unit_digest_bytes: int = 150_000           # MCP_PHASE3_UNIT_DIGEST_BYTES
+    phase3_unit_digest_bytes: int = 150_000  # MCP_PHASE3_UNIT_DIGEST_BYTES
     # LLM scorecard (Phase 2.6) gate for STANDARD (non-plugin) runs. The
     # scorecard is advisory (it feeds only 07_QUALITY_SECURITY_RISK_SCORECARD);
     # on the verified Assetcheck run it planned 4 calls, used 13 (12 slices +
@@ -423,18 +517,20 @@ class MCPServerConfig(BaseSettings):
     # a deterministic "scorecard omitted" marker is written instead so the 07
     # doc, executive summary, and enterprise gates degrade gracefully. Plugin
     # packs that declare a scorecard phase are unaffected by this flag.
-    docgen_llm_scorecard_enabled: bool = False        # MCP_DOCGEN_LLM_SCORECARD_ENABLED
+    docgen_llm_scorecard_enabled: bool = False  # MCP_DOCGEN_LLM_SCORECARD_ENABLED
     # Built-in evidence agents on STANDARD (non-plugin) runs. Verified waste:
     # 3 of the 4 defaults (core_architecture_dependency, core_data_flow,
     # core_runtime_config) produced 0 claims + 1 validation issue each on the
     # Assetcheck run (~0.6M tokens of pure noise). Default off; plugin packs
     # that explicitly declare evidence_agents are unaffected.
-    docgen_default_evidence_agents_enabled: bool = False  # MCP_DOCGEN_DEFAULT_EVIDENCE_AGENTS_ENABLED
+    docgen_default_evidence_agents_enabled: bool = (
+        False  # MCP_DOCGEN_DEFAULT_EVIDENCE_AGENTS_ENABLED
+    )
     # Phase 2 plan allowance for validation-failure repair retries, as a
     # fraction of the planned claim tasks (verified: ~21 retries on 73 tasks =
     # 29% before the per-section claim demotion landed; the allowance keeps the
     # plan honest without inflating it now that retries are rarer).
-    docgen_phase2_retry_allowance: float = 0.25       # MCP_DOCGEN_PHASE2_RETRY_ALLOWANCE
+    docgen_phase2_retry_allowance: float = 0.25  # MCP_DOCGEN_PHASE2_RETRY_ALLOWANCE
     # Phase 3 input-partitioned slicing: a context file at or below this size is
     # SHARED (replicated byte-stable into every slice: unit index, cross-refs,
     # small relational maps); anything larger is EVIDENCE, split on section
@@ -442,22 +538,22 @@ class MCPServerConfig(BaseSettings):
     # failure: the generic splitter replicated ~195 KB of "common" context into
     # every slice and paged evidence into 19-22 tiny chunks, so the 4-slice cap
     # dropped most of the evidence (input = N x pack; units truncated).
-    phase3_shared_context_file_bytes: int = 16_000    # MCP_PHASE3_SHARED_CONTEXT_FILE_BYTES
+    phase3_shared_context_file_bytes: int = 16_000  # MCP_PHASE3_SHARED_CONTEXT_FILE_BYTES
     docgen_token_estimate_safety_factor: float = 1.5  # MCP_DOCGEN_TOKEN_ESTIMATE_SAFETY_FACTOR
-    docgen_adaptive_concurrency: bool = True          # MCP_DOCGEN_ADAPTIVE_CONCURRENCY
-    phase_cost_warning_input_tokens: int = 500_000   # MCP_PHASE_COST_WARNING_INPUT_TOKENS
+    docgen_adaptive_concurrency: bool = True  # MCP_DOCGEN_ADAPTIVE_CONCURRENCY
+    phase_cost_warning_input_tokens: int = 500_000  # MCP_PHASE_COST_WARNING_INPUT_TOKENS
 
     # Deep Dive repo-agent runtime
-    deep_dive_engine: str = "repo_agent"               # MCP_DEEP_DIVE_ENGINE: repo_agent | claude_cli
+    deep_dive_engine: str = "repo_agent"  # MCP_DEEP_DIVE_ENGINE: repo_agent | claude_cli
     deep_dive_model: str = "anthropic/claude-sonnet-4-6"  # MCP_DEEP_DIVE_MODEL
-    deep_dive_api_key: str | None = None               # MCP_DEEP_DIVE_API_KEY
-    deep_dive_base_url: str | None = None              # MCP_DEEP_DIVE_BASE_URL
-    deep_dive_max_tool_calls: int = 40                 # MCP_DEEP_DIVE_MAX_TOOL_CALLS
-    deep_dive_max_file_bytes: int = 120_000            # MCP_DEEP_DIVE_MAX_FILE_BYTES
-    deep_dive_max_search_results: int = 50             # MCP_DEEP_DIVE_MAX_SEARCH_RESULTS
-    deep_dive_timeout_s: float = 300.0                 # MCP_DEEP_DIVE_TIMEOUT_S
+    deep_dive_api_key: str | None = None  # MCP_DEEP_DIVE_API_KEY
+    deep_dive_base_url: str | None = None  # MCP_DEEP_DIVE_BASE_URL
+    deep_dive_max_tool_calls: int = 40  # MCP_DEEP_DIVE_MAX_TOOL_CALLS
+    deep_dive_max_file_bytes: int = 120_000  # MCP_DEEP_DIVE_MAX_FILE_BYTES
+    deep_dive_max_search_results: int = 50  # MCP_DEEP_DIVE_MAX_SEARCH_RESULTS
+    deep_dive_timeout_s: float = 300.0  # MCP_DEEP_DIVE_TIMEOUT_S
     deep_dive_allow_claude_cli_fallback: bool = False  # MCP_DEEP_DIVE_ALLOW_CLAUDE_CLI_FALLBACK
-    deep_dive_max_answer_tokens: int = 8_000          # MCP_DEEP_DIVE_MAX_ANSWER_TOKENS
+    deep_dive_max_answer_tokens: int = 8_000  # MCP_DEEP_DIVE_MAX_ANSWER_TOKENS
 
     # Instruction pack directory (relative to project_root) — US-106
     instruction_pack_dir: str = "packs/default"  # MCP_INSTRUCTION_PACK_DIR
@@ -465,19 +561,21 @@ class MCPServerConfig(BaseSettings):
     # Upload limits
     max_upload_zip_bytes: int = 1024 * 1024 * 1024  # MCP_MAX_UPLOAD_ZIP_BYTES — 1 GB default
     max_upload_zip_entries: int = 20_000  # MCP_MAX_UPLOAD_ZIP_ENTRIES
-    max_upload_zip_uncompressed_bytes: int = 2 * 1024 * 1024 * 1024  # MCP_MAX_UPLOAD_ZIP_UNCOMPRESSED_BYTES
+    max_upload_zip_uncompressed_bytes: int = (
+        2 * 1024 * 1024 * 1024
+    )  # MCP_MAX_UPLOAD_ZIP_UNCOMPRESSED_BYTES
     # Nested source bundles are common for Talend exports.  These limits apply
     # cumulatively across the outer archive and every nested archive.
     max_upload_zip_nesting_depth: int = 4  # MCP_MAX_UPLOAD_ZIP_NESTING_DEPTH
     upload_receipt_ttl_seconds: int = 24 * 60 * 60  # MCP_UPLOAD_RECEIPT_TTL_SECONDS
 
     # Local path security — comma-separated allowed roots; empty = no restriction
-    allowed_local_roots: str = ""            # MCP_ALLOWED_LOCAL_ROOTS
+    allowed_local_roots: str = ""  # MCP_ALLOWED_LOCAL_ROOTS
 
     # RAG bridge HTTP timeouts (seconds)
-    rag_push_timeout_s: float = 60.0         # MCP_RAG_PUSH_TIMEOUT_S
-    rag_delete_timeout_s: float = 60.0       # MCP_RAG_DELETE_TIMEOUT_S
-    rag_usage_timeout_s: float = 10.0        # MCP_RAG_USAGE_TIMEOUT_S
+    rag_push_timeout_s: float = 60.0  # MCP_RAG_PUSH_TIMEOUT_S
+    rag_delete_timeout_s: float = 60.0  # MCP_RAG_DELETE_TIMEOUT_S
+    rag_usage_timeout_s: float = 10.0  # MCP_RAG_USAGE_TIMEOUT_S
 
     # Vector-store content-hash skip (Slice 2).
     # When enabled, push_docs() skips re-embedding docs whose SHA-256 matches
@@ -490,8 +588,12 @@ class MCPServerConfig(BaseSettings):
     # output/{project_id}/{doc_version_history_dirname}/ (see
     # .plans/slice-4-versioning-history/plan.md for the storage-choice rationale).
     doc_version_history_dirname: str = "_version_history"  # MCP_DOC_VERSION_HISTORY_DIRNAME
-    doc_version_history_log_filename: str = "change_history.jsonl"  # MCP_DOC_VERSION_HISTORY_LOG_FILENAME
-    doc_version_history_sidecar_filename: str = "doc_commit_ranges.json"  # MCP_DOC_VERSION_HISTORY_SIDECAR_FILENAME
+    doc_version_history_log_filename: str = (
+        "change_history.jsonl"  # MCP_DOC_VERSION_HISTORY_LOG_FILENAME
+    )
+    doc_version_history_sidecar_filename: str = (
+        "doc_commit_ranges.json"  # MCP_DOC_VERSION_HISTORY_SIDECAR_FILENAME
+    )
 
     # Living-Document Reingestion (Slice 5) -- drift visibility + manual
     # full-rebuild trigger. This reason code is the ONLY signal
@@ -501,7 +603,9 @@ class MCPServerConfig(BaseSettings):
     # a caller-supplied string) so the reset boundary is the code path, not a
     # naming convention. See .plans/slice-5-drift-manual-rebuild/critique.md
     # (Attack 3) for why this must not be keyed off `triggered_by`.
-    manual_full_rebuild_reason_code: str = "manual_full_rebuild"  # MCP_MANUAL_FULL_REBUILD_REASON_CODE
+    manual_full_rebuild_reason_code: str = (
+        "manual_full_rebuild"  # MCP_MANUAL_FULL_REBUILD_REASON_CODE
+    )
     manual_full_rebuild_trigger: str = "manual_full_rebuild"  # MCP_MANUAL_FULL_REBUILD_TRIGGER
 
     @property
@@ -525,7 +629,7 @@ class MCPServerConfig(BaseSettings):
 
 config = MCPServerConfig()
 
-from mcp_server.platforms import supported_platform_ids  # noqa: E402
+from mcp_server.platforms import supported_platform_ids
 
 SUPPORTED_PLATFORMS: frozenset[str] = supported_platform_ids()
 
@@ -536,6 +640,7 @@ _PROVIDER_KEY_MAP: dict[str, tuple[str, ...]] = {
     "gemini": ("GOOGLE_API_KEY",),
     "deepseek": ("MCP_DOC_GENERATION_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"),
     "route33": ("MCP_DOC_GENERATION_ROUTE33_API_KEY", "ROUTE33_API_KEY"),
+    "openrouter": ("MCP_DOC_GENERATION_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"),
 }
 
 
@@ -556,7 +661,11 @@ def check_provider_credentials() -> list[str]:
             continue
         prefix = model_str.split("/")[0].lower()
         required_vars = _PROVIDER_KEY_MAP.get(prefix)
-        if required_vars and prefix not in seen and not any(_os.environ.get(var) for var in required_vars):
+        if (
+            required_vars
+            and prefix not in seen
+            and not any(_os.environ.get(var) for var in required_vars)
+        ):
             warnings_out.append(
                 f"provider '{prefix}' is configured (model: {model_str}) "
                 f"but {' or '.join(required_vars)} is not set — generation will fail"

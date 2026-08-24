@@ -1,24 +1,10 @@
-import { NextRequest, NextResponse } from "next/server";
-import { apiErrorMessage } from "@/lib/apiError";
-import { FASTAPI_URL } from "@/lib/fastapi";
+import { NextRequest } from "next/server";
+import { proxyJson } from "@/lib/backendProxy";
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const res = await fetch(`${FASTAPI_URL}/api/v1/auth/otp/send`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      return NextResponse.json(
-        { error: apiErrorMessage(data.detail, "Code could not be sent") },
-        { status: res.status },
-      );
-    }
-    return NextResponse.json(data);
-  } catch {
-    return NextResponse.json({ error: "Code could not be sent" }, { status: 500 });
-  }
+  return proxyJson(request, "/api/v1/auth/otp/send", {
+    context: "auth/otp/send",
+    fallbackError: "Could not send the code",
+    forwardBody: true,
+  });
 }

@@ -8,7 +8,8 @@ this connector protocol to validate credentials and ingest from live sources.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Mapping, Protocol, TypedDict, runtime_checkable
+import hashlib
+from typing import Any, Iterable, Literal, Mapping, Protocol, TypedDict, runtime_checkable
 
 from src.runtime.sync import RuntimeSyncBatch
 
@@ -40,7 +41,31 @@ class RuntimeSourceProvider(Protocol):
         """Return the static-reference strategy; v1 reserves the slot as ``None``."""
 
     def physical_source_identity(self, credentials: Mapping[str, Any]) -> str:
-        """Return a stable, secret-free identity for duplicate registration checks."""
+        """Return the endpoint-scoped identity: stable, secret-free, offline-derivable.
+
+        This identifies the API endpoint, not the account behind it. On a shared
+        multi-tenant endpoint it is a prefix shared by every tenant, so it must
+        not be used as the duplicate-registration key on its own.
+        """
+
+    async def resolve_physical_identity(self, credentials: Mapping[str, Any]) -> str:
+        """Return the identity stored on the source and checked for duplicates.
+
+        Providers whose endpoint serves exactly one tenant return the endpoint
+        identity unchanged (see ``SingleTenantIdentityMixin``). Providers on a
+        shared endpoint must narrow it to the account the credentials belong to,
+        which usually means one live call.
+        """
+
+    def physical_identity_from_batch(
+        self, credentials: Mapping[str, Any], batch: RuntimeSyncBatch
+    ) -> str | None:
+        """Return the identity implied by a freshly synced batch, or None to keep the stored one.
+
+        Lets the identity follow the tenant when the markers it was derived from
+        change (e.g. an environment added in TMC), so re-registering the same
+        physical source keeps colliding instead of silently mirroring its data.
+        """
 
     def source_type_aliases(self) -> set[str]:
         """Return historical source-type keys whose credentials use this identity."""
@@ -50,6 +75,41 @@ class RuntimeSourceProvider(Protocol):
 
     async def sync(self, *, credentials: Mapping[str, Any], project_id: str) -> RuntimeSyncBatch:
         """Fetch a source batch for the scheduler/write-port path."""
+
+
+class SingleTenantIdentityMixin:
+    """Identity behaviour for providers whose endpoint serves exactly one tenant.
+
+    For these the endpoint already identifies the source uniquely, so there is
+    nothing to narrow and nothing a synced batch could tell us that we did not
+    already know at registration time.
+    """
+
+    def physical_source_identity(self, credentials: Mapping[str, Any]) -> str:  # pragma: no cover - overridden
+        raise NotImplementedError
+
+    async def resolve_physical_identity(self, credentials: Mapping[str, Any]) -> str:
+        return self.physical_source_identity(credentials)
+
+    def physical_identity_from_batch(
+        self, credentials: Mapping[str, Any], batch: RuntimeSyncBatch
+    ) -> str | None:
+        return None
+
+
+def compose_tenant_identity(endpoint_identity: str, tenant_markers: Iterable[str]) -> str:
+    """Narrow an endpoint identity to the tenant that endpoint was observed to serve.
+
+    Multi-tenant SaaS runtimes put every customer behind one regional endpoint,
+    so an endpoint-only identity treats unrelated accounts as the same physical
+    source. Markers are ids only the owning tenant can produce; they are hashed
+    so the stored identity stays free of anything secret or customer-identifying.
+    """
+    markers = sorted({marker.strip() for marker in tenant_markers if marker and marker.strip()})
+    if not markers:
+        raise ValueError("Cannot derive a tenant identity without markers")
+    digest = hashlib.sha256("\n".join(markers).encode("utf-8")).hexdigest()[:16]
+    return f"{endpoint_identity}#{digest}"
 
 
 def find_non_ascii_credential_field(

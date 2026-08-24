@@ -10,7 +10,6 @@ from src.harness.connectors.catalog import default_connector_provider_registry
 from src.harness.packs import FIXTURE_PACK_DIRECTORY
 from src.harness.packs.catalog import PackCatalog
 from src.harness.packs.models import (
-    CompiledPackStack,
     PackActivation,
     PackPhase,
     PackReferenceSets,
@@ -75,10 +74,11 @@ def compile_resolved_pack_registry(
     registry: CapabilityRegistry,
     resolved: ResolvedPackSet,
 ) -> CapabilityRegistry:
-    """Compile an immutable project/workflow Pack selection into capability policy.
+    """Compile the static fixture allowlist into capability policy.
 
-    ``ProjectPackService.resolve_for_execution`` supplies ``resolved`` for
-    project-scoped runs; the legacy deployment selection uses this same path.
+    These fixtures are the agent-chat tool allowlist, not project-selectable
+    documentation packs. They deliberately carry no documentation-pack or
+    presentation metadata across the RAG/MCP boundary.
     """
     return _compile_pack_registry(
         registry,
@@ -87,52 +87,12 @@ def compile_resolved_pack_registry(
     )
 
 
-def compile_governed_pack_registry(
-    registry: CapabilityRegistry,
-    compiled: CompiledPackStack,
-    private_analysis_packs: tuple[dict[str, object], ...] = (),
-) -> CapabilityRegistry:
-    """Compile a persisted governed stack without leaking Style into semantics.
-
-    The compiled snapshot is the execution authority.  Presentation travels as
-    receipt metadata only and is consumed at answer/document rendering seams.
-    """
-    return _compile_pack_registry(
-        registry,
-        manifests=compiled.manifests,
-        snapshot=compiled.snapshot.model_dump(mode="json"),
-        presentation=(
-            compiled.presentation.model_dump(mode="json") if compiled.presentation else None
-        ),
-        private_analysis_packs=private_analysis_packs,
-    )
-
-
-def governed_pack_receipt(compiled: CompiledPackStack) -> dict[str, object]:
-    """Stable provenance stored on runs, activity, and provider receipts."""
-    snapshot = compiled.snapshot
-    return {
-        "policy_id": snapshot.policy_id,
-        "policy_hash": snapshot.policy_hash,
-        "compiled_snapshot_hash": snapshot.snapshot_hash,
-        "foundation_pack_id": snapshot.foundation_pack_id,
-        "functional_pack_ids": list(snapshot.functional_pack_ids),
-        "style_pack_ids": list(snapshot.style_pack_ids),
-        # Resolved orchestration modules are internal implementation context.
-        # User-facing Documentation Packs come from the dedicated catalog tool.
-        "presentation": compiled.presentation.model_dump(mode="json")
-        if compiled.presentation
-        else None,
-    }
-
-
 def _compile_pack_registry(
     registry: CapabilityRegistry,
     *,
     manifests: tuple,
     snapshot: dict[str, object],
     presentation: dict[str, object] | None = None,
-    private_analysis_packs: tuple[dict[str, object], ...] = (),
 ) -> CapabilityRegistry:
     legacy = [manifest.id for manifest in manifests if manifest.governance is None]
     if legacy:
@@ -157,12 +117,10 @@ def _compile_pack_registry(
                     manifests=semantic_manifests,
                     snapshot=snapshot,
                     presentation=presentation,
-                    private_analysis_packs=private_analysis_packs,
-                ),
+                            ),
                 registry.handler_for(capability.id),
             )
     return compiled
-
 
 def _with_pack_snapshot(
     capability: CapabilityDefinition,
@@ -170,14 +128,12 @@ def _with_pack_snapshot(
     manifests: tuple,
     snapshot: dict[str, object],
     presentation: dict[str, object] | None,
-    private_analysis_packs: tuple[dict[str, object], ...],
 ) -> CapabilityDefinition:
     capability_pack_ids = sorted(
         manifest.id
         for manifest in manifests
         if any(capability.id in workflow.capability_ids for workflow in manifest.workflows)
     )
-    full_stack_ids = _full_stack_ids(snapshot)
     application_context = {
         # These manifests configure orchestration and policy. They are not
         # user-selectable Documentation Packs and must not be presented as such.
@@ -201,45 +157,15 @@ def _with_pack_snapshot(
         ],
         "output_rules": [manifest.output_rules.model_dump(mode="json") for manifest in manifests],
     }
-    private_metadata = (
-        {"nexus_private_analysis_packs": [dict(item) for item in private_analysis_packs]}
-        if capability.id == "mcp.docs.generate_project_documentation" and private_analysis_packs
-        else {}
-    )
     return capability.model_copy(
         update={
             "metadata": {
                 **capability.metadata,
-                # MCP validates this against the complete compiled stack,
-                # including Style identities. It is not the capability subset.
-                "nexus_pack_ids": full_stack_ids,
-                "nexus_capability_pack_ids": capability_pack_ids,
-                "nexus_pack_snapshot_hash": snapshot["snapshot_hash"],
-                "nexus_pack_snapshot": snapshot,
-                "nexus_pack_context": application_context,
-                # Presentation is deliberately not part of nexus_pack_context.
-                "nexus_pack_presentation": presentation,
-                # Verified private V3 artifacts are Phase 3-only additive data,
-                # not Pack authority or general capability context.
-                **private_metadata,
+                # Static fixture provenance remains local to the chat
+                # capability registry. It must never become a second pack
+                # selection transported to MCP generation.
+                "capability_fixture_ids": capability_pack_ids,
+                "capability_fixture_context": application_context,
             }
         }
     )
-
-
-def _full_stack_ids(snapshot: dict[str, object]) -> list[str]:
-    selected = [
-        snapshot.get("foundation_pack_id"),
-        *(snapshot.get("functional_pack_ids") or []),
-        *(snapshot.get("style_pack_ids") or []),
-    ]
-    canonical = [item for item in selected if isinstance(item, str) and item]
-    if canonical:
-        return canonical
-
-    resolved = snapshot.get("resolved_packs")
-    if isinstance(resolved, list):
-        identities = [item.get("id") for item in resolved if isinstance(item, dict)]
-        if all(isinstance(item, str) and item for item in identities):
-            return identities
-    return []

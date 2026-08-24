@@ -12,8 +12,9 @@ import { RagProjectSelector } from "./RagProjectSelector";
 import { RuntimeStatusIndicator } from "./RuntimeStatusIndicator";
 import { useUserProjects } from "@/hooks/useUserProjects";
 import { useSlashCommands } from "@/hooks/useSlashCommands";
-import { resolvePackCommand } from "@/lib/packCommand";
-import { packWorkspaceHref, stagePackCreateCommand } from "@/lib/packWorkspace";
+import { useProgressiveReveal } from "@/hooks/useProgressiveReveal";
+import { answerRevealSource } from "@/lib/answerReveal";
+import { packWorkbenchHref } from "@/lib/packs";
 import { OnboardingLauncher } from "./onboarding/OnboardingLauncher";
 import type { UploadedZipReceipt } from "@/lib/mcpClient";
 import type { ChatMode } from "./ModeToggle";
@@ -100,31 +101,50 @@ export function ChatWindow({
       deepDiveState.thinking ||
       deepDiveState.error);
 
+  // Same progressive reveal as the docked copilot, over the same components
+  // (`useProgressiveReveal`). Deep dive is excluded: it streams real tokens
+  // through `DeepDiveChatBubble`, so it needs no pacing.
+  const revealSource = useMemo(
+    () =>
+      answerRevealSource({
+        streamState: isDeepDive ? null : streamingMessage ?? null,
+        messages: conversation?.messages ?? [],
+      }),
+    [isDeepDive, streamingMessage, conversation?.messages],
+  );
+  const reveal = useProgressiveReveal({
+    text: revealSource?.text ?? "",
+    turnKey: revealSource?.key ?? null,
+    isLive: revealSource?.isLive ?? false,
+  });
+  const revealedAnswer = revealSource
+    ? { key: revealSource.key, text: reveal.text, isRevealing: reveal.isRevealing }
+    : null;
+
   function handleSend(message: string, images?: string[]) {
+    // A new question means the previous answer is done being read.
+    reveal.complete();
     onSendMessage({ query: message, project_id: selectedProject || undefined, images });
   }
 
-  function handleSlashCommand(name: string, argumentsText: string): boolean {
+  function handleSlashCommand(name: string, _argumentsText: string): boolean {
     if (name === "onboard" || name === "onboarding") {
       setPackCommandError(null);
       setShowOnboarding(true);
       return true;
     }
     if (name !== "pack" && name !== "packs") return false;
-    const resolution = resolvePackCommand(
-      argumentsText,
-      userProjectsData?.projects ?? [],
-      selectedProject || latestPendingAction?.project_id || undefined,
-      conversation?.id,
-    );
-    if ("error" in resolution) {
-      setPackCommandError(resolution.error);
-      setShowOnboarding(false);
-      return true;
-    }
+    // /pack opens the workbench. It used to parse a sub-command grammar and
+    // pre-stage a draft; authoring now starts from the workbench's own AI
+    // author, so the command only has to get the user there.
     setPackCommandError(null);
-    if (resolution.message) stagePackCreateCommand(resolution.message);
-    router.push(resolution.href);
+    setShowOnboarding(false);
+    router.push(
+      packWorkbenchHref({
+        conversationId: conversation?.id,
+        projectId: selectedProject || latestPendingAction?.project_id || undefined,
+      }),
+    );
     return true;
   }
 
@@ -184,10 +204,10 @@ export function ChatWindow({
       {!isDeepDive && (
         <button
           type="button"
-          onClick={() => router.push(packWorkspaceHref({ conversationId: conversation?.id, projectId: selectedProject || undefined }))}
+          onClick={() => router.push(packWorkbenchHref({ conversationId: conversation?.id, projectId: selectedProject || undefined }))}
           aria-label="Open Pack workbench"
           title="Open Pack workbench"
-          className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           <Package className="h-4 w-4" />
         </button>
@@ -332,6 +352,7 @@ export function ChatWindow({
           deepDiveState={isDeepDive ? deepDiveState : null}
           onCancelDeepDive={onCancelDeepDive}
           onSuggestionClick={handleSuggestionClick}
+          revealedAnswer={revealedAnswer}
         />
       </div>
 

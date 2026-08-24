@@ -72,6 +72,11 @@ class HarnessHelpers(Protocol):
         ...
 
     @property
+    def pack_contract(self) -> object:
+        """The resolved PackContract for this run (default contract when no pack)."""
+        ...
+
+    @property
     def pack_contract_mode(self) -> bool:
         """True when both investigation and analysis are skipped (pack-contract path)."""
         ...
@@ -140,6 +145,10 @@ class HarnessHelpersImpl:  # noqa: PLR0904 — intentionally wide delegation sur
     @property
     def plugin_mode(self) -> bool:
         return self._p._plugin_mode  # type: ignore[attr-defined]
+
+    @property
+    def pack_contract(self) -> object:
+        return self._p.pack_contract  # type: ignore[attr-defined]
 
     @property
     def pack_contract_mode(self) -> bool:

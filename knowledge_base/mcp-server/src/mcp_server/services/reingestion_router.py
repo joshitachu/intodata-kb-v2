@@ -405,30 +405,14 @@ class ReingestionRouter:
 def _expander_provider_config(model_id: str) -> dict[str, str | None]:
     """Resolve API key / base URL for the optional expand-only model call.
 
-    Mirrors the doc-generation provider resolution: hosted providers
-    (openai/anthropic/google) use SDK-managed credentials; deepseek and the
+    Uses the same resolution as doc generation: hosted providers
+    (openai/anthropic/google) use SDK-managed credentials; aggregators and the
     default (Ollama/local) read their respective config entries. No secret is
     hardcoded.
     """
-    from mcp_server.model_strategies.registry import normalize_model_id
+    from mcp_server.model_strategies import provider_connection_config
 
-    provider = normalize_model_id(model_id).partition("/")[0]
-    if provider == "deepseek":
-        return {
-            "api_key": config.doc_generation_deepseek_api_key or config.doc_generation_api_key,
-            "base_url": config.doc_generation_deepseek_base_url or config.doc_generation_base_url,
-        }
-    if provider == "route33":
-        return {
-            "api_key": config.doc_generation_route33_api_key or config.doc_generation_api_key,
-            "base_url": config.doc_generation_route33_base_url,
-        }
-    if provider in {"openai", "anthropic", "google"}:
-        return {"api_key": None, "base_url": None}
-    return {
-        "api_key": config.doc_generation_api_key,
-        "base_url": config.doc_generation_base_url,
-    }
+    return provider_connection_config(model_id)
 
 
 def _parse_expand_docs(text: str) -> list[str]:

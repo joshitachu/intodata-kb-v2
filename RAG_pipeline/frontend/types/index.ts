@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PageScopeSchema, TopologyTargetListSchema } from "./topology";
 
 export const DocumentRoleSchema = z.enum([
   "source",
@@ -105,6 +106,9 @@ export const ConversationMessageRequestSchema = z.object({
   project_id: z.string().optional(),
   images: z.array(z.string()).max(4).optional(),
   client_turn_id: z.string().min(8).max(64).optional(),
+  // Where the question was asked. An untrusted prompt hint on the backend --
+  // never an access or retrieval filter (see backend `schemas.py`).
+  page_scope: PageScopeSchema.optional(),
 });
 
 export type ConversationMessageRequest = z.input<
@@ -182,6 +186,55 @@ export const TypedResponseFactSchema = z.object({
   workflow_run_id: z.number().int().positive().nullable().optional(),
 }).strict();
 
+export const EvidenceSourceFamilySchema = z.enum([
+  "topology",
+  "documentation",
+  "runtime",
+  "metadata",
+  "conversation",
+  "connector",
+  "other",
+]);
+
+export type EvidenceSourceFamily = z.infer<typeof EvidenceSourceFamilySchema>;
+
+export const EvidenceSourceRoleSchema = z.enum([
+  "structure",
+  "explanation",
+  "runtime_verification",
+  "metadata",
+  "conversation_context",
+  "external_evidence",
+  "supporting",
+]);
+
+export const EvidenceSummarySchema = z.object({
+  version: z.literal("1.0"),
+  evidence_step_count: z.number().int().nonnegative(),
+  successful_sources: z.array(z.object({
+    family: EvidenceSourceFamilySchema,
+    role: EvidenceSourceRoleSchema,
+    evidence_count: z.number().int().nonnegative(),
+  }).strict()),
+  failed_sources: z.array(z.object({
+    family: EvidenceSourceFamilySchema,
+    status: z.enum(["failed", "unavailable", "denied", "needs_input"]),
+    reason_code: z.string().nullable(),
+    message: z.string().nullable().optional(),
+  }).strict()),
+  zero_evidence: z.boolean(),
+  documentation: z.object({
+    provider_used: z.string().nullable(),
+    fallback_used: z.boolean(),
+    attempts: z.array(z.object({
+      provider: z.string(),
+      status: z.enum(["failed", "succeeded"]),
+    }).strict()),
+  }).strict(),
+}).strict();
+
+export type EvidenceSummary = z.infer<typeof EvidenceSummarySchema>;
+
 export const TypedAgentResponseSchema = z.object({
   response_type: z.literal("agent_response_v1"),
   kind: z.enum(["answer", "clarification", "status", "error", "no_progress"]),
@@ -195,6 +248,7 @@ export const TypedAgentResponseSchema = z.object({
   }).strict()).max(50).optional().default([]),
   evidence_refs: z.array(z.object({ id: z.string(), label: z.string() }).strict()).max(100).optional().default([]),
   workflow_cards: z.array(WorkflowCardSchema).max(20).optional().default([]),
+  evidence_summary: EvidenceSummarySchema.optional(),
   stop_reason: z.string(),
   factual_fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
@@ -225,6 +279,8 @@ export const GroundedAgentResponseSchema = z.object({
     model_profile: z.string().min(1),
     prompt_version: z.string().optional(),
   }).strict(),
+  evidence_summary: EvidenceSummarySchema.optional(),
+  topology_targets: TopologyTargetListSchema.optional(),
 }).strict();
 
 export type GroundedAgentResponse = z.infer<typeof GroundedAgentResponseSchema>;
@@ -254,6 +310,9 @@ export const MessageResponseSchema = z.object({
   pending_action: z
     .lazy(() => HarnessPendingActionSchema.nullable())
     .optional(),
+  // The surface and level the question was asked from, recorded per message so
+  // one shared thread stays readable when questions come from several places.
+  page_scope: PageScopeSchema.nullable().optional(),
   created_at: z.string(),
 });
 
@@ -263,6 +322,8 @@ export const ConversationResponseSchema = z.object({
   id: z.number(),
   title: z.string().nullable(),
   message_count: z.number(),
+  origin_surface: z.enum(["chat", "topology"]).optional().default("chat"),
+  visible_in_chat: z.boolean().optional().default(true),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -273,6 +334,8 @@ export const ConversationDetailResponseSchema = z.object({
   id: z.number(),
   title: z.string().nullable(),
   messages: z.array(MessageResponseSchema),
+  origin_surface: z.enum(["chat", "topology"]).optional().default("chat"),
+  visible_in_chat: z.boolean().optional().default(true),
   agent_plan: z.object({
     plan_id: z.string(), goal: z.string(), success_criteria: z.array(z.string()),
     constraints: z.array(z.string()), scoped_entities: z.array(z.string()),
@@ -299,6 +362,7 @@ export type ConversationListResponse = z.infer<
 
 export const ConversationCreateRequestSchema = z.object({
   title: z.string().max(200).optional(),
+  surface: z.enum(["chat", "topology"]).optional().default("chat"),
 });
 
 export type ConversationCreateRequest = z.input<
@@ -306,7 +370,8 @@ export type ConversationCreateRequest = z.input<
 >;
 
 export const ConversationUpdateRequestSchema = z.object({
-  title: z.string().min(1).max(200),
+  title: z.string().min(1).max(200).optional(),
+  visible_in_chat: z.boolean().optional(),
 });
 
 export type ConversationUpdateRequest = z.input<
@@ -402,6 +467,8 @@ export const AddGithubSourceSchema = z.object({
   github_token: z.string().min(1).optional(),
   // GitHub App connection (preferred). Set after installing the App.
   installation_id: z.number().int().positive().optional(),
+  // Azure DevOps organization connection supplying the clone credential.
+  azure_devops_connection_id: z.string().min(1).max(36).optional(),
 });
 
 export type AddGithubSource = z.infer<typeof AddGithubSourceSchema>;
@@ -435,6 +502,59 @@ export const GithubAppReposResponseSchema = z.object({
 
 export type GithubAppReposResponse = z.infer<typeof GithubAppReposResponseSchema>;
 export type GithubAppRepoItem = z.infer<typeof GithubAppRepoItemSchema>;
+
+// --- Azure DevOps connection ---
+//
+// Azure DevOps has no GitHub-App equivalent, so the credential is a Personal
+// Access Token entered once per organization. The PAT crosses this boundary on
+// the way in only; nothing that comes back ever carries it.
+
+export const ConnectAzureDevOpsSchema = z.object({
+  // Accepts organization, project and repository URLs; the server normalizes.
+  organization_url: z.string().trim().min(1).max(500),
+  pat: z.string().min(1).max(1000),
+});
+
+export type ConnectAzureDevOps = z.infer<typeof ConnectAzureDevOpsSchema>;
+
+export const AzureDevOpsConnectionItemSchema = z.object({
+  id: z.string(),
+  organization_url: z.string(),
+  organization_name: z.string(),
+  account_name: z.string().nullable().optional(),
+  last_verified_at: z.string().nullable().optional(),
+});
+
+export type AzureDevOpsConnectionItem = z.infer<typeof AzureDevOpsConnectionItemSchema>;
+
+export const AzureDevOpsConnectionsResponseSchema = z.object({
+  connections: z.array(AzureDevOpsConnectionItemSchema),
+});
+
+export type AzureDevOpsConnectionsResponse = z.infer<
+  typeof AzureDevOpsConnectionsResponseSchema
+>;
+
+export const AzureDevOpsRepoItemSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  project: z.string(),
+  clone_url: z.string().nullable().optional(),
+  web_url: z.string().nullable().optional(),
+  default_branch: z.string().nullable().optional(),
+  is_disabled: z.boolean().optional(),
+  size_bytes: z.number().optional(),
+});
+
+export type AzureDevOpsRepoItem = z.infer<typeof AzureDevOpsRepoItemSchema>;
+
+export const AzureDevOpsReposResponseSchema = z.object({
+  connection_id: z.string(),
+  organization_name: z.string(),
+  repositories: z.array(AzureDevOpsRepoItemSchema),
+});
+
+export type AzureDevOpsReposResponse = z.infer<typeof AzureDevOpsReposResponseSchema>;
 
 // --- User Projects (RAG project selector) ---
 

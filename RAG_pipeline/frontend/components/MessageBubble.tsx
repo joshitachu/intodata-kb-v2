@@ -19,12 +19,22 @@ import { MarkdownContent } from "./MarkdownContent";
 import { HarnessActivityStatus } from "./HarnessActivityStatus";
 import { HarnessPendingAction } from "./HarnessPendingAction";
 import { WorkflowCard } from "./WorkflowCard";
+import { PageScopeChip } from "./copilot/PageScopeChip";
+import { TopologyTargetLinks } from "./copilot/TopologyTargetLinks";
+import { AssistantProgress } from "./copilot/AssistantProgress";
+import {
+  EvidenceSummaryNote,
+  readEvidenceSummary,
+} from "./copilot/EvidenceSummaryNote";
+import { readTopologyTargetsPayload } from "@/lib/topologyCopilot";
+import type { StreamProgress } from "@/lib/agentProgress";
 import { submitFeedback } from "@/lib/feedback";
 import { useViewport } from "@/hooks/useViewport";
 import type {
   HarnessActivityEvent,
   HarnessPendingAction as HarnessPendingActionValue,
   MessageResponse,
+  PublicAgentEvent,
   TypedAgentResponse,
   UsageStats,
 } from "@/types";
@@ -53,6 +63,28 @@ interface MessageBubbleProps {
   harnessActivities?: HarnessActivityEvent[];
   pendingAction?: HarnessPendingActionValue | null;
   workflowCards?: MessageResponse["workflow_cards"];
+  /**
+   * Render the answer's topology targets as links to `/topology`. Off by
+   * default: the docked copilot renders the same targets as navigable chips
+   * against its own canvas, and showing both would be two ways to do one thing.
+   */
+  showTopologyLinks?: boolean;
+  /** Project whose topology the links open, when the message names none. */
+  topologyProjectId?: string | null;
+  /**
+   * Progressive reveal override for the answer text: the prefix of the answer
+   * cleared for display so far (`hooks/useProgressiveReveal`). Presentation
+   * only -- everything else on this bubble (sources, actions, latency) renders
+   * off the message's real state, so nothing a finished turn earned is held
+   * back behind the animation.
+   */
+  revealedContent?: string;
+  /** True while that prefix is still growing; keeps the caret blinking. */
+  isRevealing?: boolean;
+  /** Live phase for the waiting state, before any answer text exists. */
+  streamProgress?: StreamProgress | null;
+  /** The turn's agent events, summarised in the waiting state. */
+  streamEvents?: readonly PublicAgentEvent[];
   onRetry?: () => void;
 }
 
@@ -66,12 +98,24 @@ export function MessageBubble({
   harnessActivities,
   pendingAction,
   workflowCards,
+  showTopologyLinks,
+  topologyProjectId,
+  revealedContent,
+  isRevealing,
+  streamProgress,
+  streamEvents,
   onRetry,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const typedResponse = isTypedAgentResponse(message.structured_answer)
     ? message.structured_answer
     : null;
+  const evidenceSummary = readEvidenceSummary(message.structured_answer);
+  // The reveal, when the host is pacing this bubble, is authoritative over both
+  // text sources -- otherwise a typed response landing mid-reveal would paint
+  // the whole answer at once, which is the block this exists to break up.
+  const answerText =
+    revealedContent !== undefined ? revealedContent : typedResponse?.content ?? message.content;
   const authoritativeCards = workflowCards ?? message.workflow_cards ?? typedResponse?.workflow_cards ?? [];
   const hasStructuredAnswer = Boolean(message.structured_answer);
   const transportFailed = !isUser && message.status === "failed";
@@ -123,6 +167,13 @@ export function MessageBubble({
       >
         {/* Content */}
         <div className={cn("max-w-[85%] min-w-0", isUser && "flex flex-col items-end")}>
+          {/* Where this question was asked. Only present once a surface records
+              it, so history from before page-scoped chat renders unchanged. */}
+          {message.page_scope && (
+            <div className="mb-1">
+              <PageScopeChip scope={message.page_scope} />
+            </div>
+          )}
           {isUser ? (
             /* User: pill bubble */
             <div className="rounded-2xl bg-muted/40 border px-4 py-2.5">
@@ -173,17 +224,16 @@ export function MessageBubble({
                       </button>
                     )}
                   </div>
-                ) : typedResponse ? (
-                  <MarkdownContent content={typedResponse.content} />
-                ) : message.content ? (
-                  <MarkdownContent content={message.content} />
+                ) : answerText ? (
+                  <MarkdownContent content={answerText} />
                 ) : isStreaming ? (
-                  <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-                    <span className="inline-block h-3.5 w-3.5 rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground animate-spin" />
-                    {streamingStatus || currentActivityLabel({ hasSources })}
-                  </span>
+                  <AssistantProgress
+                    progress={streamProgress ?? null}
+                    events={streamEvents}
+                    fallbackLabel={streamingStatus || currentActivityLabel({ hasSources })}
+                  />
                 ) : null}
-                {isStreaming && message.content && (
+                {(isStreaming || isRevealing) && answerText && (
                   <span className="inline-block w-0.5 h-4 bg-foreground/70 animate-cursor-blink ml-0.5 align-text-bottom" />
                 )}
               </div>
@@ -209,6 +259,19 @@ export function MessageBubble({
                     </a>
                   ))}
                 </div>
+              )}
+
+              {evidenceSummary && <EvidenceSummaryNote summary={evidenceSummary} />}
+
+              {showTopologyLinks && (
+                <TopologyTargetLinks
+                  payload={readTopologyTargetsPayload(message.structured_answer)}
+                  // The scope the question was asked from names its own
+                  // project; it is more specific than whatever the page has
+                  // selected now, which may have moved on since.
+                  projectId={message.page_scope?.project_id ?? topologyProjectId}
+                  conversationId={conversationId}
+                />
               )}
 
               {harnessActivities && harnessActivities.length > 0 && (

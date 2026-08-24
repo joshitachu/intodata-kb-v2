@@ -19,6 +19,13 @@ How to register and scan a new integration project for documentation generation.
    ```
    Or via dashboard: click "Add Repo" and fill in the form.
 
+   For a private repository, pass the credential reference instead of a raw token
+   where one exists -- `installation_id` for a GitHub App installation, or
+   `azure_devops_connection_id` for an Azure DevOps organization connection (create
+   one first via `POST /mcp/azure-devops/connections`). `github_token` remains the
+   fallback. Azure DevOps browser URLs may be pasted as-is; `add-repo` reduces them
+   to a bare clone URL. See `.agent/system/mcp-server.md` "Git connection kinds".
+
 3. **Trigger a scan**:
    ```
    trigger_scan(project_id)

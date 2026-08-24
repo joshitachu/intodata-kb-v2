@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
 from mcp_server.services.auto_doc_update import AutoDocUpdateService
+from mcp_server.services.git_credentials import GitCredentialProvider, provider_for_project
 from mcp_server.services.git_remote_service import fetch_remote, run_git
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
@@ -41,8 +42,8 @@ async def _git_output(local_path: str, *args: str) -> str:
     return await run_git(local_path, *args, timeout=30.0, strip=True)
 
 
-async def _fetch_remote(local_path: str, token_enc: str | None = None) -> None:
-    await fetch_remote(local_path, token_enc, remote="origin", git_func=_git_output)
+async def _fetch_remote(local_path: str, credential: GitCredentialProvider | None = None) -> None:
+    await fetch_remote(local_path, credential, remote="origin", git_func=_git_output)
 
 
 async def _remote_head_sha(local_path: str) -> str:
@@ -66,7 +67,7 @@ async def poll_git_projects_once(log_mgr: LogManager) -> None:
         error: str | None = None
         remote_sha: str | None = None
         try:
-            await _fetch_remote(project.local_path, token_enc=getattr(project, "github_token_enc", None))
+            await _fetch_remote(project.local_path, provider_for_project(project))
             remote_sha = await _remote_head_sha(project.local_path)
             if remote_sha == project.last_ingested_commit_sha:
                 async with async_session_factory() as db:

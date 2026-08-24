@@ -29,6 +29,9 @@ __all__ = [
     "generate_answer",
     "generate_answer_stream",
     "generate_answer_with_runtime_tools",
+    "generate_document_answer",
+    "generate_document_answer_stream",
+    "get_documentation_provider_trace",
     "get_last_usage",
     "get_turn_usage",
     "reset_turn_usage",
@@ -42,6 +45,20 @@ __all__ = [
 # `_turn_usage` accumulates every call made since `reset_turn_usage()`.
 _last_usage: ContextVar[UsageStats | None] = ContextVar("llm_last_usage", default=None)
 _turn_usage: ContextVar[UsageStats | None] = ContextVar("llm_turn_usage", default=None)
+_documentation_provider_trace: ContextVar[dict | None] = ContextVar(
+    "documentation_provider_trace", default=None
+)
+
+
+def get_documentation_provider_trace() -> dict | None:
+    trace = _documentation_provider_trace.get()
+    if trace is None:
+        return None
+    return {
+        "provider_used": trace.get("provider_used"),
+        "fallback_used": bool(trace.get("fallback_used")),
+        "attempts": [dict(item) for item in trace.get("attempts", [])],
+    }
 
 
 def get_last_usage() -> UsageStats | None:
@@ -62,6 +79,8 @@ def get_turn_usage() -> UsageStats | None:
         output_tokens=total.output_tokens,
         cost_usd=total.cost_usd,
         latency_ms=total.latency_ms,
+        cached_input_tokens=total.cached_input_tokens,
+        cache_write_tokens=total.cache_write_tokens,
     )
 
 
@@ -85,6 +104,8 @@ def _record_usage(usage: UsageStats) -> None:
     total.output_tokens += usage.output_tokens
     total.cost_usd += usage.cost_usd
     total.latency_ms += usage.latency_ms
+    total.cached_input_tokens += usage.cached_input_tokens
+    total.cache_write_tokens += usage.cache_write_tokens
 
 
 async def _resolve_selection() -> tuple:
@@ -92,6 +113,128 @@ async def _resolve_selection() -> tuple:
     model_id = await get_rag_chat_model_id()
     provider, bare_model = registry.resolve(model_id)
     return provider, bare_model
+
+
+async def _documentation_chain() -> list[tuple]:
+    """Resolve the selected model plus explicitly approved fallback models."""
+
+    from src.config import settings
+
+    selected = await get_rag_chat_model_id()
+    model_ids = [selected, *settings.rag_approved_fallback_models]
+    resolved: list[tuple] = []
+    seen: set[str] = set()
+    for model_id in model_ids:
+        normalized = str(model_id).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        resolved.append(registry.resolve(normalized))
+    if not resolved:
+        raise RuntimeError("No approved documentation generation provider is configured.")
+    return resolved
+
+
+def _set_documentation_trace(attempts: list[dict], provider_used: str | None) -> None:
+    _documentation_provider_trace.set(
+        {
+            "provider_used": provider_used,
+            "fallback_used": bool(provider_used and attempts and provider_used != attempts[0]["provider"]),
+            "attempts": [dict(item) for item in attempts],
+        }
+    )
+
+
+async def generate_document_answer(
+    messages: list[dict], images: list[str] | None = None
+) -> str:
+    """Generate a RAG answer through the bounded approved provider chain."""
+
+    from src.config import settings
+
+    _documentation_provider_trace.set(None)
+    attempts: list[dict] = []
+    for provider, model in await _documentation_chain():
+        last_error: Exception | None = None
+        for retry in range(settings.rag_documentation_provider_max_retries + 1):
+            t0 = time.perf_counter()
+            try:
+                result, usage = await provider.generate(
+                    messages=messages, model=model, images=images
+                )
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "Documentation provider %s failed for %s (attempt %d): [%s] %s",
+                    provider.provider_id,
+                    model,
+                    retry + 1,
+                    type(exc).__name__,
+                    exc,
+                )
+                continue
+            _record_usage(usage)
+            attempts.append({"provider": provider.provider_id, "status": "succeeded"})
+            _set_documentation_trace(attempts, provider.provider_id)
+            logger.info(
+                "Documentation response from %s/%s (%.0fms)",
+                provider.provider_id,
+                model,
+                (time.perf_counter() - t0) * 1000,
+            )
+            return result
+        attempts.append({"provider": provider.provider_id, "status": "failed"})
+        _set_documentation_trace(attempts, None)
+        logger.warning(
+            "Documentation provider %s exhausted retry budget: %s",
+            provider.provider_id,
+            type(last_error).__name__ if last_error else "unknown_error",
+        )
+    raise RuntimeError("All approved documentation providers are temporarily unavailable.")
+
+
+async def generate_document_answer_stream(
+    messages: list[dict], images: list[str] | None = None
+) -> AsyncGenerator[str, None]:
+    """Stream through the approved chain, switching only before any text exists."""
+
+    from src.config import settings
+
+    _documentation_provider_trace.set(None)
+    attempts: list[dict] = []
+    for provider, model in await _documentation_chain():
+        for retry in range(settings.rag_documentation_provider_max_retries + 1):
+            produced = False
+            try:
+                async for item in provider.stream(messages=messages, model=model, images=images):
+                    if isinstance(item, UsageStats):
+                        _record_usage(item)
+                    else:
+                        if item:
+                            produced = True
+                            yield item
+                attempts.append({"provider": provider.provider_id, "status": "succeeded"})
+                _set_documentation_trace(attempts, provider.provider_id)
+                return
+            except Exception as exc:
+                logger.warning(
+                    "Documentation streaming provider %s failed for %s (attempt %d, produced=%s): [%s] %s",
+                    provider.provider_id,
+                    model,
+                    retry + 1,
+                    produced,
+                    type(exc).__name__,
+                    exc,
+                )
+                if produced:
+                    attempts.append({"provider": provider.provider_id, "status": "failed"})
+                    _set_documentation_trace(attempts, None)
+                    raise RuntimeError(
+                        "Documentation provider failed after answer output began; retry is unsafe."
+                    ) from exc
+        attempts.append({"provider": provider.provider_id, "status": "failed"})
+        _set_documentation_trace(attempts, None)
+    raise RuntimeError("All approved documentation providers are temporarily unavailable.")
 
 
 async def cleanup_llm_clients() -> None:
@@ -121,8 +264,9 @@ async def generate_answer(
         ) from e
     elapsed = (time.perf_counter() - t0) * 1000
     logger.info(
-        "LLM response from %s/%s (%.0fms, %d in / %d out tokens)",
-        provider.provider_id, model, elapsed, usage.input_tokens, usage.output_tokens,
+        "LLM response from %s/%s (%.0fms, %d in / %d out tokens, %d in cached)",
+        provider.provider_id, model, elapsed,
+        usage.input_tokens, usage.output_tokens, usage.cached_input_tokens,
     )
     _record_usage(usage)
     return result
@@ -140,9 +284,9 @@ async def generate_answer_stream(
             if isinstance(item, UsageStats):
                 _record_usage(item)
                 logger.info(
-                    "LLM streaming from %s/%s (%dms, %d in / %d out tokens)",
+                    "LLM streaming from %s/%s (%dms, %d in / %d out tokens, %d in cached)",
                     provider.provider_id, model, item.latency_ms,
-                    item.input_tokens, item.output_tokens,
+                    item.input_tokens, item.output_tokens, item.cached_input_tokens,
                 )
             else:
                 yield item
@@ -183,4 +327,16 @@ async def generate_answer_with_runtime_tools(
         return ToolAwareLLMResponse(provider=provider.provider_id, no_tool_support=True)
     if response.usage:
         _record_usage(response.usage)
+        # The dominant chat path runs through here several times per turn, so the
+        # prompt-cache hit rate is logged per call: it is the only place the
+        # re-billed-prefix cost of an agent turn is directly observable.
+        logger.info(
+            "LLM tool-aware from %s/%s (%dms, %d in / %d out tokens, "
+            "%d in cached = %.0f%%, %d tools)",
+            provider.provider_id, model, response.usage.latency_ms,
+            response.usage.input_tokens, response.usage.output_tokens,
+            response.usage.cached_input_tokens,
+            response.usage.cache_hit_ratio * 100,
+            len(runtime_tools),
+        )
     return response

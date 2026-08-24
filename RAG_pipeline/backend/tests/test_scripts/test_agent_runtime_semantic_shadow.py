@@ -156,11 +156,12 @@ def test_decision_trace_explains_invalid_argument_paths_without_values() -> None
         content="",
         tool_calls=[
             {
-                "name": "configure_pack_draft",
+                "name": "refine_pack_draft",
                 "args": {
                     "draft_id": 41,
                     "expected_revision": 1,
-                    "audience": {"label": "Leads", "roles": "engineering"},
+                    # `instruction` must be a string; an int is the wrong type.
+                    "instruction": 7,
                 },
                 "id": "call-invalid",
                 "type": "tool_call",
@@ -174,7 +175,7 @@ def test_decision_trace_explains_invalid_argument_paths_without_values() -> None
     assert call["schema_valid"] is False
     assert call["validation_error_count"] == 1
     assert {item["instance_path"] for item in call["validation_errors"]} == {
-        "audience/roles"
+        "instruction"
     }
     assert {item["validator"] for item in call["validation_errors"]} == {"type"}
 
@@ -297,18 +298,18 @@ def test_base_prompt_and_pack_tool_require_complete_grounded_creation() -> None:
     assert "otherwise clarify first" in runner.SEMANTIC_SHADOW_SYSTEM_PROMPT
     assert create is not None
     assert "single action" in create.description
-    assert create.input_schema["required"] == [
-        "name",
-        "purpose",
-        "audience",
-        "focus_components",
-        "output_documents",
-    ]
+    # The model supplies a brief; the pack author writes the manifest.
+    assert create.input_schema["required"] == ["name", "brief"]
     assert runtime.snapshot.tool_for_name("create_pack_draft") is None
-    configure = runtime.snapshot.tool_for_name("configure_pack_draft")
-    assert configure is not None
-    assert "Do not invent artifact IDs" in configure.description
-    assert "artifact_patch" not in configure.input_schema["properties"]
+    refine = runtime.snapshot.tool_for_name("refine_pack_draft")
+    assert refine is not None
+    assert "Do not write manifest keys" in refine.description
+    assert "artifact_patch" not in refine.input_schema["properties"]
+    assert refine.input_schema["required"] == [
+        "draft_id",
+        "expected_revision",
+        "instruction",
+    ]
 
 
 def test_safe_argument_capture_redacts_sensitive_values() -> None:

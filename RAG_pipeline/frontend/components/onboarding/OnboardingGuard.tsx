@@ -15,7 +15,7 @@ interface Props {
 
 /**
  * Mounts the appropriate wizard over the app:
- * - Superadmin with no company config done → AdminOnboardingWizard (full 7-step)
+ * - Owner with no company config done → AdminOnboardingWizard (full 7-step)
  * - Regular user with no personal onboarding done → UserWelcomeWizard (slim welcome)
  * - Everyone else → nothing
  *

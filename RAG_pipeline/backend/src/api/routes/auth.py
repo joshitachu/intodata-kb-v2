@@ -8,6 +8,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 import jwt
 from jwt import InvalidTokenError as JWTError
 from pydantic import BaseModel, Field, model_validator
@@ -93,6 +94,20 @@ def _clear_auth_cookies(response: Response) -> None:
     response.delete_cookie("access_token", path="/", domain=_cookie_domain())
     response.delete_cookie("refresh_token", path="/", domain=_cookie_domain())
     response.delete_cookie("csrf_token", path="/", domain=_cookie_domain())
+
+
+def _unauthorized_clearing_cookies(message: str) -> JSONResponse:
+    """401 whose Set-Cookie deletions actually reach the browser.
+
+    Raising HTTPException discards the injected ``Response`` object, so the
+    ``_clear_auth_cookies`` calls that used to accompany a failed refresh never
+    left the server. The dead cookies stayed put, `middleware.ts` kept admitting
+    the request because both cookie names were present, and the client had to
+    rediscover the logout on every navigation.
+    """
+    response = JSONResponse(status_code=401, content={"detail": message})
+    _clear_auth_cookies(response)
+    return response
 
 
 class LoginRequest(BaseModel):
@@ -650,7 +665,8 @@ async def login(request: Request, body: LoginRequest, db: DBSession, response: R
     except PasswordlessAccountError as exc:
         raise api_error(
             401, "passwordless_account",
-            "This account does not have a password. Use email code or contact an admin.",
+            "Unable to sign in with a password. If you have not created one yet, "
+            "use your email code and create a password after verification.",
         ) from exc
     if user is None:
         raise api_error(401, "invalid_credentials", "Invalid username/email or password")
@@ -682,18 +698,7 @@ async def login(request: Request, body: LoginRequest, db: DBSession, response: R
 
     return {
         "message": "Login successful",
-        "user": UserResponse(
-            id=user.id,
-            username=user.username,
-            email=user.email,
-            is_active=user.is_active,
-            is_superadmin=user.is_superadmin,
-            roles=[r.name for r in user.roles],
-            permissions=sorted(get_user_permissions(user)),
-            onboarding_completed=onboarding_completed,
-            tour_completed=tour_completed,
-            mfa_enabled=user.mfa_enabled,
-        ),
+        "user": _user_response(user, onboarding_completed, tour_completed),
     }
 
 
@@ -763,18 +768,7 @@ async def verify_mfa(
 
     return {
         "message": "Login successful",
-        "user": UserResponse(
-            id=user.id,
-            username=user.username,
-            email=user.email,
-            is_active=user.is_active,
-            is_superadmin=user.is_superadmin,
-            roles=[r.name for r in user.roles],
-            permissions=sorted(get_user_permissions(user)),
-            onboarding_completed=onboarding_completed,
-            tour_completed=tour_completed,
-            mfa_enabled=user.mfa_enabled,
-        ),
+        "user": _user_response(user, onboarding_completed, tour_completed),
     }
 
 
@@ -965,18 +959,23 @@ async def logout(request: Request, db: DBSession, response: Response):
 
 
 @router.post("/refresh", summary="Rotate the refresh token and issue a new access token")
-@limiter.limit("10/minute")
+# Keyed on the real client IP (nginx X-Forwarded-For, forwarded through the
+# Next.js proxy and honoured by ProxyHeadersMiddleware). Generous because a
+# single browser can legitimately refresh from several tabs and because clients
+# behind one NAT share this bucket -- and unlike /login this endpoint is not a
+# guessing surface: it requires an unexpired single-use token. Overrunning it
+# used to surface as a 429 that the frontend read as a logout.
+@limiter.limit("60/minute")
 async def refresh(request: Request, db: DBSession, response: Response):
     """Exchange a valid refresh token cookie for a new access + refresh token pair."""
     refresh_token = request.cookies.get("refresh_token")
     if not refresh_token:
-        raise HTTPException(status_code=401, detail="No refresh token")
+        return _unauthorized_clearing_cookies("No refresh token")
 
     svc = AuthService(db)
     result = await svc.rotate_refresh_token(refresh_token)
     if result is None:
-        _clear_auth_cookies(response)
-        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+        return _unauthorized_clearing_cookies("Invalid or expired refresh token")
 
     access, new_refresh, user = result
     _set_auth_cookies(response, access, new_refresh)
@@ -985,6 +984,10 @@ async def refresh(request: Request, db: DBSession, response: Response):
 
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=12, max_length=128)
+
+
+class SetPasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=12, max_length=128)
 
 
@@ -1032,3 +1035,47 @@ async def change_password(
     )
 
     return {"message": "Password updated."}
+
+
+@router.post("/set-password", summary="Create the first password for an account")
+@limiter.limit("5/minute")
+async def set_password(
+    request: Request, body: SetPasswordRequest, user: CurrentUser, db: DBSession
+) -> dict:
+    """Create a first password after authenticated email-code and MFA login.
+
+    This endpoint is deliberately not a reset path: an account with an existing
+    password must use ``/change-password`` and prove the current password.
+    Locking the row keeps concurrent setup requests from overwriting each other.
+    """
+    locked_user = (
+        await db.execute(select(User).where(User.id == user.id).with_for_update())
+    ).scalar_one()
+    if locked_user.password_hash is not None:
+        raise api_error(
+            409,
+            "password_already_set",
+            "A password already exists. Use the password change form instead.",
+        )
+
+    locked_user.password_hash = hash_password(body.new_password)
+
+    svc = AuthService(db)
+    current_refresh = request.cookies.get("refresh_token")
+    if current_refresh:
+        await svc.revoke_other_user_tokens(locked_user.id, current_refresh)
+    else:
+        await svc.revoke_all_user_tokens(locked_user.id)
+
+    audit = AuditService(db)
+    await audit.log(
+        user_id=locked_user.id,
+        username=locked_user.username,
+        action="password_created",
+        resource_type="user",
+        resource_id=str(locked_user.id),
+        ip_address=_request_ip(request),
+    )
+    await db.commit()
+
+    return {"message": "Password created."}

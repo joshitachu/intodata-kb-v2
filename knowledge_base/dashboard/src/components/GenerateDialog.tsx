@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useGenerate, usePackWorkspace } from "../hooks/useProjects";
+import { useAssignPluginPack, useGenerate, usePluginPacks } from "../hooks/useProjects";
 import { useModels } from "../hooks/useDiscovery";
 import { useModalDialog } from "../hooks/useModalDialog";
+import { useConnectors, useProjectConnectorBindings } from "../hooks/useConnectors";
 import type { Project } from "../types";
 
 interface Props {
@@ -10,6 +11,7 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onTriggered?: (projectId: string) => void;
+  onManageRuntimeEvidence?: (projectId: string) => void;
 }
 
 type GenerationMethod = "legacy" | "opencode";
@@ -19,16 +21,17 @@ export default function GenerateDialog({
   open,
   onClose,
   onTriggered,
+  onManageRuntimeEvidence,
 }: Props) {
   const generate = useGenerate();
   const { data: modelsData } = useModels();
-  const workspaceQuery = usePackWorkspace(project.id);
+  const pluginPacksQuery = usePluginPacks();
+  const assignPluginPack = useAssignPluginPack();
+  const connectorBindings = useProjectConnectorBindings(project.id, open);
+  const connectors = useConnectors(open);
 
   const [resume, setResume] = useState(true);
-  const [organizationPackId, setOrganizationPackId] = useState<number | null>(
-    null,
-  );
-  const [privateVersionIds, setPrivateVersionIds] = useState<number[]>([]);
+  const [pluginPackId, setPluginPackId] = useState<number | null>(project.plugin_pack_id);
   const [runGenerationMethod, setRunGenerationMethod] =
     useState<GenerationMethod | null>(null);
   const [runInvestigationModel, setRunInvestigationModel] = useState("");
@@ -40,8 +43,7 @@ export default function GenerateDialog({
   useEffect(() => {
     if (open) {
       setResume(true);
-      setOrganizationPackId(null);
-      setPrivateVersionIds([]);
+      setPluginPackId(project.plugin_pack_id);
       setRunGenerationMethod(null);
       setRunInvestigationModel("");
       setRunAnalysisModel("");
@@ -50,13 +52,6 @@ export default function GenerateDialog({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, project.id]);
-
-  useEffect(() => {
-    if (workspaceQuery.data?.project_id === project.id) {
-      setOrganizationPackId(workspaceQuery.data.selected_organization_pack_id);
-      setPrivateVersionIds(workspaceQuery.data.selected_private_version_ids);
-    }
-  }, [project.id, workspaceQuery.data]);
 
   useModalDialog({ open, onClose, containerRef });
 
@@ -84,6 +79,13 @@ export default function GenerateDialog({
       ? localStorage.getItem(`project_write_model_${project.id}`) || null
       : null;
   const selectableAnalysisModels = models.filter(
+    (model) =>
+      model.supports_analysis &&
+      model.id !== "opencode-cli" &&
+      model.id !== "claude-cli" &&
+      model.provider !== "opencode-go",
+  );
+  const openCodeSessionModels = models.filter(
     (model) =>
       model.supports_analysis &&
       model.id !== "opencode-cli" &&
@@ -116,15 +118,16 @@ export default function GenerateDialog({
       ? null
       : savedInvestigation;
 
-  const packSelectionUnavailable =
-    workspaceQuery.isLoading ||
-    workspaceQuery.isError ||
-    workspaceQuery.data?.project_id !== project.id;
+  const selectedPluginPack = (pluginPacksQuery.data ?? []).find(
+    (pack) => pack.id === pluginPackId,
+  );
+  const selectablePluginPacks = (pluginPacksQuery.data ?? []).filter(
+    (pack) => pack.usable || pack.id === pluginPackId,
+  );
 
   if (!open) return null;
 
   function submit() {
-    if (packSelectionUnavailable) return;
     generate.mutate(
       {
         projectId: project.id,
@@ -136,8 +139,6 @@ export default function GenerateDialog({
           ? runAnalysisModel || null
           : runAnalysisModel || configuredLegacyAnalysisModel,
         writeModel: usesOpenCode ? null : runWriteModel || savedWrite,
-        organizationPackId,
-        privateVersionIds,
         generationMethod: usesOpenCode ? "opencode-cli" : "custom",
       },
       {
@@ -163,7 +164,7 @@ export default function GenerateDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="generate-dialog-title"
-        className="bg-surface-raised border border-white/[0.14] rounded-lg shadow-2xl ring-1 ring-black/50 w-full max-w-2xl max-h-[90vh] flex flex-col animate-fade-in"
+        className="bg-surface-raised border border-white/[0.14] rounded-lg shadow-2xl ring-1 ring-black/50 w-full max-w-4xl max-h-[90vh] flex flex-col animate-fade-in"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between px-7 pt-6 pb-4 border-b border-white/[0.08]">
@@ -202,69 +203,66 @@ export default function GenerateDialog({
         </div>
 
         <div className="flex-1 overflow-y-auto px-7 py-5 space-y-6">
-          <section className="space-y-3">
+          <section className="space-y-3 rounded border border-white/[0.08] bg-black/10 p-4">
             <h4 className="font-mono uppercase tracking-wider text-xs text-accent-primary/80">
-              Nexus Documentation Pack
+              Plugin pack
             </h4>
-            {workspaceQuery.isLoading && (
+            {pluginPacksQuery.isLoading && (
               <p className="text-sm text-slate-400">
-                Loading this project's pack selection...
+                Loading available plugin packs...
               </p>
             )}
-            {workspaceQuery.error && (
-              <p className="text-sm text-amber-400">
-                Pack selection could not be loaded. Reload it before starting
-                documentation generation.
-              </p>
-            )}
-            {workspaceQuery.data && (
-              <div className="space-y-1.5">
-                <PackOption
-                  checked={organizationPackId === null}
-                  onCheck={() => setOrganizationPackId(null)}
-                  title="Organization default"
-                  subtitle="Use the approved Nexus documentation baseline."
-                />
-                {workspaceQuery.data.organization_packs.map((pack) => (
-                  <PackOption
-                    key={pack.id}
-                    checked={organizationPackId === pack.id}
-                    onCheck={() => setOrganizationPackId(pack.id)}
-                    title={`${pack.name} v${pack.version}`}
-                    subtitle={pack.description ?? "Organization base pack"}
-                  />
-                ))}
-                {workspaceQuery.data.personal_packs.map((pack) => (
-                  <label
-                    key={pack.id}
-                    className="flex items-start gap-3 px-3.5 py-2.5 rounded border border-white/[0.08] hover:border-white/[0.18] hover:bg-white/[0.04] cursor-pointer transition-all"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={privateVersionIds.includes(pack.id)}
-                      onChange={() =>
-                        setPrivateVersionIds((current) =>
-                          current.includes(pack.id)
-                            ? current.filter((id) => id !== pack.id)
-                            : [...current, pack.id],
-                        )
-                      }
-                      className="mt-1 h-4 w-4 accent-accent-primary"
-                    />
-                    <span className="min-w-0">
-                      <span className="block text-sm font-medium text-slate-100">
-                        Add {pack.name} v{pack.version}
-                      </span>
-                      <span className="mt-1 block text-xs text-slate-400">
-                        {pack.description ?? "Personal additive pack"}
-                        {pack.output_documents.length > 0
-                          ? ` Outputs: ${pack.output_documents.join(", ")}`
-                          : ""}
-                      </span>
-                    </span>
-                  </label>
-                ))}
+            {pluginPacksQuery.error && (
+              <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-amber-400">
+                <p>
+                  Available packs could not be loaded. The saved project pack will still be used.
+                </p>
+                <button type="button" className="btn-ghost" onClick={() => void pluginPacksQuery.refetch()}>
+                  Retry
+                </button>
               </div>
+            )}
+            <label className="block">
+              <span className="mb-1.5 block text-xs text-slate-400">Project pack</span>
+              <select
+                className="input-dark"
+                value={pluginPackId ?? ""}
+                aria-label="Plugin pack"
+                disabled={assignPluginPack.isPending}
+                onChange={(event) => {
+                  const previousPackId = pluginPackId;
+                  const nextPackId = event.target.value ? Number(event.target.value) : null;
+                  setPluginPackId(nextPackId);
+                  assignPluginPack.mutate(
+                    { projectId: project.id, pluginPackId: nextPackId },
+                    { onError: () => setPluginPackId(previousPackId) },
+                  );
+                }}
+              >
+                <option value="">— none (use the built-in document set) —</option>
+                {selectablePluginPacks.map((pack) => (
+                  <option key={pack.id} value={pack.id} disabled={!pack.usable}>
+                    {pack.name} v{pack.version}
+                    {!pack.usable ? " (currently unavailable)" : ""}
+                  </option>
+                ))}
+              </select>
+              <span className="mt-1.5 block text-xs text-slate-500">
+                {selectedPluginPack?.description
+                  ?? (pluginPackId != null
+                    ? `Saved plugin pack #${pluginPackId} will be used for this run.`
+                    : "Choose a pack to define this project's generated documents.")}
+              </span>
+              {selectedPluginPack && !selectedPluginPack.usable && (
+                <span className="mt-1.5 block text-xs text-amber-400">
+                  This previously selected pack is unavailable: {selectedPluginPack.blocked_reason ?? "select another usable pack before generating."}
+                </span>
+              )}
+            </label>
+            {assignPluginPack.error && (
+              <p role="alert" className="text-sm text-red-400">
+                The plugin pack could not be saved. Please try again.
+              </p>
             )}
           </section>
 
@@ -326,7 +324,7 @@ export default function GenerateDialog({
                 <ModelSelect
                   value={runAnalysisModel}
                   onChange={setRunAnalysisModel}
-                  models={selectableAnalysisModels}
+                  models={openCodeSessionModels}
                   placeholder="Select OpenCode session model (required)"
                 />
                 {!runAnalysisModel && (
@@ -420,6 +418,23 @@ export default function GenerateDialog({
             )}
           </section>
 
+          {usesOpenCode && (
+            <RuntimeEvidenceSummary
+              bindings={connectorBindings.data?.bindings ?? []}
+              connectors={connectors.data?.connectors ?? []}
+              isLoading={connectorBindings.isLoading || connectors.isLoading}
+              error={connectorBindings.error ?? connectors.error}
+              onRetry={() => {
+                void connectorBindings.refetch();
+                void connectors.refetch();
+              }}
+              onManage={onManageRuntimeEvidence ? () => {
+                onClose();
+                onManageRuntimeEvidence(project.id);
+              } : undefined}
+            />
+          )}
+
           <label className="flex items-center gap-2.5 text-sm text-slate-300 select-none">
             <input
               type="checkbox"
@@ -455,13 +470,11 @@ export default function GenerateDialog({
             onClick={submit}
             disabled={
               submitPending ||
-              packSelectionUnavailable ||
+              assignPluginPack.isPending ||
               (usesOpenCode && !runAnalysisModel)
             }
           >
-            {workspaceQuery.isLoading
-              ? "Loading Packs..."
-              : submitPending
+            {submitPending
                 ? "Starting..."
                 : "Generate"}
           </button>
@@ -469,6 +482,40 @@ export default function GenerateDialog({
       </div>
     </div>,
     document.body,
+  );
+}
+
+function RuntimeEvidenceSummary({
+  bindings,
+  connectors,
+  isLoading,
+  error,
+  onRetry,
+  onManage,
+}: {
+  bindings: import("../types").ProjectConnectorBinding[];
+  connectors: import("../types").ConnectorInstance[];
+  isLoading: boolean;
+  error: Error | null;
+  onRetry: () => void;
+  onManage?: () => void;
+}) {
+  const activeBindings = bindings.filter((binding) => binding.enabled && binding.source_ids.length > 0);
+  const connectorById = new Map(connectors.map((connector) => [connector.id, connector]));
+  return (
+    <section className="space-y-3 rounded border border-white/[0.08] bg-black/10 p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h4 className="font-mono uppercase tracking-wider text-xs text-accent-primary/80">Connected live data</h4>
+          <p className="mt-1 text-xs text-slate-500">Nexus can use safe, read-only observations from your connected systems to make the documentation more accurate.</p>
+        </div>
+      </div>
+      {isLoading ? <p className="text-sm text-slate-500">Checking connected systems…</p> : error ? <div className="flex items-center justify-between gap-3 rounded border border-amber-400/30 bg-amber-400/5 p-3"><p className="text-sm text-amber-400">Connected systems could not be loaded.</p><button type="button" className="btn-ghost" onClick={onRetry}>Retry</button></div> : activeBindings.length === 0 ? <div className="rounded border border-dashed border-white/[0.1] p-3"><p className="text-sm text-slate-400">{connectors.length > 0 ? "Elastic is connected to Nexus, but it is not enabled for this project." : "No connected live data is configured yet."}</p><p className="mt-1 text-xs text-slate-500">{connectors.length > 0 ? "Use Adjust connected systems to choose the sources this project may use." : "Connect a system once and Nexus will discover and enable its sources automatically."}</p></div> : <div className="space-y-2">{activeBindings.map((binding) => {
+        const connector = connectorById.get(binding.connector_instance_id);
+        return <div key={binding.connector_instance_id} className="flex items-center justify-between gap-3 rounded border border-white/[0.06] px-3 py-2"><span className="text-sm text-slate-300">{binding.connector_display_name ?? connector?.display_name ?? "Connector"}</span><span className="text-xs font-mono text-slate-500">{connector?.status === "connected" ? "Connected" : connector?.status ?? "Configured"} · {binding.source_ids.length} source{binding.source_ids.length === 1 ? "" : "s"}</span></div>;
+      })}</div>}
+      {onManage && <button type="button" className="btn-ghost" onClick={onManage}>Adjust connected systems</button>}
+    </section>
   );
 }
 
@@ -482,12 +529,30 @@ function ModelSelect({
   onChange: (value: string) => void;
   models: {
     id: string;
+    provider: string;
     label: string;
     available: boolean;
     unavailable_reason: string | null;
   }[];
   placeholder: string;
 }) {
+  const groups = [
+    {
+      label: "OpenCode Go subscription",
+      models: models.filter((model) => model.provider === "opencode-go"),
+    },
+    {
+      label: "API providers",
+      models: models.filter(
+        (model) => model.provider !== "opencode-go" && !model.id.startsWith("ollama/"),
+      ),
+    },
+    {
+      label: "Local models",
+      models: models.filter((model) => model.id.startsWith("ollama/")),
+    },
+  ].filter((group) => group.models.length > 0);
+
   return (
     <select
       value={value}
@@ -496,49 +561,17 @@ function ModelSelect({
       aria-label={placeholder}
     >
       <option value="">{placeholder}</option>
-      {models.map((model) => (
-        <option key={model.id} value={model.id}>
-          {model.label} ({model.id})
-          {model.available ? "" : " — credentials not configured"}
-        </option>
+      {groups.map((group) => (
+        <optgroup key={group.label} label={group.label}>
+          {group.models.map((model) => (
+            <option key={model.id} value={model.id} disabled={!model.available}>
+              {model.label} ({model.id})
+              {model.available ? "" : ` — ${model.unavailable_reason ?? "credentials not configured"}`}
+            </option>
+          ))}
+        </optgroup>
       ))}
     </select>
-  );
-}
-
-function PackOption({
-  checked,
-  onCheck,
-  title,
-  subtitle,
-}: {
-  checked: boolean;
-  onCheck: () => void;
-  title: string;
-  subtitle: string;
-}) {
-  return (
-    <label
-      className={`flex items-start gap-3 px-3.5 py-2.5 rounded border cursor-pointer transition-all ${
-        checked
-          ? "border-accent-primary/60 bg-accent-primary/[0.08]"
-          : "border-white/[0.08] hover:border-white/[0.18] hover:bg-white/[0.04]"
-      }`}
-    >
-      <input
-        type="radio"
-        checked={checked}
-        onChange={onCheck}
-        aria-label={title}
-        className="mt-1 h-4 w-4 accent-accent-primary"
-      />
-      <div className="min-w-0">
-        <div className="text-sm font-medium text-slate-100">{title}</div>
-        <div className="text-xs text-slate-400 mt-1 break-words">
-          {subtitle}
-        </div>
-      </div>
-    </label>
   );
 }
 

@@ -10,6 +10,7 @@ interface Props {
   isActive: boolean;
   onSelect: (id: string) => void;
   onAction: (id: string) => void;
+  onManageRuntimeEvidence?: (id: string) => void;
   canManageProjects: boolean;
 }
 
@@ -18,6 +19,7 @@ export default function ProjectCard({
   isActive,
   onSelect,
   onAction,
+  onManageRuntimeEvidence,
   canManageProjects,
 }: Props) {
   const { data: platformsData } = usePlatforms();
@@ -101,6 +103,7 @@ export default function ProjectCard({
             project={project}
             status={project.status}
             onAction={onAction}
+            onManageRuntimeEvidence={onManageRuntimeEvidence}
           />
         </div>
       )}

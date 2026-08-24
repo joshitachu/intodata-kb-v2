@@ -28,7 +28,10 @@ import {
   type ArchitecturePairRelationship,
 } from "@/lib/architectureViewModel";
 import { architectureColumnRank, layoutArchitectureNodes } from "@/lib/architectureLayout";
+import { assistantRoleShadow } from "@/lib/nodeStyles";
 import type { BusinessTopology, ProjectLandscapeResponse } from "@/types/landscape";
+import type { AssistantCanvasEmphasis, AssistantFocusRequest, CopilotViewContext } from "@/types/copilot";
+import { aggregatedRelationshipId } from "@/lib/landscapeTransform";
 
 interface ArchitectureNodeData extends Record<string, unknown> {
   architectureNode: ArchitectureNode;
@@ -37,6 +40,7 @@ interface ArchitectureNodeData extends Record<string, unknown> {
   dimmed: boolean;
   incomingPorts: string[];
   outgoingPorts: string[];
+  assistantVisualRole?: string;
 }
 
 interface ArchitectureEdgeData extends Record<string, unknown> {
@@ -77,11 +81,15 @@ function ArchitectureSystemNodeComponent({ data }: { data: ArchitectureNodeData 
   const anchor = node.column === "anchor";
   return (
     <div
+      data-assistant-role={data.assistantVisualRole}
+      style={{ boxShadow: assistantRoleShadow(data.assistantVisualRole) }}
       className={`relative h-[116px] w-[244px] rounded-2xl border px-4 py-3 shadow-sm transition-all duration-200 ${
         anchor
           ? "border-slate-900 bg-slate-900 text-white shadow-lg"
-          : data.selected
+          : data.selected && !data.assistantVisualRole
             ? "border-blue-500 bg-white ring-4 ring-blue-100"
+            : data.assistantVisualRole
+              ? "border-blue-500 bg-white"
             : "border-slate-200 bg-white text-slate-900"
       } ${data.dimmed ? "opacity-20" : "opacity-100"}`}
       aria-label={`${COLUMN_LABEL[node.column]} system ${node.label}`}
@@ -197,9 +205,15 @@ function buildFlow(
 export function ArchitectureTopologyCanvas({
   landscape,
   onOpenFlow,
+  assistantEmphasis,
+  assistantFocusRequest,
+  onContextChange,
 }: {
   landscape: ProjectLandscapeResponse;
   onOpenFlow: (streamId: string) => void;
+  assistantEmphasis?: AssistantCanvasEmphasis | null;
+  assistantFocusRequest?: AssistantFocusRequest | null;
+  onContextChange?: (context: CopilotViewContext) => void;
 }) {
   const topology = landscape.business_topology!;
   const model = useMemo(() => normalizeArchitectureL1(topology), [topology]);
@@ -233,6 +247,35 @@ export function ArchitectureTopologyCanvas({
     return () => { cancelled = true; };
   }, [baseFlow, instance, setEdges, setNodes]);
 
+  useEffect(() => {
+    if (!assistantFocusRequest || !instance) return;
+    const focusNodes = nodes.filter((node) => assistantFocusRequest.nodeIds.includes(node.id));
+    if (focusNodes.length > 0) void instance.fitView({ nodes: focusNodes, padding: 0.3, duration: 450 });
+  }, [assistantFocusRequest, instance, nodes]);
+
+  useEffect(() => {
+    const selectedEntity = selectedFlow
+      ? { kind: "edge" as const, label: selectedFlow.name, entity_id: selectedFlow.id }
+      : selectedPair
+        ? {
+            kind: "relationship" as const,
+            label: `${nodesById.get(selectedPair.first)?.label ?? selectedPair.first} ↔ ${nodesById.get(selectedPair.second)?.label ?? selectedPair.second}`,
+            entity_id: selectedPair.id,
+          }
+        : selectedSystemId
+          ? {
+              kind: "system" as const,
+              label: nodesById.get(selectedSystemId)?.label ?? selectedSystemId,
+              entity_id: selectedSystemId,
+            }
+          : undefined;
+    onContextChange?.({
+      selectedEntity,
+      activeDetailTab: selectedFlow ? "technical_flow" : selectedPair ? "relationship" : selectedSystemId ? "system" : "landscape",
+      filters: [{ name: "query", value: query || "all" }],
+    });
+  }, [selectedFlow, selectedPair, selectedSystemId, nodesById, query, onContextChange]);
+
   const activeNodeIds = useMemo(() => {
     if (selectedPair) return new Set([selectedPair.first, selectedPair.second]);
     if (selectedSystemId) return new Set([
@@ -248,16 +291,19 @@ export function ArchitectureTopologyCanvas({
       const architectureNode = node.data.architectureNode;
       const queryDimmed = Boolean(normalizedQuery) && !`${architectureNode.label} ${architectureNode.description}`.toLocaleLowerCase().includes(normalizedQuery);
       const focusDimmed = activeNodeIds ? !activeNodeIds.has(node.id) : false;
+      const assistantRole = assistantEmphasis?.nodeRoles.get(node.id);
+      const assistantActive = Boolean(assistantEmphasis?.nodeRoles.size || assistantEmphasis?.edgeRoles.size);
       return {
         ...node,
         data: {
           ...node.data,
           selected: node.id === selectedSystemId || Boolean(selectedPair && (node.id === selectedPair.first || node.id === selectedPair.second)),
-          dimmed: queryDimmed || focusDimmed,
+          dimmed: queryDimmed || focusDimmed || (!activeNodeIds && assistantActive && !assistantRole),
+          assistantVisualRole: assistantRole,
         },
       };
     });
-  }, [nodes, query, activeNodeIds, selectedSystemId, selectedPair]);
+  }, [nodes, query, activeNodeIds, selectedSystemId, selectedPair, assistantEmphasis]);
 
   const displayedEdges = useMemo(() => edges.map((edge) => {
     const pair = edge.data!.pair;
@@ -266,16 +312,21 @@ export function ArchitectureTopologyCanvas({
       : selectedSystemId
         ? pair.first === selectedSystemId || pair.second === selectedSystemId
         : true;
+    const assistantRole = assistantEmphasis?.edgeRoles.get(pair.id)
+      ?? assistantEmphasis?.edgeRoles.get(aggregatedRelationshipId(pair.first, pair.second))
+      ?? assistantEmphasis?.edgeRoles.get(aggregatedRelationshipId(pair.second, pair.first));
+    const assistantActive = Boolean(assistantEmphasis?.nodeRoles.size || assistantEmphasis?.edgeRoles.size);
     return {
       ...edge,
       style: {
         ...edge.style,
-        opacity: active ? 1 : 0.08,
-        strokeWidth: selectedPair?.id === pair.id ? 3.5 : 2,
+        opacity: active && (!assistantActive || Boolean(assistantRole)) ? 1 : 0.08,
+        strokeWidth: selectedPair?.id === pair.id || assistantRole === "primary" ? 3.5 : assistantRole ? 2.8 : 2,
         transition: "opacity 180ms ease, stroke-width 180ms ease",
       },
+      data: { pair, assistantVisualRole: assistantRole },
     };
-  }), [edges, selectedPair, selectedSystemId]);
+  }), [edges, selectedPair, selectedSystemId, assistantEmphasis]);
 
   const selectSystem: NodeMouseHandler<Node<ArchitectureNodeData>> = useCallback((_event, node) => {
     setSelectedSystemId(node.id);
@@ -337,7 +388,7 @@ export function ArchitectureTopologyCanvas({
       </div>
 
       <div className={`absolute bottom-0 left-0 top-[105px] transition-[right] duration-200 ${selectedSystemId || selectedPair ? "right-[390px]" : "right-0"}`}>
-        <ReactFlow
+        <ReactFlow<Node<ArchitectureNodeData>, Edge<ArchitectureEdgeData>>
           nodes={displayedNodes}
           edges={displayedEdges}
           nodeTypes={nodeTypes}
@@ -346,7 +397,7 @@ export function ArchitectureTopologyCanvas({
           onNodeClick={selectSystem}
           onEdgeClick={(_event, edge) => selectPair((edge.data as ArchitectureEdgeData).pair)}
           onPaneClick={clearSelection}
-          onInit={(next) => setInstance(next as ReactFlowInstance<Node<ArchitectureNodeData>, Edge<ArchitectureEdgeData>>)}
+          onInit={setInstance}
           nodesDraggable={false}
           nodesConnectable={false}
           elementsSelectable

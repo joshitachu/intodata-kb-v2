@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from src.config import settings
 from src.generation import llm_client
 from src.generation.llm_client import (
     RuntimeToolCallRequest,
@@ -16,6 +17,9 @@ from src.generation.llm_client import (
     generate_answer,
     generate_answer_stream,
     generate_answer_with_runtime_tools,
+    generate_document_answer,
+    generate_document_answer_stream,
+    get_documentation_provider_trace,
     get_last_usage,
     get_turn_usage,
     reset_turn_usage,
@@ -83,6 +87,93 @@ async def test_provider_error_surfaces_no_fallback():
     with p_id, p_resolve:
         with pytest.raises(RuntimeError, match="kimi.*failed"):
             await generate_answer(MESSAGES)
+
+
+async def test_document_answer_retries_then_uses_approved_fallback():
+    kimi = FakeProvider(provider_id="kimi")
+    kimi.generate.side_effect = RuntimeError("transient")
+    openai = FakeProvider(provider_id="openai")
+    openai.generate.return_value = (
+        "grounded answer",
+        UsageStats(provider="openai", model="gpt-5"),
+    )
+
+    def resolve(model_id):  # noqa: ANN001, ANN202
+        return {
+            "kimi/kimi-k2.5": (kimi, "kimi-k2.5"),
+            "openai/gpt-5": (openai, "gpt-5"),
+        }[model_id]
+
+    with (
+        patch.object(llm_client, "get_rag_chat_model_id", AsyncMock(return_value="kimi/kimi-k2.5")),
+        patch.object(llm_client.registry, "resolve", side_effect=resolve),
+        patch.object(settings, "rag_approved_fallback_models", ["openai/gpt-5"]),
+        patch.object(settings, "rag_documentation_provider_max_retries", 1),
+    ):
+        assert await generate_document_answer(MESSAGES) == "grounded answer"
+
+    assert kimi.generate.await_count == 2
+    assert openai.generate.await_count == 1
+    assert get_documentation_provider_trace() == {
+        "provider_used": "openai",
+        "fallback_used": True,
+        "attempts": [
+            {"provider": "kimi", "status": "failed"},
+            {"provider": "openai", "status": "succeeded"},
+        ],
+    }
+
+
+async def test_document_answer_all_approved_providers_fail_explicitly():
+    kimi = FakeProvider(provider_id="kimi")
+    kimi.generate.side_effect = RuntimeError("down")
+    with (
+        patch.object(llm_client, "get_rag_chat_model_id", AsyncMock(return_value="kimi/kimi-k2.5")),
+        patch.object(llm_client.registry, "resolve", return_value=(kimi, "kimi-k2.5")),
+        patch.object(settings, "rag_approved_fallback_models", []),
+        patch.object(settings, "rag_documentation_provider_max_retries", 0),
+    ):
+        with pytest.raises(RuntimeError, match="All approved documentation providers"):
+            await generate_document_answer(MESSAGES)
+
+    assert get_documentation_provider_trace() == {
+        "provider_used": None,
+        "fallback_used": False,
+        "attempts": [{"provider": "kimi", "status": "failed"}],
+    }
+
+
+async def test_document_stream_never_fails_over_after_output_begins():
+    kimi = FakeProvider(provider_id="kimi")
+    openai = FakeProvider(provider_id="openai")
+
+    async def partial_stream(model, messages, images=None):  # noqa: ANN001, ANN202
+        del model, messages, images
+        yield "visible"
+        raise RuntimeError("mid-stream")
+
+    kimi.stream = partial_stream
+    openai._stream_tokens = ["replacement"]
+
+    def resolve(model_id):  # noqa: ANN001, ANN202
+        return {
+            "kimi/kimi-k2.5": (kimi, "kimi-k2.5"),
+            "openai/gpt-5": (openai, "gpt-5"),
+        }[model_id]
+
+    with (
+        patch.object(llm_client, "get_rag_chat_model_id", AsyncMock(return_value="kimi/kimi-k2.5")),
+        patch.object(llm_client.registry, "resolve", side_effect=resolve),
+        patch.object(settings, "rag_approved_fallback_models", ["openai/gpt-5"]),
+        patch.object(settings, "rag_documentation_provider_max_retries", 1),
+    ):
+        seen = []
+        with pytest.raises(RuntimeError, match="after answer output began"):
+            async for item in generate_document_answer_stream(MESSAGES):
+                seen.append(item)
+
+    assert seen == ["visible"]
+    assert openai.seen_model is None
 
 
 async def test_unknown_provider_raises():

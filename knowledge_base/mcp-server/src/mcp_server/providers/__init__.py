@@ -24,11 +24,12 @@ def get_provider(
       - "openai/<model>"     — custom harness + OpenAI-compatible adapter
       - "deepseek/<model>"   — custom harness + DeepSeek OpenAI-compatible adapter
       - "route33/<model>"    — custom harness + Route33 OpenAI-compatible adapter
+      - "openrouter/<model>" — custom harness + OpenRouter OpenAI-compatible adapter
       - "anthropic/<model>"  — custom harness + Anthropic API adapter
       - "google/<model>"     — custom harness + Gemini OpenAI-compatible adapter
       - "ollama/<model>"     — custom harness + Ollama-compatible adapter
       - "claude-cli"         — legacy Claude Code CLI subprocess fallback
-      - "opencode-cli"       — one-session OpenCode three-phase runtime
+      - "opencode-cli"       — adaptive-session OpenCode three-phase runtime
 
     investigation_model: optional override for Phase 1 investigation model.
     write_model: optional override for Phase 3 doc-writing model (must be "provider/model" format).
@@ -82,5 +83,6 @@ def get_provider(
     raise ValueError(
         f"Unknown doc generation provider: {provider_type or config.doc_generation_provider!r}. "
         f"Supported: 'custom', 'openai/<model>', 'deepseek/<model>', 'route33/<model>', "
-        f"'anthropic/<model>', 'google/<model>', 'ollama/<model>', 'claude-cli', or 'opencode-cli'."
+        f"'openrouter/<model>', 'anthropic/<model>', 'google/<model>', 'ollama/<model>', "
+        f"'claude-cli', or 'opencode-cli'."
     )

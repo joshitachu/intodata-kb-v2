@@ -78,7 +78,7 @@ async def test_trigger_generation_rejects_unknown_generation_method() -> None:
         )
 
 
-async def test_trigger_generation_keeps_governed_snapshot_and_presentation_separate() -> None:
+async def test_trigger_generation_uses_only_the_single_plugin_pack_override() -> None:
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -89,42 +89,15 @@ async def test_trigger_generation_keeps_governed_snapshot_and_presentation_separ
         base_url="http://mcp.internal/mcp",
         transport=httpx.MockTransport(handler),
     )
-    snapshot = {
-        "policy_id": "org.default",
-        "policy_hash": "a" * 64,
-        "foundation_pack_id": "nexus.documentation",
-        "functional_pack_ids": ["nexus.data-integration"],
-        "style_pack_ids": ["style.user.1.concise"],
-        "resolved_packs": [],
-        "snapshot_hash": "b" * 64,
-    }
-    presentation = {"audience": "engineering", "tone": "concise", "formatting": ["markdown"]}
-
     await provider.trigger_generation(
         project_id="p1",
         plugin_pack_id=7,
-        nexus_pack_ids=["nexus.documentation", "nexus.data-integration", "style.user.1.concise"],
-        nexus_pack_snapshot=snapshot,
-        nexus_presentation=presentation,
     )
 
     assert captured["json"] == {
         "project_id": "p1",
         "plugin_pack_id": 7,
-        "nexus_pack_ids": ["nexus.documentation", "nexus.data-integration", "style.user.1.concise"],
-        "nexus_pack_snapshot": snapshot,
-        "nexus_presentation": presentation,
     }
-
-
-async def test_trigger_generation_rejects_duplicate_pack_ids() -> None:
-    provider = McpDocumentationProvider(base_url="http://mcp.internal/mcp")
-
-    with pytest.raises(McpDocumentationProviderError, match="Duplicate documentation Pack selection"):
-        await provider.trigger_generation(
-            project_id="p1",
-            nexus_pack_ids=["nexus.documentation", "nexus.documentation"],
-        )
 
 
 async def test_list_documentation_packs_returns_safe_metadata_without_paths() -> None:

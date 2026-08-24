@@ -2,18 +2,29 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import time
 from typing import TYPE_CHECKING
 
+from mcp_server.config import config
 from mcp_server.providers.custom.debug_artifacts import debug_dir, debug_write
 from mcp_server.providers.custom.pipeline.phase import Phase, PhaseEstimate, PhaseResult
+from mcp_server.services.extraction_cache import (
+    compute_extraction_key,
+    extraction_cache_dir,
+    prune_extraction_cache,
+    store_extraction,
+    unit_allowlist_for_partition,
+)
 from mcp_server.services.rag_support_package import build_rag_support_package
 
 if TYPE_CHECKING:
     from mcp_server.providers.base import DocGenContext, LogCallback
     from mcp_server.providers.custom.models import ExecutionPlan, HarnessRunState
     from mcp_server.providers.custom.pipeline.helpers import HarnessHelpersImpl
+
+logger = logging.getLogger(__name__)
 
 
 class Phase4Cleanup(Phase):
@@ -96,7 +107,36 @@ class Phase4Cleanup(Phase):
                 "warning",
             )
 
+        # Persist the pack-INDEPENDENT extraction layer BEFORE the rmtree below
+        # destroys it. Swapping the pack (the "lens") must reuse the evidence;
+        # the cached interpretation belongs to the OLD pack.
+        #
+        # Deliberately not cached, and why (recon section 4.6):
+        #   * _analysis/_context_packets/ -- deterministic from the Phase 2 task
+        #     evidence plus per-run byte caps (6.4M measured). Caching it buys
+        #     disk, not model calls.
+        #   * _analysis/_claims/, _analysis/_doc_pack_*,
+        #     _analysis/_evidence_{doc}.md -- pack-scoped OUTPUTS, not
+        #     extraction. Serving them to a NEW pack would replay the OLD pack's
+        #     interpretation, which is exactly the defect this cache fixes.
+        #   * the engineering-fact artifacts -- already archived into _facts/
+        #     above and carried through the atomic swap.
+        # The rmtree list itself is unchanged: staging stays the working set.
+        self._store_extraction_cache(ctx)
+
         for directory in ("_preprocess", "_analysis", "_transient"):
+            target = ctx.staging_dir / directory
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+
+        # Connector providers may stage redacted working excerpts only beneath
+        # this private transient area. Keep the accepted claim links and audit
+        # receipts, but never publish or retain event/provider payloads by
+        # default. This is deliberately independent of provider type.
+        for directory in (
+            "_connector_evidence/_provider_items",
+            "_connector_evidence/_excerpts",
+        ):
             target = ctx.staging_dir / directory
             if target.exists():
                 shutil.rmtree(target, ignore_errors=True)
@@ -116,6 +156,57 @@ class Phase4Cleanup(Phase):
             encoding="utf-8",
         )
         return PhaseResult(phase_name=self.name, success=True)
+
+    def _store_extraction_cache(self, ctx: "DocGenContext") -> None:
+        """Persist docs_staging/_preprocess/ into the universal extraction cache.
+
+        This is a cache: every failure is a warning, never a phase failure.
+
+        Key inputs are taken from ``ctx`` so they match the restore side in
+        ``ClaudeService.generate_docs`` byte for byte:
+
+        * scan dir  -- ``config.intodoc_output_dir / ctx.project_id``
+        * platform  -- ``ctx.platform`` (the DB platform that generate_docs also
+          keys on). ``state.facts_manifest.platform`` is derived independently
+          from ``scan_result.json`` and lower-cased, so keying on it could make
+          the store and restore keys disagree.
+        * allowlist -- rebuilt from ``ctx.partition`` via
+          ``unit_allowlist_for_partition``, which mirrors generate_docs exactly.
+          The partition NAME is deliberately not used: the allowlist is the
+          value that actually scopes the extraction.
+
+        Cache root is ``ctx.staging_dir.parent`` -- the partition-scoped output
+        dir (``output/{project_id}[/{subproject}]``), a sibling of
+        ``docs_staging/``, so it survives this phase and the atomic swap and
+        partitions never share entries.
+        """
+
+        if not config.extraction_cache_enabled:
+            return
+        # A scoped reingestion prepares staging deliberately and may carry a
+        # partial extraction layer; never promote that into the cache.
+        if getattr(ctx, "scoped_docs", None):
+            return
+        try:
+            key = compute_extraction_key(
+                config.intodoc_output_dir / ctx.project_id,
+                platform=ctx.platform,
+                unit_allowlist=unit_allowlist_for_partition(
+                    getattr(ctx, "partition", None)
+                ),
+            )
+            if not key:
+                # Empty key means DO NOT CACHE (no readable scan artifacts).
+                return
+            cache_root = extraction_cache_dir(ctx.staging_dir.parent)
+            if store_extraction(cache_root, key, ctx.staging_dir) is None:
+                return
+            prune_extraction_cache(cache_root, keep=config.extraction_cache_keep)
+        except Exception as exc:  # noqa: BLE001 - a cache must never fail the run
+            logger.warning(
+                "Extraction cache: store failed for project %s (%s)",
+                ctx.project_id, exc,
+            )
 
     async def resume(
         self,

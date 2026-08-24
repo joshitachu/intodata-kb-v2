@@ -161,7 +161,7 @@ async def test_empty_automatic_target_scope_is_held_before_reingestion(
         project_id="proj",
         local_path=str(tmp_path / "repo"),
         doc_generation_provider=None,
-        github_token_enc=None,
+        credential=None,
         last_ingested_commit_sha="a" * 40,
     )
     decision = RoutingDecision(

@@ -1,5 +1,6 @@
 """Model/provider strategy registry."""
 
+from mcp_server.model_strategies.connections import provider_connection_config
 from mcp_server.model_strategies.registry import (
     GenerationModelResolution,
     get_model_strategy,
@@ -18,6 +19,7 @@ __all__ = [
     "list_model_descriptors",
     "list_model_strategies",
     "normalize_model_id",
+    "provider_connection_config",
     "resolve_generation_models",
     "supported_model_ids",
 ]

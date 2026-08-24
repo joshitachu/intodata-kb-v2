@@ -12,16 +12,23 @@ lookups return 404 so they cannot reveal whether an execution exists outside sco
 All endpoints are available to any authenticated user; authorization is project-scope
 based (the same contract used across the RAG backend), so there is no extra
 role/permission gate.
+
+`GET /runtime/doc-evidence` is the one exception to the user-scope rule: it is a
+machine endpoint for the documentation generator, authenticated with the MCP
+ingest key. Having no user, it pins scope to the single requested project rather
+than running unrestricted.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from src.api.dependencies import CurrentUser, DBSession, RuntimeSourceReader, RuntimeSourceWriter
+from src.api.routes.ingest import verify_machine_topology_ingest_api_key
 from src.rbac.permissions import get_user_project_ids
 from src.runtime.insights.models import (
     RuntimeAlertReadyMetadata,
@@ -33,6 +40,7 @@ from src.runtime.insights.models import (
 )
 from src.runtime.insights.repository import RuntimeInsightRepository
 from src.runtime.models import (
+    RuntimeDocEvidence,
     DetectFailuresInput,
     GetExecutionDetailsInput,
     GetExecutionLogsInput,
@@ -95,6 +103,11 @@ from src.runtime.topology.repository import (
 )
 
 router = APIRouter(prefix="/runtime", tags=["runtime"])
+
+# One documentation run asks about the units of one doc target, not a whole
+# scan. The cap bounds the IN-clause and the response without constraining any
+# real caller.
+_DOC_EVIDENCE_MAX_UNITS = 200
 
 
 # --- Response envelopes ------------------------------------------------------
@@ -235,6 +248,17 @@ class RuntimeErrorSignatureResponse(BaseModel):
     total: int
 
 
+class RuntimeDocEvidenceResponse(BaseModel):
+    project_id: str
+    window_days: int
+    since: datetime
+    units: list[RuntimeDocEvidence]
+    # Units the caller asked about that have no runtime data. Returned
+    # explicitly so a document can state "no runtime data" rather than let a
+    # writer infer from silence that a job never runs.
+    unmatched_units: list[str]
+
+
 # --- Scope helper ------------------------------------------------------------
 
 
@@ -260,6 +284,46 @@ def _intersect_scope(scope: ProjectScope, project_id: str | None) -> ProjectScop
 @router.get("/status", response_model=RuntimeStatusResponse, summary="Get live runtime connection status")
 async def get_status(_user: CurrentUser) -> RuntimeStatusResponse:
     return await get_runtime_status()
+
+
+@router.get(
+    "/doc-evidence",
+    response_model=RuntimeDocEvidenceResponse,
+    dependencies=[Depends(verify_machine_topology_ingest_api_key)],
+    summary="Runtime execution profiles for scanned units, for documentation evidence",
+)
+async def get_runtime_doc_evidence(
+    db: DBSession,
+    project_id: str,
+    units: Annotated[list[str], Query(min_length=1, max_length=_DOC_EVIDENCE_MAX_UNITS)],
+    window_days: int = Query(default=90, ge=1, le=365),
+    max_failures_per_unit: int = Query(default=5, ge=0, le=20),
+) -> RuntimeDocEvidenceResponse:
+    """Serve bounded runtime aggregates to the documentation generator.
+
+    This is a MACHINE endpoint: the doc-generation service authenticates with
+    the MCP ingest key, not a user session, so there is no user project scope to
+    derive.  Scope is therefore pinned to the single requested `project_id` --
+    the narrowest possible -- rather than left unrestricted.
+
+    Aggregates only.  No log lines cross this boundary and the one free-text
+    field is redacted, because the response is destined for an LLM prompt.
+    """
+    since = datetime.now(UTC) - timedelta(days=window_days)
+    units_, unmatched = await RuntimeStoreRepository(db).list_doc_evidence(
+        [project_id],
+        project_id=project_id,
+        unit_names=units,
+        since=since,
+        max_failures_per_unit=max_failures_per_unit,
+    )
+    return RuntimeDocEvidenceResponse(
+        project_id=project_id,
+        window_days=window_days,
+        since=since,
+        units=units_,
+        unmatched_units=unmatched,
+    )
 
 
 @router.get("/job-scan-maps", response_model=RuntimeJobScanMapListResponse)

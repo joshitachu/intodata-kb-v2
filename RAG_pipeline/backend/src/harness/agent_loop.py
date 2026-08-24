@@ -132,14 +132,35 @@ class AgentDecision(BaseModel):
 
 
 class AgentUsage(BaseModel):
+    """Token and cost usage for one agent turn.
+
+    Same invariant as ``src.generation.usage.UsageStats``: ``input_tokens`` is the
+    TOTAL prompt count and the cache counts are SUBSETS of it, so every existing
+    consumer that reads ``input_tokens`` as "how big was the prompt" stays correct.
+    """
+
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     model_cost_usd: float = Field(default=0.0, ge=0)
     capability_cost_usd: float = Field(default=0.0, ge=0)
+    #: Prompt tokens served from the provider's prefix cache, billed at a
+    #: discount. A subset of ``input_tokens``, not an addition to it.
+    cached_input_tokens: int = Field(default=0, ge=0)
+    #: Prompt tokens written into an explicit cache, billed at a premium. Stays 0
+    #: on providers with an automatic prefix cache and no write fee (Moonshot).
+    cache_write_tokens: int = Field(default=0, ge=0)
 
     @property
     def total_cost_usd(self) -> float:
         return self.model_cost_usd + self.capability_cost_usd
+
+    @property
+    def cache_hit_ratio(self) -> float:
+        """Share of the prompt served from cache, 0.0-1.0. 0.0 when no prompt."""
+
+        if self.input_tokens <= 0:
+            return 0.0
+        return min(1.0, self.cached_input_tokens / self.input_tokens)
 
 
 class AgentModelResult(BaseModel):
@@ -1286,6 +1307,8 @@ def _agent_usage(usage: UsageStats | None) -> AgentUsage:
         input_tokens=max(0, usage.input_tokens),
         output_tokens=max(0, usage.output_tokens),
         model_cost_usd=max(0.0, cost),
+        cached_input_tokens=max(0, usage.cached_input_tokens),
+        cache_write_tokens=max(0, usage.cache_write_tokens),
     )
 
 
@@ -1295,6 +1318,8 @@ def _add_usage(current: AgentUsage, added: AgentUsage) -> AgentUsage:
         output_tokens=current.output_tokens + added.output_tokens,
         model_cost_usd=current.model_cost_usd + added.model_cost_usd,
         capability_cost_usd=current.capability_cost_usd + added.capability_cost_usd,
+        cached_input_tokens=current.cached_input_tokens + added.cached_input_tokens,
+        cache_write_tokens=current.cache_write_tokens + added.cache_write_tokens,
     )
 
 

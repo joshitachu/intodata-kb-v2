@@ -29,6 +29,7 @@ import {
   type ComponentNodeData,
 } from "@/lib/jobGraphTransform";
 import { collapseLinearChains, CHAIN_SUMMARY_NODE_TYPE } from "@/lib/chainCollapse";
+import type { AssistantCanvasEmphasis, AssistantFocusRequest, CopilotViewContext } from "@/types/copilot";
 
 interface JobGraphCanvasProps {
   projectId: string;
@@ -45,6 +46,9 @@ interface JobGraphCanvasProps {
    *  lineage selection is active, or the selection belongs to a different
    *  job than the one this canvas shows. */
   lineageComponentIds?: Set<string> | null;
+  assistantEmphasis?: AssistantCanvasEmphasis | null;
+  assistantFocusRequest?: AssistantFocusRequest | null;
+  onContextChange?: (context: CopilotViewContext) => void;
 }
 
 const nodeTypes = {
@@ -100,6 +104,9 @@ function JobGraphCanvasInner({
   onOpenJob,
   onOpenComponent,
   lineageComponentIds = null,
+  assistantEmphasis,
+  assistantFocusRequest,
+  onContextChange,
 }: JobGraphCanvasProps) {
   const designLabel = artifactKind === "route" ? "Route" : "Job";
   const { data, isLoading, error } = useJobGraph(projectId, jobName);
@@ -158,13 +165,36 @@ function JobGraphCanvasInner({
             ? memberIds.some((id) => lineageComponentIds!.has(id))
             : lineageComponentIds!.has(n.id)
         );
-        const dimmed = Boolean(lineageComponentIds) && !isMatch;
-        const highlighted = isMatch;
-        if (n.data.dimmed === dimmed && n.data.highlighted === highlighted) return n;
-        return { ...n, data: { ...n.data, dimmed, highlighted } };
+        const assistantRole = assistantEmphasis?.nodeRoles.get(n.id)
+          ?? (memberIds
+            ? memberIds.map((id) => assistantEmphasis?.nodeRoles.get(id)).find(Boolean)
+            : undefined);
+        const highlighted = isMatch || Boolean(assistantRole);
+        const dimmed = Boolean(lineageComponentIds || assistantEmphasis?.nodeRoles.size) && !highlighted;
+        if (
+          n.data.dimmed === dimmed &&
+          n.data.highlighted === highlighted &&
+          n.data.assistantVisualRole === assistantRole
+        ) return n;
+        return { ...n, data: { ...n.data, dimmed, highlighted, assistantVisualRole: assistantRole } };
       }),
     );
-  }, [lineageComponentIds, setNodes]);
+  }, [lineageComponentIds, assistantEmphasis, setNodes]);
+
+  useEffect(() => {
+    if (!assistantFocusRequest) return;
+    const focusNodes = nodes.filter((node) => assistantFocusRequest.nodeIds.includes(node.id));
+    if (focusNodes.length > 0) void fitView({ nodes: focusNodes, padding: 0.4, duration: 450 });
+  }, [assistantFocusRequest, nodes, fitView]);
+
+  useEffect(() => {
+    onContextChange?.({
+      selectedEntity: inspectorComponent
+        ? { kind: "component", label: inspectorComponent, entity_id: `${jobName}::${inspectorComponent}` }
+        : { kind: "job", label: jobName, entity_id: jobName },
+      activeDetailTab: inspectorComponent ? "component_inspector" : "component_graph",
+    });
+  }, [inspectorComponent, jobName, onContextChange]);
 
   const handleNodeDoubleClick: NodeMouseHandler = useCallback(
     (_event, node) => {

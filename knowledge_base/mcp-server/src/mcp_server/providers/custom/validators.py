@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mcp_server.config import config
 from mcp_server.platforms import get_platform_strategy
@@ -14,6 +14,9 @@ from mcp_server.providers.custom.models import CoverageReport, FactsManifest, In
 from mcp_server.providers.custom.partition_planner import clean_system_keys
 from mcp_server.providers.custom.doc_catalog import load_doc_catalog as _load_catalog
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES, REQUIRED_SECTION_NAMES
+
+if TYPE_CHECKING:
+    from mcp_server.providers.custom.pack_contract import PackContract
 
 _catalog = _load_catalog()
 # Fallback doc set (used when a caller supplies no explicit required_docs).
@@ -548,12 +551,24 @@ def validate_analysis_guide_sections(
     facts: FactsManifest,
     *,
     require_group_summary: bool = True,
+    contract: "PackContract | None" = None,
 ) -> CoverageReport:
-    """Require canonical guide sections for Talend Phase 2 output."""
+    """Require canonical guide sections for Phase 2 output.
+
+    Contract-driven when ``contract`` is given: enforcement runs against
+    ``contract.required_names`` (empty -> artifact-existence check only,
+    matching the old plugin behaviour). The legacy ``require_group_summary`` /
+    platform-conditional path is unchanged when no contract is supplied.
+    """
 
     covered_ids: set[str] = set()
     errors: list[str] = []
     all_ids = {_unit_id(unit) for unit in facts.units}
+
+    if contract is not None:
+        return _validate_guide_sections_for_contract(
+            analysis_dir, facts, contract, all_ids
+        )
 
     if not require_group_summary:
         for group in facts.groups:
@@ -659,6 +674,83 @@ def validate_analysis_guide_sections(
     )
 
 
+def _validate_guide_sections_for_contract(
+    analysis_dir: Path,
+    facts: FactsManifest,
+    contract: "PackContract",
+    all_ids: set[str],
+) -> CoverageReport:
+    """Contract-driven guide-section gate shared by all platforms and packs."""
+
+    covered_ids: set[str] = set()
+    errors: list[str] = []
+    required = contract.required_names
+    for group in facts.groups:
+        group_files = [
+            p for p in sorted(analysis_dir.glob(f"{group}*.md"))
+            if not p.name.startswith("_bundle_")
+            and "_chunk_" not in p.name
+            and not p.name.endswith("_summary.md")
+        ]
+        if not group_files:
+            errors.append(f"Missing Phase 2 guide-section artifact for group {group}")
+            continue
+        if not required:
+            continue
+        text = "\n\n".join(p.read_text(encoding="utf-8", errors="replace") for p in group_files)
+        model_text = _model_analysis_text(text)
+        missing_required = [
+            name for name in required if not _has_section(model_text, name)
+        ]
+        if missing_required:
+            errors.append(
+                f"Phase 2 analysis for group {group} missing required sections: "
+                f"{', '.join(missing_required)}"
+            )
+        group_facts = [u for u in facts.units if u.group == group or group.startswith(f"{u.group}_part")]
+        if not group_facts:
+            group_facts = [u for u in facts.units if u.group == group]
+        covered_ids.update(_unit_id(unit) for unit in group_facts if unit.name in model_text)
+
+    if not required:
+        return CoverageReport(
+            ok=not errors,
+            covered_units=sorted(facts.unit_names()),
+            covered_unit_ids=sorted(all_ids),
+            missing_units=[],
+            missing_unit_ids=[],
+            coverage_count=facts.unit_count,
+            expected_count=facts.unit_count,
+            errors=errors,
+            warnings=_identity_report_warnings(facts),
+        )
+
+    # ESB_ROUTES stays a Talend-conditional check, but only when the contract
+    # actually asks for that section (a replace-mode pack does not).
+    if (
+        facts.platform == "talend"
+        and ESB_ROUTES_SECTION in contract.analysis_section_names
+        and _esb_detected(analysis_dir.parent / "_preprocess" / "talend_esb_facts.json")
+    ):
+        full_analysis_text = "\n".join(
+            p.read_text(encoding="utf-8", errors="replace")
+            for p in sorted(analysis_dir.glob("*.md"))
+            if not p.name.startswith("_") and "_chunk_" not in p.name
+        )
+        if not _has_section(full_analysis_text, ESB_ROUTES_SECTION):
+            errors.append(
+                f"Talend ESB/Camel routes detected but Phase 2 analysis is missing an "
+                f"{ESB_ROUTES_SECTION} section"
+            )
+
+    return _coverage_report_from_identities(
+        facts=facts,
+        covered_ids=covered_ids,
+        skipped_ids={},
+        errors=errors,
+    )
+
+
 def _has_section(text: str, section_name: str) -> bool:
     """Return True if the Model Analysis block contains a heading whose name matches
     section_name, regardless of heading level (#–######), case, or any suffix.
@@ -689,15 +781,24 @@ def _has_section(text: str, section_name: str) -> bool:
     return False
 
 
-def normalize_analysis_guide_headings(text: str, platform: str) -> str:
+def normalize_analysis_guide_headings(
+    text: str, platform: str, *, contract: "PackContract | None" = None
+) -> str:
     """Normalize known guide section headings to the canonical Phase 2 level.
 
     Accepts any heading level, any case, and any suffix after the section name
     (e.g. '### GROUP_SUMMARY: demo-data' → '### GROUP_SUMMARY').
+
+    When a ``contract`` is given its ``normalizable_names`` drive
+    canonicalisation (pack headings such as ``### INJECTION_SINKS: notes`` are
+    normalized too); without one the legacy platform conditional applies.
     """
-    section_names = (GROUP_SUMMARY_SECTION,)
-    if platform == "talend":
-        section_names = tuple(ANALYSIS_SECTION_NAMES) + section_names
+    if contract is not None:
+        section_names: tuple[str, ...] = contract.normalizable_names
+    else:
+        section_names = (GROUP_SUMMARY_SECTION,)
+        if platform == "talend":
+            section_names = tuple(ANALYSIS_SECTION_NAMES) + section_names
     # The suffix pattern uses [:\-–— \t] (horizontal-whitespace only) so that
     # '### GROUP_SUMMARY: demo-data' is matched but the newline + content line
     # that follows is never consumed.
@@ -708,9 +809,22 @@ def normalize_analysis_guide_headings(text: str, platform: str) -> str:
     return pattern.sub(lambda m: f"### {m.group('name').upper()}", text)
 
 
-def missing_required_analysis_sections(text: str, platform: str) -> list[str]:
-    """Return required guide sections absent from a Phase 2 model-analysis body."""
+def missing_required_analysis_sections(
+    text: str, platform: str, *, contract: "PackContract | None" = None
+) -> list[str]:
+    """Return required guide sections absent from a Phase 2 model-analysis body.
 
+    Contract-driven: enforcement runs against ``contract.required_names`` (for
+    a ``mode: replace`` pack the hard floor is ``GROUP_SUMMARY`` only), so a
+    pack whose declared sections are all satisfied can never trip the Phase 2
+    section raise and land in ``partial_groups``. Without a contract the
+    legacy platform conditional applies unchanged.
+    """
+
+    if contract is not None:
+        return [
+            name for name in contract.required_names if not _has_section(text, name)
+        ]
     missing_summary = [] if _has_section(text, GROUP_SUMMARY_SECTION) else [GROUP_SUMMARY_SECTION]
     if platform != "talend":
         return missing_summary
@@ -727,8 +841,26 @@ def _model_analysis_text(text: str) -> str:
     return text
 
 
-def group_analysis_is_complete(analysis_path: Path, platform: str, *, require_sections: bool = True) -> bool:
-    """Return True if a cached Phase 2 file has all required sections (Talend only)."""
+def group_analysis_is_complete(
+    analysis_path: Path,
+    platform: str,
+    *,
+    require_sections: bool = True,
+    contract: "PackContract | None" = None,
+) -> bool:
+    """Return True if a cached Phase 2 file has all contract-required sections.
+
+    With a ``contract`` the check runs against ``contract.required_names``
+    (empty for v1 plugin packs -> existence/size check, matching the old
+    ``require_sections=False`` plugin behaviour). Without one the legacy
+    platform conditional applies unchanged.
+    """
+    if contract is not None:
+        required: tuple[str, ...] = contract.required_names
+        if not required:
+            return analysis_path.exists() and analysis_path.stat().st_size > 0
+        text = analysis_path.read_text(encoding="utf-8", errors="replace")
+        return all(_has_section(text, name) for name in required)
     if not require_sections:
         return analysis_path.exists() and analysis_path.stat().st_size > 0
     text = analysis_path.read_text(encoding="utf-8", errors="replace")
@@ -1116,7 +1248,12 @@ def validate_pack_quality(staging_dir: Path, manifest: Any) -> dict[str, Any]:
         else (getattr(gates, "mode", "blocking") if gates is not None else "blocking")
     )
     unknown_policy = getattr(validation, "unknown_policy", "explicit")
-    errors: list[str] = []
+    # Contract errors describe whether the requested artifact exists and is
+    # structurally complete.  They are never advisory: ``mode: advisory`` may
+    # relax quality preferences, but it must not publish a missing, empty, or
+    # truncated required document.
+    contract_errors: list[str] = []
+    quality_errors: list[str] = []
     warnings: list[str] = []
     doc_reports: dict[str, dict[str, Any]] = {}
 
@@ -1129,9 +1266,9 @@ def validate_pack_quality(staging_dir: Path, manifest: Any) -> dict[str, Any]:
             "bytes": len(text.encode("utf-8")),
         }
         if not exists:
-            errors.append(f"Missing pack doc: {doc_name}.md")
+            contract_errors.append(f"Missing pack doc: {doc_name}.md")
         elif not text.strip():
-            errors.append(f"Pack doc is empty: {doc_name}.md")
+            contract_errors.append(f"Pack doc is empty: {doc_name}.md")
 
     for doc in docs:
         doc_name = doc.name
@@ -1145,7 +1282,7 @@ def validate_pack_quality(staging_dir: Path, manifest: Any) -> dict[str, Any]:
         required_sections = list(getattr(doc, "required_sections", []) or getattr(doc, "sections", []) or [])
         missing_sections = [section for section in required_sections if section.lower() not in headings]
         if missing_sections and path.exists():
-            errors.append(f"Pack doc {doc_name}.md missing required sections: {', '.join(missing_sections)}")
+            contract_errors.append(f"Pack doc {doc_name}.md missing required sections: {', '.join(missing_sections)}")
 
         for output in getattr(doc, "required_outputs", []) or []:
             if not _required_output_present(text, str(output)):
@@ -1159,12 +1296,12 @@ def validate_pack_quality(staging_dir: Path, manifest: Any) -> dict[str, Any]:
         if profile_name and required_evidence:
             bundle_path = staging_dir / "_evidence" / f"{profile_name}.json"
             if not bundle_path.exists():
-                errors.append(f"Pack doc {doc_name}.md missing evidence bundle for profile: {profile_name}")
+                contract_errors.append(f"Pack doc {doc_name}.md missing evidence bundle for profile: {profile_name}")
             else:
                 try:
                     payload = json.loads(bundle_path.read_text(encoding="utf-8"))
                 except Exception as exc:
-                    errors.append(f"Pack evidence bundle {profile_name}.json is invalid: {exc}")
+                    contract_errors.append(f"Pack evidence bundle {profile_name}.json is invalid: {exc}")
                     payload = {}
                 categories = payload.get("categories", {}) if isinstance(payload, dict) else {}
                 missing_required = [
@@ -1174,16 +1311,17 @@ def validate_pack_quality(staging_dir: Path, manifest: Any) -> dict[str, Any]:
                 ]
                 if missing_required:
                     if unknown_policy == "explicit" and not re.search(r"\bUNKNOWN\b|not evidenced", text, re.I):
-                        errors.append(
+                        contract_errors.append(
                             f"Pack doc {doc_name}.md missing explicit UNKNOWN/not evidenced wording for absent evidence: "
                             + ", ".join(missing_required)
                         )
                     doc_reports.setdefault(doc_name, {})["missing_required_evidence"] = missing_required
 
     if gates is None:
+        errors = [*contract_errors, *quality_errors]
         ok = not errors
-        effective_ok = ok or mode == "advisory"
-        if errors and mode == "advisory":
+        effective_ok = not contract_errors and (not quality_errors or mode == "advisory")
+        if quality_errors and mode == "advisory":
             warnings.append("Pack validation failed in advisory mode")
         return {
             "ok": ok,
@@ -1205,16 +1343,16 @@ def validate_pack_quality(staging_dir: Path, manifest: Any) -> dict[str, Any]:
 
     for term in gates.required_terms:
         if term.lower() not in all_text_lower:
-            errors.append(f"Missing required pack term: {term}")
+            quality_errors.append(f"Missing required pack term: {term}")
 
     for term in gates.required_evidence_terms:
         if term.lower() not in all_text_lower:
-            errors.append(f"Missing required evidence/provenance term: {term}")
+            quality_errors.append(f"Missing required evidence/provenance term: {term}")
 
     for doc_name, required_sections in gates.required_sections.items():
         path = staging_dir / f"{doc_name}.md"
         if not path.exists():
-            errors.append(f"Cannot validate sections for missing pack doc: {doc_name}.md")
+            contract_errors.append(f"Cannot validate sections for missing pack doc: {doc_name}.md")
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         headings = {
@@ -1224,22 +1362,23 @@ def validate_pack_quality(staging_dir: Path, manifest: Any) -> dict[str, Any]:
         }
         missing = [section for section in required_sections if section.lower() not in headings]
         if missing:
-            errors.append(f"Pack doc {doc_name}.md missing required sections: {', '.join(missing)}")
+            contract_errors.append(f"Pack doc {doc_name}.md missing required sections: {', '.join(missing)}")
 
     for doc_name, min_bytes in gates.min_doc_bytes.items():
         path = staging_dir / f"{doc_name}.md"
         if not path.exists():
-            errors.append(f"Cannot validate byte minimum for missing pack doc: {doc_name}.md")
+            contract_errors.append(f"Cannot validate byte minimum for missing pack doc: {doc_name}.md")
             continue
         actual = path.stat().st_size
         doc_reports.setdefault(doc_name, {"exists": True})["bytes"] = actual
         doc_reports[doc_name]["min_bytes"] = min_bytes
         if actual < min_bytes:
-            errors.append(f"Pack doc {doc_name}.md is too small: {actual} bytes < {min_bytes} required")
+            quality_errors.append(f"Pack doc {doc_name}.md is too small: {actual} bytes < {min_bytes} required")
 
+    errors = [*contract_errors, *quality_errors]
     ok = not errors
-    effective_ok = ok or mode == "advisory"
-    if errors and mode == "advisory":
+    effective_ok = not contract_errors and (not quality_errors or mode == "advisory")
+    if quality_errors and mode == "advisory":
         warnings.append("Pack quality gates failed in advisory mode")
     return {
         "ok": ok,
@@ -1404,7 +1543,12 @@ def _tabular_secret_cell_count(text: str) -> int:
 
 
 def validate_final_redaction(staging_dir: Path) -> CoverageReport:
-    """Scan publishable docs and persisted run artifacts for obvious secrets."""
+    """Scan publishable and RAG-eligible artifacts for obvious secrets.
+
+    Debug transcripts and copied static prompt/reference material are not
+    publication inputs and frequently contain fictional credential examples.
+    Scanning them as blocking deliverables created false enterprise failures.
+    """
 
     errors: list[str] = []
     scanned = 0
@@ -1413,6 +1557,13 @@ def validate_final_redaction(staging_dir: Path) -> CoverageReport:
             continue
         rel = path.relative_to(staging_dir).as_posix()
         if path.suffix.lower() not in {".md", ".json", ".log", ".txt"}:
+            continue
+        parts = path.relative_to(staging_dir).parts
+        is_public_doc = len(parts) == 1 and path.suffix.lower() == ".md"
+        is_rag_internal = bool(parts) and parts[0] in {
+            "_analysis", "_facts", "_rag_support", "_topology"
+        }
+        if not (is_public_doc or is_rag_internal):
             continue
         scanned += 1
         try:

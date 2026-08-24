@@ -56,6 +56,9 @@ class PluginRunnerProvider(DocGenerationProvider):
         total_out = 0
         t_start = time.monotonic()
         self._harness_required_docs: list[str] = []
+        self._write_model_name: str | None = None
+        self._has_warnings = False
+        model_name = ""
 
         for step in self.manifest.steps:
             await log_cb(ctx.project_id, f"[STEP:start] {step.id}", "info")
@@ -73,6 +76,7 @@ class PluginRunnerProvider(DocGenerationProvider):
                 step_outputs[step.id] = result.text
                 total_in += result.input_tokens
                 total_out += result.output_tokens
+                model_name = result.model_name or model_name
                 await log_cb(
                     ctx.project_id,
                     f"[STEP:done] {step.id} ({result.input_tokens}in/{result.output_tokens}out tokens)",
@@ -98,8 +102,12 @@ class PluginRunnerProvider(DocGenerationProvider):
             input_tokens=total_in,
             output_tokens=total_out,
             duration_ms=elapsed_ms,
-            model_name=self.manifest.name,
+            # The Pack identity belongs in Pack audit metadata.  ``model_name``
+            # must remain the actual model used by the wrapped pipeline.
+            model_name=model_name,
+            write_model_name=self._write_model_name,
             required_docs=harness_required_docs,
+            has_warnings=self._has_warnings,
         )
 
     async def _run_harness_step(
@@ -109,11 +117,14 @@ class PluginRunnerProvider(DocGenerationProvider):
         log_cb: LogCallback,
     ) -> ModelResult:
         result = await self.inner_provider.run(ctx, log_cb)
+        self._write_model_name = result.write_model_name
+        self._has_warnings = result.has_warnings
         if result.required_docs:
             self._harness_required_docs = result.required_docs
         return ModelResult(
             success=result.success,
             text="",
+            model_name=result.model_name,
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
             raw_error=result.error,

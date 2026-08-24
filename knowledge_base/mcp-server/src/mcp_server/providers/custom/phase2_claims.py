@@ -19,7 +19,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -30,7 +30,12 @@ from mcp_server.providers.custom.constants import (
 from mcp_server.providers.custom.evidence_tasks import EvidenceTask
 from mcp_server.providers.custom.models import FactsManifest
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES
+from mcp_server.providers.custom.prompt_renderer import get_renderer
+from mcp_server.providers.custom.prompts import plugin_analysis_extensions
 from mcp_server.providers.custom.target_evidence import extract_component_refs
+
+if TYPE_CHECKING:
+    from mcp_server.providers.custom.pack_contract import PackContract
 
 
 ClaimKind = Literal["fact", "relationship", "risk", "unknown"]
@@ -197,6 +202,7 @@ def plan_claim_tasks(
     evidence_bytes: int,
     dense_threshold_bytes: int = 24_000,
     max_output_tokens: int = 4_500,
+    sections: tuple[str, ...] | None = None,
 ) -> list[ClaimTaskSpec]:
     """Create one bounded claim request for one physical unit packet.
 
@@ -215,7 +221,7 @@ def plan_claim_tasks(
         ClaimTaskSpec(
             task=task,
             concern="analysis",
-            sections=ANALYSIS_SECTION_NAMES,
+            sections=sections if sections is not None else ANALYSIS_SECTION_NAMES,
             artifact_names=(
                 _DESIGN_ARTIFACTS | _OPERATIONS_ARTIFACTS | _RELATIONSHIP_ARTIFACTS
             ),
@@ -250,62 +256,24 @@ def claim_task_prompt(
     facts: FactsManifest,
     group: str,
     spec: ClaimTaskSpec,
+    plugin_pack_dir: Path | None = None,
+    contract: "PackContract | None" = None,
 ) -> str:
     """Return the complete compact extraction contract for one claim task."""
 
     units = spec.task.all_units
-    canonical_units = "\n".join(f"- {name}" for name in units) or "- none"
-    sections = "\n".join(f"- {name}" for name in spec.sections)
-    return f"""Return one JSON object only. Do not use Markdown fences or explanatory prose.
-
-You are extracting bounded evidence claims for documentation. The scanner artifacts are the
-factual record; your response is a concise interpretation index, not a copy of the source.
-
-SCHEMA
-{{
-  "schema_version": "phase2-claims-v1",
-  "group": {json.dumps(group)},
-  "task_id": {json.dumps(spec.target_id)},
-  "concern": {json.dumps(spec.concern)},
-  "claims": [
-    {{
-      "section": "ONE_ALLOWED_SECTION",
-      "kind": "fact|relationship|risk|unknown",
-      "unit_names": ["assigned canonical unit"],
-      "related_units": ["optional directly connected canonical unit"],
-      "statement": "one concise evidenced statement",
-      "evidence_refs": ["exact supplied source path and component/locator when available"],
-      "confidence": "certain|supported|tentative|unknown",
-      "claim_id": ""
-    }}
-  ]
-}}
-
-ASSIGNED CANONICAL UNITS
-{canonical_units}
-
-ALLOWED SECTIONS
-{sections}
-
-RULES
-- Emit at least one claim for every allowed section.
-- Use only assigned units in unit_names. A directly connected unit may appear in related_units.
-- Every fact, relationship, or risk requires at least one exact evidence_refs entry.
-- If evidence for a section is absent, emit exactly one kind=unknown claim naming the missing evidence;
-  unknown claims may have an empty evidence_refs list.
-- Maximum three non-unknown claims per section and maximum one claim per assigned unit per section.
-- CODE-BEARING SECTIONS (TRANSFORMATION_DETAIL, SOURCE_SQL, CUSTOM_CODE): when the evidence
-  contains SQL queries, tMap/transformation expressions, or custom code for an assigned unit,
-  the section's claim MUST quote the decisive expression VERBATIM inside backticks (up to the
-  {MAX_CLAIM_STATEMENT_CHARS}-character statement allowance; quote the decisive portion of a
-  longer expression) and explain what it does. A one-line paraphrase without
-  the verbatim expression is INVALID for these sections. An unknown claim in a code-bearing
-  section is INVALID when the evidence contains that category.
-- Other sections: do not reproduce full component inventories, context tables, credentials, URLs,
-  or configuration dumps. State the decisive interpretation and cite its source.
-- Do not infer business purpose, schedules, ownership, SLAs, or relationships absent from evidence.
-- Preserve canonical names exactly. The project has {facts.unit_count} canonical {facts.canonical_unit_label}.
-"""
+    prompt = get_renderer().render("phase2_claims.md", {
+        "GROUP_JSON": json.dumps(group),
+        "TASK_ID_JSON": json.dumps(spec.target_id),
+        "CONCERN_JSON": json.dumps(spec.concern),
+        "CANONICAL_UNITS": "\n".join(f"- {name}" for name in units) or "- none",
+        "SECTIONS": "\n".join(f"- {name}" for name in spec.sections),
+        "MAX_CLAIM_STATEMENT_CHARS": str(MAX_CLAIM_STATEMENT_CHARS),
+        "CANONICAL_UNIT_COUNT": str(facts.unit_count),
+        "CANONICAL_UNIT_LABEL": facts.canonical_unit_label,
+    }, pack_dir=plugin_pack_dir)
+    additions = plugin_analysis_extensions(facts, contract, plugin_pack_dir)
+    return f"{prompt.rstrip()}\n\n{additions}" if additions else prompt
 
 
 def parse_claim_batch(
@@ -716,12 +684,27 @@ def render_claims_as_markdown(
     group: str,
     unit_names: list[str],
     batches: list[Phase2ClaimBatch],
+    sections: tuple[str, ...] | None = None,
+    relationship_section_names: tuple[str, ...] | None = None,
 ) -> str:
-    """Render accepted claims into the legacy Phase 2 section contract."""
+    """Render accepted claims into the active Phase 2 section contract.
 
+    ``sections`` defaults to the legacy 16-section contract; a pack contract
+    passes its own declared sections so a ``mode: replace`` run emits exactly
+    those headings (this renderer is the mechanism that otherwise forces the
+    legacy shape -- recon S18). ``relationship_section_names`` drives the
+    CROSS_JOB_FINDINGS rollup in addition to ``kind == "relationship"``.
+    """
+
+    section_order = sections if sections is not None else tuple(ANALYSIS_SECTION_NAMES)
+    relationship_names = (
+        relationship_section_names
+        if relationship_section_names is not None
+        else ("CROSS_GROUP_REFS", "ESB_ROUTES")
+    )
     claims = [claim for batch in batches for claim in batch.claims]
     parts: list[str] = []
-    for section in ANALYSIS_SECTION_NAMES:
+    for section in section_order:
         parts.append(f"### {section}")
         section_claims = [claim for claim in claims if claim.section == section]
         if not section_claims:
@@ -749,7 +732,7 @@ def render_claims_as_markdown(
     relationship_claims = [
         claim
         for claim in claims
-        if claim.kind == "relationship" or claim.section in {"CROSS_GROUP_REFS", "ESB_ROUTES"}
+        if claim.kind == "relationship" or claim.section in set(relationship_names)
     ]
     parts.append(f"### {CROSS_JOB_FINDINGS_SECTION}")
     if relationship_claims:

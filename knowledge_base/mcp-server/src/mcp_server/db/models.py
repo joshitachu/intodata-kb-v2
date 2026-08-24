@@ -17,6 +17,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -70,12 +71,16 @@ class Project(Base):
     )
     github_token_enc: Mapped[str | None] = mapped_column(String(500), nullable=True)
     github_webhook_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # GitHub App connection (repo access via installation instead of a stored PAT).
-    # connection_kind: "pat" (default, legacy/fallback) | "app". github_installation_id
-    # is a non-secret reference used to mint short-lived tokens on demand.
-    connection_kind: Mapped[str] = mapped_column(String(10), default="pat", server_default="pat", nullable=False)
+    # How this project's git credential is resolved. connection_kind:
+    #   "pat"          -> github_token_enc (legacy/fallback, encrypted PAT on the project)
+    #   "app"          -> github_installation_id, a non-secret reference used to mint
+    #                     short-lived GitHub App tokens on demand
+    #   "azure_devops" -> azure_devops_connection_id, an organization-level PAT held
+    #                     once in azure_devops_connections instead of per project
+    connection_kind: Mapped[str] = mapped_column(String(32), default="pat", server_default="pat", nullable=False)
     github_installation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     github_account_login: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    azure_devops_connection_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     instruction_pack_dir: Mapped[str | None] = mapped_column(String(500), nullable=True)
     plugin_pack_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("plugin_packs.id", ondelete="SET NULL"), nullable=True
@@ -111,6 +116,39 @@ class GithubAppInstallation(Base):
     installation_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
     owner_user_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     account_login: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class AzureDevOpsConnection(Base):
+    """An Azure DevOps organization connected with a Personal Access Token.
+
+    Azure DevOps has no GitHub-App equivalent, so a PAT is the only credential.
+    Holding it once per organization (rather than once per repository, the way the
+    legacy ``projects.github_token_enc`` column does) means the user pastes a token
+    a single time, and every project cloned from that organization resolves its
+    credential through this row.
+
+    The token is Fernet-encrypted with ``MCP_TOKEN_ENCRYPTION_KEY`` and never
+    leaves the server. ``owner_user_id`` references the RAG users table, which MCP
+    accesses via raw SQL, so it is a plain indexed column (no FK) — same as
+    :class:`GithubAppInstallation`.
+    """
+
+    __tablename__ = "azure_devops_connections"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id", "organization_url", name="uq_azure_devops_connection_owner_org"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    organization_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    organization_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    account_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    pat_enc: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_user_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    last_verified_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ScanRun(Base):
@@ -189,8 +227,145 @@ class GenerateRun(Base):
         nullable=True,
     )
 
+    # Pack audit record (docs/one-pack-program.md section 9, "Substitute
+    # controls for dropping Git on user packs"). Mandatory GitHub PR review is
+    # dropped for user-authored packs, so every client deliverable must be
+    # bindable to the exact pack version that produced it. All nullable: runs
+    # with no active pack (the default handover contract) leave them NULL.
+    # ``pack_activated_by`` is the actor identity string supplied by the RAG
+    # side; this database has no ``users`` table, so it is deliberately not a
+    # foreign key.
+    pack_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    pack_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pack_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pack_activated_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    pack_activated_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Relationships
     project: Mapped[Project] = relationship(back_populates="generate_runs")
+
+
+class ConnectorInstance(Base):
+    """Workspace-owned connector configuration; credentials are ciphertext only."""
+
+    __tablename__ = "connector_instances"
+    __table_args__ = (
+        UniqueConstraint("provider_id", "account_key", name="uq_connector_instance_account"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    provider_id: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Normalized identity of the account/domain this instance points at, so the
+    # same cluster or tenant cannot be registered twice under two display names.
+    # NULL where the provider's manifest declares no account field -- NULLs stay
+    # distinct under the unique index, which is the behaviour wanted here.
+    account_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ownership_scope: Mapped[str] = mapped_column(String(32), default="workspace", nullable=False)
+    safe_config: Mapped[dict] = mapped_column(JSONB().with_variant(JSON(), "sqlite"), default=dict, nullable=False)
+    credential_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    credential_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    kibana_credential_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="not_connected", nullable=False)
+    last_checked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    health_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider_version: Mapped[str] = mapped_column(String(32), default="1", nullable=False)
+    redaction_policy_version: Mapped[str] = mapped_column(String(32), default="v1", nullable=False)
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    updated_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+
+
+class ConnectorSource(Base):
+    """Approved provider target.  The locator is encrypted separately from profile metadata."""
+
+    __tablename__ = "connector_sources"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    connector_instance_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("connector_instances.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    source_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_label: Mapped[str] = mapped_column(String(500), nullable=False)
+    locator_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    field_profile: Mapped[dict] = mapped_column(JSONB().with_variant(JSON(), "sqlite"), default=dict, nullable=False)
+    discovered_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    discovery_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class ProjectConnectorBindingModel(Base):
+    """Project ceiling for source/capability access; versioned for immutable run snapshots."""
+
+    __tablename__ = "project_connector_bindings"
+    __table_args__ = (UniqueConstraint("project_id", "connector_instance_id", name="uq_project_connector_binding"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(100), ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    connector_instance_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("connector_instances.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    source_ids: Mapped[list] = mapped_column(JSONB().with_variant(JSON(), "sqlite"), default=list, nullable=False)
+    capability_ids: Mapped[list] = mapped_column(JSONB().with_variant(JSON(), "sqlite"), default=list, nullable=False)
+    budgets: Mapped[dict] = mapped_column(JSONB().with_variant(JSON(), "sqlite"), default=dict, nullable=False)
+    max_time_window_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    updated_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+
+
+class GenerationConnectorSnapshot(Base):
+    """Immutable effective binding and grant metadata for one generation run."""
+
+    __tablename__ = "generation_connector_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    generate_run_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("generate_runs.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    project_id: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
+    initiating_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    connector_instance_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    binding_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    binding_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSONB().with_variant(JSON(), "sqlite"), nullable=False)
+    grant_nonce_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    grant_issued_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    grant_expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    grant_revoked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    digest: Mapped[str] = mapped_column(String(71), nullable=False)
+
+
+class ConnectorInvocation(Base):
+    """Sanitized immutable receipt; never stores a provider response body."""
+
+    __tablename__ = "connector_invocations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    evidence_id: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    generation_snapshot_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("generation_connector_snapshots.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    connector_instance_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    source_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    capability_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    query_summary: Mapped[dict] = mapped_column(JSONB().with_variant(JSON(), "sqlite"), default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    started_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    item_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    byte_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    redaction_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    truncation: Mapped[dict] = mapped_column(JSONB().with_variant(JSON(), "sqlite"), default=dict, nullable=False)
+    limitations: Mapped[list] = mapped_column(JSONB().with_variant(JSON(), "sqlite"), default=list, nullable=False)
+    result_digest: Mapped[str | None] = mapped_column(String(71), nullable=True)
+    denial_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class ProjectGroupScanHash(Base):
@@ -239,12 +414,27 @@ class PluginPack(Base):
     A pack directory must contain a plugin.yaml manifest.  When installed from
     a GitHub URL the local clone path is stored in `path` and the HEAD SHA in
     `last_commit_sha` so the poller/webhook can detect updates.
+
+    Two lanes, one format:
+
+    * ``owner_user_id IS NULL`` -- a SHARED pack, cloned from the configured
+      pack repository. Visible to everyone, immutable in-app, changed only by
+      merging a pull request upstream.
+    * ``owner_user_id`` set -- a PERSONAL pack authored in Nexus by that user.
+      Visible and usable only to its owner, freely editable, and publishable to
+      the shared repository as a branch + pull request.
     """
 
     __tablename__ = "plugin_packs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    # Uniqueness is enforced by two indexes (migration 028): globally for
+    # shared packs, per-owner for personal ones. Not `unique=True` here.
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    #: NULL = shared (from the pack repository); set = private to that user.
+    owner_user_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, index=True
+    )
     manifest_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     version: Mapped[str] = mapped_column(String(50), nullable=False)
     path: Mapped[str] = mapped_column(String(1000), nullable=False)

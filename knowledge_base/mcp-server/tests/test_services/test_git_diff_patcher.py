@@ -50,16 +50,18 @@ async def test_run_git_sanitizes_remote_errors(monkeypatch, tmp_path):
     assert "token@" not in str(exc.value)
 
 
-async def test_manual_or_skip_uses_token_aware_pull(monkeypatch, log_manager):
+async def test_manual_or_skip_uses_credential_aware_pull(monkeypatch, log_manager):
     import mcp_server.services.git_diff_patcher as patcher
+    from mcp_server.services.git_credentials import PatCredentialProvider
 
-    calls: list[tuple[str, str | None, object | None]] = []
+    calls: list[tuple[str, object | None, object | None]] = []
 
-    async def pull_stub(local_path: str, github_token_enc: str | None, git_func=None) -> str:
-        calls.append((local_path, github_token_enc, git_func))
+    async def pull_stub(local_path: str, credential=None, git_func=None) -> str:
+        calls.append((local_path, credential, git_func))
         return ""
 
     monkeypatch.setattr(patcher, "pull_remote_ff_only", pull_stub)
+    credential = PatCredentialProvider("enc-token")
 
     result = await patcher._manual_or_skip(
         "proj",
@@ -68,13 +70,15 @@ async def test_manual_or_skip_uses_token_aware_pull(monkeypatch, log_manager):
         {"action": "unknown"},
         ("skipped", "Only ignored/non-doc-impacting files changed"),
         log_manager,
-        github_token_enc="enc-token",
+        credential=credential,
     )
 
     assert result.advance_commit is True
     assert result.summary["outcome"] == "skip"
     assert result.summary["reason_code"] == "non_doc_change"
-    assert calls == [("/tmp/repo", "enc-token", patcher._git)]
+    # The provider is passed through untouched, so the pull authenticates with
+    # whatever connection kind the project has.
+    assert calls == [("/tmp/repo", credential, patcher._git)]
 
 
 def test_agent_confidence_infers_confidence_for_valid_edits(monkeypatch):
@@ -582,6 +586,133 @@ def test_pattern_diff_prefers_pattern_architecture_and_onboarding_docs(tmp_path)
         ("01_ARCHITECTURE_MAP.md", "Topology"),
         ("00_AGENT_BRIEF.md", "Known Traps"),
     ]
+
+
+def test_diff_doc_selection_reaches_pack_named_docs(tmp_path):
+    """Doc selection is driven by the ACTIVE doc set, not a numeric prefix (D35)."""
+    import mcp_server.services.git_diff_patcher as patcher
+
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "MIGRATION_PLAYBOOK.md").write_text(
+        "# Migration Playbook\n\n## Change Impact\n\nOrderIntakeHandler rollout steps.\n",
+        encoding="utf-8",
+    )
+    (docs_dir / "SYSTEM_TOPOLOGY.md").write_text(
+        "# System Topology\n\n## Boundaries\n\nOrderIntakeHandler sits at the edge.\n",
+        encoding="utf-8",
+    )
+    (docs_dir / "engineering_facts.md").write_text(
+        "# Facts\n\n## Facts\n\nOrderIntakeHandler appears here too.\n",
+        encoding="utf-8",
+    )
+    (docs_dir / "_internal.md").write_text(
+        "# Internal\n\n## Internal\n\nOrderIntakeHandler internal note.\n",
+        encoding="utf-8",
+    )
+
+    active = patcher._active_doc_names(docs_dir)
+    assert active == ("MIGRATION_PLAYBOOK.md", "SYSTEM_TOPOLOGY.md")
+
+    changes = [
+        patcher.FileChange(status="M", path="src/Api/Patterns/Chain/OrderIntakeHandler.cs")
+    ]
+    diff_text = "+public class OrderIntakeHandler {}\n"
+
+    # Candidate matching now sees pack-named docs, and only those.
+    candidates = patcher._match_doc_sections(docs_dir, changes, diff_text)
+    assert {section.filename for section in candidates} == {
+        "MIGRATION_PLAYBOOK.md",
+        "SYSTEM_TOPOLOGY.md",
+    }
+
+    # The diff-signal heuristic resolves its roles onto the active names.
+    preferred = patcher._preferred_docs_for_diff(changes, diff_text, available_docs=active)
+    assert preferred[0] == "MIGRATION_PLAYBOOK.md"
+    assert "SYSTEM_TOPOLOGY.md" in preferred
+
+    # The preferred-doc fallback no longer refuses non-numbered filenames.
+    fallback = patcher._fallback_section_for_doc(docs_dir, "MIGRATION_PLAYBOOK.md")
+    assert fallback is not None
+    assert fallback.filename == "MIGRATION_PLAYBOOK.md"
+    assert patcher._fallback_section_for_doc(docs_dir, "_internal.md") is None
+    assert patcher._fallback_section_for_doc(docs_dir, "engineering_facts.md") is None
+
+    selected = patcher._select_doc_sections(
+        [],
+        limit=2,
+        preferred_docs=preferred,
+        docs_dir=docs_dir,
+    )
+    assert [section.filename for section in selected] == [
+        "MIGRATION_PLAYBOOK.md",
+        "SYSTEM_TOPOLOGY.md",
+    ]
+
+
+def test_diff_doc_selection_unchanged_for_legacy_doc_set(tmp_path):
+    """Same heuristic, legacy doc set: byte-identical routing to before."""
+    import mcp_server.services.git_diff_patcher as patcher
+
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    legacy = (
+        "00_AGENT_BRIEF.md",
+        "01_ARCHITECTURE_MAP.md",
+        "03_DATA_FLOWS_AND_LINEAGE.md",
+        "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md",
+        "06_OPERATIONS_TESTING_AND_DEBUGGING.md",
+        "07_QUALITY_SECURITY_RISK_SCORECARD.md",
+        "08_CHANGE_PLAYBOOK.md",
+    )
+    for name in legacy:
+        (docs_dir / name).write_text(f"# {name}\n\n## Body\n\nText.\n", encoding="utf-8")
+
+    changes = [
+        patcher.FileChange(status="M", path="src/Api/Patterns/Chain/Handler.cs"),
+        patcher.FileChange(status="M", path="src/Api/Services/OrderService.cs"),
+        patcher.FileChange(status="M", path="src/Api/Middleware/ErrorMiddleware.cs"),
+    ]
+    diff_text = "+throw new Exception();\n"
+
+    with_active = patcher._preferred_docs_for_diff(
+        changes, diff_text, available_docs=patcher._active_doc_names(docs_dir)
+    )
+    without_active = patcher._preferred_docs_for_diff(changes, diff_text)
+    assert with_active == without_active == [
+        "08_CHANGE_PLAYBOOK.md",
+        "01_ARCHITECTURE_MAP.md",
+        "00_AGENT_BRIEF.md",
+        "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md",
+        "03_DATA_FLOWS_AND_LINEAGE.md",
+        "06_OPERATIONS_TESTING_AND_DEBUGGING.md",
+        "07_QUALITY_SECURITY_RISK_SCORECARD.md",
+    ]
+
+
+def test_patch_apply_and_restore_cover_pack_named_docs(tmp_path):
+    """A doc the patcher may write must be a doc it can roll back."""
+    import mcp_server.services.git_diff_patcher as patcher
+
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    original = "# Injection Findings\n\n## Sinks\n\nOld text.\n"
+    (docs_dir / "INJECTION_FINDINGS.md").write_text(original, encoding="utf-8")
+
+    patched, originals = patcher._apply_patches_with_backup(
+        docs_dir,
+        [{
+            "filename": "INJECTION_FINDINGS.md",
+            "heading": "Sinks",
+            "replacement_markdown": "## Sinks\n\nNew verified text about the sink.\n",
+        }],
+    )
+
+    assert patched == ["INJECTION_FINDINGS.md"]
+    assert originals == {"INJECTION_FINDINGS.md": original}
+
+    patcher._restore_docs(docs_dir, originals)
+    assert (docs_dir / "INJECTION_FINDINGS.md").read_text(encoding="utf-8") == original
 
 
 async def test_webhook_diff_update_invalid_patch_json_leaves_docs_unchanged(

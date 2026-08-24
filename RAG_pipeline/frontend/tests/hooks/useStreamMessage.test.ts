@@ -33,6 +33,7 @@ function publicEvent(
   sequence: number,
   type: string,
   publicPayload: Record<string, unknown>,
+  replayable = true,
 ) {
   return {
     event_id: `run-fixture:evt:${String(sequence).padStart(6, "0")}`,
@@ -41,7 +42,7 @@ function publicEvent(
     type,
     created_at: "2026-07-21T10:00:00Z",
     public_payload: publicPayload,
-    replayable: true,
+    replayable,
   };
 }
 
@@ -189,5 +190,95 @@ describe("useStreamMessage", () => {
     expect(fetchMock.mock.calls[1][0]).toContain("after_sequence=2");
     expect((fetchMock.mock.calls[1][1]?.headers as Record<string, string>)["Last-Event-ID"])
       .toBe(firstDelta.event_id);
+  });
+
+  it("renders live progress during generation without treating it as answer content", async () => {
+    const progress = publicEvent(2, "assistant.progress", {
+      status: "running",
+      phase: "writing_answer",
+      summary: "Writing the answer... 14s",
+      elapsed_ms: 14000,
+    });
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      sseResponse(
+        `event: run.started\ndata: ${JSON.stringify(publicEvent(1, "run.started", { status: "running" }))}\n\n` +
+          `event: assistant.progress\ndata: ${JSON.stringify(progress)}\n\n` +
+          `event: assistant.delta\ndata: ${JSON.stringify(publicEvent(3, "assistant.delta", { content: "Validated answer." }))}\n\n` +
+          `event: done\ndata: ${JSON.stringify({ message_id: 9, latency_ms: 12, run_id: "run-fixture" })}\n\n`,
+      ),
+    );
+    const { result } = renderHook(() => useStreamMessage(4));
+
+    await act(async () => result.current.sendMessage({ query: "Question" }));
+
+    // The progress summary reaches the status line...
+    expect(result.current.streamState.progress).toBe("Writing the answer... 14s");
+    // ...but never the answer, which still arrives only as validated deltas.
+    expect(result.current.streamState.content).toBe("Validated answer.");
+    // Heartbeats are not retained: there is one per couple of seconds of decode.
+    expect(
+      (result.current.streamState.agentEvents ?? []).map((event) => event.type),
+    ).toEqual(["run.started"]);
+  });
+  it("shows the live answer once, then lets the persisted answer replace it", async () => {
+    // The trusted RAG answer is streamed live (replayable: false) while it is
+    // generated and emitted again after persistence (replayable: true).
+    // Appending both would duplicate it; the authoritative run must replace.
+    const live = [
+      publicEvent(2, "assistant.delta", { content: "Amsterdam " }, false),
+      publicEvent(3, "assistant.delta", { content: "is the answer." }, false),
+    ];
+    const authoritative = [
+      publicEvent(5, "assistant.delta", { content: "Amsterdam " }),
+      publicEvent(6, "assistant.delta", { content: "is the answer." }),
+    ];
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      sseResponse(
+        `event: run.started\ndata: ${JSON.stringify(publicEvent(1, "run.started", { status: "running" }))}\n\n` +
+          live
+            .map((e) => `event: assistant.delta\ndata: ${JSON.stringify(e)}\n\n`)
+            .join("") +
+          authoritative
+            .map((e) => `event: assistant.delta\ndata: ${JSON.stringify(e)}\n\n`)
+            .join("") +
+          `event: done\ndata: ${JSON.stringify({ message_id: 9, latency_ms: 12, run_id: "run-fixture" })}\n\n`,
+      ),
+    );
+    const { result } = renderHook(() => useStreamMessage(4));
+
+    await act(async () => result.current.sendMessage({ query: "Where is it?" }));
+
+    expect(result.current.streamState.content).toBe("Amsterdam is the answer.");
+    expect(result.current.streamState.deltaSource).toBe("authoritative");
+  });
+
+  it("lets the persisted answer correct the live text if the two ever differ", async () => {
+    // Safety property: whatever the server persisted wins on screen.
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      sseResponse(
+        `event: assistant.delta\ndata: ${JSON.stringify(publicEvent(2, "assistant.delta", { content: "provisional text" }, false))}\n\n` +
+          `event: assistant.delta\ndata: ${JSON.stringify(publicEvent(3, "assistant.delta", { content: "persisted text" }))}\n\n` +
+          `event: done\ndata: ${JSON.stringify({ message_id: 9, latency_ms: 12, run_id: "run-fixture" })}\n\n`,
+      ),
+    );
+    const { result } = renderHook(() => useStreamMessage(4));
+
+    await act(async () => result.current.sendMessage({ query: "Where is it?" }));
+
+    expect(result.current.streamState.content).toBe("persisted text");
+  });
+
+  it("streams live deltas into content while generation is still running", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      sseResponse(
+        `event: assistant.delta\ndata: ${JSON.stringify(publicEvent(2, "assistant.delta", { content: "partial " }, false))}\n\n`,
+      ),
+    );
+    const { result } = renderHook(() => useStreamMessage(4));
+
+    await act(async () => result.current.sendMessage({ query: "Where is it?" }));
+
+    expect(result.current.streamState.content).toBe("partial ");
+    expect(result.current.streamState.deltaSource).toBe("live");
   });
 });

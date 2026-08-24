@@ -25,7 +25,7 @@ import {
   deleteSourceProject,
   deleteGithubWebhook,
   fetchSourceLogHistory,
-  generateDocs,
+  generateDocsWhenScanned,
   pushProjectToRag,
   registerGithubWebhook,
   resetProjectStatus,
@@ -41,7 +41,10 @@ import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { AzureDevOpsConnectPanel } from "./AzureDevOpsConnectPanel";
 import { GithubAppConnectPanel } from "./GithubAppConnectPanel";
+import { ProjectConnectorBindings } from "./ProjectConnectorBindings";
+import { SimpleConnectorPanel } from "./SimpleConnectorPanel";
 
 type RowStage =
   | "pending"
@@ -278,6 +281,7 @@ export default function SourcesSettingsPage() {
   const [search, setSearch] = useState("");
   const [platformFilter, setPlatformFilter] = useState("all");
   const [sourceTypeFilter, setSourceTypeFilter] = useState("all");
+  const [manualAddOpen, setManualAddOpen] = useState(false);
   const projects = sourceProjects?.projects ?? [];
   const filteredProjects = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -401,7 +405,10 @@ export default function SourcesSettingsPage() {
                 stage: "generating",
                 progress: progressFromEvent(ev, "generating"),
               });
-              generateDocs(projectId).catch((err) => {
+              // The log marker only says "the scanner thinks it is done". It can
+              // arrive from an earlier run or before scan_result.json lands, so the
+              // dispatch itself waits on the project row before generating.
+              generateDocsWhenScanned(projectId).catch((err) => {
                 if (settled) return;
                 settled = true;
                 removePersistedPipeline(projectId);
@@ -456,7 +463,7 @@ export default function SourcesSettingsPage() {
           logsOpen: true,
         });
         const starter = options.startGenerate
-          ? generateDocs(projectId)
+          ? generateDocsWhenScanned(projectId)
           : options.startScan === false
             ? Promise.resolve()
             : scanProject(projectId);
@@ -627,7 +634,7 @@ export default function SourcesSettingsPage() {
           logs: [],
           logsOpen: true,
         });
-        generateDocs(projectId).catch((err) => {
+        generateDocsWhenScanned(projectId).catch((err) => {
           if (settled) return;
           settled = true;
           removePersistedPipeline(projectId);
@@ -804,93 +811,140 @@ export default function SourcesSettingsPage() {
     );
   }
 
+  const attentionCount = projects.filter((project) => project.status === "error").length;
+  const totalDocs = projects.reduce((sum, project) => sum + (project.doc_count ?? 0), 0);
+  const totalUnits = projects.reduce((sum, project) => sum + (project.job_count ?? 0), 0);
+
   return (
-    <div className="mx-auto w-full max-w-3xl p-6 space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Sources</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Connect a GitHub repository or upload a ZIP for each platform you
-          declared during onboarding. Scans run sequentially in the
-          background.
-        </p>
-      </div>
-
-      <GithubAppConnectPanel
-        platforms={platformOptions.map((id) => ({ id, label: platformLabel(id) }))}
-        defaultPlatform={activeAddPlatform}
-        existingProjects={projects}
-        onConnected={async (project) => {
-          qc.invalidateQueries({ queryKey: ["source-projects"] });
-          await runProjectPipeline(project.id, project.id);
-        }}
-      />
-
-      <section className="space-y-3">
+    <div className="mx-auto w-full max-w-3xl space-y-10 px-6 py-12">
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-baseline sm:justify-between">
         <div>
-          <h2 className="text-base font-semibold">Add source</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Add a new ZIP or GitHub repository, then scan and generate docs
-            from the same customer admin screen.
+          <h1 className="text-3xl font-semibold tracking-tight">Sources</h1>
+          <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
+            Source code, generated documentation, and live evidence for every project you can manage.
           </p>
         </div>
-
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <label className="text-sm font-medium text-muted-foreground">Platform</label>
-          <select
-            className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-            value={activeAddPlatform}
-            onChange={(e) => setAddPlatform(e.target.value)}
-          >
-            {platformOptions.map((platformId) => (
-              <option key={platformId} value={platformId}>
-                {platformLabel(platformId)}
-              </option>
-            ))}
-          </select>
+        <div className="flex shrink-0 items-baseline gap-5">
+          <span className="text-sm text-muted-foreground">
+            {attentionCount > 0 ? `${attentionCount} need attention` : `${projects.length} sources`}
+          </span>
         </div>
+      </header>
 
-        <SourceRow
-          key={`add-${activeAddPlatform}`}
-          platformId={activeAddPlatform}
-          label={platformLabel(activeAddPlatform)}
-          platformLabel={platformLabel(activeAddPlatform)}
-          row={rows[activeAddPlatform]}
-          mode={modes[activeAddPlatform] ?? "zip"}
-          github={githubForms[activeAddPlatform]}
-          onModeChange={(mode) => setModes((prev) => ({ ...prev, [activeAddPlatform]: mode }))}
-          onGithubChange={(patch) => patchGithub(activeAddPlatform, patch)}
-          onGithubConnect={() => runGithubConnect(activeAddPlatform)}
-          onProjectNameChange={(projectName) => patchRow(activeAddPlatform, { projectName })}
-          onFilePicked={(file) =>
-            patchRow(activeAddPlatform, { file, error: null, stage: "pending" })
-          }
-          onClear={() =>
-            patchRow(activeAddPlatform, { file: null, error: null, stage: "pending" })
-          }
-          onUpload={(file) => runUpload(activeAddPlatform, file)}
-          onScanExisting={async () => undefined}
-          onGenerateExisting={async () => undefined}
-          onPushToRag={async () => undefined}
-          onResetStatus={async () => undefined}
-          onUpdateToken={async () => undefined}
-          onRegisterWebhook={async () => undefined}
-          onDeleteWebhook={async () => undefined}
-          onCheckWebhook={async () => undefined}
-          onDeleteProject={async () => undefined}
-          onToggleLogs={() =>
-            patchRow(activeAddPlatform, {
-              logsOpen: !(rows[activeAddPlatform]?.logsOpen ?? false),
-            })
-          }
+      <section aria-labelledby="add-source-heading">
+        <h2 id="add-source-heading" className="sr-only">Add source</h2>
+        <GithubAppConnectPanel
+          platforms={platformOptions.map((id) => ({ id, label: platformLabel(id) }))}
+          defaultPlatform={activeAddPlatform}
+          existingProjects={projects}
+          onConnected={async (project) => {
+            qc.invalidateQueries({ queryKey: ["source-projects"] });
+            await runProjectPipeline(project.id, project.id);
+          }}
         />
+
+        <AzureDevOpsConnectPanel
+          platforms={platformOptions.map((id) => ({ id, label: platformLabel(id) }))}
+          defaultPlatform={activeAddPlatform}
+          existingProjects={projects}
+          onConnected={async (project) => {
+            qc.invalidateQueries({ queryKey: ["source-projects"] });
+            await runProjectPipeline(project.id, project.id);
+          }}
+        />
+
+        <div className="border-b border-border">
+          <div className="flex flex-col gap-4 px-1 py-5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                <FileArchive className="h-5 w-5" />
+              </span>
+              <div>
+                <h3 className="text-base font-semibold">ZIP or manual Git URL</h3>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Upload an archive, or paste a GitHub / Azure DevOps repository URL with
+                  a personal access token.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setManualAddOpen((current) => !current)}
+              className="shrink-0 border-b-2 border-[#fe9543] text-sm font-semibold text-foreground transition-colors hover:text-[#d96f23]"
+              aria-expanded={manualAddOpen}
+            >
+              {manualAddOpen ? "Close form" : "Add manually"}
+            </button>
+          </div>
+
+          {manualAddOpen && (
+            <div className="space-y-4 border-t border-border px-1 py-5">
+              <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                Platform
+                <select
+                  className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
+                  value={activeAddPlatform}
+                  onChange={(e) => setAddPlatform(e.target.value)}
+                >
+                  {platformOptions.map((platformId) => (
+                    <option key={platformId} value={platformId}>
+                      {platformLabel(platformId)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <SourceRow
+                key={`add-${activeAddPlatform}`}
+                platformId={activeAddPlatform}
+                label={platformLabel(activeAddPlatform)}
+                platformLabel={platformLabel(activeAddPlatform)}
+                row={rows[activeAddPlatform]}
+                mode={modes[activeAddPlatform] ?? "zip"}
+                github={githubForms[activeAddPlatform]}
+                onModeChange={(mode) => setModes((prev) => ({ ...prev, [activeAddPlatform]: mode }))}
+                onGithubChange={(patch) => patchGithub(activeAddPlatform, patch)}
+                onGithubConnect={() => runGithubConnect(activeAddPlatform)}
+                onProjectNameChange={(projectName) => patchRow(activeAddPlatform, { projectName })}
+                onFilePicked={(file) =>
+                  patchRow(activeAddPlatform, { file, error: null, stage: "pending" })
+                }
+                onClear={() =>
+                  patchRow(activeAddPlatform, { file: null, error: null, stage: "pending" })
+                }
+                onUpload={(file) => runUpload(activeAddPlatform, file)}
+                onScanExisting={async () => undefined}
+                onGenerateExisting={async () => undefined}
+                onPushToRag={async () => undefined}
+                onResetStatus={async () => undefined}
+                onUpdateToken={async () => undefined}
+                onRegisterWebhook={async () => undefined}
+                onDeleteWebhook={async () => undefined}
+                onCheckWebhook={async () => undefined}
+                onDeleteProject={async () => undefined}
+                onToggleLogs={() =>
+                  patchRow(activeAddPlatform, {
+                    logsOpen: !(rows[activeAddPlatform]?.logsOpen ?? false),
+                  })
+                }
+              />
+            </div>
+          )}
+        </div>
       </section>
 
-      <section className="space-y-3">
-        <div>
-          <h2 className="text-base font-semibold">Existing sources</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Every project this admin can access. GitHub credentials and webhook
-            controls appear on GitHub sources only.
+      <SimpleConnectorPanel />
+
+      <section className="space-y-5" aria-labelledby="existing-sources-heading">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 id="existing-sources-heading" className="text-base font-semibold">Connected sources</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Select a project to manage its pipeline, GitHub settings, and logs.
+            </p>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {totalUnits} units · {totalDocs} docs · {projects.filter((p) => p.source_type === "git").length} GitHub
           </p>
         </div>
 
@@ -927,13 +981,6 @@ export default function SourcesSettingsPage() {
           </select>
         </div>
 
-        <div className="grid gap-2 sm:grid-cols-4">
-          <Stat label="Sources" value={projects.length} />
-          <Stat label="GitHub" value={projects.filter((p) => p.source_type === "git").length} />
-          <Stat label="Docs" value={projects.reduce((sum, p) => sum + (p.doc_count ?? 0), 0)} />
-          <Stat label="Recipes / Talend designs" value={projects.reduce((sum, p) => sum + (p.job_count ?? 0), 0)} />
-        </div>
-
         {projects.length === 0 ? (
           <Card>
             <CardBody>
@@ -947,7 +994,12 @@ export default function SourcesSettingsPage() {
             </CardBody>
           </Card>
         ) : (
-          <div className="space-y-3">
+          <div className="border-y border-border">
+            <div className="hidden grid-cols-[minmax(0,1fr)_auto_auto] gap-5 border-b border-border px-1 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground sm:grid">
+              <span>Project source</span>
+              <span className="min-w-28 text-right">Evidence</span>
+              <span className="min-w-28 text-right">Updated</span>
+            </div>
             {filteredProjects.map((source) => (
               <SourceRow
                 key={source.id}
@@ -1020,20 +1072,11 @@ export default function SourcesSettingsPage() {
 
 // ─── Single platform row ───────────────────────────────────────────
 
-function Stat({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="rounded-md border border-border bg-muted/20 px-3 py-2">
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="text-lg font-semibold">{value}</p>
-    </div>
-  );
-}
-
 function Meta({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-border bg-background px-3 py-2">
+    <div>
       <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</p>
-      <p className="mt-1 truncate text-foreground">{value}</p>
+      <p className="mt-1 truncate text-sm font-medium text-foreground">{value}</p>
     </div>
   );
 }
@@ -1097,11 +1140,24 @@ function SourceRow({
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [tokenDraft, setTokenDraft] = useState("");
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [expanded, setExpanded] = useState(!source);
 
   const stage: RowStage = row?.stage ?? "pending";
   const active = stage !== "pending" && stage !== "complete" && stage !== "failed";
   const isConnected = Boolean(source) || stage === "complete";
   const sourceBusy = source?.status === "scanning" || source?.status === "generating";
+  // Azure DevOps projects resolve their credential from an organization connection,
+  // so the per-project GitHub token and webhook controls do not apply to them.
+  const isAzureDevOpsSource = source?.connection_kind === "azure_devops";
+  const sourceStatus = source?.status === "error"
+    ? "Needs attention"
+    : sourceBusy
+      ? STAGE_LABELS[stage === "pending" ? "scanning" : stage]
+      : source?.last_rag_push_at
+        ? `${source.doc_count ?? 0} docs · in RAG`
+        : source?.doc_count
+          ? `${source.doc_count} docs`
+          : "Scanned, no docs";
 
   async function runAction(name: string, action: () => Promise<unknown>) {
     try {
@@ -1116,58 +1172,72 @@ function SourceRow({
   }
 
   return (
-    <Card>
-      <CardHeader>
+    <Card
+      className={cn(
+        source
+          ? "rounded-none border-0 border-b border-border bg-transparent shadow-none last:border-b-0"
+          : "rounded-none border-x-0 shadow-none",
+      )}
+    >
+      <CardHeader className={cn(source ? "border-0 p-0" : "px-1")}>
+        {source ? (
+          <button
+            type="button"
+            onClick={() => setExpanded((current) => !current)}
+            className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-4 px-1 py-4 text-left transition-colors hover:bg-muted/30 sm:grid-cols-[minmax(0,1fr)_auto_auto]"
+            aria-expanded={expanded}
+          >
+            <span className="flex min-w-0 items-center gap-3">
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 shrink-0 rounded-full",
+                  source.status === "error"
+                    ? "bg-destructive"
+                    : sourceBusy
+                      ? "bg-amber-500"
+                      : "bg-emerald-500",
+                )}
+              />
+              {source.source_type === "git" ? (
+                <Github className="h-4 w-4 shrink-0 text-muted-foreground" />
+              ) : (
+                <FileArchive className="h-4 w-4 shrink-0 text-muted-foreground" />
+              )}
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-semibold">{label}</span>
+                <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                  {source.id} · {platformLabel ?? source.platform} · {source.source_type === "git" ? "GitHub" : "ZIP"}
+                </span>
+              </span>
+            </span>
+            <span className={cn(
+              "hidden min-w-28 text-right text-sm sm:block",
+              source.status === "error" ? "text-destructive" : "text-muted-foreground",
+            )}>
+              {sourceStatus}
+            </span>
+            <span className="flex min-w-28 items-center justify-end gap-3 text-sm text-muted-foreground">
+              {formatDate(source.last_generate_at ?? source.last_scan_at)}
+              <ChevronDown className={cn("h-4 w-4 transition-transform", expanded && "rotate-180")} />
+            </span>
+          </button>
+        ) : (
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <StatusBadge stage={stage} uploaded={Boolean(source)} />
             <div className="min-w-0">
               <p className="font-semibold truncate">{label}</p>
-              {source ? (
-                <p className="text-xs text-muted-foreground truncate">
-                  {source.id} &middot; {platformLabel ?? source.platform} &middot;{" "}
-                  {source.source_type === "git" ? "GitHub" : "ZIP"} &middot;{" "}
-                  {source.job_count ?? 0} {unitLabel(source.platform, source.job_count ?? 0)} &middot;{" "}
-                  {source.platform === "talend" && source.artifact_counts
-                    ? `${source.artifact_counts.job_count ?? 0} Jobs · ${source.artifact_counts.route_count ?? 0} Routes · `
-                    : ""}
-                  {source.doc_count ?? 0} docs
-                </p>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  {stage === "pending" ? "No source uploaded yet" : STAGE_LABELS[stage]}
-                </p>
-              )}
+              <p className="text-xs text-muted-foreground">
+                {stage === "pending" ? "No source uploaded yet" : STAGE_LABELS[stage]}
+              </p>
             </div>
           </div>
-          {source && (
-            <div className="flex shrink-0 flex-wrap justify-end gap-1">
-              <Badge variant={source.has_github_token ? "success" : "muted"}>
-                token {source.has_github_token ? "stored" : "missing"}
-              </Badge>
-              {source.source_type === "git" && (
-                <Badge
-                  variant={
-                    source.webhook_status === "active"
-                      ? "success"
-                      : source.webhook_status === "not_registered"
-                        ? "warning"
-                        : "muted"
-                  }
-                >
-                  webhook {source.webhook_status ?? "unknown"}
-                </Badge>
-              )}
-              <Badge variant={source.status === "error" ? "destructive" : "muted"}>
-                {source.status}
-              </Badge>
-            </div>
-          )}
         </div>
+        )}
       </CardHeader>
 
       {isConnected && source ? (
-        <CardBody className="space-y-3">
+        expanded ? <CardBody className="space-y-5 border-t border-border bg-muted/[0.12] px-1 py-5">
           {source.repo_url && (
             <p className="truncate text-xs text-muted-foreground">{source.repo_url}</p>
           )}
@@ -1217,9 +1287,15 @@ function SourceRow({
                   <>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <p className="font-medium text-foreground">GitHub integration</p>
+                  <p className="font-medium text-foreground">
+                    {isAzureDevOpsSource ? "Azure DevOps integration" : "GitHub integration"}
+                  </p>
                   <p className="mt-1 text-muted-foreground">
-                    {source.webhook_status === "active"
+                    {isAzureDevOpsSource
+                      ? // Azure DevOps service hooks are not wired up; the git poller
+                        // picks up new commits instead.
+                        "Updates are picked up by periodic polling of the repository."
+                      : source.webhook_status === "active"
                       ? "Webhook active. Pushes can trigger updates."
                       : source.webhook_status === "not_registered"
                         ? "Webhook not registered yet."
@@ -1227,7 +1303,9 @@ function SourceRow({
                   </p>
                 </div>
                 <Badge variant={source.has_github_token ? "success" : "warning"}>
-                  token {source.has_github_token ? "stored" : "missing"}
+                  {isAzureDevOpsSource
+                    ? `organization token ${source.has_github_token ? "stored" : "missing"}`
+                    : `token ${source.has_github_token ? "stored" : "missing"}`}
                 </Badge>
               </div>
               {action && (
@@ -1298,7 +1376,7 @@ function SourceRow({
                 Reset status
               </Button>
             )}
-            {source.source_type === "git" && (
+            {source.source_type === "git" && !isAzureDevOpsSource && (
               <>
                 <Button
                   size="sm"
@@ -1347,7 +1425,13 @@ function SourceRow({
               onCancel={() => setConfirmDeleteOpen(false)}
             />
           </div>
-          {source.source_type === "git" && (
+          {source.source_type === "git" && isAzureDevOpsSource && (
+            <p className="text-xs text-muted-foreground">
+              Credentials come from the Azure DevOps organization connection above.
+              Rotate the token there and every project from that organization picks it up.
+            </p>
+          )}
+          {source.source_type === "git" && !isAzureDevOpsSource && (
             <div className="flex gap-2">
               <Input
                 type="password"
@@ -1371,6 +1455,7 @@ function SourceRow({
               </Button>
             </div>
           )}
+          <ProjectConnectorBindings projectId={source.id} />
           {(row?.error || actionError) && (
             <p className="text-xs text-destructive">{row?.error ?? actionError}</p>
           )}
@@ -1383,9 +1468,9 @@ function SourceRow({
               onToggleLogs={onToggleLogs}
             />
           )}
-        </CardBody>
+        </CardBody> : null
       ) : (
-        <CardBody className="space-y-3">
+        <CardBody className="space-y-3 px-1">
           <div
             role="tablist"
             aria-label={`${label} source type`}
@@ -1417,7 +1502,7 @@ function SourceRow({
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
-              <Github className="h-4 w-4" /> GitHub
+              <Github className="h-4 w-4" /> Git URL
             </button>
           </div>
 
@@ -1433,7 +1518,7 @@ function SourceRow({
                   />
                   <Input
                     type="url"
-                    placeholder="https://github.com/org/repo"
+                    placeholder="https://github.com/org/repo or https://dev.azure.com/org/project/_git/repo"
                     value={github?.repoUrl ?? ""}
                     onChange={(e) => onGithubChange({ repoUrl: e.target.value, error: null })}
                     hasError={Boolean(github?.error)}
@@ -1447,7 +1532,7 @@ function SourceRow({
                 />
                 <Input
                   type="password"
-                  placeholder="GitHub personal access token"
+                  placeholder="Personal access token (GitHub or Azure DevOps)"
                   value={github?.token ?? ""}
                   onChange={(e) => onGithubChange({ token: e.target.value, error: null })}
                   hasError={Boolean(github?.error)}

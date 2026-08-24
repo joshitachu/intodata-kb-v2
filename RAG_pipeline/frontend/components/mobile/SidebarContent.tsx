@@ -13,16 +13,11 @@ import {
   Loader2,
   Trash2,
   Users,
-  UserPlus,
-  KeyRound,
-  FolderKanban,
   BarChart3,
-  FlaskConical,
   Brain,
   HelpCircle,
   Database,
   ScrollText,
-  Settings2,
   User,
   Waypoints,
 } from "lucide-react";
@@ -31,7 +26,6 @@ import { useAuthContext } from "@/components/AuthProvider";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useChatContext } from "@/contexts/ChatContext";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { UserGuideDialog } from "@/components/UserGuideDialog";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
 import type { ConversationResponse } from "@/types";
 
@@ -57,22 +51,19 @@ interface AdminSubLink {
   href: string;
   label: string;
   icon: typeof Users;
-  adminOnly?: boolean;
-  superadminOnly?: boolean;
+  ownerOnly?: boolean;
   perm?: PermissionCodename;
+  /** Visible when the user holds at least one of these permissions. */
+  anyPerm?: PermissionCodename[];
 }
 
 const adminSubLinks: AdminSubLink[] = [
-  { href: "/settings/sources", label: "Sources", icon: Database, adminOnly: true },
-  { href: "/admin/users", label: "Users", icon: Users, superadminOnly: true },
-  { href: "/admin/access-requests", label: "Access", icon: UserPlus, superadminOnly: true },
-  { href: "/admin/roles", label: "Roles", icon: KeyRound, superadminOnly: true },
-  { href: "/admin/project-assignments", label: "Projects", icon: FolderKanban, perm: "create_projects" },
-  { href: "/admin/application-profile", label: "Profiles", icon: Settings2, perm: "manage_projects" },
+  { href: "/settings/sources", label: "Sources", icon: Database, perm: "manage_projects" },
+  // Users, access requests, roles and project assignments are one dashboard.
+  { href: "/admin/organization", label: "Organization", icon: Users, anyPerm: ["manage_users", "create_projects"] },
   { href: "/admin/usage", label: "Usage", icon: BarChart3, perm: "view_audit_logs" },
   { href: "/admin/logs", label: "Logs", icon: ScrollText, perm: "view_audit_logs" },
   { href: "/admin/agent-traces", label: "Agent Traces", icon: Waypoints, perm: "view_audit_logs" },
-  { href: "/admin/benchmark", label: "Benchmark", icon: FlaskConical, perm: "view_audit_logs" },
   { href: "/admin/hindsight", label: "Memory", icon: Brain, perm: "view_audit_logs" },
 ];
 
@@ -84,17 +75,15 @@ export function SidebarContent({ onNavigate }: SidebarContentProps) {
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout } = useAuthContext();
-  const { hasAnyAdminPermission, hasPermission, isSuperadmin } = usePermissions();
+  const { hasAnyAdminPermission, hasPermission, isOwner } = usePermissions();
   const chat = useChatContext();
 
   const [deleteTarget, setDeleteTarget] = useState<ConversationResponse | null>(null);
-  const [guideOpen, setGuideOpen] = useState(false);
-
   const isAdminSection = pathname.startsWith("/admin") || pathname === "/settings/sources";
 
   const visibleAdminLinks = adminSubLinks.filter((link) => {
-    if (link.adminOnly) return hasAnyAdminPermission;
-    if (link.superadminOnly) return isSuperadmin;
+    if (link.ownerOnly) return isOwner;
+    if (link.anyPerm) return link.anyPerm.some(hasPermission);
     if (link.perm) return hasPermission(link.perm);
     return false;
   });
@@ -131,7 +120,7 @@ export function SidebarContent({ onNavigate }: SidebarContentProps) {
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium truncate">{user.username}</div>
               <div className="text-xs text-muted-foreground truncate">
-                {user.is_superadmin ? "Superadmin" : user.roles?.[0] ?? "Member"}
+                {user.is_superadmin ? "Owner" : user.roles?.[0] ?? "Member"}
               </div>
             </div>
           </Link>
@@ -233,13 +222,6 @@ export function SidebarContent({ onNavigate }: SidebarContentProps) {
           Settings
         </Link>
 
-        <button
-          onClick={() => setGuideOpen(true)}
-          className="flex items-center gap-2 w-full px-3 py-2.5 rounded-md text-sm transition-colors min-h-[44px] text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          <HelpCircle className="h-4 w-4" />
-          User Guide
-        </button>
       </nav>
 
       <div className="mx-3 my-2 border-t" />
@@ -267,9 +249,17 @@ export function SidebarContent({ onNavigate }: SidebarContentProps) {
         )}
       </div>
 
-      <NotificationBell />
-
-      <UserGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} />
+      <div className="border-t px-2 py-2">
+        <a
+          href="/guide"
+          onClick={handleNav}
+          className="flex min-h-[44px] items-center gap-2 rounded-md px-3 py-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <HelpCircle className="h-4 w-4" />
+          Documentation
+        </a>
+        <NotificationBell />
+      </div>
 
       <ConfirmDialog
         open={deleteTarget !== null}

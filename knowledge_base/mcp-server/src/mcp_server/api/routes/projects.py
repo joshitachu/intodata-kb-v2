@@ -70,12 +70,12 @@ from mcp_server.schemas import (
     JobDocSection,
     JobGraphResponse,
     JobScanMetadata,
+    LineageErrorResponse,
     LineageFieldResponse,
+    LineageJobResponse,
     LogFileListResponse,
     LogFileResponse,
     NexusPackSnapshot,
-    NexusPrivateAnalysisPack,
-    NexusPrivatePackReceipt,
     NexusPresentation,
     PdfGenerateResponse,
     ProjectGraphResponse,
@@ -110,9 +110,15 @@ from mcp_server.services.claude_service import DocGenerationCoordinator
 from mcp_server.services.pack_governance import PackGovernanceDenied, pack_governance
 from mcp_server.services.deep_dive_service import DeepDiveService
 from mcp_server.services.auto_doc_update import AutoDocUpdateService
+from mcp_server.services.git_credentials import NullCredentialProvider, provider_for_project
+from mcp_server.utils.azure_devops_api import (
+    AzureDevOpsUrlError,
+    build_repo_clone_url,
+    is_azure_devops_url,
+    parse_repo_url,
+)
 from mcp_server.services.git_remote_service import (
     ReingestionReadinessReport,
-    authenticated_url,
     authenticated_url_plaintext,
     git_subprocess_env,
     inspect_reingestion_readiness,
@@ -131,7 +137,13 @@ from mcp_server.services.component_description_service import (
     parse_component_descriptions,
 )
 from mcp_server.services.job_graph_service import build_job_graph
-from mcp_server.services.lineage_service import LineageDataUnavailableError, build_field_lineage
+from mcp_server.services.lineage_service import (
+    MAX_JOBS_PER_REQUEST,
+    LineageDataUnavailableError,
+    LineageQueryError,
+    build_field_lineage,
+    build_job_lineage,
+)
 from mcp_server.services.static_topology_publisher import StaticTopologyPublisher
 from mcp_server.services.pack_loader import PackLoader
 from mcp_server.services.project_registry import ProjectRegistry
@@ -205,9 +217,12 @@ def _project_to_response(p) -> ProjectResponse:
         auto_reingest_last_checked_at=p.auto_reingest_last_checked_at,
         auto_reingest_error=sanitize_git_error(p.auto_reingest_error) if p.auto_reingest_error else p.auto_reingest_error,
         git_update_summary=p.git_update_summary,
-        has_github_token=bool(getattr(p, "github_token_enc", None)),
+        # "a credential is resolvable" — App and Azure DevOps connections keep the
+        # credential off the project row, so the raw PAT column is not the answer.
+        has_github_token=not isinstance(provider_for_project(p), NullCredentialProvider),
         connection_kind=getattr(p, "connection_kind", "pat") or "pat",
         github_account_login=getattr(p, "github_account_login", None),
+        azure_devops_connection_id=getattr(p, "azure_devops_connection_id", None),
         webhook_status=webhook_status,
         instruction_pack_dir=getattr(p, "instruction_pack_dir", None),
         plugin_pack_id=getattr(p, "plugin_pack_id", None),
@@ -363,16 +378,26 @@ def _build_reingestion_status_response(
 @router.post("/add-repo", response_model=ProjectResponse)
 async def add_repo(req: AddRepoRequest, request: Request):
     """Register a project (URL, local path, or 'zip')."""
-    # Multi-tenant guard: a caller may only use a GitHub App installation they own.
+    # Multi-tenant guard: a caller may only use a connection they own. Both the
+    # GitHub App installation id and the Azure DevOps connection id are supplied by
+    # the client, so neither may be trusted without an ownership check.
+    _auth_payload = getattr(request.state, "auth_payload", None)
+    _uid = int(_auth_payload.get("sub", 0)) if _auth_payload else 0
     if req.installation_id:
-        _auth_payload = getattr(request.state, "auth_payload", None)
-        _uid = int(_auth_payload.get("sub", 0)) if _auth_payload else 0
         from mcp_server.services.github_app_ownership import authorize_installation
         async with async_session_factory() as _authdb:
             if not await authorize_installation(_authdb, int(req.installation_id), _uid):
                 raise HTTPException(
                     status_code=403,
                     detail="You do not have access to this GitHub App installation",
+                )
+    if req.azure_devops_connection_id:
+        from mcp_server.services.azure_devops_connections import authorize_connection
+        async with async_session_factory() as _authdb:
+            if not await authorize_connection(_authdb, req.azure_devops_connection_id, _uid):
+                raise HTTPException(
+                    status_code=403,
+                    detail="You do not have access to this Azure DevOps connection",
                 )
 
     url = req.url
@@ -394,19 +419,39 @@ async def add_repo(req: AddRepoRequest, request: Request):
         local_path = str(resolved)
         repo_url = None
     elif url.startswith(("http://", "https://", "git@")):
+        # Reduce a pasted browser URL to a bare clone URL *before* validating it:
+        # GitHub carries the location in the path (/tree/, /blob/) and Azure DevOps
+        # in the query string (?path=&version=), and git can clone neither. The
+        # injection guard then runs on the URL that will actually reach git.
+        url = re.sub(r"/(tree|blob)/[^/].*$", "", url.rstrip("/"))
+        if is_azure_devops_url(url):
+            try:
+                _ado_org, _ado_project, _ado_repo = parse_repo_url(url)
+                url = build_repo_clone_url(_ado_org, _ado_project, _ado_repo)
+            except AzureDevOpsUrlError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
         # Validate URL to prevent command injection
         if not re.match(r"^https?://[^\s;|&]+$", url) and not re.match(r"^git@[^\s;|&]+$", url):
             raise HTTPException(status_code=400, detail="Invalid git URL format")
         source_type = "git"
-        # Strip GitHub tree/blob browser suffixes so git clone gets the bare repo URL
-        url = re.sub(r"/(tree|blob)/[^/].*$", "", url.rstrip("/"))
         repo_url = strip_url_credentials(url)
         clone_dir = config.repos_dir / req.project_id
         if not clone_dir.exists():
-            # Resolve a clone credential. GitHub App installation (preferred): mint a
-            # short-lived token; PAT (fallback): inject the encrypted token. Neither:
-            # attempt an unauthenticated clone (public repo).
-            if req.installation_id:
+            # Resolve a clone credential, in the same precedence the credential
+            # strategy uses afterwards for fetch/pull (git_credentials.py):
+            # Azure DevOps organization PAT, GitHub App installation token, stored
+            # PAT, or none at all (public repo).
+            if req.azure_devops_connection_id:
+                from mcp_server.services.azure_devops_connections import resolve_pat
+                async with async_session_factory() as _paydb:
+                    _ado_pat = await resolve_pat(_paydb, req.azure_devops_connection_id)
+                if not _ado_pat:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Could not read the credential for this Azure DevOps connection. Reconnect it.",
+                    )
+                clone_url = authenticated_url_plaintext(repo_url or url, _ado_pat)
+            elif req.installation_id:
                 from mcp_server.utils.github_app import mint_installation_token
                 try:
                     _minted = await mint_installation_token(int(req.installation_id))
@@ -418,13 +463,7 @@ async def add_repo(req: AddRepoRequest, request: Request):
                     )
                 clone_url = authenticated_url_plaintext(repo_url or url, _minted)
             elif req.github_token:
-                from mcp_server.utils.encryption import encrypt_token as _encrypt_token
-                _token_enc_tmp: str | None = None
-                try:
-                    _token_enc_tmp = _encrypt_token(req.github_token)
-                except Exception:
-                    _token_enc_tmp = None
-                clone_url = authenticated_url(repo_url or url, _token_enc_tmp)
+                clone_url = authenticated_url_plaintext(repo_url or url, req.github_token)
             else:
                 clone_url = repo_url or url
             _clone_proc = await asyncio.create_subprocess_exec(
@@ -462,10 +501,16 @@ async def add_repo(req: AddRepoRequest, request: Request):
         except Exception as exc:
             logger.warning("Failed to encrypt GitHub token for %s: %s", req.project_id, exc)
 
-    # Resolve the connection kind. A GitHub App installation is preferred and stores
-    # only a non-secret installation id; the account login is best-effort for display.
+    # Resolve the display account for a connection-backed project. Both the GitHub
+    # App installation and the Azure DevOps connection store only a non-secret
+    # reference; the account label is best-effort for display.
     account_login: str | None = None
-    if source_type == "git" and req.installation_id:
+    if source_type == "git" and req.azure_devops_connection_id:
+        from mcp_server.services.azure_devops_connections import get_connection
+        async with async_session_factory() as _labeldb:
+            _connection = await get_connection(_labeldb, req.azure_devops_connection_id)
+            account_login = _connection.organization_name if _connection else None
+    elif source_type == "git" and req.installation_id:
         try:
             from mcp_server.utils.github_app import get_installation_account_login
             account_login = await get_installation_account_login(int(req.installation_id))
@@ -486,7 +531,12 @@ async def add_repo(req: AddRepoRequest, request: Request):
         if token_enc:
             project.github_token_enc = token_enc
 
-        if source_type == "git" and req.installation_id:
+        if source_type == "git" and req.azure_devops_connection_id:
+            project.connection_kind = "azure_devops"
+            project.azure_devops_connection_id = req.azure_devops_connection_id
+            if account_login:
+                project.github_account_login = account_login
+        elif source_type == "git" and req.installation_id:
             project.connection_kind = "app"
             project.github_installation_id = int(req.installation_id)
             if account_login:
@@ -1065,6 +1115,10 @@ async def _run_scan_background_inner(
 async def generate_docs(req: GenerateRequest, request: Request, background_tasks: BackgroundTasks):
     """Spawn Claude Code CLI to generate docs (runs in background)."""
     await require_project_access(request, req.project_id)
+    # Only this authenticated, server-derived actor may authorize a run-scoped
+    # connector grant. Never accept actor identity from the request body.
+    auth_payload = getattr(request.state, "auth_payload", None) or {}
+    initiating_user_id = int(auth_payload.get("sub", 0)) or None
     if any(not value.strip() or len(value) > 200 for value in req.nexus_pack_ids):
         raise HTTPException(status_code=400, detail="Invalid Nexus pack selection")
     log_mgr = request.app.state.log_manager
@@ -1100,6 +1154,7 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
             if req.plugin_pack_id is not None
             else project.plugin_pack_id
         )
+        pack = None
         if effective_pack_id is not None:
             pack = (
                 await db.execute(select(PluginPack).where(PluginPack.id == effective_pack_id))
@@ -1112,6 +1167,27 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
         await registry.update_status(req.project_id, "generating")
         run = await registry.create_generate_run(req.project_id, triggered_by="api")
+        # Pack audit record (docs/one-pack-program.md section 9). Written at
+        # creation, not completion: the binding between a deliverable and the
+        # pack version that produced it must survive a failed or crashed run.
+        if pack is not None:
+            # Freeze the effective project/default selection at run creation.
+            # The Pack ID is not a model name and must remain independently
+            # auditable even if the project selection changes while queued.
+            run.pack_id = str(pack.id)
+            run.pack_version = pack.version
+            run.pack_content_hash = pack.content_sha256
+            run.pack_activated_by = (
+                f"user:{initiating_user_id}" if initiating_user_id is not None else "api"
+            )
+            run.pack_activated_at = datetime.datetime.now(datetime.timezone.utc)
+        else:
+            pack_audit = req.resolved_pack_audit()
+            run.pack_id = pack_audit.pack_id
+            run.pack_version = pack_audit.pack_version
+            run.pack_content_hash = pack_audit.pack_content_hash
+            run.pack_activated_by = pack_audit.pack_activated_by
+            run.pack_activated_at = pack_audit.pack_activated_at
         await db.commit()
         run_id = run.id
 
@@ -1121,16 +1197,13 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
         investigation_model=req.investigation_model,
         model=req.model,
         write_model=req.write_model,
-        plugin_pack_id=req.plugin_pack_id,
+        # Pass the resolved ID, not the nullable request override. This freezes
+        # a project-default Pack for the lifetime of this run.
+        plugin_pack_id=effective_pack_id,
         nexus_pack_ids=req.nexus_pack_ids,
         nexus_pack_snapshot=req.nexus_pack_snapshot,
         nexus_presentation=req.nexus_presentation,
-        nexus_audience_render=(
-            req.nexus_audience_render.model_dump(mode="json", exclude_none=True)
-            if req.nexus_audience_render is not None else None
-        ),
-        nexus_private_pack_receipts=req.nexus_private_pack_receipts,
-        nexus_private_analysis_packs=req.nexus_private_analysis_packs,
+        live_evidence=req.live_evidence != "off",
         resume=req.resume,
         run_id_for_lock=run_id,
         doc_generation_provider=(
@@ -1140,6 +1213,7 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
         ),
         instruction_pack_dir=project.instruction_pack_dir,
         enterprise_mode=req.mode == "enterprise",
+        initiating_user_id=initiating_user_id,
     )
     return StatusResponse(
         status="generation_triggered",
@@ -1221,13 +1295,13 @@ async def trigger_manual_full_rebuild(
                 "Wait for it to complete before triggering a full rebuild.",
             )
         local_path = project.local_path
-        github_token_enc = getattr(project, "github_token_enc", None)
+        credential = provider_for_project(project)
         before_sha = project.last_ingested_commit_sha or "0" * 40
 
     after_sha = body.after_sha if body and body.after_sha else None
     if not after_sha:
         try:
-            await pull_remote_ff_only(local_path, github_token_enc)
+            await pull_remote_ff_only(local_path, credential)
             after_sha = await run_git(local_path, "rev-parse", "HEAD", strip=True)
         except Exception as exc:
             raise HTTPException(
@@ -1539,17 +1613,29 @@ def _sign_app_state(project_id: str | None) -> str:
 
 
 def _verify_app_state(state: str | None) -> str | None:
-    """Validate the install state token and return its project id (or None)."""
+    """Return the project id carried by a valid install state, else None.
+
+    The state is an *optional hint* about which project to attach the
+    installation to — it is not the ownership proof (that is the OAuth code or an
+    existing binding, below). GitHub also bounces users to the setup URL with no
+    state at all (e.g. saving repository access on the installation settings
+    page), and the token expires after 15 minutes of clicking around in GitHub's
+    UI. Failing the whole connect in those cases turns a legitimate return trip
+    into a dead end, so an unusable state degrades to "no project to attach".
+    Only a *signed* state can name a project, so this grants nothing.
+    """
     if not state:
         return None
     from jose import JWTError, jwt as _jwt
 
     try:
         claims = _jwt.decode(state, config.jwt_secret_key, algorithms=[config.jwt_algorithm])
-    except JWTError:
-        raise HTTPException(status_code=400, detail="Invalid or expired install state")
+    except JWTError as exc:
+        logger.info("Ignoring invalid or expired GitHub App install state: %s", exc)
+        return None
     if claims.get("purpose") != _APP_STATE_PURPOSE:
-        raise HTTPException(status_code=400, detail="Invalid install state")
+        logger.info("Ignoring GitHub App install state with unexpected purpose")
+        return None
     return claims.get("pid") or None
 
 
@@ -1580,7 +1666,10 @@ async def github_app_callback(
         github_app_oauth_configured,
         user_can_access_installation,
     )
-    from mcp_server.services.github_app_ownership import record_installation_owner
+    from mcp_server.services.github_app_ownership import (
+        installation_is_bound_to,
+        record_installation_owner,
+    )
 
     project_id = _verify_app_state(state)
 
@@ -1589,14 +1678,26 @@ async def github_app_callback(
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
+    # GitHub sends the user to this Setup URL for more than the first install:
+    # saving repository access on github.com/settings/installations/<id> bounces
+    # here with setup_action=update and NEITHER state NOR code. Ownership of an
+    # already-bound installation was proven when it was first connected, so
+    # demanding a fresh authorization code there rejects a legitimate return trip.
+    async with async_session_factory() as db:
+        already_owned = await installation_is_bound_to(db, int(installation_id), user_id)
+
     # Multi-tenant guard: prove the connecting user actually controls this installation
     # (their own GET /user/installations) before binding it to them. Without the OAuth
     # client configured we cannot verify — that is only safe on single-tenant deployments.
-    if github_app_oauth_configured():
+    if github_app_oauth_configured() and not already_owned:
         if not code:
             raise HTTPException(
                 status_code=400,
-                detail="Authorization code missing — enable 'Request user authorization during installation' on the GitHub App",
+                detail=(
+                    "GitHub did not send an authorization code for this new installation. "
+                    "Start from 'Connect with GitHub App' in Nexus, and make sure 'Request "
+                    "user authorization (OAuth) during installation' is enabled on the App."
+                ),
             )
         try:
             user_token = await exchange_user_access_token(code)
@@ -1608,6 +1709,13 @@ async def github_app_callback(
             raise HTTPException(status_code=502, detail="Could not verify installation ownership with GitHub")
         if not owns:
             raise HTTPException(status_code=403, detail="You do not have access to this GitHub App installation")
+    elif already_owned:
+        logger.info(
+            "Installation %s is already bound to user %s — skipping re-verification "
+            "(GitHub returned to the setup URL without an authorization code).",
+            installation_id,
+            user_id,
+        )
     else:
         logger.warning(
             "GitHub App OAuth is not configured — binding installation %s without ownership "
@@ -1647,24 +1755,60 @@ async def github_app_callback(
 
 @router.get("/github/app/installations", response_model=GithubAppInstallationsResponse)
 async def github_app_installations(request: Request):
-    """List GitHub App installations already bound to the current Nexus user."""
+    """List GitHub App installations available to the current Nexus user.
+
+    Bindings are reconciled against GitHub on every read: an owner can uninstall
+    the App without telling us, and a stale row would otherwise keep the UI
+    showing a connected account that cannot mint tokens.
+
+    The deployment Owner can already authorize every installation, so their
+    list comes directly from GitHub. This also recovers installations whose
+    local callback binding was missed without weakening tenant isolation for
+    regular users.
+    """
     from mcp_server.db.models import GithubAppInstallation
-    from mcp_server.services.github_app_ownership import _is_superadmin
+    from mcp_server.services.github_app_ownership import _is_superadmin, reconcile_installations
+    from mcp_server.utils.github_app import github_app_configured, list_app_installations
 
     auth_payload = getattr(request.state, "auth_payload", None)
     user_id = int(auth_payload.get("sub", 0)) if auth_payload else 0
     async with async_session_factory() as db:
+        is_superadmin = await _is_superadmin(db, user_id)
         query = select(GithubAppInstallation)
-        if not await _is_superadmin(db, user_id):
+        if not is_superadmin:
             query = query.where(GithubAppInstallation.owner_user_id == user_id)
         result = await db.execute(query.order_by(GithubAppInstallation.account_login))
-        installations = [
+        rows = await reconcile_installations(db, list(result.scalars().all()))
+        installations: list[GithubAppInstallationItem] = [
             GithubAppInstallationItem(
                 installation_id=int(row.installation_id),
                 account_login=row.account_login,
             )
-            for row in result.scalars().all()
+            for row in rows
         ]
+        if is_superadmin and github_app_configured():
+            try:
+                live = await list_app_installations()
+            except Exception as exc:
+                logger.warning("Could not list live GitHub App installations: %s", exc)
+                raise HTTPException(
+                    status_code=502,
+                    detail="Could not verify GitHub App connection status with GitHub",
+                ) from exc
+            installations = sorted(
+                (
+                    GithubAppInstallationItem(
+                        installation_id=int(item["installation_id"]),
+                        account_login=(
+                            str(item["account_login"])
+                            if item.get("account_login") is not None
+                            else None
+                        ),
+                    )
+                    for item in live
+                ),
+                key=lambda item: item.account_login or "",
+            )
     return GithubAppInstallationsResponse(installations=installations)
 
 
@@ -1674,6 +1818,7 @@ async def github_app_installation_repos(installation_id: int, request: Request):
     from mcp_server.utils.github_app import (
         get_installation_account_login,
         github_app_configured,
+        installation_exists,
         list_installation_repositories,
     )
 
@@ -1682,7 +1827,7 @@ async def github_app_installation_repos(installation_id: int, request: Request):
 
     auth_payload = getattr(request.state, "auth_payload", None)
     user_id = int(auth_payload.get("sub", 0)) if auth_payload else 0
-    from mcp_server.services.github_app_ownership import authorize_installation
+    from mcp_server.services.github_app_ownership import authorize_installation, prune_installation
     async with async_session_factory() as db:
         if not await authorize_installation(db, int(installation_id), user_id):
             raise HTTPException(status_code=403, detail="You do not have access to this GitHub App installation")
@@ -1692,6 +1837,27 @@ async def github_app_installation_repos(installation_id: int, request: Request):
         account_login = await get_installation_account_login(int(installation_id))
     except Exception as exc:
         logger.warning("Failed to list installation repos for %s: %s", installation_id, exc)
+        # An uninstalled App fails here exactly like a transient GitHub outage.
+        # Ask GitHub whether the installation still exists so the client gets a
+        # terminal "reconnect" answer instead of a retryable 502, and drop the
+        # stale binding that would keep the UI showing it as connected.
+        gone = False
+        try:
+            gone = not await installation_exists(int(installation_id))
+        except Exception as probe_exc:  # GitHub unreachable — treat as transient
+            logger.warning(
+                "Could not verify installation %s after a repo-list failure: %s",
+                installation_id,
+                probe_exc,
+            )
+        if gone:
+            async with async_session_factory() as db:
+                await prune_installation(db, int(installation_id))
+                await db.commit()
+            raise HTTPException(
+                status_code=404,
+                detail="This GitHub App installation no longer exists. Connect with the GitHub App again.",
+            )
         raise HTTPException(status_code=502, detail="Could not list repositories for this installation")
     return GithubAppReposResponse(
         installation_id=int(installation_id),
@@ -1850,6 +2016,69 @@ def _load_enterprise_gate_results(base_dir: Path) -> dict | None:
     return None
 
 
+async def _write_plugin_pack_execution_receipt(
+    staging_dir: Path,
+    *,
+    run_id: int,
+    plugin_pack_id: int,
+    model_name: str | None,
+    write_model_name: str | None,
+) -> None:
+    """Persist the exact Plugin Pack/model binding used by a generated run."""
+    from mcp_server.services.plugin_schema import load_plugin_manifest
+
+    async with async_session_factory() as db:
+        pack = (
+            await db.execute(select(PluginPack).where(PluginPack.id == plugin_pack_id))
+        ).scalar_one_or_none()
+    if pack is None:
+        return
+    manifest = load_plugin_manifest(Path(pack.path))
+    audit_dir = staging_dir / "_audit"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    public_docs = sorted(path.name for path in staging_dir.glob("*.md"))
+    payload = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "plugin_pack": {
+            "id": pack.id,
+            "display_name": pack.name,
+            "manifest_name": manifest.name,
+            "version": manifest.version,
+            "content_sha256": pack.content_sha256,
+            "owner_user_id": pack.owner_user_id,
+        },
+        "models": {
+            "analysis": model_name,
+            "writing": write_model_name or model_name,
+        },
+        "effective_contract": {
+            "phases": (
+                manifest.phases.model_dump(mode="json")
+                if manifest.phases is not None
+                else None
+            ),
+            "documents": [
+                doc.model_dump(mode="json") for doc in (manifest.docs or [])
+            ],
+            "audience": (
+                manifest.audience.model_dump(mode="json")
+                if manifest.audience is not None
+                else None
+            ),
+            "quality_gates": (
+                manifest.quality_gates.model_dump(mode="json")
+                if manifest.quality_gates is not None
+                else None
+            ),
+        },
+        "generated_documents": public_docs,
+    }
+    (audit_dir / "plugin_pack_execution_receipt.json").write_text(
+        json.dumps(payload, indent=2, default=str), encoding="utf-8"
+    )
+
+
 async def _run_generate_background(
     project_id: str,
     run_id: int,
@@ -1862,9 +2091,7 @@ async def _run_generate_background(
     nexus_pack_ids: list[str] | None = None,
     nexus_pack_snapshot: NexusPackSnapshot | None = None,
     nexus_presentation: NexusPresentation | None = None,
-    nexus_audience_render: dict[str, str] | None = None,
-    nexus_private_pack_receipts: list[NexusPrivatePackReceipt] | None = None,
-    nexus_private_analysis_packs: list[NexusPrivateAnalysisPack] | None = None,
+    live_evidence: bool = True,
     resume: bool = True,
     run_id_for_lock: int | None = None,
     doc_generation_provider: str | None = None,
@@ -1873,6 +2100,7 @@ async def _run_generate_background(
     enterprise_mode: bool = True,
     pre_swap_gate: "Callable[[Path], GateOutcome] | None" = None,
     scoped_docs: set[str] | None = None,
+    initiating_user_id: int | None = None,
 ):
     """Background task: spawn Claude Code for doc generation.
 
@@ -1928,9 +2156,7 @@ async def _run_generate_background(
                         "nexus_pack_ids": nexus_pack_ids,
                         "nexus_pack_snapshot": nexus_pack_snapshot,
                         "nexus_presentation": nexus_presentation,
-                        "nexus_audience_render": nexus_audience_render,
-                        "nexus_private_pack_receipts": nexus_private_pack_receipts,
-                        "nexus_private_analysis_packs": nexus_private_analysis_packs,
+                        "live_evidence": live_evidence,
                         "doc_generation_provider": doc_generation_provider,
                         "instruction_pack_dir": instruction_pack_dir,
                         "enterprise_mode": enterprise_mode,
@@ -1960,14 +2186,13 @@ async def _run_generate_background(
             nexus_pack_ids=nexus_pack_ids,
             nexus_pack_snapshot=nexus_pack_snapshot,
             nexus_presentation=nexus_presentation,
-            nexus_audience_render=nexus_audience_render,
-            nexus_private_pack_receipts=nexus_private_pack_receipts,
-            nexus_private_analysis_packs=nexus_private_analysis_packs,
+            live_evidence=live_evidence,
             resume=resume, run_id=run_id_for_lock or run_id,
             doc_generation_provider=doc_generation_provider,
             instruction_pack_dir=instruction_pack_dir,
             enterprise_mode=enterprise_mode,
             scoped_docs=scoped_docs,
+            initiating_user_id=initiating_user_id,
         )
     except asyncio.CancelledError:
         await log_mgr.emit(project_id, "Generation cancelled by user.", level="warning")
@@ -1996,9 +2221,39 @@ async def _run_generate_background(
         doc_count = len(list(staging_dir.glob("*.md"))) if staging_dir.exists() else 0
         gate_results = _load_enterprise_gate_results(staging_dir) if staging_dir.exists() else None
 
+        if staging_dir.exists() and plugin_pack_id is not None:
+            await _write_plugin_pack_execution_receipt(
+                staging_dir,
+                run_id=run_id,
+                plugin_pack_id=plugin_pack_id,
+                model_name=result.get("model_name"),
+                write_model_name=result.get("write_model_name"),
+            )
+
         gate_outcome: GateOutcome | None = (
             pre_swap_gate(staging_dir) if pre_swap_gate is not None and doc_count > 0 else None
         )
+        if (
+            gate_outcome is None
+            and enterprise_mode
+            and plugin_pack_id is not None
+            and gate_results is not None
+        ):
+            gates = gate_results.get("gates") or {}
+            failed_blocking = [
+                name
+                for name in ("pack_quality", "final_redaction")
+                if not (gates.get(name) or {}).get("ok", False)
+            ]
+            if failed_blocking:
+                gate_outcome = GateOutcome(
+                    passed=False,
+                    evaluated=True,
+                    reason=(
+                        "Plugin Pack publication blocked by: "
+                        + ", ".join(failed_blocking)
+                    ),
+                )
         if gate_outcome is not None and not gate_outcome.passed:
             # Blocking correctness gate held the swap. Keep docs_staging/ intact
             # (existing keep-old-docs mechanism) so the previous good docs in
@@ -2007,7 +2262,7 @@ async def _run_generate_background(
             manual_review_reason = f"manual_review: {reason}"
             await log_mgr.emit(
                 project_id,
-                f"Reingestion held by correctness gate: {reason}",
+                f"Publication held by correctness gate: {reason}",
                 level="error",
             )
             async with async_session_factory() as db:
@@ -4581,6 +4836,104 @@ async def get_field_lineage(
         )
     except LineageDataUnavailableError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get(
+    "/projects/{project_id}/lineage/job",
+    response_model=LineageJobResponse,
+    responses={
+        404: {
+            "model": LineageErrorResponse,
+            "description": (
+                "No lineage for this request. Branch on `detail.reason`, never on "
+                "`detail.message`: `lineage_artifact_absent` means the project has no "
+                "scan/lineage.json and needs a (re)scan; `lineage_selection_empty` means "
+                "lineage exists but the requested job/group name is not in it."
+            ),
+        }
+    },
+)
+async def get_job_lineage(
+    project_id: str,
+    request: Request,
+    job: list[str] = Query(
+        default_factory=list,
+        description=(
+            "Job name to include; repeat for several (max "
+            f"{MAX_JOBS_PER_REQUEST}). Matched EXACTLY, then case-insensitively "
+            "exact -- never fuzzy. Unmatched names are absent from the response's "
+            "`jobs` list."
+        ),
+    ),
+    group: str = Query(
+        "",
+        description=(
+            "Functional group to include, resolved via scan/manifest.json "
+            "job_groups. Accepts the full group path, its trailing segment, or "
+            "any path segment (zip marker stripped)."
+        ),
+    ),
+    offset: int = Query(0, ge=0, description="Row offset into the sorted edge list"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum rows to return"),
+):
+    """Return a flat, paged rollup of every field mapping the selected jobs perform.
+
+    The field API (`/lineage/field`) answers "where does THIS column come
+    from" and needs a job + table + column to start. This one answers the
+    question a caller has BEFORE it knows a column worth tracing -- "what data
+    moves out of these jobs, into which tables, and how is it transformed" --
+    over whole jobs or a whole functional group.
+
+    Rows are totally ordered with resolved (confirmed) mappings first, so
+    `offset`/`limit` paging is stable across calls and a caller that reads only
+    page 1 sees the confirmed column-to-column mappings rather than the
+    dynamic/globalMap rows. Expressions are credential-redacted and clipped --
+    this output is LLM prompt material.
+
+    Two distinguishable 404s, discriminated by a STABLE `detail.reason` code
+    rather than by the prose message: `lineage_artifact_absent` (no lineage
+    data for the project at all -- rescan) versus `lineage_selection_empty`
+    (lineage exists, the requested job/group name is not in it -- do NOT tell
+    the user to rescan). See `schemas.LineageErrorDetail`.
+    """
+    # Access check first: an unassigned caller must get 403, never a 422 that
+    # confirms the route (and therefore the project) is there.
+    await require_project_access(request, project_id)
+
+    # Hand-rolled rather than declared on Query(...): a repeated query param
+    # bound to `list[str]` routes Query's own length constraints at the ITEM,
+    # not the list, so `max_length` there would silently cap job-name length
+    # instead of the job count.
+    if not job and not group.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="At least one of 'job' or 'group' is required",
+        )
+    if len(job) > MAX_JOBS_PER_REQUEST:
+        raise HTTPException(
+            status_code=422,
+            detail=f"At most {MAX_JOBS_PER_REQUEST} 'job' parameters are allowed, got {len(job)}",
+        )
+
+    try:
+        return build_job_lineage(
+            project_id,
+            config.intodoc_output_dir,
+            jobs=job,
+            group=group,
+            offset=offset,
+            limit=limit,
+        )
+    except LineageQueryError as exc:
+        # `reason` comes off the exception class, so the route never restates
+        # the mapping and a new LineageQueryError subclass cannot reach the wire
+        # without its own discriminator. Dict-shaped detail follows the existing
+        # convention in this module for errors a client must branch on
+        # (`detail={"fallback": "inspector"}` above, `{"code", "message"}` in
+        # connectors.py).
+        raise HTTPException(
+            status_code=404, detail={"reason": exc.reason, "message": str(exc)}
+        ) from exc
 
 
 # --- AI Summaries ---

@@ -11,9 +11,6 @@ from pydantic import BaseModel, Field
 from src.api.dependencies import CurrentUser, DBSession
 from src.harness import HarnessRunNotFoundError, HarnessWorkflowRepository, default_capability_registry
 from src.harness.registry import base_capability_registry
-from src.harness.packs import PackSnapshot, PackView
-from src.harness.packs.runtime import build_pack_catalog, resolve_active_packs
-from src.harness.packs.project_service import ProjectPackService
 from src.harness.manifest import (
     ManifestScope,
     RuntimeCapabilityManifest,
@@ -87,12 +84,6 @@ class HarnessConnectorListResponse(BaseModel):
     total: int
 
 
-class HarnessPackListResponse(BaseModel):
-    packs: list[PackView]
-    active: PackSnapshot
-    total: int
-
-
 @router.get("/capabilities", response_model=CapabilityListResponse)
 async def list_capabilities(
     user: CurrentUser,
@@ -106,40 +97,6 @@ async def list_capabilities(
     _ = user
     capabilities = default_capability_registry().list(enabled_only=enabled_only)
     return CapabilityListResponse(capabilities=capabilities, total=len(capabilities))
-
-
-@router.get("/packs", response_model=HarnessPackListResponse)
-async def list_packs(
-    user: CurrentUser,
-    db: DBSession,
-    project_id: str | None = None,
-    workflow_key: str = "default",
-) -> HarnessPackListResponse:
-    """List safe Pack definitions and a selected project's active snapshot when scoped."""
-    registry = base_capability_registry()
-    if project_id is not None:
-        scope = await get_user_project_ids(user, db)
-        if scope is not None and project_id not in scope:
-            raise HTTPException(status_code=404, detail="Project not found")
-        service = ProjectPackService(db, registry)
-        catalog = await service.catalog(project_id)
-        try:
-            active = await service.current_activation(project_id, workflow_key)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if active is not None:
-            return HarnessPackListResponse(
-                packs=list(catalog.views()), active=active.snapshot, total=len(catalog.views())
-            )
-    else:
-        catalog = build_pack_catalog(registry)
-    resolved = resolve_active_packs(registry)
-    views = list(catalog.views())
-    return HarnessPackListResponse(
-        packs=views,
-        active=resolved.snapshot,
-        total=len(views),
-    )
 
 
 @router.get("/manifest", response_model=RuntimeCapabilityManifest)

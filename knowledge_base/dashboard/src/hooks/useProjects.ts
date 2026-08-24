@@ -49,8 +49,6 @@ export function useGenerate() {
       investigationModel,
       model,
       writeModel,
-      organizationPackId = null,
-      privateVersionIds = [],
       generationMethod,
     }: {
       projectId: string;
@@ -58,8 +56,6 @@ export function useGenerate() {
       investigationModel?: string | null;
       model?: string | null;
       writeModel?: string | null;
-      organizationPackId?: number | null;
-      privateVersionIds?: number[];
       generationMethod?: "custom" | "opencode-cli" | null;
     }): Promise<import("../types").StatusResponse> =>
       api.generate(
@@ -68,38 +64,10 @@ export function useGenerate() {
         investigationModel,
         model,
         writeModel,
-        organizationPackId,
-        privateVersionIds,
         generationMethod,
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["projects"] });
-    },
-  });
-}
-
-export function usePackWorkspace(projectId: string | null) {
-  return useQuery({
-    queryKey: ["pack-workspace", projectId],
-    queryFn: () => api.getPackWorkspace(projectId!),
-    enabled: !!projectId,
-  });
-}
-
-export function useUpdatePackWorkspace() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      projectId,
-      organizationPackId,
-      privateVersionIds,
-    }: {
-      projectId: string;
-      organizationPackId: number | null;
-      privateVersionIds: number[];
-    }) => api.updatePackWorkspace(projectId, organizationPackId, privateVersionIds),
-    onSuccess: (workspace) => {
-      qc.setQueryData(["pack-workspace", workspace.project_id], workspace);
     },
   });
 }

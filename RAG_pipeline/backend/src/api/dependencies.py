@@ -53,9 +53,20 @@ MFA_ENROLLMENT_EXEMPT_PATHS = {
     "/api/v1/auth/change-password",
 }
 
+PASSWORD_SETUP_EXEMPT_PATHS = {
+    "/api/v1/auth/me",
+    "/api/v1/auth/logout",
+    "/api/v1/auth/refresh",
+    "/api/v1/auth/set-password",
+}
+
 
 def _is_mfa_enrollment_exempt(path: str) -> bool:
     return path in MFA_ENROLLMENT_EXEMPT_PATHS
+
+
+def _is_password_setup_exempt(path: str) -> bool:
+    return path in PASSWORD_SETUP_EXEMPT_PATHS
 
 async def get_current_user(
     request: Request,
@@ -90,22 +101,44 @@ async def get_current_user(
             },
         )
 
+    # Email-code users must first complete the mandatory MFA step, then create
+    # a password before the rest of the API becomes available. Keep only the
+    # endpoints needed to inspect/end/refresh the session and finish setup.
+    if (
+        user.mfa_enabled
+        and user.password_hash is None
+        and user.sso_provider is None
+        and not _is_password_setup_exempt(request.url.path)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "password_setup_required",
+                "message": "Create a password before using this endpoint.",
+            },
+        )
+
     return user
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
-# --- Admin user ---
+# --- Deployment owner ---
 
-async def require_admin(user: CurrentUser) -> User:
-    """Require the current user to be a superadmin."""
+async def require_owner(user: CurrentUser) -> User:
+    """Require the deployment Owner (stored as ``is_superadmin``).
+
+    ``is_superadmin`` remains the persistence/API field for backwards
+    compatibility.  In the product hierarchy it represents the Owner, not the
+    day-to-day Admin role.
+    """
     if not user.is_superadmin:
-        raise HTTPException(status_code=403, detail="Admin access required")
+        raise HTTPException(status_code=403, detail="Owner access required")
     return user
 
 
-AdminUser = Annotated[User, Depends(require_admin)]
+OwnerUser = Annotated[User, Depends(require_owner)]
 
 
 # --- Permission-based access control ---
@@ -127,7 +160,7 @@ def require_permission(codename: str):
 ManagerUser = Annotated[User, Depends(require_permission("manage_users"))]
 ProjectManager = Annotated[User, Depends(require_permission("assign_projects"))]
 AuditViewer = Annotated[User, Depends(require_permission("view_audit_logs"))]
-# Admins + superadmins can create projects (they become the owner). Ownership of
+# Admins + the deployment Owner can create projects (they become the project owner). Ownership of
 # an *existing* project is enforced separately via rbac.permissions.can_manage_project.
 ProjectCreator = Annotated[User, Depends(require_permission("create_projects"))]
 RuntimeSourceReader = Annotated[User, Depends(require_permission(RUNTIME_SOURCES_READ))]

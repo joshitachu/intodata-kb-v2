@@ -258,6 +258,32 @@ class TestPluginPackOverride:
         # Default template contains the new anti-filler header
         assert "MANDATORY SECTION STRUCTURE" in prompt
 
+    def test_platform_baseline_cannot_be_replaced_and_extension_is_additive(
+        self, tmp_path: Path
+    ) -> None:
+        pack_dir = tmp_path / "pack"
+        legacy = pack_dir / "prompts" / "phase2_platform_sections"
+        extension = pack_dir / "prompts" / "extensions" / "platforms"
+        legacy.mkdir(parents=True)
+        extension.mkdir(parents=True)
+        (legacy / "talend.md").write_text(
+            "PLUGIN TRIED TO REPLACE TALEND", encoding="utf-8"
+        )
+        (extension / "talend.md").write_text(
+            "Inspect the customer-specific control table.", encoding="utf-8"
+        )
+
+        prompt = group_analysis_prompt(
+            _make_facts(["JobA"], platform="talend"),
+            "G",
+            plugin_pack_dir=pack_dir,
+        )
+
+        assert "PLUGIN TRIED TO REPLACE TALEND" not in prompt
+        assert "tRunJob references" in prompt  # Nexus-owned Talend baseline
+        assert "PLUGIN PLATFORM EXTENSION (ADDITIVE ONLY)" in prompt
+        assert "customer-specific control table" in prompt
+
 
 # ---------------------------------------------------------------------------
 # Task-scoped unit enumeration (per-job Phase 2 tasks)
@@ -370,6 +396,9 @@ class TestTemplateFileContent:
             "TASK_UNIT_COUNT", "MISSING_EVIDENCE_BLOCK", "TASK_SCOPE_NOTE",
             "FACTS_SUMMARY", "PLATFORM_ANALYSIS_REQUIREMENTS", "SECTION_HEADINGS",
             "PLATFORM_SECTION_DEPTH", "CANONICAL_UNIT_COUNT", "CANONICAL_UNIT_LABEL",
+            # One Pack contract slots: unit-enumeration target section and the
+            # analysis-guide note (pack-lens note for mode: replace runs).
+            "ENUMERATION_SECTION", "ANALYSIS_GUIDE_NOTE",
         }
         found_slots = set(re.findall(r"\$\{([A-Z_]+)\}", tmpl))
         unknown = found_slots - known_slots

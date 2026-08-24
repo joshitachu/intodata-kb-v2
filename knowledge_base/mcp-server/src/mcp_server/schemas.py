@@ -21,6 +21,171 @@ from pydantic import (
 StrippedStr = Annotated[str, BeforeValidator(lambda v: v.strip() if isinstance(v, str) else v)]
 
 
+# --- Governed live connectors ---
+
+class ConnectorCapabilityResponse(BaseModel):
+    id: str
+    label: str
+    description: str
+    read_only: bool
+    gather_eligible: bool
+    risk: str
+    accepted_entity_ref_types: list[str] = Field(default_factory=list)
+    use_when: str = ""
+    do_not_use_when: str = ""
+
+
+class ConnectorProviderResponse(BaseModel):
+    provider_id: str
+    label: str
+    version: str
+    authentication_types: list[str]
+    capabilities: list[ConnectorCapabilityResponse]
+    redaction_policy_version: str
+    # Directory presentation, served from the manifest so adding a provider is a
+    # backend-only change: `kind` is the Type column, `build_state` decides
+    # whether a Connect action is offered at all.
+    kind: str = "live_evidence"
+    build_state: str = "available"
+    description: str = ""
+    # Field names and shapes for a manifest-driven credential form. Never any
+    # stored secret value -- `secret_fields` marks which inputs are write-only.
+    configuration_schema: dict[str, object] = Field(default_factory=dict)
+    secret_fields: list[str] = Field(default_factory=list)
+
+
+class ConnectorCatalogResponse(BaseModel):
+    providers: list[ConnectorProviderResponse]
+
+
+class ConnectorCreateRequest(BaseModel):
+    provider_id: StrippedStr = Field(..., min_length=1, max_length=100)
+    display_name: StrippedStr = Field(..., min_length=1, max_length=255)
+    safe_config: dict[str, object] = Field(default_factory=dict)
+    credential_type: Literal["api_key", "basic"] = "api_key"
+    credential: str = Field(..., min_length=1, max_length=20_000, repr=False)
+    kibana_credential: str | None = Field(None, min_length=1, max_length=20_000, repr=False)
+
+
+class ConnectorUpdateRequest(BaseModel):
+    display_name: StrippedStr | None = Field(None, min_length=1, max_length=255)
+    safe_config: dict[str, object] | None = None
+    enabled: bool | None = None
+
+
+class ConnectorRotateCredentialRequest(BaseModel):
+    credential: str = Field(..., min_length=1, max_length=20_000, repr=False)
+    credential_type: Literal["api_key", "basic"] | None = None
+    kibana_credential: str | None = Field(None, min_length=1, max_length=20_000, repr=False)
+    reuse_elasticsearch_credential: bool = True
+
+
+class ConnectorResponse(BaseModel):
+    id: str
+    provider_id: str
+    display_name: str
+    ownership_scope: str
+    enabled: bool
+    status: str
+    last_checked_at: datetime.datetime | None = None
+    health_code: str | None = None
+    provider_version: str
+    redaction_policy_version: str
+    has_credential: bool = True
+    has_kibana_credential: bool = False
+    created_at: datetime.datetime | None = None
+    updated_at: datetime.datetime | None = None
+
+
+class ConnectorListResponse(BaseModel):
+    connectors: list[ConnectorResponse]
+
+
+class ConnectorTestResponse(BaseModel):
+    status: str
+    message: str | None = None
+    checked_at: datetime.datetime | None = None
+    details: dict[str, object] = Field(default_factory=dict)
+
+
+class ConnectorSourceResponse(BaseModel):
+    id: str
+    connector_instance_id: str
+    source_type: str
+    display_label: str
+    field_profile: dict[str, object] = Field(default_factory=dict)
+    discovered_at: datetime.datetime | None = None
+    discovery_digest: str | None = None
+    enabled: bool
+
+
+class ConnectorSourceListResponse(BaseModel):
+    connector_instance_id: str
+    sources: list[ConnectorSourceResponse]
+    total: int = 0
+
+
+class ConnectorDiscoverRequest(BaseModel):
+    source_ids: list[str] = Field(default_factory=list, max_length=100)
+    include_kibana: bool = False
+    kibana_space: StrippedStr = Field(default="default", min_length=1, max_length=200)
+    data_view_id: StrippedStr | None = Field(None, min_length=1, max_length=200)
+
+
+class KibanaSpaceResponse(BaseModel):
+    id: str
+    name: str
+
+
+class KibanaSpaceListResponse(BaseModel):
+    spaces: list[KibanaSpaceResponse]
+
+
+class KibanaDataViewResponse(BaseModel):
+    id: str
+    title: str
+
+
+class KibanaDataViewListResponse(BaseModel):
+    data_views: list[KibanaDataViewResponse]
+
+
+class ProjectConnectorBindingRequest(BaseModel):
+    source_ids: list[str] = Field(..., min_length=1, max_length=100)
+    capability_ids: list[str] = Field(..., min_length=1, max_length=20)
+    budgets: dict[str, int] = Field(default_factory=dict)
+    max_time_window_days: int | None = Field(None, ge=1, le=30)
+    enabled: bool = True
+
+
+class ProjectConnectorBindingResponse(BaseModel):
+    id: str
+    project_id: str
+    connector_instance_id: str
+    source_ids: list[str]
+    capability_ids: list[str]
+    budgets: dict[str, int] = Field(default_factory=dict)
+    max_time_window_days: int | None = None
+    enabled: bool
+    version: int
+    created_at: datetime.datetime | None = None
+    updated_at: datetime.datetime | None = None
+
+
+class ProjectConnectorBindingListResponse(BaseModel):
+    project_id: str
+    bindings: list[ProjectConnectorBindingResponse]
+
+
+class ProjectAvailableConnector(BaseModel):
+    connector: ConnectorResponse
+    sources: list[ConnectorSourceResponse]
+
+
+class ProjectAvailableConnectorsResponse(BaseModel):
+    connectors: list[ProjectAvailableConnector]
+
+
 # --- Project ---
 
 class ProjectResponse(BaseModel):
@@ -47,8 +212,9 @@ class ProjectResponse(BaseModel):
     auto_reingest_error: str | None = None
     git_update_summary: dict | None = None
     has_github_token: bool = False
-    connection_kind: str = "pat"  # "pat" | "app"
+    connection_kind: str = "pat"  # "pat" | "app" | "azure_devops"
     github_account_login: str | None = None
+    azure_devops_connection_id: str | None = None
     webhook_status: str | None = None  # "active" | "not_registered" | "unknown" | None
     instruction_pack_dir: str | None = None
     plugin_pack_id: int | None = None
@@ -137,6 +303,11 @@ class AddRepoRequest(BaseModel):
         None,
         description="GitHub App installation id (preferred connection; short-lived tokens are minted on demand)",
     )
+    azure_devops_connection_id: str | None = Field(
+        None,
+        max_length=36,
+        description="Azure DevOps organization connection id supplying the clone/fetch PAT",
+    )
 
     @field_validator("platform")
     @classmethod
@@ -178,6 +349,62 @@ class GithubAppInstallationItem(BaseModel):
 
 class GithubAppInstallationsResponse(BaseModel):
     installations: list[GithubAppInstallationItem] = Field(default_factory=list)
+
+
+# --- Azure DevOps -------------------------------------------------------------
+
+
+class AzureDevOpsConnectRequest(BaseModel):
+    """Connect an Azure DevOps organization with a Personal Access Token.
+
+    ``organization_url`` accepts anything identifying the organization: the
+    organization URL, a project URL, or a repository/clone URL. The server
+    normalizes it before verifying the token.
+    """
+
+    organization_url: StrippedStr = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="e.g. https://dev.azure.com/my-org (project and repo URLs are accepted too)",
+    )
+    pat: str = Field(
+        ...,
+        min_length=1,
+        max_length=1000,
+        description="Azure DevOps Personal Access Token; needs Code: Read",
+    )
+
+
+class AzureDevOpsConnectionItem(BaseModel):
+    """A stored Azure DevOps connection. Never carries the token."""
+
+    id: str
+    organization_url: str
+    organization_name: str
+    account_name: str | None = None
+    last_verified_at: datetime.datetime | None = None
+
+
+class AzureDevOpsConnectionsResponse(BaseModel):
+    connections: list[AzureDevOpsConnectionItem] = Field(default_factory=list)
+
+
+class AzureDevOpsRepoItem(BaseModel):
+    id: str
+    name: str
+    project: str
+    clone_url: str | None = None
+    web_url: str | None = None
+    default_branch: str | None = None
+    is_disabled: bool = False
+    size_bytes: int = 0
+
+
+class AzureDevOpsReposResponse(BaseModel):
+    connection_id: str
+    organization_name: str
+    repositories: list[AzureDevOpsRepoItem] = Field(default_factory=list)
 
 
 class ReingestionReadinessResponse(BaseModel):
@@ -326,18 +553,10 @@ NexusPackId = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_.-]{1,79}$")]
 NexusReferenceId = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_.:-]{1,159}$")]
 NexusHash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 NEXUS_PACK_SNAPSHOT_MAX_BYTES = 64 * 1024
-NEXUS_PRIVATE_ANALYSIS_PACKS_MAX_BYTES = 64 * 1024
-NEXUS_PRIVATE_REFERENCE_ATTACHMENTS_MAX_COUNT = 20
-NEXUS_PRIVATE_REFERENCE_ATTACHMENT_TEXT_MAX_CHARS = 12_000
-NEXUS_PRIVATE_REFERENCE_ATTACHMENTS_TEXT_MAX_CHARS = 32_000
 
 
 class NexusContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class NexusPrivateContractModel(NexusContractModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 class NexusStyleAudience(StrEnum):
@@ -417,229 +636,6 @@ class NexusAudienceRender(NexusContractModel):
     detail_level: Literal["brief", "standard", "detailed"] | None = None
 
 
-class NexusPrivatePackReceipt(NexusContractModel):
-    version_id: int = Field(ge=1)
-    pack_id: NexusPackId
-    version: str = Field(min_length=1, max_length=64)
-    content_hash: NexusHash
-    audience_render: NexusAudienceRender = Field(default_factory=NexusAudienceRender)
-
-    @model_validator(mode="after")
-    def require_exact_identity(self) -> "NexusPrivatePackReceipt":
-        if not self.audience_render.model_fields_set:
-            # An empty normalized profile is valid, but raw display/audit values
-            # are intentionally not part of the MCP execution contract.
-            return self
-        return self
-
-
-class NexusPrivateReferenceAttachment(NexusPrivateContractModel):
-    """Metadata and bounded extracted text for a Pack reference attachment.
-
-    Raw attachment bytes are intentionally outside the MCP execution contract.
-    """
-
-    purpose: str = Field(min_length=1, max_length=240)
-    filename: str = Field(min_length=1, max_length=255)
-    content_type: str = Field(min_length=1, max_length=120)
-    sha256: NexusHash
-    extracted_text: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=NEXUS_PRIVATE_REFERENCE_ATTACHMENT_TEXT_MAX_CHARS,
-    )
-
-    @field_validator("purpose", "filename", "content_type")
-    @classmethod
-    def validate_non_blank_text(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("reference attachment text fields must not be blank")
-        return value
-
-    @field_validator("extracted_text")
-    @classmethod
-    def validate_extracted_text(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            raise ValueError("reference attachment extracted_text must not be blank")
-        return value
-
-    @field_validator("filename")
-    @classmethod
-    def validate_filename(cls, value: str) -> str:
-        if "/" in value or "\\" in value or any(ord(char) < 32 or ord(char) == 127 for char in value):
-            raise ValueError("reference attachment filename must be a safe basename")
-        return value
-
-
-class NexusPrivateAnalysis(NexusPrivateContractModel):
-    id: NexusReferenceId
-    label: str = Field(min_length=1, max_length=120)
-    purpose: str = Field(min_length=1, max_length=500)
-
-
-class NexusPrivateEvidenceRequirement(NexusPrivateContractModel):
-    id: NexusReferenceId
-    label: str = Field(min_length=1, max_length=120)
-    required: bool = True
-    weight: int = Field(default=1, ge=1, le=100)
-
-
-class NexusPrivateOutputSection(NexusPrivateContractModel):
-    id: NexusReferenceId
-    heading: str = Field(min_length=1, max_length=160)
-    order: int = Field(ge=1, le=100)
-
-
-class NexusPrivateOutputDocument(NexusPrivateContractModel):
-    id: NexusReferenceId
-    title: str = Field(min_length=1, max_length=160)
-    sections: list[NexusPrivateOutputSection] = Field(min_length=1, max_length=20)
-
-    @model_validator(mode="after")
-    def validate_section_order(self) -> "NexusPrivateOutputDocument":
-        orders = [section.order for section in self.sections]
-        if len(orders) != len(set(orders)) or orders != sorted(orders):
-            raise ValueError("private output sections must have unique ascending order")
-        return self
-
-
-class NexusPrivateScoringDimension(NexusPrivateContractModel):
-    id: NexusReferenceId
-    label: str = Field(min_length=1, max_length=120)
-    weight: int = Field(ge=1, le=100)
-
-
-class NexusPrivateCapabilityRequirement(NexusPrivateContractModel):
-    capability_id: NexusReferenceId
-    required: bool = True
-    purpose: str = Field(min_length=1, max_length=240)
-
-
-class NexusPrivateCompatibility(NexusPrivateContractModel):
-    supported_project_kinds: list[str] = Field(default_factory=list, max_length=20)
-    required_domains: list[str] = Field(default_factory=list, max_length=20)
-
-
-class NexusPrivateAudience(NexusPrivateContractModel):
-    label: str = Field(min_length=1, max_length=160)
-    roles: list[str] = Field(default_factory=list, max_length=12)
-    decision_needs: list[str] = Field(default_factory=list, max_length=12)
-    domain_familiarity: str | None = Field(default=None, max_length=160)
-    desired_outcome: str | None = Field(default=None, max_length=300)
-    render: NexusAudienceRender = Field(default_factory=NexusAudienceRender)
-
-    @field_validator("roles", "decision_needs")
-    @classmethod
-    def validate_words(cls, value: list[str]) -> list[str]:
-        if any(not item.strip() or len(item) > 120 for item in value):
-            raise ValueError("private audience values must be non-empty bounded text")
-        return value
-
-    @model_validator(mode="after")
-    def reject_suppression(self) -> "NexusPrivateAudience":
-        text = " ".join((
-            self.label, *self.roles, *self.decision_needs,
-            self.domain_familiarity or "", self.desired_outcome or "",
-        )).casefold()
-        forbidden = (
-            "hide finding", "suppress finding", "omit finding", "hide evidence",
-            "suppress evidence", "omit evidence", "hide uncertainty", "suppress uncertainty",
-            "omit uncertainty", "hide source", "suppress source", "omit source",
-        )
-        if any(term in text for term in forbidden):
-            raise ValueError("private audience cannot suppress findings, evidence, uncertainty, or sources")
-        return self
-
-
-class NexusPrivateAnalysisArtifactV3(NexusPrivateContractModel):
-    """Strict V3 declarative transport contract; it has no executable namespace."""
-
-    schema_version: Literal[3] = 3
-    purpose: str = Field(min_length=1, max_length=1000)
-    analyses: list[NexusPrivateAnalysis] = Field(min_length=1, max_length=30)
-    evidence_requirements: list[NexusPrivateEvidenceRequirement] = Field(min_length=1, max_length=30)
-    output_documents: list[NexusPrivateOutputDocument] = Field(min_length=1, max_length=12)
-    scoring_dimensions: list[NexusPrivateScoringDimension] = Field(default_factory=list, max_length=20)
-    capability_requirements: list[NexusPrivateCapabilityRequirement] = Field(default_factory=list, max_length=30)
-    compatibility: NexusPrivateCompatibility = Field(default_factory=NexusPrivateCompatibility)
-    audience: NexusPrivateAudience
-
-    @model_validator(mode="after")
-    def validate_unique_ids(self) -> "NexusPrivateAnalysisArtifactV3":
-        for label, values in (
-            ("analysis", self.analyses), ("evidence", self.evidence_requirements),
-            ("output", self.output_documents), ("scoring", self.scoring_dimensions),
-        ):
-            ids = [item.id for item in values]
-            if len(ids) != len(set(ids)):
-                raise ValueError(f"duplicate private {label} id")
-        if sum(item.weight for item in self.scoring_dimensions) > 1000:
-            raise ValueError("private scoring weights are too large")
-        return self
-
-
-def compute_nexus_private_artifact_hash(
-    artifact: NexusPrivateAnalysisArtifactV3,
-    reference_attachments: list[NexusPrivateReferenceAttachment] | tuple[NexusPrivateReferenceAttachment, ...] = (),
-) -> str:
-    """Hash artifact content and, when present, sorted attachment receipt identities."""
-    if reference_attachments:
-        payload: object = {
-            "artifact": artifact.model_dump(mode="json"),
-            "reference_attachments": sorted(
-                (
-                    {"sha256": item.sha256, "purpose": item.purpose}
-                    for item in reference_attachments
-                ),
-                key=lambda item: (item["sha256"], item["purpose"]),
-            ),
-        }
-    else:
-        payload = artifact.model_dump(mode="json")
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-class NexusPrivateAnalysisPack(NexusPrivateContractModel):
-    receipt: NexusPrivatePackReceipt
-    artifact: NexusPrivateAnalysisArtifactV3
-    missing_optional_capability_ids: list[NexusReferenceId] = Field(default_factory=list, max_length=30)
-    reference_attachments: list[NexusPrivateReferenceAttachment] = Field(
-        default_factory=list,
-        max_length=NEXUS_PRIVATE_REFERENCE_ATTACHMENTS_MAX_COUNT,
-        description="Optional metadata and bounded extracted text only; raw binary is never accepted",
-    )
-
-    @model_validator(mode="after")
-    def validate_exact_artifact(self) -> "NexusPrivateAnalysisPack":
-        if self.receipt.content_hash != compute_nexus_private_artifact_hash(
-            self.artifact, self.reference_attachments
-        ):
-            raise ValueError(
-                "private Analysis Pack artifact/reference content_hash does not match receipt"
-            )
-        if self.receipt.audience_render != self.artifact.audience.render:
-            raise ValueError("private Analysis Pack audience render does not match receipt")
-        if len(self.missing_optional_capability_ids) != len(set(self.missing_optional_capability_ids)):
-            raise ValueError("duplicate missing optional capability")
-        optional_ids = {
-            requirement.capability_id
-            for requirement in self.artifact.capability_requirements
-            if not requirement.required
-        }
-        if not set(self.missing_optional_capability_ids) <= optional_ids:
-            raise ValueError("missing optional capability is not declared optional")
-        if sum(len(item.extracted_text or "") for item in self.reference_attachments) > NEXUS_PRIVATE_REFERENCE_ATTACHMENTS_TEXT_MAX_CHARS:
-            raise ValueError(
-                "private reference attachments exceed "
-                f"{NEXUS_PRIVATE_REFERENCE_ATTACHMENTS_TEXT_MAX_CHARS} extracted-text characters"
-            )
-        attachment_keys = [(item.filename.casefold(), item.sha256) for item in self.reference_attachments]
-        if len(attachment_keys) != len(set(attachment_keys)):
-            raise ValueError("private reference attachments must have unique filename and sha256 pairs")
-        return self
-
-
 class NexusResolvedPack(NexusContractModel):
     id: NexusPackId
     version: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9][A-Za-z0-9.+_-]{0,79}$")
@@ -696,6 +692,22 @@ def compute_nexus_snapshot_hash(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+class PackAuditRecord(BaseModel):
+    """The pack identity bound to one ``GenerateRun`` (spec section 9).
+
+    Not a wire model; the resolved audit values a generate request implies.
+    Every field is optional -- a run with no active pack records all NULL.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    pack_id: str | None = None
+    pack_version: str | None = None
+    pack_content_hash: str | None = None
+    pack_activated_by: str | None = None
+    pack_activated_at: datetime.datetime | None = None
+
+
 class GenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -711,11 +723,93 @@ class GenerateRequest(BaseModel):
     nexus_pack_ids: list[NexusPackId] = Field(default_factory=list, max_length=201, description="Selected governed Nexus Pack IDs for this generation request")
     nexus_pack_snapshot: NexusPackSnapshot | None = Field(None, description="Immutable governed Pack provenance receipt; never executable input")
     nexus_presentation: NexusPresentation | None = Field(None, description="Bounded Phase 3 presentation overlay")
-    nexus_audience_render: NexusAudienceRender | None = Field(None, description="Normalized custom V3 audience render dimensions")
-    nexus_private_pack_receipts: list[NexusPrivatePackReceipt] = Field(default_factory=list, max_length=20, description="Exact additive private Pack version receipts; never authority grants")
-    nexus_private_analysis_packs: list[NexusPrivateAnalysisPack] = Field(default_factory=list, max_length=20, description="Verified private V3 data for additive Phase 3 documents only")
+    # --- Pack audit record (spec section 9) -------------------------------
+    # Identity fields are a FALLBACK only. When ``nexus_pack_snapshot`` is
+    # present the identity is derived from it (see ``resolved_pack_audit``),
+    # because the snapshot is hash-verified below and a duplicated client
+    # field is not. Actor and timestamp are not expressible in the snapshot,
+    # so they are always taken from the request.
+    pack_id: str | None = Field(
+        None,
+        max_length=200,
+        description="Active pack id for the audit record. Ignored when nexus_pack_snapshot is supplied (derived from it instead).",
+    )
+    pack_version: str | None = Field(
+        None,
+        max_length=64,
+        description="Active pack version for the audit record. Ignored when nexus_pack_snapshot is supplied.",
+    )
+    pack_content_hash: str | None = Field(
+        None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+        description="sha256 of the canonical pack manifest JSON. Ignored when nexus_pack_snapshot is supplied.",
+    )
+    pack_activated_by: str | None = Field(
+        None,
+        max_length=200,
+        description="Actor identity that activated the pack, as supplied by the calling service",
+    )
+    pack_activated_at: datetime.datetime | None = Field(
+        None, description="Activation timestamp of the pack version used for this run"
+    )
+    live_evidence: Literal["off", "project_default"] = Field(
+        "project_default",
+        description=(
+            "Whether this run may use live runtime evidence. 'project_default' "
+            "uses exactly the runtime sources the project already has; 'off' "
+            "produces a code-only run. A run can never widen the project's "
+            "grant, only decline it."
+        ),
+    )
     resume: bool = Field(True, description="Resume from staging checkpoint if available")
     mode: str = Field("enterprise", description="'enterprise' blocks publish on all quality gates; 'draft' allows looser output")
+
+    def resolved_pack_audit(self) -> PackAuditRecord:
+        """Resolve the pack audit record to persist on the ``GenerateRun``.
+
+        Identity resolution order:
+
+        1. ``nexus_pack_snapshot`` -- the snapshot's ``resolved_packs`` entry
+           for the first functional pack (the user-authored lens, which is the
+           thing Git review was dropped for), falling back to the foundation
+           pack when the stack declares no functional pack. The snapshot's
+           ``snapshot_hash`` is verified against the canonical
+           snapshot/presentation payload by ``align_pack_ids_with_snapshot``,
+           so these three values are tamper-evident.
+        2. the explicit ``pack_id`` / ``pack_version`` / ``pack_content_hash``
+           request fields -- used only when no snapshot is supplied (DB-authored
+           packs activated outside the Nexus snapshot path).
+
+        ``pack_activated_by`` / ``pack_activated_at`` always come from the
+        request: neither is part of the snapshot payload.
+        """
+        pack_id = self.pack_id
+        pack_version = self.pack_version
+        content_hash = self.pack_content_hash
+        snapshot = self.nexus_pack_snapshot
+        if snapshot is not None:
+            preferred = (
+                snapshot.functional_pack_ids[0]
+                if snapshot.functional_pack_ids
+                else snapshot.foundation_pack_id
+            )
+            resolved = next(
+                (pack for pack in snapshot.resolved_packs if pack.id == preferred),
+                None,
+            )
+            if resolved is not None:
+                pack_id = resolved.id
+                pack_version = resolved.version
+                content_hash = resolved.content_hash
+        return PackAuditRecord(
+            pack_id=pack_id,
+            pack_version=pack_version,
+            pack_content_hash=content_hash,
+            pack_activated_by=self.pack_activated_by,
+            pack_activated_at=self.pack_activated_at,
+        )
 
     @field_validator("mode")
     @classmethod
@@ -733,27 +827,6 @@ class GenerateRequest(BaseModel):
 
     @model_validator(mode="after")
     def align_pack_ids_with_snapshot(self) -> "GenerateRequest":
-        if len({receipt.content_hash for receipt in self.nexus_private_pack_receipts}) != len(self.nexus_private_pack_receipts):
-            raise ValueError("nexus_private_pack_receipts must contain unique exact versions")
-        private_hashes = [item.receipt.content_hash for item in self.nexus_private_analysis_packs]
-        if len(private_hashes) != len(set(private_hashes)):
-            raise ValueError("nexus_private_analysis_packs must contain unique exact versions")
-        encoded_private = json.dumps(
-            [item.model_dump(mode="json") for item in self.nexus_private_analysis_packs],
-            sort_keys=True, separators=(",", ":"), ensure_ascii=True,
-        ).encode("utf-8")
-        if len(encoded_private) > NEXUS_PRIVATE_ANALYSIS_PACKS_MAX_BYTES:
-            raise ValueError(
-                f"nexus_private_analysis_packs exceeds {NEXUS_PRIVATE_ANALYSIS_PACKS_MAX_BYTES} bytes"
-            )
-        if self.nexus_private_analysis_packs:
-            exact_receipts = [item.receipt for item in self.nexus_private_analysis_packs]
-            if self.nexus_private_pack_receipts and self.nexus_private_pack_receipts != exact_receipts:
-                raise ValueError("nexus_private_pack_receipts must exactly match private Analysis Pack payload")
-            self.nexus_private_pack_receipts = exact_receipts
-            if self.nexus_audience_render is not None and len(exact_receipts) == 1:
-                if self.nexus_audience_render != exact_receipts[0].audience_render:
-                    raise ValueError("nexus_audience_render must match the private Analysis Pack receipt")
         if self.nexus_pack_snapshot is None:
             return self
         expected = [
@@ -1436,3 +1509,116 @@ class LineageFieldResponse(BaseModel):
     edges: list[LineageFieldEdge] = []
     # True when the BFS hit max_depth with further edges still unexplored.
     truncated: bool = False
+
+
+# --- Job/group lineage rollup (GET /lineage/job) ---
+#
+# The field API answers "where does THIS column come from". The rollup answers
+# the question one level up -- "what data moves out of these jobs, into which
+# tables, and how is it transformed" -- which is what an LLM or a landscape UI
+# needs before it can even name a column worth tracing.
+#
+# Same source file (`scan/lineage.json`), different projection: FLAT. A field
+# response nests `transformations` inside an edge because a BFS hop is one
+# entry; a rollup row is one (entry, transformation) pair, so a two-step tMap
+# mapping shows up as two rows with the same source/target and different
+# expressions. That keeps the payload tabular for paging and for prompt
+# rendering, at the cost of repeating the endpoints of multi-step mappings.
+#
+# `expression` is raw generated Java. It is credential-redacted
+# (`source_context.redact_inline_credentials`) and hard-clipped before it ever
+# reaches this model -- see `lineage_service._safe_expression`.
+
+class LineageRollupEdge(BaseModel):
+    job_name: str
+    source_component: str = ""
+    source_table: str = ""
+    source_column: str = ""
+    target_component: str = ""
+    target_table: str = ""
+    target_column: str = ""
+    # One transformation step, flattened out of the entry's `transformations`
+    # list. Empty strings when the entry carried no transformation at all --
+    # the row is still emitted, never dropped.
+    transformation_type: str = ""
+    expression: str = ""
+    human_explanation: str = ""
+    # certain | likely | dynamic | inferred | opaque (LineageConfidence)
+    confidence: str = "opaque"
+    resolved: bool = False
+    dynamic_refs: list[str] = []
+
+
+class LineageConfidenceTotals(BaseModel):
+    """Per-confidence entry counts. A closed set of five buckets.
+
+    Any confidence value the scanner emits outside this set is counted under
+    `opaque`, matching `lineage_service._DEFAULT_CONFIDENCE` (the fallback used
+    when an entry has no confidence at all). The raw value still survives
+    verbatim on each `LineageRollupEdge.confidence`, so nothing is lost --
+    only the aggregate is bucketed.
+    """
+
+    certain: int = 0
+    likely: int = 0
+    dynamic: int = 0
+    inferred: int = 0
+    opaque: int = 0
+
+
+class LineageRollupTotals(BaseModel):
+    # Counted over ENTRIES, not over emitted rows: a multi-step mapping is one
+    # entry and several rows, so `entries` != `total_edges` is expected.
+    entries: int = 0
+    resolved: int = 0
+    unresolved: int = 0
+    confidence: LineageConfidenceTotals = LineageConfidenceTotals()
+
+
+class LineageErrorDetail(BaseModel):
+    """Structured body of a lineage 404, carried as the HTTPException `detail`.
+
+    `reason` is the stable machine-readable discriminator; `message` is the
+    human-readable prose. Both 404s of `/lineage/job` mean different things and
+    drive opposite user-facing outcomes:
+
+    * `lineage_artifact_absent`  -- no `scan/lineage.json`; the project needs a
+      (re)scan.
+    * `lineage_selection_empty`  -- lineage data exists, the requested job or
+      group is not in it; the NAME is wrong. Do not tell the user to rescan.
+
+    A consumer must branch on `reason` ONLY. `message` is prose and may be
+    reworded at any time; treating it as a discriminator would make a copy edit
+    silently flip downstream behaviour, which is exactly what this field
+    prevents. The Literal is closed and mirrors
+    `lineage_service.LineageQueryError.reason` on every subclass (asserted by
+    `tests/test_services/test_lineage_job_rollup.py`), so a new failure mode
+    cannot ship without a code declared here.
+    """
+
+    reason: Literal["lineage_artifact_absent", "lineage_selection_empty"]
+    message: str
+
+
+class LineageErrorResponse(BaseModel):
+    """OpenAPI shape of a lineage 404 -- FastAPI wraps `detail` around the body."""
+
+    detail: LineageErrorDetail
+
+
+class LineageJobResponse(BaseModel):
+    project_id: str
+    # Job names that actually matched lineage entries. A requested job that
+    # matched nothing is absent here -- the caller diffs its request against
+    # this list rather than being told a wrong job matched.
+    jobs: list[str] = []
+    totals: LineageRollupTotals
+    # Distinct target tables across the WHOLE selection (not just this page),
+    # capped -- see lineage_service.TARGET_TABLE_CAP.
+    target_tables: list[str] = []
+    edges: list[LineageRollupEdge] = []
+    offset: int
+    limit: int
+    returned: int
+    total_edges: int
+    has_more: bool

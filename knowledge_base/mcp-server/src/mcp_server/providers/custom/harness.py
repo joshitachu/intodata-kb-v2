@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 from mcp_server.config import config
 from mcp_server.providers.base import AgentResult, DocGenContext, DocGenerationProvider, LogCallback
 from mcp_server.services.pack_loader import InstructionPack
+from mcp_server.services.plugin_schema import load_plugin_manifest
 from mcp_server.providers.custom.investigator import (
     ChunkManifestInvestigator,
     InvestigationError,
@@ -56,6 +57,10 @@ from mcp_server.providers.custom.fabrication_validators import (
     job_scoped_component_reference_errors,
     protected_fact_errors,
     unit_count_claim_errors,
+)
+from mcp_server.providers.custom.runtime_evidence import (
+    RuntimeEvidenceStore,
+    fetch_runtime_evidence,
 )
 from mcp_server.providers.custom.target_evidence import (
     TargetEvidence,
@@ -92,6 +97,13 @@ from mcp_server.providers.custom.models import (
     ProviderCallLog,
 )
 from mcp_server.providers.custom.doc_catalog import load_doc_catalog
+from mcp_server.providers.custom.pack_contract import (
+    SECTION_COVERAGE_FILENAME,
+    PackContract,
+    contract_from_plugin_manifest,
+    default_contract,
+)
+from mcp_server.providers.custom.pipeline.warning_collector import WarningCode
 from mcp_server.providers.custom.prompt_packs import (
     ANALYSIS_SECTION_NAMES,
     REQUIRED_SECTION_NAMES,
@@ -102,7 +114,6 @@ from mcp_server.providers.custom.prompts import (
     facts_summary,
     group_analysis_prompt,
 )
-from mcp_server.services.nexus_execution_contract import private_analysis_instructions_for_document
 from mcp_server.providers.custom.providers import ModelProvider, build_model_provider
 from mcp_server.providers.custom.repair_planner import (
     REPAIR_TOKEN_CAP,
@@ -643,6 +654,7 @@ class CustomHarnessProvider(DocGenerationProvider):
         fallback_provider: ModelProvider | None = None,
         pack: "InstructionPack | None" = None,
         plugin_pack_dir: "Path | None" = None,
+        pack_contract: "PackContract | None" = None,
     ) -> None:
         self.model_provider = model_provider
         self.write_provider = write_provider or model_provider
@@ -650,6 +662,10 @@ class CustomHarnessProvider(DocGenerationProvider):
         self.fallback_provider = fallback_provider
         self.pack = pack
         self.plugin_pack_dir = plugin_pack_dir
+        # Resolved section/doc contract (One Pack program, decision D1).
+        # Injected directly for DB-stored packs, compiled from plugin.yaml
+        # (v1 or v2) for directory packs, or defaulted per-platform in run().
+        self._pack_contract: "PackContract | None" = pack_contract
 
         _catalog = load_doc_catalog()
         # Per-unit catalog entries are expanded at run start (one doc per
@@ -665,8 +681,6 @@ class CustomHarnessProvider(DocGenerationProvider):
         self._doc_bundle_map: dict[str, str] = dict(_catalog.doc_bundle_map)
         self._doc_section_bundle_map: dict[str, set[str]] = dict(_catalog.doc_section_bundle_map)
         self._doc_section_requirements_extra: dict[str, list[str]] = {}
-        self._private_analysis_instructions: dict[str, str] = {}
-        self._private_analysis_applied = False
         self._plugin_manifest = None
         self._plugin_doc_definitions: dict[str, object] = {}
         self._per_job_doc_units: dict[str, str] = {}
@@ -674,6 +688,9 @@ class CustomHarnessProvider(DocGenerationProvider):
         # builder instance caching the loaded scan for the current staging dir.
         self._target_evidence: dict[str, TargetEvidence] = {}
         self._target_evidence_builder: TargetEvidenceBuilder | None = None
+        # Observed production behaviour, fetched once at the start of Phase 3
+        # (the evidence builder is synchronous and must not do I/O per doc).
+        self._runtime_evidence: "RuntimeEvidenceStore | None" = None
         # Tier-3 non-code documented-context plan (built once per staging dir).
         # ``False`` means "attempted, unavailable" so we do not retry per doc.
         self._noncode_plan: NonCodeAssociationPlan | None | bool = None
@@ -684,9 +701,13 @@ class CustomHarnessProvider(DocGenerationProvider):
         self._phase_concurrency_overrides: dict[str, int] = {}
 
         if plugin_pack_dir:
-            from mcp_server.services.plugin_schema import load_plugin_manifest
             try:
+                # One pack format, one compiler: the manifest IS the execution
+                # contract, and contract_from_plugin_manifest derives the
+                # section/doc contract from its ``lens`` and ``docs`` blocks.
                 _manifest = load_plugin_manifest(plugin_pack_dir)
+                if self._pack_contract is None:
+                    self._pack_contract = contract_from_plugin_manifest(_manifest)
                 self._plugin_manifest = _manifest
                 if _manifest.phases is not None:
                     for _phase_name in ("investigation", "analysis", "scorecard", "doc_bundles"):
@@ -701,7 +722,20 @@ class CustomHarnessProvider(DocGenerationProvider):
                     self._plugin_doc_definitions = {d.name: d for d in _manifest.docs}
                     self._doc_assignments = {"custom": list(self._required_docs)}
                     self._doc_bundle_map = {d: "custom" for d in self._required_docs}
-                    self._doc_section_bundle_map = {}  # pack runs: no Phase 2 section routing
+                    # A pack that routes nothing gets no routing (the historical
+                    # behaviour: doc bundles receive the GROUP_SUMMARY floor).
+                    # Declaring docs[].phase2_sections populates the map so each
+                    # document's bundle carries exactly the analysis sections it
+                    # is meant to be written from.
+                    self._doc_section_bundle_map = {}
+                    if self._pack_contract is not None:
+                        contract_routing = {
+                            spec.name: set(spec.phase2_sections)
+                            for spec in self._pack_contract.docs
+                            if spec.phase2_sections
+                        }
+                        if contract_routing:
+                            self._doc_section_bundle_map = contract_routing
                     self._doc_section_requirements_extra = {
                         d.name: d.required_sections for d in _manifest.docs if d.required_sections
                     }
@@ -711,10 +745,37 @@ class CustomHarnessProvider(DocGenerationProvider):
                     exc,
                     exc_info=True,
                 )
+                self._pack_contract = pack_contract
 
     @property
     def _plugin_mode(self) -> bool:
-        return self.plugin_pack_dir is not None
+        return self.plugin_pack_dir is not None or (
+            self._pack_contract is not None and self._pack_contract.is_pack
+        )
+
+    @property
+    def pack_contract(self) -> "PackContract":
+        """The resolved contract for this run (default per-platform when no pack).
+
+        Before ``run()`` resolves the facts manifest the platform is unknown;
+        the generic default is returned so contract-driven helpers called in
+        isolation (tests, tooling) keep the legacy non-Talend floor. Run-path
+        code that has the platform at hand uses :meth:`_contract_for` instead.
+        """
+        if self._pack_contract is not None:
+            return self._pack_contract
+        return default_contract("generic")
+
+    def _contract_for(self, platform: str) -> "PackContract":
+        """Contract for a known platform: the active pack's, else the default.
+
+        Used by run-path helpers that carry ``state.facts_manifest.platform``
+        so direct calls (tests, repair tooling) outside ``run()`` still get
+        the exact legacy platform-conditional enforcement.
+        """
+        if self._pack_contract is not None:
+            return self._pack_contract
+        return default_contract(platform)
 
     def _phase_policy(self, phase: str) -> str:
         """Return the execution policy for a harness phase.
@@ -794,26 +855,17 @@ class CustomHarnessProvider(DocGenerationProvider):
         if not hasattr(self, "_override_providers"):
             self._override_providers: dict[str, "ModelProvider"] = {}
         if override_model not in self._override_providers:
-            from mcp_server.model_strategies import normalize_model_id
+            from mcp_server.model_strategies import (
+                normalize_model_id,
+                provider_connection_config,
+            )
             normalized = normalize_model_id(override_model)
-            provider_prefix = normalized.partition("/")[0]
-            api_key: str | None = None
-            base_url: str | None = None
-            ollama_base_url: str | None = config.ollama_base_url
-            if provider_prefix == "deepseek":
-                api_key = config.doc_generation_deepseek_api_key or config.doc_generation_api_key
-                base_url = config.doc_generation_deepseek_base_url or config.doc_generation_base_url
-            elif provider_prefix == "route33":
-                api_key = config.doc_generation_route33_api_key or config.doc_generation_api_key
-                base_url = config.doc_generation_route33_base_url
-            elif provider_prefix not in {"openai", "anthropic", "google"}:
-                api_key = config.doc_generation_api_key
-                base_url = config.doc_generation_base_url
+            connection = provider_connection_config(normalized)
             self._override_providers[override_model] = build_model_provider(
                 normalized,
-                api_key=api_key,
-                base_url=base_url,
-                ollama_base_url=ollama_base_url,
+                api_key=connection["api_key"],
+                base_url=connection["base_url"],
+                ollama_base_url=config.ollama_base_url,
             )
         return self._override_providers[override_model]
 
@@ -1285,11 +1337,21 @@ Fallback plan example:
     def _doc_output_ceiling(self, doc_name: str, state: HarnessRunState) -> int:
         """Per-doc-type output token ceiling (P0.3 output governance).
 
-        A per-unit dossier must be small; a brief/summary is bounded; an
-        inventory scales with unit count. Everything else keeps the phase-wide
+        The built-in unit-reference dossier is intentionally small; a
+        brief/summary is bounded; an inventory scales with unit count. Plugin
+        ``per_unit`` documents are authored contracts, so multiplicity never
+        implies a smaller output ceiling. Everything else keeps the phase-wide
         ceiling. Reservations use this per doc-task so one document can never
         starve the run's output budget.
         """
+        # ``per_unit`` controls multiplicity, not document size.  The 6K
+        # ceiling is appropriate for Nexus's built-in 10_UNIT_REFERENCE
+        # dossier, but applying it to arbitrary plugin documents truncated
+        # substantial contracts such as END_TO_END_LINEAGE before their final
+        # required sections.  Plugin documents retain the normal Phase 3
+        # safety ceiling and are governed by their manifest contract instead.
+        if doc_name in self._per_job_doc_units and self._plugin_manifest is not None:
+            return config.phase3_max_tokens
         if doc_name in self._per_job_doc_units:
             return max(1_200, config.docgen_unit_doc_output_tokens)
         base = doc_name.split("__", 1)[0]
@@ -1315,6 +1377,20 @@ Fallback plan example:
         `phase3_single_call_output_tokens`, and partitions the task by
         section/unit-range only when it does not.
         """
+        if doc_name in self._per_job_doc_units and self._plugin_manifest is not None:
+            base = doc_name.split("__", 1)[0]
+            required_sections = self._plugin_required_sections(base)
+            # Size the planning estimate from the authored document contract.
+            # The provider still receives the Phase 3 safety ceiling above;
+            # this estimate only decides whether the output planner should
+            # treat the document as a normal substantial document.
+            return min(
+                config.phase3_max_tokens,
+                max(
+                    config.docgen_doc_expected_output_tokens,
+                    2_000 + 2_000 * len(required_sections),
+                ),
+            )
         if doc_name in self._per_job_doc_units:
             return max(1_200, config.docgen_unit_doc_output_tokens)
         base = doc_name.split("__", 1)[0]
@@ -1627,6 +1703,16 @@ Fallback plan example:
                 "info",
             )
             facts = scoped
+
+        # Resolve the run's section contract now that the platform is known
+        # (platform is a compiler input, not a runtime discriminator). No pack
+        # selected => the built-in per-platform contract.
+        if self._pack_contract is None or not self._pack_contract.is_pack:
+            self._pack_contract = default_contract(facts.platform)
+        elif self._pack_contract.platform != (facts.platform or "generic").lower():
+            self._pack_contract = self._pack_contract.model_copy(
+                update={"platform": (facts.platform or "generic").lower()}
+            )
 
         state = HarnessRunState(project_id=ctx.project_id, facts_manifest=facts)
         facts_path = ctx.staging_dir / "facts_manifest.json"
@@ -2073,6 +2159,72 @@ Fallback plan example:
             "warning",
         )
 
+    async def _record_section_coverage_gap(
+        self,
+        ctx: DocGenContext,
+        state: HarnessRunState,
+        group: str,
+        missing: list[str],
+        contract: "PackContract",
+        log_cb: LogCallback,
+        *,
+        phase: str = "phase2",
+    ) -> None:
+        """Record, quietly, that a declared section produced nothing.
+
+        A pack asks questions of the evidence. Some of those questions have the
+        answer "there is nothing here" -- a SQL-injection pack pointed at a job
+        with no dynamic SQL SHOULD come back empty for that section, and that is
+        a correct result, not a defect. So this is a debugging breadcrumb only:
+
+        * the group keeps its real analysis (never a PARTIAL stub);
+        * the gap lands in ``_assessment/pack_section_coverage.json`` with the
+          question that went unanswered, so an author can tell "my question was
+          wrong" from "this codebase genuinely has none of that";
+        * the documents publish clean -- no notice, no warning code, no quality
+          penalty, no ``completed_warnings`` run status.
+        """
+        missing_sorted = sorted({str(name) for name in missing})
+        if not missing_sorted:
+            return
+        for record in state.section_coverage_gaps:
+            if record.get("group") == group and record.get("phase") == phase:
+                record["missing_sections"] = sorted(
+                    set(record.get("missing_sections") or []) | set(missing_sorted)
+                )
+                break
+        else:
+            questions = contract.questions
+            state.section_coverage_gaps.append(
+                {
+                    "pack_id": contract.pack_id,
+                    "group": group,
+                    "missing_sections": missing_sorted,
+                    "questions": {
+                        name: questions.get(name, "") for name in missing_sorted
+                    },
+                    "phase": phase,
+                }
+            )
+        self._write_section_coverage_gaps(ctx.staging_dir, state)
+        await log_cb(
+            ctx.project_id,
+            f"[custom] group {group} produced no content for declared section(s) "
+            f"{', '.join(missing_sorted)} of pack {contract.pack_id}; publishing the "
+            "analysis as found -- see _assessment/pack_section_coverage.json",
+            "info",
+        )
+
+    @staticmethod
+    def _write_section_coverage_gaps(
+        staging_dir: Path, state: HarnessRunState
+    ) -> None:
+        assessment_dir = staging_dir / "_assessment"
+        assessment_dir.mkdir(parents=True, exist_ok=True)
+        (assessment_dir / SECTION_COVERAGE_FILENAME).write_text(
+            json.dumps(state.section_coverage_gaps, indent=2), encoding="utf-8"
+        )
+
     def _phase2_pack_contract_records(
         self,
         ctx: DocGenContext,
@@ -2157,7 +2309,7 @@ Fallback plan example:
             if group_analysis_is_complete(
                 analysis_path,
                 state.facts_manifest.platform,
-                require_sections=not self._plugin_mode,
+                contract=self._contract_for(state.facts_manifest.platform),
             ):
                 await log_cb(
                     ctx.project_id,
@@ -2211,6 +2363,7 @@ Fallback plan example:
                     evidence_bytes=task.path.stat().st_size,
                     dense_threshold_bytes=config.phase2_dense_unit_bytes,
                     max_output_tokens=config.phase2_claim_max_tokens,
+                    sections=self._contract_for(state.facts_manifest.platform).analysis_section_names,
                 )
             )
 
@@ -2235,6 +2388,33 @@ Fallback plan example:
                 )
             )
 
+        # Fail-loudly enforcement of the pack's declared-required sections on
+        # the claims path. render_claims_as_markdown always emits a heading
+        # (plus an UNKNOWN stub) for every contract section, so a heading
+        # check can never detect an unanswered section here; the truthful
+        # signal is the claim ledger -- a declared section with no non-unknown
+        # claim got no answer. Groups the salvage path already
+        # marked PARTIAL are skipped: their gap is a pipeline failure owned by
+        # `_contain_phase2_group_failures` / the claim-spec salvage, and resume
+        # retries them.
+        claims_contract = self._contract_for(state.facts_manifest.platform)
+        if claims_contract.is_pack and group not in state.partial_groups:
+            satisfied_sections = {
+                claim.section
+                for batch in batches
+                for claim in batch.claims
+                if claim.kind != "unknown"
+            }
+            unanswered = [
+                name
+                for name in claims_contract.analysis_section_names
+                if name not in satisfied_sections
+            ]
+            if unanswered:
+                await self._record_section_coverage_gap(
+                    ctx, state, group, unanswered, claims_contract, log_cb
+                )
+
         claim_dir = analysis_dir / "_claims"
         ledger_path = claim_dir / f"{self._safe_name(group)}.jsonl"
         write_claim_ledger(
@@ -2247,6 +2427,8 @@ Fallback plan example:
             group=group,
             unit_names=group_units,
             batches=batches,
+            sections=self._contract_for(state.facts_manifest.platform).analysis_section_names,
+            relationship_section_names=self._contract_for(state.facts_manifest.platform).relationship_section_names,
         )
         coverage_block = "\n".join(f"- COVERED: {name}" for name in group_units)
         content = (
@@ -2314,7 +2496,10 @@ Fallback plan example:
             max_bytes=config.phase2_task_context_bytes,
             max_scoped_artifact_bytes=config.phase2_filtered_map_bytes,
             artifact_names=spec.artifact_names,
-            include_prompt_pack=False,
+            # The Nexus-owned platform analysis policy is materialized as a
+            # prompt pack and promoted to the system channel before dispatch.
+            # Plugins cannot suppress it, including in replace-mode lenses.
+            include_prompt_pack=True,
             include_investigation=True,
         )
         context_files = list(packet.files)
@@ -2322,6 +2507,8 @@ Fallback plan example:
             facts=state.facts_manifest,
             group=group,
             spec=spec,
+            plugin_pack_dir=self.plugin_pack_dir,
+            contract=self._contract_for(state.facts_manifest.platform),
         )
         opts = ModelOptions(
             max_tokens=min(config.phase2_claim_max_tokens, spec.max_output_tokens),
@@ -2587,7 +2774,7 @@ Fallback plan example:
                 if group_analysis_is_complete(
                     analysis_path,
                     state.facts_manifest.platform,
-                    require_sections=not self._plugin_mode,
+                    contract=self._contract_for(state.facts_manifest.platform),
                 ):
                     await log_cb(ctx.project_id, f"[custom] REUSE: skipping Phase 2 for {group} (unchanged group; cached analysis)", "info")
                     self._write_phase2_coverage_record(ctx, group, self._group_units(state, group), analysis_path)
@@ -2631,6 +2818,7 @@ Fallback plan example:
                     task_units=task.units if multi_task else None,
                     missing_evidence_units=task.missing_units if multi_task else None,
                     multi_task=multi_task,
+                    contract=self._contract_for(state.facts_manifest.platform),
                 )
                 target = task.task_id
                 allowed_units = task.all_units if multi_task else group_units
@@ -2726,7 +2914,8 @@ Fallback plan example:
                             text,
                             units,
                             platform=state.facts_manifest.platform,
-                            require_sections=not self._plugin_mode,
+                            require_sections=True,
+                            contract=self._contract_for(state.facts_manifest.platform),
                         ),
                         text,
                         refs,
@@ -2780,7 +2969,7 @@ Fallback plan example:
                 _guide_file = ctx.staging_dir / "_preprocess" / ctx.analysis_guide_file if ctx.analysis_guide_file else None
                 _extra = _guide_section_names(_guide_file) if _guide_file else frozenset()
                 assembled, summary_fallback = self._assemble_phase2_task_sections(
-                    group, tasks, task_outputs, _extra
+                    group, tasks, task_outputs, _extra, contract=self._contract_for(state.facts_manifest.platform)
                 )
                 await log_cb(
                     ctx.project_id,
@@ -2831,6 +3020,7 @@ Fallback plan example:
         tasks: list[EvidenceTask],
         task_outputs: list[str],
         extra_section_names: frozenset[str] = frozenset(),
+        contract: "PackContract | None" = None,
     ) -> tuple[str, str]:
         """Deterministically assemble per-job task outputs into one group analysis body.
 
@@ -2843,7 +3033,10 @@ Fallback plan example:
         authoritative group-level GROUP_SUMMARY (and CROSS_JOB_FINDINGS); the
         fallback is used only if that synthesis call fails.
         """
-        parsed_tasks = [cls._parse_phase2_sections(text, extra_section_names) for text in task_outputs]
+        parsed_tasks = [
+            cls._parse_phase2_sections(text, extra_section_names, contract=contract)
+            for text in task_outputs
+        ]
         provenance = [
             f"task {task.task_id}: {', '.join(task.all_units) or 'unscoped'}"
             for task in tasks
@@ -2853,8 +3046,9 @@ Fallback plan example:
             "Task text is preserved verbatim under provenance subheadings naming the analyzed units.",
         ]
         summary_sections = {GROUP_SUMMARY_SECTION, CROSS_JOB_FINDINGS_SECTION, LEGACY_CROSS_CHUNK_SECTION}
-        ordered_sections = PHASE2_SECTION_NAMES + tuple(
-            sorted(extra_section_names - set(PHASE2_SECTION_NAMES))
+        base_ordered = contract.ordered_names if contract is not None else PHASE2_SECTION_NAMES
+        ordered_sections = tuple(base_ordered) + tuple(
+            sorted(extra_section_names - set(base_ordered))
         )
         for section in ordered_sections:
             if section in summary_sections:
@@ -2883,10 +3077,12 @@ Fallback plan example:
 
     @staticmethod
     def _parse_phase2_sections(
-        text: str, extra_section_names: frozenset[str] = frozenset()
+        text: str,
+        extra_section_names: frozenset[str] = frozenset(),
+        contract: "PackContract | None" = None,
     ) -> dict[str, str]:
         from mcp_server.providers.custom.analysis_parser import parse_phase2_sections
-        return parse_phase2_sections(text, extra_section_names)
+        return parse_phase2_sections(text, extra_section_names, contract=contract)
 
     async def _phase2_group_synthesis(
         self,
@@ -2999,29 +3195,72 @@ Fallback plan example:
         opts: ModelOptions,
         log_cb: LogCallback,
     ) -> str:
-        """Normalize required guide headings without spending a repair LLM call."""
+        """Normalize required guide headings without spending a repair LLM call.
+
+        Contract-driven (recon S9): ``still_missing`` is computed against the
+        active contract's required set, so a ``mode: replace`` pack whose
+        declared sections are satisfied can never hit the raise below and be
+        silently converted into a PARTIAL stub by
+        ``_contain_phase2_group_failures``.
+
+        The residual-miss handling is split by enforcement class:
+
+        * ``hard_required_names`` (no-pack contract: the built-in platform set;
+          pack contracts: the GROUP_SUMMARY floor) -- unchanged raise; the
+          salvage machinery contains it exactly as today.
+        * everything a pack declared for itself -- recorded via
+          :meth:`_record_section_coverage_gap` and published as found. Routing
+          these through the raise would let ``_contain_phase2_group_failures``
+          replace real content with a PARTIAL stub while the run reports
+          success -- the exact failure mode this split removes.
+        """
 
         platform = state.facts_manifest.platform
+        contract = self._contract_for(platform)
         patched, missing = deterministic_phase2_section_patch(
             model_analysis,
             platform=platform,
             group=group,
+            contract=contract,
         )
-        if not missing:
-            return patched
 
-        await log_cb(
-            ctx.project_id,
-            f"[custom] Phase 2 for {group} missing guide sections after first pass: "
-            f"{', '.join(missing)}; applied deterministic structural patch",
-            "warning",
-        )
-        still_missing = missing_required_analysis_sections(patched, platform)
-        if still_missing:
-            raise RuntimeError(
-                f"Phase 2 analysis for group {group} missing required sections after deterministic patch: "
-                f"{', '.join(still_missing)}"
+        if missing:
+            await log_cb(
+                ctx.project_id,
+                f"[custom] Phase 2 for {group} missing guide sections after first pass: "
+                f"{', '.join(missing)}; applied deterministic structural patch",
+                "warning",
             )
+            still_missing = missing_required_analysis_sections(
+                patched, platform, contract=contract
+            )
+            # ``hard_required_names`` is the whole required set for a no-pack run
+            # (built-in Talend strictness, unchanged) and the protected floor
+            # alone for any pack. So the built-in contract keeps exactly the
+            # enforcement it always had, and nothing a pack declared for itself
+            # can ever raise here.
+            hard = set(contract.hard_required_names)
+            hard_missing = [n for n in still_missing if n in hard]
+            if hard_missing:
+                raise RuntimeError(
+                    f"Phase 2 analysis for group {group} missing required sections after deterministic patch: "
+                    f"{', '.join(hard_missing)}"
+                )
+
+        # Record every declared section the output has no heading for -- not
+        # just the required ones. The author's question is the unit of interest:
+        # they need to know which of their questions came back empty, whether or
+        # not they happened to mark it required.
+        if contract.is_pack and contract.declared_sections:
+            unanswered = [
+                spec.id
+                for spec in contract.declared_sections
+                if f"### {spec.id}" not in patched
+            ]
+            if unanswered:
+                await self._record_section_coverage_gap(
+                    ctx, state, group, unanswered, contract, log_cb
+                )
         return patched
 
     async def _phase2_analysis_direct(
@@ -3170,7 +3409,7 @@ Fallback plan example:
             if group_analysis_is_complete(
                 analysis_path,
                 state.facts_manifest.platform,
-                require_sections=not self._plugin_mode,
+                contract=self._contract_for(state.facts_manifest.platform),
             ):
                 await log_cb(ctx.project_id, f"[custom] REUSE: skipping Phase 2 for {group} (unchanged group; cached analysis)", "info")
                 self._write_phase2_coverage_record(ctx, group, self._group_units(state, group), analysis_path)
@@ -3276,6 +3515,7 @@ Fallback plan example:
                 pack=self.pack,
                 plugin_pack_dir=self.plugin_pack_dir,
                 required_docs=self._required_docs,
+                contract=self._contract_for(state.facts_manifest.platform),
             )
 
         investigation_context = self._investigation_context(ctx, group)
@@ -3321,7 +3561,8 @@ Fallback plan example:
             text,
             group_units,
             platform=state.facts_manifest.platform,
-            require_sections=not self._plugin_mode,
+            require_sections=True,
+            contract=self._contract_for(state.facts_manifest.platform),
         )
         if not validation["ok"]:
             raise RuntimeError(
@@ -3491,6 +3732,7 @@ Fallback plan example:
                 repair_text = normalize_analysis_guide_headings(
                     task_result.result.text.strip(),
                     state.facts_manifest.platform,
+                    contract=self._contract_for(state.facts_manifest.platform),
                 )
                 target.write_text(
                     f"{existing.rstrip()}\n\n## Targeted Validator Repair\n\n{coverage}\n\n{repair_text}\n",
@@ -3624,6 +3866,15 @@ Fallback plan example:
 
     def _bundle_sections_for_docs(self, doc_names: list[str]) -> set[str]:
         sections = set(BASELINE_BUNDLE_SECTIONS)
+        # mode: replace packs route doc bundles exclusively through their
+        # declared docs[].phase2_sections: the legacy evidence-profile ->
+        # section map names sections that do not exist under the replaced
+        # contract and would degrade every doc pack to an UNCLASSIFIED dump
+        # (recon S13/S14).
+        if self._pack_contract is not None and self._pack_contract.mode == "replace":
+            for doc_name in doc_names:
+                sections.update(self._doc_section_bundle_map.get(doc_name, set()))
+            return sections
         for doc_name in doc_names:
             doc_def = self._pack_doc_definition(doc_name)
             profile_name = getattr(doc_def, "evidence_profile", None) if doc_def else None
@@ -3651,7 +3902,9 @@ Fallback plan example:
     ) -> tuple[str, dict[str, object]]:
         _guide_file = ctx.staging_dir / "_preprocess" / ctx.analysis_guide_file if ctx.analysis_guide_file else None
         _extra = _guide_section_names(_guide_file) if _guide_file else frozenset()
-        selected, manifest = self._targeted_analysis_bundle_parts(analysis_files, section_names, _extra)
+        selected, manifest = self._targeted_analysis_bundle_parts(
+            analysis_files, section_names, _extra, contract=self._contract_for(facts.platform)
+        )
         included_obligations, unmatched_obligations, obligation_text = self._doc_obligation_context(facts, doc_name)
         groups = ", ".join(f"{group}={count}" for group, count in sorted(facts.groups.items())) or "none"
         units = "\n".join(
@@ -3766,9 +4019,15 @@ Fallback plan example:
 
     @classmethod
     def _targeted_analysis_bundle_text(
-        cls, analysis_files: list[Path], section_names: set[str], extra_section_names: frozenset[str] = frozenset()
+        cls,
+        analysis_files: list[Path],
+        section_names: set[str],
+        extra_section_names: frozenset[str] = frozenset(),
+        contract: "PackContract | None" = None,
     ) -> str:
-        text, _ = cls._targeted_analysis_bundle_parts(analysis_files, section_names, extra_section_names)
+        text, _ = cls._targeted_analysis_bundle_parts(
+            analysis_files, section_names, extra_section_names, contract=contract
+        )
         return text
 
     @classmethod
@@ -3777,15 +4036,27 @@ Fallback plan example:
         analysis_files: list[Path],
         section_names: set[str],
         extra_section_names: frozenset[str] = frozenset(),
+        contract: "PackContract | None" = None,
     ) -> tuple[str, dict[str, object]]:
+        """Select the requested sections from each Phase 2 analysis file.
+
+        Contract-driven (recon S14): iterates the contract's own ordered
+        section universe, not the module constant, so pack-declared sections
+        can be selected; without this every pack doc pack degraded to an
+        unstructured UNCLASSIFIED dump.
+        """
+        ordered = contract.ordered_names if contract is not None else PHASE2_SECTION_NAMES
+        ordered = tuple(ordered) + tuple(
+            name for name in sorted(section_names) if name not in ordered
+        )
         parts: list[str] = []
         manifest: dict[str, object] = {"included": {}, "omitted": {}, "unclassified": {}}
         for path in analysis_files:
             text = path.read_text(encoding="utf-8", errors="replace")
-            sections = cls._parse_phase2_sections(text, extra_section_names)
+            sections = cls._parse_phase2_sections(text, extra_section_names, contract=contract)
             selected = [
                 (section, sections[section])
-                for section in PHASE2_SECTION_NAMES
+                for section in ordered
                 if section in section_names and sections.get(section)
             ]
             if not selected:
@@ -3836,53 +4107,18 @@ Fallback plan example:
             "info",
         )
 
-    def _apply_private_analysis_packs(self, ctx: DocGenContext) -> None:
-        """Add verified private declarations to Phase 3 without changing prior phases."""
-        if self._private_analysis_applied:
-            return
-        self._private_analysis_applied = True
-        if not ctx.nexus_private_analysis_packs:
-            return
-
-        existing = set(self._required_docs)
-        for pack in ctx.nexus_private_analysis_packs:
-            pack_slug = re.sub(
-                r"[^A-Za-z0-9]+", "_", pack.receipt.pack_id
-            ).strip("_").upper()[:40]
-            for output in pack.artifact.output_documents:
-                output_slug = re.sub(
-                    r"[^A-Za-z0-9]+", "_", output.id
-                ).strip("_").upper()[:60]
-                doc_name = f"PRIVATE_ANALYSIS__{pack_slug}__{output_slug}"
-                if not doc_name or doc_name in existing:
-                    raise RuntimeError(
-                        "Private Analysis Pack output filename collides with a required document: "
-                        + doc_name
-                    )
-                existing.add(doc_name)
-                self._required_docs.append(doc_name)
-                self._doc_assignments.setdefault("private_analysis", []).append(doc_name)
-                self._doc_bundle_map[doc_name] = "private_analysis"
-                self._doc_section_bundle_map[doc_name] = set()
-                self._doc_section_requirements_extra[doc_name] = [
-                    section.heading for section in output.sections
-                ]
-                self._private_analysis_instructions[doc_name] = (
-                    private_analysis_instructions_for_document(pack, output.id)
-                )
-
     async def _phase3_docs(
         self,
         ctx: DocGenContext,
         state: HarnessRunState,
         log_cb: LogCallback,
     ) -> None:
-        self._apply_private_analysis_packs(ctx)
         scorecard = ctx.staging_dir / "_assessment" / "scorecard.md"
         # Whole-partition deterministic facts shared by every doc writer (and
         # every slice of a partitioned doc) so no two outputs can disagree on
         # scanner-derived counts.
         self._write_cross_cutting_facts(ctx, state)
+        await self._load_runtime_evidence(ctx, log_cb)
         _doc_write_provider = self._provider_for_phase("doc_write")
 
         _calls_lock = asyncio.Lock()
@@ -3903,10 +4139,13 @@ Fallback plan example:
                 extra_section_requirements=self._doc_section_requirements_extra,
                 scoped_unit=self._per_job_doc_units.get(doc_name),
                 nexus_presentation=ctx.nexus_presentation,
-                private_analysis_instructions=self._private_analysis_instructions.get(doc_name, ""),
                 unit_reference=(
                     doc_name in self._per_job_doc_units and self._plugin_manifest is None
                 ),
+                # Manifest ``audience:`` -> Phase 3 presentation (spec item 8).
+                # ``ctx.nexus_presentation`` (the Style layer) still wins inside
+                # ``doc_prompt``; the contract supplies the pack-owned default.
+                contract=self.pack_contract,
             )
             opts = ModelOptions(
                 max_tokens=self._doc_output_ceiling(doc_name, state),
@@ -4450,10 +4689,13 @@ Fallback plan example:
     ):
         """Run a Phase 2/3 model call with explicit bounded files and slice caching."""
 
-        if not opts.system_prompt:
-            pack_content, context_files = self._extract_prompt_pack(context_files)
-            if pack_content:
-                opts = opts.model_copy(update={"system_prompt": pack_content})
+        pack_content, context_files = self._extract_prompt_pack(context_files)
+        if pack_content:
+            existing_system = opts.system_prompt or ""
+            separator = "\n\n" if existing_system else ""
+            opts = opts.model_copy(update={
+                "system_prompt": pack_content + separator + existing_system,
+            })
         context_files = self._bounded_context_files(context_files)
         tool_policy = self._tool_policy(provider, phase)
         use_tools = tool_policy.enabled
@@ -5784,6 +6026,23 @@ Allowed docs:
         group/summary docs get the unit-count recompute check.
         """
         report = self._validate_agent_markdown(text, [], min_bytes=200)
+        required_sections = self._plugin_required_sections(doc_name)
+        if required_sections:
+            headings = {
+                line.lstrip("#").strip().casefold()
+                for line in text.splitlines()
+                if line.lstrip().startswith("#")
+            }
+            missing = [
+                section for section in required_sections
+                if section.casefold() not in headings
+            ]
+            if missing:
+                errors = list(report.get("errors") or [])
+                errors.append(
+                    "Missing required Pack sections: " + ", ".join(missing)
+                )
+                report = {**report, "ok": False, "errors": errors}
         # Post-assembly guard (verified failure: slice restarts shipped the
         # same document structure 11x): repeated H1/H2 structure is deniable
         # here because _final_doc_content dedupes deterministically -- but a
@@ -5827,6 +6086,28 @@ Allowed docs:
             errors.extend(protected_fact_errors(text, evidence.protected_facts))
         return {**report, "ok": not errors, "errors": errors}
 
+    def _plugin_required_sections(self, doc_name: str) -> list[str]:
+        """Return the authored section contract for an expanded plugin doc."""
+        if self._plugin_manifest is None:
+            return []
+        base = doc_name.split("__", 1)[0]
+        required: list[str] = []
+        for doc in getattr(self._plugin_manifest, "docs", None) or []:
+            if getattr(doc, "name", "") == base:
+                required.extend(
+                    getattr(doc, "required_sections", None)
+                    or getattr(doc, "sections", None)
+                    or []
+                )
+                break
+        quality_gates = getattr(self._plugin_manifest, "quality_gates", None)
+        if quality_gates is not None:
+            required.extend(
+                (getattr(quality_gates, "required_sections", None) or {}).get(base, [])
+            )
+        # Preserve manifest order while avoiding duplicate repair instructions.
+        return list(dict.fromkeys(required))
+
     @staticmethod
     def _merge_component_ref_errors(
         report: dict,
@@ -5865,23 +6146,38 @@ Allowed docs:
         *,
         platform: str,
         require_sections: bool,
+        contract: "PackContract | None" = None,
     ) -> dict:
         """Reject structurally incomplete task output before group assembly.
 
         A response may be non-empty and mention every unit while still omitting
         late required sections. Accepting that output simply moves the failure to
         synthesis, where missing evidence cannot safely be reconstructed.
+
+        Contract-driven (recon S16): with a ``contract`` the required set is
+        ``contract.hard_required_names`` (empty for v1 packs, GROUP_SUMMARY
+        floor for v2 packs, the full legacy set for the default contract) and
+        the parser recognises the contract's own sections. Pack-declared
+        ``required: true`` sections are deliberately NOT enforced here: their
+        absence is a pack-contract violation handled by the fail-loudly path
+        (``_record_section_contract_failure``), and rejecting the task for it
+        would route real analysis into the retry -> salvage-stub machinery.
         """
 
         report = cls._validate_agent_markdown(text, required_units)
         if not require_sections:
             return report
-        required = (
-            (*REQUIRED_SECTION_NAMES, GROUP_SUMMARY_SECTION)
-            if platform == "talend"
-            else (GROUP_SUMMARY_SECTION,)
-        )
-        parsed = cls._parse_phase2_sections(text)
+        if contract is not None:
+            required: tuple[str, ...] = contract.hard_required_names
+            if not required:
+                return report
+        else:
+            required = (
+                (*REQUIRED_SECTION_NAMES, GROUP_SUMMARY_SECTION)
+                if platform == "talend"
+                else (GROUP_SUMMARY_SECTION,)
+            )
+        parsed = cls._parse_phase2_sections(text, contract=contract)
         missing_sections = [name for name in required if name not in parsed]
         if not missing_sections:
             return report
@@ -6253,6 +6549,17 @@ Allowed docs:
         self._doc_section_requirements_extra = {
             doc.name: list(getattr(doc, "required_sections", []) or []) for doc in expanded
         }
+        # v2 packs: carry the base doc's Phase 2 section routing onto its
+        # per-unit expansions so doc bundles keep the declared lens
+        # (harness.py:704 fix, persisted through expansion -- recon D2).
+        if self._pack_contract is not None and self._doc_section_bundle_map:
+            base_routing = dict(self._doc_section_bundle_map)
+            for doc in expanded:
+                if doc.name in base_routing:
+                    continue
+                base_name = doc.name.split("__", 1)[0]
+                if base_name in base_routing:
+                    self._doc_section_bundle_map[doc.name] = set(base_routing[base_name])
         quality_gates = getattr(self._plugin_manifest, "quality_gates", None)
         if quality_gates is not None:
             base_sections = dict(getattr(quality_gates, "required_sections", {}) or {})
@@ -6325,12 +6632,17 @@ Allowed docs:
                 brief = ctx.staging_dir / brief_rel
                 if brief.exists():
                     files.append(brief)
+            # Nexus owns the platform analysis policy. It is supplied for every
+            # analysis run, including replace-mode lenses; a plugin controls
+            # attention and additions, never Talend/Workato/etc. semantics.
             analysis_pack = pack_dir / "_analysis_prompt_pack.md"
             if analysis_pack.exists():
                 files.append(analysis_pack)
-            elif self._phase_policy("analysis") == "bounded":
-                # bounded mode: include the analysis guide so the model knows the
-                # platform-specific extraction rules even without tool access.
+            else:
+                # Fail closed on policy transport: if materialization was
+                # unavailable, include the source guide for every analysis
+                # policy rather than letting a plugin run without Nexus's
+                # platform semantics.
                 files.extend(
                     self._phase2_analysis_guide_files(
                         preprocess_dir, ctx.analysis_guide_file
@@ -6466,6 +6778,57 @@ Allowed docs:
         )
         return plan
 
+    async def _load_runtime_evidence(self, ctx: DocGenContext, log_cb: LogCallback) -> None:
+        """Fetch observed production behaviour for every unit-scoped doc, once.
+
+        Scoped to the units this run actually writes about, so a partitioned run
+        never asks about a sibling sub-project's units. A miss is degradation,
+        never a run failure: documents are still written, just without runtime
+        facts, and the coverage line below is what tells an operator which it
+        was.
+        """
+        if not ctx.live_evidence:
+            # An explicit code-only run. Say so in the log: a reader comparing
+            # two runs of the same project must be able to tell a deliberate
+            # opt-out from a lookup that silently found nothing.
+            await log_cb(
+                ctx.project_id,
+                "[custom] runtime evidence: skipped (live evidence off for this run)",
+                "info",
+            )
+            return
+        if self._runtime_evidence is not None or not self._per_job_doc_units:
+            return
+        unit_names = sorted(set(self._per_job_doc_units.values()))
+        store = await fetch_runtime_evidence(ctx.project_id, unit_names)
+        if store is None:
+            return
+        self._runtime_evidence = store
+        coverage = f"{len(store.by_unit)}/{len(unit_names)}"
+        await log_cb(
+            ctx.project_id,
+            f"[custom] runtime evidence: {coverage} units have observed production "
+            f"data (last {store.window_days} days)",
+            "info",
+        )
+        # Coverage is a first-class run fact: a reviewer must be able to tell a
+        # document with no runtime section from a run where the lookup was thin.
+        out_path = ctx.staging_dir / "_assessment" / "runtime_evidence_coverage.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            json.dumps(
+                {
+                    "window_days": store.window_days,
+                    "units_requested": len(unit_names),
+                    "units_matched": len(store.by_unit),
+                    "matched": sorted(store.by_unit),
+                    "unmatched": list(store.unmatched_units),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
     def _build_target_evidence(self, ctx: DocGenContext, doc_name: str) -> TargetEvidence | None:
         """Build (and cache) the deterministic evidence bundle for a unit-scoped doc.
 
@@ -6488,6 +6851,8 @@ Allowed docs:
                 max_bytes=config.phase3_target_evidence_bytes,
                 noncode_plan=plan or None,
                 noncode_section_bytes=config.phase3_noncode_evidence_bytes,
+                runtime_store=self._runtime_evidence,
+                runtime_section_bytes=config.phase3_runtime_evidence_bytes,
             )
         evidence = self._target_evidence_builder.build(doc_name, unit_name)
         if evidence is not None:
@@ -6811,24 +7176,9 @@ def build_custom_provider(
     model_str = normalize_model_id(model_str)
 
     def _provider_config(model_id: str) -> dict[str, str | None]:
-        model_id = normalize_model_id(model_id)
-        provider = model_id.partition("/")[0]
-        if provider == "deepseek":
-            return {
-                "api_key": config.doc_generation_deepseek_api_key or config.doc_generation_api_key,
-                "base_url": config.doc_generation_deepseek_base_url or config.doc_generation_base_url,
-            }
-        if provider == "route33":
-            return {
-                "api_key": config.doc_generation_route33_api_key or config.doc_generation_api_key,
-                "base_url": config.doc_generation_route33_base_url,
-            }
-        if provider in {"openai", "anthropic", "google"}:
-            return {"api_key": None, "base_url": None}
-        return {
-            "api_key": config.doc_generation_api_key,
-            "base_url": config.doc_generation_base_url,
-        }
+        from mcp_server.model_strategies import provider_connection_config
+
+        return provider_connection_config(model_id)
 
     def _build_secondary(secondary_str: str | None, *, skip_if_same: bool = True) -> ModelProvider | None:
         secondary_str = normalize_model_id(secondary_str) if secondary_str else None

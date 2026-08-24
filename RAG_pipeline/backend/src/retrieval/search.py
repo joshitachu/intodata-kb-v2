@@ -27,6 +27,7 @@ from src.retrieval.reranker import rerank
 from src.retrieval.sparse_embedder import embed_text_sparse
 from src.retrieval.vector_store import COLLECTION_NAME
 from src.schemas import DocumentSource, Source
+from src.turn_timings import measured_retrieval, record_embedding_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +249,7 @@ def _source_from_payload(payload: dict, score: float) -> Source:
     )
 
 
+@measured_retrieval
 async def search_similar(
     client: AsyncQdrantClient,
     query: str,
@@ -266,8 +268,9 @@ async def search_similar(
     """
     embed_start = time.perf_counter()
     query_embedding = await embed_text(query)
-    embed_ms = int((time.perf_counter() - embed_start) * 1000)
-    logger.info(f"Embedded query in {embed_ms}ms: {query[:80]!r}")
+    embed_seconds = time.perf_counter() - embed_start
+    record_embedding_seconds(embed_seconds)
+    logger.info(f"Embedded query in {int(embed_seconds * 1000)}ms: {query[:80]!r}")
 
     search_filter = _build_search_filter(
         user_groups, document_ids, project_ids, source_layers, document_roles, knowledge_revisions,
@@ -286,6 +289,7 @@ async def search_similar(
     return _process_results(results.points, threshold)
 
 
+@measured_retrieval
 async def search_similar_hybrid(
     client: AsyncQdrantClient,
     query: str,
@@ -309,8 +313,11 @@ async def search_similar_hybrid(
     embed_start = time.perf_counter()
     query_embedding = await embed_text(query)
     sparse_vector = embed_text_sparse(query)
-    embed_ms = int((time.perf_counter() - embed_start) * 1000)
-    logger.info(f"Embedded query (dense + sparse) in {embed_ms}ms: {query[:80]!r}")
+    embed_seconds = time.perf_counter() - embed_start
+    record_embedding_seconds(embed_seconds)
+    logger.info(
+        f"Embedded query (dense + sparse) in {int(embed_seconds * 1000)}ms: {query[:80]!r}"
+    )
 
     search_filter = _build_search_filter(
         user_groups, document_ids, project_ids, source_layers, document_roles, knowledge_revisions,
@@ -346,6 +353,7 @@ async def search_similar_hybrid(
     return _process_results(results.points, threshold)
 
 
+@measured_retrieval
 async def search_and_rerank(
     client: AsyncQdrantClient,
     query: str,
@@ -543,6 +551,7 @@ async def expand_neighbor_chunks(
     return expanded
 
 
+@measured_retrieval
 async def search_multi_query(
     client: AsyncQdrantClient,
     query: str,
@@ -828,6 +837,7 @@ async def expand_section_chunks(
     return expanded
 
 
+@measured_retrieval
 async def search_layered(
     client: AsyncQdrantClient,
     query: str,

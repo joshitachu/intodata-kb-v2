@@ -64,9 +64,12 @@ import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mcp_server.config import config
+
+if TYPE_CHECKING:
+    from mcp_server.providers.custom.pack_contract import PackContract
 from mcp_server.providers.custom.analysis_parser import (
     PHASE2_SECTION_NAMES,
     parse_phase2_sections,
@@ -247,7 +250,9 @@ def _compute_field_diff(
 # ---------------------------------------------------------------------------
 
 
-def _split_analysis(text: str) -> tuple[str, dict[str, str]]:
+def _split_analysis(
+    text: str, contract: "PackContract | None" = None
+) -> tuple[str, dict[str, str]]:
     """Split a Phase 2 analysis text into (preamble, sections).
 
     ``preamble`` is everything before the first ``### SECTION_NAME`` heading
@@ -263,19 +268,24 @@ def _split_analysis(text: str) -> tuple[str, dict[str, str]]:
     else:
         preamble = text.rstrip()
         body = ""
-    sections = parse_phase2_sections(body) if body else {}
+    sections = parse_phase2_sections(body, contract=contract) if body else {}
     return preamble, sections
 
 
-def _reassemble_analysis(preamble: str, sections: dict[str, str]) -> str:
+def _reassemble_analysis(
+    preamble: str,
+    sections: dict[str, str],
+    section_order: tuple[str, ...] | None = None,
+) -> str:
     """Reassemble a full Phase 2 analysis from preamble + section dict.
 
-    Emits sections in ``PHASE2_SECTION_NAMES`` order.  Adds ``### NAME``
-    headings back (they were stripped by ``parse_phase2_sections``).
+    Emits sections in contract order when given (``section_order``), else in
+    ``PHASE2_SECTION_NAMES`` order.  Adds ``### NAME`` headings back (they
+    were stripped by ``parse_phase2_sections``).
     """
     emitted: set[str] = set()
     parts: list[str] = [preamble]
-    for name in PHASE2_SECTION_NAMES:
+    for name in section_order if section_order is not None else PHASE2_SECTION_NAMES:
         if name in sections:
             parts.append(f"\n\n### {name}\n\n{sections[name]}")
             emitted.add(name)
@@ -285,11 +295,17 @@ def _reassemble_analysis(preamble: str, sections: dict[str, str]) -> str:
     return "".join(parts).strip() + "\n"
 
 
-def _analysis_text_is_valid(text: str, platform: str) -> bool:
+def _analysis_text_is_valid(
+    text: str, platform: str, contract: "PackContract | None" = None
+) -> bool:
     """G3 inline validation -- avoids writing to disk unless temp file is needed.
 
     Replicates the logic of ``group_analysis_is_complete`` on a string.
     Falls back to a temp file for the full check.
+
+    Contract-driven (recon S37): the previous hardcoded
+    ``require_sections=True`` rejected every pack-shaped analysis on Talend;
+    with a contract the required set is the contract's own floor.
     """
     if len(text.encode("utf-8")) <= _THIN_FLOOR_BYTES:
         return False
@@ -299,7 +315,9 @@ def _analysis_text_is_valid(text: str, platform: str) -> bool:
         tmp.write(text)
         tmp_path = Path(tmp.name)
     try:
-        return group_analysis_is_complete(tmp_path, platform, require_sections=True)
+        return group_analysis_is_complete(
+            tmp_path, platform, require_sections=True, contract=contract
+        )
     finally:
         try:
             tmp_path.unlink(missing_ok=True)
@@ -441,6 +459,52 @@ class _Phase2Patch:
     removed_identifiers: frozenset[str]
 
 
+async def _resolve_project_contract(project_id: str, platform: str) -> "PackContract":
+    """Resolve the project's active pack contract, defaulting per-platform.
+
+    Living-doc patching runs outside the generation coordinator, so the pack
+    is resolved here from the project's ``plugin_pack_id`` (same source as
+    generation). Any resolution failure degrades to the platform default --
+    the pre-One-Pack behaviour -- rather than blocking the patch lane.
+    """
+    from mcp_server.providers.custom.pack_contract import (
+        contract_from_plugin_manifest,
+        default_contract,
+    )
+
+    try:
+        from sqlalchemy import select
+
+        from mcp_server.db.models import PluginPack
+        from mcp_server.db.session import async_session_factory
+        from mcp_server.services.project_registry import ProjectRegistry
+
+        async with async_session_factory() as db:
+            registry = ProjectRegistry(db)
+            project = await registry.get_project(project_id)
+            pack_id = getattr(project, "plugin_pack_id", None) if project else None
+            if pack_id is None:
+                return default_contract(platform)
+            pack_row = (
+                await db.execute(select(PluginPack).where(PluginPack.id == pack_id))
+            ).scalar_one_or_none()
+            if pack_row is None or not getattr(pack_row, "path", None):
+                return default_contract(platform)
+            from mcp_server.services.plugin_schema import load_plugin_manifest
+
+            return contract_from_plugin_manifest(
+                load_plugin_manifest(Path(pack_row.path)), platform
+            )
+    except Exception as exc:
+        logger.warning(
+            "TruePatch: pack contract resolution failed for %s (%s); "
+            "using the platform default contract",
+            project_id,
+            exc,
+        )
+        return default_contract(platform)
+
+
 # ---------------------------------------------------------------------------
 # TruePatchExecutor
 # ---------------------------------------------------------------------------
@@ -461,6 +525,9 @@ class TruePatchExecutor:
     def __init__(self, *, doc_generation_provider: str | None = None) -> None:
         self._doc_generation_provider = doc_generation_provider
         self._renderer = PromptRenderer()
+        # Resolved per run(); None means "no run started yet" and helpers fall
+        # back to legacy default-catalog behaviour.
+        self._contract: "PackContract | None" = None
 
     # ------------------------------------------------------------------
     # Entry point
@@ -479,11 +546,22 @@ class TruePatchExecutor:
         trigger: str = "webhook",
         scan_output_dir: Path | None = None,
         publish_rag: bool = True,
+        contract: "PackContract | None" = None,
     ) -> PatchResult:
         """Execute the true patch lane for ``changed_groups``.
 
         Returns a ``PatchResult``; never raises.
+
+        ``contract`` is the project's active pack contract; without one the
+        per-platform default applies (legacy behaviour). Contract-shaped
+        analyses and pack-declared docs are patched against their own section
+        universe instead of the default catalog (recon S35/S37-S43).
         """
+        self._contract = (
+            contract
+            if contract is not None
+            else await _resolve_project_contract(project_id, platform)
+        )
         provider = _patch_provider(self._doc_generation_provider)
         group_analyses: dict[str, str] = {}       # group -> merged text (after G3)
         group_sections: dict[str, frozenset[str]] = {}  # group -> sections_to_rewrite
@@ -601,7 +679,7 @@ class TruePatchExecutor:
         all_sections: frozenset[str] = frozenset().union(
             *(group_sections[g] for g in patched_groups_so_far)
         )
-        docs_to_patch = docs_for_sections(all_sections)
+        docs_to_patch = docs_for_sections(all_sections, contract=self._contract)
         docs_dir = output_dir / "docs"
         patched_docs: list[str] = []
         p3_fallback: set[str] = set()
@@ -948,8 +1026,11 @@ class TruePatchExecutor:
                 reason_code="no_field_changes",
             )
 
-        # 3. Sections to rewrite
-        sections_to_rewrite = sections_for_delta(platform, field_changes)
+        # 3. Sections to rewrite (contract-aware: replace-mode packs rewrite
+        # their own declared sections, never the legacy component map's).
+        sections_to_rewrite = sections_for_delta(
+            platform, field_changes, contract=self._contract
+        )
 
         # 4. Load existing analysis from published support file
         support_path = (
@@ -967,7 +1048,9 @@ class TruePatchExecutor:
         existing_analysis = await asyncio.to_thread(
             support_path.read_text, "utf-8", "replace"
         )
-        preamble, existing_sections = _split_analysis(existing_analysis)
+        preamble, existing_sections = _split_analysis(
+            existing_analysis, contract=self._contract
+        )
 
         # 5. Render prompt (G4: per-section token budget)
         prompt = self._renderer.render("phase2_patch.md", {
@@ -996,7 +1079,9 @@ class TruePatchExecutor:
             )
 
         # 7. Parse and merge
-        model_sections = parse_phase2_sections(result.text.strip())
+        model_sections = parse_phase2_sections(
+            result.text.strip(), contract=self._contract
+        )
         merged_sections = dict(existing_sections)
         for name in sections_to_rewrite:
             if name in model_sections:
@@ -1009,7 +1094,13 @@ class TruePatchExecutor:
                 # Restore to original (model is not permitted to rewrite this)
                 merged_sections[name] = existing_sections.get(name, "")
 
-        merged_text = _reassemble_analysis(preamble, merged_sections)
+        merged_text = _reassemble_analysis(
+            preamble,
+            merged_sections,
+            section_order=(
+                self._contract.ordered_names if self._contract is not None else None
+            ),
+        )
 
         # 8. G5 validate-against-diff -- reject hallucinated facts BEFORE G3/write.
         # Only the sections the model actually rewrote are checked; each is compared
@@ -1034,7 +1125,9 @@ class TruePatchExecutor:
             )
 
         # 9. G3 validate-before-return
-        if not await asyncio.to_thread(_analysis_text_is_valid, merged_text, platform):
+        if not await asyncio.to_thread(
+            _analysis_text_is_valid, merged_text, platform, self._contract
+        ):
             raise PatchQualityError(
                 f"G3 validation failed for group {group!r}: "
                 "merged analysis thin, incomplete, or missing GROUP_SUMMARY",
@@ -1153,18 +1246,41 @@ class TruePatchExecutor:
     # Helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _get_doc_entry(doc_name: str):
+    def _get_doc_entry(self, doc_name: str):
+        """Resolve a doc entry from the run's active pack, else the default catalog.
+
+        Recon S39/D31: reading only the default catalog silently skipped every
+        pack doc during living-doc patching.
+        """
+        if self._contract is not None and self._contract.is_pack:
+            spec = self._contract.doc_spec(doc_name)
+            if spec is None:
+                return None
+            from mcp_server.providers.custom.doc_catalog import DocCatalogEntry
+            return DocCatalogEntry(
+                name=spec.name,
+                required_sections=list(spec.sections),
+                phase2_sections=list(spec.phase2_sections),
+                per_unit=spec.per_unit,
+            )
         from mcp_server.providers.custom.doc_catalog import load_doc_catalog
         catalog = load_doc_catalog()
         return next((e for e in catalog.docs if e.name == doc_name), None)
 
-    @staticmethod
-    def _extract_sections(analysis_text: str, sections: frozenset[str]) -> str:
-        """Return markdown for only the requested sections (with headings)."""
-        parsed = parse_phase2_sections(analysis_text)
+    def _extract_sections(self, analysis_text: str, sections: frozenset[str]) -> str:
+        """Return markdown for only the requested sections (with headings).
+
+        Contract-driven (recon S38): iterates the contract's section universe
+        so pack sections are never silently dropped from the Phase 3 excerpt.
+        """
+        parsed = parse_phase2_sections(analysis_text, contract=self._contract)
+        ordered = (
+            self._contract.ordered_names
+            if self._contract is not None
+            else PHASE2_SECTION_NAMES
+        )
         parts: list[str] = []
-        for name in PHASE2_SECTION_NAMES:
+        for name in ordered:
             if name in sections and name in parsed:
                 parts.append(f"### {name}\n\n{parsed[name]}")
         return "\n\n".join(parts)

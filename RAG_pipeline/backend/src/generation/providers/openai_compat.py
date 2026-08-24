@@ -3,6 +3,27 @@
 Parameterized by base_url + api_key so one adapter serves every OpenAI-wire
 endpoint: Kimi/Moonshot now, OpenAI and DeepSeek in later slices. Uses the
 official ``openai`` AsyncOpenAI client (all three speak that protocol).
+
+Prompt caching on this wire format is AUTOMATIC, not requested. Probed against
+api.moonshot.ai with kimi-k2.5 on 2026-08-20:
+
+* Repeating an identical request reported ``cached_tokens == prompt_tokens``
+  (6266/6266); the first, cold call reported ``prompt_tokens_details: null``.
+* Holding the tool block constant while changing the system message still
+  cached 2304 tokens — exactly the tool block — proving the tool schemas are
+  serialized BEFORE the system message and cache independently of it.
+* Cached counts only ever land on multiples of 128, so the cache is granular to
+  128-token blocks.
+* ``POST /v1/caching`` (Moonshot's explicit context-cache API) returns
+  ``400 model family is invalid`` for kimi-k2.5 — explicit caching is a
+  moonshot-v1 feature and is not available to us.
+* Anthropic-style ``cache_control`` blocks are silently ACCEPTED but change
+  nothing (same 6144 cached tokens with and without them).
+
+So there is no explicit marker worth sending here: adding one would be a no-op
+parameter that merely looks like a feature. The work that actually pays is
+keeping the prefix byte-stable (``canonical_schema``) and reading the hit counts
+back so the saving is measurable (``read_openai_cache_tokens``).
 """
 from __future__ import annotations
 
@@ -15,6 +36,13 @@ from collections.abc import AsyncGenerator
 import httpx
 
 from src.generation.providers.base import ChatProvider
+from src.generation.providers.prompt_cache import (
+    apply_cache_tokens,
+    canonical_schema,
+    check_tool_prefix_stability,
+    log_cache_effect,
+    read_openai_cache_tokens,
+)
 from src.generation.providers.types import RuntimeToolCallRequest, ToolAwareLLMResponse
 from src.generation.usage import StreamUsageStats, UsageStats
 from src.runtime.models import RuntimeToolDefinition
@@ -42,12 +70,19 @@ def _apply_images(messages: list[dict], images: list[str] | None) -> list[dict]:
 
 
 def _to_openai_tool_schema(tool: RuntimeToolDefinition) -> dict:
+    """Serialize one tool for the wire, with object keys canonically ordered.
+
+    ``input_schema`` reaches us as a plain dict assembled upstream, so its key
+    order depends on how it was built. Since the tool block heads the cacheable
+    prefix, an order difference between two otherwise identical schemas would
+    invalidate the cache for the whole request.
+    """
     return {
         "type": "function",
         "function": {
             "name": tool.name,
             "description": tool.description,
-            "parameters": tool.input_schema,
+            "parameters": canonical_schema(tool.input_schema),
         },
     }
 
@@ -109,7 +144,9 @@ class OpenAICompatibleProvider(ChatProvider):
         if response.usage:
             usage.input_tokens = response.usage.prompt_tokens or 0
             usage.output_tokens = response.usage.completion_tokens or 0
+            apply_cache_tokens(usage, *read_openai_cache_tokens(response.usage))
             usage.calculate_cost()
+            log_cache_effect(self.provider_id, model, usage)
         return response.choices[0].message.content, usage
 
     async def stream(
@@ -134,8 +171,11 @@ class OpenAICompatibleProvider(ChatProvider):
             if chunk.usage:
                 acc.input_tokens = chunk.usage.prompt_tokens or 0
                 acc.output_tokens = chunk.usage.completion_tokens or 0
+                apply_cache_tokens(acc, *read_openai_cache_tokens(chunk.usage))
         acc.latency_ms = int((time.perf_counter() - t0) * 1000)
-        yield acc.finalize()
+        final = acc.finalize()
+        log_cache_effect(self.provider_id, model, final)
+        yield final
 
     async def generate_with_tools(
         self,
@@ -147,6 +187,7 @@ class OpenAICompatibleProvider(ChatProvider):
         client = await self._get_client()
         t0 = time.perf_counter()
         tools_schema = [_to_openai_tool_schema(t) for t in runtime_tools] if runtime_tools else None
+        check_tool_prefix_stability(self.provider_id, tools_schema)
         response = await client.chat.completions.create(
             model=model,
             messages=_apply_images(messages, images),
@@ -161,7 +202,9 @@ class OpenAICompatibleProvider(ChatProvider):
         if response.usage:
             usage.input_tokens = response.usage.prompt_tokens or 0
             usage.output_tokens = response.usage.completion_tokens or 0
+            apply_cache_tokens(usage, *read_openai_cache_tokens(response.usage))
             usage.calculate_cost()
+            log_cache_effect(self.provider_id, model, usage)
 
         message = response.choices[0].message
         if message.tool_calls:

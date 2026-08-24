@@ -26,9 +26,8 @@ from src.harness.models import (
     ONBOARDING_RESUME_CAPABILITY,
     PACK_CREATE_CAPABILITY,
     PACK_DRAFT_ABANDON_CAPABILITY,
-    PACK_DRAFT_CONFIGURE_CAPABILITY,
     PACK_DRAFT_CREATE_CAPABILITY,
-    PACK_DRAFT_MUTATE_CAPABILITY,
+    PACK_DRAFT_REFINE_CAPABILITY,
     PACK_DRAFT_READ_CAPABILITY,
     PACK_DRAFT_SAVE_CAPABILITY,
     PACK_DRAFT_VALIDATE_CAPABILITY,
@@ -184,6 +183,10 @@ def base_capability_registry() -> CapabilityRegistry:
 
     from src.harness.agent_plans import agent_plan_capabilities
     from src.harness.task_controls import conversation_task_control_capabilities
+    from src.harness.topology_capability import (
+        topology_capabilities,
+        topology_capability_handlers,
+    )
     capabilities = [
         DOCUMENT_SEARCH_CAPABILITY,
         DOCUMENTATION_ANSWER_CAPABILITY,
@@ -200,8 +203,7 @@ def base_capability_registry() -> CapabilityRegistry:
         PACK_CREATE_CAPABILITY,
         PACK_DRAFT_CREATE_CAPABILITY,
         PACK_DRAFT_READ_CAPABILITY,
-        PACK_DRAFT_CONFIGURE_CAPABILITY,
-        PACK_DRAFT_MUTATE_CAPABILITY,
+        PACK_DRAFT_REFINE_CAPABILITY,
         PACK_DRAFT_VALIDATE_CAPABILITY,
         PACK_DRAFT_SAVE_CAPABILITY,
         PACK_DRAFT_ABANDON_CAPABILITY,
@@ -220,6 +222,10 @@ def base_capability_registry() -> CapabilityRegistry:
         PUBLISH_INDEX_CAPABILITY,
         *agent_plan_capabilities(),
         *conversation_task_control_capabilities(),
+        # Topology reads published artifacts rather than a live runtime API, so it
+        # is registered unconditionally: it stays available on deployments with the
+        # live runtime provider switched off.
+        *topology_capabilities(),
     ]
     from src.harness.capability_handlers import migrated_capability_handlers
     from src.harness.agent_plans import AgentPlanCapabilityHandler
@@ -227,7 +233,7 @@ def base_capability_registry() -> CapabilityRegistry:
 
     return CapabilityRegistry(
         capabilities,
-        handlers=(*migrated_capability_handlers(), *(AgentPlanCapabilityHandler(item) for item in agent_plan_capabilities()), *(ConversationTaskControlHandler(item) for item in conversation_task_control_capabilities())),
+        handlers=(*migrated_capability_handlers(), *(AgentPlanCapabilityHandler(item) for item in agent_plan_capabilities()), *(ConversationTaskControlHandler(item) for item in conversation_task_control_capabilities()), *topology_capability_handlers()),
     )
 
 

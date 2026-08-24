@@ -22,6 +22,21 @@ logger = logging.getLogger(__name__)
 LOCKOUT_THRESHOLD = 5
 LOCKOUT_DURATION_MINUTES = 15
 
+# How long a just-rotated refresh token keeps working.
+#
+# Rotation is single-use, so two refreshes racing on the same token used to
+# leave the loser with a 401 -- which the frontend read as "logged out". This
+# window absorbs that race (aligned tab timers, a retry after a slow response,
+# development double-effects) without weakening the single-use property for
+# anything older. Deliberately short: within the window a leaked token is
+# replayable, so this trades a small exposure for not evicting live sessions.
+ROTATION_GRACE_SECONDS = 15
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Treat naive timestamps from the DB as UTC."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
 
 class PasswordlessAccountError(Exception):
     """Raised when password auth is attempted for an account without a password."""
@@ -104,25 +119,41 @@ class AuthService:
         return access, refresh
 
     async def rotate_refresh_token(self, old_refresh: str) -> tuple[str, str, User] | None:
-        """Revoke old refresh token, issue new pair. Returns (access, refresh, user) or None."""
+        """Revoke old refresh token, issue new pair. Returns (access, refresh, user) or None.
+
+        Accepts a token that was itself rotated within ``ROTATION_GRACE_SECONDS``
+        so two concurrent refreshes both succeed instead of one being treated as
+        a logout. Tokens revoked for any other reason (logout, password change,
+        admin revocation) have no ``rotated_at`` and are always rejected.
+        """
         old_hash = hash_token(old_refresh)
+        now = datetime.now(timezone.utc)
+
+        # Fetch regardless of `revoked` so a just-rotated token can be told apart
+        # from one that was deliberately revoked.
         result = await self.db.execute(
-            select(RefreshToken).where(
-                RefreshToken.token_hash == old_hash,
-                RefreshToken.revoked == False,  # noqa: E712
-            )
+            select(RefreshToken).where(RefreshToken.token_hash == old_hash)
         )
         token_record = result.scalar_one_or_none()
         if token_record is None:
             return None
-        expires_at = token_record.expires_at
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        if expires_at < datetime.now(timezone.utc):
+        if _as_utc(token_record.expires_at) < now:
             return None
 
-        # Revoke old token
-        token_record.revoked = True
+        if token_record.revoked:
+            if token_record.rotated_at is None:
+                # Revoked on purpose -- never honour it again.
+                return None
+            if _as_utc(token_record.rotated_at) < now - timedelta(seconds=ROTATION_GRACE_SECONDS):
+                return None
+            logger.info(
+                "Refresh token replayed inside the rotation grace window",
+                extra={"user_id": token_record.user_id},
+            )
+        else:
+            # Revoke old token, marking it as superseded rather than withdrawn.
+            token_record.revoked = True
+            token_record.rotated_at = now
 
         # Load user
         user_result = await self.db.execute(select(User).where(User.id == token_record.user_id))
@@ -134,21 +165,29 @@ class AuthService:
         access, refresh = await self.create_tokens(user)
         return access, refresh, user
 
+    # Every revocation below clears `rotated_at` as well as setting `revoked`.
+    # Leaving it set would let a token that happened to be rotated seconds
+    # earlier still mint a new pair through the grace window in
+    # `rotate_refresh_token` -- so a password change would not actually end the
+    # other sessions. For the same reason these statements deliberately do not
+    # filter on `revoked == False`: already-revoked rows must have their grace
+    # withdrawn too.
+
     async def revoke_refresh_token(self, refresh: str) -> None:
         """Revoke a specific refresh token."""
         token_hash = hash_token(refresh)
         await self.db.execute(
             update(RefreshToken)
             .where(RefreshToken.token_hash == token_hash)
-            .values(revoked=True)
+            .values(revoked=True, rotated_at=None)
         )
 
     async def revoke_all_user_tokens(self, user_id: int) -> None:
         """Revoke all refresh tokens for a user (e.g., on password reset)."""
         await self.db.execute(
             update(RefreshToken)
-            .where(RefreshToken.user_id == user_id, RefreshToken.revoked == False)  # noqa: E712
-            .values(revoked=True)
+            .where(RefreshToken.user_id == user_id)
+            .values(revoked=True, rotated_at=None)
         )
 
     async def revoke_other_user_tokens(self, user_id: int, keep_token: str) -> None:
@@ -159,7 +198,6 @@ class AuthService:
             .where(
                 RefreshToken.user_id == user_id,
                 RefreshToken.token_hash != keep_hash,
-                RefreshToken.revoked == False,  # noqa: E712
             )
-            .values(revoked=True)
+            .values(revoked=True, rotated_at=None)
         )

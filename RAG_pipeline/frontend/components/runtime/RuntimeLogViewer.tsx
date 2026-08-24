@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronRight, Loader2, Terminal } from "lucide-react";
 import { useRuntimeExecutionLogs } from "@/hooks/useRuntimeLogs";
+import { Button } from "@/components/ui/button";
+import { SelectMenu } from "@/components/ui/select-menu";
 import type { RuntimeLogEvent, RuntimeLogSeverity } from "@/types";
 import { cn } from "@/lib/utils";
-import { SeverityChip, formatDate } from "./runtime-ui";
+import { SeverityChip, formatClock, formatDate } from "./runtime-ui";
 
 const LOG_PAGE_SIZE = 100;
 
@@ -50,49 +52,58 @@ export function RuntimeLogViewer({ executionId }: { executionId: string }) {
   }
 
   return (
-    <section className="flex min-w-0 flex-col gap-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+    <section className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-elevation-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+          <Terminal className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
           Log lines
+          {events.length > 0 && (
+            <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium tabular-nums text-muted-foreground">
+              {total.toLocaleString()}
+              {pages > 1 && ` · page ${page + 1}/${pages}`}
+            </span>
+          )}
         </h3>
-        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="sr-only">Minimum severity</span>
-          <select
-            value={minSeverity}
-            onChange={(event) => setMinSeverity(event.target.value as "" | RuntimeLogSeverity)}
-            className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
-          >
-            {SEVERITY_OPTIONS.map((option) => (
-              <option key={option.value || "all"} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <SelectMenu
+          value={minSeverity}
+          onChange={(value) => setMinSeverity(value as "" | RuntimeLogSeverity)}
+          options={SEVERITY_OPTIONS.map((option) => ({
+            value: option.value,
+            label: option.label,
+          }))}
+          placeholder="All severities"
+          ariaLabel="Minimum severity"
+          variant="field"
+          align="end"
+        />
       </div>
 
       {query.isLoading && (
-        <p className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+        <p className="flex items-center gap-2 px-4 py-6 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" />
           Loading log lines
         </p>
       )}
 
       {query.isError && (
-        <div className="border border-destructive/40 p-3 text-sm">
-          <p className="text-destructive">Log lines could not be loaded.</p>
-          <button
-            type="button"
+        <div className="m-4 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
+          <p className="flex items-center gap-2 text-destructive">
+            <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
+            Log lines could not be loaded.
+          </p>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="mt-2"
             onClick={() => query.refetch()}
-            className="mt-2 rounded-md border border-input px-2 py-1 text-xs"
           >
             Retry
-          </button>
+          </Button>
         </div>
       )}
 
       {!query.isLoading && !query.isError && events.length === 0 && (
-        <p className="py-6 text-sm text-muted-foreground">
+        <p className="px-4 py-8 text-center text-sm text-muted-foreground">
           {total === 0 && !minSeverity
             ? "No log lines were captured for this run. Logs are only retained for the configured window, and successful runs may not have been captured."
             : "No log lines match this severity filter."}
@@ -101,11 +112,9 @@ export function RuntimeLogViewer({ executionId }: { executionId: string }) {
 
       {events.length > 0 && (
         <>
-          <p className="text-xs text-muted-foreground">
-            {total.toLocaleString()} line{total === 1 ? "" : "s"}
-            {pages > 1 && ` · page ${page + 1} of ${pages}`}
-          </p>
-          <ol className="min-w-0 divide-y divide-border border border-border">
+          {/* Dark gutter on both themes: a log stream reads better against a
+              constant backdrop than one that inverts with the app theme. */}
+          <ol className="min-w-0 divide-y divide-border/60 bg-muted/20">
             {events.map((event) => (
               <LogLine
                 // Position is part of a line's identity: repeated messages are valid data.
@@ -117,23 +126,26 @@ export function RuntimeLogViewer({ executionId }: { executionId: string }) {
             ))}
           </ol>
           {pages > 1 && (
-            <div className="flex items-center justify-between gap-3 text-xs">
-              <button
-                type="button"
+            <div className="flex items-center justify-between gap-3 border-t border-border/60 px-4 py-2.5">
+              <Button
+                variant="secondary"
+                size="sm"
                 disabled={page === 0}
                 onClick={() => setPage(page - 1)}
-                className="rounded-md border border-input px-2 py-1 disabled:opacity-50"
               >
                 Previous
-              </button>
-              <button
-                type="button"
+              </Button>
+              <span className="text-xs tabular-nums text-muted-foreground">
+                Page {page + 1} of {pages}
+              </span>
+              <Button
+                variant="secondary"
+                size="sm"
                 disabled={page + 1 >= pages}
                 onClick={() => setPage(page + 1)}
-                className="rounded-md border border-input px-2 py-1 disabled:opacity-50"
               >
                 Next
-              </button>
+              </Button>
             </div>
           )}
         </>
@@ -155,18 +167,28 @@ function LogLine({
   const isTall = lineCount > COLLAPSE_LINE_THRESHOLD || event.message.length > 400;
 
   return (
-    <li className="min-w-0 px-3 py-2">
+    <li
+      className={cn(
+        "min-w-0 px-4 py-2 transition-colors hover:bg-muted/40 motion-reduce:transition-none",
+        // An error line is the reason someone opened this drawer: give it a rail.
+        event.severity === "error" && "border-l-2 border-l-destructive bg-destructive/[0.04]",
+        event.severity === "warning" && "border-l-2 border-l-amber-500/60",
+      )}
+    >
       <div className="flex flex-wrap items-center gap-2">
         <SeverityChip severity={event.severity} />
-        <span className="text-[11px] tabular-nums text-muted-foreground">
-          {formatDate(event.timestamp)}
+        <span
+          className="font-mono text-[11px] tabular-nums text-muted-foreground"
+          title={formatDate(event.timestamp)}
+        >
+          {formatClock(event.timestamp)}
         </span>
         {isTall && (
           <button
             type="button"
             onClick={onToggle}
             aria-expanded={isExpanded}
-            className="ml-auto inline-flex items-center gap-1 rounded-md border border-input px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-foreground"
+            className="ml-auto inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
             {isExpanded ? (
               <ChevronDown className="h-3 w-3" />
@@ -181,7 +203,8 @@ function LogLine({
           never let the pre block widen the drawer. */}
       <pre
         className={cn(
-          "mt-1 min-w-0 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-foreground",
+          "mt-1 min-w-0 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed",
+          event.severity === "error" ? "text-foreground" : "text-foreground/90",
           isTall && !isExpanded && "line-clamp-3",
         )}
       >

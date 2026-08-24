@@ -8,6 +8,7 @@ through the central store, then derived insights are rebuilt from DB rows.
 from __future__ import annotations
 
 import datetime
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
@@ -15,7 +16,7 @@ from typing import TYPE_CHECKING, Protocol
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.runtime.insights.builder import InsightBuildResult, build_runtime_insights_for_execution
-from src.runtime.insights.parser import redact_credentials
+from src.runtime.redaction import sanitize_sync_error
 from src.runtime.models import (
     RuntimeArtifact,
     RuntimeConnection,
@@ -35,15 +36,17 @@ from src.runtime.models import (
     RuntimeWorkspace,
 )
 from src.runtime.store import RuntimeStoreRepository
-from src.runtime.store import RuntimeRecordNotFoundError
+from src.runtime.store import RuntimeDuplicateSourceError, RuntimeRecordNotFoundError
 
 if TYPE_CHECKING:
     from src.runtime.insights.semantic import RuntimeSemanticIndexer
 
-_MAX_ERROR_SUMMARY = 240
-_TOKENISH_RE = re.compile(
-    r"(?i)\b(bearer|token|secret|password|passwd|pwd|api[_-]?key)\b\s*[:=]?\s*\S*"
-)
+# Re-exported: `sanitize_sync_error` moved to src/runtime/redaction.py so the
+# documentation-evidence read path can share it without importing the sync
+# service (which imports the store, and would cycle).
+__all__ = ["sanitize_sync_error"]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -184,6 +187,7 @@ async def run_runtime_source_sync_cycle(
             error_summary=error_summary,
         )
     if result.status == RuntimeSyncStatus.SUCCESS:
+        await _refresh_source_identity(repo, source_id=source_id, provider=provider, credentials=credentials, batch=batch)
         await repo.record_source_sync_success(
             source_id,
             succeeded_at=result.last_synced_at or cycle_at,
@@ -210,6 +214,37 @@ async def run_runtime_source_sync_cycle(
                 },
             )
     return result
+
+
+async def _refresh_source_identity(
+    repo: RuntimeStoreRepository,
+    *,
+    source_id: int,
+    provider,
+    credentials: dict,
+    batch: RuntimeSyncBatch,
+) -> None:
+    """Keep the stored identity aligned with the tenant the source actually serves.
+
+    The markers an identity is derived from can change on the source side (a new
+    TMC environment, say). Without this the identity would freeze at its
+    registration-time value, and re-registering the same physical source would
+    compute a different identity and slip past the duplicate guard -- mirroring
+    every row a second time, which is the failure that guard exists to prevent.
+    """
+    refreshed = provider.physical_identity_from_batch(credentials, batch)
+    if refreshed is None:
+        return
+    if refreshed == await repo.get_source_physical_identity(source_id):
+        return
+    try:
+        await repo.promote_source_identity(source_id, refreshed)
+    except RuntimeDuplicateSourceError:
+        logger.warning(
+            "Runtime source %s now resolves to an identity another source already holds; "
+            "the two are mirroring the same physical source",
+            source_id,
+        )
 
 
 async def _persist_source_batch_with_project_map(
@@ -445,17 +480,6 @@ async def run_runtime_sync_cycle(
         failure_reason_code=failure_reason,
         error_summary=error_summary,
     )
-
-
-def sanitize_sync_error(value: str | None) -> str | None:
-    """Bound and redact sync failure text before persistence or API exposure."""
-    if not value:
-        return None
-    compact = " ".join(value.replace("\n", " ").split())
-    redacted = redact_credentials(_TOKENISH_RE.sub("<redacted>", compact))
-    if len(redacted) > _MAX_ERROR_SUMMARY:
-        return redacted[: _MAX_ERROR_SUMMARY - 3] + "..."
-    return redacted
 
 
 def _clean_reason_code(value: str | None) -> str | None:

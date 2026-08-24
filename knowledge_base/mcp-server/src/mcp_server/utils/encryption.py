@@ -1,8 +1,7 @@
-"""Fernet-based token encryption for GitHub PATs stored at rest."""
+"""Fernet-based token encryption for git access tokens stored at rest."""
 
 from __future__ import annotations
 
-import re
 from urllib.parse import urlparse, urlunparse
 
 
@@ -30,11 +29,11 @@ def decrypt_token(ciphertext: str) -> str:
 def inject_plaintext_token(repo_url: str, token: str | None, *, username: str | None = None) -> str:
     """Return repo_url with a plaintext token injected as HTTPS credentials (in-memory only).
 
-    Single URL-building implementation for both credential sources. A PAT is used as
-    the userinfo directly (``https://<pat>@host``). A GitHub App installation token
-    must be paired with the ``x-access-token`` username
-    (``https://x-access-token:<token>@host``) — GitHub rejects an installation token
-    placed in the username position. Callers pass ``username`` for that case.
+    Single URL-building implementation for every credential source. Without
+    ``username`` the token becomes the userinfo directly (``https://<pat>@host``).
+    With it, the token becomes the password (``https://<username>:<token>@host``) —
+    required for GitHub App installation tokens, which GitHub rejects in the
+    username position, and equally valid for GitHub PATs and Azure DevOps PATs.
     """
     if not token:
         return repo_url
@@ -46,14 +45,3 @@ def inject_plaintext_token(repo_url: str, token: str | None, *, username: str | 
     creds = f"{username}:{token}" if username else token
     authed = parsed._replace(netloc=f"{creds}@{parsed.hostname}" + (f":{parsed.port}" if parsed.port else ""))
     return urlunparse(authed)
-
-
-def inject_token(repo_url: str, token_enc: str | None) -> str:
-    """Return repo_url with a stored (encrypted) PAT injected as HTTPS credentials."""
-    if not token_enc:
-        return repo_url
-    try:
-        token = decrypt_token(token_enc)
-    except Exception:
-        return repo_url
-    return inject_plaintext_token(repo_url, token)

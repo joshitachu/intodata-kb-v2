@@ -23,6 +23,11 @@ from mcp_server.db.session import async_session_factory
 from mcp_server.model_strategies import resolve_generation_models
 from mcp_server.providers import get_provider
 from mcp_server.providers.base import DocGenContext
+from mcp_server.services.extraction_cache import (
+    compute_extraction_key,
+    extraction_cache_dir,
+    restore_extraction,
+)
 from mcp_server.services.generation_run_state import (
     GenerationLockError,
     LockHeartbeat,
@@ -42,7 +47,7 @@ from mcp_server.services.pack_governance import PackGovernanceDenied, pack_gover
 from mcp_server.services.nexus_execution_contract import build_nexus_execution_receipt
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.scanner_service import ScannerService
-from mcp_server.schemas import NexusPackSnapshot, NexusPresentation, NexusPrivateAnalysisPack
+from mcp_server.schemas import NexusPackSnapshot, NexusPresentation
 
 logger = logging.getLogger(__name__)
 
@@ -1100,9 +1105,7 @@ Required sections:
         nexus_pack_ids: list[str] | None = None,
         nexus_pack_snapshot: NexusPackSnapshot | None = None,
         nexus_presentation: NexusPresentation | None = None,
-        nexus_audience_render: dict[str, str] | None = None,
-        nexus_private_pack_receipts: list | None = None,
-        nexus_private_analysis_packs: list[NexusPrivateAnalysisPack] | None = None,
+        live_evidence: bool = True,
         resume: bool = True,
         run_id: int | None = None,
         doc_generation_provider: str | None = None,
@@ -1110,6 +1113,7 @@ Required sections:
         enterprise_mode: bool | None = None,
         scoped_docs: set[str] | None = None,
         partition=None,
+        initiating_user_id: int | None = None,
     ) -> dict:
         """Spawn Claude Code CLI to generate docs for a project.
 
@@ -1211,9 +1215,6 @@ Required sections:
                 pack_ids=nexus_pack_ids or [],
                 snapshot=nexus_pack_snapshot,
                 presentation=nexus_presentation,
-                audience_render=nexus_audience_render,
-                private_pack_receipts=nexus_private_pack_receipts,
-                private_analysis_packs=nexus_private_analysis_packs,
             )
             persist_nexus_execution_receipt(staging_dir, nexus_execution_receipt)
         except Exception as exc:
@@ -1343,6 +1344,43 @@ Required sections:
             and resume_state.get("preprocess_exists", False)
         )
 
+        # Universal extraction cache (services/extraction_cache.py). _preprocess/
+        # is a pure function of the scan artifacts + the preprocess/redaction
+        # code version + platform + the partition unit allowlist, and never of
+        # the pack, so a second pack over the same project reuses this layer
+        # instead of re-running the deterministic extraction.
+        #
+        # No extra staleness check is needed here: compute_extraction_key is
+        # built on compute_scan_fingerprint, which hashes scan_result.json,
+        # scan/manifest.json, scan/lineage.json and scan/landscape.json
+        # (business_topology/evidence.py::_SCAN_ARTIFACTS). Any change to the
+        # scan therefore produces a DIFFERENT key and a cache MISS, so the
+        # mtime-based stale-scan invalidation above stays authoritative and
+        # cannot be defeated by a restore.
+        extraction_key = ""
+        restored_groups: list[str] | None = None
+        if (
+            not skip_preprocess
+            # A scoped reingestion prepares staging deliberately (unchanged
+            # groups' analyses restored, changed groups removed) — mirror the
+            # fresh-staging guard above and never overwrite that.
+            and scoped_docs is None
+            and config.extraction_cache_enabled
+        ):
+            extraction_key = compute_extraction_key(
+                Path(scan_output_dir),
+                platform=platform,
+                unit_allowlist=unit_allowlist,
+            )
+            if extraction_key:
+                try:
+                    restored_groups = restore_extraction(
+                        extraction_cache_dir(output_dir), extraction_key, staging_dir,
+                    )
+                except OSError as exc:
+                    logger.warning("Extraction cache restore failed: %s", exc)
+                    restored_groups = None
+
         if skip_preprocess:
             await self.log_manager.emit(
                 project_id,
@@ -1355,6 +1393,15 @@ Required sections:
                 f.stem for f in preprocess_dir.glob("*.md")
                 if not f.name.startswith("_")
             )
+        elif restored_groups is not None:
+            await self.log_manager.emit(
+                project_id,
+                f"Extraction cache HIT ({extraction_key[:12]}) — reused "
+                f"{len(restored_groups)} pre-processed group bundle(s), "
+                "skipping preprocessing",
+                level="info",
+            )
+            preprocess_groups = restored_groups
         else:
             await self.log_manager.emit(
                 project_id, "Pre-processing scan data...", level="info",
@@ -1423,6 +1470,37 @@ Required sections:
         effective_model = model_resolution.analysis_model
         effective_write_model = model_resolution.write_model
 
+        connector_runtime = None
+        if (
+            model_resolution.uses_opencode_cli
+            and config.opencode_connectors_enabled
+            and run_id is not None
+            and initiating_user_id is not None
+        ):
+            # The connector service owns DB snapshotting and credentials.  The
+            # OpenCode provider receives only opaque run authority.  Any
+            # preflight failure is supplementary-evidence degradation, never a
+            # reason to switch on connectors for a legacy/non-user run.
+            try:
+                from mcp_server.connectors.service import ConnectorService
+
+                connector_runtime = await ConnectorService.create_opencode_runtime(
+                    generate_run_id=run_id,
+                    project_id=project_id,
+                    user_id=initiating_user_id,
+                    # ``resume`` is a caller preference; only an actual
+                    # recovered staging state must reuse an old snapshot.
+                    # Fresh runs commonly use resume=True by default.
+                    resume=resume_state is not None,
+                )
+            except Exception:
+                logger.warning(
+                    "Connector preflight failed for OpenCode run %s/%s; continuing without live evidence",
+                    project_id,
+                    run_id,
+                    exc_info=True,
+                )
+
         # Build DocGenContext and hand off to the configured provider
         ctx = DocGenContext(
             project_id=project_id,
@@ -1441,7 +1519,9 @@ Required sections:
             scoped_docs=scoped_docs,
             partition=partition,
             nexus_presentation=nexus_presentation,
-            nexus_private_analysis_packs=tuple(nexus_private_analysis_packs or ()),
+            live_evidence=live_evidence,
+            run_id=run_id,
+            connector_runtime=connector_runtime,
         )
 
         provider = get_provider(
@@ -1477,9 +1557,9 @@ Required sections:
         main_model_name = getattr(resolved_main_model, "model_name", effective_model)
         write_model_name = getattr(resolved_write_model_obj, "model_name", effective_write_model)
         if model_resolution.uses_opencode_cli:
-            # OpenCode owns one orchestrator session for all three phases. Its
-            # selected route is therefore the effective model throughout; the
-            # legacy per-phase defaults are not consulted by this provider.
+            # OpenCode owns its adaptive phase sessions and uses one selected
+            # route throughout; the legacy per-phase model defaults are not
+            # consulted by this provider.
             investigation_model_name = effective_model
             main_model_name = effective_model
             write_model_name = effective_model

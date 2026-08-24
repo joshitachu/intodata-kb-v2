@@ -826,6 +826,20 @@ def test_pack_quality_required_sections_fail(tmp_path):
     assert any("missing required sections" in error for error in report["errors"])
 
 
+def test_pack_required_sections_are_checked_before_doc_acceptance(tmp_path):
+    pack_dir = tmp_path / "pack"
+    _write_pack_dir(pack_dir, mode="advisory")
+    provider = CustomHarnessProvider(MagicMock(), plugin_pack_dir=pack_dir)
+
+    report = provider._validate_phase3_doc(
+        "# Webhook Smoke Test\n\n## Repository Snapshot\nEvidence.\n",
+        "WEBHOOK_SMOKE_TEST",
+    )
+
+    assert not report["ok"]
+    assert any("Missing required Pack sections" in error for error in report["errors"])
+
+
 def test_pack_quality_required_terms_fail(tmp_path):
     staging = tmp_path / "staging"
     staging.mkdir()
@@ -861,7 +875,7 @@ def test_pack_quality_min_doc_bytes_fail(tmp_path):
     assert any("too small" in error for error in report["errors"])
 
 
-def test_pack_quality_advisory_failure_is_effectively_ok(tmp_path):
+def test_pack_quality_advisory_does_not_relax_required_sections(tmp_path):
     staging = tmp_path / "staging"
     staging.mkdir()
     (staging / "WEBHOOK_SMOKE_TEST.md").write_text("# Webhook Smoke Test\n", encoding="utf-8")
@@ -869,6 +883,23 @@ def test_pack_quality_advisory_failure_is_effectively_ok(tmp_path):
     report = validate_pack_quality(staging, _pack_manifest(mode="advisory"))
 
     assert not report["ok"]
+    assert not report["effective_ok"]
+    assert any("missing required sections" in error for error in report["errors"])
+
+
+def test_pack_quality_advisory_relaxes_quality_preferences_only(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "WEBHOOK_SMOKE_TEST.md").write_text(
+        "# Webhook Smoke Test\n\n"
+        "## Repository Snapshot\nsource evidence\n\n"
+        "## Smoke Test Result\nfinished\n",
+        encoding="utf-8",
+    )
+
+    report = validate_pack_quality(staging, _pack_manifest(mode="advisory"))
+
+    assert not report["ok"]  # preferred terms/minimum size are absent
     assert report["effective_ok"]
     assert report["warnings"] == ["Pack quality gates failed in advisory mode"]
 
@@ -909,7 +940,7 @@ def test_pack_contract_requires_explicit_unknown_for_missing_evidence(tmp_path):
     assert any("UNKNOWN/not evidenced" in error for error in report["errors"])
 
 
-def test_pack_contract_advisory_allows_missing_evidence_warning(tmp_path):
+def test_pack_contract_advisory_does_not_relax_missing_evidence_contract(tmp_path):
     staging = tmp_path / "staging"
     staging.mkdir()
     (staging / "_evidence").mkdir()
@@ -935,8 +966,8 @@ def test_pack_contract_advisory_allows_missing_evidence_warning(tmp_path):
     report = validate_pack_quality(staging, manifest)
 
     assert not report["ok"]
-    assert report["effective_ok"]
-    assert report["warnings"] == ["Pack validation failed in advisory mode"]
+    assert not report["effective_ok"]
+    assert any("missing required sections" in error for error in report["errors"])
 
 
 def test_pack_quality_required_outputs_must_be_structured(tmp_path):
@@ -1231,7 +1262,7 @@ def test_enterprise_gate_blocks_failed_blocking_pack_quality(tmp_path, monkeypat
     assert (staging / "_assessment" / "pack_quality_report.json").exists()
 
 
-def test_enterprise_gate_allows_failed_advisory_pack_quality(tmp_path, monkeypatch):
+def test_enterprise_gate_blocks_structurally_incomplete_advisory_pack(tmp_path, monkeypatch):
     from mcp_server.config import config
 
     project_id = "proj"
@@ -1266,8 +1297,11 @@ def test_enterprise_gate_allows_failed_advisory_pack_quality(tmp_path, monkeypat
         provenance=CoverageReport(ok=True, coverage_count=1, expected_count=1),
     )
 
-    assert gate_report["gates"]["pack_quality"]["ok"]
-    assert gate_report["gates"]["pack_quality"]["warnings"] == ["Pack quality gates failed in advisory mode"]
+    assert not gate_report["gates"]["pack_quality"]["ok"]
+    assert any(
+        "missing required sections" in error
+        for error in gate_report["gates"]["pack_quality"]["errors"]
+    )
 
 
 def test_pack_contract_can_construct_skipped_provenance_report(tmp_path):
@@ -1505,6 +1539,9 @@ def test_materialize_prompt_packs_writes_harness_safe_assets(tmp_path):
     phase2 = Path(packs["phase2"])
     assert phase2.exists()
     content = phase2.read_text(encoding="utf-8")
+    assert "Nexus Platform Analysis Policy (Immutable)" in content
+    assert "cannot replace" in content
+    assert "weaken, or contradict" in content
     assert "## Source: _analysis_guide.md" in content
     assert "Spawn one sub-agent per group." in content
     assert "Semantic detail." in content
@@ -4566,10 +4603,11 @@ async def test_custom_harness_generates_valid_staging(tmp_path, monkeypatch):
         if '"schema_version": "phase2-claims-v1"' in call["prompt"]
     ]
     assert len(claim_calls) == 2
-    # Extraction is governed by the compact claim schema, not the historical
-    # exhaustive analysis guide that caused unbounded prose responses.
+    # The compact claim schema governs transport, while Nexus's platform
+    # guide remains immutable system policy for semantics and grounding.
     assert all(
-        not call["system_prompt"] or "_analysis_guide" not in call["system_prompt"]
+        "Nexus Platform Analysis Policy (Immutable)" in call["system_prompt"]
+        and "_analysis_guide" in call["system_prompt"]
         for call in claim_calls
     )
     topology_claims = staging / "_topology" / "evidence" / "phase2_claims.jsonl"

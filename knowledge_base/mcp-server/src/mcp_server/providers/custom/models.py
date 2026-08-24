@@ -141,6 +141,14 @@ class HarnessRunState(BaseModel):
     # stub, and docs that shipped as stubs / truncated after a Phase 3 failure.
     partial_groups: list[str] = Field(default_factory=list)
     failed_docs: list[dict] = Field(default_factory=list)
+    # Fail-loudly bookkeeping (distinct from the salvage path above): a pack's
+    # Declared pack sections a group produced no content for. Advisory only:
+    # the group keeps its REAL analysis, the documents publish clean, and the
+    # run status is untouched. Persisted to
+    # _assessment/pack_section_coverage.json so a pack author can distinguish
+    # "my question was wrong" from "this codebase genuinely has none of that".
+    # Records: {pack_id, group, missing_sections, questions, phase}.
+    section_coverage_gaps: list[dict] = Field(default_factory=list)
     # Call budget computed from the actual bin-packed work plan at run start
     # (P0.1/R2.1). ``planned_call_budget`` is the plan SUM -- a reservation
     # guide for reporting, never the enforcement ceiling (the verified

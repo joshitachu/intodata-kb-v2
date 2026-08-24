@@ -13,6 +13,8 @@
     { "id": "openai/gpt-4.1", "provider": "openai", "label": "OpenAI GPT-4.1", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["OPENAI_API_KEY"], "rag_capable": true },
     { "id": "openai/gpt-4o", "provider": "openai", "label": "OpenAI GPT-4o", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["OPENAI_API_KEY"], "rag_capable": true },
 
+    { "id": "kimi/kimi-k2.5", "provider": "kimi", "label": "Kimi K2.5", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["KIMI_API_KEY", "MOONSHOT_API_KEY"], "rag_capable": true },
+
     { "id": "deepseek/deepseek-chat", "provider": "deepseek", "label": "DeepSeek Chat", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_DOC_GENERATION_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"], "rag_capable": true },
     { "id": "deepseek/deepseek-reasoner", "provider": "deepseek", "label": "DeepSeek Reasoner", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_DOC_GENERATION_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"], "rag_capable": true },
     { "id": "deepseek/deepseek-v4-pro", "provider": "deepseek", "label": "DeepSeek V4 Pro", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_DOC_GENERATION_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"], "rag_capable": true },
@@ -31,6 +33,8 @@
     { "id": "route33/google/gemini-3.5-flash", "provider": "route33", "label": "Route33 Gemini 3.5 Flash", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_DOC_GENERATION_ROUTE33_API_KEY", "ROUTE33_API_KEY"], "rag_capable": false },
     { "id": "route33/anthropic/claude-sonnet-5", "provider": "route33", "label": "Route33 Claude Sonnet 5", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_DOC_GENERATION_ROUTE33_API_KEY", "ROUTE33_API_KEY"], "rag_capable": false },
 
+    { "id": "openrouter/stealth/ox-alpha", "provider": "openrouter", "label": "OpenRouter Ox Alpha (stealth)", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_DOC_GENERATION_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"], "rag_capable": false },
+
     { "id": "anthropic/claude-sonnet-4-6", "provider": "anthropic", "label": "Claude Sonnet 4.6", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["ANTHROPIC_API_KEY"], "rag_capable": true },
     { "id": "anthropic/claude-opus-4-7", "provider": "anthropic", "label": "Claude Opus 4.7", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["ANTHROPIC_API_KEY"], "rag_capable": true },
 
@@ -38,6 +42,26 @@
     { "id": "google/gemini-2.5-pro", "provider": "google", "label": "Gemini 2.5 Pro", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["GOOGLE_API_KEY", "GEMINI_API_KEY"], "rag_capable": true },
     { "id": "google/gemini-2.5-flash-lite", "provider": "google", "label": "Gemini 2.5 Flash-Lite", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["GOOGLE_API_KEY", "GEMINI_API_KEY"], "rag_capable": true },
     { "id": "google/gemini-2.5-flash", "provider": "google", "label": "Gemini 2.5 Flash", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["GOOGLE_API_KEY", "GEMINI_API_KEY"], "rag_capable": true },
+
+    { "id": "opencode-go/grok-4.5", "provider": "opencode-go", "label": "Grok 4.5 — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
+    { "id": "opencode-go/glm-5.3", "provider": "opencode-go", "label": "GLM-5.3 — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
+    { "id": "opencode-go/glm-5.2", "provider": "opencode-go", "label": "GLM-5.2 — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
+    { "id": "opencode-go/glm-5.1", "provider": "opencode-go", "label": "GLM-5.1 — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
+    { "id": "opencode-go/gpt-5.6-luna", "provider": "opencode-go", "label": "GPT-5.6 Luna — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
+    { "id": "opencode-go/kimi-k3", "provider": "opencode-go", "label": "Kimi K3 — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
+    { "id": "opencode-go/kimi-k2.7-code", "provider": "opencode-go", "label": "Kimi K2.7 Code — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
+    { "id": "opencode-go/kimi-k2.6", "provider": "opencode-go", "label": "Kimi K2.6 — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
+    { "id": "opencode-go/mimo-v2.5", "provider": "opencode-go", "label": "MiMo-V2.5 — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
+    { "id": "opencode-go/mimo-v2.5-pro", "provider": "opencode-go", "label": "MiMo-V2.5 Pro — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
+    { "id": "opencode-go/minimax-m3", "provider": "opencode-go", "label": "MiniMax M3 — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
+    { "id": "opencode-go/minimax-m2.7", "provider": "opencode-go", "label": "MiniMax M2.7 — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
+    { "id": "opencode-go/qwen3.8-max", "provider": "opencode-go", "label": "Qwen3.8 Max — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
+    { "id": "opencode-go/qwen3.7-max", "provider": "opencode-go", "label": "Qwen3.7 Max — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
+    { "id": "opencode-go/qwen3.7-plus", "provider": "opencode-go", "label": "Qwen3.7 Plus — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
+    { "id": "opencode-go/qwen3.6-plus", "provider": "opencode-go", "label": "Qwen3.6 Plus — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
+    { "id": "opencode-go/deepseek-v4-pro", "provider": "opencode-go", "label": "DeepSeek V4 Pro — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
+    { "id": "opencode-go/deepseek-v4-flash", "provider": "opencode-go", "label": "DeepSeek V4 Flash — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
+    { "id": "opencode-go/hy3", "provider": "opencode-go", "label": "Hy3 — Go subscription", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_OPENCODE_GO_API_KEY"], "rag_capable": false },
 
     { "id": "ollama/gemma3:12b", "provider": "ollama", "label": "Ollama Gemma 3 12B (local)", "supports_analysis": true, "supports_writing": true, "is_local": true, "credential_env": [], "rag_capable": true },
     { "id": "ollama/gemma3:4b", "provider": "ollama", "label": "Ollama Gemma 3 4B (local)", "supports_analysis": true, "supports_writing": true, "is_local": true, "credential_env": [], "rag_capable": true },

@@ -145,6 +145,10 @@ COOKIE_SECURE=true
 COOKIE_DOMAIN=$CLIENT.$BASE_DOMAIN
 ALLOWED_ORIGINS=https://$CLIENT.$BASE_DOMAIN
 PUBLIC_APP_URL=https://$CLIENT.$BASE_DOMAIN
+# nginx on the host plus the frontend container both sit in front of FastAPI;
+# the Compose bridge range must be trusted or every rate limit collapses into a
+# single bucket keyed on the frontend container. See .env.production.template.
+TRUSTED_PROXIES=127.0.0.1,172.16.0.0/12
 
 # Repository root used by host-level services
 REPO_ROOT=$REPO_ROOT

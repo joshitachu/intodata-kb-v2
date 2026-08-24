@@ -83,3 +83,112 @@ async def test_generate_with_tools_returns_tool_call():
     assert resp.tool_calls[0].tool_name == "list_executions"
     assert resp.tool_calls[0].arguments == {"limit": 5}
     assert resp.no_tool_support is False
+
+
+def _usage_cached(prompt=6266, completion=32, cached=6144):
+    return SimpleNamespace(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=cached, cache_write_tokens=None),
+    )
+
+
+class TestPromptCacheAccounting:
+    """Moonshot/Kimi caches the prefix automatically; the adapter must read the
+    hit count back and discount it, or the saving is invisible and unbilled."""
+
+    async def test_generate_records_cached_tokens_and_discounts_cost(self):
+        provider = OpenAICompatibleProvider(
+            provider_id="kimi", base_url="https://api.moonshot.ai/v1", api_key="sk-x"
+        )
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = AsyncMock(
+            return_value=SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="a", tool_calls=None))],
+                usage=_usage_cached(),
+            )
+        )
+        with patch.object(provider, "_get_client", AsyncMock(return_value=fake_client)):
+            _, usage = await provider.generate(model="kimi-k2.5", messages=MESSAGES)
+
+        assert usage.input_tokens == 6266
+        assert usage.cached_input_tokens == 6144
+        assert usage.uncached_input_tokens == 122
+        expected = (122 * 0.30 + 6144 * 0.30 * 0.175 + 32 * 0.60) / 1_000_000
+        assert usage.cost_usd == round(expected, 6)
+
+    async def test_cold_call_with_null_details_is_safe(self):
+        """Moonshot's first call returns prompt_tokens_details: null."""
+        provider = _provider()
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = AsyncMock(
+            return_value=SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="a", tool_calls=None))],
+                usage=SimpleNamespace(
+                    prompt_tokens=6266, completion_tokens=32, prompt_tokens_details=None
+                ),
+            )
+        )
+        with patch.object(provider, "_get_client", AsyncMock(return_value=fake_client)):
+            _, usage = await provider.generate(model="gpt-4o", messages=MESSAGES)
+        assert usage.cached_input_tokens == 0
+        assert usage.input_tokens == 6266
+
+    async def test_generate_with_tools_records_cached_tokens(self):
+        provider = _provider()
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = AsyncMock(
+            return_value=SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="a", tool_calls=None))],
+                usage=_usage_cached(),
+            )
+        )
+        tools = [RuntimeToolDefinition(name="t", description="d", input_schema={"type": "object"})]
+        with patch.object(provider, "_get_client", AsyncMock(return_value=fake_client)):
+            resp = await provider.generate_with_tools(
+                model="gpt-4o", messages=MESSAGES, runtime_tools=tools
+            )
+        assert resp.usage.cached_input_tokens == 6144
+
+    async def test_stream_records_cached_tokens(self):
+        provider = _provider()
+
+        async def _fake_stream(*a, **k):
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="hi"))], usage=None
+            )
+            yield SimpleNamespace(choices=[], usage=_usage_cached())
+
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = AsyncMock(side_effect=lambda *a, **k: _fake_stream())
+        with patch.object(provider, "_get_client", AsyncMock(return_value=fake_client)):
+            out = [x async for x in provider.stream(model="gpt-4o", messages=MESSAGES)]
+
+        stats = [x for x in out if not isinstance(x, str)]
+        assert stats[-1].cached_input_tokens == 6144
+
+    async def test_tool_schema_keys_are_canonically_ordered_on_the_wire(self):
+        """The tool block heads the cacheable prefix, so its bytes must be stable
+        regardless of how the caller happened to build the schema dict."""
+        provider = _provider()
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = AsyncMock(
+            return_value=SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="a", tool_calls=None))],
+                usage=_usage(),
+            )
+        )
+        tools = [RuntimeToolDefinition(
+            name="t",
+            description="d",
+            input_schema={"required": ["b"], "type": "object",
+                          "properties": {"b": {"type": "string"}, "a": {"type": "string"}}},
+        )]
+        with patch.object(provider, "_get_client", AsyncMock(return_value=fake_client)):
+            await provider.generate_with_tools(
+                model="gpt-4o", messages=MESSAGES, runtime_tools=tools
+            )
+        sent = fake_client.chat.completions.create.await_args.kwargs["tools"][0]
+        params = sent["function"]["parameters"]
+        assert list(params.keys()) == ["properties", "required", "type"]
+        assert list(params["properties"].keys()) == ["a", "b"]

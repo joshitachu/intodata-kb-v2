@@ -39,6 +39,9 @@ export interface TableNodeData {
   // The exact column the user clicked to start the trace, if it lives on
   // this table - gets a distinct "active" marker from the rest of the path.
   lineageActiveColumn?: string | null;
+  assistantHighlightedColumns?: Set<string>;
+  assistantColumnRoles?: ReadonlyMap<string, string>;
+  assistantVisualRole?: string;
   // Invoked with the clicked column's name; wired up one level above
   // (ComponentGraphCanvas) to a field-lineage fetch.
   onColumnClick?: (columnName: string) => void;

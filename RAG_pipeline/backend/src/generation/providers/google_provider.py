@@ -17,6 +17,11 @@ from collections.abc import AsyncGenerator
 
 from src.generation.providers.base import ChatProvider
 from src.generation.providers.types import RuntimeToolCallRequest, ToolAwareLLMResponse
+from src.generation.providers.prompt_cache import (
+    apply_cache_tokens,
+    canonical_schema,
+    log_cache_effect,
+)
 from src.generation.usage import StreamUsageStats, UsageStats
 from src.runtime.models import RuntimeToolDefinition
 
@@ -83,9 +88,15 @@ def _to_gemini(messages: list[dict], images: list[str] | None) -> tuple[str, lis
 
 
 def _to_gemini_tools(runtime_tools: list[RuntimeToolDefinition]) -> list[dict]:
+    # canonical_schema keeps the serialized tool block byte-stable so Gemini's
+    # implicit prefix cache can actually match it across calls.
     return [{
         "function_declarations": [
-            {"name": t.name, "description": t.description, "parameters": t.input_schema}
+            {
+                "name": t.name,
+                "description": t.description,
+                "parameters": canonical_schema(t.input_schema),
+            }
             for t in runtime_tools
         ]
     }]
@@ -110,13 +121,23 @@ def _function_calls(resp) -> list:
 
 
 def _usage(resp, model: str) -> UsageStats:
+    """Build UsageStats, including Gemini's implicit-cache hit count.
+
+    Gemini 2.5+ caches long prefixes implicitly and reports the hit as
+    ``cached_content_token_count``, which IS included in
+    ``prompt_token_count`` — matching the UsageStats invariant, so no summing is
+    needed here (unlike Anthropic).
+    """
     um = getattr(resp, "usage_metadata", None)
     usage = UsageStats(
         provider="google", model=model,
         input_tokens=getattr(um, "prompt_token_count", 0) or 0 if um else 0,
         output_tokens=getattr(um, "candidates_token_count", 0) or 0 if um else 0,
     )
+    cached = (getattr(um, "cached_content_token_count", 0) or 0) if um else 0
+    apply_cache_tokens(usage, cached, 0)
     usage.calculate_cost()
+    log_cache_effect("google", model, usage)
     return usage
 
 
@@ -185,8 +206,13 @@ class GoogleProvider(ChatProvider):
             if um:
                 acc.input_tokens = getattr(um, "prompt_token_count", 0) or 0
                 acc.output_tokens = getattr(um, "candidates_token_count", 0) or 0
+                apply_cache_tokens(
+                    acc, getattr(um, "cached_content_token_count", 0) or 0, 0
+                )
         acc.latency_ms = int((time.perf_counter() - t0) * 1000)
-        yield acc.finalize()
+        final = acc.finalize()
+        log_cache_effect("google", model, final)
+        yield final
 
     async def generate_with_tools(
         self,

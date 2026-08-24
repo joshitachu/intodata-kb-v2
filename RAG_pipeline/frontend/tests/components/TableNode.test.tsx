@@ -25,6 +25,27 @@ function makeData(overrides: Partial<TableNodeData> = {}): TableNodeData {
 }
 
 describe("TableNode", () => {
+  it("visually distinguishes assistant roles on exact columns", () => {
+    const { rerender } = render(
+      <TableNode data={makeData({
+        columns: [{ name: "status", expression: null }],
+        assistantHighlightedColumns: new Set(["status"]),
+        assistantColumnRoles: new Map([["status", "primary"]]),
+      })} />,
+    );
+    const row = screen.getByTestId("column-row-status");
+    const primaryBackground = row.style.background;
+    expect(row).toHaveAttribute("data-assistant-role", "primary");
+
+    rerender(<TableNode data={makeData({
+      columns: [{ name: "status", expression: null }],
+      assistantHighlightedColumns: new Set(["status"]),
+      assistantColumnRoles: new Map([["status", "supporting"]]),
+    })} />);
+    expect(row).toHaveAttribute("data-assistant-role", "supporting");
+    expect(row.style.background).not.toBe(primaryBackground);
+  });
+
   it("renders the table name and kind badge", () => {
     render(<TableNode data={makeData()} />);
     expect(screen.getByText("row17")).toBeInTheDocument();

@@ -1,26 +1,29 @@
 """OpenCode CLI provider for the modern three-phase documentation workflow.
 
 The coordinator performs the same deterministic preprocessing as every other
-provider.  This adapter then keeps one OpenCode session alive across three
-messages (Gather, Analyze, Produce), running the existing deterministic legacy
-handoffs between them.  Task prompts come from the current custom-pipeline
-renderers; the retired Claude CLI mega-prompt is never used.
+provider. Gather and Analyze use bounded task sessions whose validated files are
+the durable handoff; Produce consumes those deterministic legacy artifacts.
+Task prompts come from the current custom-pipeline renderers; the retired Claude
+CLI mega-prompt is never used.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict
-from dataclasses import dataclass, field
 import hashlib
 import json
 import logging
 import os
-from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
+import tempfile
 import time
+from collections import defaultdict
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -30,13 +33,22 @@ from mcp_server.providers.base import AgentResult, DocGenContext, DocGenerationP
 logger = logging.getLogger(__name__)
 
 PHASES = ("gather", "analyze", "produce")
-_READ_ONLY_TOOL_PREFIXES = ("read", "get", "list", "search", "fetch", "query", "find")
 _SENSITIVE_EVENT_KEYS = frozenset(
     {
-        "prompt", "reasoning", "content", "payload", "config", "env",
-        "environment", "token", "api_key", "authorization", "secret",
+        "prompt",
+        "reasoning",
+        "content",
+        "payload",
+        "config",
+        "env",
+        "environment",
+        "token",
+        "api_key",
+        "authorization",
+        "secret",
     }
 )
+_LEGACY_MUTATING_TOOL_PREFIXES = ("write", "edit", "delete", "update", "create", "publish")
 
 
 class OpenCodeCompatibilityError(RuntimeError):
@@ -47,11 +59,81 @@ class OpenCodeAttemptError(RuntimeError):
     """Raised when Nexus tries to dispatch the same orchestration step twice."""
 
 
+# Diagnostics budget for a failed OpenCode step. The full raw error events land
+# in ``_audit/opencode_errors.json``; only a short reason reaches the run log and
+# the exception, because a provider message can quote a fragment of the request.
+_MAX_LOG_REASON_CHARS = 300
+_MAX_PERSISTED_ERROR_EVENTS = 20
+_MAX_PERSISTED_STDERR_CHARS = 8000
+# Keys an OpenCode/ai-sdk error event puts its human-readable text under.
+_ERROR_TEXT_KEYS = ("message", "error", "name", "detail", "reason")
+_ESTIMATED_BYTES_PER_TOKEN = 4
+_GATHER_EXHAUSTED_GAP_REASON = "OpenCode scope ended before this unit was evidenced"
+
+
+def _error_reason(event: Any, *, limit: int = _MAX_LOG_REASON_CHARS) -> str:
+    """Return a compact one-line reason from an OpenCode error event.
+
+    The event shape is provider-dependent (``error.error``, ``error.data.message``,
+    a bare string, ...), so this walks the structure for the known text keys and
+    takes the longest hit — in practice the actual provider message rather than an
+    exception class name.
+    """
+
+    found: list[str] = []
+
+    def walk(node: Any, depth: int) -> None:
+        if depth > 6 or len(found) >= 8:
+            return
+        if isinstance(node, str):
+            if node.strip():
+                found.append(node.strip())
+            return
+        if isinstance(node, dict):
+            for key in _ERROR_TEXT_KEYS:
+                value = node.get(key)
+                if isinstance(value, str) and value.strip():
+                    found.append(value.strip())
+            for key, value in node.items():
+                if key in _ERROR_TEXT_KEYS and isinstance(value, str):
+                    continue
+                if isinstance(value, (dict, list)):
+                    walk(value, depth + 1)
+            return
+        if isinstance(node, list):
+            for item in node[:8]:
+                walk(item, depth + 1)
+
+    walk(event, 0)
+    if not found:
+        return ""
+    reason = " ".join(max(found, key=len).split())
+    return reason[:limit]
+
+
+@dataclass(frozen=True)
+class OpenCodePhaseConfig:
+    """An isolated, per-invocation OpenCode config kept outside staging."""
+
+    path: Path
+    environment: dict[str, str]
+
+    def cleanup(self) -> None:
+        shutil.rmtree(self.path.parent, ignore_errors=True)
+
+
 @dataclass
 class OpenCodeAttemptLedger:
-    """Persist the Nexus-owned dispatch count for one generation run."""
+    """Persist Nexus-owned dispatch counts for one database generation run.
+
+    Staging survives a failed run so a later user-triggered run can resume its
+    accepted artifacts.  The attempt ceiling must therefore be scoped to
+    ``run_id``; otherwise the old run's dispatch permanently prevents the new
+    run from completing an interrupted step.
+    """
 
     staging_dir: Path
+    run_id: int | None = None
     attempts: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -60,10 +142,12 @@ class OpenCodeAttemptLedger:
             return
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
+            persisted_run_id = payload.get("run_id") if isinstance(payload, dict) else None
+            if self.run_id is not None and persisted_run_id != self.run_id:
+                return
             persisted = payload.get("attempts") if isinstance(payload, dict) else None
             if isinstance(persisted, dict) and all(
-                isinstance(key, str) and isinstance(value, int)
-                for key, value in persisted.items()
+                isinstance(key, str) and isinstance(value, int) for key, value in persisted.items()
             ):
                 self.attempts.update(persisted)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
@@ -77,7 +161,14 @@ class OpenCodeAttemptLedger:
         path = self.staging_dir / "_audit" / "opencode_attempt_ledger.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            json.dumps({"max_nexus_attempts": 1, "attempts": self.attempts}, indent=2),
+            json.dumps(
+                {
+                    "max_nexus_attempts": 1,
+                    "run_id": self.run_id,
+                    "attempts": self.attempts,
+                },
+                indent=2,
+            ),
             encoding="utf-8",
         )
 
@@ -88,7 +179,14 @@ class OpenCodeAttemptLedger:
             return
         path = self.staging_dir / "_audit" / "opencode_attempt_ledger.json"
         path.write_text(
-            json.dumps({"max_nexus_attempts": 1, "attempts": self.attempts}, indent=2),
+            json.dumps(
+                {
+                    "max_nexus_attempts": 1,
+                    "run_id": self.run_id,
+                    "attempts": self.attempts,
+                },
+                indent=2,
+            ),
             encoding="utf-8",
         )
 
@@ -134,6 +232,16 @@ class _PhaseExecution:
     latency_ms: int = 0
 
 
+@dataclass(frozen=True)
+class _ContractBatch:
+    """One adaptively sized, fresh OpenCode session invocation."""
+
+    index: int
+    contracts: tuple[OpenCodeTaskContract, ...]
+    estimated_input_tokens: int
+    over_target: bool = False
+
+
 def _prompt_hash(prompt: str | None) -> str | None:
     return hashlib.sha256(prompt.encode("utf-8")).hexdigest() if prompt is not None else None
 
@@ -143,7 +251,13 @@ def _safe_name(value: str) -> str:
 
 
 def parse_mcp_read_allowlist(raw: str) -> dict[str, tuple[str, ...]]:
-    """Parse the operator's bounded read-tool policy."""
+    """Parse an optional operator ceiling; it is never an authorization grant.
+
+    Read-only and Gather eligibility are decided exclusively by trusted provider
+    catalogue metadata in the capability broker.  The legacy field is rejected
+    when it visibly contains a mutation name so an old operator setting cannot
+    accidentally re-enable general MCP; that input hygiene is not authorization.
+    """
 
     try:
         decoded = json.loads(raw or "{}")
@@ -153,26 +267,52 @@ def parse_mcp_read_allowlist(raw: str) -> dict[str, tuple[str, ...]]:
         raise OpenCodeCompatibilityError("OpenCode MCP allowlist must be an object")
     allowlist: dict[str, tuple[str, ...]] = {}
     for server, tools in decoded.items():
-        if not isinstance(server, str) or not isinstance(tools, list) or not all(
-            isinstance(tool, str) for tool in tools
+        if (
+            not isinstance(server, str)
+            or not isinstance(tools, list)
+            or not all(isinstance(tool, str) for tool in tools)
         ):
             raise OpenCodeCompatibilityError(
                 "OpenCode MCP allowlist entries must be string tool lists"
             )
-        rejected = [
-            tool for tool in tools
-            if not tool.lower().startswith(_READ_ONLY_TOOL_PREFIXES)
-        ]
-        if rejected:
-            raise OpenCodeCompatibilityError(
-                f"OpenCode MCP tools must be read-only; rejected {server}: {', '.join(rejected)}"
-            )
+        if any(tool.lower().startswith(_LEGACY_MUTATING_TOOL_PREFIXES) for tool in tools):
+            raise OpenCodeCompatibilityError("OpenCode MCP operator ceiling must be read-only")
         allowlist[server] = tuple(tools)
     return allowlist
 
 
+# Model routes whose provider credential reaches OpenCode as a plain environment
+# variable (the built-in provider reads the first name; the remaining names are
+# accepted aliases, e.g. the MCP_-prefixed settings form). Routes needing a
+# credential FILE (opencode-go) or inline provider config (ollama) are handled
+# separately below.
+_ROUTE_ENV_CREDENTIALS: dict[str, tuple[str, ...]] = {
+    "openrouter/": ("OPENROUTER_API_KEY", "MCP_DOC_GENERATION_OPENROUTER_API_KEY"),
+}
+
+
+def _route_credential(model_route: str) -> tuple[str, str] | None:
+    """Return ``(env_var, value)`` for an env-credentialed route, else ``None``.
+
+    Raises when the route needs a credential that is not configured, so the run
+    fails at setup instead of inside the OpenCode session.
+    """
+
+    for prefix, names in _ROUTE_ENV_CREDENTIALS.items():
+        if not model_route.startswith(prefix):
+            continue
+        for name in names:
+            value = (os.environ.get(name) or "").strip()
+            if value:
+                return names[0], value
+        raise OpenCodeCompatibilityError(
+            f"OpenCode route {model_route!r} requires {' or '.join(names)}"
+        )
+    return None
+
+
 class OpenCodeCliProvider(DocGenerationProvider):
-    """Run modern legacy prompts through one continued OpenCode session."""
+    """Run modern legacy prompts through adaptive OpenCode phase sessions."""
 
     def __init__(
         self,
@@ -218,10 +358,37 @@ class OpenCodeCliProvider(DocGenerationProvider):
         env["PYTHONUTF8"] = "1"
         return env
 
-    def _execution_env(self) -> dict[str, str]:
+    def _execution_env(self, phase_config: OpenCodePhaseConfig | None = None) -> dict[str, str]:
         """Add model connector configuration needed by the selected route."""
 
         env = self._runtime_env()
+        if phase_config is not None:
+            env["OPENCODE_CONFIG"] = str(phase_config.path)
+            env.update(phase_config.environment)
+            # Go authentication is exposed only through the temporary 0600
+            # auth file prepared for this phase, not duplicated in child env.
+            env.pop("MCP_OPENCODE_GO_API_KEY", None)
+        elif config.opencode_config_path:
+            # This is retained for the connector-free path. Connector-enabled
+            # invocations always receive a generated deny-by-default config.
+            env["OPENCODE_CONFIG"] = config.opencode_config_path
+        if phase_config is not None and env.get("OPENCODE_CONFIG_CONTENT"):
+            try:
+                inherited_inline = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+            except json.JSONDecodeError as exc:
+                raise OpenCodeCompatibilityError(
+                    "OPENCODE_CONFIG_CONTENT must be valid JSON"
+                ) from exc
+            if not isinstance(inherited_inline, dict):
+                raise OpenCodeCompatibilityError(
+                    "OPENCODE_CONFIG_CONTENT must contain a JSON object"
+                )
+            # This path also covers non-Ollama models: OpenCode can merge inline
+            # config independently of the selected provider route.
+            inherited_inline.pop("mcp", None)
+            inherited_inline.pop("permission", None)
+            inherited_inline.pop("agent", None)
+            env["OPENCODE_CONFIG_CONTENT"] = json.dumps(inherited_inline, separators=(",", ":"))
         if not self.model_route.startswith("ollama/"):
             return env
 
@@ -229,13 +396,17 @@ class OpenCodeCliProvider(DocGenerationProvider):
         try:
             inline_config = json.loads(env.get("OPENCODE_CONFIG_CONTENT") or "{}")
         except json.JSONDecodeError as exc:
-            raise OpenCodeCompatibilityError(
-                "OPENCODE_CONFIG_CONTENT must be valid JSON"
-            ) from exc
+            raise OpenCodeCompatibilityError("OPENCODE_CONFIG_CONTENT must be valid JSON") from exc
         if not isinstance(inline_config, dict):
-            raise OpenCodeCompatibilityError(
-                "OPENCODE_CONFIG_CONTENT must contain a JSON object"
-            )
+            raise OpenCodeCompatibilityError("OPENCODE_CONFIG_CONTENT must contain a JSON object")
+        if phase_config is not None:
+            # A generated phase config is the complete permission/MCP boundary.
+            # Preserve only provider construction data from a legacy inline
+            # config; an inherited MCP or permission block must not reintroduce
+            # tools that this invocation explicitly denied.
+            inline_config.pop("mcp", None)
+            inline_config.pop("permission", None)
+            inline_config.pop("agent", None)
 
         providers = inline_config.setdefault("provider", {})
         if not isinstance(providers, dict):
@@ -251,22 +422,263 @@ class OpenCodeCliProvider(DocGenerationProvider):
         ollama.setdefault("name", "Ollama (local)")
         options = ollama.setdefault("options", {})
         if not isinstance(options, dict):
-            raise OpenCodeCompatibilityError(
-                "OpenCode Ollama provider options must be an object"
-            )
+            raise OpenCodeCompatibilityError("OpenCode Ollama provider options must be an object")
         options.setdefault("baseURL", config.opencode_ollama_base_url)
         models = ollama.setdefault("models", {})
         if not isinstance(models, dict):
-            raise OpenCodeCompatibilityError(
-                "OpenCode Ollama provider models must be an object"
-            )
+            raise OpenCodeCompatibilityError("OpenCode Ollama provider models must be an object")
         models.setdefault(model_id, {"name": model_id})
         env["OPENCODE_CONFIG_CONTENT"] = json.dumps(inline_config, separators=(",", ":"))
         return env
 
+    @staticmethod
+    def _connector_runtime(ctx: DocGenContext) -> Any | None:
+        """Return injected run authority only when the feature flag is on.
+
+        The generation service owns binding snapshots.  This provider does not
+        query connector tables itself, which keeps legacy runs fully isolated.
+        """
+
+        if not getattr(config, "opencode_connectors_enabled", False):
+            return None
+        runtime = getattr(ctx, "connector_runtime", None)
+        try:
+            enabled = runtime is not None and bool(getattr(runtime, "enabled", False))
+        except Exception:  # noqa: BLE001 - connector implementations are third-party adapters
+            # An expired/revoked persisted snapshot is connector degradation,
+            # not a reason to fail the source-backed documentation run.
+            return None
+        if not enabled:
+            return None
+        if (
+            getattr(runtime, "run_id", None) != ctx.run_id
+            or getattr(runtime, "project_id", None) != ctx.project_id
+        ):
+            return None
+        return runtime
+
+    @staticmethod
+    def _connector_tools(runtime: Any, allowlist: dict[str, tuple[str, ...]]) -> tuple[str, ...]:
+        """Present only tools derived from the broker's trusted catalogue.
+
+        The legacy environment allowlist can only reduce this catalogue when it
+        is non-empty; it cannot create a capability or mark one read-only.
+        """
+
+        from mcp_server.connectors.mcp_facade import _CAPABILITY_TO_TOOL
+
+        capabilities = tuple(runtime.broker.tool_catalogue(runtime.token))
+        ceiling = {tool for tools in allowlist.values() for tool in tools}
+        names = []
+        for capability in capabilities:
+            tool = _CAPABILITY_TO_TOOL.get(capability)
+            if tool is None:
+                continue
+            identifier = f"nexus_run_evidence:{tool}"
+            if (
+                ceiling
+                and capability not in ceiling
+                and tool not in ceiling
+                and identifier not in ceiling
+            ):
+                continue
+            names.append(identifier)
+        return tuple(names)
+
+    def _phase_config(
+        self,
+        *,
+        ctx: DocGenContext,
+        phase: str,
+        contracts: list[OpenCodeTaskContract],
+        runtime: Any | None,
+        investigation_facade: Any | None = None,
+        artifact_facade: Any | None = None,
+    ) -> OpenCodePhaseConfig:
+        """Generate an isolated deny-by-default config outside model staging."""
+
+        root = Path(tempfile.mkdtemp(prefix="nexus-opencode-"))
+        root.chmod(0o700)
+        validation_commands = [
+            str(contract.metadata["validation_command"])
+            for contract in contracts
+            if contract.metadata.get("validation_command")
+        ]
+        bash_policy: dict[str, str] = {"*": "deny"}
+        for command in validation_commands:
+            bash_policy[command] = "allow"
+        workspace_glob = str((ctx.staging_dir / "**").resolve())
+        # OpenCode passes paths to its tools relative to the active workspace
+        # (for example ``_transient/opencode/gather_contracts.json``), while
+        # the coordinator also needs to support absolute paths in tool calls.
+        # Keep both forms explicitly allow-listed.  Without the relative
+        # pattern the generated files exist on disk, but OpenCode cannot read
+        # the contract or write its investigation receipts.
+        workspace_patterns = {"*": "deny", "**": "allow", workspace_glob: "allow"}
+        output_patterns: dict[str, str] = {"*": "deny"}
+        for contract in contracts:
+            output = ctx.staging_dir / contract.output_artifact
+            output_patterns[contract.output_artifact] = "allow"
+            output_patterns[str(output.resolve())] = "allow"
+        permissions: dict[str, Any] = {
+            "*": "deny",
+            "read": workspace_patterns,
+            # Analyze and Produce can write only their declared deliverables.
+            # This prevents concurrent sessions from mutating a sibling's
+            # checkpoint while keeping the workspace fully readable.
+            "edit": output_patterns,
+            "glob": {"*": "deny", "**": "allow"},
+            "grep": {"*": "deny", "**": "allow"},
+            "list": {"*": "deny", "**": "allow"},
+            "bash": bash_policy,
+            "webfetch": "deny",
+            "websearch": "deny",
+            "external_directory": "deny",
+        }
+        if investigation_facade is not None or artifact_facade is not None:
+            # Gather v2 is read/search native and write-through-tools only.  The
+            # Analyze/Produce use the same boundary for their declared output
+            # artifacts. Agents may explore freely inside sanitized staging,
+            # but cannot bypass coordinator validation by editing files.
+            permissions["edit"] = {"*": "deny"}
+            permissions["bash"] = {"*": "deny"}
+        payload: dict[str, Any] = {
+            "$schema": "https://opencode.ai/config.json",
+            "permission": permissions,
+        }
+        environment: dict[str, str] = {}
+        # Every invocation gets its own writable data/state home, not just the
+        # Go route that needs one for its auth file. Sharing the service
+        # account's ambient home makes a run depend on whatever uid last wrote
+        # there -- one `docker compose exec` as root leaves root-owned
+        # `opencode/log` and `opencode/locks` behind and every later run dies
+        # with `PermissionDenied: FileSystem.open (.../opencode.log)` before it
+        # reaches the model. Both directories are per-phase scratch (log/,
+        # repos/, locks/) with nothing worth carrying between phases, and they
+        # are removed with the config root by `OpenCodePhaseConfig.cleanup`.
+        data_home = root / "data"
+        (data_home / "opencode").mkdir(parents=True, mode=0o700)
+        environment["XDG_DATA_HOME"] = str(data_home)
+        state_home = root / "state"
+        state_home.mkdir(mode=0o700)
+        environment["XDG_STATE_HOME"] = str(state_home)
+        # The cache holds the models.json download and the runtime binary, so it
+        # is worth keeping between runs. It is owned by whichever account the
+        # service runs as because the service process is what creates it.
+        try:
+            cache_home = self._shared_cache_home()
+        except OSError as exc:
+            shutil.rmtree(root, ignore_errors=True)
+            raise OpenCodeCompatibilityError(
+                f"OpenCode cache directory is not usable: {exc}"
+            ) from exc
+        environment["XDG_CACHE_HOME"] = str(cache_home)
+
+        if self.model_route.startswith("opencode-go/"):
+            key = config.opencode_go_api_key.strip()
+            if not key:
+                shutil.rmtree(root, ignore_errors=True)
+                raise OpenCodeCompatibilityError("OpenCode Go requires MCP_OPENCODE_GO_API_KEY")
+            auth_path = data_home / "opencode" / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {"opencode-go": {"type": "api", "key": key}},
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
+            auth_path.chmod(0o600)
+        else:
+            try:
+                credential = _route_credential(self.model_route)
+            except OpenCodeCompatibilityError:
+                shutil.rmtree(root, ignore_errors=True)
+                raise
+            if credential is not None:
+                environment[credential[0]] = credential[1]
+        if investigation_facade is not None:
+            payload["mcp"] = {
+                "nexus_investigation": {
+                    "type": "local",
+                    "command": [
+                        sys.executable,
+                        "-m",
+                        "mcp_server.providers.opencode_investigation_mcp",
+                    ],
+                    "environment": {
+                        "NEXUS_INVESTIGATION_GRANT": str(investigation_facade.token),
+                    },
+                }
+            }
+            # OpenCode permission keys are matched directly against normalized
+            # tool names. MCP tools are `<server>_<tool>`; there is no nested
+            # `mcp` permission namespace. With the global `* = deny`, nesting
+            # this wildcard under `mcp` silently connected the server while
+            # hiding every tool from the model.
+            permissions["nexus_investigation_*"] = "allow"
+        elif artifact_facade is not None:
+            payload["mcp"] = {
+                "nexus_artifacts": {
+                    "type": "local",
+                    "command": [
+                        sys.executable,
+                        "-m",
+                        "mcp_server.providers.opencode_artifact_mcp",
+                    ],
+                    "environment": {
+                        "NEXUS_ARTIFACT_GRANT": str(artifact_facade.token),
+                    },
+                }
+            }
+            permissions["nexus_artifacts_*"] = "allow"
+        elif phase == "gather" and runtime is not None:
+            # The opaque grant is deliberately in a 0700 config outside the
+            # workspace. It is neither a provider credential nor prompt content.
+            payload["mcp"] = {
+                "nexus_run_evidence": {
+                    "type": "local",
+                    "command": [sys.executable, "-m", "mcp_server.connectors.mcp_facade"],
+                    "environment": {
+                        "NEXUS_CONNECTOR_GRANT": str(runtime.token),
+                        "NEXUS_CONNECTOR_RUN_ID": str(runtime.run_id),
+                        "NEXUS_CONNECTOR_PROJECT_ID": str(runtime.project_id),
+                    },
+                }
+            }
+            permissions["nexus_run_evidence_*"] = "allow"
+        path = root / "opencode.json"
+        path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+        path.chmod(0o600)
+        return OpenCodePhaseConfig(path=path, environment=environment)
+
+    @staticmethod
+    def _shared_cache_home() -> Path:
+        """Return the service-owned OpenCode cache directory, creating it.
+
+        Created by the service process, so it is owned by whichever account runs
+        the service. Raises ``OSError`` when it exists but cannot be written --
+        the caller turns that into a setup-time failure rather than letting
+        OpenCode die mid-run.
+        """
+
+        cache_home = Path(config.data_dir) / "opencode_cache"
+        cache_home.mkdir(parents=True, exist_ok=True)
+        probe = cache_home / ".nexus_write_probe"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+        return cache_home
+
     def _preflight(self) -> tuple[str, dict[str, tuple[str, ...]]]:
         if not config.opencode_version:
             raise OpenCodeCompatibilityError("MCP_OPENCODE_VERSION must pin the OpenCode runtime")
+        try:
+            self._shared_cache_home()
+        except OSError as exc:
+            # A non-writable cache surfaces as an opaque runtime PermissionDenied
+            # once OpenCode is already streaming; name the path and owner here.
+            raise OpenCodeCompatibilityError(
+                f"OpenCode cache directory is not writable by the service account: {exc}"
+            ) from exc
         resolved = shutil.which(self.command)
         if not resolved:
             raise OpenCodeCompatibilityError(f"OpenCode CLI not found: {self.command}")
@@ -342,7 +754,6 @@ class OpenCodeCliProvider(DocGenerationProvider):
         )
         materialize_prompt_packs(ctx.staging_dir, ctx.analysis_guide_file)
         harness = self._legacy_harness(facts)
-        harness._apply_private_analysis_packs(ctx)
         state = HarnessRunState(project_id=ctx.project_id, facts_manifest=facts)
         harness._write_cross_cutting_facts(ctx, state)
         return facts, harness, state
@@ -355,9 +766,11 @@ class OpenCodeCliProvider(DocGenerationProvider):
         allowlist: dict[str, tuple[str, ...]],
     ) -> list[OpenCodeTaskContract]:
         from mcp_server.providers.custom.evidence_tasks import plan_evidence_tasks
-        from mcp_server.providers.custom.investigator import SingleShotInvestigator
+        from mcp_server.providers.custom.investigator import (
+            SingleShotInvestigator,
+            write_investigation_artifacts,
+        )
         from mcp_server.providers.custom.models import InvestigationReport
-        from mcp_server.providers.custom.investigator import write_investigation_artifacts
 
         if harness._phase_policy("investigation") == "skip" or (
             facts.unit_count <= config.small_project_threshold and self.plugin_pack_dir is None
@@ -369,14 +782,17 @@ class OpenCodeCliProvider(DocGenerationProvider):
             preamble_path = self.plugin_pack_dir / "prompts" / "investigation.md"
             if preamble_path.exists():
                 preamble = preamble_path.read_text(encoding="utf-8").rstrip()
-        prompt_builder = SimpleNamespace(_preamble=preamble)
+        # Duck-typed stand-in for the investigator: this provider borrows the
+        # unbound `_build_prompt` so its Phase 1 contract cannot drift from the
+        # custom harness's. It must therefore carry every attribute that method
+        # reads -- `_pack_dir` included, so a pack's
+        # prompts/templates/phase1_extraction.md override applies here too.
+        prompt_builder = SimpleNamespace(
+            _preamble=preamble, _pack_dir=self.plugin_pack_dir
+        )
         raw_dir = ctx.staging_dir / "_transient" / "opencode" / "investigation_raw"
         task_dir = ctx.staging_dir / "_transient" / "opencode" / "evidence_tasks"
         contracts: list[OpenCodeTaskContract] = []
-        connector_tools = tuple(
-            f"{server}:{tool}" for server, tools in allowlist.items() for tool in tools
-        )
-
         for group in ctx.preprocess_groups:
             group_file = ctx.staging_dir / "_preprocess" / f"{group}.md"
             group_units = [unit.name for unit in facts.units if unit.group == group]
@@ -404,12 +820,14 @@ class OpenCodeCliProvider(DocGenerationProvider):
                 source_ref = task.path.relative_to(ctx.staging_dir).as_posix()
                 output = raw_dir / f"{_safe_name(task.task_id)}.json"
                 output_artifact = output.relative_to(ctx.staging_dir).as_posix()
-                template_artifact, validation_spec, validation_receipt, validation_command = self._write_gather_guard(
-                    ctx,
-                    task_id=task.task_id,
-                    output_artifact=output_artifact,
-                    allowed_units=task.all_units,
-                    source_ref=source_ref,
+                template_artifact, validation_spec, validation_receipt, validation_command = (
+                    self._write_gather_guard(
+                        ctx,
+                        task_id=task.task_id,
+                        output_artifact=output_artifact,
+                        allowed_units=task.all_units,
+                        source_ref=source_ref,
+                    )
                 )
                 contracts.append(
                     OpenCodeTaskContract(
@@ -430,7 +848,10 @@ class OpenCodeCliProvider(DocGenerationProvider):
                             validation_spec,
                         ),
                         output_artifact=output_artifact,
-                        allowed_tools=connector_tools,
+                        # Static investigation is intentionally connector-free.
+                        # Runtime evidence gets a separate Gather sub-step after
+                        # deterministic static finalization.
+                        allowed_tools=(),
                         metadata={
                             "group": group,
                             "task_id": task.task_id,
@@ -444,6 +865,127 @@ class OpenCodeCliProvider(DocGenerationProvider):
                     )
                 )
         return contracts
+
+    def _external_evidence_contracts(
+        self,
+        ctx: DocGenContext,
+        facts: Any,
+        runtime: Any,
+        allowlist: dict[str, tuple[str, ...]],
+    ) -> list[OpenCodeTaskContract]:
+        """Plan the dedicated live-evidence Gather sub-step after static Gather."""
+
+        from mcp_server.connectors.planner import plan_external_evidence_tasks
+
+        trusted_capabilities = tuple(runtime.broker.tool_catalogue(runtime.token))
+        allowed_tools = self._connector_tools(runtime, allowlist)
+        if not trusted_capabilities or not allowed_tools:
+            return []
+        tasks = plan_external_evidence_tasks(
+            staging_dir=ctx.staging_dir,
+            facts=facts,
+            preprocess_groups=ctx.preprocess_groups,
+            capabilities=trusted_capabilities,
+            max_tasks=min(4, max(1, len(ctx.preprocess_groups))),
+        )
+        return [
+            OpenCodeTaskContract(
+                phase="gather",
+                target=f"connector:{task.task_id}",
+                prompt_artifact="authoritative:connector_external_evidence_task",
+                prompt=task.prompt(),
+                evidence_artifacts=task.evidence_artifacts,
+                output_artifact=task.output_artifact,
+                allowed_tools=allowed_tools,
+                metadata={
+                    "connector_external_evidence": True,
+                    "group": task.group,
+                    "entity_refs": list(task.entity_refs),
+                    "question": task.question,
+                },
+            )
+            for task in tasks
+        ]
+
+    def _finalize_external_evidence(
+        self,
+        ctx: DocGenContext,
+        facts: Any,
+        runtime: Any,
+        contracts: list[OpenCodeTaskContract],
+        *,
+        limitation: str | None = None,
+    ) -> Path:
+        """Accept only reconciled claim links and hand them to Analyze as artifacts."""
+
+        from mcp_server.connectors.reconciliation import (
+            ReconciliationError,
+            issued_evidence_index,
+            materialize_reconciled_evidence,
+            reconcile_findings,
+            write_claim_linkage_report,
+        )
+
+        run_id = ctx.run_id
+        if run_id is None:
+            raise OpenCodeCompatibilityError("connector evidence requires a generation run ID")
+        envelopes = list(getattr(runtime.broker, "evidence_by_id", {}).values())
+        issued = issued_evidence_index(envelopes, run_id=run_id, project_id=ctx.project_id)
+        canonical_refs = {f"unit:{unit.name}" for unit in facts.units}
+        accepted = []
+        limitations: list[str] = [limitation] if limitation else []
+        for contract in contracts:
+            output = ctx.staging_dir / contract.output_artifact
+            if not output.exists():
+                if limitation is None:
+                    raise OpenCodeCompatibilityError(
+                        f"OpenCode external evidence output is missing for {contract.target}"
+                    )
+                continue
+            try:
+                payload = json.loads(output.read_text(encoding="utf-8", errors="replace"))
+                findings, task_limitations = reconcile_findings(
+                    payload, issued=issued, canonical_entity_refs=canonical_refs
+                )
+            except (OSError, json.JSONDecodeError, ReconciliationError) as exc:
+                if limitation is not None:
+                    limitations.append(limitation)
+                    continue
+                raise OpenCodeCompatibilityError(
+                    f"OpenCode external evidence output is invalid for {contract.target}: {exc}"
+                ) from exc
+            accepted.extend(findings)
+            limitations.extend(task_limitations)
+        path = materialize_reconciled_evidence(
+            ctx.staging_dir,
+            findings=accepted,
+            limitations=limitations,
+            run_id=run_id,
+            project_id=ctx.project_id,
+        )
+        # Add group-scoped artifacts so Analyze receives only relevant accepted
+        # evidence, never the whole runtime envelope catalogue.
+        group_by_entity = {f"unit:{unit.name}": unit.group for unit in facts.units}
+        for group in ctx.preprocess_groups:
+            group_findings = [
+                finding
+                for finding in accepted
+                if any(group_by_entity.get(ref) == group for ref in finding.entity_refs)
+            ]
+            materialize_reconciled_evidence(
+                ctx.staging_dir,
+                findings=group_findings,
+                limitations=limitations,
+                run_id=run_id,
+                project_id=ctx.project_id,
+                artifact_dir=ctx.staging_dir / "_connector_evidence" / _safe_name(group),
+            )
+        write_claim_linkage_report(
+            ctx.staging_dir,
+            findings=accepted,
+            receipts=[item.to_safe_dict() for item in runtime.broker.receipts],
+        )
+        return path
 
     @staticmethod
     def _write_gather_validator(ctx: DocGenContext) -> str:
@@ -526,7 +1068,8 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
                     "validation_receipt": receipt.relative_to(ctx.staging_dir).as_posix(),
                 },
                 indent=2,
-            ) + "\n",
+            )
+            + "\n",
             encoding="utf-8",
         )
         validator = self._write_gather_validator(ctx)
@@ -536,7 +1079,9 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
         receipt_ref = receipt.relative_to(ctx.staging_dir).as_posix()
         return template_ref, spec_ref, receipt_ref, command
 
-    def _analyze_contracts(self, ctx: DocGenContext, facts: Any, harness: Any) -> list[OpenCodeTaskContract]:
+    def _analyze_contracts(
+        self, ctx: DocGenContext, facts: Any, harness: Any
+    ) -> list[OpenCodeTaskContract]:
         from mcp_server.providers.custom.prompts import group_analysis_prompt, scorecard_prompt
 
         required_docs = list(harness._required_docs)
@@ -548,6 +1093,11 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
                     f"_preprocess/{group}.md",
                     f"_investigation/{_safe_name(group)}.md",
                 ]
+                connector_artifact = (
+                    f"_connector_evidence/{_safe_name(group)}/accepted_findings.json"
+                )
+                if (ctx.staging_dir / connector_artifact).exists():
+                    context.append(connector_artifact)
                 contracts.append(
                     OpenCodeTaskContract(
                         phase="analyze",
@@ -573,7 +1123,9 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
                     prompt_artifact="authoritative:scorecard_prompt",
                     prompt=scorecard_prompt(facts, plugin_pack_dir=self.plugin_pack_dir),
                     evidence_artifacts=(
-                        "facts_manifest.json", "_analysis", "_investigation",
+                        "facts_manifest.json",
+                        "_analysis",
+                        "_investigation",
                         "_assessment/prompt_packs/_scorecard_prompt_pack.md",
                     ),
                     output_artifact="_transient/opencode/scorecard_raw.md",
@@ -581,7 +1133,9 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
             )
         return contracts
 
-    def _doc_contract(self, ctx: DocGenContext, facts: Any, harness: Any, doc_name: str) -> OpenCodeTaskContract:
+    def _doc_contract(
+        self, ctx: DocGenContext, facts: Any, harness: Any, doc_name: str
+    ) -> OpenCodeTaskContract:
         from mcp_server.providers.custom.prompts import doc_prompt
 
         context_files = harness._phase3_context_files(ctx, doc_name)
@@ -599,10 +1153,13 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
                 extra_section_requirements=harness._doc_section_requirements_extra,
                 scoped_unit=harness._per_job_doc_units.get(doc_name),
                 nexus_presentation=ctx.nexus_presentation,
-                private_analysis_instructions=harness._private_analysis_instructions.get(doc_name, ""),
                 unit_reference=(
                     doc_name in harness._per_job_doc_units and harness._plugin_manifest is None
                 ),
+                # Mirror of the custom harness contract (One Pack item 8): the
+                # pack's ``audience:`` block must reach this legacy provider's
+                # Phase 3 prompt too, or the two paths diverge silently.
+                contract=harness.pack_contract,
             ),
             evidence_artifacts=tuple(
                 path.relative_to(ctx.staging_dir).as_posix()
@@ -651,12 +1208,8 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
         contract_dir.mkdir(parents=True, exist_ok=True)
         index: list[dict[str, Any]] = []
         for position, contract in enumerate(contracts, start=1):
-            contract_file = contract_dir / (
-                f"{position:03d}__{_safe_name(contract.target)}.json"
-            )
-            contract_file.write_text(
-                json.dumps(contract.to_wire(), indent=2), encoding="utf-8"
-            )
+            contract_file = contract_dir / (f"{position:03d}__{_safe_name(contract.target)}.json")
+            contract_file.write_text(json.dumps(contract.to_wire(), indent=2), encoding="utf-8")
             evidence_sizes = []
             for artifact in contract.evidence_artifacts:
                 artifact_path = ctx.staging_dir / artifact
@@ -667,9 +1220,7 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
             index.append(
                 {
                     "target": contract.target,
-                    "contract_artifact": contract_file.relative_to(
-                        ctx.staging_dir
-                    ).as_posix(),
+                    "contract_artifact": contract_file.relative_to(ctx.staging_dir).as_posix(),
                     "output_artifact": contract.output_artifact,
                     # Workload hints let OpenCode choose an appropriate execution
                     # topology without loading every prompt/evidence file into the
@@ -686,6 +1237,112 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
         )
         return path.relative_to(ctx.staging_dir).as_posix()
 
+    @staticmethod
+    def _artifact_size_bytes(path: Path) -> int:
+        """Return the deterministic byte size of one declared evidence path."""
+
+        try:
+            if path.is_file():
+                return path.stat().st_size
+            if path.is_dir():
+                total = 0
+                for child in sorted(path.rglob("*"), key=lambda item: item.as_posix()):
+                    try:
+                        if child.is_file():
+                            total += child.stat().st_size
+                    except OSError:
+                        continue
+                return total
+        except OSError:
+            pass
+        return 0
+
+    def _estimate_contract_input_tokens(
+        self,
+        ctx: DocGenContext,
+        contract: OpenCodeTaskContract,
+    ) -> int:
+        """Estimate prompt, contract-envelope, and declared-evidence input cost."""
+
+        wire = contract.to_wire()
+        # Prompt bytes are counted explicitly. Keep only their digest in the
+        # envelope estimate so the serialized contract is not double-counted.
+        wire.pop("prompt", None)
+        contract_bytes = len(
+            json.dumps(wire, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+        prompt_bytes = len((contract.prompt or "").encode("utf-8"))
+        evidence_bytes = sum(
+            self._artifact_size_bytes(ctx.staging_dir / artifact)
+            for artifact in contract.evidence_artifacts
+        )
+        total_bytes = contract_bytes + prompt_bytes + evidence_bytes
+        return max(1, (total_bytes + _ESTIMATED_BYTES_PER_TOKEN - 1) // _ESTIMATED_BYTES_PER_TOKEN)
+
+    def _plan_contract_batches(
+        self,
+        ctx: DocGenContext,
+        contracts: list[OpenCodeTaskContract],
+        target_tokens: int | None = None,
+    ) -> list[_ContractBatch]:
+        """Pack contracts in stable order under the configured input target.
+
+        Contract artifacts remain the validation and resume boundary. Batches
+        only decide which ordered contracts share one fresh OpenCode session.
+        An over-target contract is retained as a visible one-contract batch.
+        """
+
+        target = max(
+            1,
+            int(
+                getattr(config, "opencode_batch_target_input_tokens", 80_000)
+                if target_tokens is None
+                else target_tokens
+            ),
+        )
+        planned: list[tuple[list[OpenCodeTaskContract], int, bool]] = []
+        current: list[OpenCodeTaskContract] = []
+        current_tokens = 0
+
+        def flush() -> None:
+            nonlocal current, current_tokens
+            if current:
+                planned.append((current, current_tokens, current_tokens > target))
+                current = []
+                current_tokens = 0
+
+        for contract in contracts:
+            estimated = self._estimate_contract_input_tokens(ctx, contract)
+            if estimated > target:
+                flush()
+                planned.append(([contract], estimated, True))
+                continue
+            if current and current_tokens + estimated > target:
+                flush()
+            current.append(contract)
+            current_tokens += estimated
+        flush()
+
+        return [
+            _ContractBatch(
+                index=index,
+                contracts=tuple(batch_contracts),
+                estimated_input_tokens=estimated,
+                over_target=over_target,
+            )
+            for index, (batch_contracts, estimated, over_target) in enumerate(
+                planned, start=1
+            )
+        ]
+
+    @staticmethod
+    def _batch_plan_summary(batches: list[_ContractBatch]) -> str:
+        return ",".join(
+            f"{batch.index}:{batch.estimated_input_tokens}"
+            f"{'!' if batch.over_target else ''}"
+            for batch in batches
+        )
+
     def _phase_prompt(
         self,
         phase: str,
@@ -693,37 +1350,54 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
         contract_path: str,
         contract_count: int,
         allowlist: dict[str, tuple[str, ...]],
+        connector_tools: tuple[str, ...] = (),
     ) -> str:
         connector_policy = ""
-        if phase == "gather":
+        if phase == "gather" and (connector_tools or allowlist):
             connector_policy = (
-                "Configured MCP tools may be used only when their server:tool identifier is listed "
+                "Run-scoped Nexus MCP tools may be used only when their server:tool identifier is listed "
                 "in a task's allowed_tools. Treat connector results as supplementary evidence and "
-                "never override scanner facts. For each Gather contract, read template_artifact and "
-                "write output_artifact as that exact JSON object shape (with evidence and skipped_units), "
-                "never as a generic job summary. After writing it, run validation_command from the "
-                "contract. A Gather task is incomplete until that command exits successfully. "
+                "never override scanner facts. Follow each contract's exact output schema and any "
+                "validation command; static investigation contracts use template_artifact and "
+                "validation_command. Do not use a connector outside this sub-step. "
+            )
+        if phase in {"analyze", "produce"}:
+            execution_protocol = (
+                "For each contract, read the contract artifact and only its listed "
+                "evidence_artifacts. Create the complete deliverable in memory, then call "
+                "nexus_artifacts_submit_artifact with the contract's exact output_artifact "
+                "and the full content. That successful tool response is the durable commit. "
+                "Do not use write, edit, apply_patch, or shell redirection. If submission "
+                "returns ok=false, correct the reported validation problem and submit again "
+                "before moving to the next contract. "
+            )
+            exploration_policy = (
+                "Use native read, grep, glob, and list tools when useful to follow evidence "
+                "inside the sanitized workspace; choose what to inspect based on what you "
+                "discover. Do not use exploratory bash commands. "
+            )
+        else:
+            execution_protocol = (
+                "For each contract, read the contract artifact and only its listed "
+                "evidence_artifacts, then immediately use the write tool to create the exact "
+                "output_artifact path. The file is the deliverable: do not merely return JSON "
+                "in your response. After each output write, run that contract's exact "
+                "validation_command and confirm its validation receipt exists before moving "
+                "to the next contract. "
+            )
+            exploration_policy = (
+                "Do not use search, grep, glob, list, or exploratory bash commands. "
             )
         return (
             f"Continue the Nexus documentation run in user-visible phase {phase.upper()} "
             f"(step {step}). Work only in the current workspace. "
             f"Read {contract_path}; it is an ordered index of {contract_count} task contract(s). "
-            "Act as the OpenCode orchestration agent and choose the execution topology dynamically. "
-            "The index exposes contract_bytes, evidence_artifact_count, and evidence_bytes so you can "
-            "judge workload before opening task content. For a small workload that fits comfortably "
-            "in context, completing contracts directly is valid. When the workload is large, contains "
-            "many independent contracts, or would crowd the orchestrator context, use OpenCode's native "
-            "sub-agents to isolate work and fan out only as much as is useful. Do not use a fixed worker "
-            "count, and avoid needless delegation, redundant work, and unbounded nested fan-out. The "
-            "current step already separates cross-step dependencies; contracts in this index may be "
-            "completed independently unless a contract explicitly says otherwise. Keep orchestration "
-            "context efficient: when delegating, pass the contract_artifact path instead of copying its "
-            "prompt or evidence into the parent conversation. Whether handled directly or delegated, "
-            "complete every contract exactly once: read that contract, follow its exact prompt without "
-            "paraphrasing, use only its listed evidence_artifacts, do not search/grep/glob or explore "
-            "other workspace files, and write output_artifact. Confirm the required output exists and, "
-            "for Gather, its "
-            "validation_command succeeded and validation_receipt exists before continuing. "
+            "Process the contracts sequentially in this one session; do not launch sub-agents or "
+            "invent another execution topology. "
+            + execution_protocol
+            + exploration_policy
+            + "Complete every contract exactly once, using its exact prompt without "
+            "paraphrasing, and do not continue until all declared outputs are durably present. "
             "Do not put Markdown fences around JSON outputs. Do not publish, deploy, change "
             "credentials, or write outside the workspace. Do not repeat a task that Nexus has "
             "already listed once. If a required task cannot complete, stop and report failure. "
@@ -731,7 +1405,13 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
             + "When every listed output exists, briefly confirm completion and stop."
         )
 
-    def _command(self, resolved: str, ctx: DocGenContext, session_id: str | None = None) -> list[str]:
+    def _command(
+        self,
+        resolved: str,
+        ctx: DocGenContext,
+        session_id: str | None = None,
+        phase_config: OpenCodePhaseConfig | None = None,
+    ) -> list[str]:
         cmd = [resolved, "run", "--format", "json"]
         if self.model_route:
             cmd.extend(["--model", self.model_route])
@@ -792,16 +1472,26 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
             tokens = part.get("tokens") if isinstance(part.get("tokens"), dict) else {}
             cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
             return (
-                f"{prefix}: model turn complete "
-                f"(input={int(tokens.get('input') or 0)} "
-                f"output={int(tokens.get('output') or 0)} "
-                f"reasoning={int(tokens.get('reasoning') or 0)} "
-                f"cache_read={int(cache.get('read') or 0)} "
-                f"cache_write={int(cache.get('write') or 0)})",
+                (
+                    f"{prefix}: model turn complete "
+                    f"(input={int(tokens.get('input') or 0)} "
+                    f"output={int(tokens.get('output') or 0)} "
+                    f"reasoning={int(tokens.get('reasoning') or 0)} "
+                    f"cache_read={int(cache.get('read') or 0)} "
+                    f"cache_write={int(cache.get('write') or 0)})"
+                ),
                 "info",
             )
         if kind == "error":
-            return f"{prefix}: OpenCode emitted an error event (details redacted)", "error"
+            reason = _error_reason(event)
+            detail = f": {reason}" if reason else " (event carried no message)"
+            return (
+                (
+                    f"{prefix}: OpenCode error event{detail} "
+                    "[full event in _audit/opencode_errors.json]"
+                ),
+                "error",
+            )
         if kind == "text" or part_type == "text":
             return f"{prefix}: agent response received", "info"
 
@@ -817,11 +1507,72 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
             if isinstance(raw_path, str):
                 try:
                     resolved = Path(raw_path).resolve()
-                    if resolved == staging_dir.resolve() or staging_dir.resolve() in resolved.parents:
+                    if (
+                        resolved == staging_dir.resolve()
+                        or staging_dir.resolve() in resolved.parents
+                    ):
                         target = f" {resolved.relative_to(staging_dir.resolve()).as_posix()}"
                 except (OSError, ValueError):
                     target = ""
         return f"{prefix}: tool {tool} {status}{target}", "info"
+
+    @staticmethod
+    def _record_step_failure(
+        staging_dir: Path,
+        *,
+        phase: str,
+        step: str,
+        model_route: str,
+        returncode: int | None,
+        error_events: list[dict[str, Any]],
+        stderr_text: str,
+    ) -> str:
+        """Append the raw failure record to ``_audit/opencode_errors.json``.
+
+        A failed step used to leave nothing behind: the error event was reduced to
+        a bare type, stderr was counted and dropped, and ``opencode_events.json``
+        is only written on success. Returns the short reason for the exception
+        message. Diagnostics must never mask the failure they describe, so every
+        filesystem problem here is swallowed.
+        """
+
+        reason = ""
+        for event in error_events:
+            reason = _error_reason(event)
+            if reason:
+                break
+        if not reason and stderr_text.strip():
+            reason = " ".join(stderr_text.split())[:_MAX_LOG_REASON_CHARS]
+
+        record = {
+            "phase": phase,
+            "step": step,
+            "model_route": model_route,
+            "returncode": returncode,
+            "reason": reason,
+            "error_events": error_events[:_MAX_PERSISTED_ERROR_EVENTS],
+            "error_event_count": len(error_events),
+            "stderr": stderr_text[:_MAX_PERSISTED_STDERR_CHARS],
+            "stderr_truncated": len(stderr_text) > _MAX_PERSISTED_STDERR_CHARS,
+        }
+        path = staging_dir / "_audit" / "opencode_errors.json"
+        try:
+            existing: list[Any] = []
+            if path.is_file():
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, list):
+                    existing = loaded
+            existing.append(record)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+        return reason
+
+    @staticmethod
+    def _failure_message(base: str, reason: str) -> str:
+        suffix = f": {reason}" if reason else " (no error event or stderr captured)"
+        return f"{base}{suffix} [see _audit/opencode_errors.json]"
 
     async def _execute_step(
         self,
@@ -835,26 +1586,110 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
         session_id: str | None,
         ledger: OpenCodeAttemptLedger,
         log_cb: LogCallback,
+        runtime: Any | None = None,
+        investigation_facade: Any | None = None,
+        prompt_override: str | None = None,
+        require_outputs: bool = True,
     ) -> _PhaseExecution:
         step_started = time.monotonic()
         ledger_target = f"step:{step}"
         ledger.dispatch(ledger_target)
         contract_path = self._write_contracts(ctx, step, contracts)
-        prompt = self._phase_prompt(phase, step, contract_path, len(contracts), allowlist)
-        env = self._execution_env()
-        if config.opencode_config_path:
-            env["OPENCODE_CONFIG"] = config.opencode_config_path
-        cmd = self._command(resolved, ctx, session_id)
-        await log_cb(ctx.project_id, f"OpenCode {phase}: {step} started", "info")
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(ctx.staging_dir),
-            env=env,
-            limit=4 * 1024 * 1024,
+        artifact_facade: Any | None = None
+        if phase in {"analyze", "produce"}:
+            from mcp_server.providers.opencode_artifact_mcp import (
+                ArtifactSubmissionFacade,
+            )
+
+            artifact_facade = ArtifactSubmissionFacade(
+                staging_dir=ctx.staging_dir,
+                phase=phase,
+                step=step,
+                contracts=contracts,
+            )
+        phase_config = self._phase_config(
+            ctx=ctx,
+            phase=phase,
+            contracts=contracts,
+            runtime=runtime if phase == "gather" else None,
+            investigation_facade=investigation_facade,
+            artifact_facade=artifact_facade,
         )
+        bridge: Any | None = None
+
+        async def cleanup_phase_config() -> None:
+            if bridge is not None:
+                await bridge.close()
+            phase_config.cleanup()
+
+        if investigation_facade is not None:
+            from mcp_server.connectors.mcp_facade import FacadeBridge
+
+            bridge = FacadeBridge(
+                investigation_facade,
+                phase_config.path.parent / "investigation.sock",
+            )
+            await bridge.start()
+            payload = json.loads(phase_config.path.read_text(encoding="utf-8"))
+            payload["mcp"]["nexus_investigation"]["environment"][
+                "NEXUS_INVESTIGATION_SOCKET"
+            ] = str(bridge.socket_path)
+            phase_config.path.write_text(
+                json.dumps(payload, separators=(",", ":")), encoding="utf-8"
+            )
+        elif artifact_facade is not None:
+            from mcp_server.connectors.mcp_facade import FacadeBridge
+
+            bridge = FacadeBridge(
+                artifact_facade,
+                phase_config.path.parent / "artifacts.sock",
+            )
+            await bridge.start()
+            payload = json.loads(phase_config.path.read_text(encoding="utf-8"))
+            payload["mcp"]["nexus_artifacts"]["environment"][
+                "NEXUS_ARTIFACT_SOCKET"
+            ] = str(bridge.socket_path)
+            phase_config.path.write_text(
+                json.dumps(payload, separators=(",", ":")), encoding="utf-8"
+            )
+        elif phase == "gather" and runtime is not None:
+            from mcp_server.connectors.mcp_facade import FacadeBridge, RunScopedMcpFacade
+
+            facade = RunScopedMcpFacade(
+                broker=runtime.broker,
+                token=runtime.token,
+                run_id=runtime.run_id,
+                project_id=runtime.project_id,
+            )
+            bridge = FacadeBridge(facade, phase_config.path.parent / "connector.sock")
+            await bridge.start()
+            payload = json.loads(phase_config.path.read_text(encoding="utf-8"))
+            payload["mcp"]["nexus_run_evidence"]["environment"]["NEXUS_CONNECTOR_SOCKET"] = str(
+                bridge.socket_path
+            )
+            phase_config.path.write_text(
+                json.dumps(payload, separators=(",", ":")), encoding="utf-8"
+            )
+        connector_tools = tuple(tool for contract in contracts for tool in contract.allowed_tools)
+        prompt = prompt_override or self._phase_prompt(
+            phase, step, contract_path, len(contracts), allowlist, connector_tools
+        )
+        env = self._execution_env(phase_config)
+        cmd = self._command(resolved, ctx, session_id, phase_config)
+        await log_cb(ctx.project_id, f"OpenCode {phase}: {step} started", "info")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(ctx.staging_dir),
+                env=env,
+                limit=4 * 1024 * 1024,
+            )
+        except Exception:
+            await cleanup_phase_config()
+            raise
 
         events: list[dict[str, Any]] = []
         actual_session = session_id
@@ -862,6 +1697,10 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
         cost_usd = 0.0
         saw_error = False
         stderr_seen = False
+        # Raw error events and stderr are kept for the failure artifact only; the
+        # normalized `events` list stays content-free for the success path.
+        raw_errors: list[dict[str, Any]] = []
+        stderr_chunks: list[str] = []
 
         async def consume_stdout() -> None:
             nonlocal actual_session, input_tokens, output_tokens, cost_usd, saw_error
@@ -875,7 +1714,10 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
                 if parsed is not None:
                     events.append(parsed)
                     actual_session = parsed.get("session_id") or actual_session
-                    saw_error = saw_error or parsed["type"] == "error"
+                    if parsed["type"] == "error":
+                        saw_error = True
+                        if len(raw_errors) < _MAX_PERSISTED_ERROR_EVENTS:
+                            raw_errors.append(raw_event)
                 used_in, used_out, used_cost = self._event_usage(raw_event)
                 input_tokens += used_in
                 output_tokens += used_out
@@ -892,9 +1734,15 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
         async def consume_stderr() -> None:
             nonlocal stderr_seen
             assert proc.stderr is not None
+            captured = 0
             while raw_line := await proc.stderr.readline():
-                if raw_line.strip():
-                    stderr_seen = True
+                if not raw_line.strip():
+                    continue
+                stderr_seen = True
+                if captured < _MAX_PERSISTED_STDERR_CHARS:
+                    text = raw_line.decode("utf-8", errors="replace")
+                    stderr_chunks.append(text)
+                    captured += len(text)
 
         stdout_task = asyncio.create_task(consume_stdout())
         stderr_task = asyncio.create_task(consume_stderr())
@@ -915,38 +1763,72 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
                 proc.kill()
                 await proc.wait()
             await asyncio.gather(stdout_task, stderr_task)
+            await cleanup_phase_config()
             raise
         await asyncio.gather(stdout_task, stderr_task)
+        stderr_text = "".join(stderr_chunks)
         if stderr_seen:
-            await log_cb(ctx.project_id, "[opencode] stderr emitted (content redacted)", "warning")
+            await log_cb(
+                ctx.project_id,
+                "[opencode] stderr emitted (captured in _audit/opencode_errors.json on failure)",
+                "warning",
+            )
+
+        def record_failure() -> str:
+            return self._record_step_failure(
+                ctx.staging_dir,
+                phase=phase,
+                step=step,
+                model_route=self.model_route,
+                returncode=proc.returncode,
+                error_events=raw_errors,
+                stderr_text=stderr_text,
+            )
+
         if proc.returncode != 0:
             if not events:
                 ledger.release_unstarted(ledger_target)
+            reason = record_failure()
+            await cleanup_phase_config()
             raise OpenCodeCompatibilityError(
-                f"OpenCode {step} exited with code {proc.returncode}"
+                self._failure_message(
+                    f"OpenCode {step} exited with code {proc.returncode}", reason
+                )
             )
         if saw_error:
-            raise OpenCodeCompatibilityError(f"OpenCode {step} emitted an error event")
-        if not actual_session:
-            raise OpenCodeCompatibilityError(f"OpenCode {step} returned no session identifier")
-        required_artifacts = [contract.output_artifact for contract in contracts]
-        if phase == "gather":
-            required_artifacts.extend(
-                str(contract.metadata["validation_receipt"])
-                for contract in contracts
-                if contract.metadata.get("validation_receipt")
+            reason = record_failure()
+            await cleanup_phase_config()
+            raise OpenCodeCompatibilityError(
+                self._failure_message(f"OpenCode {step} emitted an error event", reason)
             )
+        if not actual_session:
+            reason = record_failure()
+            await cleanup_phase_config()
+            raise OpenCodeCompatibilityError(
+                self._failure_message(f"OpenCode {step} returned no session identifier", reason)
+            )
+        required_artifacts: list[str] = []
+        if require_outputs:
+            required_artifacts = [contract.output_artifact for contract in contracts]
+            if phase == "gather":
+                required_artifacts.extend(
+                    str(contract.metadata["validation_receipt"])
+                    for contract in contracts
+                    if contract.metadata.get("validation_receipt")
+                )
         missing = [
-            artifact for artifact in required_artifacts
+            artifact
+            for artifact in required_artifacts
             if not (ctx.staging_dir / artifact).is_file()
         ]
         if missing:
+            await cleanup_phase_config()
             raise OpenCodeCompatibilityError(
                 f"OpenCode {step} did not write required outputs or validation receipts: "
                 f"{', '.join(missing[:5])}"
             )
         await log_cb(ctx.project_id, f"OpenCode {phase}: {step} complete", "info")
-        return _PhaseExecution(
+        result = _PhaseExecution(
             session_id=actual_session,
             events=events,
             input_tokens=input_tokens,
@@ -954,6 +1836,868 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
             cost_usd=cost_usd,
             latency_ms=int((time.monotonic() - step_started) * 1000),
         )
+        await cleanup_phase_config()
+        return result
+
+    async def _execute_analyze_contract(
+        self,
+        *,
+        resolved: str,
+        ctx: DocGenContext,
+        contract: OpenCodeTaskContract,
+        allowlist: dict[str, tuple[str, ...]],
+        ledger: OpenCodeAttemptLedger,
+        log_cb: LogCallback,
+        require_outputs: bool = True,
+    ) -> tuple[str, _PhaseExecution]:
+        """Compatibility helper for a one-contract Analyze invocation.
+
+        Adaptive group work uses ``_execute_analyze_batch``. This remains the
+        explicit one-contract path for callers that require a dependency
+        barrier, while keeping artifacts rather than conversation state as the
+        durable hand-off.
+        """
+
+        step = f"analyze_{_safe_name(contract.target)}"
+        execution = await self._execute_step(
+            resolved=resolved,
+            ctx=ctx,
+            phase="analyze",
+            step=step,
+            contracts=[contract],
+            allowlist=allowlist,
+            session_id=None,
+            ledger=ledger,
+            log_cb=log_cb,
+            require_outputs=require_outputs,
+        )
+        return step, execution
+
+    async def _execute_analyze_batch(
+        self,
+        *,
+        resolved: str,
+        ctx: DocGenContext,
+        batch: _ContractBatch,
+        allowlist: dict[str, tuple[str, ...]],
+        ledger: OpenCodeAttemptLedger,
+        log_cb: LogCallback,
+        require_outputs: bool = True,
+    ) -> tuple[str, _PhaseExecution]:
+        """Execute an ordered group-analysis batch in one fresh session."""
+
+        step = f"analyze_batch_{batch.index:03d}"
+        execution = await self._execute_step(
+            resolved=resolved,
+            ctx=ctx,
+            phase="analyze",
+            step=step,
+            contracts=list(batch.contracts),
+            allowlist=allowlist,
+            session_id=None,
+            ledger=ledger,
+            log_cb=log_cb,
+            require_outputs=require_outputs,
+        )
+        return step, execution
+
+    async def _execute_produce_batch(
+        self,
+        *,
+        resolved: str,
+        ctx: DocGenContext,
+        step: str,
+        contracts: list[OpenCodeTaskContract],
+        allowlist: dict[str, tuple[str, ...]],
+        ledger: OpenCodeAttemptLedger,
+        log_cb: LogCallback,
+        require_outputs: bool = True,
+    ) -> _PhaseExecution:
+        """Execute one Produce batch in a fresh, artifact-driven session.
+
+        Each OpenCode invocation owns an isolated temporary data/state home that
+        is removed when the invocation completes. A returned session id is
+        therefore audit metadata only: attempting to continue it from the next
+        invocation would point OpenCode at a session store that no longer
+        exists. Produce dependencies are the validated files written by earlier
+        batches, not conversation history.
+        """
+
+        return await self._execute_step(
+            resolved=resolved,
+            ctx=ctx,
+            phase="produce",
+            step=step,
+            contracts=contracts,
+            allowlist=allowlist,
+            session_id=None,
+            ledger=ledger,
+            log_cb=log_cb,
+            require_outputs=require_outputs,
+        )
+
+    @staticmethod
+    def _missing_contracts(
+        ctx: DocGenContext,
+        contracts: list[OpenCodeTaskContract],
+    ) -> list[OpenCodeTaskContract]:
+        """Return contracts without a readable, non-empty durable output."""
+
+        missing: list[OpenCodeTaskContract] = []
+        for contract in contracts:
+            path = ctx.staging_dir / contract.output_artifact
+            try:
+                complete = path.is_file() and path.stat().st_size > 0
+            except OSError:
+                complete = False
+            if not complete:
+                missing.append(contract)
+        return missing
+
+    async def _recover_missing_contracts(
+        self,
+        *,
+        resolved: str,
+        ctx: DocGenContext,
+        phase: str,
+        step_prefix: str,
+        contracts: list[OpenCodeTaskContract],
+        allowlist: dict[str, tuple[str, ...]],
+        ledger: OpenCodeAttemptLedger,
+        log_cb: LogCallback,
+        on_complete: Callable[[str, _PhaseExecution], None],
+    ) -> None:
+        """Retry only missing outputs in bounded, one-contract fresh sessions."""
+
+        pending = self._missing_contracts(ctx, contracts)
+        max_followups = max(0, int(config.opencode_phase_max_followups))
+        for attempt in range(1, max_followups + 1):
+            if not pending:
+                return
+            await log_cb(
+                ctx.project_id,
+                f"OpenCode {phase} recovery {attempt}/{max_followups}: "
+                f"{len(pending)} missing artifact(s), one focused session each",
+                "warning",
+            )
+            concurrency_limit = (
+                config.opencode_analyze_concurrency
+                if phase == "analyze"
+                else config.opencode_produce_concurrency
+            )
+            semaphore = asyncio.Semaphore(
+                min(len(pending), max(1, int(concurrency_limit)))
+            )
+
+            async def recover(
+                position: int,
+                contract: OpenCodeTaskContract,
+                attempt_number: int = attempt,
+                limiter: asyncio.Semaphore = semaphore,
+            ) -> None:
+                async with limiter:
+                    step = (
+                        f"{step_prefix}_recovery_{attempt_number}_{position:03d}_"
+                        f"{_safe_name(contract.target)}"
+                    )
+                    try:
+                        execution = await self._execute_step(
+                            resolved=resolved,
+                            ctx=ctx,
+                            phase=phase,
+                            step=step,
+                            contracts=[contract],
+                            allowlist=allowlist,
+                            session_id=None,
+                            ledger=ledger,
+                            log_cb=log_cb,
+                            require_outputs=False,
+                        )
+                    except (OpenCodeCompatibilityError, OSError, TimeoutError) as exc:
+                        await log_cb(
+                            ctx.project_id,
+                            f"OpenCode {phase} recovery for {contract.target} ended early: {exc}",
+                            "warning",
+                        )
+                        return
+                    on_complete(step, execution)
+
+            await asyncio.gather(
+                *(recover(position, contract) for position, contract in enumerate(pending, 1))
+            )
+            pending = self._missing_contracts(ctx, contracts)
+
+        if pending:
+            raise OpenCodeCompatibilityError(
+                f"OpenCode {phase} recovery exhausted with missing outputs: "
+                + ", ".join(contract.output_artifact for contract in pending[:5])
+            )
+
+    async def _execute_produce_contracts(
+        self,
+        *,
+        resolved: str,
+        ctx: DocGenContext,
+        step: str,
+        contracts: list[OpenCodeTaskContract],
+        allowlist: dict[str, tuple[str, ...]],
+        ledger: OpenCodeAttemptLedger,
+        log_cb: LogCallback,
+        on_complete: Callable[[str, _PhaseExecution], None],
+        force: bool = False,
+    ) -> None:
+        """Run one Produce dependency stage with per-artifact recovery."""
+
+        if force:
+            for contract in contracts:
+                (ctx.staging_dir / contract.output_artifact).unlink(missing_ok=True)
+        pending = self._missing_contracts(ctx, contracts)
+        if not pending:
+            return
+
+        batches = self._plan_contract_batches(ctx, pending)
+        concurrency = min(
+            len(batches),
+            max(1, int(config.opencode_produce_concurrency)),
+        )
+        await log_cb(
+            ctx.project_id,
+            f"OpenCode produce plan ({step}): {len(pending)} remaining artifact(s), "
+            f"{len(batches)} fresh session batch(es), concurrency={concurrency}, "
+            f"target={max(1, int(config.opencode_batch_target_input_tokens))} tokens, "
+            f"estimated=[{self._batch_plan_summary(batches)}] (! = over target)",
+            "info",
+        )
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def execute(batch: _ContractBatch) -> None:
+            batch_step = f"{step}_batch_{batch.index:03d}"
+            async with semaphore:
+                try:
+                    execution = await self._execute_produce_batch(
+                        resolved=resolved,
+                        ctx=ctx,
+                        step=batch_step,
+                        contracts=list(batch.contracts),
+                        allowlist=allowlist,
+                        ledger=ledger,
+                        log_cb=log_cb,
+                        require_outputs=False,
+                    )
+                except (OpenCodeCompatibilityError, OSError, TimeoutError) as exc:
+                    await log_cb(
+                        ctx.project_id,
+                        f"OpenCode produce batch {batch_step} ended early: {exc}; "
+                        "completed artifacts were preserved",
+                        "warning",
+                    )
+                    return
+                on_complete(batch_step, execution)
+
+        await asyncio.gather(*(execute(batch) for batch in batches))
+        await self._recover_missing_contracts(
+            resolved=resolved,
+            ctx=ctx,
+            phase="produce",
+            step_prefix=step,
+            contracts=contracts,
+            allowlist=allowlist,
+            ledger=ledger,
+            log_cb=log_cb,
+            on_complete=on_complete,
+        )
+
+    @staticmethod
+    def _document_contract_errors(
+        ctx: DocGenContext,
+        facts: Any,
+        doc_names: list[str],
+    ) -> dict[str, list[str]]:
+        """Return deterministic assistant-contract errors for existing docs."""
+
+        from mcp_server.providers.custom.validators import _assistant_doc_contract_errors
+
+        selected = set(doc_names)
+        errors: dict[str, list[str]] = defaultdict(list)
+        for error in _assistant_doc_contract_errors(ctx.staging_dir, facts):
+            match = re.match(r"Generated doc ([A-Za-z0-9_]+)\.md\b", error)
+            if match and match.group(1) in selected:
+                errors[match.group(1)].append(error)
+        return dict(errors)
+
+    async def _repair_produce_documents(
+        self,
+        *,
+        resolved: str,
+        ctx: DocGenContext,
+        facts: Any,
+        harness: Any,
+        repair_step: str,
+        doc_names: list[str],
+        allowlist: dict[str, tuple[str, ...]],
+        ledger: OpenCodeAttemptLedger,
+        log_cb: LogCallback,
+    ) -> list[tuple[str, _PhaseExecution]]:
+        """Run one evidence-backed repair pass for structural doc violations.
+
+        Presence is not semantic completion. This gate runs both after fresh
+        Produce work and after resume skipped an existing artifact, preventing
+        a permanently invalid checkpoint from failing at the very end forever.
+        """
+
+        errors = self._document_contract_errors(ctx, facts, doc_names)
+        if not errors:
+            return []
+        await log_cb(
+            ctx.project_id,
+            "OpenCode produce validation found document contract gaps; starting one "
+            "targeted repair session for " + ", ".join(sorted(errors)),
+            "warning",
+        )
+        contracts: list[OpenCodeTaskContract] = []
+        for doc_name in sorted(errors):
+            original = self._doc_contract(ctx, facts, harness, doc_name)
+            issue_text = "\n".join(f"- {item}" for item in errors[doc_name])
+            contracts.append(
+                OpenCodeTaskContract(
+                    phase="produce",
+                    target=f"repair_document:{doc_name}",
+                    prompt_artifact="deterministic:assistant_doc_contract_repair",
+                    prompt=(
+                        f"Repair the existing `{doc_name}.md` in place. Preserve its supported "
+                        "content and evidence pointers; make only the structural/content additions "
+                        "needed to satisfy every deterministic validation error below. Read the "
+                        "existing document first, then the supplied authoritative evidence pack. "
+                        "Do not merely describe a patch: write the complete repaired document to "
+                        f"`{doc_name}.md`. Validation errors:\n{issue_text}\n\n"
+                        "Required terms are semantic obligations, not decorative keywords. Put them "
+                        "in the relevant heading, field, or table column with evidence-backed values."
+                    ),
+                    evidence_artifacts=tuple(
+                        dict.fromkeys((f"{doc_name}.md", *original.evidence_artifacts))
+                    ),
+                    output_artifact=f"{doc_name}.md",
+                )
+            )
+        concurrency = min(
+            len(contracts),
+            max(1, int(config.opencode_produce_concurrency)),
+        )
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def repair_one(
+            position: int,
+            contract: OpenCodeTaskContract,
+        ) -> tuple[str, _PhaseExecution] | None:
+            step = f"{repair_step}_{position:03d}_{_safe_name(contract.target)}"
+            async with semaphore:
+                try:
+                    execution = await self._execute_produce_batch(
+                        resolved=resolved,
+                        ctx=ctx,
+                        step=step,
+                        contracts=[contract],
+                        allowlist=allowlist,
+                        ledger=ledger,
+                        log_cb=log_cb,
+                        require_outputs=False,
+                    )
+                except (OpenCodeCompatibilityError, OSError, TimeoutError) as exc:
+                    await log_cb(
+                        ctx.project_id,
+                        f"OpenCode document repair for {contract.target} ended early: {exc}",
+                        "warning",
+                    )
+                    return None
+                return step, execution
+
+        attempted = await asyncio.gather(
+            *(repair_one(position, contract) for position, contract in enumerate(contracts, 1))
+        )
+        executions = [item for item in attempted if item is not None]
+        remaining = self._document_contract_errors(ctx, facts, doc_names)
+        if remaining:
+            flattened = [item for values in remaining.values() for item in values]
+            raise OpenCodeCompatibilityError(
+                "OpenCode document contract repair remained invalid: "
+                + "; ".join(flattened[:3])
+            )
+        return executions
+
+    async def _execute_gather_contract(
+        self,
+        *,
+        resolved: str,
+        ctx: DocGenContext,
+        contract: OpenCodeTaskContract,
+        allowlist: dict[str, tuple[str, ...]],
+        ledger: OpenCodeAttemptLedger,
+        log_cb: LogCallback,
+    ) -> tuple[str, _PhaseExecution]:
+        """Compatibility helper for a one-contract Gather invocation.
+
+        Normal static Gather work uses ``_execute_gather_batch``; validation and
+        resume still operate on this contract's own artifacts and receipt.
+        """
+
+        step = f"gather_{_safe_name(contract.target)}"
+        execution = await self._execute_step(
+            resolved=resolved,
+            ctx=ctx,
+            phase="gather",
+            step=step,
+            contracts=[contract],
+            allowlist=allowlist,
+            session_id=None,
+            ledger=ledger,
+            log_cb=log_cb,
+        )
+        return step, execution
+
+    async def _execute_gather_batch(
+        self,
+        *,
+        resolved: str,
+        ctx: DocGenContext,
+        batch: _ContractBatch,
+        allowlist: dict[str, tuple[str, ...]],
+        ledger: OpenCodeAttemptLedger,
+        log_cb: LogCallback,
+    ) -> tuple[str, _PhaseExecution]:
+        """Execute an ordered Gather batch in one fresh session."""
+
+        step = f"gather_batch_{batch.index:03d}"
+        execution = await self._execute_step(
+            resolved=resolved,
+            ctx=ctx,
+            phase="gather",
+            step=step,
+            contracts=list(batch.contracts),
+            allowlist=allowlist,
+            session_id=None,
+            ledger=ledger,
+            log_cb=log_cb,
+        )
+        return step, execution
+
+    async def _execute_gather_contracts(
+        self,
+        *,
+        resolved: str,
+        ctx: DocGenContext,
+        contracts: list[OpenCodeTaskContract],
+        allowlist: dict[str, tuple[str, ...]],
+        ledger: OpenCodeAttemptLedger,
+        log_cb: LogCallback,
+        on_complete: Callable[[str, _PhaseExecution], None],
+    ) -> None:
+        """Pack and run unfinished Gather contracts with bounded concurrency.
+
+        Contracts remain independent durable checkpoints. A successful batch is
+        recorded immediately; on failure, unfinished sibling batch subprocesses
+        are cancelled. A later run filters surviving validated contracts before
+        planning a new set of adaptive batches.
+        """
+
+        pending: list[OpenCodeTaskContract] = []
+        for contract in contracts:
+            if ctx.resume_state is not None and self._contracts_complete(
+                ctx, "gather", [contract]
+            ):
+                await log_cb(
+                    ctx.project_id,
+                    f"OpenCode RESUME: {contract.target} output already complete; "
+                    "skipping model work",
+                    "info",
+                )
+                continue
+            pending.append(contract)
+
+        if not pending:
+            return
+
+        batches = self._plan_contract_batches(ctx, pending)
+        concurrency = min(
+            len(batches), max(1, int(config.opencode_gather_concurrency))
+        )
+        await log_cb(
+            ctx.project_id,
+            f"OpenCode gather plan: {len(pending)} remaining contract(s), "
+            f"{len(batches)} fresh session batch(es), concurrency={concurrency}, "
+            f"target={max(1, int(config.opencode_batch_target_input_tokens))} tokens, "
+            f"estimated=[{self._batch_plan_summary(batches)}] (! = over target)",
+            "info",
+        )
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def execute(batch: _ContractBatch) -> None:
+            async with semaphore:
+                step, execution = await self._execute_gather_batch(
+                    resolved=resolved,
+                    ctx=ctx,
+                    batch=batch,
+                    allowlist=allowlist,
+                    ledger=ledger,
+                    log_cb=log_cb,
+                )
+                # No await between accepted output and its durable usage receipt.
+                on_complete(step, execution)
+
+        tasks = [asyncio.create_task(execute(batch)) for batch in batches]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+    @staticmethod
+    def _investigation_scope_prompt(
+        logical_scope: Any,
+        evidence_scopes: list[Any],
+        *,
+        followup: bool,
+    ) -> str:
+        assignments = [
+            {
+                "scope_id": scope.scope_id,
+                "group": scope.group,
+                "allowed_units": list(scope.allowed_units),
+                "suggested_start": scope.source_ref,
+            }
+            for scope in evidence_scopes
+        ]
+        continuation = (
+            "This is a recovery pass. Call get_progress first and work only on remaining units. "
+            if followup
+            else "Call get_progress for each scope before beginning. "
+        )
+        return (
+            "Investigate the assigned Nexus project scope as a coding agent. "
+            "You have native read, grep, glob, and list tools across the sanitized workspace; "
+            "choose what to inspect based on what you discover. Do not edit files and do not "
+            "construct legacy JSON. Use nexus_investigation_submit_evidence in small batches as "
+            "soon as findings are supported. For a unit that genuinely cannot be evidenced, use "
+            "nexus_investigation_report_gap with a concrete reason. Validation errors are feedback: "
+            "correct the submission and continue. Finish every listed scope with "
+            "nexus_investigation_finish_scope, which only succeeds after every assigned unit is "
+            "accounted for. "
+            + continuation
+            + "Useful deterministic starting points are facts_manifest.json, _preprocess/, "
+            "engineering_facts.json, dependency_map.md, and config_runtime_map.md when present. "
+            f"Logical scope: {logical_scope.scope_id}. Assignments:\n"
+            + json.dumps(assignments, indent=2)
+            + "\nDo not stop after merely describing a plan; explore, submit, check progress, and finish."
+        )
+
+    async def _execute_gather_scopes(
+        self,
+        *,
+        resolved: str,
+        ctx: DocGenContext,
+        facts: Any,
+        contracts: list[OpenCodeTaskContract],
+        ledger: OpenCodeAttemptLedger,
+        log_cb: LogCallback,
+        on_complete: Callable[[str, _PhaseExecution], None],
+    ) -> Any:
+        """Run adaptive, tool-driven investigation scopes with durable recovery.
+
+        Session boundaries are a capacity choice, not the evidence boundary.
+        Accepted tool submissions are persisted immediately. A crashed or
+        incomplete agent gets a bounded fresh recovery session that sees the
+        same progress, and any remainder becomes an explicit gap instead of
+        cancelling successful sibling scopes.
+        """
+
+        from mcp_server.providers.opencode_evidence import (
+            EvidenceScope,
+            FinishScopeRequest,
+            GetProgressRequest,
+            OpenCodeEvidenceStore,
+            ReportGapRequest,
+        )
+        from mcp_server.providers.opencode_investigation_mcp import InvestigationFacade
+        from mcp_server.providers.opencode_scopes import ensure_scope_plan
+
+        plan = ensure_scope_plan(
+            ctx.staging_dir,
+            facts,
+            partitions=([ctx.partition] if ctx.partition is not None else None),
+            max_units_per_scope=max(1, int(config.opencode_scope_max_units)),
+            max_groups_per_scope=max(1, int(config.opencode_scope_max_groups)),
+        )
+        store = OpenCodeEvidenceStore(ctx.staging_dir, facts)
+        units_by_name = {unit.name: unit for unit in facts.units}
+        source_by_group = {
+            str(contract.metadata.get("group")): str(contract.metadata.get("source_ref"))
+            for contract in contracts
+            if contract.metadata.get("group") and contract.metadata.get("source_ref")
+        }
+
+        def source_ref_for(group: str) -> str:
+            preprocess = f"_preprocess/{group}.md"
+            if (ctx.staging_dir / preprocess).is_file():
+                return preprocess
+            return source_by_group.get(group, preprocess)
+        assignments: dict[str, list[Any]] = {}
+        for logical in plan.scopes:
+            evidence_scopes: list[Any] = []
+            for group in logical.groups:
+                unit_names = tuple(
+                    name
+                    for name in logical.unit_names
+                    if name in units_by_name and units_by_name[name].group == group
+                )
+                if not unit_names:
+                    continue
+                scope_id = _safe_name(f"{logical.scope_id}__{group}")
+                if len(scope_id) > 127:
+                    digest = hashlib.sha256(scope_id.encode("utf-8")).hexdigest()[:12]
+                    scope_id = f"{scope_id[:114]}_{digest}"
+                scope = EvidenceScope(
+                    scope_id=scope_id,
+                    group=group,
+                    allowed_units=unit_names,
+                    source_ref=source_ref_for(group),
+                )
+                store.register_scope(scope)
+                if ctx.resume_state is not None:
+                    store.reopen_system_gaps(
+                        scope.scope_id,
+                        reason=_GATHER_EXHAUSTED_GAP_REASON,
+                    )
+                evidence_scopes.append(scope)
+            assignments[logical.scope_id] = evidence_scopes
+
+        pending = [
+            logical
+            for logical in plan.scopes
+            if any(
+                not store.get_progress(GetProgressRequest(scope_id=scope.scope_id)).complete
+                for scope in assignments[logical.scope_id]
+            )
+        ]
+        concurrency = min(
+            len(pending) or 1,
+            max(1, int(config.opencode_scope_concurrency)),
+        )
+        await log_cb(
+            ctx.project_id,
+            f"OpenCode Gather v2 plan: {facts.unit_count} unit(s), "
+            f"{len(plan.scopes)} adaptive scope session(s), concurrency={concurrency}; "
+            "native exploration + durable evidence tools",
+            "info",
+        )
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def execute(logical: Any) -> None:
+            evidence_scopes = assignments[logical.scope_id]
+            if not evidence_scopes:
+                return
+            async with semaphore:
+                max_attempts = 1 + max(0, int(config.opencode_scope_max_followups))
+                for attempt in range(max_attempts):
+                    unfinished = [
+                        scope
+                        for scope in evidence_scopes
+                        if not store.get_progress(
+                            GetProgressRequest(scope_id=scope.scope_id)
+                        ).complete
+                    ]
+                    if not unfinished:
+                        return
+                    suffix = "" if attempt == 0 else f"_recovery_{attempt}"
+                    step = f"gather_scope_{_safe_name(logical.scope_id)}{suffix}"
+                    facade = InvestigationFacade(store, {scope.scope_id for scope in unfinished})
+                    try:
+                        execution = await self._execute_step(
+                            resolved=resolved,
+                            ctx=ctx,
+                            phase="gather",
+                            step=step,
+                            contracts=[],
+                            allowlist={},
+                            session_id=None,
+                            ledger=ledger,
+                            log_cb=log_cb,
+                            investigation_facade=facade,
+                            prompt_override=self._investigation_scope_prompt(
+                                logical,
+                                unfinished,
+                                followup=attempt > 0,
+                            ),
+                            require_outputs=False,
+                        )
+                        on_complete(step, execution)
+                    except (OpenCodeCompatibilityError, OSError, TimeoutError) as exc:
+                        await log_cb(
+                            ctx.project_id,
+                            f"OpenCode Gather v2 scope {logical.scope_id} attempt "
+                            f"{attempt + 1}/{max_attempts} ended early: {exc}; "
+                            "accepted evidence was preserved",
+                            "warning",
+                        )
+
+                # Soft close: explicit gaps are safer and more useful than
+                # throwing away every successful scope because one agent ended.
+                gap_count = 0
+                for scope in evidence_scopes:
+                    progress = store.get_progress(GetProgressRequest(scope_id=scope.scope_id))
+                    for unit_name in progress.remaining_units:
+                        store.report_gap(
+                            ReportGapRequest(
+                                scope_id=scope.scope_id,
+                                unit_name=unit_name,
+                                reason=_GATHER_EXHAUSTED_GAP_REASON,
+                            )
+                        )
+                        gap_count += 1
+                    progress = store.get_progress(GetProgressRequest(scope_id=scope.scope_id))
+                    if not progress.complete:
+                        store.finish_scope(FinishScopeRequest(scope_id=scope.scope_id))
+                if gap_count:
+                    await log_cb(
+                        ctx.project_id,
+                        f"OpenCode Gather v2 scope {logical.scope_id} closed with "
+                        f"{gap_count} explicit coverage gap(s); continuing with partial evidence",
+                        "warning",
+                    )
+
+        await asyncio.gather(*(execute(logical) for logical in pending))
+        return store
+
+    async def _execute_analyze_contracts(
+        self,
+        *,
+        resolved: str,
+        ctx: DocGenContext,
+        contracts: list[OpenCodeTaskContract],
+        allowlist: dict[str, tuple[str, ...]],
+        ledger: OpenCodeAttemptLedger,
+        log_cb: LogCallback,
+        on_complete: Callable[[str, _PhaseExecution], None],
+        force: bool = False,
+    ) -> None:
+        """Run adaptive group batches, then scorecard as a dependency barrier."""
+
+        pending_groups: list[OpenCodeTaskContract] = []
+        pending_scorecards: list[OpenCodeTaskContract] = []
+        for contract in contracts:
+            if force:
+                # Gather evidence changed, so an existing downstream artifact is
+                # stale. Remove only this generated checkpoint before dispatch;
+                # otherwise simple existence could falsely accept an old file
+                # when the new session omits it.
+                (ctx.staging_dir / contract.output_artifact).unlink(missing_ok=True)
+            if not force and ctx.resume_state is not None and self._contracts_complete(
+                ctx, "analyze", [contract]
+            ):
+                await log_cb(
+                    ctx.project_id,
+                    f"OpenCode RESUME: {contract.target} output already complete; "
+                    "skipping model work",
+                    "info",
+                )
+                continue
+            if contract.target == "scorecard":
+                pending_scorecards.append(contract)
+            else:
+                pending_groups.append(contract)
+
+        batches = self._plan_contract_batches(ctx, pending_groups)
+        if batches:
+            concurrency = min(
+                len(batches),
+                max(1, int(config.opencode_analyze_concurrency)),
+            )
+            await log_cb(
+                ctx.project_id,
+                f"OpenCode analyze plan: {len(pending_groups)} remaining group contract(s), "
+                f"{len(batches)} fresh session batch(es), concurrency={concurrency}, "
+                f"target={max(1, int(config.opencode_batch_target_input_tokens))} tokens, "
+                f"estimated=[{self._batch_plan_summary(batches)}] (! = over target)",
+                "info",
+            )
+            semaphore = asyncio.Semaphore(concurrency)
+
+            async def execute(batch: _ContractBatch) -> None:
+                async with semaphore:
+                    try:
+                        step, execution = await self._execute_analyze_batch(
+                            resolved=resolved,
+                            ctx=ctx,
+                            batch=batch,
+                            allowlist=allowlist,
+                            ledger=ledger,
+                            log_cb=log_cb,
+                            require_outputs=False,
+                        )
+                    except (OpenCodeCompatibilityError, OSError, TimeoutError) as exc:
+                        await log_cb(
+                            ctx.project_id,
+                            f"OpenCode analyze batch {batch.index} ended early: {exc}; "
+                            "completed artifacts were preserved",
+                            "warning",
+                        )
+                        return
+                    on_complete(step, execution)
+
+            tasks = [asyncio.create_task(execute(batch)) for batch in batches]
+            # A weak batch must not cancel healthy siblings. Every session is
+            # allowed to settle, then only the still-missing contracts recover.
+            await asyncio.gather(*tasks)
+            await self._recover_missing_contracts(
+                resolved=resolved,
+                ctx=ctx,
+                phase="analyze",
+                step_prefix="analyze_groups",
+                contracts=pending_groups,
+                allowlist=allowlist,
+                ledger=ledger,
+                log_cb=log_cb,
+                on_complete=on_complete,
+            )
+
+        # The scorecard reads the complete analysis directory. Never dispatch it
+        # until all group batches have completed successfully.
+        for scorecard in pending_scorecards:
+            await log_cb(
+                ctx.project_id,
+                "OpenCode analyze: group batches complete; starting scorecard barrier",
+                "info",
+            )
+            try:
+                step, execution = await self._execute_analyze_contract(
+                    resolved=resolved,
+                    ctx=ctx,
+                    contract=scorecard,
+                    allowlist=allowlist,
+                    ledger=ledger,
+                    log_cb=log_cb,
+                    require_outputs=False,
+                )
+            except (OpenCodeCompatibilityError, OSError, TimeoutError) as exc:
+                await log_cb(
+                    ctx.project_id,
+                    f"OpenCode analyze scorecard ended early: {exc}; attempting focused recovery",
+                    "warning",
+                )
+            else:
+                on_complete(step, execution)
+            await self._recover_missing_contracts(
+                resolved=resolved,
+                ctx=ctx,
+                phase="analyze",
+                step_prefix="analyze_scorecard",
+                contracts=[scorecard],
+                allowlist=allowlist,
+                ledger=ledger,
+                log_cb=log_cb,
+                on_complete=on_complete,
+            )
 
     def _record_execution(
         self,
@@ -1019,7 +2763,38 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
                 for contract in contracts
                 if contract.metadata.get("validation_receipt")
             )
-        return all((ctx.staging_dir / artifact).is_file() for artifact in required)
+        for artifact in required:
+            path = ctx.staging_dir / artifact
+            try:
+                if not path.is_file() or path.stat().st_size <= 0:
+                    return False
+            except OSError:
+                return False
+        return True
+
+    @staticmethod
+    def _gather_evidence_fingerprint(ctx: DocGenContext) -> str:
+        """Hash durable evidence meaning, excluding retry bookkeeping versions."""
+
+        material: list[dict[str, Any]] = []
+        scopes_root = ctx.staging_dir / "_evidence" / "scopes"
+        if scopes_root.is_dir():
+            for path in sorted(scopes_root.glob("*/state.json")):
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                material.append(
+                    {
+                        "scope": path.parent.name,
+                        "evidence": payload.get("evidence", []),
+                        "gaps": payload.get("gaps", {}),
+                    }
+                )
+        encoded = json.dumps(material, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     def _finalize_gather(
         self,
@@ -1169,8 +2944,7 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
             (analysis_dir / name).write_text(report.model_dump_json(indent=2), encoding="utf-8")
         if coverage.coverage_count == 0 and facts.unit_count:
             raise OpenCodeCompatibilityError(
-                "OpenCode analysis covered zero canonical units: "
-                + "; ".join(coverage.errors[:3])
+                "OpenCode analysis covered zero canonical units: " + "; ".join(coverage.errors[:3])
             )
         if not depth.ok:
             state.warnings.extend(depth.errors)
@@ -1215,8 +2989,8 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
     ) -> list[str]:
         from mcp_server.providers.custom.evidence_traceability import EvidenceTraceabilityValidator
         from mcp_server.providers.custom.models import CoverageReport
-        from mcp_server.providers.custom.pipeline.phases.phase3_docs import _thin_bundle_notice
         from mcp_server.providers.custom.pipeline.helpers import HarnessHelpersImpl
+        from mcp_server.providers.custom.pipeline.phases.phase3_docs import _thin_bundle_notice
         from mcp_server.providers.custom.pipeline.phases.phase4_cleanup import Phase4Cleanup
         from mcp_server.providers.custom.validators import (
             validate_doc_depth,
@@ -1307,8 +3081,7 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
         )
         if not doc_report.ok:
             raise OpenCodeCompatibilityError(
-                "OpenCode required-document validation failed: "
-                + "; ".join(doc_report.errors[:3])
+                "OpenCode required-document validation failed: " + "; ".join(doc_report.errors[:3])
             )
         if not depth_report.ok:
             state.warnings.extend(depth_report.errors)
@@ -1369,15 +3142,13 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
     async def run(self, ctx: DocGenContext, log_cb: LogCallback) -> AgentResult:
         audit_dir = ctx.staging_dir / "_audit"
         audit_dir.mkdir(parents=True, exist_ok=True)
-        ledger = OpenCodeAttemptLedger(ctx.staging_dir)
+        ledger = OpenCodeAttemptLedger(ctx.staging_dir, run_id=ctx.run_id)
         started = int(time.time() * 1000)
         all_events: list[dict[str, Any]] = []
         phase_receipts = (
-            self._read_usage_receipts(audit_dir)
-            if ctx.resume_state is not None
-            else []
+            self._read_usage_receipts(audit_dir) if ctx.resume_state is not None else []
         )
-        session_id = next(
+        last_session_id = next(
             (
                 str(receipt["session_id"])
                 for receipt in reversed(phase_receipts)
@@ -1391,27 +3162,37 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
         total_output = sum(int(item.get("output_tokens") or 0) for item in phase_receipts)
         total_cost = sum(float(item.get("cost_usd") or 0.0) for item in phase_receipts)
         turns = len(phase_receipts)
+        connector_runtime: Any | None = None
 
         def record_execution(phase: str, step: str, execution: _PhaseExecution) -> None:
             """Record model-reported usage before deterministic validation runs."""
 
-            nonlocal session_id, total_input, total_output, total_cost, turns, active_phase, active_step
-            session_id = execution.session_id
+            nonlocal \
+                last_session_id, \
+                total_input, \
+                total_output, \
+                total_cost, \
+                turns, \
+                active_phase, \
+                active_step
+            last_session_id = execution.session_id
             all_events.extend(execution.events)
             total_input += execution.input_tokens
             total_output += execution.output_tokens
             total_cost += execution.cost_usd
             turns += 1
-            phase_receipts.append({
-                "phase": phase,
-                "step": step,
-                "status": "model_completed",
-                "session_id": execution.session_id,
-                "input_tokens": execution.input_tokens,
-                "output_tokens": execution.output_tokens,
-                "cost_usd": execution.cost_usd,
-                "latency_ms": execution.latency_ms,
-            })
+            phase_receipts.append(
+                {
+                    "phase": phase,
+                    "step": step,
+                    "status": "model_completed",
+                    "session_id": execution.session_id,
+                    "input_tokens": execution.input_tokens,
+                    "output_tokens": execution.output_tokens,
+                    "cost_usd": execution.cost_usd,
+                    "latency_ms": execution.latency_ms,
+                }
+            )
             self._write_usage_receipts(audit_dir, phase_receipts)
             self._record_execution(state, phase, step, execution)
             active_phase = None
@@ -1419,19 +3200,20 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
 
         try:
             resolved, allowlist = self._preflight()
-            if session_id and not self._session_exists(resolved, session_id):
-                await log_cb(
-                    ctx.project_id,
-                    "OpenCode RESUME: prior runtime session is unavailable; "
-                    "continuing incomplete work in a fresh orchestrator session",
-                    "info",
-                )
-                session_id = None
             facts, harness, state = self._prepare_run(ctx)
+            gather_changed = False
 
             gather = self._gather_contracts(ctx, facts, harness, allowlist)
-            if ctx.resume_state is not None and self._contracts_complete(
-                ctx, "gather", gather
+            if not gather:
+                await log_cb(
+                    ctx.project_id,
+                    "OpenCode Gather skipped by the deterministic project policy",
+                    "info",
+                )
+            elif (
+                ctx.resume_state is not None
+                and str(config.opencode_gather_mode).strip().lower() != "tools"
+                and self._contracts_complete(ctx, "gather", gather)
             ):
                 await log_cb(
                     ctx.project_id,
@@ -1439,55 +3221,130 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
                     "info",
                 )
             else:
-                active_phase, active_step = "gather", "gather"
-                execution = await self._execute_step(
-                    resolved=resolved,
-                    ctx=ctx,
-                    phase="gather",
-                    step="gather",
-                    contracts=gather,
-                    allowlist=allowlist,
-                    session_id=session_id,
-                    ledger=ledger,
-                    log_cb=log_cb,
-                )
-                record_execution("gather", "gather", execution)
+                gather_mode = str(config.opencode_gather_mode).strip().lower()
+                if gather_mode == "tools":
+                    from mcp_server.providers.opencode_evidence_export import (
+                        export_legacy_gather_artifacts,
+                    )
+
+                    evidence_before = self._gather_evidence_fingerprint(ctx)
+                    active_phase, active_step = "gather", "adaptive_scopes"
+                    await self._execute_gather_scopes(
+                        resolved=resolved,
+                        ctx=ctx,
+                        facts=facts,
+                        contracts=gather,
+                        ledger=ledger,
+                        log_cb=log_cb,
+                        on_complete=lambda step, execution: record_execution(
+                            "gather", step, execution
+                        ),
+                    )
+                    export_legacy_gather_artifacts(ctx.staging_dir, facts, gather)
+                    gather_changed = (
+                        self._gather_evidence_fingerprint(ctx) != evidence_before
+                    )
+                elif gather_mode == "contracts":
+                    active_phase, active_step = "gather", "adaptive_batches"
+                    await self._execute_gather_contracts(
+                        resolved=resolved,
+                        ctx=ctx,
+                        contracts=gather,
+                        allowlist=allowlist,
+                        ledger=ledger,
+                        log_cb=log_cb,
+                        on_complete=lambda step, execution: record_execution(
+                            "gather", step, execution
+                        ),
+                    )
+                else:
+                    raise OpenCodeCompatibilityError(
+                        "MCP_OPENCODE_GATHER_MODE must be 'tools' or 'contracts'"
+                    )
+                active_phase = None
+                active_step = None
             self._finalize_gather(ctx, facts, harness, state, gather)
 
+            # Static Gather state is fully represented by validated artifacts.
+            # Connector Gather starts fresh and must not inherit an arbitrary
+            # task conversation.
+            # Runtime evidence is deliberately a second Gather sub-step: static
+            # investigation has now produced canonical code entities, while
+            # Analyze/Produce have not yet received any connector authority.
+            connector_runtime = self._connector_runtime(ctx)
+            if connector_runtime is not None:
+                external = self._external_evidence_contracts(
+                    ctx, facts, connector_runtime, allowlist
+                )
+                try:
+                    if external:
+                        active_phase, active_step = "gather", "external_evidence"
+                        execution = await self._execute_step(
+                            resolved=resolved,
+                            ctx=ctx,
+                            phase="gather",
+                            step="external_evidence",
+                            contracts=external,
+                            allowlist=allowlist,
+                            session_id=None,
+                            ledger=ledger,
+                            log_cb=log_cb,
+                            runtime=connector_runtime,
+                        )
+                        record_execution("gather", "external_evidence", execution)
+                    self._finalize_external_evidence(ctx, facts, connector_runtime, external)
+                except (OpenCodeCompatibilityError, OSError):
+                    # Connector evidence is supplementary by default. Retain a
+                    # sanitized limitation and continue with scanner evidence.
+                    await log_cb(
+                        ctx.project_id,
+                        "OpenCode connector evidence unavailable; continuing without live evidence",
+                        "warning",
+                    )
+                    self._finalize_external_evidence(
+                        ctx,
+                        facts,
+                        connector_runtime,
+                        external,
+                        limitation="source_unavailable",
+                    )
+                finally:
+                    manifest = connector_runtime.audit_manifest()
+                    (audit_dir / "connector_run_manifest.json").write_text(
+                        json.dumps(manifest, indent=2), encoding="utf-8"
+                    )
+                    connector_runtime.close()
+                    connector_runtime = None
+
             analyze = self._analyze_contracts(ctx, facts, harness)
-            if ctx.resume_state is not None and self._contracts_complete(
-                ctx, "analyze", analyze
-            ):
-                await log_cb(
-                    ctx.project_id,
-                    "OpenCode RESUME: analysis outputs already complete; validating checkpoint",
-                    "info",
-                )
-            else:
-                active_phase, active_step = "analyze", "analyze"
-                execution = await self._execute_step(
-                    resolved=resolved,
-                    ctx=ctx,
-                    phase="analyze",
-                    step="analyze",
-                    contracts=analyze,
-                    allowlist=allowlist,
-                    session_id=session_id,
-                    ledger=ledger,
-                    log_cb=log_cb,
-                )
-                record_execution("analyze", "analyze", execution)
+            active_phase, active_step = "analyze", "adaptive_batches"
+            await self._execute_analyze_contracts(
+                resolved=resolved,
+                ctx=ctx,
+                contracts=analyze,
+                allowlist=allowlist,
+                ledger=ledger,
+                log_cb=log_cb,
+                on_complete=lambda step, execution: record_execution(
+                    "analyze", step, execution
+                ),
+                force=gather_changed,
+            )
+            active_phase = None
+            active_step = None
+
+            # Produce receives its own bounded contracts and evidence files.
+            # Each Produce batch also starts fresh; validated files are the
+            # cross-batch hand-off rather than ephemeral conversation history.
             await self._finalize_analyze(ctx, facts, harness, state, log_cb)
 
             docs = list(harness._required_docs)
             executive = "09_EXECUTIVE_SUMMARY"
             unit_docs = [
-                doc for doc in docs
-                if doc in harness._per_job_doc_units and doc != executive
+                doc for doc in docs if doc in harness._per_job_doc_units and doc != executive
             ]
             group_docs = [
-                doc for doc in docs
-                if doc not in harness._per_job_doc_units and doc != executive
+                doc for doc in docs if doc not in harness._per_job_doc_units and doc != executive
             ]
             produce_batches: list[tuple[str, list[str] | None]] = []
             if unit_docs:
@@ -1506,8 +3363,12 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
                     if doc_names is None
                     else [self._doc_contract(ctx, facts, harness, doc) for doc in doc_names]
                 )
-                if ctx.resume_state is not None and self._contracts_complete(
-                    ctx, "produce", contracts
+                if (
+                    not gather_changed
+                    and ctx.resume_state is not None
+                    and self._contracts_complete(
+                        ctx, "produce", contracts
+                    )
                 ):
                     await log_cb(
                         ctx.project_id,
@@ -1516,24 +3377,60 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
                     )
                 else:
                     active_phase, active_step = "produce", step
-                    execution = await self._execute_step(
+                    try:
+                        await self._execute_produce_contracts(
+                            resolved=resolved,
+                            ctx=ctx,
+                            step=step,
+                            contracts=contracts,
+                            allowlist=allowlist,
+                            ledger=ledger,
+                            log_cb=log_cb,
+                            on_complete=lambda completed_step, execution: record_execution(
+                                "produce", completed_step, execution
+                            ),
+                            force=gather_changed,
+                        )
+                    except OpenCodeCompatibilityError:
+                        if doc_names is not None:
+                            raise
+                        await log_cb(
+                            ctx.project_id,
+                            "OpenCode topology output remained unavailable after recovery; "
+                            "continuing to deterministic topology fallback",
+                            "warning",
+                        )
+                    active_phase = None
+                    active_step = None
+                if step == "produce_unit_docs":
+                    harness._build_unit_docs_digest(ctx, unit_docs)
+                if doc_names is not None and not harness._plugin_mode:
+                    # File existence is only a checkpoint, not proof that the
+                    # document satisfies its semantic contract. Validate fresh
+                    # and resumed artifacts at the point where they are made,
+                    # then give OpenCode one narrowly scoped repair pass.
+                    repair_step = f"{step}_contract_repair"
+                    active_phase, active_step = "produce", repair_step
+                    repairs = await self._repair_produce_documents(
                         resolved=resolved,
                         ctx=ctx,
-                        phase="produce",
-                        step=step,
-                        contracts=contracts,
+                        facts=facts,
+                        harness=harness,
+                        repair_step=repair_step,
+                        doc_names=doc_names,
                         allowlist=allowlist,
-                        session_id=session_id,
                         ledger=ledger,
                         log_cb=log_cb,
                     )
-                    record_execution("produce", step, execution)
-                if step == "produce_unit_docs":
-                    harness._build_unit_docs_digest(ctx, unit_docs)
+                    for completed_step, repair in repairs:
+                        record_execution("produce", completed_step, repair)
+                    if not repairs:
+                        active_phase = None
+                        active_step = None
 
             required = await self._finalize_produce(ctx, facts, harness, state, log_cb)
             receipts = [
-                {"phase": phase, "status": "verified", "session_id": session_id}
+                {"phase": phase, "status": "verified", "session_id": last_session_id}
                 for phase in PHASES
             ]
             (audit_dir / "opencode_phase_receipts.json").write_text(
@@ -1549,26 +3446,34 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
                 cost_usd=total_cost or None,
                 duration_ms=int(time.time() * 1000) - started,
                 num_turns=turns,
-                session_id=session_id,
+                session_id=last_session_id,
                 model_name=self.model_route or "opencode-default",
                 write_model_name=self.model_route or "opencode-default",
                 required_docs=required,
                 has_warnings=bool(state.warnings),
             )
         except asyncio.CancelledError:
+            if connector_runtime is not None:
+                connector_runtime.close()
             if active_phase is not None:
-                phase_receipts.append({
-                    "phase": active_phase,
-                    "step": active_step,
-                    "status": "cancelled",
-                    "usage_available": False,
-                    "note": "OpenCode was stopped before it emitted a final usage event.",
-                })
+                phase_receipts.append(
+                    {
+                        "phase": active_phase,
+                        "step": active_step,
+                        "status": "cancelled",
+                        "usage_available": False,
+                        "note": "OpenCode was stopped before it emitted a final usage event.",
+                    }
+                )
             self._write_usage_receipts(audit_dir, phase_receipts)
             raise
         except (OpenCodeCompatibilityError, OpenCodeAttemptError) as exc:
+            if connector_runtime is not None:
+                connector_runtime.close()
             error = str(exc)
         except Exception as exc:
+            if connector_runtime is not None:
+                connector_runtime.close()
             logger.exception("OpenCode adapter failure")
             error = f"OpenCode provider error [{type(exc).__name__}]"
         (audit_dir / "opencode_failure.json").write_text(
@@ -1582,6 +3487,6 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
             error=error,
             model_name=self.model_route or "opencode-default",
             write_model_name=self.model_route or "opencode-default",
-            session_id=session_id,
+            session_id=last_session_id,
             duration_ms=int(time.time() * 1000) - started,
         )

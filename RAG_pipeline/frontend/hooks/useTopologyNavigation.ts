@@ -30,9 +30,48 @@ export interface TopologyNavigation {
   ascend: () => void;
   jumpTo: (index: number) => void;
   reset: () => void;
+  /**
+   * Land directly on `level`, as if the user had drilled there by hand: the
+   * stack becomes the canonical path to it, so the breadcrumb reads normally
+   * and `ascend` walks back out one level at a time.
+   */
+  restore: (level: TopologyLevel) => void;
+  /**
+   * Put an exact stack back. Used to undo a jump the ANSWER made rather than
+   * the user (see the auto-navigation path in `app/topology/page.tsx`): a
+   * component jump grows the stack by two, so a single `ascend` would leave
+   * the user somewhere they never asked to be.
+   */
+  replaceStack: (stack: readonly TopologyLevel[]) => void;
 }
 
 const ROOT: TopologyLevel[] = [{ kind: "project" }];
+
+/**
+ * The canonical stack for a level -- what the breadcrumb would show had the
+ * user drilled there themselves.
+ *
+ * A job is treated as a direct child of the landscape rather than of a group:
+ * the level itself does not name a group (only an optional source root), so
+ * inventing an intermediate crumb would mean guessing. `component` keeps its
+ * job crumb because the level carries the job name.
+ */
+export function topologyStackForLevel(level: TopologyLevel): TopologyLevel[] {
+  switch (level.kind) {
+    case "project":
+      return [{ kind: "project" }];
+    case "component":
+      return [
+        { kind: "project" },
+        { kind: "job", jobName: level.jobName, sourceRoot: level.sourceRoot },
+        level,
+      ];
+    case "integration":
+    case "group":
+    case "job":
+      return [{ kind: "project" }, level];
+  }
+}
 
 export function useTopologyNavigation(): TopologyNavigation {
   const [stack, setStack] = useState<TopologyLevel[]>(ROOT);
@@ -98,6 +137,15 @@ export function useTopologyNavigation(): TopologyNavigation {
     setStack(ROOT);
   }, []);
 
+  const replaceStack = useCallback((next: readonly TopologyLevel[]) => {
+    // An empty stack has no `current`, which every consumer reads unguarded.
+    setStack(next.length > 0 ? [...next] : ROOT);
+  }, []);
+
+  const restore = useCallback((level: TopologyLevel) => {
+    setStack(topologyStackForLevel(level));
+  }, []);
+
   const current = stack[stack.length - 1];
   const depth = stack.length;
 
@@ -113,6 +161,8 @@ export function useTopologyNavigation(): TopologyNavigation {
       ascend,
       jumpTo,
       reset,
+      restore,
+      replaceStack,
     }),
     [
       stack,
@@ -125,6 +175,8 @@ export function useTopologyNavigation(): TopologyNavigation {
       ascend,
       jumpTo,
       reset,
+      restore,
+      replaceStack,
     ],
   );
 }

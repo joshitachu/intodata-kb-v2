@@ -38,11 +38,19 @@ _METRIC_STOP_REASONS = frozenset({
 _PUBLIC_EVENT_FIELDS: dict[str, frozenset[str]] = {
     "run.started": frozenset({"status", "cohort", "transport", "objective"}),
     "runtime.update": frozenset({"status", "phase", "summary"}),
+    # Live, server-authored progress emitted *while* the model is generating.
+    # There is deliberately no `content` field: the answer text it is producing
+    # has not passed the grounding validator yet, so only the phase, a
+    # server-authored label and elapsed time may be published.
+    "assistant.progress": frozenset({"status", "phase", "summary", "elapsed_ms"}),
     "assistant.delta": frozenset({"content"}),
     "tool.proposed": frozenset({"tool_label", "status", "call_ref"}),
     "tool.running": frozenset({"tool_label", "status", "call_ref"}),
     "tool.awaiting_approval": frozenset({"tool_label", "status", "summary", "proposal_id"}),
-    "tool.completed": frozenset({"tool_label", "status", "summary", "evidence_refs", "receipt_ref", "workflow_ref"}),
+    # `targets` carries topology navigation targets verbatim: the canvas needs them
+    # to highlight and navigate, and their ids belong to whichever id space the
+    # canvas is rendering. They are never rewritten here.
+    "tool.completed": frozenset({"tool_label", "status", "summary", "evidence_refs", "receipt_ref", "workflow_ref", "targets"}),
     "tool.denied": frozenset({"tool_label", "status", "summary"}),
     "workflow.started": frozenset({"workflow_run_id", "status", "summary"}),
     "workflow.waiting": frozenset({"workflow_run_id", "status", "summary"}),
@@ -446,37 +454,71 @@ def sanitize_public_payload(event_type: str, payload: Mapping[str, Any]) -> dict
     if allowed is None:
         raise ValueError(f"Unsupported public event type: {event_type}")
     return {
-        key: _sanitize_value(value, depth=0)
+        key: _sanitize_value(value, depth=0, exact=key in _EXACT_VALUE_FIELDS)
         for key, value in payload.items()
         if key in allowed and key.lower() not in _PRIVATE_KEYS
     }
 
 
-def _sanitize_value(value: Any, *, depth: int) -> Any:
-    if depth >= 4:
+#: Six levels, not four: a topology navigation target nests
+#: target -> level -> selection -> id under its list, and a *relationship*
+#: selection nests one deeper still (selection -> streamKeys -> key). Truncating
+#: either leaf produces a chip that navigates nowhere. Width (20 items) and
+#: string length (1000 chars) still bound the payload.
+_MAX_PUBLIC_PAYLOAD_DEPTH = 6
+
+#: Allowlisted fields whose leaf strings must survive verbatim.
+#:
+#: Whitespace folding is a prose normalization; applied to an identifier it is
+#: silent corruption. Topology edge keys join their endpoints with a unit
+#: separator (\x1f), which ``str.split()`` treats as whitespace, so folding
+#: rewrites the key and the client navigates nowhere.
+#:
+#: ``content`` (``assistant.delta``) is here for the mirror-image reason: it is
+#: prose, but *chunked* prose that the client concatenates back together. Folding
+#: each chunk collapses the answer's newlines into spaces and trims the space at
+#: every chunk boundary, so the reassembled text is neither valid Markdown nor
+#: equal to the stored answer. Now that the trusted answer streams while it is
+#: generated, that folded text is what the user reads for the whole generation.
+#:
+#: These subtrees are still credential-redacted, length-bounded, depth-bounded and
+#: width-bounded — only the re-folding is skipped.
+_EXACT_VALUE_FIELDS: frozenset[str] = frozenset({"content", "targets"})
+
+
+def _sanitize_value(value: Any, *, depth: int, exact: bool = False) -> Any:
+    if depth >= _MAX_PUBLIC_PAYLOAD_DEPTH:
         return "[TRUNCATED]"
     if value is None or isinstance(value, (bool, int)):
         return value
     if isinstance(value, float):
         return round(value, 6)
     if isinstance(value, str):
-        return _clean_text(value, 1000)
+        return _redact_text(value, 1000) if exact else _clean_text(value, 1000)
     if isinstance(value, Mapping):
         return {
-            _clean_text(str(key), 80): _sanitize_value(item, depth=depth + 1)
+            _clean_text(str(key), 80): _sanitize_value(item, depth=depth + 1, exact=exact)
             for key, item in list(value.items())[:20]
             if str(key).lower() not in _PRIVATE_KEYS
         }
     if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
-        return [_sanitize_value(item, depth=depth + 1) for item in list(value)[:20]]
+        return [
+            _sanitize_value(item, depth=depth + 1, exact=exact) for item in list(value)[:20]
+        ]
     return _clean_text(str(value), 200)
 
 
-def _clean_text(value: str, limit: int) -> str:
-    cleaned = " ".join(value.split())
+def _redact_text(value: str, limit: int) -> str:
+    """Credential-redact and bound a string without normalizing its whitespace."""
+
+    redacted = value
     for pattern in _SECRET_PATTERNS:
-        cleaned = pattern.sub("[REDACTED]", cleaned)
-    return cleaned[:limit]
+        redacted = pattern.sub("[REDACTED]", redacted)
+    return redacted[:limit]
+
+
+def _clean_text(value: str, limit: int) -> str:
+    return _redact_text(" ".join(value.split()), limit)
 
 
 def _bounded_mapping(value: Mapping[str, Any]) -> dict[str, Any]:

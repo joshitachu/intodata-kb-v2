@@ -9,6 +9,7 @@ import {
   SUBTLE_TEXT_COLOR,
   TITLE_COLOR,
   accentBarStyle,
+  assistantRoleShadow,
   cardShadow,
 } from "@/lib/nodeStyles";
 
@@ -37,12 +38,14 @@ function ComponentNodeComponent({ data }: { data: ComponentNodeData }) {
   return (
     <div
       className="topo-node rounded-lg cursor-pointer relative"
+      data-assistant-role={data.assistantVisualRole as string | undefined}
       style={{
         background: "white",
         border: drillable
           ? `1.5px dashed ${data.color.border}90`
           : CARD_BORDER,
-        boxShadow: cardShadow(data.highlighted === true, data.color.border),
+        boxShadow: assistantRoleShadow(data.assistantVisualRole as string | undefined)
+          ?? cardShadow(data.highlighted === true, data.color.border),
         width: 220,
         padding: "8px 10px 8px 12px",
         ...(data.dimmed ? DIMMED_STYLE : { opacity: 1 }),

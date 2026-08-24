@@ -1,4 +1,4 @@
-"""Wizard telemetry — raw event ingest + admin aggregate.
+"""Wizard telemetry — raw event ingest + Owner aggregate.
 
 Goal: see which platforms / tools users actually pick so we can prioritise
 which integration to build end-to-end next. Fire-and-forget from the frontend;
@@ -14,7 +14,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
-from src.api.dependencies import AdminUser, CurrentUser, DBSession
+from src.api.dependencies import CurrentUser, DBSession, OwnerUser
 from src.api.routes.auth import limiter
 from src.db.models import WizardEvent
 
@@ -90,7 +90,7 @@ async def ingest_wizard_event(
 
 @router.get("/wizard/summary", response_model=WizardSummaryResponse)
 async def wizard_summary(
-    _admin: AdminUser,
+    _owner: OwnerUser,
     db: DBSession,
     window_days: int = 30,
 ) -> WizardSummaryResponse:

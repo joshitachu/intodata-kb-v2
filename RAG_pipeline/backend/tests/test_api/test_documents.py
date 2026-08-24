@@ -80,6 +80,13 @@ async def test_list_documents(mock_deps):
     assert data["documents"][0]["filename"] == "test.pdf"
     assert data["documents"][0]["document_role"] == "guidance"
 
+    # Generated support artifacts stay queryable by RAG, but are not separate
+    # user-facing documents and must not inflate the document count/list.
+    for call in mock_db.execute.await_args_list:
+        statement = call.args[0]
+        compiled = str(statement.compile(compile_kwargs={"literal_binds": True}))
+        assert "NOT LIKE '%/_internal/%'" in compiled
+
 
 async def test_list_documents_scoped_to_caller_for_non_admin(mock_deps):
     """Non-admin user sees only their own uploads; the SQL filter must be applied."""

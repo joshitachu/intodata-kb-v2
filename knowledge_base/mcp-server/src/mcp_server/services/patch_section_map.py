@@ -13,6 +13,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mcp_server.providers.custom.pack_contract import PackContract
 
 # ---------------------------------------------------------------------------
 # FieldChange -- shared data class imported by TruePatchExecutor
@@ -83,19 +87,32 @@ def _platform_map(platform: str) -> dict[str, list[str]]:
 def sections_for_delta(
     platform: str,
     field_changes: list[FieldChange],
+    contract: "PackContract | None" = None,
 ) -> frozenset[str]:
     """Return the set of Phase 2 section names that must be rewritten.
 
     Iterates ``field_changes``, looks up each ``component_type`` in the
     platform map (falling back to ``_default`` for unknown types), and unions
     all matched sections.  ``GROUP_SUMMARY`` is always added.
+
+    Contract-driven (recon S40/S42): under a ``mode: replace`` pack the legacy
+    component->section map is meaningless, so the safe fallback is to rewrite
+    ALL of the pack's declared sections plus the GROUP_SUMMARY floor.
     """
+    if contract is not None and contract.mode == "replace":
+        return frozenset(contract.analysis_section_names) | set(ALWAYS_REWRITE)
     comp_map = _platform_map(platform)
     sections: set[str] = set(ALWAYS_REWRITE)
     for fc in field_changes:
         comp_type = fc.component_type or ""
         matched = comp_map.get(comp_type) or comp_map.get("_default") or ["COMPONENTS"]
         sections.update(matched)
+    if contract is not None and contract.is_pack:
+        # Extend-mode packs: keep only sections the contract actually knows,
+        # never below the floor.
+        known = set(contract.ordered_names) | set(ALWAYS_REWRITE)
+        sections &= known
+        sections |= set(ALWAYS_REWRITE)
     return frozenset(sections)
 
 
@@ -128,12 +145,22 @@ def extract_h2_sections(text: str) -> dict[str, str]:
     return result
 
 
-def docs_for_sections(sections: frozenset[str]) -> list[str]:
+def docs_for_sections(
+    sections: frozenset[str], contract: "PackContract | None" = None
+) -> list[str]:
     """Return doc names (no .md suffix) whose phase2_sections intersect ``sections``.
 
     Synthesis docs (phase2_sections: []) are never included.
-    Order follows the catalog declaration order.
+    Order follows the declaration order of the active pack's docs when a pack
+    contract is given (recon S43 -- the default catalog names docs a pack run
+    never generated), otherwise the default catalog.
     """
+    if contract is not None and contract.is_pack:
+        return [
+            spec.name
+            for spec in contract.docs
+            if spec.phase2_sections and sections & set(spec.phase2_sections)
+        ]
     catalog = _load_catalog()
     result: list[str] = []
     for entry in catalog.docs:

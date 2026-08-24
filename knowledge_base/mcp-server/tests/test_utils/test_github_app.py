@@ -218,3 +218,41 @@ def test_github_app_oauth_configured(monkeypatch):
     assert github_app.github_app_oauth_configured() is True
     monkeypatch.setattr(config, "github_app_client_secret", "")
     assert github_app.github_app_oauth_configured() is False
+
+
+class StatusClient:
+    """Fake client returning a fixed status code for GET."""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+        self.get_calls: list[str] = []
+
+    async def get(self, url, **kwargs):
+        self.get_calls.append(url)
+        return FakeResponse({}, status_code=self.status_code)
+
+
+async def test_installation_exists_true_on_200():
+    fake = StatusClient(200)
+    assert await github_app.installation_exists(4242, client=fake) is True
+    assert fake.get_calls[0].endswith("/app/installations/4242")
+
+
+async def test_installation_exists_false_on_404():
+    """An uninstalled App answers 404 — the only signal that it is really gone."""
+    assert await github_app.installation_exists(4242, client=StatusClient(404)) is False
+
+
+async def test_installation_exists_raises_on_server_error():
+    """A 5xx must not be read as 'gone' or callers would prune live state."""
+    with pytest.raises(RuntimeError):
+        await github_app.installation_exists(4242, client=StatusClient(500))
+
+
+async def test_forget_installation_token_drops_cache():
+    fake = FakeClient(post_payload={"token": "ghs_x", "expires_at": None})
+    await github_app.mint_installation_token(99, client=fake)
+    await github_app.forget_installation_token(99)
+    # A second mint must hit GitHub again rather than serve the dropped token.
+    await github_app.mint_installation_token(99, client=fake)
+    assert len(fake.post_calls) == 2

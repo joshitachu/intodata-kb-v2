@@ -25,7 +25,7 @@ function formatLastLogin(iso: string | null): string {
 }
 
 export default function ProfilePage() {
-  const { user } = useAuthContext();
+  const { user, refreshUser } = useAuthContext();
   const router = useRouter();
 
   const [currentPassword, setCurrentPassword] = useState("");
@@ -35,16 +35,20 @@ export default function ProfilePage() {
 
   if (!user) return null;
   const { isMobile } = useViewport();
+  const hasPassword = user.has_password;
 
   const newPasswordTooShort = newPassword.length > 0 && newPassword.length < 12;
+  const newPasswordTooLong = newPassword.length > 128;
   const passwordsMismatch = confirmPassword.length > 0 && newPassword !== confirmPassword;
-  const sameAsCurrentPassword = newPassword.length > 0 && newPassword === currentPassword;
+  const sameAsCurrentPassword =
+    hasPassword && newPassword.length > 0 && newPassword === currentPassword;
 
   const canSubmit =
-    currentPassword.length > 0 &&
+    (!hasPassword || currentPassword.length > 0) &&
     newPassword.length >= 12 &&
+    newPassword.length <= 128 &&
     newPassword === confirmPassword &&
-    newPassword !== currentPassword &&
+    (!hasPassword || newPassword !== currentPassword) &&
     pwState.kind !== "submitting";
 
   async function handlePasswordChange(e: React.FormEvent) {
@@ -53,14 +57,18 @@ export default function ProfilePage() {
 
     setPwState({ kind: "submitting" });
     try {
-      const res = await fetch("/api/auth/change-password", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          current_password: currentPassword,
-          new_password: newPassword,
-        }),
-      });
+      const res = await fetch(
+        hasPassword ? "/api/auth/change-password" : "/api/auth/set-password",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            hasPassword
+              ? { current_password: currentPassword, new_password: newPassword }
+              : { new_password: newPassword },
+          ),
+        },
+      );
       const data = await res.json();
       if (!res.ok) {
         setPwState({ kind: "error", message: data.error || "Password change failed." });
@@ -70,6 +78,8 @@ export default function ProfilePage() {
       setNewPassword("");
       setConfirmPassword("");
       setPwState({ kind: "success" });
+      await refreshUser();
+      if (!hasPassword) router.push("/");
     } catch {
       setPwState({ kind: "error", message: "Password change failed. Please try again." });
     }
@@ -96,7 +106,11 @@ export default function ProfilePage() {
 
             <dt className="text-muted-foreground">Roles</dt>
             <dd className="text-foreground">
-              {user.roles.length > 0 ? user.roles.join(", ") : "—"}
+              {user.is_superadmin
+                ? "Owner"
+                : user.roles.length > 0
+                  ? user.roles.join(", ")
+                  : "—"}
             </dd>
 
             <dt className="text-muted-foreground">Last login</dt>
@@ -111,31 +125,34 @@ export default function ProfilePage() {
           <h2 className="text-sm font-semibold text-foreground">Password</h2>
         </CardHeader>
         <CardBody>
-          {!user.has_password ? (
-            <p className="text-sm text-muted-foreground">
-              This account uses{" "}
-              <span className="font-medium text-foreground">
-                {user.sso_provider ?? "email code"}
-              </span>{" "}
-              sign-in and has no password set. Contact an administrator if you need password access.
-            </p>
-          ) : (
-            <form onSubmit={handlePasswordChange} className="space-y-4">
-              <div className="space-y-1.5">
-                <label className="text-sm text-muted-foreground" htmlFor="current-password">
-                  Current password
-                </label>
-                <Input
-                  id="current-password"
-                  type="password"
-                  autoComplete="current-password"
-                  value={currentPassword}
-                  onChange={(e) => {
-                    setCurrentPassword(e.target.value);
-                    if (pwState.kind !== "idle") setPwState({ kind: "idle" });
-                  }}
-                />
-              </div>
+          <form onSubmit={handlePasswordChange} className="space-y-4">
+              {!user.has_password && (
+                <div className="rounded-md border border-primary/20 bg-primary/5 p-3 text-sm text-foreground">
+                  You signed in securely with{" "}
+                  {user.sso_provider
+                    ? `${user.sso_provider} single sign-on`
+                    : `your email code${user.mfa_enabled ? " and authenticator" : ""}`}
+                  . Create a password
+                  {user.sso_provider ? " if you also want password sign-in." : " before continuing to the app."}
+                </div>
+              )}
+              {user.has_password && (
+                <div className="space-y-1.5">
+                  <label className="text-sm text-muted-foreground" htmlFor="current-password">
+                    Current password
+                  </label>
+                  <Input
+                    id="current-password"
+                    type="password"
+                    autoComplete="current-password"
+                    value={currentPassword}
+                    onChange={(e) => {
+                      setCurrentPassword(e.target.value);
+                      if (pwState.kind !== "idle") setPwState({ kind: "idle" });
+                    }}
+                  />
+                </div>
+              )}
 
               <div className="space-y-1.5">
                 <label className="text-sm text-muted-foreground" htmlFor="new-password">
@@ -146,8 +163,9 @@ export default function ProfilePage() {
                   id="new-password"
                   type="password"
                   autoComplete="new-password"
+                  maxLength={128}
                   value={newPassword}
-                  hasError={newPasswordTooShort || sameAsCurrentPassword}
+                  hasError={newPasswordTooShort || newPasswordTooLong || sameAsCurrentPassword}
                   onChange={(e) => {
                     setNewPassword(e.target.value);
                     if (pwState.kind !== "idle") setPwState({ kind: "idle" });
@@ -155,6 +173,9 @@ export default function ProfilePage() {
                 />
                 {newPasswordTooShort && (
                   <p className="text-xs text-destructive">Must be at least 12 characters.</p>
+                )}
+                {newPasswordTooLong && (
+                  <p className="text-xs text-destructive">Must be no more than 128 characters.</p>
                 )}
                 {sameAsCurrentPassword && (
                   <p className="text-xs text-destructive">Must differ from current password.</p>
@@ -169,6 +190,7 @@ export default function ProfilePage() {
                   id="confirm-password"
                   type="password"
                   autoComplete="new-password"
+                  maxLength={128}
                   value={confirmPassword}
                   hasError={passwordsMismatch}
                   onChange={(e) => {
@@ -184,7 +206,7 @@ export default function ProfilePage() {
               {pwState.kind === "success" && (
                 <div className="flex items-center gap-2 text-sm text-emerald-600">
                   <CheckCircle2 className="h-4 w-4 shrink-0" />
-                  Password updated successfully.
+                  Password saved successfully.
                 </div>
               )}
               {pwState.kind === "error" && (
@@ -199,10 +221,9 @@ export default function ProfilePage() {
                 disabled={!canSubmit}
                 isLoading={pwState.kind === "submitting"}
               >
-                Update password
+                {user.has_password ? "Update password" : "Create password & continue"}
               </Button>
             </form>
-          )}
         </CardBody>
       </Card>
 

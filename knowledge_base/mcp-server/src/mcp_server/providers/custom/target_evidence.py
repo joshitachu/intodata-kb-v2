@@ -29,6 +29,7 @@ from mcp_server.providers.custom.source_context import redact_inline_credentials
 
 if TYPE_CHECKING:  # avoid a runtime import cycle (noncode_evidence imports this module)
     from mcp_server.providers.custom.noncode_evidence import NonCodeAssociationPlan
+    from mcp_server.providers.custom.runtime_evidence import RuntimeEvidenceStore
 
 logger = logging.getLogger("mcp_server.providers.custom.target_evidence")
 
@@ -191,10 +192,17 @@ class TargetEvidenceBuilder:
         *,
         noncode_plan: "NonCodeAssociationPlan | None" = None,
         noncode_section_bytes: int = 0,
+        runtime_store: "RuntimeEvidenceStore | None" = None,
+        runtime_section_bytes: int = 0,
     ) -> None:
         self.scan_output_dir = scan_output_dir
         self.staging_dir = staging_dir
         self.max_bytes = max_bytes
+        # Observed production behaviour for this unit (run counts, outcomes,
+        # latency, redacted failure headlines). Prefetched once per run by the
+        # harness -- this builder is synchronous and must not do I/O.
+        self._runtime_store = runtime_store
+        self._runtime_section_bytes = runtime_section_bytes
         # Optional Tier-3 documented-context (non-code) attachment. Additive
         # redacted intent appended after the verbatim evidence; bounded by its
         # own byte budget and dropped before any verbatim evidence, never ahead.
@@ -230,6 +238,25 @@ class TargetEvidenceBuilder:
         if self._job_index is None:
             self._job_index = build_unit_index(self._all_jobs())
         return self._job_index
+
+    def _is_esb_route(self, unit_name: str) -> bool:
+        """Whether this unit is a long-running ESB route rather than a batch job.
+
+        Scanner-computed (`is_esb_route`), never inferred from the name -- an
+        `r` prefix or `_Route` suffix is a convention, not a guarantee.
+
+        A scan can hold several entries under one unit name (different exported
+        versions of the same artifact; werkorder carries
+        `Maximo2Quintiq_Workorder_Route` twice, flagged False and True). ANY
+        flagged entry makes this a route: mislabelling a route as a batch job
+        publishes a 76-day "run duration", while the converse merely omits a
+        clarifying note.
+        """
+        return any(
+            bool(job.get("is_esb_route"))
+            for job in self._all_jobs()
+            if str(job.get("name") or "") == unit_name
+        )
 
     def _job_by_unit(self, unit_name: str) -> dict[str, Any] | None:
         return self._job_lookup().get(unit_name)
@@ -514,11 +541,20 @@ class TargetEvidenceBuilder:
             noncode_md = self._noncode_plan.unit_section(
                 unit_name, max_bytes=self._noncode_section_bytes
             ) or ""
+        runtime_md = ""
+        if self._runtime_store is not None and self._runtime_section_bytes > 0:
+            runtime_md = self._runtime_store.section_for(
+                unit_name,
+                is_esb_route=self._is_esb_route(unit_name),
+                max_bytes=self._runtime_section_bytes,
+            )
 
-        def _assemble(inventory: str, connections: str, noncode: str) -> str:
+        def _assemble(
+            inventory: str, connections: str, noncode: str, runtime: str = ""
+        ) -> str:
             parts = [
                 header_md, callers_md, inventory, code_md, tmap_md, sql_md,
-                context_md, connections, noncode,
+                context_md, connections, noncode, runtime,
             ]
             return "\n\n".join(p for p in parts if p) + "\n"
 
@@ -527,8 +563,13 @@ class TargetEvidenceBuilder:
         # detail, then the additive Tier-3 non-code section, and only then --
         # last resort -- ship verbatim evidence alone. Verbatim code/SQL/tMap/
         # context is never trimmed ahead of the documented-context section.
-        content = _assemble(inventory_md, connections_md, noncode_md)
+        content = _assemble(inventory_md, connections_md, noncode_md, runtime_md)
         if len(content.encode("utf-8")) > self.max_bytes:
+            content = _assemble(inventory_md, "", noncode_md, runtime_md)
+        if len(content.encode("utf-8")) > self.max_bytes:
+            # Runtime facts are compact and high-signal, so they survive the
+            # derived-detail trims above; they still go before any verbatim
+            # scanner evidence is touched.
             content = _assemble(inventory_md, "", noncode_md)
         if len(content.encode("utf-8")) > self.max_bytes:
             content = _assemble(self._render_inventory(job, include_params=False), "", noncode_md)

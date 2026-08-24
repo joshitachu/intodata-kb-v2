@@ -1,8 +1,9 @@
 import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
 import type { LandscapeApplication } from "@/types/landscape";
+import { assistantRoleShadow } from "@/lib/nodeStyles";
 
-export interface LandscapeApplicationNodeData { application: LandscapeApplication }
+export interface LandscapeApplicationNodeData { application: LandscapeApplication; highlighted?: boolean; dimmed?: boolean; assistantVisualRole?: string }
 
 function LandscapeApplicationNodeComponent({ data }: { data: LandscapeApplicationNodeData }) {
   const { application } = data;
@@ -17,7 +18,7 @@ function LandscapeApplicationNodeComponent({ data }: { data: LandscapeApplicatio
       ? `${application.source_roots.length} identical imported copies`
       : "Scanned integration project");
   return (
-    <div className="relative w-[230px] rounded-xl border border-blue-200 bg-white px-4 py-3 shadow-sm" aria-label={`${entityLabel} ${application.label || application.source_root}`}>
+    <div data-assistant-role={data.assistantVisualRole} style={{ boxShadow: assistantRoleShadow(data.assistantVisualRole) }} className={`relative w-[230px] rounded-xl border border-blue-200 bg-white px-4 py-3 shadow-sm ${data.highlighted && !data.assistantVisualRole ? "ring-4 ring-blue-200" : ""}`} aria-label={`${entityLabel} ${application.label || application.source_root}`}>
       <Handle type="target" position={Position.Left} className="!h-2.5 !w-2.5 !border-2 !border-white !bg-blue-400" />
       <div className="absolute inset-y-0 left-0 w-1 rounded-l-xl bg-blue-600" />
       <div className="flex items-start justify-between gap-2">

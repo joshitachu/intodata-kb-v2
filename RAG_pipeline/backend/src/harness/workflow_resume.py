@@ -31,8 +31,6 @@ from src.harness.models import (
     WorkflowRunStatus,
     WorkflowRunUpdate,
 )
-from src.harness.packs.project_service import PackServiceError, ProjectPackService
-from src.harness.packs.runtime import compile_governed_pack_registry
 from src.harness.providers.mcp_docs import McpDocumentationProvider
 from src.harness.providers.mcp_projects import McpProjectsProvider
 from src.harness.registry import CapabilityRegistry, base_capability_registry
@@ -212,11 +210,6 @@ async def resume_project_onboarding_workflow(
     source_type = arguments.get("source_type")
     if source_type not in {"git", "zip"}:
         source_type = None
-    selected_pack_ids = [
-        str(value)
-        for value in arguments.get("selected_pack_ids", [])
-        if isinstance(value, str)
-    ]
     plugin_pack_id = arguments.get("plugin_pack_id")
     if (
         not isinstance(plugin_pack_id, int)
@@ -224,13 +217,6 @@ async def resume_project_onboarding_workflow(
         or plugin_pack_id < 1
     ):
         plugin_pack_id = None
-    if selected_pack_ids:
-        await ProjectPackService(db, base_capability_registry()).activate(
-            project_id=project_id,
-            workflow_key=_DOCUMENTATION_PACK_WORKFLOW_KEY,
-            active_pack_ids=selected_pack_ids,
-            user_id=user_id,
-        )
     registry = await _project_execution_registry(
         db, project_id, _DOCUMENTATION_PACK_WORKFLOW_KEY
     )
@@ -558,40 +544,12 @@ async def _project_execution_registry(
     db: AsyncSession,
     project_id: str,
     workflow_key: str,
-    *,
-    private_version_ids: tuple[int, ...] | None = None,
-    owner_user_id: int | None = None,
 ) -> CapabilityRegistry:
-    base = base_capability_registry()
-    pack_service = ProjectPackService(db, base)
-    compiled = await pack_service.resolve_governed_for_execution(project_id, workflow_key)
-    if compiled is None and private_version_ids is not None:
-        if owner_user_id is None:
-            raise PackServiceError("Private Analysis Pack selection has no owner context")
-        await pack_service.activate(
-            project_id=project_id,
-            workflow_key=workflow_key,
-            user_id=owner_user_id,
-        )
-        compiled = await pack_service.resolve_governed_for_execution(
-            project_id, workflow_key
-        )
-    if compiled is None:
-        return default_capability_registry()
-    if private_version_ids is None:
-        private_packs = await pack_service.resolve_private_analysis_for_execution(
-            project_id, workflow_key
-        )
-    else:
-        if owner_user_id is None:
-            raise PackServiceError("Private Analysis Pack selection has no owner context")
-        private_packs = await pack_service.resolve_private_analysis_versions_for_execution(
-            private_version_ids,
-            owner_user_id=owner_user_id,
-        )
-    return compile_governed_pack_registry(
-        base, compiled, tuple(item.provider_payload() for item in private_packs)
-    )
+    # Project generation is controlled solely by MCP's persisted
+    # ``plugin_pack_id``. The RAG runtime keeps its fixture-driven capability
+    # allowlist, but no longer compiles a second, project-selectable pack stack.
+    _ = (db, project_id, workflow_key)
+    return default_capability_registry()
 
 
 async def _record_runtime_activities(

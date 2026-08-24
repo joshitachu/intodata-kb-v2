@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactElement } from "react";
 import ABComparison from "../components/ABComparison";
 import GenerateDialog from "../components/GenerateDialog";
-import PluginPacksPage from "../components/PluginPacksPage";
 import ProjectSettings from "../components/ProjectSettings";
 import ValidationReviewPanel from "../components/ValidationReviewPanel";
 import { api } from "../api/client";
@@ -26,9 +25,15 @@ vi.mock("../api/client", () => ({
     listProjects: vi.fn(),
     listPluginPacks: vi.fn(),
     assignPluginPack: vi.fn(),
-    getPackWorkspace: vi.fn(),
-    updatePackWorkspace: vi.fn(),
     generate: vi.fn(),
+    listConnectorCatalog: vi.fn(),
+    listConnectors: vi.fn(),
+    listProjectConnectorBindings: vi.fn(),
+    listConnectorSources: vi.fn(),
+    listProjectAvailableConnectors: vi.fn(),
+    putProjectConnectorBinding: vi.fn(),
+    deleteProjectConnectorBinding: vi.fn(),
+    getRunConnectorEvidence: vi.fn(),
   },
 }));
 
@@ -148,6 +153,12 @@ const workspaceProject: Project = {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(api.listConnectorCatalog).mockResolvedValue({ providers: [] });
+  vi.mocked(api.listConnectors).mockResolvedValue({ connectors: [], total: 0 });
+  vi.mocked(api.listProjectConnectorBindings).mockResolvedValue({ project_id: "p1", bindings: [] });
+  vi.mocked(api.listProjectAvailableConnectors).mockResolvedValue({ connectors: [] });
+  vi.mocked(api.listConnectorSources).mockResolvedValue({ connector_instance_id: "none", sources: [], total: 0 });
+  vi.mocked(api.listPluginPacks).mockResolvedValue([]);
 });
 
 describe("EP-000 dashboard panels", () => {
@@ -305,68 +316,17 @@ describe("EP-000 dashboard panels", () => {
     expect(screen.getByText("phase2_preamble (7 chars)")).toBeInTheDocument();
   });
 
-  it("renders only plugin packs (no analysis add-ons) and saves the selection", async () => {
-    const workspace = {
-      project_id: "p1",
-      organization_packs: [
-        { id: 10, name: "Swap Pack", version: "2.0", description: "Base docs" },
-      ],
-      personal_packs: [
-        {
-          id: 21,
-          name: "Quality Pack",
-          version: "1.0",
-          description: "Adds quality output",
-          output_documents: ["quality.md"],
-        },
-      ],
-      selected_organization_pack_id: 10,
-      selected_private_version_ids: [],
-    };
-    vi.mocked(api.listProjects).mockResolvedValue({
-      projects: [workspaceProject],
-      total: 1,
-    });
-    vi.mocked(api.getPackWorkspace).mockResolvedValue(workspace);
-    vi.mocked(api.updatePackWorkspace).mockResolvedValue({
-      ...workspace,
-      selected_private_version_ids: [21],
-    });
-
-    renderWithClient(<PluginPacksPage isSuperadmin={false} />);
-
-    expect(await screen.findByText("Plugin Packs")).toBeInTheDocument();
-    expect(await screen.findByText("Swap Pack v2.0")).toBeInTheDocument();
-    // Analysis (personal) packs are managed in the Nexus Workbench, not here.
-    expect(screen.queryByText("Quality Pack v1.0")).not.toBeInTheDocument();
-    expect(screen.queryByText("My add-ons")).not.toBeInTheDocument();
-    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-    expect(screen.queryByText(/Advanced\/admin/)).not.toBeInTheDocument();
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Save pack selection" }),
-    );
-
-    await waitFor(() => {
-      // Existing private selections are preserved untouched (empty here).
-      expect(api.updatePackWorkspace).toHaveBeenCalledWith("p1", 10, []);
-    });
-  });
-
-  it("passes the selected workspace IDs from GenerateDialog to the Nexus hook", async () => {
-    const workspace = {
-      project_id: "p1",
-      organization_packs: [
-        { id: 10, name: "Swap Pack", version: "2.0", description: null },
-      ],
-      personal_packs: [
-        { id: 21, name: "Quality Pack", version: "1.0", output_documents: [] },
-      ],
-      selected_organization_pack_id: 10,
-      selected_private_version_ids: [21],
-    };
+  it("persists one selected plugin pack before generating through MCP", async () => {
+    vi.mocked(api.listPluginPacks).mockResolvedValue([
+      {
+        id: 10, name: "Swap Pack", manifest_name: "Swap Pack", version: "2.0",
+        description: "Talend migration documents", repo_url: null, repo_branch: null,
+        last_commit_sha: null, auto_update: false, origin: "personal",
+        certification_status: "approved", usable: true, mutable: false,
+      },
+    ]);
+    vi.mocked(api.assignPluginPack).mockResolvedValue({ project_id: "p1", plugin_pack_id: 10 });
     vi.mocked(api.listModels).mockResolvedValue({ models: [] });
-    vi.mocked(api.getPackWorkspace).mockResolvedValue(workspace);
     vi.mocked(api.generate).mockResolvedValue({
       status: "started",
       message: "ok",
@@ -376,7 +336,8 @@ describe("EP-000 dashboard panels", () => {
       <GenerateDialog project={workspaceProject} open onClose={vi.fn()} />,
     );
 
-    expect(await screen.findByText("Swap Pack v2.0")).toBeInTheDocument();
+    fireEvent.change(await screen.findByLabelText("Plugin pack"), { target: { value: "10" } });
+    await waitFor(() => expect(api.assignPluginPack).toHaveBeenCalledWith("p1", 10));
     fireEvent.click(screen.getByRole("button", { name: "Generate" }));
 
     await waitFor(() => {
@@ -386,24 +347,32 @@ describe("EP-000 dashboard panels", () => {
         null,
         null,
         null,
-        10,
-        [21],
         "custom",
       );
     });
+  });
+
+  it("does not offer unavailable plugin packs for selection", async () => {
+    vi.mocked(api.listPluginPacks).mockResolvedValue([
+      {
+        id: 11, name: "Blocked Pack", manifest_name: "Blocked Pack", version: "1.0.0",
+        description: null, repo_url: null, repo_branch: null, last_commit_sha: null,
+        auto_update: false, origin: "shared", certification_status: "blocked",
+        usable: false, mutable: false, blocked_reason: "Awaiting review",
+      },
+    ]);
+    vi.mocked(api.listModels).mockResolvedValue({ models: [] });
+
+    renderWithClient(<GenerateDialog project={workspaceProject} open onClose={vi.fn()} />);
+
+    expect(await screen.findByRole("option", { name: /none \(use the built-in/i })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Blocked Pack/ })).not.toBeInTheDocument();
   });
 
   it("uses one actual model for the complete OpenCode session", async () => {
     const openCodeProject = {
       ...workspaceProject,
       doc_generation_provider: "opencode-cli",
-    };
-    const workspace = {
-      project_id: "p1",
-      organization_packs: [],
-      personal_packs: [],
-      selected_organization_pack_id: null,
-      selected_private_version_ids: [],
     };
     const descriptor = (id: string, label: string) => ({
       id,
@@ -425,9 +394,13 @@ describe("EP-000 dashboard panels", () => {
         descriptor("openai/gpt-5.6-luna", "OpenAI GPT-5.6 Luna"),
         descriptor("openai/gpt-5.6-sol", "OpenAI GPT-5.6 Sol"),
         descriptor("openai/gpt-5.6-terra", "OpenAI GPT-5.6 Terra"),
+        {
+          ...descriptor("opencode-go/kimi-k3", "Kimi K3 — Go subscription"),
+          available: false,
+          unavailable_reason: "No credentials configured (set MCP_OPENCODE_GO_API_KEY)",
+        },
       ],
     });
-    vi.mocked(api.getPackWorkspace).mockResolvedValue(workspace);
     vi.mocked(api.generate).mockResolvedValue({
       status: "started",
       message: "ok",
@@ -445,6 +418,12 @@ describe("EP-000 dashboard panels", () => {
     ).not.toBeInTheDocument();
     expect(screen.queryByText("Phase 3 — Doc Writing")).not.toBeInTheDocument();
     await screen.findByRole("option", { name: /OpenAI GPT-5.6 Sol/ });
+    const goOption = screen.getByRole("option", { name: /Kimi K3/ });
+    expect(goOption).toBeDisabled();
+    expect(goOption.parentElement).toHaveAttribute(
+      "label",
+      "OpenCode Go subscription",
+    );
     const generateButton = await screen.findByRole("button", {
       name: "Generate",
     });
@@ -463,21 +442,51 @@ describe("EP-000 dashboard panels", () => {
         null,
         "openai/gpt-5.6-sol",
         null,
-        null,
-        [],
         "opencode-cli",
       );
     });
   });
 
+  it("shows project runtime evidence only for OpenCode", async () => {
+    const manageRuntimeEvidence = vi.fn();
+    vi.mocked(api.listModels).mockResolvedValue({ models: [
+      {
+        id: "openai/gpt-5.6-sol", provider: "openai", label: "Sol", supports_analysis: true,
+        supports_writing: true, is_default_analysis: true, is_default_investigation: true,
+        is_default_writing: false, is_local: false, available: true, unavailable_reason: null, rag_capable: true,
+      },
+    ] });
+    vi.mocked(api.generate).mockResolvedValue({ status: "started", message: "ok" });
+
+    renderWithClient(<GenerateDialog project={workspaceProject} open onClose={vi.fn()} onManageRuntimeEvidence={manageRuntimeEvidence} />);
+    expect(screen.queryByText("Connected live data")).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("tab", { name: "OpenCode" }));
+    expect(await screen.findByText("Connected live data")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Adjust connected systems" }));
+    expect(manageRuntimeEvidence).toHaveBeenCalledWith("p1");
+    fireEvent.change(screen.getByLabelText("Select OpenCode session model (required)"), { target: { value: "openai/gpt-5.6-sol" } });
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+
+    await waitFor(() => expect(api.generate).toHaveBeenCalledWith(
+      "p1", true, null, "openai/gpt-5.6-sol", null, "opencode-cli",
+    ));
+  });
+
+  it("does not block generation when the plugin catalogue is temporarily unavailable", async () => {
+    vi.mocked(api.listPluginPacks).mockRejectedValue(new Error("Load failed"));
+    vi.mocked(api.listModels).mockResolvedValue({ models: [] });
+    vi.mocked(api.generate).mockResolvedValue({ status: "started", message: "ok" });
+
+    renderWithClient(<GenerateDialog project={workspaceProject} open onClose={vi.fn()} />);
+
+    expect(await screen.findByText(/saved project pack will still be used/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+    await waitFor(() => expect(api.generate).toHaveBeenCalledWith(
+      "p1", true, null, null, null, "custom",
+    ));
+  });
+
   it("separates the OpenCode method from its session model", async () => {
-    const workspace = {
-      project_id: "p1",
-      organization_packs: [],
-      personal_packs: [],
-      selected_organization_pack_id: null,
-      selected_private_version_ids: [],
-    };
     const descriptor = (
       id: string,
       label: string,
@@ -502,8 +511,6 @@ describe("EP-000 dashboard panels", () => {
         descriptor("openai/gpt-5.6-luna", "OpenAI GPT-5.6 Luna", true),
       ],
     });
-    vi.mocked(api.getPackWorkspace).mockResolvedValue(workspace);
-
     renderWithClient(
       <GenerateDialog project={workspaceProject} open onClose={vi.fn()} />,
     );

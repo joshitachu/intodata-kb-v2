@@ -55,7 +55,6 @@ class HarnessWorkflowService:
         pack_governance = _pack_governance_receipt(
             pack_snapshot,
             capability.metadata.get("nexus_pack_presentation"),
-            capability.metadata.get("nexus_private_analysis_packs"),
         )
         return await self._repository.create_run(
             WorkflowRunCreate(
@@ -348,16 +347,10 @@ def _bounded(value: str | None, limit: int) -> str | None:
 def _pack_governance_receipt(
     snapshot: Any,
     presentation: Any,
-    private_analysis_packs: Any = None,
 ) -> dict[str, Any] | None:
     """Extract immutable governed provenance from compiled capability metadata."""
     if not isinstance(snapshot, dict) or "policy_id" not in snapshot:
         return None
-    private_receipts = [
-        item["receipt"]
-        for item in (private_analysis_packs if isinstance(private_analysis_packs, list) else [])
-        if isinstance(item, dict) and isinstance(item.get("receipt"), dict)
-    ]
     return {
         "policy_id": snapshot.get("policy_id"),
         "policy_hash": snapshot.get("policy_hash"),
@@ -367,7 +360,6 @@ def _pack_governance_receipt(
         "style_pack_ids": list(snapshot.get("style_pack_ids") or []),
         "packs": list(snapshot.get("resolved_packs") or []),
         "presentation": presentation if isinstance(presentation, dict) else None,
-        "private_analysis_pack_receipts": private_receipts,
     }
 
 

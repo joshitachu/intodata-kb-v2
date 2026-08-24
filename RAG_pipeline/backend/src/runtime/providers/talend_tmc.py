@@ -55,7 +55,7 @@ from src.runtime.models import (
     RuntimeWorkspace,
 )
 from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
-from src.runtime.providers.base import CredentialField
+from src.runtime.providers.base import CredentialField, compose_tenant_identity
 from src.runtime.sync import RuntimeSyncBatch
 
 logger = logging.getLogger(__name__)
@@ -165,6 +165,50 @@ class TalendTmcRuntimeProvider:
         if not base_url:
             raise RuntimeProviderError("Missing TMC base URL")
         return f"tmc:{base_url}"
+
+    async def resolve_physical_identity(self, credentials: Mapping[str, Any]) -> str:
+        """Narrow the regional endpoint to the Talend account the token belongs to.
+
+        Every Talend Cloud tenant in a region shares one base URL, so the
+        endpoint alone cannot tell two customers apart. Environment ids are
+        account-scoped, so the set of them the token can see identifies the
+        tenant without sending the token itself into storage.
+        """
+        environment_ids = await self._tenant_environment_ids(credentials)
+        return compose_tenant_identity(self.physical_source_identity(credentials), environment_ids)
+
+    def physical_identity_from_batch(
+        self, credentials: Mapping[str, Any], batch: RuntimeSyncBatch
+    ) -> str | None:
+        environment_ids = [item.environment_id for item in batch.environments if item.environment_id]
+        if not environment_ids:
+            # A scoped sync can return no environments; keeping the stored
+            # identity is safer than narrowing it to an empty marker set.
+            return None
+        return compose_tenant_identity(self.physical_source_identity(credentials), environment_ids)
+
+    async def _tenant_environment_ids(self, credentials: Mapping[str, Any]) -> list[str]:
+        token = str(credentials.get("api_token") or "").strip()
+        base_url = str(credentials.get("base_url") or "").strip().rstrip("/")
+        if not token or not base_url:
+            raise RuntimeProviderError("Missing required TMC credentials")
+        provider = TalendTmcRuntimeProvider(transport=self._transport)
+        provider._token = token
+        provider._base_url_override = base_url
+        items = await provider._get_all_pages(
+            "/orchestration/environments", max_items=_DEFAULT_FETCH_LIMIT
+        )
+        environment_ids = [
+            environment_id
+            for item in items
+            if (environment_id := _str_field(item, "id", "environment_id"))
+        ]
+        if not environment_ids:
+            raise RuntimeProviderError(
+                "Talend TMC returned no environments for this token, so the account "
+                "cannot be identified. Check that the token has environment access."
+            )
+        return environment_ids
 
     def source_type_aliases(self) -> set[str]:
         # Historical runtime mirrors used ``talend_tmc`` before self-service

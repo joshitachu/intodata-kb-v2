@@ -34,6 +34,23 @@ export default function GithubIntegrationPanel({
     );
   }
 
+  // Azure DevOps projects resolve their credential from an organization-level
+  // connection, not from a per-project column. The controls below call the GitHub
+  // API, so offering them here would only produce failures.
+  if (project.connection_kind === "azure_devops") {
+    return (
+      <div className="bg-surface-raised rounded border border-white/[0.07] p-3">
+        <div className="flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0" />
+          <span className="text-sm text-emerald-400">
+            Connected via Azure DevOps{project.github_account_login ? ` (${project.github_account_login})` : ""}
+            {" "}— token held on the organization connection, rotate it there
+          </span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="bg-surface-raised rounded border border-white/[0.07] p-3 space-y-3">
       <div className="flex items-center justify-between gap-3">

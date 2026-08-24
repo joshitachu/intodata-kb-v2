@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
@@ -13,6 +13,9 @@ from mcp_server.providers.custom.validators import (
     missing_required_analysis_sections,
     normalize_analysis_guide_headings,
 )
+
+if TYPE_CHECKING:
+    from mcp_server.providers.custom.pack_contract import PackContract
 
 
 RepairTriggerKind = Literal[
@@ -177,14 +180,29 @@ def mentioned_units_by_group(facts: FactsManifest, analysis_dir: Path, unit_name
     return found
 
 
-def deterministic_phase2_section_patch(text: str, *, platform: str, group: str) -> tuple[str, list[str]]:
-    """Add only safe structural Phase 2 section shells without calling an LLM."""
+def deterministic_phase2_section_patch(
+    text: str,
+    *,
+    platform: str,
+    group: str,
+    contract: "PackContract | None" = None,
+) -> tuple[str, list[str]]:
+    """Add only safe structural Phase 2 section shells without calling an LLM.
 
-    normalized = normalize_analysis_guide_headings(text, platform)
-    missing = missing_required_analysis_sections(normalized, platform)
+    Contract-driven when ``contract`` is given: missing sections are computed
+    against the contract's required set, and the patchable set is the
+    protected floor (GROUP_SUMMARY). For a ``mode: replace`` pack the floor IS
+    the whole required set, so this patch always converges and the downstream
+    "missing required sections after deterministic patch" raise (the silent
+    PARTIAL-stub path, recon S9) is unreachable for satisfied pack output.
+    """
+
+    normalized = normalize_analysis_guide_headings(text, platform, contract=contract)
+    missing = missing_required_analysis_sections(normalized, platform, contract=contract)
     if not missing:
         return normalized, []
-    patchable = [name for name in missing if name == "GROUP_SUMMARY"]
+    floor = contract.floor_names if contract is not None else {"GROUP_SUMMARY"}
+    patchable = [name for name in missing if name in floor]
     if not patchable:
         return normalized, missing
     sections = []

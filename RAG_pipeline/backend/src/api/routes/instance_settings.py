@@ -1,18 +1,17 @@
 """Admin endpoints for per-instance model settings.
 
-GET returns the current override map (superadmin only).
-PUT replaces the override set (superadmin only, validated against registered keys).
+GET returns the current override map (Owner only).
+PUT replaces the override set (Owner only, validated against registered keys).
 Every PUT is written to audit_logs with before/after diff.
 """
 from __future__ import annotations
 
 import logging
-from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from src.api.dependencies import AdminUser, DBSession
+from src.api.dependencies import DBSession, OwnerUser
 from src.services import instance_settings_service as svc
 from src.services.audit_service import AuditService
 
@@ -41,10 +40,10 @@ class InstanceSettingsUpdateRequest(BaseModel):
 
 @router.get("/instance-settings", response_model=InstanceSettingsResponse)
 async def get_instance_settings(
-    _admin: AdminUser,
+    _owner: OwnerUser,
     db: DBSession,
 ):
-    """Return the current instance setting overrides (superadmin only)."""
+    """Return the current instance setting overrides (Owner only)."""
     overrides = await svc.get_all(db)
     return InstanceSettingsResponse(settings=overrides)
 
@@ -53,10 +52,10 @@ async def get_instance_settings(
 async def update_instance_settings(
     request: Request,
     body: InstanceSettingsUpdateRequest,
-    admin: AdminUser,
+    owner: OwnerUser,
     db: DBSession,
 ):
-    """Replace the instance setting overrides (superadmin only).
+    """Replace the instance setting overrides (Owner only).
 
     Validates every key against the registered set. Empty / null values delete
     the row so the system falls back to env / pydantic defaults. Each successful
@@ -72,8 +71,8 @@ async def update_instance_settings(
         await svc.set_many(
             db,
             normalized,
-            actor_user_id=admin.id,
-            actor_username=admin.username,
+            actor_user_id=owner.id,
+            actor_username=owner.username,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -87,8 +86,8 @@ async def update_instance_settings(
 
     audit = AuditService(db)
     await audit.log(
-        user_id=admin.id,
-        username=admin.username,
+        user_id=owner.id,
+        username=owner.username,
         action="update_instance_settings",
         resource_type="instance_settings",
         resource_id=None,
@@ -99,7 +98,7 @@ async def update_instance_settings(
 
     logger.info(
         "instance_settings updated by %s: %d keys changed",
-        admin.username,
+        owner.username,
         len(diff),
     )
 

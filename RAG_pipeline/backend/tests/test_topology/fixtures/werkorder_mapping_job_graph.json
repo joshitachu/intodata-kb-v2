@@ -1,0 +1,2125 @@
+{
+ "project_id": "werkorder",
+ "job_name": "VISE_SP_VIP_OTL",
+ "group": "VolkerVessels_Workorder/Talend exports/Assetcheck.__intodoc_zip__/ASSETCHECK/VoorbeeldJobs",
+ "nodes": [
+  {
+   "unique_name": "tFileInputXML_2",
+   "display_label": "ExtractListResults",
+   "component_type": "tFileInputXML",
+   "type_explanation": "Reads hierarchical XML data from a file.",
+   "role": "input",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "DIE_ON_ERROR": "false",
+    "ENCODING": "\"UTF-8\"",
+    "FILENAME": "context.processedDirectory +(String)globalMap.get(\"globalFileName\") + \"_vise_get_output.xml\""
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFlowToIterate_2",
+   "display_label": "IterateInMethod",
+   "component_type": "tFlowToIterate",
+   "type_explanation": "Runs the next branch once for every incoming row.",
+   "role": "orchestration",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFixedFlowInput_6",
+   "display_label": "SetMethodAndId",
+   "component_type": "tFixedFlowInput",
+   "type_explanation": "Creates rows from configured values.",
+   "role": "input",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tExtractXMLField_4",
+   "display_label": "ExtractMethodNode",
+   "component_type": "tExtractXMLField",
+   "type_explanation": "Processes data using the Talend tExtractXMLField component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "DIE_ON_ERROR": "false"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileOutputXML_1",
+   "display_label": "CopyMethodNode",
+   "component_type": "tFileOutputXML",
+   "type_explanation": "Writes hierarchical XML data to a file.",
+   "role": "output",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "ENCODING": "\"UTF-8\"",
+    "FILENAME": "context.inProgressDirectory +\"Temp//\"+ (String)globalMap.get(\"globalFileName\") + \"_vise_method_temp_\" + (String)globa..."
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tLibraryLoad_1",
+   "display_label": "LoadSaxonJar",
+   "component_type": "tLibraryLoad",
+   "type_explanation": "Processes data using the Talend tLibraryLoad component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tSetGlobalVar_5",
+   "display_label": "SetGlobalVariable",
+   "component_type": "tSetGlobalVar",
+   "type_explanation": "Stores a value for later components in this Job.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tMSSqlConnection_1",
+   "display_label": "SqlConnection",
+   "component_type": "tMSSqlConnection",
+   "type_explanation": "Opens or closes a MSSqlConnection connection.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "VolkerVessels_Workorder/Talend exports/Assetcheck.__intodoc_zip__/ASSETCHECK::LogConnection",
+   "param_summary": {
+    "DBNAME": "context.connection_logDB_Database",
+    "ENCODING": "\"ISO-8859-15\"",
+    "HOST": "context.connection_logDB_Host",
+    "PORT": "context.connection_logDB_Port",
+    "PROPERTIES": "context.connection_logDB_AdditionalParameters",
+    "SCHEMA_DB": "context.connection_logDB_Schema",
+    "USER": "context.connection_logDB_Username",
+    "USE_SHARED_CONNECTION": "false"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tMSSqlInput_1",
+   "display_label": "LogInfo",
+   "component_type": "tMSSqlInput",
+   "type_explanation": "Reads data using the Talend tMSSqlInput component.",
+   "role": "input",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "VolkerVessels_Workorder/Talend exports/Assetcheck.__intodoc_zip__/ASSETCHECK::LogConnection",
+   "param_summary": {
+    "DBNAME": "context.logDBName",
+    "ENCODING": "\"ISO-8859-15\"",
+    "HOST": "context.logDBHost",
+    "PORT": "context.logDBPort",
+    "PROPERTIES": "context.logDbAdditionalParamenters",
+    "QUERY": "\"SELECT ProcessID from Processes  WITH (NOLOCK) where ProcessCode ='\" + context.processCode + \"' and datedeleted is n...",
+    "TABLE": "\"Processes\"",
+    "USER": "context.logDBUserName"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tSetGlobalVar_6",
+   "display_label": "SetprocessID",
+   "component_type": "tSetGlobalVar",
+   "type_explanation": "Stores a value for later components in this Job.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tJava_1",
+   "display_label": "InputLink",
+   "component_type": "tJava",
+   "type_explanation": "Processes data using the Talend tJava component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": true,
+   "description": ""
+  },
+  {
+   "unique_name": "tXMLMap_5",
+   "display_label": "MapIntegration",
+   "component_type": "tXMLMap",
+   "type_explanation": "Maps hierarchical XML data.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "DIE_ON_ERROR": "false"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tSOAP_4",
+   "display_label": "GetIntegration",
+   "component_type": "tSOAP",
+   "type_explanation": "Processes data using the Talend tSOAP component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "ENDPOINT": "context.relaticsEndPoint"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileOutputXML_2",
+   "display_label": "CopyIntegrationOutput",
+   "component_type": "tFileOutputXML",
+   "type_explanation": "Writes hierarchical XML data to a file.",
+   "role": "output",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "ENCODING": "\"UTF-8\"",
+    "FILENAME": "context.inputDirectory + (String)globalMap.get(\"globalVariable\") +\".xml\""
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tExtractXMLField_3",
+   "display_label": "ExtractGetResults",
+   "component_type": "tExtractXMLField",
+   "type_explanation": "Processes data using the Talend tExtractXMLField component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "DIE_ON_ERROR": "false"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFlowToIterate_1",
+   "display_label": "Iterate",
+   "component_type": "tFlowToIterate",
+   "type_explanation": "Runs the next branch once for every incoming row.",
+   "role": "orchestration",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tJava_5",
+   "display_label": "SetNewRunTimeREf",
+   "component_type": "tJava",
+   "type_explanation": "Processes data using the Talend tJava component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": true,
+   "description": ""
+  },
+  {
+   "unique_name": "tXMLMap_1",
+   "display_label": "MapIntoRelatics",
+   "component_type": "tXMLMap",
+   "type_explanation": "Maps hierarchical XML data.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "DIE_ON_ERROR": "false"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tSetGlobalVar_2",
+   "display_label": "SetGlobalVariable",
+   "component_type": "tSetGlobalVar",
+   "type_explanation": "Stores a value for later components in this Job.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileOutputDelimited_2",
+   "display_label": "RelaticsGetResultInput",
+   "component_type": "tFileOutputDelimited",
+   "type_explanation": "Writes data using the Talend tFileOutputDelimited component.",
+   "role": "output",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "ENCODING": "\"UTF-8\"",
+    "FILENAME": "context.inProgressDirectory + (String)((String)globalMap.get(\"globalVariable\") + \"\\\\\" + ((String)globalMap.get(\"row1...."
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tSOAP_1",
+   "display_label": "VISEGet",
+   "component_type": "tSOAP",
+   "type_explanation": "Processes data using the Talend tSOAP component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "ENDPOINT": "(String)row1.VISEURL"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileOutputDelimited_3",
+   "display_label": "RelaticsGetResultOutput",
+   "component_type": "tFileOutputDelimited",
+   "type_explanation": "Writes data using the Talend tFileOutputDelimited component.",
+   "role": "output",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "ENCODING": "\"UTF-8\"",
+    "FILENAME": "context.processedDirectory +(String)((String)globalMap.get(\"globalVariable\") + \"\\\\\" + ((String)globalMap.get(\"row1.Op..."
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tExtractXMLField_1",
+   "display_label": "ExtractRowCount",
+   "component_type": "tExtractXMLField",
+   "type_explanation": "Processes data using the Talend tExtractXMLField component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "DIE_ON_ERROR": "false"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tSetGlobalVar_3",
+   "display_label": "SetRowCount",
+   "component_type": "tSetGlobalVar",
+   "type_explanation": "Stores a value for later components in this Job.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tStatCatcher_1",
+   "display_label": "LogCatcher",
+   "component_type": "tStatCatcher",
+   "type_explanation": "Captures execution statistics for monitoring or logging.",
+   "role": "logging",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tMap_1",
+   "display_label": "LogMap",
+   "component_type": "tMap",
+   "type_explanation": "Maps, joins, filters, and transforms rows of data.",
+   "role": "transform",
+   "has_subgraph": true,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "DIE_ON_ERROR": "true"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tSetGlobalVar_10",
+   "display_label": "SetLogVariable",
+   "component_type": "tSetGlobalVar",
+   "type_explanation": "Stores a value for later components in this Job.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileOutputDelimited_12",
+   "display_label": "LogFile",
+   "component_type": "tFileOutputDelimited",
+   "type_explanation": "Writes data using the Talend tFileOutputDelimited component.",
+   "role": "output",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "ENCODING": "\"UTF-8\"",
+    "FILENAME": "context.logsDirectory + TalendDate.formatDate(\"yyyyMMdd\", new Date()) + \"_log.txt\""
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFixedFlowInput_2",
+   "display_label": "SetLogInfoInput",
+   "component_type": "tFixedFlowInput",
+   "type_explanation": "Creates rows from configured values.",
+   "role": "input",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFilterRow_1",
+   "display_label": "",
+   "component_type": "tFilterRow",
+   "type_explanation": "Processes data using the Talend tFilterRow component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileOutputDelimited_1",
+   "display_label": "csvLogFile",
+   "component_type": "tFileOutputDelimited",
+   "type_explanation": "Writes data using the Talend tFileOutputDelimited component.",
+   "role": "output",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "ENCODING": "\"ISO-8859-15\"",
+    "FILENAME": "context.logsDirectory+context.processCode+\"_\"+((String)globalMap.get(\"globalVariable\"))+\"_log.csv\""
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tLogCatcher_1",
+   "display_label": "CatchException",
+   "component_type": "tLogCatcher",
+   "type_explanation": "Captures errors and warnings for logging.",
+   "role": "logging",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tXMLMap_6",
+   "display_label": "MapException",
+   "component_type": "tXMLMap",
+   "type_explanation": "Maps hierarchical XML data.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "DIE_ON_ERROR": "false"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tSetGlobalVar_11",
+   "display_label": "SetException",
+   "component_type": "tSetGlobalVar",
+   "type_explanation": "Stores a value for later components in this Job.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tJava_3",
+   "display_label": "ProcessComplete",
+   "component_type": "tJava",
+   "type_explanation": "Processes data using the Talend tJava component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": true,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileCopy_1",
+   "display_label": "CopyToFailed",
+   "component_type": "tFileCopy",
+   "type_explanation": "Processes data using the Talend tFileCopy component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "CREATE_DIRECTORY": "true",
+    "DESTINATION": "context.failedDirectory + (String)globalMap.get(\"globalVariable\") + \"\\\\\" + ((String)globalMap.get(\"row1.OperationName\"))",
+    "ENABLE_COPY_DIRECTORY": "false",
+    "FAILON": "true",
+    "FILENAME": "context.processedDirectory +(String)globalMap.get(\"globalFileName\") + \"_vise_get_output.xml\"",
+    "REMOVE_FILE": "false",
+    "REPLACE_FILE": "true",
+    "SOURCE_DERECTORY": "\"D:/Talend Project New WorkSpace\""
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileInputDelimited_1",
+   "display_label": "ExtractSummary",
+   "component_type": "tFileInputDelimited",
+   "type_explanation": "Reads data using the Talend tFileInputDelimited component.",
+   "role": "input",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "DIE_ON_ERROR": "false",
+    "ENCODING": "\"UTF-8\"",
+    "FILENAME": "context.logsDirectory +\"temp_summary.txt\""
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tSetGlobalVar_12",
+   "display_label": "SetSummary",
+   "component_type": "tSetGlobalVar",
+   "type_explanation": "Stores a value for later components in this Job.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileCopy_3",
+   "display_label": "CopyToFailed",
+   "component_type": "tFileCopy",
+   "type_explanation": "Processes data using the Talend tFileCopy component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "CREATE_DIRECTORY": "true",
+    "DESTINATION": "context.failedDirectory + (String)globalMap.get(\"globalVariable\") + \"\\\\\" + ((String)globalMap.get(\"row1.OperationName\"))",
+    "ENABLE_COPY_DIRECTORY": "false",
+    "FAILON": "true",
+    "FILENAME": "context.inProgressDirectory + (String)globalMap.get(\"globalFileName\") + \"_vise_get_input.xml\"",
+    "REMOVE_FILE": "false",
+    "REPLACE_FILE": "true",
+    "SOURCE_DERECTORY": "\"D:/Talend Project New WorkSpace\""
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileExist_2",
+   "display_label": "SummaryFileExist",
+   "component_type": "tFileExist",
+   "type_explanation": "Processes data using the Talend tFileExist component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "FILE_NAME": "context.logsDirectory +\"temp_summary.txt\""
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileDelete_1",
+   "display_label": "DeleteSummary",
+   "component_type": "tFileDelete",
+   "type_explanation": "Processes data using the Talend tFileDelete component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "DIRECTORY": "\"D:/Talend Project New WorkSpace/delete_folder\"",
+    "FAILON": "true",
+    "FILENAME": "((String)globalMap.get(\"tFileExist_2_FILENAME\"))",
+    "FOLDER": "false",
+    "FOLDER_FILE": "false",
+    "PATH": "\"D:/Talend Project New WorkSpace/delete_folder or delete_file\""
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tJava_4",
+   "display_label": "ExceptionSummary",
+   "component_type": "tJava",
+   "type_explanation": "Processes data using the Talend tJava component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": true,
+   "description": ""
+  },
+  {
+   "unique_name": "tMSSqlRow_2",
+   "display_label": "UpdateLastProcessDate",
+   "component_type": "tMSSqlRow",
+   "type_explanation": "Processes data using the Talend tMSSqlRow component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "VolkerVessels_Workorder/Talend exports/Assetcheck.__intodoc_zip__/ASSETCHECK::LogConnection",
+   "param_summary": {
+    "COMMIT_EVERY": "10000",
+    "DBNAME": "\"\"",
+    "DIE_ON_ERROR": "false",
+    "ENCODING": "\"ISO-8859-15\"",
+    "HOST": "\"\"",
+    "PORT": "\"1433\"",
+    "PROPERTIES": "\"\"",
+    "QUERY": "\"UPDATE Processes SET  LastRunDateTime=GETDATE() WHERE ProcessID=\"+(Integer)globalMap.get(\"processID\")+\" AND DateDele..."
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileCopy_5",
+   "display_label": "CopyToArchive",
+   "component_type": "tFileCopy",
+   "type_explanation": "Processes data using the Talend tFileCopy component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "CREATE_DIRECTORY": "true",
+    "DESTINATION": "context.inProgressDirectory +\"\\\\\" + \"Archive\"",
+    "ENABLE_COPY_DIRECTORY": "true",
+    "FAILON": "false",
+    "FILENAME": "((String)globalMap.get(\"tFileOutputDelimited_2_FILE_NAME\"))",
+    "REMOVE_FILE": "false",
+    "REPLACE_FILE": "true",
+    "SOURCE_DERECTORY": "context.inProgressDirectory + (String)globalMap.get(\"globalVariable\")"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileDelete_3",
+   "display_label": "DeleteInprogressFolder",
+   "component_type": "tFileDelete",
+   "type_explanation": "Processes data using the Talend tFileDelete component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "DIRECTORY": "context.inProgressDirectory + (String)globalMap.get(\"globalVariable\")",
+    "FAILON": "true",
+    "FILENAME": "\"D:/Talend Project New WorkSpace/in.csv\"",
+    "FOLDER": "true",
+    "FOLDER_FILE": "false",
+    "PATH": "\"D:/Talend Project New WorkSpace/delete_folder or delete_file\""
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFixedFlowInput_5",
+   "display_label": "SetOutputFileName",
+   "component_type": "tFixedFlowInput",
+   "type_explanation": "Creates rows from configured values.",
+   "role": "input",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tJavaRow_4",
+   "display_label": "CountExport",
+   "component_type": "tJavaRow",
+   "type_explanation": "Processes data using the Talend tJavaRow component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": true,
+   "description": ""
+  },
+  {
+   "unique_name": "tRunJob_1",
+   "display_label": "CheckViseCode",
+   "component_type": "tRunJob",
+   "type_explanation": "Starts another Talend Job.",
+   "role": "orchestration",
+   "has_subgraph": false,
+   "subjob_target": "CheckViseCode_VIP_OTL",
+   "connection_ref": "",
+   "param_summary": {
+    "DIE_ON_CHILD_ERROR": "false",
+    "EXTRA_CLASSPATH": "\"\"",
+    "TRANSMIT_WHOLE_CONTEXT": "true",
+    "USE_EXTRA_CLASSPATH": "false"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tJavaRow_6",
+   "display_label": "ExtractSubJobVariable",
+   "component_type": "tJavaRow",
+   "type_explanation": "Processes data using the Talend tJavaRow component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": true,
+   "description": ""
+  },
+  {
+   "unique_name": "tSetGlobalVar_14",
+   "display_label": "SetSubJobVariable",
+   "component_type": "tSetGlobalVar",
+   "type_explanation": "Stores a value for later components in this Job.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tSetGlobalVar_13",
+   "display_label": "DeclareVariable",
+   "component_type": "tSetGlobalVar",
+   "type_explanation": "Stores a value for later components in this Job.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tRunJob_2",
+   "display_label": "UpdateViseSharepoint",
+   "component_type": "tRunJob",
+   "type_explanation": "Starts another Talend Job.",
+   "role": "orchestration",
+   "has_subgraph": false,
+   "subjob_target": "UpdateViseSharepoint_VIP_OTL",
+   "connection_ref": "",
+   "param_summary": {
+    "DIE_ON_CHILD_ERROR": "true",
+    "EXTRA_CLASSPATH": "\"\"",
+    "TRANSMIT_WHOLE_CONTEXT": "true",
+    "USE_EXTRA_CLASSPATH": "false"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tJavaRow_7",
+   "display_label": "ExtractSubJobResponse",
+   "component_type": "tJavaRow",
+   "type_explanation": "Processes data using the Talend tJavaRow component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": true,
+   "description": ""
+  },
+  {
+   "unique_name": "tSetGlobalVar_4",
+   "display_label": "SetValidateResponse",
+   "component_type": "tSetGlobalVar",
+   "type_explanation": "Stores a value for later components in this Job.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tRunJob_3",
+   "display_label": "InsertViseSharepoint",
+   "component_type": "tRunJob",
+   "type_explanation": "Starts another Talend Job.",
+   "role": "orchestration",
+   "has_subgraph": false,
+   "subjob_target": "CreateViseSharepoint_VIP_OTL",
+   "connection_ref": "",
+   "param_summary": {
+    "DIE_ON_CHILD_ERROR": "true",
+    "EXTRA_CLASSPATH": "\"\"",
+    "TRANSMIT_WHOLE_CONTEXT": "true",
+    "USE_EXTRA_CLASSPATH": "false"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tJavaRow_8",
+   "display_label": "ExtractSubJobResponse",
+   "component_type": "tJavaRow",
+   "type_explanation": "Processes data using the Talend tJavaRow component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": true,
+   "description": ""
+  },
+  {
+   "unique_name": "tSetGlobalVar_17",
+   "display_label": "SetValidateResponse",
+   "component_type": "tSetGlobalVar",
+   "type_explanation": "Stores a value for later components in this Job.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tXSLT_4",
+   "display_label": "MapIntoJson",
+   "component_type": "tXSLT",
+   "type_explanation": "Processes data using the Talend tXSLT component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tCreateTemporaryFile_2",
+   "display_label": "CreateMappedDirectory",
+   "component_type": "tCreateTemporaryFile",
+   "type_explanation": "Processes data using the Talend tCreateTemporaryFile component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "DIRECTORY": "(String)(context.mappedDirectory  + (String)globalMap.get(\"globalVariable\") + \"\\\\\" + ((String)globalMap.get(\"row1.Ope..."
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFixedFlowInput_7",
+   "display_label": "GenerateFixedFlowInput",
+   "component_type": "tFixedFlowInput",
+   "type_explanation": "Creates rows from configured values.",
+   "role": "input",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileCopy_8",
+   "display_label": "CopyToProcessed",
+   "component_type": "tFileCopy",
+   "type_explanation": "Processes data using the Talend tFileCopy component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "CREATE_DIRECTORY": "true",
+    "DESTINATION": "context.processedDirectory + (String)globalMap.get(\"globalVariable\") + \"\\\\\" + ((String)globalMap.get(\"row1.OperationN...",
+    "ENABLE_COPY_DIRECTORY": "false",
+    "FAILON": "true",
+    "FILENAME": "context.inProgressDirectory +\"Temp//\"+ (String)globalMap.get(\"globalFileName\") + \"_vise_method_temp_\" + (String)globa...",
+    "REMOVE_FILE": "false",
+    "REPLACE_FILE": "true",
+    "SOURCE_DERECTORY": "\"D:/Talend Projects\""
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileCopy_9",
+   "display_label": "CopyToFailed",
+   "component_type": "tFileCopy",
+   "type_explanation": "Processes data using the Talend tFileCopy component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "CREATE_DIRECTORY": "true",
+    "DESTINATION": "context.failedDirectory + (String)globalMap.get(\"globalVariable\") + \"\\\\\" + ((String)globalMap.get(\"row1.OperationName\"))",
+    "ENABLE_COPY_DIRECTORY": "false",
+    "FAILON": "true",
+    "FILENAME": "context.mappedDirectory + (String)globalMap.get(\"globalFileName\") + \"_sharepoint_mapped_\"+ (String)globalMap.get(\"row...",
+    "REMOVE_FILE": "false",
+    "REPLACE_FILE": "true",
+    "SOURCE_DERECTORY": "\"D:/Talend Project New WorkSpace\""
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFixedFlowInput_3",
+   "display_label": "GenerateFixedFlowInput",
+   "component_type": "tFixedFlowInput",
+   "type_explanation": "Creates rows from configured values.",
+   "role": "input",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tSetGlobalVar_18",
+   "display_label": "SetInsertfailedFilename",
+   "component_type": "tSetGlobalVar",
+   "type_explanation": "Stores a value for later components in this Job.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tSetGlobalVar_19",
+   "display_label": "SetUpdateFileName",
+   "component_type": "tSetGlobalVar",
+   "type_explanation": "Stores a value for later components in this Job.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileInputXML_3",
+   "display_label": "ExtractImportNode",
+   "component_type": "tFileInputXML",
+   "type_explanation": "Reads hierarchical XML data from a file.",
+   "role": "input",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "DIE_ON_ERROR": "false",
+    "ENCODING": "\"UTF-8\"",
+    "FILENAME": "context.processedDirectory +(String)globalMap.get(\"globalFileName\") + \"_vise_get_output.xml\""
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tSetGlobalVar_20",
+   "display_label": "SetRow",
+   "component_type": "tSetGlobalVar",
+   "type_explanation": "Stores a value for later components in this Job.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tRunJob_4",
+   "display_label": "SyncViseDate",
+   "component_type": "tRunJob",
+   "type_explanation": "Starts another Talend Job.",
+   "role": "orchestration",
+   "has_subgraph": false,
+   "subjob_target": "UpdateSyncDate_VIP_OTL",
+   "connection_ref": "",
+   "param_summary": {
+    "DIE_ON_CHILD_ERROR": "true",
+    "EXTRA_CLASSPATH": "\"\"",
+    "TRANSMIT_WHOLE_CONTEXT": "true",
+    "USE_EXTRA_CLASSPATH": "false"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileInputXML_4",
+   "display_label": "ExtractElement",
+   "component_type": "tFileInputXML",
+   "type_explanation": "Reads hierarchical XML data from a file.",
+   "role": "input",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "DIE_ON_ERROR": "false",
+    "ENCODING": "\"UTF-8\"",
+    "FILENAME": "context.processedDirectory +(String)globalMap.get(\"globalFileName\") + \"_vise_get_output.xml\""
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tSetGlobalVar_21",
+   "display_label": "SetElementCount",
+   "component_type": "tSetGlobalVar",
+   "type_explanation": "Stores a value for later components in this Job.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tRunJob_5",
+   "display_label": "UpdateManagedMetaData",
+   "component_type": "tRunJob",
+   "type_explanation": "Starts another Talend Job.",
+   "role": "orchestration",
+   "has_subgraph": false,
+   "subjob_target": "UpdateManagedMetaData_VIP_OTL",
+   "connection_ref": "",
+   "param_summary": {
+    "DIE_ON_CHILD_ERROR": "true",
+    "EXTRA_CLASSPATH": "\"\"",
+    "TRANSMIT_WHOLE_CONTEXT": "true",
+    "USE_EXTRA_CLASSPATH": "false"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tCreateTemporaryFile_1",
+   "display_label": "CreateMappedFile",
+   "component_type": "tCreateTemporaryFile",
+   "type_explanation": "Processes data using the Talend tCreateTemporaryFile component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "DIRECTORY": "context.mappedDirectory + (String)globalMap.get(\"globalVariable\") + \"\\\\\" + ((String)globalMap.get(\"row1.OperationName\"))"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tSetGlobalVar_22",
+   "display_label": "SetInsertFileName",
+   "component_type": "tSetGlobalVar",
+   "type_explanation": "Stores a value for later components in this Job.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tSetGlobalVar_23",
+   "display_label": "SetUpdateFileName",
+   "component_type": "tSetGlobalVar",
+   "type_explanation": "Stores a value for later components in this Job.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileCopy_10",
+   "display_label": "CopyToFailed",
+   "component_type": "tFileCopy",
+   "type_explanation": "Processes data using the Talend tFileCopy component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "CREATE_DIRECTORY": "true",
+    "DESTINATION": "context.failedDirectory + (String)globalMap.get(\"globalVariable\") + \"\\\\\" + ((String)globalMap.get(\"row1.OperationName\"))",
+    "ENABLE_COPY_DIRECTORY": "false",
+    "FAILON": "true",
+    "FILENAME": "context.mappedDirectory + (String)globalMap.get(\"globalFileName\") + \"_sharepoint_mapped_\"+ (String)globalMap.get(\"row...",
+    "REMOVE_FILE": "false",
+    "REPLACE_FILE": "true",
+    "SOURCE_DERECTORY": "\"D:/Talend Project New WorkSpace\""
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tRunJob_6",
+   "display_label": "ExtraRun",
+   "component_type": "tRunJob",
+   "type_explanation": "Starts another Talend Job.",
+   "role": "orchestration",
+   "has_subgraph": false,
+   "subjob_target": "VISE2SP_ExtraRun_VIP_OTL",
+   "connection_ref": "",
+   "param_summary": {
+    "DIE_ON_CHILD_ERROR": "true",
+    "EXTRA_CLASSPATH": "\"\"",
+    "TRANSMIT_WHOLE_CONTEXT": "true",
+    "USE_EXTRA_CLASSPATH": "false"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tJava_6",
+   "display_label": "AssignOldRuntimeRef",
+   "component_type": "tJava",
+   "type_explanation": "Processes data using the Talend tJava component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": true,
+   "description": ""
+  },
+  {
+   "unique_name": "tJava_7",
+   "display_label": "AssignOldRuntimeRef",
+   "component_type": "tJava",
+   "type_explanation": "Processes data using the Talend tJava component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": true,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileCopy_2",
+   "display_label": "copyLogfileToTalendLoggerDir",
+   "component_type": "tFileCopy",
+   "type_explanation": "Processes data using the Talend tFileCopy component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "CREATE_DIRECTORY": "true",
+    "DESTINATION": "context.TalendLoggerDirectory",
+    "ENABLE_COPY_DIRECTORY": "false",
+    "FAILON": "true",
+    "FILENAME": "context.logsDirectory+context.processCode+\"_\"+((String)globalMap.get(\"globalVariable\"))+\"_log.csv\"",
+    "REMOVE_FILE": "false",
+    "REPLACE_FILE": "true",
+    "SOURCE_DERECTORY": "\"D:/ViseWokspace\""
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileExist_3",
+   "display_label": "",
+   "component_type": "tFileExist",
+   "type_explanation": "Processes data using the Talend tFileExist component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "FILE_NAME": "context.inProgressDirectory + (String)globalMap.get(\"globalVariable\")"
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileCopy_4",
+   "display_label": "CopyToFailed",
+   "component_type": "tFileCopy",
+   "type_explanation": "Processes data using the Talend tFileCopy component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "CREATE_DIRECTORY": "true",
+    "DESTINATION": "context.failedDirectory + (String)globalMap.get(\"globalVariable\") + \"\\\\\" + ((String)globalMap.get(\"row1.OperationName\"))",
+    "ENABLE_COPY_DIRECTORY": "false",
+    "FAILON": "true",
+    "FILENAME": "context.inProgressDirectory +\"Temp//\"+ (String)globalMap.get(\"globalFileName\") + \"_vise_method_temp_\" + (String)globa...",
+    "REMOVE_FILE": "false",
+    "REPLACE_FILE": "true",
+    "SOURCE_DERECTORY": "\"D:/Talend Project New WorkSpace\""
+   },
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tSetKeystore_1",
+   "display_label": "",
+   "component_type": "tSetKeystore",
+   "type_explanation": "Processes data using the Talend tSetKeystore component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "tFileOutputDelimited_11",
+   "display_label": "LogSummary",
+   "component_type": "tFileOutputDelimited",
+   "type_explanation": "Writes data using the Talend tFileOutputDelimited component.",
+   "role": "output",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "ENCODING": "\"UTF-8\"",
+    "FILENAME": "context.logsDirectory +\"temp_summary.txt\""
+   },
+   "has_code": false,
+   "description": ""
+  }
+ ],
+ "edges": [
+  {
+   "name": "row8",
+   "source": "tFileInputXML_2",
+   "target": "tFlowToIterate_2",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "iterate3",
+   "source": "tFlowToIterate_2",
+   "target": "tFixedFlowInput_6",
+   "connector_name": "ITERATE",
+   "line_style": 7,
+   "is_control_flow": true,
+   "explanation": "Starts the next component once for each incoming item; carries iteration values rather than a row flow."
+  },
+  {
+   "name": "OnComponentOk18",
+   "source": "tFlowToIterate_2",
+   "target": "tFileCopy_5",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "row28",
+   "source": "tFixedFlowInput_6",
+   "target": "tExtractXMLField_4",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "row29",
+   "source": "tExtractXMLField_4",
+   "target": "tFileOutputXML_1",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "OnComponentOk8",
+   "source": "tFileOutputXML_1",
+   "target": "tSetGlobalVar_13",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "OnComponentOk2",
+   "source": "tLibraryLoad_1",
+   "target": "tSetGlobalVar_5",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "OnComponentOk3",
+   "source": "tSetGlobalVar_5",
+   "target": "tMSSqlConnection_1",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "OnComponentOk4",
+   "source": "tMSSqlConnection_1",
+   "target": "tMSSqlInput_1",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "row17",
+   "source": "tMSSqlInput_1",
+   "target": "tSetGlobalVar_6",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "OnComponentOk5",
+   "source": "tSetGlobalVar_6",
+   "target": "tMSSqlRow_2",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "row20",
+   "source": "tJava_1",
+   "target": "tXMLMap_5",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "OnSubjobError1",
+   "source": "tJava_1",
+   "target": "tFileCopy_2",
+   "connector_name": "SUBJOB_ERROR",
+   "line_style": 4,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding subjob fails; carries no data."
+  },
+  {
+   "name": "OnSubjobOk11",
+   "source": "tJava_1",
+   "target": "tFileExist_3",
+   "connector_name": "SUBJOB_OK",
+   "line_style": 1,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding subjob succeeds; carries no data."
+  },
+  {
+   "name": "GetIntegration",
+   "source": "tXMLMap_5",
+   "target": "tSOAP_4",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "row13",
+   "source": "tSOAP_4",
+   "target": "tFileOutputXML_2",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "row19",
+   "source": "tFileOutputXML_2",
+   "target": "tExtractXMLField_3",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "row1",
+   "source": "tExtractXMLField_3",
+   "target": "tFlowToIterate_1",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "iterate1",
+   "source": "tFlowToIterate_1",
+   "target": "tJava_5",
+   "connector_name": "ITERATE",
+   "line_style": 7,
+   "is_control_flow": true,
+   "explanation": "Starts the next component once for each incoming item; carries iteration values rather than a row flow."
+  },
+  {
+   "name": "If16",
+   "source": "tFlowToIterate_1",
+   "target": "tJava_6",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "If15",
+   "source": "tFlowToIterate_1",
+   "target": "tRunJob_6",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "row2",
+   "source": "tJava_5",
+   "target": "tXMLMap_1",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "copyOfTranslate_0",
+   "source": "tXMLMap_1",
+   "target": "tSetGlobalVar_2",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "row3",
+   "source": "tSetGlobalVar_2",
+   "target": "tFileOutputDelimited_2",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "row4",
+   "source": "tFileOutputDelimited_2",
+   "target": "tSOAP_1",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "row5",
+   "source": "tSOAP_1",
+   "target": "tFileOutputDelimited_3",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "OnComponentError2",
+   "source": "tSOAP_1",
+   "target": "tFileCopy_3",
+   "connector_name": "COMPONENT_ERROR",
+   "line_style": 5,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component fails; carries no data."
+  },
+  {
+   "name": "row6",
+   "source": "tFileOutputDelimited_3",
+   "target": "tExtractXMLField_1",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "row7",
+   "source": "tExtractXMLField_1",
+   "target": "tSetGlobalVar_3",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "If10",
+   "source": "tSetGlobalVar_3",
+   "target": "tFixedFlowInput_5",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "If1",
+   "source": "tSetGlobalVar_3",
+   "target": "tFileInputXML_2",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "row21",
+   "source": "tStatCatcher_1",
+   "target": "tMap_1",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "dblogs",
+   "source": "tMap_1",
+   "target": "tSetGlobalVar_10",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "filelogs",
+   "source": "tMap_1",
+   "target": "tFileOutputDelimited_12",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "reportsummary",
+   "source": "tMap_1",
+   "target": "tFileOutputDelimited_11",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "If2",
+   "source": "tSetGlobalVar_10",
+   "target": "tFixedFlowInput_2",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "row22",
+   "source": "tFixedFlowInput_2",
+   "target": "tFilterRow_1",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "row11",
+   "source": "tFilterRow_1",
+   "target": "tFileOutputDelimited_1",
+   "connector_name": "FILTER",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data between components."
+  },
+  {
+   "name": "row23",
+   "source": "tLogCatcher_1",
+   "target": "tXMLMap_6",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "dbColumn",
+   "source": "tXMLMap_6",
+   "target": "tSetGlobalVar_11",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "If27",
+   "source": "tSetGlobalVar_11",
+   "target": "tFixedFlowInput_2",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "OnComponentOk11",
+   "source": "tSetGlobalVar_11",
+   "target": "tJava_4",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "OnComponentOk19",
+   "source": "tFileCopy_1",
+   "target": "tFileCopy_5",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "row24",
+   "source": "tFileInputDelimited_1",
+   "target": "tSetGlobalVar_12",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "OnComponentOk9",
+   "source": "tSetGlobalVar_12",
+   "target": "tJava_3",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "OnComponentOk20",
+   "source": "tFileCopy_3",
+   "target": "tFileCopy_5",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "If24",
+   "source": "tFileExist_2",
+   "target": "tFileDelete_1",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "OnComponentOk12",
+   "source": "tJava_4",
+   "target": "tFileInputDelimited_1",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "OnComponentOk26",
+   "source": "tMSSqlRow_2",
+   "target": "tJava_1",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "row26",
+   "source": "tFixedFlowInput_5",
+   "target": "tJavaRow_4",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "If11",
+   "source": "tJavaRow_4",
+   "target": "tFileCopy_1",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "If9",
+   "source": "tJavaRow_4",
+   "target": "tFileInputXML_4",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "row12",
+   "source": "tRunJob_1",
+   "target": "tJavaRow_6",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "OnComponentError4",
+   "source": "tRunJob_1",
+   "target": "tFileCopy_4",
+   "connector_name": "COMPONENT_ERROR",
+   "line_style": 5,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component fails; carries no data."
+  },
+  {
+   "name": "row27",
+   "source": "tJavaRow_6",
+   "target": "tSetGlobalVar_14",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "OnComponentOk23",
+   "source": "tSetGlobalVar_14",
+   "target": "tCreateTemporaryFile_2",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "OnSubjobOk2",
+   "source": "tSetGlobalVar_13",
+   "target": "tRunJob_1",
+   "connector_name": "SUBJOB_OK",
+   "line_style": 1,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding subjob succeeds; carries no data."
+  },
+  {
+   "name": "row30",
+   "source": "tRunJob_2",
+   "target": "tJavaRow_7",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "OnComponentError3",
+   "source": "tRunJob_2",
+   "target": "tSetGlobalVar_19",
+   "connector_name": "COMPONENT_ERROR",
+   "line_style": 5,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component fails; carries no data."
+  },
+  {
+   "name": "OnSubjobOk7",
+   "source": "tRunJob_2",
+   "target": "tFixedFlowInput_7",
+   "connector_name": "SUBJOB_OK",
+   "line_style": 1,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding subjob succeeds; carries no data."
+  },
+  {
+   "name": "row31",
+   "source": "tJavaRow_7",
+   "target": "tSetGlobalVar_4",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "row32",
+   "source": "tRunJob_3",
+   "target": "tJavaRow_8",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "OnComponentError2",
+   "source": "tRunJob_3",
+   "target": "tSetGlobalVar_18",
+   "connector_name": "COMPONENT_ERROR",
+   "line_style": 5,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component fails; carries no data."
+  },
+  {
+   "name": "OnSubjobOk3",
+   "source": "tRunJob_3",
+   "target": "tFixedFlowInput_3",
+   "connector_name": "SUBJOB_OK",
+   "line_style": 1,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding subjob succeeds; carries no data."
+  },
+  {
+   "name": "row33",
+   "source": "tJavaRow_8",
+   "target": "tSetGlobalVar_17",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "If13",
+   "source": "tXSLT_4",
+   "target": "tRunJob_3",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "If12",
+   "source": "tXSLT_4",
+   "target": "tRunJob_2",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "If14",
+   "source": "tXSLT_4",
+   "target": "tFileCopy_10",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "OnComponentOk24",
+   "source": "tCreateTemporaryFile_2",
+   "target": "tXSLT_4",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "If7",
+   "source": "tFixedFlowInput_7",
+   "target": "tSetGlobalVar_23",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "If4",
+   "source": "tFixedFlowInput_7",
+   "target": "tSetGlobalVar_19",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "OnSubjobOk6",
+   "source": "tFileCopy_8",
+   "target": "tFileInputXML_3",
+   "connector_name": "SUBJOB_OK",
+   "line_style": 1,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding subjob succeeds; carries no data."
+  },
+  {
+   "name": "If14",
+   "source": "tFixedFlowInput_3",
+   "target": "tSetGlobalVar_22",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "If6",
+   "source": "tFixedFlowInput_3",
+   "target": "tSetGlobalVar_18",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "OnComponentOk1",
+   "source": "tSetGlobalVar_18",
+   "target": "tFileCopy_9",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "OnComponentOk14",
+   "source": "tSetGlobalVar_19",
+   "target": "tFileCopy_9",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "row9",
+   "source": "tFileInputXML_3",
+   "target": "tSetGlobalVar_20",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "OnComponentOk17",
+   "source": "tSetGlobalVar_20",
+   "target": "tRunJob_4",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "row10",
+   "source": "tFileInputXML_4",
+   "target": "tSetGlobalVar_21",
+   "connector_name": "FLOW",
+   "line_style": 0,
+   "is_control_flow": false,
+   "explanation": "Transfers rows of data."
+  },
+  {
+   "name": "If3",
+   "source": "tSetGlobalVar_21",
+   "target": "tFileCopy_5",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "If8",
+   "source": "tSetGlobalVar_21",
+   "target": "tCreateTemporaryFile_1",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "OnComponentOk16",
+   "source": "tRunJob_5",
+   "target": "tFileCopy_5",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "OnSubjobOk8",
+   "source": "tCreateTemporaryFile_1",
+   "target": "tRunJob_5",
+   "connector_name": "SUBJOB_OK",
+   "line_style": 1,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding subjob succeeds; carries no data."
+  },
+  {
+   "name": "OnComponentOk24",
+   "source": "tSetGlobalVar_22",
+   "target": "tFileCopy_8",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "OnComponentOk25",
+   "source": "tSetGlobalVar_23",
+   "target": "tFileCopy_8",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "OnComponentOk7",
+   "source": "tRunJob_6",
+   "target": "tJava_7",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "OnComponentOk36",
+   "source": "tJava_6",
+   "target": "tFileInputDelimited_1",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "OnComponentOk35",
+   "source": "tJava_7",
+   "target": "tFileInputDelimited_1",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "OnComponentOk37",
+   "source": "tFileExist_3",
+   "target": "tFileCopy_2",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  },
+  {
+   "name": "If26",
+   "source": "tFileExist_3",
+   "target": "tFileDelete_3",
+   "connector_name": "RUN_IF",
+   "line_style": 6,
+   "is_control_flow": true,
+   "explanation": "Starts only when its configured condition is true; carries no data."
+  },
+  {
+   "name": "OnComponentOk33",
+   "source": "tSetKeystore_1",
+   "target": "tLibraryLoad_1",
+   "connector_name": "COMPONENT_OK",
+   "line_style": 3,
+   "is_control_flow": true,
+   "explanation": "Starts after the preceding component succeeds; carries no data."
+  }
+ ],
+ "tmap_tables": {
+  "tMap_1": {
+   "input_tables": [
+    "row21"
+   ],
+   "output_tables": [
+    "dblogs",
+    "filelogs",
+    "reportsummary"
+   ]
+  }
+ }
+}

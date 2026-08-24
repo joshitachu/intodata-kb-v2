@@ -119,6 +119,10 @@ function LoginForm() {
       router.push("/settings/security");
       return;
     }
+    if (!authUser.has_password && !authUser.sso_provider) {
+      router.push("/settings/profile");
+      return;
+    }
     const safeRedirect = redirect.startsWith("/") && !redirect.startsWith("//") ? redirect : "/";
     router.push(safeRedirect);
   }
@@ -199,6 +203,16 @@ function LoginForm() {
         return;
       }
       if (!res.ok) {
+        if (data?.code === "passwordless_account") {
+          if (username.includes("@")) setEmail(username);
+          setSignInMethod("otp");
+          setPassword("");
+          setError(
+            "You have not created a password yet. Sign in with your email code; " +
+              "after verification you will be asked to create one.",
+          );
+          return;
+        }
         setError(data?.error || "Invalid username/email or password");
         return;
       }

@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import type { AssistantVisualRole } from "@/types/copilot";
 
 // ── Shared topology node/edge visual language ─────────────────────────────
 //
@@ -22,6 +23,22 @@ export const DIMMED_STYLE: CSSProperties = {
 // Highlighted (hover/search/lineage match): one crisp accent ring, no bloom.
 export function cardShadow(highlighted: boolean, accentColor: string): string {
   return highlighted ? `0 0 0 2px ${accentColor}` : CARD_SHADOW;
+}
+
+/**
+ * Server-authored assistant roles need a stable visual hierarchy across every
+ * topology depth. Primary is deliberately the strongest treatment; path is
+ * warm and directional; supporting stays neutral and quieter.
+ */
+export function assistantRoleShadow(
+  role: AssistantVisualRole | string | undefined,
+): string | undefined {
+  if (role === "primary") {
+    return "0 0 0 4px #2563eb, 0 6px 16px rgba(37, 99, 235, 0.22)";
+  }
+  if (role === "path") return "0 0 0 3px #f59e0b";
+  if (role === "supporting") return "0 0 0 2px #94a3b8";
+  return undefined;
 }
 
 // The 3px left accent bar that carries a node's group/role identity color.

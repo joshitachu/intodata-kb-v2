@@ -3,11 +3,35 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import {
   type ConversationMessageRequest,
+  type PublicAgentEvent,
   type TypedAgentResponse,
   SseDoneSchema,
   TypedAgentResponseSchema,
   PublicAgentEventSchema,
 } from "@/types";
+import { parseAgentProgress, type StreamProgress } from "@/lib/agentProgress";
+
+/**
+ * Ceiling on retained `agentEvents`. Tool/plan/run events number in the tens
+ * per turn, so this is unreachable in practice; it exists so a pathological run
+ * cannot grow an unbounded array that every downstream `useMemo` re-walks.
+ */
+const MAX_AGENT_EVENTS = 1000;
+
+/**
+ * Event types that are never retained in `agentEvents`.
+ *
+ * `assistant.delta` carries prose already accumulated into `content`.
+ * `assistant.progress` is a throttled liveness heartbeat emitted throughout a
+ * long generation and carries no answer content at all. For both, only the
+ * latest value matters (`content` / `progress` respectively), and there are
+ * enough of them per turn that retaining them would make every derivation over
+ * `agentEvents` grow with the turn's duration.
+ */
+const EPHEMERAL_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "assistant.delta",
+  "assistant.progress",
+]);
 
 export interface StreamState {
   isStreaming: boolean;
@@ -18,7 +42,52 @@ export interface StreamState {
   typedResponse?: TypedAgentResponse | null;
   runId?: string | null;
   progress?: string | null;
+  /**
+   * The latest `assistant.progress` heartbeat, kept whole rather than collapsed
+   * into the `progress` one-liner.
+   *
+   * Before any answer text exists this and the `tool.*` events are the only
+   * honest live signals there are, so the waiting state renders from it (see
+   * `components/copilot/AssistantProgress.tsx`). Replaced, never accumulated:
+   * heartbeats fire throughout a long generation and only the latest is a fact
+   * about now.
+   */
+  progressDetail?: StreamProgress | null;
   lastSequence?: number;
+  /**
+   * The turn's validated public agent events, oldest first, so hosts can react
+   * to tool results mid-stream instead of waiting for the finished answer (see
+   * `components/copilot/useProgressiveTargets.ts`). `progress` remains the
+   * collapsed one-line summary and is unaffected.
+   *
+   * `assistant.delta` is deliberately NOT retained: its only payload is prose
+   * already accumulated into `content`, and there are thousands of deltas per
+   * turn -- keeping them would make every derivation over this array quadratic
+   * in the answer's length. Everything else that survives
+   * `PublicAgentEventSchema` is kept verbatim; the schema is not widened here.
+   *
+   * Reset per turn alongside the rest of the state, and de-duplicated by
+   * `event_id` (a resumed stream replays events it already delivered).
+   *
+   * Optional like the other additive fields on this state, because hosts and
+   * tests construct `StreamState` literals directly; treat an absent value as
+   * an empty list.
+   */
+  agentEvents?: readonly PublicAgentEvent[];
+  /**
+   * Which delta stream `content` currently holds.
+   *
+   * The trusted RAG answer is streamed live while it is generated
+   * (`replayable: false`, provisional) and then emitted again after persistence
+   * (`replayable: true`, authoritative). Appending both would duplicate the
+   * answer, so the first authoritative delta RESETS `content` and the
+   * authoritative run rebuilds it.
+   *
+   * This is a safety property, not just de-duplication: whatever the server
+   * persisted always wins on screen, so if the live and stored text ever
+   * diverged the display would self-correct rather than keep the provisional text.
+   */
+  deltaSource?: "live" | "authoritative" | null;
 }
 
 const INITIAL_STATE: StreamState = {
@@ -30,7 +99,10 @@ const INITIAL_STATE: StreamState = {
   typedResponse: null,
   runId: null,
   progress: null,
+  progressDetail: null,
   lastSequence: 0,
+  agentEvents: [],
+  deltaSource: null,
 };
 
 export function useStreamMessage(conversationId: number | null) {
@@ -84,7 +156,12 @@ export function useStreamMessage(conversationId: number | null) {
         typedResponse: sameTurn ? prev.typedResponse : null,
         runId: sameTurn ? prev.runId : null,
         progress: sameTurn ? prev.progress : null,
+        progressDetail: sameTurn ? prev.progressDetail : null,
+        deltaSource: sameTurn ? prev.deltaSource : null,
         lastSequence: lastSequenceRef.current,
+        // A resumed turn keeps the events already delivered (the `seenEventIds`
+        // set is preserved too, so the replay cannot double-append them).
+        agentEvents: sameTurn ? prev.agentEvents : [],
       }));
 
       try {
@@ -137,6 +214,7 @@ export function useStreamMessage(conversationId: number | null) {
         const dispatchEvent = (eventType: string, data: string) => {
           if (
             eventType === "assistant.delta" ||
+            eventType === "assistant.progress" ||
             eventType === "run.started" ||
             eventType === "runtime.update" ||
             eventType.startsWith("tool.") ||
@@ -155,18 +233,38 @@ export function useStreamMessage(conversationId: number | null) {
                 event.sequence,
               );
               const payload = event.public_payload;
+              const retainEvent =
+                !EPHEMERAL_EVENT_TYPES.has(eventType) &&
+                !EPHEMERAL_EVENT_TYPES.has(event.type);
+              const isDelta = eventType === "assistant.delta";
               setStreamState((prev) => ({
                 ...prev,
                 runId: event.run_id,
                 lastSequence: lastSequenceRef.current,
-                content:
-                  eventType === "assistant.delta"
-                    ? prev.content + String(payload.content ?? "")
-                    : prev.content,
+                agentEvents:
+                  retainEvent && (prev.agentEvents?.length ?? 0) < MAX_AGENT_EVENTS
+                    ? [...(prev.agentEvents ?? []), event]
+                    : prev.agentEvents,
+                deltaSource: isDelta
+                  ? event.replayable
+                    ? "authoritative"
+                    : "live"
+                  : prev.deltaSource,
+                content: !isDelta
+                  ? prev.content
+                  : event.replayable && prev.deltaSource !== "authoritative"
+                    ? String(payload.content ?? "")
+                    : prev.content + String(payload.content ?? ""),
                 progress:
                   eventType === "assistant.delta"
                     ? prev.progress
                     : String(payload.summary ?? payload.status ?? eventType),
+                // A heartbeat with nothing usable in it keeps the last known
+                // phase rather than blanking the waiting state.
+                progressDetail:
+                  eventType === "assistant.progress"
+                    ? parseAgentProgress(payload) ?? prev.progressDetail ?? null
+                    : prev.progressDetail,
                 isStreaming: ![
                   "run.completed",
                   "run.failed",

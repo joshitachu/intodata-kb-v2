@@ -95,6 +95,28 @@ class DeepSeekModelStrategy(ModelProviderStrategy):
         )
 
 
+class KimiModelStrategy(ModelProviderStrategy):
+    """Moonshot Kimi using the same canonical ``kimi/<model>`` id as RAG chat."""
+
+    provider_id = "kimi"
+
+    def create_model_provider(
+        self,
+        model_id: str,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        ollama_base_url: str | None = None,
+    ):
+        from mcp_server.providers.custom.providers import MoonshotKimiProvider
+
+        return MoonshotKimiProvider(
+            self.parse_model_name(model_id),
+            api_key=api_key or os.environ.get("KIMI_API_KEY") or os.environ.get("MOONSHOT_API_KEY"),
+            base_url=base_url or "https://api.moonshot.ai/v1",
+        )
+
+
 class Route33ModelStrategy(ModelProviderStrategy):
     provider_id = "route33"
 
@@ -130,6 +152,38 @@ class Route33ModelStrategy(ModelProviderStrategy):
             api_key=resolved_api_key,
             base_url=base_url or config.doc_generation_route33_base_url,
             provider_name="route33",
+        )
+
+
+class OpenRouterModelStrategy(ModelProviderStrategy):
+    """OpenRouter aggregator, reached over its OpenAI-compatible endpoint.
+
+    Model ids keep the vendor path OpenRouter itself uses, so the descriptor id is
+    ``openrouter/<vendor>/<model>`` and the wire model name is ``<vendor>/<model>``.
+    """
+
+    provider_id = "openrouter"
+
+    def create_model_provider(
+        self,
+        model_id: str,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        ollama_base_url: str | None = None,
+    ):
+        from mcp_server.config import config
+        from mcp_server.providers.custom.providers import OpenAICompatibleProvider
+
+        return OpenAICompatibleProvider(
+            self.parse_model_name(model_id),
+            api_key=(
+                api_key
+                or config.doc_generation_openrouter_api_key
+                or os.environ.get("OPENROUTER_API_KEY")
+            ),
+            base_url=base_url or config.doc_generation_openrouter_base_url,
+            provider_name="openrouter",
         )
 
 

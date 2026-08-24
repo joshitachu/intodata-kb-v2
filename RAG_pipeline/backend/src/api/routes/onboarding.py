@@ -3,21 +3,15 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from src.api.dependencies import AdminUser, CurrentUser, DBSession
+from src.api.dependencies import CurrentUser, DBSession, OwnerUser
 from src.db.models import User, UserOnboarding
 from src.db.session import async_session_factory
-from src.services.onboarding_service import (
-    VALID_COMM_TOOLS,
-    VALID_PLATFORMS,
-    OnboardingService,
-    run_background_setup,
-)
+from src.services.onboarding_service import OnboardingService, run_background_setup
 from src.services.system_config_service import SystemConfigService
 
 logger = logging.getLogger(__name__)
@@ -343,8 +337,8 @@ async def tour_step(body: TourStepBody, user: CurrentUser, db: DBSession):
 
 
 @router.post("/reset", status_code=204, summary="Reset a user's onboarding state")
-async def reset_onboarding(body: ResetOnboardingBody, admin: AdminUser, db: DBSession):
-    """Admin: wipe a user's onboarding state so the wizard shows on next login."""
+async def reset_onboarding(body: ResetOnboardingBody, owner: OwnerUser, db: DBSession):
+    """Owner: wipe a user's onboarding state so the wizard shows on next login."""
     result = await db.execute(select(User).where(User.id == body.user_id))
     target = result.scalar_one_or_none()
     if target is None:

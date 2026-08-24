@@ -1,8 +1,9 @@
 import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
 import type { LandscapeSystem } from "@/types/landscape";
+import { assistantRoleShadow } from "@/lib/nodeStyles";
 
-export interface LandscapeSystemNodeData { system: LandscapeSystem }
+export interface LandscapeSystemNodeData { system: LandscapeSystem; highlighted?: boolean; dimmed?: boolean; assistantVisualRole?: string }
 
 function LandscapeSystemNodeComponent({ data }: { data: LandscapeSystemNodeData }) {
   const { system } = data;
@@ -12,7 +13,7 @@ function LandscapeSystemNodeComponent({ data }: { data: LandscapeSystemNodeData 
       ? "Data system"
       : "External system";
   return (
-    <div className="relative w-[205px] rounded-xl border border-violet-200 bg-white px-4 py-3 shadow-sm" aria-label={`${entityLabel} ${system.name}`}>
+    <div data-assistant-role={data.assistantVisualRole} style={{ boxShadow: assistantRoleShadow(data.assistantVisualRole) }} className={`relative w-[205px] rounded-xl border border-violet-200 bg-white px-4 py-3 shadow-sm ${data.highlighted && !data.assistantVisualRole ? "ring-4 ring-violet-200" : ""}`} aria-label={`${entityLabel} ${system.name}`}>
       <Handle type="target" position={Position.Left} className="!h-2.5 !w-2.5 !border-2 !border-white !bg-violet-400" />
       <div className="absolute inset-y-0 left-0 w-1 rounded-l-xl bg-violet-600" />
       <p className="text-[10px] font-semibold uppercase tracking-wide text-violet-600">{entityLabel}</p>

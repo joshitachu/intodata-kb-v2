@@ -13,4 +13,7 @@ def test_alembic_has_exactly_one_head() -> None:
 
     heads = ScriptDirectory.from_config(config).get_heads()
 
-    assert heads == ["080_runtime_duration_bigint"]
+    # The invariant is the count, not the name: `alembic upgrade head` fails on
+    # a branched graph. Pinning the revision id made this fail on every new
+    # migration, which taught people to ignore it.
+    assert len(heads) == 1, f"branched migration graph: {heads}"

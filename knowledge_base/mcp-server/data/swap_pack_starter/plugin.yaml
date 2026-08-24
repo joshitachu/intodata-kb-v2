@@ -1,15 +1,104 @@
+# A Nexus documentation pack.
+#
+# A pack changes three things. Extraction -- parsing the source into a scan
+# cache -- is platform-owned and identical for every pack, so a pack cannot
+# change the evidence floor. What it changes is:
+#
+#   phases  WHETHER each analysis phase runs, and with which model.
+#   lens    WHAT each phase looks at and asks.
+#   docs    WHICH documents come out, and what feeds each one.
+#
+# Everything below is commented. Delete what you do not need -- an absent block
+# means "use the built-in behaviour", never "produce nothing".
+
 name: swap-pack-starter
 version: 0.1.0
-description: Starter Swap Pack for tuning IntoData documentation output.
+description: Starting point for a Nexus documentation pack.
+
+
+# ---------------------------------------------------------------------------
+# phases -- whether each phase runs
+# ---------------------------------------------------------------------------
+# skip     do not run it at all
+# run      full agent with tool access
+# bounded  one inline call per group, no tools (cheaper, more predictable)
+#
+# A pack that declares a section lens below and leaves this out defaults to
+# `analysis: bounded`, because sections nobody asks for are sections nobody
+# answers. Each phase also accepts `{policy:, model:, concurrency:}`.
 
 phases:
   investigation: skip
   analysis: bounded
   scorecard: skip
-  doc_bundles: skip
+  doc_bundles: run
+
+
+# ---------------------------------------------------------------------------
+# lens -- what to look at, and what to ask
+# ---------------------------------------------------------------------------
+
+lens:
+  # Which evidence categories get screened in. Narrowing is where depth comes
+  # from: fewer categories means more attention per retained item. Closed
+  # vocabulary, so a typo is rejected at registration instead of silently
+  # producing an empty bundle.
+  #
+  # include: sql_queries, ddl_schema, orm_entities, db_connections,
+  #          config_references, routes, handlers, auth, source_summary
+  # exclude: binary, static_assets, generated_files
+  focus:
+    include:
+      - source_summary
+    exclude:
+      - binary
+      - static_assets
+      - generated_files
+
+  sections:
+    # extend  -- your sections are ADDED to the built-in analysis contract.
+    # replace -- your sections ARE the contract. The analysis prompt asks for
+    #            exactly these and nothing else, so a focused pack stops paying
+    #            for built-in questions it never wanted. GROUP_SUMMARY is a
+    #            protected floor and survives either way.
+    mode: replace
+    declare:
+      # `question` is what makes a section more than a heading: it is the thing
+      # the analyst must answer. Vague question, vague section.
+      - id: SYSTEMS_AND_DATA
+        question: >
+          Which external systems does this code read from and write to, and
+          what data moves between them?
+      - id: OPERATIONAL_NOTES
+        question: >
+          How is this scheduled or triggered, and what breaks it?
+
+  # Standing rules added to the analysis prompt. Nexus's platform analysis
+  # policy remains active and wins conflicts; this block cannot replace it.
+  requirements: >
+    Cite the file or component every finding comes from. If the evidence does
+    not support a claim, say nothing rather than inferring.
+
+
+# ---------------------------------------------------------------------------
+# docs -- what comes out
+# ---------------------------------------------------------------------------
+# Declaring `docs` REPLACES the built-in document set entirely: you get these
+# documents and no others.
+#
+#   phase2_sections   which analysis sections feed this document
+#   per_unit          one document per scanned unit instead of one overall
+#   required_sections headings the document must contain
+#   min_doc_bytes     see quality_gates below
+#
+# Per-document instructions go in prompts/docs/<NAME>.md and fully replace the
+# built-in instruction for that document.
 
 docs:
   - name: SINGLE_SUMMARY
+    phase2_sections:
+      - SYSTEMS_AND_DATA
+      - OPERATIONAL_NOTES
     required_sections:
       - Project Summary
       - Systems And Data
@@ -18,6 +107,30 @@ docs:
     required_evidence:
       - source-backed facts
 
-steps:
-  - id: generate-docs
-    type: harness
+
+# ---------------------------------------------------------------------------
+# audience -- presentation only
+# ---------------------------------------------------------------------------
+# Applied at the writing boundary. Changes how findings are presented, never
+# what is found. tone: neutral|concise|explanatory ·
+# technical_depth: summary|standard|deep ·
+# output_organization: direct_answer|sectioned|incident_report
+
+audience:
+  roles:
+    - Integration engineer
+  tone: neutral
+  technical_depth: standard
+  output_organization: sectioned
+
+
+# ---------------------------------------------------------------------------
+# quality_gates -- advisory
+# ---------------------------------------------------------------------------
+# `advisory` reports shortfalls and publishes anyway, which is almost always
+# what you want: a thin document you can read beats a failed run you cannot.
+
+quality_gates:
+  mode: advisory
+  min_doc_bytes:
+    SINGLE_SUMMARY: 2000

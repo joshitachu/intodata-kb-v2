@@ -171,10 +171,12 @@ class Phase2Analysis(Phase):
         else:
             await log_cb(ctx.project_id, "[custom] Phase 2 depth gate passed", "info")
 
+        pack_contract = self._helpers.pack_contract
         guide_sections = validate_analysis_guide_sections(
             ctx.staging_dir / "_analysis",
             facts,
             require_group_summary=not self._helpers.plugin_mode,
+            contract=pack_contract,
         )
         (ctx.staging_dir / "_analysis" / "_guide_sections_report.json").write_text(
             guide_sections.model_dump_json(indent=2), encoding="utf-8"
@@ -182,7 +184,9 @@ class Phase2Analysis(Phase):
         if not guide_sections.ok:
             guide_plan = phase2_report_plan(report=guide_sections, report_kind="guide_sections")
             await self._write_repair_plan(ctx, guide_plan, "phase2_guide_sections")
-            patched = self._patch_guide_sections(ctx, facts, deterministic_phase2_section_patch)
+            patched = self._patch_guide_sections(
+                ctx, facts, deterministic_phase2_section_patch, contract=pack_contract
+            )
             await log_cb(
                 ctx.project_id,
                 f"[custom] Phase 2 guide-section repair applied deterministically: {patched} group(s)",
@@ -192,6 +196,7 @@ class Phase2Analysis(Phase):
                 ctx.staging_dir / "_analysis",
                 facts,
                 require_group_summary=not self._helpers.plugin_mode,
+                contract=pack_contract,
             )
             (ctx.staging_dir / "_analysis" / "_guide_sections_report.json").write_text(
                 guide_sections.model_dump_json(indent=2), encoding="utf-8"
@@ -279,7 +284,7 @@ class Phase2Analysis(Phase):
                 patched += 1
         return patched
 
-    def _patch_guide_sections(self, ctx: "DocGenContext", facts, patcher) -> int:
+    def _patch_guide_sections(self, ctx: "DocGenContext", facts, patcher, contract=None) -> int:
         analysis_dir = ctx.staging_dir / "_analysis"
         patched = 0
         for group in facts.groups:
@@ -287,7 +292,9 @@ class Phase2Analysis(Phase):
             if path is None:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
-            updated, missing = patcher(text, platform=facts.platform, group=group)
+            updated, missing = patcher(
+                text, platform=facts.platform, group=group, contract=contract
+            )
             if missing and updated != text:
                 path.write_text(updated, encoding="utf-8")
                 patched += 1

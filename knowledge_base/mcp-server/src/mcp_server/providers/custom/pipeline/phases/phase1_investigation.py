@@ -73,6 +73,7 @@ class Phase1Investigation(Phase):
             ctx.staging_dir,
             state.facts_manifest,
             preamble=inv_preamble,
+            pack_dir=self._helpers.plugin_pack_dir,
         )
         failed_groups: set[str] = set()
         sem = asyncio.Semaphore(self._helpers.concurrency_for_phase("investigation", config.agent_phase1_concurrency))
@@ -143,6 +144,7 @@ class Phase1Investigation(Phase):
                         ctx.staging_dir,
                         state.facts_manifest,
                         preamble=inv_preamble,
+                        pack_dir=self._helpers.plugin_pack_dir,
                     )
                     try:
                         report, calls = await manifest_investigator.run(

@@ -18,6 +18,12 @@ from collections.abc import AsyncGenerator
 import httpx
 
 from src.generation.providers.base import ChatProvider
+from src.generation.providers.prompt_cache import (
+    apply_cache_tokens,
+    canonical_schema,
+    check_tool_prefix_stability,
+    log_cache_effect,
+)
 from src.generation.providers.types import RuntimeToolCallRequest, ToolAwareLLMResponse
 from src.generation.usage import StreamUsageStats, UsageStats
 from src.runtime.models import RuntimeToolDefinition
@@ -25,6 +31,10 @@ from src.runtime.models import RuntimeToolDefinition
 logger = logging.getLogger(__name__)
 
 _MAX_TOKENS = 2048
+
+# Anthropic prompt caching is OPT-IN: without a cache_control breakpoint nothing
+# is cached, unlike the OpenAI-compatible endpoints which cache automatically.
+_EPHEMERAL_CACHE = {"type": "ephemeral"}
 
 
 def _to_anthropic(messages: list[dict], images: list[str] | None) -> tuple[str, list[dict]]:
@@ -87,10 +97,76 @@ def _to_anthropic(messages: list[dict], images: list[str] | None) -> tuple[str, 
 
 
 def _to_anthropic_tools(runtime_tools: list[RuntimeToolDefinition]) -> list[dict]:
+    """Serialize tools with canonically ordered schema keys.
+
+    Same reason as the OpenAI-compatible adapter: the tool block heads the
+    cacheable prefix, so byte-stability of these schemas decides whether
+    anything downstream can be cached at all.
+    """
     return [
-        {"name": t.name, "description": t.description, "input_schema": t.input_schema}
+        {
+            "name": t.name,
+            "description": t.description,
+            "input_schema": canonical_schema(t.input_schema),
+        }
         for t in runtime_tools
     ]
+
+
+def _with_tool_cache_breakpoint(tools: list[dict]) -> list[dict]:
+    """Mark the final tool with cache_control so the whole tool block is cached.
+
+    One breakpoint, on the tools and nowhere else. A cache_control marker is not
+    free: tokens written into the cache are billed at 1.25x the input rate and
+    only pay back at 0.1x on a later hit, so a breakpoint placed on content that
+    changes every call is a straight loss (it needs roughly one hit per two and a
+    half writes to break even).
+
+    The tool block is the one region that is genuinely invariant across turns.
+    The system message is not: on the dominant agent path it ends with a
+    per-turn JSON context blob (conversation state, observations, remaining
+    budget), so a breakpoint there would pay the write premium on every turn and
+    almost never hit. If that prompt is ever split so the invariant prose is its
+    own leading block, a second breakpoint on that block becomes worthwhile.
+
+    Anthropic allows at most 4 breakpoints and silently declines to cache a
+    prefix below the model's minimum (1024 tokens on Sonnet/Opus), so a small
+    tool block costs nothing here.
+    """
+    if not tools:
+        return tools
+    marked = [dict(tool) for tool in tools]
+    marked[-1]["cache_control"] = _EPHEMERAL_CACHE
+    return marked
+
+
+def _anthropic_usage(
+    resp_usage: object | None, model: str, latency_ms: int = 0
+) -> UsageStats:
+    """Build UsageStats from an Anthropic usage object.
+
+    Typed as ``object`` rather than the SDK's ``Usage`` because ``anthropic`` is
+    imported lazily in ``_get_client`` to keep it off the module import path;
+    every field is read with ``getattr`` so a field the SDK has not yet added
+    (or has renamed) degrades to "no cache" instead of raising.
+
+    Anthropic reports ``input_tokens`` EXCLUSIVE of cache reads and writes, while
+    ``UsageStats.input_tokens`` is defined as the total prompt size. So the three
+    counts are summed here — without that, a cached turn would look like a tiny
+    prompt and the cache hit ratio would read as 0%.
+    """
+    stats = UsageStats(provider="anthropic", model=model, latency_ms=latency_ms)
+    if resp_usage is None:
+        return stats
+    fresh = max(0, getattr(resp_usage, "input_tokens", 0) or 0)
+    cached = max(0, getattr(resp_usage, "cache_read_input_tokens", 0) or 0)
+    written = max(0, getattr(resp_usage, "cache_creation_input_tokens", 0) or 0)
+    stats.input_tokens = fresh + cached + written
+    stats.output_tokens = max(0, getattr(resp_usage, "output_tokens", 0) or 0)
+    apply_cache_tokens(stats, cached, written)
+    stats.calculate_cost()
+    log_cache_effect("anthropic", model, stats)
+    return stats
 
 
 def _text_from_content(content) -> str:
@@ -133,13 +209,7 @@ class AnthropicProvider(ChatProvider):
             system=system or None, messages=msgs,
         )
         elapsed = int((time.perf_counter() - t0) * 1000)
-        usage = UsageStats(
-            provider="anthropic", model=model,
-            input_tokens=resp.usage.input_tokens if resp.usage else 0,
-            output_tokens=resp.usage.output_tokens if resp.usage else 0,
-            latency_ms=elapsed,
-        )
-        usage.calculate_cost()
+        usage = _anthropic_usage(resp.usage, model, elapsed)
         return _text_from_content(resp.content), usage
 
     async def stream(
@@ -158,8 +228,13 @@ class AnthropicProvider(ChatProvider):
                     yield text
             final = await stream.get_final_message()
         if final and final.usage:
-            acc.input_tokens = final.usage.input_tokens or 0
-            acc.output_tokens = final.usage.output_tokens or 0
+            # Reuse the shared conversion so the total-prompt invariant and the
+            # cache accounting are identical to the non-streaming path.
+            resolved = _anthropic_usage(final.usage, model)
+            acc.input_tokens = resolved.input_tokens
+            acc.output_tokens = resolved.output_tokens
+            acc.cached_input_tokens = resolved.cached_input_tokens
+            acc.cache_write_tokens = resolved.cache_write_tokens
         acc.latency_ms = int((time.perf_counter() - t0) * 1000)
         yield acc.finalize()
 
@@ -172,18 +247,18 @@ class AnthropicProvider(ChatProvider):
     ) -> ToolAwareLLMResponse:
         client = await self._get_client()
         system, msgs = _to_anthropic(messages, images)
-        tools = _to_anthropic_tools(runtime_tools) if runtime_tools else None
+        tools = (
+            _with_tool_cache_breakpoint(_to_anthropic_tools(runtime_tools))
+            if runtime_tools
+            else None
+        )
+        check_tool_prefix_stability("anthropic", tools)
         resp = await client.messages.create(
             model=model, max_tokens=_MAX_TOKENS, temperature=self._temperature,
             system=system or None, messages=msgs,
             tools=tools, tool_choice={"type": "auto"} if tools else None,
         )
-        usage = UsageStats(
-            provider="anthropic", model=model,
-            input_tokens=resp.usage.input_tokens if resp.usage else 0,
-            output_tokens=resp.usage.output_tokens if resp.usage else 0,
-        )
-        usage.calculate_cost()
+        usage = _anthropic_usage(resp.usage, model)
 
         tool_uses = [b for b in resp.content if getattr(b, "type", None) == "tool_use"]
         if tool_uses:

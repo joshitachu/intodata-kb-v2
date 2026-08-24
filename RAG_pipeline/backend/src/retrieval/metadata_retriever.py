@@ -113,7 +113,11 @@ async def get_project_detail(
 
     # Get document count from documents table for this project
     doc_result = await db.execute(
-        select(func.count(Document.id)).where(Document.project_id == row.id)
+        select(func.count(Document.id)).where(
+            Document.project_id == row.id,
+            Document.deleted_at.is_(None),
+            Document.filename.not_like("%/_internal/%"),
+        )
     )
     rag_doc_count = doc_result.scalar_one()
 
@@ -154,6 +158,9 @@ async def get_document_stats(
         Document.file_type,
         func.count(Document.id).label("count"),
         func.sum(Document.chunk_count).label("total_chunks"),
+    ).where(
+        Document.deleted_at.is_(None),
+        Document.filename.not_like("%/_internal/%"),
     ).group_by(Document.project_id, Document.file_type)
 
     # RBAC filter
@@ -286,6 +293,9 @@ async def get_system_overview(
     doc_query = select(
         func.count(Document.id).label("doc_count"),
         func.coalesce(func.sum(Document.chunk_count), 0).label("total_chunks"),
+    ).where(
+        Document.deleted_at.is_(None),
+        Document.filename.not_like("%/_internal/%"),
     )
     if project_ids is not None:
         if not project_ids:
@@ -337,7 +347,10 @@ async def get_system_knowledge_summary(
     rbac = _project_id_filter(project_ids)
     sql = text(f"""
         SELECT p.display_name,
-               (SELECT COUNT(*) FROM documents d WHERE d.project_id = p.id) as doc_count
+               (SELECT COUNT(*) FROM documents d
+                 WHERE d.project_id = p.id
+                   AND d.deleted_at IS NULL
+                   AND d.filename NOT LIKE '%/_internal/%') as doc_count
         FROM projects p
         WHERE 1=1 {rbac}
         ORDER BY p.display_name

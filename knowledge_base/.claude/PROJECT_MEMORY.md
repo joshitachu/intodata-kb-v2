@@ -4,6 +4,16 @@
 
 ## Architecture Decisions
 
+- **OpenCode contracts are correctness boundaries; sessions are adaptive
+  execution containers.** Gather and group Analyze contracts retain independent
+  output validation and artifact-based resume, while a deterministic planner
+  packs unfinished contracts under `MCP_OPENCODE_BATCH_TARGET_INPUT_TOKENS` and
+  runs the resulting fresh sessions under phase-specific concurrency ceilings.
+  Group Analyze is a barrier prerequisite for the separate scorecard session;
+  Produce keeps its ordered continued session. Never restore one-session-per-
+  contract merely to obtain isolation: validation receipts and staging artifacts
+  provide that boundary. Added 2026-08-23.
+
 - **Static topology publication is an all-or-nothing approved boundary.** MCP may
   publish only when `publication_approval.json` approves and hash-binds
   `scan_result.json`, manifest, lineage, and landscape; redaction-bypass scans,
@@ -502,3 +512,17 @@ knowledge_base/
 - **The model reads scoped packets, not a project directory.** Role tools can list/search/read only their immutable inputs and validated topology packet; candidate output, raw workspace, and sibling-role paths are forbidden. Relationship traversal is derived deterministically from the frozen fact ledger.
 - **Review is downstream of topology.** The scheduler must not execute reviewer roles while topology or any other non-review role is still pending/running.
 - **Grounded results are candidates until promoted.** Do not change legacy docs or the published topology automatically. A reviewed promotion mechanism is required before treating agent output as a normal project artifact.
+### Interactive Pack Architect boundary (2026-08-23)
+
+- **Pack creation is a persistent conversation, not an atomic model response.** Preserve incomplete files and deterministic validation findings between turns; do not discard a useful draft because one canonical file is missing.
+- **The Pack workspace is the agent's only writable/readable scope.** OpenCode shell, web, external-directory, MCP, and task capabilities remain denied for Pack authoring.
+- **Completeness is structural, not a document-count policy.** Require the canonical manifest and companion files and enforce technical safety/payload limits, but do not impose arbitrary counts on documents, files, sections, or audience roles.
+- **Publishing and runtime selection share one Plugin Pack store.** A completed Architect session saves through the canonical personal Pack service; do not reintroduce `/mcp/plugins/draft` or a parallel Pack table/mechanism.
+
+### Direct Pack Architect boundary (2026-08-24, supersedes the OpenCode workspace rule above)
+
+- **Pack authoring must not invoke OpenCode, shell tools, or hidden repair calls.** Each turn is exactly one direct structured design request to the dedicated Pack model. Nexus renders canonical files and owns deterministic validation.
+- **Durability precedes inference.** Persist the user message and revision before starting the model task. POST returns accepted state immediately; polling, cancellation, refresh recovery, and restart-safe failure preserve the draft.
+- **The design is complete, but breadth is not artificially capped.** The model returns the full current semantic design on each successful turn and may declare as many purposeful documents/sections as user intent requires. Only technical path and artifact-size safeguards apply.
+- **Generated boilerplate is server-owned.** Manifest serialization, README, phase guidance, document prompts, additive platform guidance, and fictional example structure are derived from the design so provider latency is spent on decisions rather than repeated file bytes.
+- **Existing-Pack AI refinement is identity-preserving.** Only the owner may seed a session from a personal Pack. Preserve its full current guidance as bounded first-turn context, retain its Git history and non-editable assets, validate before swap, and update the same Plugin Pack row so existing project selections remain valid.

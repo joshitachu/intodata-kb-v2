@@ -18,6 +18,16 @@ export function safeProjectId(projectId: string): string | null {
   return /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$/.test(trimmed) ? trimmed : null;
 }
 
+/** Validates a UUID path segment (e.g. an Azure DevOps connection id). */
+export function safeUuid(value: string): string | null {
+  const trimmed = value.trim();
+  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(
+    trimmed,
+  )
+    ? trimmed
+    : null;
+}
+
 export async function proxyMcpJson(
   request: NextRequest,
   path: string,
@@ -77,13 +87,23 @@ export async function proxyMcpJsonSanitized(
   }
 }
 
+/** Keys that must never reach the browser, whatever nesting they appear at. */
+const SECRET_KEYS = new Set([
+  "github_token",
+  "github_token_enc",
+  "local_path",
+  // Azure DevOps organization PAT, in both its request and at-rest field names.
+  "pat",
+  "pat_enc",
+]);
+
 export function stripSourceSecrets(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stripSourceSecrets);
   if (!value || typeof value !== "object") return value;
 
   const out: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
-    if (key === "github_token" || key === "github_token_enc" || key === "local_path") {
+    if (SECRET_KEYS.has(key)) {
       continue;
     }
     out[key] = stripSourceSecrets(item);

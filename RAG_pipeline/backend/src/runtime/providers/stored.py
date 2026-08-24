@@ -64,7 +64,7 @@ from src.runtime.models import (
     RuntimeTrendInput,
     RuntimeUnhealthySummary,
 )
-from src.runtime.providers.base import CredentialField
+from src.runtime.providers.base import CredentialField, SingleTenantIdentityMixin
 from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
 from src.runtime.store import RuntimeRecordNotFoundError, RuntimeStoreRepository
 
@@ -90,7 +90,7 @@ _LOG_SEARCH_FIELDS = (
 )
 
 
-class StoredRuntimeProvider:
+class StoredRuntimeProvider(SingleTenantIdentityMixin):
     """Reads held runtime data via the repository, scoped per request."""
 
     def provider_key(self) -> str:

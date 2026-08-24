@@ -35,6 +35,7 @@ import {
   type TableGraphLineageHighlight,
 } from "@/lib/lineageHighlight";
 import type { FieldLineageQuery } from "@/types/lineage";
+import type { AssistantCanvasEmphasis, AssistantFocusRequest, CopilotViewContext } from "@/types/copilot";
 
 interface ComponentGraphCanvasProps {
   projectId: string;
@@ -50,6 +51,9 @@ interface ComponentGraphCanvasProps {
   lineageQuery?: FieldLineageQuery | null;
   lineageHighlight?: TableGraphLineageHighlight | null;
   onColumnLineageClick?: (jobName: string, componentName: string, table: string, column: string) => void;
+  assistantEmphasis?: AssistantCanvasEmphasis | null;
+  assistantFocusRequest?: AssistantFocusRequest | null;
+  onContextChange?: (context: CopilotViewContext) => void;
 }
 
 const nodeTypes = { tableNode: TableNode };
@@ -63,6 +67,9 @@ function ComponentGraphCanvasInner({
   lineageQuery = null,
   lineageHighlight = null,
   onColumnLineageClick,
+  assistantEmphasis,
+  assistantFocusRequest,
+  onContextChange,
 }: ComponentGraphCanvasProps) {
   const { data, isLoading, error } = useComponentGraph(
     projectId,
@@ -121,13 +128,28 @@ function ComponentGraphCanvasInner({
         const projection = lineageHighlight
           ? tableLineageProjection(lineageHighlight, tableName)
           : { touchedColumns: new Set<string>(), unresolvedColumns: new Map<string, string>() };
+        const assistantRole = assistantEmphasis?.nodeRoles.get(n.id);
+        const assistantColumnRoles = new Map(
+          [...(assistantEmphasis?.columnRoles?.entries() ?? [])]
+            .filter(([key]) => key.startsWith(`${tableName}::`))
+            .map(([key, role]) => [key.slice(tableName.length + 2), role]),
+        );
+        const assistantActive = Boolean(
+          assistantEmphasis?.nodeRoles.size ||
+          assistantEmphasis?.columnRoles?.size ||
+          assistantEmphasis?.edgeRoles.size,
+        );
+        const assistantMatch = Boolean(assistantRole || assistantColumnRoles.size);
 
         return {
           ...n,
           data: {
             ...n.data,
-            dimmed,
-            highlighted,
+            dimmed: Boolean(lineageHighlight || assistantActive) && !(highlighted || assistantMatch),
+            highlighted: highlighted || assistantMatch,
+            assistantVisualRole: assistantRole,
+            assistantHighlightedColumns: new Set(assistantColumnRoles.keys()),
+            assistantColumnRoles,
             lineageTouchedColumns: projection.touchedColumns,
             lineageUnresolvedColumns: projection.unresolvedColumns,
             lineageActiveColumn: tableName === activeTable ? activeColumn : null,
@@ -140,18 +162,34 @@ function ComponentGraphCanvasInner({
     setEdges((eds) => {
       const structural = eds
         .filter((e) => e.type !== LINEAGE_EDGE_TYPE)
-        .map((e) => ({
-          ...e,
-          style: lineageHighlight
-            ? { ...e.style, opacity: 0.15 }
-            : { ...e.style, opacity: undefined },
-        }));
+        .map((e) => {
+          const targetTable = e.target.startsWith("table:") ? e.target.slice(6) : e.target;
+          const targetColumn = e.targetHandle?.startsWith("target:")
+            ? e.targetHandle.slice(7)
+            : "";
+          const assistantRole = assistantEmphasis?.edgeRoles.get(`${targetTable}::${targetColumn}`);
+          const assistantEdgesActive = Boolean(assistantEmphasis?.edgeRoles.size);
+          return {
+            ...e,
+            data: { ...e.data, assistantVisualRole: assistantRole },
+            style: {
+              ...e.style,
+              opacity: lineageHighlight
+                ? 0.15
+                : assistantEdgesActive
+                  ? assistantRole ? 1 : 0.08
+                  : undefined,
+              strokeWidth: assistantRole === "primary" ? 3 : e.style?.strokeWidth,
+            },
+          };
+        });
       const overlay = lineageHighlight ? buildLineageOverlayEdges(lineageHighlight) : [];
       return [...structural, ...overlay];
     });
   }, [
     lineageHighlight,
     lineageQuery,
+    assistantEmphasis,
     jobName,
     componentName,
     handleColumnClick,
@@ -159,6 +197,29 @@ function ComponentGraphCanvasInner({
     setNodes,
     setEdges,
   ]);
+
+  useEffect(() => {
+    if (!assistantFocusRequest) return;
+    const focusNodes = nodes.filter((node) => assistantFocusRequest.nodeIds.includes(node.id));
+    if (focusNodes.length > 0) void fitView({ nodes: focusNodes, padding: 0.35, duration: 450 });
+  }, [assistantFocusRequest, nodes, fitView]);
+
+  useEffect(() => {
+    const selectedEntity = lineageQuery
+      && lineageQuery.jobName === jobName
+      && lineageQuery.component === componentName
+      ? {
+          kind: "column" as const,
+          label: `${lineageQuery.table}.${lineageQuery.column}`,
+          entity_id: `${jobName}::${componentName}::${lineageQuery.table}::${lineageQuery.column}`,
+        }
+      : {
+          kind: "component" as const,
+          label: componentName,
+          entity_id: `${jobName}::${componentName}`,
+        };
+    onContextChange?.({ selectedEntity, activeDetailTab: "mapping" });
+  }, [lineageQuery, jobName, componentName, onContextChange]);
 
   // Documented 404 { fallback: "inspector" } contract (D4): this component
   // has no level-3 graph after all - render the inspector in this slot

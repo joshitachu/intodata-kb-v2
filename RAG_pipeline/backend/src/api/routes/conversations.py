@@ -48,6 +48,7 @@ from src.schemas import (
     MessageHarnessActivity,
     MessageHarnessActionChoice,
     MessageHarnessPendingAction,
+    PageScope,
     SlashCommandListResponse,
     SlashCommandResponse,
 )
@@ -118,14 +119,22 @@ async def list_conversations(
     # Count total
     total_result = await db.execute(
         select(func.count(Conversation.id))
-        .where(Conversation.user_id == user.id, Conversation.deleted_at.is_(None))
+        .where(
+            Conversation.user_id == user.id,
+            Conversation.deleted_at.is_(None),
+            Conversation.visible_in_chat.is_(True),
+        )
     )
     total = total_result.scalar_one()
 
     # Get conversations with message counts
     result = await db.execute(
         select(Conversation)
-        .where(Conversation.user_id == user.id, Conversation.deleted_at.is_(None))
+        .where(
+            Conversation.user_id == user.id,
+            Conversation.deleted_at.is_(None),
+            Conversation.visible_in_chat.is_(True),
+        )
         .order_by(Conversation.updated_at.desc())
         .offset(skip)
         .limit(limit)
@@ -139,6 +148,8 @@ async def list_conversations(
                 id=c.id,
                 title=c.title,
                 message_count=len(c.messages),
+                origin_surface=c.origin_surface,
+                visible_in_chat=c.visible_in_chat,
                 created_at=c.created_at,
                 updated_at=c.updated_at,
             )
@@ -156,7 +167,13 @@ async def create_conversation(
 ) -> ConversationResponse:
     """Create a new conversation."""
     title = request.title if request else None
-    conversation = Conversation(user_id=user.id, title=title)
+    surface = request.surface if request else "chat"
+    conversation = Conversation(
+        user_id=user.id,
+        title=title,
+        origin_surface=surface,
+        visible_in_chat=surface == "chat",
+    )
     db.add(conversation)
     await db.flush()
 
@@ -164,6 +181,8 @@ async def create_conversation(
         id=conversation.id,
         title=conversation.title,
         message_count=0,
+        origin_surface=conversation.origin_surface,
+        visible_in_chat=conversation.visible_in_chat,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
     )
@@ -368,6 +387,7 @@ async def get_conversation(
                     ]
                 ),
                 pending_action=pending_action,
+                page_scope=(message.page_scope if isinstance(message.page_scope, dict) else None),
                 created_at=message.created_at,
             )
         )
@@ -381,6 +401,8 @@ async def get_conversation(
         id=conversation.id,
         title=conversation.title,
         messages=messages,
+        origin_surface=conversation.origin_surface,
+        visible_in_chat=conversation.visible_in_chat,
         agent_plan=(AgentPlanProjectionResponse(**agent_plan.model_dump()) if agent_plan else None),
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
@@ -534,6 +556,47 @@ async def decide_agent_approval(
         raise api_error(409, "approval_conflict", str(exc)) from exc
 
 
+def _page_scope_payload(page_scope: PageScope | None) -> dict | None:
+    """Serialize a validated page scope for storage.
+
+    `exclude_none` keeps the stored shape identical to the frontend `TopologyLevel`
+    union, where `sourceRoot` is an optional key rather than an explicit null. The
+    topology tools emit the same union back as navigation targets, so shape drift here
+    would surface as chips that navigate nowhere.
+    """
+    if page_scope is None:
+        return None
+    return page_scope.model_dump(mode="json", exclude_none=True)
+
+
+async def _persist_page_scope(
+    db: DBSession,
+    message: ConversationMessage,
+    page_scope: PageScope | None,
+) -> None:
+    """Record the client's viewing context on the turn's user message.
+
+    Stored verbatim as an untrusted prompt hint. It is deliberately NOT used to derive
+    project access, narrow retrieval, or override `request.project_id` — the route's
+    existing project authorization above is the only authority, so a page_scope naming
+    an inaccessible project grants nothing.
+
+    Written after the turn rather than at message creation because the agent runtime
+    owns the user-message row (it is the durable idempotency key for the turn); an
+    explicit UPDATE keeps the write correct whether or not the instance is attached.
+    """
+    payload = _page_scope_payload(page_scope)
+    if payload is None:
+        return
+    await db.execute(
+        update(ConversationMessage)
+        .where(ConversationMessage.id == message.id)
+        .values(page_scope=payload)
+    )
+    await db.commit()
+    message.page_scope = payload
+
+
 def _safe_activity_details(raw: dict) -> dict:
     safe: dict = {}
     for key, value in raw.items():
@@ -563,14 +626,14 @@ def _agent_message_response(execution) -> MessageResponse:  # noqa: ANN001
     )
 
 
-@router.patch("/{conversation_id}", response_model=ConversationResponse, summary="Rename a conversation")
+@router.patch("/{conversation_id}", response_model=ConversationResponse, summary="Update a conversation")
 async def update_conversation(
     conversation_id: int,
     request: ConversationUpdateRequest,
     db: DBSession,
     user: CurrentUser,
 ) -> ConversationResponse:
-    """Update conversation title."""
+    """Update user-controlled conversation presentation state."""
     result = await db.execute(
         select(Conversation)
         .where(Conversation.id == conversation_id, Conversation.deleted_at.is_(None))
@@ -584,12 +647,17 @@ async def update_conversation(
     if conversation.user_id != user.id:
         raise api_error(403, "forbidden", "Not authorized")
 
-    conversation.title = request.title
+    if request.title is not None:
+        conversation.title = request.title
+    if request.visible_in_chat is not None:
+        conversation.visible_in_chat = request.visible_in_chat
 
     return ConversationResponse(
         id=conversation.id,
         title=conversation.title,
         message_count=len(conversation.messages),
+        origin_surface=conversation.origin_surface,
+        visible_in_chat=conversation.visible_in_chat,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
     )
@@ -676,6 +744,7 @@ async def send_message(
             project_scope=project_ids,
             permissions=get_user_permissions(user),
             access_token=http_request.cookies.get("access_token"),
+            page_scope=_page_scope_payload(request.page_scope),
             transport="nonstream",
         )
     except AgentChatIdempotencyConflict as exc:
@@ -686,6 +755,7 @@ async def send_message(
             "agent_run_in_progress",
             f"Agent run {exc.run_id} is still processing; reconnect to its stream.",
         ) from exc
+    await _persist_page_scope(db, execution.user_message, request.page_scope)
     return _agent_message_response(execution)
 
 
@@ -759,6 +829,7 @@ async def send_message_stream(
                     project_scope=project_ids,
                     permissions=get_user_permissions(user),
                     access_token=http_request.cookies.get("access_token"),
+                    page_scope=_page_scope_payload(request.page_scope),
                     transport="stream",
                     public_event_listener=listener,
                 )
@@ -785,6 +856,7 @@ async def send_message_stream(
                 except AgentChatIdempotencyConflict as exc:
                     yield f"event: error\ndata: {json.dumps(str(exc))}\n\n"
                     return
+                await _persist_page_scope(db, execution.user_message, request.page_scope)
                 if execution.run_id is None:
                     async for event_type, data in stream_transport(execution.result):
                         yield f"event: {event_type}\ndata: {data}\n\n"
@@ -815,10 +887,13 @@ async def send_message_stream(
             requested_project_id=request.project_id, user_id=user.id,
             user_groups=user_groups, project_scope=project_ids,
             permissions=get_user_permissions(user),
-            access_token=http_request.cookies.get("access_token"), transport="stream",
+            access_token=http_request.cookies.get("access_token"),
+            page_scope=_page_scope_payload(request.page_scope),
+            transport="stream",
         )
     except AgentChatIdempotencyConflict as exc:
         raise api_error(409, "idempotency_conflict", str(exc)) from exc
+    await _persist_page_scope(db, execution.user_message, request.page_scope)
 
     async def event_generator():
         async for event_type, data in stream_transport(execution.result):
@@ -905,6 +980,9 @@ class SaveExchangeRequest(BaseModel):
     user_message: str
     assistant_message: str
     latency_ms: int | None = None
+    # Same untrusted prompt-hint contract as ConversationMessageRequest.page_scope:
+    # persisted with the turn, never an authorization or retrieval input.
+    page_scope: PageScope | None = None
 
 
 @router.post("/{conversation_id}/messages/save", response_model=MessageResponse, summary="Save a pre-generated exchange")
@@ -935,6 +1013,7 @@ async def save_exchange(
         conversation_id=conversation_id,
         role="user",
         content=request.user_message,
+        page_scope=_page_scope_payload(request.page_scope),
     )
     db.add(user_msg)
     await db.flush()

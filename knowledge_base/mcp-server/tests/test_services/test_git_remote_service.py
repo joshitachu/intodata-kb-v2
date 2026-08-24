@@ -52,17 +52,17 @@ async def test_temporary_authenticated_origin_restores_clean_remote_on_failure(m
 
     monkeypatch.setattr(
         service,
-        "authenticated_url",
-        lambda repo_url, token_enc: "https://tokenized.example/acme/repo.git",
+        "authenticated_url_plaintext",
+        lambda repo_url, token: "https://tokenized.example/acme/repo.git",
     )
 
     async def failing_operation() -> str:
         raise RuntimeError("boom")
 
     try:
-        await service.with_temporary_authenticated_origin(
+        await service.with_temporary_authenticated_origin_token(
             "/repo",
-            "encrypted-token",
+            "resolved-token",
             failing_operation,
             git_func=git_func,
         )

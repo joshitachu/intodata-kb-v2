@@ -12,9 +12,9 @@ import ScanHistory from "./components/ScanHistory";
 import ValidationReviewPanel from "./components/ValidationReviewPanel";
 import ABComparison from "./components/ABComparison";
 import HelpPanel from "./components/HelpPanel";
-import PluginPacksPage from "./components/PluginPacksPage";
 import FleetPage from "./components/FleetPage";
 import ModelsPage from "./components/ModelsPage";
+import ConnectorsPage from "./components/connectors/ConnectorsPage";
 import { useLogStream } from "./hooks/useLogStream";
 import { useProjects } from "./hooks/useProjects";
 import { useAuth, getLoginUrl } from "./hooks/useAuth";
@@ -24,7 +24,7 @@ import type { GenerateRun } from "./types";
 
 const FLEET_ENABLED = import.meta.env.VITE_FLEET_ENABLED === "true";
 
-type TopNav = "projects" | "docs" | "packs" | "fleet" | "models";
+type TopNav = "projects" | "docs" | "fleet" | "models" | "connectors";
 
 export default function App() {
   const auth = useAuth();
@@ -61,6 +61,8 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
 
   const activeProjectObj = projectsData?.projects.find((p) => p.id === activeProject) ?? null;
   const projects = projectsData?.projects ?? [];
+  const canViewConnectors = Boolean(user?.is_superadmin || user?.permissions.includes("view_connectors") || user?.permissions.includes("manage_connectors"));
+  const canManageConnectors = Boolean(user?.is_superadmin || user?.permissions.includes("manage_connectors"));
 
   async function handleLogout() {
     await fetch("/auth/logout", { method: "POST", credentials: "include", headers: csrfHeaders() });
@@ -124,18 +126,6 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
                   {nav.charAt(0).toUpperCase() + nav.slice(1)}
                 </button>
               ))}
-              {isAuthenticated && (
-                <button
-                  className={`px-3 py-1.5 text-sm rounded transition-all ${
-                    topNav === "packs"
-                      ? "text-slate-200 bg-white/[0.06]"
-                      : "text-slate-500 hover:text-slate-300"
-                  }`}
-                  onClick={() => setTopNav("packs")}
-                >
-                  Packs
-                </button>
-              )}
               {FLEET_ENABLED && user?.is_superadmin && (
                 <button
                   className={`px-3 py-1.5 text-sm rounded transition-all ${
@@ -158,6 +148,18 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
                   onClick={() => setTopNav("models")}
                 >
                   Models
+                </button>
+              )}
+              {canViewConnectors && (
+                <button
+                  className={`px-3 py-1.5 text-sm rounded transition-all ${
+                    topNav === "connectors"
+                      ? "text-slate-200 bg-white/[0.06]"
+                      : "text-slate-500 hover:text-slate-300"
+                  }`}
+                  onClick={() => setTopNav("connectors")}
+                >
+                  Connectors
                 </button>
               )}
             </nav>
@@ -201,6 +203,11 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
 
               <ProjectList
                 onAction={(id) => setActiveProject(id)}
+                onManageRuntimeEvidence={(id) => {
+                  setActiveProject(id);
+                  setTopNav("projects");
+                  setDetailTab("settings");
+                }}
                 activeProject={activeProject}
                 canManageProjects={isAuthenticated}
                 onSelect={(id) => {
@@ -260,13 +267,14 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
           {topNav === "docs" && <HelpPanel />}
 
           {/* Documentation Pack workspace; legacy registry editing is admin-only inside it. */}
-          {topNav === "packs" && <PluginPacksPage isSuperadmin={Boolean(user?.is_superadmin)} />}
 
           {/* Fleet / Mission Control — nexus operator server only */}
           {topNav === "fleet" && FLEET_ENABLED && user?.is_superadmin && <FleetPage />}
 
           {/* Models — per-VPS default model overrides (superadmin only) */}
           {topNav === "models" && user?.is_superadmin && <ModelsPage />}
+
+          {topNav === "connectors" && canViewConnectors && <ConnectorsPage canManage={canManageConnectors} />}
 
         </div>
       </main>

@@ -24,6 +24,7 @@ from mcp_server.providers.custom.models import (
     ModelOptions,
     ProviderCallLog,
 )
+from mcp_server.providers.custom.prompt_renderer import get_renderer
 from mcp_server.providers.custom.prompts import facts_summary, platform_analysis_requirements
 from mcp_server.providers.custom.providers import ModelProvider, _estimate_tokens
 
@@ -414,12 +415,14 @@ class SingleShotInvestigator:
         *,
         limits: InvestigatorLimits | None = None,
         preamble: str | None = None,
+        pack_dir: Path | None = None,
     ) -> None:
         self.provider = provider
         self.toolbox = StagingToolbox(staging_dir, limits)
         self.validator = EvidenceValidator(facts, self.toolbox)
         self.facts = facts
         self._preamble = preamble
+        self._pack_dir = pack_dir
 
     async def run(
         self,
@@ -563,54 +566,12 @@ class SingleShotInvestigator:
         *,
         repair_context: str | None = None,
     ) -> str:
-        units_list = "\n".join(f"- {u}" for u in allowed_units)
-        base = f"""\
-You are extracting structured evidence from integration scan data.
-
-Scan data for group: {group}
-Source file: {source_ref}
-
-=== SCAN DATA ===
-{content}
-=== END SCAN DATA ===
-
-Extract evidence for EVERY unit listed below from the scan data above.
-If a unit truly has no data, add it to skipped_units with a specific reason.
-
-Units to cover:
-{units_list}
-
-Return ONLY a valid JSON object (no markdown fences, no explanation):
-
-{{
-  "evidence": [
-    {{
-      "unit_name": "exact unit name from the list above",
-      "category": "short label describing the evidence type (e.g. data flow, business logic, error handling, security, orchestration)",
-      "source_file": "{source_ref}",
-      "chunk_ref": "{source_ref}",
-      "line_range": "approximate line range e.g. 10-25",
-      "snippet": "exact short excerpt from the scan data (minimum 8 chars)",
-      "observation": "specific concrete finding about this unit (minimum 20 chars)"
-    }}
-  ],
-  "skipped_units": {{
-    "UnitName": "specific reason this unit has no usable data in the scan"
-  }}
-}}
-
-Rules:
-- Every unit must appear in evidence OR skipped_units
-- snippet must be an exact excerpt from the scan data above
-- observation must be specific, not generic phrases like "needs review" or "no details available"
-- chunk_ref must be exactly: {source_ref}
-- source_file may be {source_ref} unless the scan data names a more specific original source artifact
-- line_range is required (approximate is fine)
-- Multiple evidence items per unit are encouraged
-- If the scan data is a pure data file (JSON/XML data without source code, logic, or
-  configuration values — e.g. a fixture file, test dataset, or empty schema stub),
-  list ALL units in skipped_units with reason "data-only file: no source code in scanner output"
-"""
+        base = get_renderer().render("phase1_extraction.md", {
+            "GROUP": group,
+            "SOURCE_REF": source_ref,
+            "CONTENT": content,
+            "UNIT_LIST": "\n".join(f"- {u}" for u in allowed_units),
+        }, pack_dir=self._pack_dir)
         if self._preamble:
             base = f"{self._preamble.rstrip()}\n\n{base}"
         if repair_context:
@@ -635,6 +596,7 @@ class ChunkManifestInvestigator:
         *,
         limits: InvestigatorLimits | None = None,
         preamble: str | None = None,
+        pack_dir: Path | None = None,
     ) -> None:
         self.provider = provider
         self.staging_dir = Path(staging_dir)
@@ -642,6 +604,7 @@ class ChunkManifestInvestigator:
         self.validator = EvidenceValidator(facts, self.toolbox)
         self.facts = facts
         self._preamble = preamble
+        self._pack_dir = pack_dir
 
     async def run(
         self,
@@ -841,29 +804,13 @@ class ChunkManifestInvestigator:
         return accumulated_evidence, accumulated_skipped, calls
 
     def _build_selection_prompt(self, group: str, group_units: list[str], manifest: list[dict]) -> str:
-        units_list = "\n".join(f"- {u}" for u in group_units)
-        return (
-            f"You are planning an evidence investigation of integration source code.\n\n"
-            f"Group: {group}\n"
-            f"Units to investigate ({len(group_units)} total):\n{units_list}\n\n"
-            f"There are {len(manifest)} preprocess chunks available. Select the minimum set needed to"
-            " cover all units above.\n\n"
-            "Each chunk entry has:\n"
-            "- unit_names: scanner-detected unit names that appear in this chunk\n"
-            "- categories: evidence categories present (sql_queries, db_connections, auth, etc.)\n"
-            "- identifiers: actual named things extracted from the chunk — SQL table names,"
-            " class names, connection names, URLs, config keys\n\n"
-            "Selection strategy:\n"
-            "- A chunk is needed if it contains a unit from the list above (check unit_names)\n"
-            "- Use identifiers to decide between chunks: if you need evidence about a table or"
-            " class, pick the chunk whose identifiers list contains that name\n"
-            "- Skip chunks where unit_names is empty AND identifiers contains nothing relevant\n"
-            "- When unsure, include the chunk — missing evidence is worse than reading one extra chunk\n\n"
-            "=== CHUNK MANIFEST ===\n"
-            + json.dumps(manifest, indent=2)
-            + "\n=== END MANIFEST ===\n\n"
-            'Return ONLY a JSON object: {"fetch_ids": ["id1", "id2"], "reasoning": "one sentence"}'
-        )
+        return get_renderer().render("phase1_chunk_selection.md", {
+            "GROUP": group,
+            "UNIT_COUNT": str(len(group_units)),
+            "UNIT_LIST": "\n".join(f"- {u}" for u in group_units),
+            "CHUNK_COUNT": str(len(manifest)),
+            "MANIFEST_JSON": json.dumps(manifest, indent=2),
+        }, pack_dir=self._pack_dir).rstrip("\n")
 
     def _build_extraction_prompt(
         self,
@@ -873,37 +820,12 @@ class ChunkManifestInvestigator:
         units_needed: list[str],
         repair_context: str | None = None,
     ) -> str:
-        units_list = "\n".join(f"- {u}" for u in units_needed)
-        base = (
-            f"You are extracting structured evidence from integration scan data.\n\n"
-            f"Scan data for group: {group}\nSource file: {source_ref}\n\n"
-            f"=== SCAN DATA ===\n{content}\n=== END SCAN DATA ===\n\n"
-            "Extract evidence for EVERY unit listed below from the scan data above.\n"
-            "If a unit truly has no data, add it to skipped_units with a specific reason.\n\n"
-            f"Units to cover:\n{units_list}\n\n"
-            "Return ONLY a valid JSON object:\n\n"
-            "{\n"
-            '  "evidence": [\n'
-            "    {\n"
-            '      "unit_name": "exact unit name from the list above",\n'
-            '      "category": "short label (e.g. data flow, business logic, error handling)",\n'
-            f'      "source_file": "{source_ref}",\n'
-            f'      "chunk_ref": "{source_ref}",\n'
-            '      "line_range": "approximate line range e.g. 10-25",\n'
-            '      "snippet": "exact short excerpt from the scan data (minimum 8 chars)",\n'
-            '      "observation": "specific concrete finding about this unit (minimum 20 chars)"\n'
-            "    }\n"
-            "  ],\n"
-            '  "skipped_units": {"UnitName": "specific reason"}\n'
-            "}\n\n"
-            "Rules:\n"
-            "- Every unit must appear in evidence OR skipped_units\n"
-            "- snippet must be an exact excerpt from the scan data above\n"
-            "- observation must be specific, not generic\n"
-            f"- chunk_ref must be exactly: {source_ref}\n"
-            "- line_range is required (approximate is fine)\n"
-            "- Multiple evidence items per unit are encouraged\n"
-        )
+        base = get_renderer().render("phase1_manifest_extraction.md", {
+            "GROUP": group,
+            "SOURCE_REF": source_ref,
+            "CONTENT": content,
+            "UNIT_LIST": "\n".join(f"- {u}" for u in units_needed),
+        }, pack_dir=self._pack_dir)
         if self._preamble:
             base = f"{self._preamble.rstrip()}\n\n{base}"
         if repair_context:

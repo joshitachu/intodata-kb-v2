@@ -10,7 +10,7 @@ vi.mock("next/navigation", () => ({
 
 import { renderHook, waitFor, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useAuth } from "@/hooks/useAuth";
+import { refreshSession, useAuth } from "@/hooks/useAuth";
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -108,9 +108,13 @@ describe("useAuth", () => {
     });
 
     expect(result.current.user?.username).toBe("admin");
-    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/auth/me");
-    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/auth/refresh", { method: "POST" });
-    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/auth/me");
+    expect(result.current.status).toBe("authenticated");
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/auth/me", { cache: "no-store" });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/auth/refresh", {
+      method: "POST",
+      cache: "no-store",
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/auth/me", { cache: "no-store" });
   });
 
   it("logout clears user and redirects to login", async () => {
@@ -135,5 +139,103 @@ describe("useAuth", () => {
 
     expect(result.current.user).toBeNull();
     expect(mockPush).toHaveBeenCalledWith("/login");
+  });
+
+  // The regression these guard: any non-401 answer used to be read as a logout,
+  // so a restarting or saturated backend evicted a perfectly valid session.
+  describe("transient backend failures", () => {
+    it("does not log out when /auth/me answers 500", async () => {
+      vi.spyOn(global, "fetch").mockResolvedValue(new Response(null, { status: 500 }));
+
+      const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(result.current.status).toBe("unavailable");
+      });
+
+      expect(result.current.isDegraded).toBe(true);
+      expect(mockPush).not.toHaveBeenCalled();
+    });
+
+    it("keeps an established session when a later probe fails", async () => {
+      vi.spyOn(global, "fetch")
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify(mockUser()), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        )
+        .mockResolvedValue(new Response(null, { status: 503 }));
+
+      const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(result.current.isAuthenticated).toBe(true);
+      });
+
+      await act(async () => {
+        await result.current.refreshUser();
+      });
+
+      expect(result.current.status).toBe("unavailable");
+      expect(result.current.user?.username).toBe("admin");
+      expect(mockPush).not.toHaveBeenCalled();
+    });
+
+    it("does not log out when the network call throws", async () => {
+      vi.spyOn(global, "fetch").mockRejectedValue(new TypeError("fetch failed"));
+
+      const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(result.current.status).toBe("unavailable");
+      });
+
+      expect(mockPush).not.toHaveBeenCalled();
+    });
+
+    it("treats a 429 on refresh as retryable, not as a logout", async () => {
+      vi.spyOn(global, "fetch")
+        .mockResolvedValueOnce(new Response(null, { status: 401 }))
+        .mockResolvedValue(new Response(null, { status: 429 }));
+
+      const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(result.current.status).toBe("unavailable");
+      });
+
+      expect(result.current.status).not.toBe("unauthenticated");
+      expect(mockPush).not.toHaveBeenCalled();
+    });
+
+    it("still reports a real logout when refresh answers 401", async () => {
+      vi.spyOn(global, "fetch").mockResolvedValue(new Response(null, { status: 401 }));
+
+      const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(result.current.status).toBe("unauthenticated");
+      });
+
+      expect(result.current.user).toBeNull();
+    });
+  });
+
+  it("collapses concurrent refreshes onto a single request", async () => {
+    const fetchMock = vi
+      .spyOn(global, "fetch")
+      .mockResolvedValue(new Response(null, { status: 200 }));
+
+    const [a, b, c] = await Promise.all([
+      refreshSession(),
+      refreshSession(),
+      refreshSession(),
+    ]);
+
+    expect([a, b, c]).toEqual(["refreshed", "refreshed", "refreshed"]);
+    // Rotation is single-use: a second in-flight POST would present an
+    // already-rotated token and come back 401.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

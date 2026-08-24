@@ -1,4 +1,19 @@
-"""Layered model/tool/deadline/cost budgets for the standard runtime."""
+"""Layered model/tool/deadline/cost budgets for the standard runtime.
+
+Read depth is budgeted separately from consequential work. Before this split
+there was one ``max_tool_calls`` ceiling for everything, and the deployed value
+is 4 (``AGENT_CHAT_MAX_TOOL_CALLS``). A genuine structural drill-down --
+resolve an edge, open the design that implements it, read the field lineage,
+cross-check the documentation -- needs four to five reads before the model has
+anything to answer with, so 4 stopped runs mid-investigation on
+``tool_call_limit``. Raising the single ceiling would have widened the write
+budget at the same time, which is not what a read-depth problem needs.
+
+``max_read_only_tool_calls`` / ``max_read_only_model_calls`` therefore apply only
+while a run has done read-only work and nothing else. The moment a run makes one
+consequential tool call, the base ceilings apply again for the rest of the run,
+so the number of consequential calls a run can make never increases.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +27,7 @@ from langchain_core.messages import ToolMessage
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.harness.models import HarnessRiskTier
-from src.generation.usage import MODEL_PRICING
+from src.harness.model_usage import model_cost_usd, token_usage_from_messages
 
 
 class BudgetStopReason(StrEnum):
@@ -35,15 +50,50 @@ class LayeredBudgetLimits(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     model_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
-    read_tool_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
+    # Upper bounds match `Settings`: `reconcile_turn_deadlines` raises the read
+    # tool timeout to the hard deadline so a finished answer is never discarded
+    # by a limit below the turn's own, and derives the soft deadline from it.
+    read_tool_timeout_seconds: float = Field(default=20.0, gt=0, le=600)
     write_tool_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
     workflow_handoff_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
-    soft_deadline_seconds: float = Field(default=45.0, gt=0, le=300)
+    soft_deadline_seconds: float = Field(default=45.0, gt=0, le=600)
     hard_deadline_seconds: float = Field(default=120.0, gt=0, le=600)
     max_model_calls: int = Field(default=8, ge=1, le=64)
     synthesis_reserve_calls: int = Field(default=2, ge=1, le=4)
     max_tool_calls: int = Field(default=4, ge=0, le=32)
+    # Read-depth ceilings. Not simply larger defaults on the two fields above,
+    # because those also bound consequential work; see the module docstring.
+    max_read_only_tool_calls: int = Field(default=8, ge=0, le=32)
+    max_read_only_model_calls: int = Field(default=12, ge=1, le=64)
     max_cost_usd: float = Field(default=0.25, ge=0, le=100)
+
+    @property
+    def read_only_tool_call_ceiling(self) -> int:
+        """Tool-call ceiling for a run that has read only, and read something.
+
+        Zero is a kill switch, not a small number: ``max_tool_calls == 0`` means
+        this turn gets no tools at all, and a read-depth allowance must never
+        re-enable them. Above zero the ceiling is the larger of the two values,
+        so a deployment that configures a base ceiling above the read allowance
+        is never given LESS depth for reads than it allows for writes.
+        """
+
+        if self.max_tool_calls == 0:
+            return 0
+        return max(self.max_tool_calls, self.max_read_only_tool_calls)
+
+    @property
+    def read_only_model_call_ceiling(self) -> int:
+        """Model-call ceiling for a run that has read only, and read something.
+
+        Raised in proportion to the tool ceiling: each extra read costs one model
+        call to request and one to reason over, so a read budget that is twice as
+        deep needs more than two extra model calls to be usable.
+        ``synthesis_reserve_calls`` is subtracted from whichever ceiling is in
+        force, so the reserved answer-only calls survive the raise unchanged.
+        """
+
+        return max(self.max_model_calls, self.max_read_only_model_calls)
 
     def model_dump_public(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
@@ -67,6 +117,9 @@ class LayeredBudgetController:
         self._started = clock()
         self.model_calls = 0
         self.tool_calls = 0
+        #: Consequential tool calls charged so far. One is enough to retire the
+        #: read-depth ceilings for the rest of the run.
+        self.consequential_tool_calls = 0
         self.cost_usd = 0.0
         self.stop_reason: BudgetStopReason | None = None
         self._post_stop_synthesis_calls = 0
@@ -79,6 +132,30 @@ class LayeredBudgetController:
     def stopped(self) -> bool:
         return self.stop_reason is not None
 
+    @property
+    def read_depth_active(self) -> bool:
+        """Whether this run has earned the read-depth ceilings.
+
+        Both conditions are load-bearing. ``consequential_tool_calls == 0``
+        keeps write work on the base budget. ``tool_calls > 0`` means the raise
+        is granted only once the run has actually read something: a turn that has
+        called no tool at all is not a drill-down, and letting it spend the
+        deeper model budget on pure generation is how a run talks itself past the
+        base ceiling without reading anything.
+        """
+
+        return self.consequential_tool_calls == 0 and self.tool_calls > 0
+
+    def _model_call_ceiling(self) -> int:
+        if self.read_depth_active:
+            return self.limits.read_only_model_call_ceiling
+        return self.limits.max_model_calls
+
+    def _tool_call_ceiling(self, risk_tier: HarnessRiskTier) -> int:
+        if risk_tier is HarnessRiskTier.READ_ONLY and self.consequential_tool_calls == 0:
+            return self.limits.read_only_tool_call_ceiling
+        return self.limits.max_tool_calls
+
     def before_model(self, *, final_synthesis: bool) -> float:
         if self.stop_reason is not None:
             return self._before_post_stop_synthesis(final_synthesis=final_synthesis)
@@ -86,9 +163,10 @@ class LayeredBudgetController:
         self._check_hard_deadline()
         if self.cost_usd >= self.limits.max_cost_usd:
             self._stop(BudgetStopReason.COST_LIMIT)
-        if self.model_calls >= self.limits.max_model_calls:
+        ceiling = self._model_call_ceiling()
+        if self.model_calls >= ceiling:
             self._stop(BudgetStopReason.MODEL_CALL_LIMIT)
-        non_synthesis_limit = self.limits.max_model_calls - self.limits.synthesis_reserve_calls
+        non_synthesis_limit = ceiling - self.limits.synthesis_reserve_calls
         if not final_synthesis and self.model_calls >= non_synthesis_limit:
             self._stop(BudgetStopReason.MODEL_CALL_LIMIT)
         if self.elapsed_seconds >= self.limits.soft_deadline_seconds and not final_synthesis:
@@ -109,7 +187,7 @@ class LayeredBudgetController:
         self._check_hard_deadline()
         if self.cost_usd >= self.limits.max_cost_usd:
             self._stop(BudgetStopReason.COST_LIMIT)
-        if self.model_calls >= self.limits.max_model_calls:
+        if self.model_calls >= self._model_call_ceiling():
             self._stop(BudgetStopReason.MODEL_CALL_LIMIT)
         self._post_stop_synthesis_calls += 1
         self.model_calls += 1
@@ -131,11 +209,17 @@ class LayeredBudgetController:
         self._check_hard_deadline()
         if self.elapsed_seconds >= self.limits.soft_deadline_seconds:
             self._stop(BudgetStopReason.SOFT_DEADLINE)
-        if self.tool_calls >= self.limits.max_tool_calls:
+        # Charged against the ceiling for THIS call's risk tier. A run may take
+        # more read calls than it may take write calls, and the first write call
+        # is measured against the base ceiling including the reads already spent,
+        # so read depth can never be converted into extra write capacity.
+        if self.tool_calls >= self._tool_call_ceiling(risk_tier):
             self._stop(BudgetStopReason.TOOL_CALL_LIMIT)
         if self.cost_usd + max(0.0, estimated_cost_usd) > self.limits.max_cost_usd:
             self._stop(BudgetStopReason.COST_LIMIT)
         self.tool_calls += 1
+        if risk_tier is not HarnessRiskTier.READ_ONLY:
+            self.consequential_tool_calls += 1
         self.cost_usd += max(0.0, estimated_cost_usd)
         configured = (
             self.limits.workflow_handoff_timeout_seconds
@@ -160,6 +244,8 @@ class LayeredBudgetController:
             **self.limits.model_dump_public(),
             "model_calls_used": self.model_calls,
             "tool_calls_used": self.tool_calls,
+            "consequential_tool_calls_used": self.consequential_tool_calls,
+            "read_depth_active": self.read_depth_active,
             "cost_usd_used": round(self.cost_usd, 6),
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "stop_reason": self.stop_reason.value if self.stop_reason else None,
@@ -207,25 +293,30 @@ class LayeredModelBudgetMiddleware(AgentMiddleware):
 
 
 def _model_cost(response: Any, *, model_name: str) -> float:
+    """Price one wrapped model call, discounting prompt tokens served from cache.
+
+    Previously this reimplemented the input/output price formula and read only the
+    two top-level token counts, so a provider with an automatic prefix cache
+    (Moonshot/Kimi reports most of the prompt as ``cache_read``) was billed at the
+    full input rate on every turn. Pricing now comes from
+    ``src.generation.usage``, which is the single source of truth for rates and
+    cache discounts.
+    """
+
     result = getattr(response, "result", None)
     messages = result if isinstance(result, list) else [result] if result is not None else []
     explicit_total = 0.0
-    input_tokens = 0
-    output_tokens = 0
     for message in messages:
         metadata = getattr(message, "response_metadata", {}) or {}
         value = metadata.get("cost_usd")
         if isinstance(value, (int, float)):
             explicit_total += max(0.0, float(value))
-        usage = getattr(message, "usage_metadata", {}) or {}
-        input_tokens += max(0, int(usage.get("input_tokens", 0) or 0))
-        output_tokens += max(0, int(usage.get("output_tokens", 0) or 0))
     if explicit_total:
+        # A provider that bills us an exact figure wins over any local table.
         return explicit_total
-    pricing = MODEL_PRICING.get(model_name)
-    if pricing is None:
-        return 0.0
-    return (input_tokens / 1_000_000) * pricing[0] + (output_tokens / 1_000_000) * pricing[1]
+    return model_cost_usd(
+        token_usage_from_messages(messages), model_name=model_name
+    )
 
 
 __all__ = [

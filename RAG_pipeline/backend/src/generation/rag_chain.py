@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.models import QueryLog
 from src.document_roles import AUXILIARY_DOCUMENT_ROLES
 from src.memory.context import build_memory_context
-from src.generation.llm_client import generate_answer, get_last_usage
+from src.generation.llm_client import (
+    generate_document_answer,
+    generate_document_answer_stream,
+    get_last_usage,
+)
+from src.harness.trusted_answer import ANSWER_DELTA_CHARS
 from src.retrieval.embedder import get_last_embed_tokens
 from src.generation.prompt_builder import (
     build_messages,
@@ -20,6 +25,8 @@ from src.generation.prompt_builder import (
 )
 from src.retrieval.metadata_retriever import get_system_knowledge_summary
 from src.config import settings
+from src.turn_progress import report_phase
+from src.turn_timings import measure_model
 from src.memory.hindsight_client import (
     ensure_corrections_bank,
     ensure_quality_bank,
@@ -36,9 +43,18 @@ from src.retrieval.search import (
     search_similar,
     search_similar_hybrid,
 )
+from src.retrieval.topology_hints import TopologyRetrievalHints
 from src.schemas import DocumentSource, QueryRequest, QueryResponse, Source
 
 logger = logging.getLogger(__name__)
+
+# Backwards-compatible monkeypatch seam for the established streaming tests.
+# Production uses the approved-chain function itself; the fallback branch in
+# ``_generate_streaming_answer`` only activates when a test/embedding caller
+# deliberately replaces this historical module symbol.
+generate_answer = generate_document_answer
+generate_answer_stream = generate_document_answer_stream
+_DEFAULT_DOCUMENT_STREAM = generate_document_answer_stream
 
 
 async def _recall_memories(
@@ -124,13 +140,14 @@ async def _execute_role_aware_search(
     qdrant: AsyncQdrantClient,
     project_ids: list[str] | None,
     knowledge_revisions: Mapping[str, str] | None = None,
+    topology_hints: TopologyRetrievalHints | None = None,
 ) -> tuple[list[Source], list[Source]]:
     """Run source-first retrieval plus bounded auxiliary/template context.
 
     The source and auxiliary searches are independent, so they run concurrently
     rather than sequentially to halve the retrieval wall-clock.
     """
-    source_sources, auxiliary_sources = await asyncio.gather(
+    searches = [
         _execute_search(
             query,
             user_groups,
@@ -153,8 +170,54 @@ async def _execute_role_aware_search(
             document_roles=list(AUXILIARY_DOCUMENT_ROLES),
             knowledge_revisions=knowledge_revisions,
         ),
-    )
+    ]
+    # The established query always runs unchanged.  A topology hint may only add
+    # one small source-document search; it cannot alter project/document filters
+    # or suppress a result the normal query found.
+    if topology_hints is not None and topology_hints.retrieval_terms:
+        searches.append(
+            _execute_search(
+                topology_hints.enriched_query(query),
+                user_groups,
+                qdrant,
+                max(1, min(4, request.top_k)),
+                request.threshold,
+                request.document_ids,
+                project_ids,
+                document_roles=["source"],
+                knowledge_revisions=knowledge_revisions,
+            )
+        )
+    results = await asyncio.gather(*searches)
+    source_sources, auxiliary_sources = results[:2]
+    if len(results) == 3:
+        source_sources = _merge_retrieval_sources(
+            source_sources,
+            results[2],
+            max_items=request.top_k + min(4, request.top_k),
+        )
     return source_sources, auxiliary_sources
+
+
+def _merge_retrieval_sources(
+    primary: list[Source],
+    supplemental: list[Source],
+    *,
+    max_items: int,
+) -> list[Source]:
+    """Append unique hinted chunks after normal results, preserving recall."""
+
+    merged: list[Source] = []
+    seen: set[tuple[int, int]] = set()
+    for source in (*primary, *supplemental):
+        key = (source.document_id, source.chunk_index)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(source)
+        if len(merged) >= max_items:
+            break
+    return merged
 
 
 async def _persist_query(
@@ -219,6 +282,45 @@ async def _persist_query(
         logger.warning("Failed to persist query log: %s", e)
 
 
+async def _generate_streaming_answer(
+    messages: list[dict],
+    on_delta: Callable[[str], Awaitable[None]],
+) -> str:
+    """Stream the answer, publishing ~96-char batches, and return the full text.
+
+    The returned string is the exact concatenation of what was published, so the
+    live text and the persisted answer cannot diverge.
+
+    Provider retry/failover is owned by ``generate_document_answer_stream``. It
+    may advance only before the provider yielded any answer text, so a new model
+    can never replace prose already visible to the user.
+    """
+
+    attempts = (0,) if generate_answer_stream is _DEFAULT_DOCUMENT_STREAM else (0, 1)
+    for attempt in attempts:
+        buffer: list[str] = []
+        pending = 0
+        produced: list[str] = []
+        try:
+            async for piece in generate_answer_stream(messages):
+                if not piece:
+                    continue
+                produced.append(piece)
+                buffer.append(piece)
+                pending += len(piece)
+                if pending >= ANSWER_DELTA_CHARS:
+                    await on_delta("".join(buffer))
+                    buffer.clear()
+                    pending = 0
+            if buffer:
+                await on_delta("".join(buffer))
+            return "".join(produced)
+        except Exception:
+            if produced or attempt == attempts[-1]:
+                raise
+    raise RuntimeError("Answer streaming exhausted its retry budget")
+
+
 async def run_rag_query(
     request: QueryRequest,
     user_groups: list[str],
@@ -227,8 +329,16 @@ async def run_rag_query(
     db: AsyncSession,
     project_ids: list[str] | None = None,
     knowledge_revisions: Mapping[str, str] | None = None,
+    on_delta: Callable[[str], Awaitable[None]] | None = None,
+    topology_hints: TopologyRetrievalHints | None = None,
 ) -> QueryResponse:
-    """Run the explicit RBAC-scoped document retrieval/generation API."""
+    """Run the explicit RBAC-scoped document retrieval/generation API.
+
+    ``on_delta`` is opt-in. When supplied, the answer is streamed and each batch
+    is published as it is produced; the returned ``answer`` is still the complete
+    text, byte-identical to what was published. Callers that omit it (the ``/query``
+    endpoint, benchmarks) keep the existing non-streaming behaviour exactly.
+    """
     start = time.perf_counter()
     uid = str(user_id)
 
@@ -243,8 +353,19 @@ async def run_rag_query(
         except Exception as e:
             logger.warning("Failed to fetch system knowledge: %s", e)
 
+    # This function is the whole of a chat turn's work when it is reached through
+    # the `answer_from_documentation` capability: the agent's outer model finishes
+    # in a couple of seconds and then waits here. Reporting the two real phases is
+    # what keeps the user's status line alive for the rest of the turn.
+    await report_phase("searching_documents")
     sources, auxiliary_sources = await _execute_role_aware_search(
-        request.query, request, user_groups, qdrant, project_ids, knowledge_revisions,
+        request.query,
+        request,
+        user_groups,
+        qdrant,
+        project_ids,
+        knowledge_revisions,
+        topology_hints,
     )
 
     if sources or auxiliary_sources:
@@ -268,7 +389,20 @@ async def run_rag_query(
             system_knowledge=system_knowledge,
             answer_style=answer_style,
         )
-    answer = await generate_answer(messages)
+    await report_phase("generating_answer")
+    # `measure_model` is what makes this inference visible. Reached through the
+    # agent harness, this call is a *nested* model call: the harness middleware
+    # only wraps the agent's own outer model, so without this the dominant share
+    # of a turn's LLM time was recorded as opaque tool time and `llm_ms` reported
+    # only the couple of seconds the outer model spent choosing the tool.
+    with measure_model():
+        if on_delta is None:
+            # Historical module seam retained for tests/embedding callers. In
+            # production this alias is exactly the approved provider-chain entry
+            # point above, so compatibility does not bypass failover policy.
+            answer = await generate_answer(messages)
+        else:
+            answer = await _generate_streaming_answer(messages, on_delta)
 
     latency_ms = int((time.perf_counter() - start) * 1000)
 

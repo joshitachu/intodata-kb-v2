@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Background, BackgroundVariant, Controls, MiniMap, ReactFlow, type EdgeMouseHandler, type NodeMouseHandler, useEdgesState, useNodesState } from "@xyflow/react";
+import { Background, BackgroundVariant, Controls, MiniMap, ReactFlow, type Edge, type EdgeMouseHandler, type Node, type NodeMouseHandler, type ReactFlowInstance, useEdgesState, useNodesState } from "@xyflow/react";
 import { Filter, Network, Search, X } from "lucide-react";
 import { LandscapeApplicationNode } from "@/components/graph/LandscapeApplicationNode";
 import { LandscapeSystemNode } from "@/components/graph/LandscapeSystemNode";
@@ -16,10 +16,12 @@ import {
   landscapeEdgeKey,
   topologyTerm,
   type LandscapeEdgeData,
+  type LandscapeNodeData,
   type TopologyEdge,
   type LandscapeFilters,
 } from "@/lib/landscapeTransform";
 import type { BusinessSystem, LandscapeApplication, LandscapeSystem, ProjectLandscapeResponse } from "@/types/landscape";
+import type { AssistantCanvasEmphasis, AssistantFocusRequest, CopilotViewContext } from "@/types/copilot";
 
 export type LandscapeSelection =
   | { kind: "application"; item: LandscapeApplication }
@@ -59,6 +61,9 @@ interface LandscapeCanvasProps {
   landscape: ProjectLandscapeResponse;
   onExplore: (selection: LandscapeSelection) => void;
   onViewDesigns: (sourceRoot: string) => void;
+  assistantEmphasis?: AssistantCanvasEmphasis | null;
+  assistantFocusRequest?: AssistantFocusRequest | null;
+  onContextChange?: (context: CopilotViewContext) => void;
 }
 
 export function LandscapeCanvas(props: LandscapeCanvasProps) {
@@ -70,6 +75,9 @@ export function LandscapeCanvas(props: LandscapeCanvasProps) {
   if (hasBusinessTopology) {
     return <ArchitectureTopologyCanvas
       landscape={props.landscape}
+      assistantEmphasis={props.assistantEmphasis}
+      assistantFocusRequest={props.assistantFocusRequest}
+      onContextChange={props.onContextChange}
       onOpenFlow={(streamId) => {
         const edge = findLandscapeEdge(props.landscape, `business-stream\u001f${streamId}`);
         if (edge) props.onExplore({ kind: "edge", item: edge });
@@ -79,7 +87,7 @@ export function LandscapeCanvas(props: LandscapeCanvasProps) {
   return <TechnicalLandscapeCanvas {...props} />;
 }
 
-function TechnicalLandscapeCanvas({ landscape, onExplore, onViewDesigns }: LandscapeCanvasProps) {
+function TechnicalLandscapeCanvas({ landscape, onExplore, onViewDesigns, assistantEmphasis, assistantFocusRequest, onContextChange }: LandscapeCanvasProps) {
   const [query, setQuery] = useState("");
   const [showSystems, setShowSystems] = useState(true);
   const [dependencyType, setDependencyType] = useState("business");
@@ -87,6 +95,7 @@ function TechnicalLandscapeCanvas({ landscape, onExplore, onViewDesigns }: Lands
   const [showInfrastructure, setShowInfrastructure] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [selection, setSelection] = useState<LandscapeSelection | null>(null);
+  const [instance, setInstance] = useState<ReactFlowInstance<Node<LandscapeNodeData>, Edge<LandscapeEdgeData>> | null>(null);
   // Focus+context: which system/relationship the cursor is over. Drives the
   // highlight so a dense graph stays readable -- hover a node or line to trace
   // only what connects to it; everything else fades and labels are hidden.
@@ -106,6 +115,31 @@ function TechnicalLandscapeCanvas({ landscape, onExplore, onViewDesigns }: Lands
   const [nodes, setNodes, onNodesChange] = useNodesState(flow.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(flow.edges);
   useEffect(() => { setNodes(flow.nodes); setEdges(flow.edges); }, [flow, setNodes, setEdges]);
+  useEffect(() => {
+    if (!assistantFocusRequest || !instance) return;
+    const focusNodes = nodes.filter((node) => assistantFocusRequest.nodeIds.includes(node.id));
+    if (focusNodes.length > 0) void instance.fitView({ nodes: focusNodes, padding: 0.35, duration: 450 });
+  }, [assistantFocusRequest, instance, nodes]);
+  useEffect(() => {
+    const selectedEntity = selection?.kind === "application"
+      ? { kind: "application" as const, label: selection.item.label, entity_id: selection.item.id }
+      : selection?.kind === "system" || selection?.kind === "businessSystem"
+        ? { kind: "system" as const, label: selection.item.name, entity_id: selection.item.id }
+        : selection?.kind === "relationship"
+          ? { kind: "relationship" as const, label: `${selection.source} → ${selection.target}`, entity_id: `${selection.source}->${selection.target}` }
+          : selection?.kind === "edge"
+            ? { kind: "edge" as const, label: topologyTerm(selection.item.dependency_type), entity_id: landscapeEdgeKey(selection.item) }
+            : undefined;
+    onContextChange?.({
+      selectedEntity,
+      filters: [
+        { name: "query", value: query || "all" },
+        { name: "dependency_type", value: dependencyType },
+        { name: "mechanism", value: mechanism },
+        { name: "infrastructure", value: showInfrastructure ? "shown" : "hidden" },
+      ],
+    });
+  }, [selection, query, dependencyType, mechanism, showInfrastructure, onContextChange]);
   // Given the focused node/edge, which nodes and edges are "active" (the thing
   // plus its direct neighbourhood). null = nothing focused (resting state).
   const active = useMemo(() => {
@@ -129,12 +163,20 @@ function TechnicalLandscapeCanvas({ landscape, onExplore, onViewDesigns }: Lands
   // text soup) and softens the lines; the focused relationship(s) get full
   // colour + their label, everything else fades right back.
   const displayNodes = useMemo(() => nodes.map((node) => {
-    const dim = active ? !active.activeNodes.has(node.id) : false;
-    return { ...node, style: { ...node.style, opacity: dim ? 0.12 : 1, transition: "opacity 120ms ease" } };
-  }), [nodes, active]);
+    const assistantRole = assistantEmphasis?.nodeRoles.get(node.id);
+    const assistantActive = Boolean(assistantEmphasis?.nodeRoles.size || assistantEmphasis?.edgeRoles.size);
+    const dim = active ? !active.activeNodes.has(node.id) : assistantActive && !assistantRole;
+    return {
+      ...node,
+      data: { ...node.data, highlighted: Boolean(assistantRole), dimmed: dim, assistantVisualRole: assistantRole },
+      style: { ...node.style, opacity: dim ? 0.12 : 1, transition: "opacity 120ms ease" },
+    };
+  }), [nodes, active, assistantEmphasis]);
   const displayEdges = useMemo(() => edges.map((edge) => {
-    const focused = active ? active.activeEdges.has(edge.id) : false;
-    const dimmed = active ? !focused : false;
+    const assistantRole = assistantEmphasis?.edgeRoles.get(edge.id);
+    const assistantActive = Boolean(assistantEmphasis?.nodeRoles.size || assistantEmphasis?.edgeRoles.size);
+    const focused = active ? active.activeEdges.has(edge.id) : Boolean(assistantRole);
+    const dimmed = active ? !focused : assistantActive && !assistantRole;
     const baseWidth = (edge.style?.strokeWidth as number | undefined) ?? 2;
     return {
       ...edge,
@@ -142,11 +184,12 @@ function TechnicalLandscapeCanvas({ landscape, onExplore, onViewDesigns }: Lands
       style: {
         ...edge.style,
         opacity: dimmed ? 0.05 : active ? 1 : 0.5,
-        strokeWidth: focused ? baseWidth + 1.2 : baseWidth,
+        strokeWidth: focused ? baseWidth + (assistantRole === "primary" ? 2 : 1.2) : baseWidth,
         transition: "opacity 120ms ease",
       },
+      data: edge.data ? { ...edge.data, assistantVisualRole: assistantRole } : edge.data,
     };
-  }), [edges, active]);
+  }), [edges, active, assistantEmphasis]);
   const onNodeEnter: NodeMouseHandler = useCallback((_event, node) => setFocus({ id: node.id, kind: "node" }), []);
   const onEdgeEnter: EdgeMouseHandler = useCallback((_event, edge) => setFocus({ id: edge.id, kind: "edge" }), []);
   const clearFocus = useCallback(() => setFocus(null), []);
@@ -190,7 +233,7 @@ function TechnicalLandscapeCanvas({ landscape, onExplore, onViewDesigns }: Lands
     </div>
     <div className="absolute bottom-3 left-3 z-10 rounded-lg border border-slate-200 bg-white/95 px-3 py-2 text-[10px] text-slate-600 shadow-sm">{hasBusinessTopology ? <><p><span className="font-semibold text-sky-700">Boxes</span> are organization systems · arrows are business data streams</p><p className="mt-0.5"><span className="font-semibold">Hover a system or line</span> to trace only what connects to it; labels appear on hover. Click a line to drill into its flows.</p></> : <><p><span className="font-semibold text-blue-700">Blue</span> applications · <span className="font-semibold text-violet-700">Violet</span> external systems</p><p className="mt-0.5">Showing the scanner-computed technical landscape until business topology is available.</p></>}</div>
     <div className="absolute right-3 bottom-3 z-10 rounded-lg border border-slate-200 bg-white/95 px-3 py-2 text-[10px] text-slate-600 shadow-sm">{hasBusinessTopology ? <>{landscape.business_topology!.systems.length} organization systems · {landscape.business_topology!.data_streams.length} data streams</> : <>{summaryCount(landscape.summary, "application_count", landscape.applications.length)} applications · {summaryCount(landscape.summary, "system_count", landscape.systems.length)} systems · {summaryCount(landscape.summary, "edge_count", landscape.edges.length)} relationships</>}</div>
-    <ReactFlow nodes={displayNodes} edges={displayEdges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={handleNodeClick} onNodeDoubleClick={doubleClickNode} onNodeMouseEnter={onNodeEnter} onNodeMouseLeave={clearFocus} onEdgeClick={handleEdgeClick} onEdgeDoubleClick={doubleClickEdge} onEdgeMouseEnter={onEdgeEnter} onEdgeMouseLeave={clearFocus} fitView minZoom={0.05} maxZoom={4} panActivationKeyCode={null} onlyRenderVisibleElements proOptions={{ hideAttribution: true }} className="bg-background"><Background variant={BackgroundVariant.Dots} gap={24} size={0.8} color="#cbd5e1" className="opacity-20" /><Controls showInteractive={false} className="!bg-card !border !shadow-sm" /><MiniMap nodeStrokeWidth={2} className="!bg-card !border !shadow-sm" nodeColor={(node) => node.type === "businessSystem" ? "#0284c7" : node.type === "landscapeApplication" ? "#2563eb" : "#7c3aed"} /></ReactFlow>
+    <ReactFlow<Node<LandscapeNodeData>, Edge<LandscapeEdgeData>> nodes={displayNodes} edges={displayEdges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={handleNodeClick} onNodeDoubleClick={doubleClickNode} onNodeMouseEnter={onNodeEnter} onNodeMouseLeave={clearFocus} onEdgeClick={handleEdgeClick} onEdgeDoubleClick={doubleClickEdge} onEdgeMouseEnter={onEdgeEnter} onEdgeMouseLeave={clearFocus} onInit={setInstance} fitView minZoom={0.05} maxZoom={4} panActivationKeyCode={null} onlyRenderVisibleElements proOptions={{ hideAttribution: true }} className="bg-background"><Background variant={BackgroundVariant.Dots} gap={24} size={0.8} color="#cbd5e1" className="opacity-20" /><Controls showInteractive={false} className="!bg-card !border !shadow-sm" /><MiniMap nodeStrokeWidth={2} className="!bg-card !border !shadow-sm" nodeColor={(node) => node.type === "businessSystem" ? "#0284c7" : node.type === "landscapeApplication" ? "#2563eb" : "#7c3aed"} /></ReactFlow>
     {selection && <LandscapeEvidencePanel landscape={landscape} selection={selection} onClose={() => setSelection(null)} onExplore={explore} onViewDesigns={onViewDesigns} />}
     {showDiagnostics && <LandscapeDiagnosticsDrawer diagnostics={flow.diagnostics} onClose={() => setShowDiagnostics(false)} />}
   </div>;

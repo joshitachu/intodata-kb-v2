@@ -7,14 +7,15 @@ import {
   useRuntimeJobReliability,
   useRuntimeJobThroughput,
 } from "@/hooks/useRuntimeLogs";
+import { Gauge, Sparkles, TrendingUp, Workflow } from "lucide-react";
 import {
   EntityTable,
   PAGE_SIZE,
   PaginatedTable,
   Panel,
   QueryState,
+  RelativeTime,
   formatCompact,
-  formatDate,
   formatDuration,
   formatPercent,
 } from "./runtime-ui";
@@ -47,7 +48,9 @@ export function RuntimeReliabilityPanel({ scope, since }: ScopeProps) {
   return (
     <Panel
       title="Job reliability"
+      icon={Workflow}
       description="Per-job outcome and duration percentiles for the selected window."
+      flush
     >
       <QueryState queries={[query]}>
         <PaginatedTable
@@ -81,7 +84,7 @@ export function RuntimeReliabilityPanel({ scope, since }: ScopeProps) {
                 job.unfinished_runs > 0 ? job.unfinished_runs.toLocaleString() : "-",
                 formatDuration(job.p50_duration_ms),
                 formatDuration(job.p95_duration_ms),
-                formatDate(job.last_run_at),
+                <RelativeTime key="last-run" value={job.last_run_at} />,
               ]}
             />
           )}
@@ -103,7 +106,9 @@ export function RuntimeHotspotsPanel({ scope, since }: ScopeProps) {
   return (
     <Panel
       title="Component hotspots"
+      icon={Gauge}
       description="Per-component throughput and duration, measured from run metrics."
+      flush
     >
       <QueryState queries={[query]}>
         <PaginatedTable
@@ -157,7 +162,12 @@ export function RuntimeThroughputPanel({ scope, since }: ScopeProps) {
   });
 
   return (
-    <Panel title="Job throughput" description="Rows moved per job, from component metrics.">
+    <Panel
+      title="Job throughput"
+      icon={TrendingUp}
+      description="Rows moved per job, from component metrics."
+      flush
+    >
       <QueryState queries={[query]}>
         <PaginatedTable
           rows={query.data?.jobs ?? []}
@@ -198,7 +208,9 @@ export function RuntimeSignaturesPanel({ scope, since }: ScopeProps) {
   return (
     <Panel
       title="Error signatures"
+      icon={Sparkles}
       description="Distinct faults with how often each recurred, most frequent first."
+      flush
     >
       <QueryState queries={[query]}>
         <PaginatedTable
@@ -221,7 +233,7 @@ export function RuntimeSignaturesPanel({ scope, since }: ScopeProps) {
                 item.exception_class ?? "-",
                 item.component_name ?? "-",
                 item.occurrence_count.toLocaleString(),
-                formatDate(item.last_seen_at),
+                <RelativeTime key="last-seen" value={item.last_seen_at} />,
               ]}
             />
           )}

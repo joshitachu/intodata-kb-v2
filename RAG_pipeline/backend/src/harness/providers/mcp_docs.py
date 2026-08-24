@@ -13,12 +13,6 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from src.harness.packs.models import PackArtifactV3
-from src.harness.packs.reference_limits import (
-    MAX_REFERENCE_AGGREGATE_EXTRACTED_TEXT_CHARS,
-    MAX_REFERENCE_ATTACHMENTS,
-    MAX_REFERENCE_EXTRACTED_TEXT_CHARS,
-)
 
 import httpx
 
@@ -236,12 +230,6 @@ class McpDocumentationProvider:
         model: str | None = None,
         write_model: str | None = None,
         plugin_pack_id: int | None = None,
-        nexus_pack_ids: list[str] | None = None,
-        nexus_pack_snapshot: dict[str, Any] | None = None,
-        nexus_presentation: dict[str, Any] | None = None,
-        nexus_audience_render: dict[str, Any] | None = None,
-        nexus_private_pack_receipts: list[dict[str, Any]] | None = None,
-        nexus_private_analysis_packs: list[dict[str, Any]] | None = None,
         resume: bool | None = None,
         mode: str | None = None,
     ) -> McpDocumentationGenerationResult:
@@ -266,72 +254,6 @@ class McpDocumentationProvider:
         _set_if_present(payload, "write_model", write_model)
         if plugin_pack_id is not None:
             payload["plugin_pack_id"] = _validated_plugin_pack_id(plugin_pack_id)
-        if nexus_pack_ids is not None:
-            if not all(isinstance(pack_id, str) and pack_id for pack_id in nexus_pack_ids):
-                raise McpDocumentationProviderError("Invalid selected documentation packs.")
-            if len(nexus_pack_ids) != len(set(nexus_pack_ids)):
-                raise McpDocumentationProviderError("Duplicate documentation Pack selection.")
-            payload["nexus_pack_ids"] = list(nexus_pack_ids)
-        if nexus_pack_snapshot is not None:
-            if not isinstance(nexus_pack_snapshot, dict) or not isinstance(
-                nexus_pack_snapshot.get("snapshot_hash"), str
-            ):
-                raise McpDocumentationProviderError("Invalid governed Pack snapshot.")
-            payload["nexus_pack_snapshot"] = nexus_pack_snapshot
-        if nexus_presentation is not None:
-            if not isinstance(nexus_presentation, dict):
-                raise McpDocumentationProviderError("Invalid governed Pack presentation.")
-            payload["nexus_presentation"] = nexus_presentation
-        if nexus_audience_render is not None:
-            if not isinstance(nexus_audience_render, dict) or not set(nexus_audience_render) <= {
-                "seniority", "domain_familiarity", "decision_horizon", "detail_level"
-            } or not all(isinstance(value, str) for value in nexus_audience_render.values()):
-                raise McpDocumentationProviderError("Invalid normalized Pack audience rendering.")
-            payload["nexus_audience_render"] = nexus_audience_render
-        if nexus_private_pack_receipts is not None:
-            if not isinstance(nexus_private_pack_receipts, list) or len(nexus_private_pack_receipts) > 20:
-                raise McpDocumentationProviderError("Invalid private Pack receipts.")
-            for receipt in nexus_private_pack_receipts:
-                if not isinstance(receipt, dict) or not isinstance(receipt.get("content_hash"), str) or len(receipt["content_hash"]) != 64:
-                    raise McpDocumentationProviderError("Invalid private Pack receipt.")
-            payload["nexus_private_pack_receipts"] = nexus_private_pack_receipts
-        if nexus_private_analysis_packs is not None:
-            if not isinstance(nexus_private_analysis_packs, list) or len(nexus_private_analysis_packs) > 20:
-                raise McpDocumentationProviderError("Invalid private Analysis Pack payload.")
-            receipts: list[dict[str, Any]] = []
-            for item in nexus_private_analysis_packs:
-                if not isinstance(item, dict) or set(item) not in (
-                    {"receipt", "artifact", "missing_optional_capability_ids"},
-                    {"receipt", "artifact", "missing_optional_capability_ids", "reference_attachments"},
-                ):
-                    raise McpDocumentationProviderError("Invalid private Analysis Pack payload.")
-                receipt = item["receipt"]
-                artifact = item["artifact"]
-                missing = item["missing_optional_capability_ids"]
-                if (
-                    not isinstance(receipt, dict)
-                    or not isinstance(receipt.get("content_hash"), str)
-                    or len(receipt["content_hash"]) != 64
-                    or not isinstance(artifact, dict)
-                    or not isinstance(missing, list)
-                    or not all(isinstance(capability_id, str) for capability_id in missing)
-                ):
-                    raise McpDocumentationProviderError("Invalid private Analysis Pack payload.")
-                try:
-                    PackArtifactV3.model_validate_json(json.dumps(artifact), strict=True)
-                except (TypeError, ValueError):
-                    raise McpDocumentationProviderError("Invalid private Analysis Pack payload.") from None
-                if "reference_attachments" in item:
-                    _validate_reference_attachments(item["reference_attachments"])
-                receipts.append(receipt)
-            if len({receipt["content_hash"] for receipt in receipts}) != len(receipts):
-                raise McpDocumentationProviderError("Duplicate private Analysis Pack payload.")
-            if nexus_private_pack_receipts is not None and receipts != nexus_private_pack_receipts:
-                raise McpDocumentationProviderError("Private Analysis Pack receipts do not match payload.")
-            payload["nexus_private_analysis_packs"] = nexus_private_analysis_packs
-            payload.setdefault("nexus_private_pack_receipts", receipts)
-            if len(receipts) == 1:
-                payload.setdefault("nexus_audience_render", receipts[0].get("audience_render", {}))
         _set_if_present(payload, "resume", resume)
         _set_if_present(payload, "mode", mode)
 
@@ -1218,46 +1140,6 @@ class McpDocumentationProvider:
 def _set_if_present(payload: dict[str, Any], key: str, value: Any | None) -> None:
     if value is not None:
         payload[key] = value
-
-
-def _validate_reference_attachments(value: Any) -> None:
-    if not isinstance(value, list) or len(value) > MAX_REFERENCE_ATTACHMENTS:
-        raise McpDocumentationProviderError("Invalid private Analysis Pack reference attachments.")
-    aggregate_extracted_chars = 0
-    for attachment in value:
-        if not isinstance(attachment, dict) or set(attachment) != {
-            "purpose", "sha256", "filename", "content_type", "extracted_text"
-        }:
-            raise McpDocumentationProviderError("Invalid private Analysis Pack reference attachments.")
-        purpose = attachment["purpose"]
-        sha256 = attachment["sha256"]
-        filename = attachment["filename"]
-        content_type = attachment["content_type"]
-        extracted_text = attachment["extracted_text"]
-        if (
-            not isinstance(purpose, str)
-            or not 1 <= len(purpose) <= 500
-            or not isinstance(sha256, str)
-            or re.fullmatch(r"[0-9a-f]{64}", sha256) is None
-            or not isinstance(filename, str)
-            or not filename
-            or len(filename) > 255
-            or "/" in filename
-            or "\\" in filename
-            or not isinstance(content_type, str)
-            or not re.fullmatch(r"[a-z0-9.+-]+/[a-z0-9.+-]+", content_type)
-            or len(content_type) > 120
-            or (extracted_text is not None and (
-                not isinstance(extracted_text, str)
-                or len(extracted_text) > MAX_REFERENCE_EXTRACTED_TEXT_CHARS
-            ))
-        ):
-            raise McpDocumentationProviderError("Invalid private Analysis Pack reference attachments.")
-        aggregate_extracted_chars += len(extracted_text or "")
-    if aggregate_extracted_chars > MAX_REFERENCE_AGGREGATE_EXTRACTED_TEXT_CHARS:
-        raise McpDocumentationProviderError(
-            "Private Analysis Pack reference attachments exceed the 32,000 character aggregate extracted-text limit."
-        )
 
 
 def _optional_text(value: Any) -> str | None:

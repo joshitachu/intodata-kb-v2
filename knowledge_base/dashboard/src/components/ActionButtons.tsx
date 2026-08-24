@@ -7,9 +7,10 @@ interface Props {
   project: Project;
   status: string;
   onAction: (projectId: string) => void;
+  onManageRuntimeEvidence?: (projectId: string) => void;
 }
 
-export default function ActionButtons({ project, status, onAction }: Props) {
+export default function ActionButtons({ project, status, onAction, onManageRuntimeEvidence }: Props) {
   const projectId = project.id;
   const scan = useScan();
   const push = usePushToRag();
@@ -98,6 +99,7 @@ export default function ActionButtons({ project, status, onAction }: Props) {
         open={generateOpen}
         onClose={() => setGenerateOpen(false)}
         onTriggered={onAction}
+        onManageRuntimeEvidence={onManageRuntimeEvidence}
       />
     </div>
   );

@@ -17,7 +17,7 @@ interface LayoutProps {
   children: ReactNode;
 }
 
-const NO_LAYOUT_PATHS = ["/login", "/onboarding"];
+const NO_LAYOUT_PATHS = ["/login", "/onboarding", "/guide"];
 
 export function Layout({ children }: LayoutProps) {
   const pathname = usePathname();
@@ -30,6 +30,19 @@ export function Layout({ children }: LayoutProps) {
   }
 
   if (pathname === "/settings/security" && user && !user.mfa_enabled) {
+    return (
+      <main className="min-h-screen overflow-y-auto bg-slate-50">
+        {children}
+      </main>
+    );
+  }
+
+  if (
+    pathname === "/settings/profile" &&
+    user &&
+    !user.has_password &&
+    !user.sso_provider
+  ) {
     return (
       <main className="min-h-screen overflow-y-auto bg-slate-50">
         {children}

@@ -13,6 +13,7 @@ import httpx
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
 from mcp_server.repositories.doc_rag_hash_repository import DocRagHashRepository
+from mcp_server.services.doc_quality_scorer import is_published_doc_filename
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.rag_support_package import (
     build_entity_aliases,
@@ -500,31 +501,54 @@ class RagBridge:
         output_dir: str,
         extra_filenames: set[str] | None = None,
     ) -> list[dict]:
-        """Read user-facing doc .md files from the top-level docs/ directory.
+        """Read the published doc set from the top-level docs/ directory.
 
-        Includes numbered enterprise docs (NN_*.md) plus any filenames in
-        extra_filenames (for plugin-pack docs that don't use numeric prefixes).
-        Internal artifacts starting with '_' are always excluded.
+        Selection is name-agnostic: every top-level ``*.md`` that
+        ``is_published_doc_filename`` accepts is read, whatever the active pack
+        named it (One Pack decisions D45 / R8). The former ``NN_`` digit-prefix
+        gate silently dropped pack-declared documents such as
+        ``INJECTION_FINDINGS.md`` on every push path that did not pass them in
+        ``extra_filenames`` -- five secondary paths (true patch executor, git
+        diff patcher, evidence doc update/revert, the ``insert_to_rag`` MCP
+        tool) did not, so those pushes were no-ops with no error and no log.
+        The ``NN_`` prefix is a filename convention; the pack contract is the
+        authority.
+
+        Excluded: ``_``-prefixed internal artifacts (pushed separately by
+        ``sync_internal_layers``) and lowercase snake_case engineering-fact
+        support artifacts (``engineering_facts.md``, ``dependency_map.md``,
+        ...). ``extra_filenames`` still forces a file in, so callers that
+        already enumerate the docs root (the primary generation push and the
+        manual re-push) keep pushing exactly what they push today, support
+        artifacts included; the parameter is now an additive superset rather
+        than the only way a pack doc can be seen.
         """
         docs: list[dict] = []
         base = Path(output_dir)
         if not base.exists():
             return docs
 
+        forced = extra_filenames or set()
         for md_file in sorted(base.glob("*.md")):
             name = md_file.name
-            is_numbered = name[0].isdigit()
-            is_pack_doc = extra_filenames is not None and name in extra_filenames
-            if not is_numbered and not is_pack_doc:
+            if not is_published_doc_filename(name) and name not in forced:
+                # Never silent: a dropped top-level document is exactly the
+                # class of defect this predicate replaced.
+                logger.info(
+                    "RAG push: skipping non-published top-level markdown %s "
+                    "(internal or engineering-fact support artifact)",
+                    md_file,
+                )
                 continue
             try:
                 content = md_file.read_text(encoding="utf-8")
-                docs.append({
-                    "filename": name,
-                    "content": content,
-                })
-            except Exception as e:
-                logger.error(f"Failed to read {md_file}: {e}")
+            except (OSError, ValueError) as e:
+                logger.error("Failed to read %s: %s", md_file, e)
+                continue
+            docs.append({
+                "filename": name,
+                "content": content,
+            })
 
         return docs
 

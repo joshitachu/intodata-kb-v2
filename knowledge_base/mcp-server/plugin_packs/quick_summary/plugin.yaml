@@ -1,3 +1,13 @@
+# Migrated to the One Pack v2 manifest format (schema_version: 2).
+# Execution surface (docs, steps, phases, evidence profiles, gates) is
+# unchanged; the v2 loader preserves v1 semantics for these fields.
+schema_version: 2
+id: intodata.quick-summary
+layer: foundation
+governance:
+  owner: intodata
+  scope: global
+  provenance: intodata-packs
 name: quick-summary
 version: "1.0.0"
 description: >

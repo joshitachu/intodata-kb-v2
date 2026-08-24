@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     # Provider preference for non-agent generation surfaces.
     llm_providers: list[str] = ["kimi", "ollama"]
 
+    # Explicitly approved, contract-compatible fallbacks for documentation answer
+    # generation. Values are full provider/model ids. Empty by default: notably,
+    # the locally configured Ollama model is not silently treated as equivalent.
+    rag_approved_fallback_models: list[str] = []
+    rag_documentation_provider_max_retries: int = Field(default=1, ge=0, le=3)
+
     # Unified bounded agent-loop limits. Chat routing is unconditional.
     # Raised 2026-07-22: default ceilings were tight enough that structured-output
     # retries (not real work) could exhaust the budget before the model reached
@@ -58,10 +64,15 @@ class Settings(BaseSettings):
     # Read tools include answer_from_documentation, which runs full retrieval
     # + answer generation in one call (not just retrieval) and can legitimately
     # take longer than a pure evidence lookup on broad/exhaustive questions.
-    agent_runtime_v2_read_tool_timeout_seconds: float = Field(default=90.0, gt=0, le=120)
+    # Upper bound matches the hard deadline's, because `reconcile_turn_deadlines`
+    # raises this to the hard deadline: a finished answer must not be discarded by
+    # a limit lower than the turn's own.
+    agent_runtime_v2_read_tool_timeout_seconds: float = Field(default=90.0, gt=0, le=600)
     agent_runtime_v2_write_tool_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
     agent_runtime_v2_workflow_handoff_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
-    agent_runtime_v2_soft_deadline_seconds: float = Field(default=180.0, gt=0, le=300)
+    # Upper bound matches the hard deadline's: `reconcile_turn_deadlines` raises
+    # this toward `hard - model_timeout`, which can exceed 300 on a long budget.
+    agent_runtime_v2_soft_deadline_seconds: float = Field(default=180.0, gt=0, le=600)
     agent_runtime_v2_hard_deadline_seconds: float = Field(default=300.0, gt=0, le=600)
     agent_runtime_v2_max_model_calls: int = Field(default=40, ge=2, le=64)
     # Keep one answer call plus one grounding-correction call available after
@@ -75,6 +86,63 @@ class Settings(BaseSettings):
         from src.agent_runtime_canary import CanaryStagePolicy
 
         CanaryStagePolicy(stage=self.agent_runtime_v2_canary_stage).validate_rollout_settings(self)
+        return self
+
+    @model_validator(mode="after")
+    def reconcile_turn_deadlines(self) -> "Settings":
+        """Make the four interacting turn deadlines mutually consistent.
+
+        A chat turn is bounded by four independently-configured numbers, and a
+        deployment can set them so that a *completed* answer is thrown away:
+        ``answer_from_documentation`` runs full retrieval plus one long answer
+        generation inside the read-tool timeout, so a read-tool timeout below the
+        hard deadline discards finished work rather than preventing an overrun.
+
+        SAFETY PROPERTY: every clamp here can only move a turn-level abort LATER,
+        never earlier. The hard deadline is the single authority and is never
+        modified. Specifically:
+
+        * ``hard_deadline``   -- untouched, always. It alone decides when a turn dies.
+        * ``soft_deadline``   -- only ever raised (capped just under the hard
+          deadline). It gates *starting* new work, so raising it can only allow
+          work that was previously refused.
+        * ``read_tool_timeout`` -- only ever raised, up to the hard deadline. The
+          budget controller already returns ``min(configured, remaining_hard)``,
+          so the hard deadline still binds; raising this only stops the tool
+          timeout from firing *before* the turn's real limit.
+        * ``model_timeout``   -- untouched. It bounds a single OUTER agent model
+          call (~2s in practice), and the soft deadline's synthesis reserve is
+          derived from it, so changing it here would move that reserve too.
+        * provider timeouts   -- only ever *lowered*, and never below the hard
+          deadline. A provider socket that outlives the turn cannot rescue it, it
+          can only leak; clamping to the hard deadline changes nothing about when
+          the turn ends because the turn was already over.
+
+        Nothing is lowered except a provider timeout that exceeded the whole turn
+        budget, so no configuration can be made to abort sooner than it does today.
+        """
+
+        hard = self.agent_runtime_v2_hard_deadline_seconds
+        # A read tool that finished its work must not be killed by a limit lower
+        # than the turn's own. The budget controller still returns
+        # min(configured, remaining_hard), so the hard deadline keeps binding.
+        self.agent_runtime_v2_read_tool_timeout_seconds = max(
+            self.agent_runtime_v2_read_tool_timeout_seconds, hard
+        )
+        # The soft deadline exists to reserve time for the final answer call, so
+        # its principled value is "one full model call before the hard deadline".
+        # Configured lower than that, it refuses second rounds that would have
+        # comfortably finished; it is therefore raised, never lowered. Left alone
+        # when model_timeout >= hard, where the subtraction says nothing useful.
+        synthesis_reserve = self.agent_runtime_v2_model_timeout_seconds
+        if synthesis_reserve < hard:
+            self.agent_runtime_v2_soft_deadline_seconds = max(
+                self.agent_runtime_v2_soft_deadline_seconds, hard - synthesis_reserve
+            )
+        # A provider socket that outlives the whole turn cannot rescue it; it can
+        # only keep a dead connection open. Clamped to the turn budget, never below.
+        for field in ("kimi_timeout", "openai_timeout", "deepseek_timeout"):
+            setattr(self, field, min(getattr(self, field), hard))
         return self
 
     # Kimi (Moonshot AI)
@@ -226,6 +294,13 @@ class Settings(BaseSettings):
     mcp_docs_reconciliation_service_token: SecretStr | None = None
     mcp_docs_reconciliation_interval_seconds: int = Field(default=60, ge=1, le=3600)
     mcp_docs_reconciliation_batch_size: int = Field(default=50, ge=1, le=500)
+
+    # Topology artifact reads (src/topology) reuse mcp_docs_base_url and
+    # mcp_docs_request_timeout — same upstream service. Only the artifact cache
+    # is topology-specific: the landscape document changes on a rescan or a
+    # documentation publish, so a short TTL keeps a chat turn cheap while a
+    # fingerprint change still invalidates immediately on the next fetch.
+    topology_landscape_cache_ttl_seconds: float = Field(default=60.0, ge=0, le=3600)
 
     # Nexus orchestration packs. Definitions are data-only JSON; activation is
     # deployment configuration and can change the application without code edits.

@@ -8,13 +8,8 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy import func, select
 
 from src.db.models import Conversation, ConversationMessage, HarnessApprovalProposalRow, User
-from src.db.models.harness_pack import (
-    HarnessPackDraftRow,
-    HarnessPrivateAnalysisPackRow,
-    HarnessPrivateAnalysisPackVersionRow,
-)
+from src.db.models.harness_pack import HarnessPackDraftRow
 from src.harness.approvals import ApprovalService
-from src.harness.capability_handlers import friendly_pack_configuration_patch
 from src.harness.capability_runtime import CapabilityExecutionContext
 from src.harness.capability_runtime import CapabilityObservation
 from src.harness.conversation_state import ConversationStateRepository
@@ -31,7 +26,7 @@ from src.harness.models import (
 )
 from src.harness.packs.draft_service import PackDraftService
 from src.harness.packs.builder_workflow import PackBuilderWorkflow, PackGenerationResult
-from src.harness.packs.models import PackArtifactV3
+from src.harness.packs.draft_artifact import PackDraftArtifact
 from src.harness.registry import CapabilityRegistry, base_capability_registry
 
 
@@ -46,23 +41,43 @@ class ScriptedEffectModel(FakeMessagesListChatModel):
         return self
 
 
+_PACK_MANIFEST = """\
+name: talend-migration
+version: 0.1.0
+description: Analyze and guide a Talend-to-Azure migration.
+docs:
+  - name: TALEND_MIGRATION_GUIDE
+"""
+
+
 def _complete_pack_arguments(name: str = "Talend Migration") -> dict[str, Any]:
     return {
         "name": name,
-        "purpose": "Analyze and guide a Talend-to-Azure migration.",
-        "audience": {
-            "label": "Platform engineers and engineering managers",
-            "roles": ["platform engineers", "engineering managers"],
-            "decision_needs": ["migration sequencing and risk decisions"],
-        },
-        "focus_components": ["job dependencies", "migration risks"],
-        "output_documents": [
-            {
-                "title": "Talend Migration Guide",
-                "sections": ["Executive summary", "Migration plan", "Risks"],
-            }
-        ],
+        "brief": (
+            "Analyze and guide a Talend-to-Azure migration for platform engineers, "
+            "covering job dependencies and migration risks."
+        ),
     }
+
+
+async def _fake_save(self, *, draft_id, owner_user_id, expected_revision, pack_id=None, access_token=None):  # noqa: ANN001, ANN202
+    """Stand in for the MCP round-trip while keeping the draft transition real."""
+    from src.harness.packs.draft_service import SavedPackRecord
+
+    row = await self._owned_active_draft(draft_id, owner_user_id)
+    validation = self._validation(dict(row.artifact or {}))
+    assert validation["valid"] is True, validation["errors"]
+    artifact = PackDraftArtifact.model_validate(row.artifact)
+    row.status = "saved"
+    row.revision += 1
+    await self._db.flush()
+    return SavedPackRecord(
+        mcp_pack_id=7,
+        name=row.name,
+        version="1.0.0",
+        documents=artifact.doc_names,
+        content_hash="a" * 64,
+    )
 
 
 async def _runtime(
@@ -117,15 +132,18 @@ async def test_complete_pack_request_executes_one_governed_creation(
     db_session, monkeypatch
 ) -> None:
     complete = _complete_pack_arguments()
-    generated = PackArtifactV3.model_validate_json(
-        json.dumps(friendly_pack_configuration_patch(complete))
-    )
+    generated = PackDraftArtifact(manifest_yaml=_PACK_MANIFEST)
+    briefs: list[str] = []
 
-    async def generate(self, **kwargs):  # noqa: ANN001, ANN202
+    async def generate(self, *, query, **kwargs):  # noqa: ANN001, ANN202
         del self, kwargs
-        return PackGenerationResult(artifact=generated)
+        briefs.append(query)
+        return PackGenerationResult(artifact=generated, name="talend-migration")
 
     monkeypatch.setattr(PackBuilderWorkflow, "generate", generate)
+    monkeypatch.setattr(
+        PackDraftService, "save", _fake_save, raising=True
+    )
     runtime = await _runtime(
         db_session,
         [
@@ -164,8 +182,8 @@ async def test_complete_pack_request_executes_one_governed_creation(
     assert drafts[0].status == "saved"
     assert drafts[0].artifact
     assert drafts[0].validation["valid"] is True
-    assert await db_session.scalar(select(func.count(HarnessPrivateAnalysisPackRow.id))) == 1
-    assert await db_session.scalar(select(func.count(HarnessPrivateAnalysisPackVersionRow.id))) == 1
+    # The brief reaches the author verbatim; no structured artifact is invented.
+    assert briefs == [complete["brief"]]
     assert turn.correction_rounds == 0
     assert turn.used_fallback is False
     assert turn.consequential_executions == 1
@@ -201,8 +219,6 @@ async def test_incomplete_pack_request_asks_before_persisting_any_pack(db_sessio
     assert not any(isinstance(message, ToolMessage) for message in result["messages"])
     assert not any(event.semantic_name == "nexus_turn_assess" for event in runtime.ledger.events)
     assert await db_session.scalar(select(func.count(HarnessPackDraftRow.id))) == 0
-    assert await db_session.scalar(select(func.count(HarnessPrivateAnalysisPackRow.id))) == 0
-    assert await db_session.scalar(select(func.count(HarnessPrivateAnalysisPackVersionRow.id))) == 0
 
 
 async def test_unspecified_pack_request_asks_for_specific_information_without_a_tool(

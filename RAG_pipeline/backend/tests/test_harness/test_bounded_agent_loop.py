@@ -256,12 +256,13 @@ def assessment(
 
 
 def pack_arguments(name: str) -> dict:
+    """The create capability takes a brief, not a structured artifact."""
     return {
         "name": name,
-        "purpose": "Analyze production incidents and guide prevention decisions.",
-        "audience": {"label": "Platform engineers"},
-        "focus_components": ["incident timelines", "root causes"],
-        "output_documents": [{"title": "Incident Review Report"}],
+        "brief": (
+            "Analyze production incidents and guide prevention decisions for "
+            "platform engineers; produce an incident review report."
+        ),
     }
 
 

@@ -17,7 +17,7 @@ import { useOnboardingContext } from "@/contexts/OnboardingContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody } from "@/components/ui/card";
 import {
-  generateDocs,
+  generateDocsWhenScanned,
   scanProject,
   subscribeToLogs,
   uploadZip,
@@ -236,7 +236,9 @@ function RealProcessing({
                   stage: "generating",
                   progress: progressFromEvent(ev, "generating"),
                 });
-                generateDocs(item.projectId)
+                // Same guard as the Sources pipeline: the log marker is a hint,
+                // the project row is the authority on scan_result.json existing.
+                generateDocsWhenScanned(item.projectId)
                   .then(() => {
                     if (settled) return;
                     settled = true;

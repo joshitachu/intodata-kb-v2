@@ -500,7 +500,14 @@ async def test_live_run_persists_events_and_terminal_reconnect_does_not_reinvoke
     assert replay.replayed is True
     assert model.calls == 1
     assert [event.sequence for event in first_events] == list(range(1, len(first_events) + 1))
-    assert [event.event_id for event in events] == [event.event_id for event in first_events]
+    # Live progress heartbeats are true only when emitted, so they are recorded
+    # non-replayable: a reconnect must see every durable event and no stale
+    # "Writing the answer... 4s" from minutes ago.
+    assert any(event.type == "assistant.progress" for event in first_events)
+    assert all(event.replayable is False for event in first_events if event.type == "assistant.progress")
+    assert [event.event_id for event in events] == [
+        event.event_id for event in first_events if event.replayable
+    ]
     assert first_events[0].type == "run.started"
     assert first_events[-1].type == "run.completed"
     run = (await db_session.execute(select(HarnessAgentRunRow))).scalar_one()

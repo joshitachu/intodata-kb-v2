@@ -7,13 +7,17 @@ from src.config import settings
 from src.db.models import runtime_data  # noqa: F401
 from src.runtime import source_registry
 from src.runtime.models import ListRuntimeJobsInput, RuntimeJob, RuntimeWorkspace
+from src.runtime.providers.base import SingleTenantIdentityMixin
 from src.runtime.store import RuntimeStoreRepository
 from src.runtime.sync import RuntimeSyncBatch, run_runtime_source_sync_cycle
 
 
-class _LifecycleProvider:
+class _LifecycleProvider(SingleTenantIdentityMixin):
     def __init__(self) -> None:
         self.fail = False
+
+    def physical_source_identity(self, credentials) -> str:
+        return f"{self.provider_key()}:local"
 
     def provider_key(self) -> str:
         return "lifecycle"

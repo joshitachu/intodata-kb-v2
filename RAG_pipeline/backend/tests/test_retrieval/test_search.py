@@ -1,3 +1,5 @@
+import asyncio
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,6 +14,7 @@ from src.retrieval.search import (
     _process_results,
 )
 from src.schemas import Source
+from src.turn_timings import current_turn_timings, turn_timings_scope
 
 
 def _make_point(score: float, payload: dict):
@@ -813,3 +816,43 @@ class TestEnsureCollectionIndexes:
             "unit",
             "section",
         } <= indexed
+
+
+async def test_retrieval_reports_embedding_and_search_time_to_the_turn(mock_qdrant):
+    """The retriever already measured embedding time; now it is not discarded.
+
+    Instrumenting the retrieval entry points rather than each Qdrant call is what
+    makes every caller -- ``/query``, the RAG chain, and the agent read
+    capabilities -- report component latency without its own bookkeeping.
+    """
+    result = MagicMock()
+    result.points = [_make_point(0.9, _payload(1, "a.pdf", 0, "text"))]
+    mock_qdrant.query_points.return_value = result
+
+    async def slow_embed(_query: str) -> list[float]:
+        await asyncio.sleep(0.02)
+        return [0.1] * 768
+
+    with patch("src.retrieval.search.embed_text", new=slow_embed):
+        with turn_timings_scope() as timings:
+            await search_similar(mock_qdrant, "test query", ["engineering"])
+
+    assert timings.embedding_calls == 1
+    assert timings.embedding_ms >= 15
+    assert timings.search_calls == 1
+    # Search time is the retrieval work only: the embedding wait is billed once,
+    # to `embedding_ms`, so the two columns can be summed.
+    assert timings.search_ms < timings.embedding_ms
+
+
+async def test_retrieval_outside_a_turn_scope_records_nothing_and_still_works(mock_qdrant):
+    result = MagicMock()
+    result.points = [_make_point(0.9, _payload(1, "a.pdf", 0, "text"))]
+    mock_qdrant.query_points.return_value = result
+
+    with patch("src.retrieval.search.embed_text", new_callable=AsyncMock) as mock_embed:
+        mock_embed.return_value = [0.1] * 768
+        sources = await search_similar(mock_qdrant, "test query", ["engineering"])
+
+    assert len(sources) == 1
+    assert current_turn_timings() is None

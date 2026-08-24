@@ -13,6 +13,7 @@ import {
   LABEL_MIN_ZOOM,
   TITLE_COLOR,
   accentBarStyle,
+  assistantRoleShadow,
   cardShadow,
   middleEllipsis,
 } from "@/lib/nodeStyles";
@@ -42,6 +43,7 @@ interface JobNodeData {
   artifactRole?: string;
   dimmed?: boolean;
   highlighted?: boolean;
+  assistantVisualRole?: string;
   compact?: boolean;
   // Runtime-health overlay (S3). Present only while the overlay is active and
   // this job matched a runtime task; absent/unknown => rendered unchanged.
@@ -90,7 +92,9 @@ function JobNodeComponent({ data }: { data: JobNodeData }) {
       ? `2px solid ${meta.color}`
       : `1px solid ${isRoute ? "#fed7aa" : "#bfdbfe"}`;
   const boxShadow =
-    data.highlighted && !meta
+    data.assistantVisualRole
+      ? assistantRoleShadow(data.assistantVisualRole) ?? CARD_SHADOW
+      : data.highlighted && !meta
       ? cardShadow(true, artifactAccent)
       : CARD_SHADOW;
 
@@ -126,6 +130,7 @@ function JobNodeComponent({ data }: { data: JobNodeData }) {
   if (pillMode) {
     return (
       <div
+        data-assistant-role={data.assistantVisualRole}
         className="topo-node rounded-md relative"
         style={{
           background: meta ? "white" : `${artifactAccent}20`,
@@ -146,6 +151,7 @@ function JobNodeComponent({ data }: { data: JobNodeData }) {
 
   return (
     <div
+      data-assistant-role={data.assistantVisualRole}
       className="topo-node group rounded-lg cursor-pointer relative"
       style={{
         background: "white",

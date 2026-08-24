@@ -544,24 +544,9 @@ class RepoToolbox:
 
 
 def _provider_config(model_id: str) -> dict[str, str | None]:
-    model_id = normalize_model_id(model_id)
-    provider = model_id.partition("/")[0]
-    if provider == "deepseek":
-        return {
-            "api_key": config.doc_generation_deepseek_api_key or config.doc_generation_api_key,
-            "base_url": config.doc_generation_deepseek_base_url or config.doc_generation_base_url,
-        }
-    if provider == "route33":
-        return {
-            "api_key": config.doc_generation_route33_api_key or config.doc_generation_api_key,
-            "base_url": config.doc_generation_route33_base_url,
-        }
-    if provider in {"openai", "anthropic", "google"}:
-        return {"api_key": None, "base_url": None}
-    return {
-        "api_key": config.doc_generation_api_key,
-        "base_url": config.doc_generation_base_url,
-    }
+    from mcp_server.model_strategies import provider_connection_config
+
+    return provider_connection_config(model_id)
 
 
 class RepoAgentEngine:

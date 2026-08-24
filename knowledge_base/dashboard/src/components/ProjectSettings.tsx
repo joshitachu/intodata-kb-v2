@@ -19,6 +19,7 @@ import ModelSelectionPanel from "./ModelSelectionPanel";
 import InstructionPackPanel from "./InstructionPackPanel";
 import ProjectUsagePanel from "./ProjectUsagePanel";
 import DangerZone from "./DangerZone";
+import ProjectConnectorBindings from "./connectors/ProjectConnectorBindings";
 
 interface Props {
   project: Project | null;
@@ -236,6 +237,13 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
           isError={instructionPack.isError}
           data={instructionPack.data}
         />
+
+        <hr className="border-white/[0.05]" />
+        <div>
+          <h4 className="text-sm font-medium text-slate-200">Runtime evidence</h4>
+          <p className="mt-1 text-xs text-slate-500">Connected sources are enabled automatically for this project. Open advanced settings only if you need to limit what documentation runs can read.</p>
+        </div>
+        <ProjectConnectorBindings projectId={project.id} />
 
         <hr className="border-white/[0.05]" />
         <ProjectUsagePanel

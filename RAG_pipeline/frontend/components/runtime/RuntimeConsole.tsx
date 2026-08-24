@@ -2,19 +2,33 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
   CircleAlert,
-  HelpCircle,
+  Clock,
+  FolderOpen,
+  Gauge,
+  LayoutGrid,
+  ListTree,
+  Network,
+  Pause,
+  Play,
   RefreshCw,
+  ScrollText,
   Server,
+  Sparkles,
   TimerOff,
+  Workflow,
   X,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { SelectMenu } from "@/components/ui/select-menu";
 import {
   useRuntimeEngines,
   useRuntimeExecution,
@@ -56,17 +70,18 @@ import {
   Empty,
   EntityTable,
   Kpi,
+  LiveDot,
   PAGE_SIZE,
   PaginatedTable,
   Panel,
-  PatternIdTag,
   QueryState,
+  RelativeTime,
   formatAge,
   formatCompact,
-  formatDate,
   formatDuration,
   formatInterval,
   formatPercent,
+  useNow,
 } from "./runtime-ui";
 import {
   DEFAULT_WINDOW_KEY,
@@ -86,16 +101,81 @@ export type RuntimeConsoleView =
   | "signatures"
   | "estate";
 
-const NAV: Array<{ view: RuntimeConsoleView; href: string; label: string }> = [
-  { view: "hub", href: "/admin/logs", label: "Overview" },
-  { view: "executions", href: "/admin/logs/executions", label: "Runs" },
-  { view: "jobs", href: "/admin/logs/jobs", label: "Jobs" },
-  { view: "plans", href: "/admin/logs/plans", label: "Plans" },
-  { view: "incidents", href: "/admin/logs/incidents", label: "Incidents" },
-  { view: "performance", href: "/admin/logs/performance", label: "Performance" },
-  { view: "signatures", href: "/admin/logs/signatures", label: "Signatures" },
-  { view: "estate", href: "/admin/logs/estate", label: "Estate" },
+const NAV: Array<{
+  view: RuntimeConsoleView;
+  href: string;
+  label: string;
+  icon: typeof Activity;
+}> = [
+  { view: "hub", href: "/admin/logs", label: "Overview", icon: LayoutGrid },
+  { view: "executions", href: "/admin/logs/executions", label: "Runs", icon: ScrollText },
+  { view: "jobs", href: "/admin/logs/jobs", label: "Jobs", icon: Workflow },
+  { view: "plans", href: "/admin/logs/plans", label: "Plans", icon: ListTree },
+  { view: "incidents", href: "/admin/logs/incidents", label: "Incidents", icon: AlertTriangle },
+  { view: "performance", href: "/admin/logs/performance", label: "Performance", icon: Gauge },
+  { view: "signatures", href: "/admin/logs/signatures", label: "Signatures", icon: Sparkles },
+  { view: "estate", href: "/admin/logs/estate", label: "Estate", icon: Network },
 ];
+
+/** Automatic refresh cadence for the console when live mode is on. */
+const LIVE_REFRESH_MS = 30_000;
+
+interface SyncFreshness {
+  hasSources: boolean;
+  isStale: boolean;
+  ageMs: number | null;
+  pollingCount: number;
+  minInterval: number;
+  message: string;
+}
+
+/**
+ * How fresh the imported runtime data is.
+ *
+ * The console shows live-updating numbers, so it must be explicit about the one
+ * thing a reader would otherwise assume: whether anything is still arriving. A
+ * pulsing dot over a three-hour-old import would be a lie, so the header pill
+ * and the hub banner both derive from this single computation.
+ */
+function useSyncFreshness(scope?: string): SyncFreshness | null {
+  const sources = useRuntimeSources({ projectId: scope, limit: 100 });
+  // Recomputed on the same tick as the relative timestamps, so "2m ago" in the
+  // header does not freeze between refetches.
+  const now = useNow();
+  const rows = sources.data?.sources ?? [];
+
+  if (sources.isLoading || rows.length === 0) return null;
+
+  const polling = rows.filter((source) => source.enabled !== false);
+  const syncedTimes = rows
+    .map((source) => source.last_synced_at)
+    .filter((value): value is string => Boolean(value))
+    .map((value) => new Date(value).getTime());
+  const freshest = syncedTimes.length ? Math.max(...syncedTimes) : null;
+  const ageMs = freshest === null ? null : now - freshest;
+  const intervals = polling.map((source) => source.sync_interval_seconds ?? 60);
+  const minInterval = intervals.length ? Math.min(...intervals) : 60;
+  const maxInterval = intervals.length ? Math.max(...intervals) : 60;
+  // Stale = older than three missed cycles, floored at 15 min to avoid flapping.
+  const staleThresholdMs = Math.max(maxInterval * 3, 900) * 1000;
+
+  const noPolling = polling.length === 0;
+  const isStale = noPolling || ageMs === null || ageMs > staleThresholdMs;
+
+  let message: string;
+  if (noPolling) {
+    message =
+      "No runtime sources are enabled for polling. Enable a source to start importing data.";
+  } else if (ageMs === null) {
+    message = `No runtime data imported yet. ${polling.length} source(s) set to poll every ${formatInterval(minInterval)}.`;
+  } else if (isStale) {
+    message = `Last import ${formatAge(ageMs)} ago — data may be stale. ${polling.length} source(s) set to poll every ${formatInterval(minInterval)}.`;
+  } else {
+    message = `Last import ${formatAge(ageMs)} ago · ${polling.length} source(s) polling every ${formatInterval(minInterval)}.`;
+  }
+
+  return { hasSources: true, isStale, ageMs, pollingCount: polling.length, minInterval, message };
+}
 
 type Detail =
   | { kind: "execution"; item: RuntimeExecution }
@@ -116,75 +196,132 @@ export function RuntimeConsole({ view }: { view: RuntimeConsoleView }) {
   const [projectId, setProjectId] = useState("");
   const [windowKey, setWindowKey] = useState<RuntimeWindowKey>(DEFAULT_WINDOW_KEY);
   const [detail, setDetail] = useState<Detail | null>(null);
+  const [live, setLive] = useState(true);
   const projects = useUserProjects();
+  const queryClient = useQueryClient();
   const scope = projectId || undefined;
+  const freshness = useSyncFreshness(scope);
 
   // Recomputed only when the window changes, so a re-render does not shift the
   // lower bound and refetch every aggregate.
   const since = useMemo(() => windowSince(windowKey), [windowKey]);
   const viewProps: ViewProps = { scope, since, windowKey, onDetail: setDetail };
 
+  // Invalidating the whole `runtime` key refetches only what is MOUNTED, so the
+  // active view stays current without paying for the seven views that are not.
+  const refresh = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ["runtime"] });
+  }, [queryClient]);
+
+  useEffect(() => {
+    if (!live) return;
+    const timer = setInterval(refresh, LIVE_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [live, refresh]);
+
+  const projectOptions = [
+    { value: "", label: "All permitted projects" },
+    ...(projects.data?.projects ?? []).map((project) => ({
+      value: project.id,
+      label: project.display_name,
+    })),
+  ];
+
   return (
-    <section className="mx-auto flex w-full max-w-7xl flex-col gap-6 overflow-x-hidden pb-8">
-      <header className="flex flex-col gap-4 border-b border-border pb-5 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <p className="text-sm font-medium text-muted-foreground">Runtime operations</p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-normal text-foreground">
-            Operational console
-          </h1>
+    <section className="mx-auto flex w-full max-w-7xl flex-col gap-5 overflow-x-hidden pb-10">
+      <header className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold tracking-tight text-foreground">Runtime logs</h1>
+          <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+            <span>What ran, what failed, and why.</span>
+            {freshness && (
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium",
+                  freshness.isStale
+                    ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                    : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+                )}
+              >
+                <LiveDot live={!freshness.isStale && live} />
+                {freshness.isStale
+                  ? freshness.ageMs === null
+                    ? "No data imported"
+                    : `Stale · ${formatAge(freshness.ageMs)} old`
+                  : `Live · imported ${freshness.ageMs === null ? "-" : formatAge(freshness.ageMs)} ago`}
+              </span>
+            )}
+          </p>
         </div>
-        <div className="flex flex-col gap-3 sm:flex-row">
-          <label className="flex min-w-0 flex-col gap-1 text-sm text-muted-foreground sm:w-64">
-            Project scope
-            <select
-              value={projectId}
-              onChange={(event) => setProjectId(event.target.value)}
-              className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground"
-            >
-              <option value="">All permitted projects</option>
-              {projects.data?.projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.display_name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex min-w-0 flex-col gap-1 text-sm text-muted-foreground sm:w-44">
-            Time window
-            <select
-              value={windowKey}
-              onChange={(event) => setWindowKey(event.target.value as RuntimeWindowKey)}
-              className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground"
-            >
-              {RUNTIME_WINDOWS.map((option) => (
-                <option key={option.key} value={option.key}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
+        <div className="flex flex-wrap items-center gap-2">
+          <SelectMenu
+            value={projectId}
+            onChange={setProjectId}
+            options={projectOptions}
+            placeholder="All permitted projects"
+            icon={FolderOpen}
+            ariaLabel="Project scope"
+            variant="field"
+            size="md"
+            align="end"
+          />
+          <SelectMenu
+            value={windowKey}
+            onChange={(value) => setWindowKey(value as RuntimeWindowKey)}
+            options={RUNTIME_WINDOWS.map((option) => ({ value: option.key, label: option.label }))}
+            icon={Clock}
+            ariaLabel="Time window"
+            variant="field"
+            size="md"
+            align="end"
+            className="max-w-[11rem]"
+          />
+          <Button
+            variant="secondary"
+            size="md"
+            onClick={() => setLive((current) => !current)}
+            aria-pressed={live}
+            title={
+              live
+                ? `Auto-refreshing every ${formatInterval(LIVE_REFRESH_MS / 1000)}`
+                : "Auto-refresh is paused"
+            }
+          >
+            {live ? <Pause className="h-3.5 w-3.5" aria-hidden /> : <Play className="h-3.5 w-3.5" aria-hidden />}
+            {live ? "Pause" : "Resume"}
+          </Button>
+          <Button variant="secondary" size="md" onClick={refresh} aria-label="Refresh now">
+            <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+            Refresh
+          </Button>
         </div>
       </header>
       <nav
         aria-label="Runtime views"
-        className="-mx-1 flex gap-1 overflow-x-auto border-b border-border px-1"
+        className="flex gap-1 overflow-x-auto rounded-xl border border-border bg-muted/30 p-1"
       >
-        {NAV.map((item) => (
-          <Link
-            key={item.view}
-            href={item.href}
-            className={cn(
-              "shrink-0 border-b-2 px-3 py-2 text-sm font-medium transition-colors motion-reduce:transition-none",
-              item.view === view
-                ? "border-primary text-primary"
-                : "border-transparent text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {item.label}
-          </Link>
-        ))}
+        {NAV.map((item) => {
+          const Icon = item.icon;
+          const isActive = item.view === view;
+          return (
+            <Link
+              key={item.view}
+              href={item.href}
+              aria-current={isActive ? "page" : undefined}
+              className={cn(
+                "inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors motion-reduce:transition-none",
+                isActive
+                  ? "bg-card text-foreground shadow-elevation-xs"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <Icon className="h-4 w-4" aria-hidden />
+              {item.label}
+            </Link>
+          );
+        })}
       </nav>
-      {view === "hub" && <Hub {...viewProps} />}
+      {view === "hub" && <Hub {...viewProps} freshness={freshness} />}
       {view === "executions" && <Executions {...viewProps} />}
       {view === "jobs" && <Jobs {...viewProps} />}
       {view === "plans" && <Plans {...viewProps} />}
@@ -197,7 +334,13 @@ export function RuntimeConsole({ view }: { view: RuntimeConsoleView }) {
   );
 }
 
-function Hub({ scope, since, windowKey, onDetail }: ViewProps) {
+function Hub({
+  scope,
+  since,
+  windowKey,
+  onDetail,
+  freshness,
+}: ViewProps & { freshness: SyncFreshness | null }) {
   const bucket = resolveWindow(windowKey).bucket;
   const overview = useRuntimeOverview({ projectId: scope });
   const trend = useRuntimeTrend({ projectId: scope, since, bucket });
@@ -230,36 +373,38 @@ function Hub({ scope, since, windowKey, onDetail }: ViewProps) {
     )
     .slice(0, 5);
 
+  const windowLabel = resolveWindow(windowKey).label.toLowerCase();
+
   return (
-    <>
-      <AskLogs scope={scope} />
-      <SyncStatusBanner scope={scope} />
+    <div className="flex flex-col gap-5">
+      <SyncStatusBanner freshness={freshness} />
       <QueryState queries={[overview, trend, reliability, runs, incidents]}>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <Kpi
-            icon={<Activity />}
+            icon={Activity}
             label="Runs"
             value={formatCompact(totals.runs)}
-            hint={resolveWindow(windowKey).label.toLowerCase()}
+            hint={windowLabel}
           />
           <Kpi
-            icon={<CircleAlert />}
+            icon={CircleAlert}
             label="Failure rate"
             value={formatPercent(failureRate)}
             hint={`${formatCompact(totals.failed)} failed`}
             tone={totals.failed > 0 ? "danger" : "good"}
           />
           <Kpi
-            icon={<TimerOff />}
+            icon={TimerOff}
             label="Never finished"
             value={formatCompact(unfinished)}
             hint="runs with no end time"
             tone={unfinished > 0 ? "warning" : "good"}
           />
           <Kpi
-            icon={<Server />}
+            icon={Server}
             label="Engines online"
             value={`${estate?.engines_online ?? 0}/${estate?.engines_total ?? 0}`}
+            hint={`${estate?.jobs_unhealthy ?? 0} unhealthy jobs`}
             tone={
               (estate?.engines_total ?? 0) > 0 &&
               estate?.engines_online === estate?.engines_total
@@ -268,13 +413,15 @@ function Hub({ scope, since, windowKey, onDetail }: ViewProps) {
             }
           />
         </div>
-        <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+        <div className="grid gap-5 xl:grid-cols-[1.35fr_0.65fr]">
           <Panel
             title="Outcome trend"
+            icon={Activity}
+            description={`Run outcomes and duration across the ${windowLabel}.`}
             action={
               <Link
                 href="/admin/logs/executions"
-                className="text-sm text-primary hover:underline"
+                className="text-xs font-medium text-primary hover:underline"
               >
                 View runs
               </Link>
@@ -284,22 +431,27 @@ function Hub({ scope, since, windowKey, onDetail }: ViewProps) {
           </Panel>
           <Panel
             title="Needs attention"
+            icon={AlertTriangle}
             description="Jobs that ran in this window and are failing or never finishing."
             action={
               <Link
                 href="/admin/logs/incidents"
-                className="text-sm text-primary hover:underline"
+                className="text-xs font-medium text-primary hover:underline"
               >
                 {incidents.data?.total ?? 0} incidents
               </Link>
             }
+            flush
           >
             {attention.length === 0 ? (
-              <Empty label="No active attention signals." />
+              <Empty
+                label="No active attention signals."
+                hint="Every job that ran in this window finished without failures."
+              />
             ) : (
               <ul className="divide-y divide-border">
                 {attention.map((job) => (
-                  <li key={`${job.source_key}:${job.job_name}`} className="py-3">
+                  <li key={`${job.source_key}:${job.job_name}`} className="px-5 py-3">
                     <AttentionRow job={job} />
                   </li>
                 ))}
@@ -309,16 +461,23 @@ function Hub({ scope, since, windowKey, onDetail }: ViewProps) {
         </div>
         <Panel
           title="Recent runs"
+          icon={ScrollText}
+          description="Newest first. Select a row for logs, evidence and the derived cause."
           action={
-            <Link href="/admin/logs/executions" className="text-sm text-primary hover:underline">
+            <Link
+              href="/admin/logs/executions"
+              className="text-xs font-medium text-primary hover:underline"
+            >
               All runs
             </Link>
           }
+          flush
         >
           <RunTable rows={runs.data?.executions ?? []} onDetail={onDetail} compact />
         </Panel>
+        <AskLogs scope={scope} />
       </QueryState>
-    </>
+    </div>
   );
 }
 
@@ -330,12 +489,16 @@ function AttentionRow({ job }: { job: RuntimeJobReliability }) {
   if (job.current_failure_streak > 1) parts.push(`${job.current_failure_streak} in a row`);
 
   return (
-    <div className="flex items-start gap-3">
-      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+    <div className="flex items-start gap-2.5">
+      <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-destructive/10 text-destructive">
+        <AlertTriangle className="h-3.5 w-3.5" aria-hidden />
+      </span>
       <div className="min-w-0">
         <p className="truncate text-sm font-medium text-foreground">{job.job_name}</p>
         <p className="truncate text-xs text-muted-foreground">{parts.join(" · ")}</p>
-        <p className="text-xs text-muted-foreground">Last run {formatDate(job.last_run_at)}</p>
+        <p className="text-xs text-muted-foreground/80">
+          Last run <RelativeTime value={job.last_run_at} />
+        </p>
       </div>
     </div>
   );
@@ -379,39 +542,40 @@ function Executions({ scope, since, onDetail }: ViewProps) {
     <QueryState queries={[query]}>
       <Panel
         title="Runs"
+        icon={ScrollText}
         description="One row per execution. Job-run mirrors are intentionally not shown."
         action={
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <select
+          <div className="flex flex-wrap items-center gap-2">
+            <SelectMenu
               value={state}
-              onChange={(event) => setState(event.target.value as "" | RuntimeExecutionState)}
-              aria-label="Outcome"
-              className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
-            >
-              {STATE_OPTIONS.map((option) => (
-                <option key={option.value || "all"} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <select
-              value={minDurationMs}
-              onChange={(event) => setMinDurationMs(Number(event.target.value))}
-              aria-label="Minimum duration"
-              className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
-            >
-              {DURATION_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              onChange={(value) => setState(value as "" | RuntimeExecutionState)}
+              options={STATE_OPTIONS.map((option) => ({
+                value: option.value,
+                label: option.label,
+              }))}
+              placeholder="All outcomes"
+              ariaLabel="Outcome"
+              variant="field"
+              align="end"
+            />
+            <SelectMenu
+              value={String(minDurationMs)}
+              onChange={(value) => setMinDurationMs(Number(value))}
+              options={DURATION_OPTIONS.map((option) => ({
+                value: String(option.value),
+                label: option.label,
+              }))}
+              placeholder="Any duration"
+              ariaLabel="Minimum duration"
+              variant="field"
+              align="end"
+            />
+            <label className="flex cursor-pointer items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/40">
               <input
                 type="checkbox"
                 checked={unfinished}
                 onChange={(event) => setUnfinished(event.target.checked)}
-                className="h-3.5 w-3.5 rounded border-input"
+                className="h-3.5 w-3.5 rounded border-input accent-[hsl(var(--primary))]"
               />
               Never finished only
             </label>
@@ -439,7 +603,12 @@ function Jobs({ scope, since, onDetail }: ViewProps) {
     <div className="flex flex-col gap-6">
       <RuntimeReliabilityPanel scope={scope} since={since} />
       <QueryState queries={[query]}>
-        <Panel title="Job inventory">
+        <Panel
+          title="Job inventory"
+          icon={Workflow}
+          description="Every job known to the runtime source, whether or not it ran in this window."
+          flush
+        >
           <PaginatedTable
             rows={query.data?.jobs ?? []}
             total={query.data?.total ?? 0}
@@ -473,7 +642,12 @@ function Plans({ scope, onDetail }: ViewProps) {
 
   return (
     <QueryState queries={[query]}>
-      <Panel title="Plans">
+      <Panel
+        title="Plans"
+        icon={ListTree}
+        description="Orchestrations that chain jobs into a sequence of steps."
+        flush
+      >
         <PaginatedTable
           rows={query.data?.plans ?? []}
           total={query.data?.total ?? 0}
@@ -513,7 +687,9 @@ function Incidents({ scope, since, onDetail }: ViewProps) {
     <QueryState queries={[query]}>
       <Panel
         title="Incidents"
+        icon={AlertTriangle}
         description="A likely cause is an inference, not a confirmed diagnosis. Confidence is shown for every row."
+        flush
       >
         <PaginatedTable
           rows={query.data?.incidents ?? []}
@@ -526,6 +702,7 @@ function Incidents({ scope, since, onDetail }: ViewProps) {
               rows={rows}
               rowKey={(incident) => incident.incident_id}
               onClick={(incident) => onDetail({ kind: "incident", item: incident })}
+              emptyLabel="No incidents were derived for this scope and window."
               cells={(incident) => [
                 incident.job_name ?? incident.execution_id,
                 // The log's own sentence beats a template when it is available.
@@ -539,7 +716,7 @@ function Incidents({ scope, since, onDetail }: ViewProps) {
                   <ConfidenceBadge confidence={incident.confidence} />
                   <CauseOriginBadge origin={incident.cause_origin} />
                 </span>,
-                formatDate(incident.first_bad_at),
+                <RelativeTime key="first-bad" value={incident.first_bad_at} />,
               ]}
             />
           )}
@@ -564,27 +741,39 @@ function Estate({ scope, onDetail }: ViewProps) {
 
   return (
     <QueryState queries={[sources, engines]}>
-      <div className="grid gap-6 xl:grid-cols-2">
-        <Panel title="Runtime sources">
+      <div className="grid gap-5 xl:grid-cols-2">
+        <Panel
+          title="Runtime sources"
+          icon={Server}
+          description="Where imported runtime data comes from, and when each last delivered."
+          flush
+        >
           <EntityTable
             headers={["Source", "Type", "Status", "Last sync"]}
             rows={sources.data?.sources ?? []}
             rowKey={(source) => `${source.project_id}:${source.source_key}`}
             onClick={(source) => onDetail({ kind: "source", item: source })}
+            emptyLabel="No runtime sources are registered for this scope."
             cells={(source) => [
               source.label,
               source.source_type,
               source.status,
-              formatDate(source.last_synced_at),
+              <RelativeTime key="synced" value={source.last_synced_at} />,
             ]}
           />
         </Panel>
-        <Panel title="Engines">
+        <Panel
+          title="Engines"
+          icon={Network}
+          description="Execution hosts the source reports, with their reported health."
+          flush
+        >
           <EntityTable
             headers={["Engine", "Environment", "Version", "Status"]}
             rows={engines.data?.engines ?? []}
             rowKey={(engine) => engine.engine_id}
             onClick={(engine) => onDetail({ kind: "engine", item: engine })}
+            emptyLabel="No engines were reported for this scope."
             cells={(engine) => [
               engine.name,
               engine.environment_name ?? "-",
@@ -615,25 +804,33 @@ function AskLogs({ scope }: { scope?: string }) {
   return (
     <form
       onSubmit={submit}
-      className="flex flex-col gap-3 border border-border bg-muted/35 p-4 sm:flex-row sm:items-end"
+      className="rounded-xl border border-border bg-gradient-to-br from-primary/[0.04] to-transparent p-5 shadow-elevation-sm"
     >
-      <label className="min-w-0 flex-1 text-sm font-medium">
-        Ask these logs
-        <input
-          value={question}
-          onChange={(event) => setQuestion(event.target.value)}
-          placeholder="What changed in the failed runs?"
-          className="mt-1 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal"
-        />
-      </label>
-      <button
-        type="submit"
-        disabled={!question.trim() || sending}
-        className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"
-      >
-        <ArrowRight className="h-4 w-4" />
-        {sending ? "Opening chat" : "Ask Nexus"}
-      </button>
+      <div className="flex items-start gap-3">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+          <Sparkles className="h-4 w-4" aria-hidden />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-semibold text-foreground">Ask these logs</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Nexus answers from the captured log lines and this project&apos;s generated
+            documentation, and cites the runs it used.
+          </p>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+            <Input
+              value={question}
+              onChange={(event) => setQuestion(event.target.value)}
+              placeholder="What changed in the failed runs?"
+              aria-label="Ask these logs"
+              className="sm:flex-1"
+            />
+            <Button type="submit" size="lg" disabled={!question.trim()} isLoading={sending}>
+              {sending ? "Opening chat" : "Ask Nexus"}
+              {!sending && <ArrowRight className="h-4 w-4" aria-hidden />}
+            </Button>
+          </div>
+        </div>
+      </div>
     </form>
   );
 }
@@ -674,18 +871,20 @@ function DetailDrawer({ detail, onClose }: { detail: Detail | null; onClose: () 
         aria-modal="true"
         aria-label="Runtime details"
         onMouseDown={(event) => event.stopPropagation()}
-        className="flex h-full w-full max-w-2xl flex-col border-l border-border bg-background shadow-xl sm:border sm:shadow-2xl"
+        className="flex h-full w-full max-w-2xl flex-col border-l border-border bg-background shadow-elevation-lg sm:rounded-xl sm:border"
       >
-        <div className="flex items-start justify-between border-b border-border p-5">
+        <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
           <div className="min-w-0">
-            <p className="text-xs font-medium uppercase text-muted-foreground">{detail.kind}</p>
-            <h2 className="mt-1 truncate text-lg font-semibold">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              {detail.kind}
+            </p>
+            <h2 className="mt-0.5 truncate font-mono text-sm font-semibold text-foreground">
               {detailTitle(detail, item as Record<string, unknown>)}
             </h2>
           </div>
           <button
             onClick={onClose}
-            className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+            className="shrink-0 rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             aria-label="Close details"
           >
             <X className="h-4 w-4" />
@@ -716,13 +915,13 @@ function DetailFields({ item }: { item: Record<string, unknown> }) {
 
   return (
     <div className="flex min-w-0 flex-col gap-5">
-      <dl className="grid gap-4 sm:grid-cols-2">
+      <dl className="grid gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2">
         {scalars.map(([key, value]) => (
-          <div key={key} className="border-b border-border pb-3">
-            <dt className="text-xs font-medium uppercase text-muted-foreground">
+          <div key={key} className="bg-card px-3 py-2.5">
+            <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
               {humanize(key)}
             </dt>
-            <dd className="mt-1 break-words text-sm text-foreground">{String(value)}</dd>
+            <dd className="mt-0.5 break-words text-sm text-foreground">{String(value)}</dd>
           </div>
         ))}
       </dl>
@@ -823,20 +1022,27 @@ function RunTable({
     <EntityTable
       headers={
         compact
-          ? ["Run", "Outcome", "Started"]
+          ? ["Job", "Outcome", "Started"]
           : ["Run", "Job", "Outcome", "Started", "Duration"]
       }
       rows={rows}
       rowKey={(run) => run.execution_id}
       onClick={(run) => onDetail({ kind: "execution", item: run })}
+      // The execution id is a copy-into-a-ticket value, so it gets monospace.
+      mono={compact ? undefined : [0]}
+      emptyLabel="No runs were recorded for this scope and window."
       cells={(run) =>
         compact
-          ? [run.job_name, <StateCell key="state" run={run} />, formatDate(run.started_at)]
+          ? [
+              run.job_name,
+              <StateCell key="state" run={run} />,
+              <RelativeTime key="started" value={run.started_at} />,
+            ]
           : [
               run.execution_id,
               run.job_name,
               <StateCell key="state" run={run} />,
-              formatDate(run.started_at),
+              <RelativeTime key="started" value={run.started_at} />,
               run.ended_at ? formatDuration(run.duration_ms) : "never finished",
             ]
       }
@@ -888,55 +1094,27 @@ function detailTitle(detail: Detail, item: Record<string, unknown>) {
 
 // Surfaces automatic-polling health on the Overview: when the last import ran,
 // how many sources are polling, and a clear warning when data has gone stale.
-function SyncStatusBanner({ scope }: { scope?: string }) {
-  const sources = useRuntimeSources({ projectId: scope, limit: 100 });
-  const rows = sources.data?.sources ?? [];
-  if (sources.isLoading || rows.length === 0) return null;
-
-  const polling = rows.filter((source) => source.enabled !== false);
-  const syncedTimes = rows
-    .map((source) => source.last_synced_at)
-    .filter((value): value is string => Boolean(value))
-    .map((value) => new Date(value).getTime());
-  const freshest = syncedTimes.length ? Math.max(...syncedTimes) : null;
-  const ageMs = freshest === null ? null : Date.now() - freshest;
-  const intervals = polling.map((source) => source.sync_interval_seconds ?? 60);
-  const minInterval = intervals.length ? Math.min(...intervals) : 60;
-  const maxInterval = intervals.length ? Math.max(...intervals) : 60;
-  // Stale = older than three missed cycles, floored at 15 min to avoid flapping.
-  const staleThresholdMs = Math.max(maxInterval * 3, 900) * 1000;
-
-  const noPolling = polling.length === 0;
-  const isStale = noPolling || ageMs === null || ageMs > staleThresholdMs;
-
-  let message: string;
-  if (noPolling) {
-    message =
-      "No runtime sources are enabled for polling. Enable a source to start importing data.";
-  } else if (ageMs === null) {
-    message = `No runtime data imported yet. ${polling.length} source(s) set to poll every ${formatInterval(minInterval)}.`;
-  } else if (isStale) {
-    message = `Last import ${formatAge(ageMs)} ago — data may be stale. ${polling.length} source(s) set to poll every ${formatInterval(minInterval)}.`;
-  } else {
-    message = `Last import ${formatAge(ageMs)} ago · ${polling.length} source(s) polling every ${formatInterval(minInterval)}.`;
-  }
+// The computation lives in `useSyncFreshness` so the header pill cannot
+// disagree with this banner.
+function SyncStatusBanner({ freshness }: { freshness: SyncFreshness | null }) {
+  if (!freshness) return null;
 
   return (
     <div
       className={cn(
-        "flex flex-col gap-2 rounded-lg border px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between",
-        isStale
+        "flex flex-col gap-2 rounded-xl border px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between",
+        freshness.isStale
           ? "border-amber-500/40 bg-amber-500/5 text-amber-700 dark:text-amber-400"
           : "border-border bg-muted/30 text-muted-foreground",
       )}
     >
       <span className="flex items-center gap-2">
-        {isStale ? (
-          <AlertTriangle className="h-4 w-4 shrink-0" />
+        {freshness.isStale ? (
+          <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
         ) : (
-          <RefreshCw className="h-4 w-4 shrink-0" />
+          <RefreshCw className="h-4 w-4 shrink-0" aria-hidden />
         )}
-        <span>{message}</span>
+        <span>{freshness.message}</span>
       </span>
       <Link
         href="/admin/runtime"

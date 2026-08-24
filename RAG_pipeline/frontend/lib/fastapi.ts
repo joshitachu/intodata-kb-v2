@@ -1,4 +1,5 @@
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
+import { clientAddressHeaders } from "@/lib/proxyHeaders";
 
 export const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 
@@ -7,6 +8,15 @@ interface FetchOptions extends Omit<RequestInit, "body"> {
 }
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
+  const forwarded: Record<string, string> = {};
+  try {
+    // Carry the real client address through to the backend so rate limits and
+    // the IP allowlist key on the user, not on this server. See proxyHeaders.ts.
+    Object.assign(forwarded, clientAddressHeaders(await headers()));
+  } catch {
+    // headers() not available in this context - that's fine
+  }
+
   try {
     const cookieStore = await cookies();
     const cookieHeader = cookieStore
@@ -15,13 +25,14 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
       .join("; ");
     const csrfToken = cookieStore.get("csrf_token")?.value;
     return {
+      ...forwarded,
       ...(cookieHeader ? { Cookie: cookieHeader } : {}),
       ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
     };
   } catch {
     // cookies() not available in client context - that's fine
   }
-  return {};
+  return forwarded;
 }
 
 export async function fastapiFetch<T>(

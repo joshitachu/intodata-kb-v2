@@ -43,9 +43,70 @@ MODEL_PRICING: dict[str, tuple[float, float]] = {
 }
 
 
+# Fraction of the normal input price charged for a prompt token served from the
+# provider's prefix cache. Expressed as a RATIO rather than an absolute per-M
+# price so it stays correct if a base rate in MODEL_PRICING is renegotiated or
+# corrected — the two numbers can never drift apart.
+#
+# A model absent from this table falls back to _DEFAULT_CACHE_READ_DISCOUNT (1.0,
+# i.e. "assume cached tokens cost full price"). That deliberately OVERSTATES cost
+# for a provider whose discount we have not confirmed: an unverified saving must
+# never show up as revenue in the usage dashboard.
+MODEL_CACHE_READ_DISCOUNT: dict[str, float] = {
+    # Moonshot/Kimi publishes cached input at CNY 0.70/M against CNY 4.00/M
+    # uncached for k2.5 => 0.175. Automatic prefix cache, no cache-write fee.
+    "kimi-k2.5": 0.175,
+    # moonshot-v1-* has no cache discount, so it is intentionally absent.
+    # Anthropic: cache read is 0.1x base input, cache write 1.25x base input.
+    "claude-sonnet-4-6": 0.10,
+    "claude-opus-4-7": 0.10,
+    # DeepSeek context caching: cache hit is 0.1x the cache-miss input price.
+    "deepseek-chat": 0.10,
+    "deepseek-reasoner": 0.10,
+    "deepseek-v4-pro": 0.10,
+    "deepseek-v4-flash": 0.10,
+    # Google implicit caching on Gemini 2.5+: cached input is 0.25x base.
+    "gemini-3.1-pro-preview": 0.25,
+    "gemini-2.5-pro": 0.25,
+    "gemini-2.5-flash": 0.25,
+    "gemini-2.5-flash-lite": 0.25,
+    # OpenAI models are intentionally absent: their cached-input discount varies
+    # by model generation and has not been verified for the ids above.
+}
+
+_DEFAULT_CACHE_READ_DISCOUNT = 1.0
+
+# Multiple of the base input price charged for tokens WRITTEN into the cache.
+# Only providers with explicit, billed cache creation appear here; everyone else
+# reports cache_write_tokens == 0 so the multiplier is never applied.
+MODEL_CACHE_WRITE_MULTIPLIER: dict[str, float] = {
+    "claude-sonnet-4-6": 1.25,
+    "claude-opus-4-7": 1.25,
+}
+
+_DEFAULT_CACHE_WRITE_MULTIPLIER = 1.0
+
+
 @dataclass
 class UsageStats:
-    """Accumulated token usage for a single LLM or embedding call."""
+    """Accumulated token usage for a single LLM or embedding call.
+
+    Cache accounting invariant (IMPORTANT — providers must normalize to it):
+    ``input_tokens`` is always the TOTAL prompt size, and
+    ``cached_input_tokens`` + ``cache_write_tokens`` are SUBSETS of it. The two
+    upstream wire formats disagree, so each adapter converts on the way in:
+
+    * OpenAI-compatible (Kimi/Moonshot, DeepSeek, OpenAI) already reports
+      ``prompt_tokens`` inclusive of ``prompt_tokens_details.cached_tokens`` —
+      pass both through unchanged.
+    * Anthropic reports ``input_tokens`` EXCLUSIVE of
+      ``cache_read_input_tokens`` and ``cache_creation_input_tokens`` — the
+      adapter must sum all three into ``input_tokens``.
+
+    Keeping one invariant means every existing consumer that reads
+    ``input_tokens`` as "how big was the prompt" stays correct, and cost is
+    computed identically for all providers.
+    """
 
     provider: str = ""
     model: str = ""
@@ -53,14 +114,47 @@ class UsageStats:
     output_tokens: int = 0
     cost_usd: float = 0.0
     latency_ms: int = 0
+    cached_input_tokens: int = 0
+    """Prompt tokens served from the provider's prefix cache (billed cheaper)."""
+    cache_write_tokens: int = 0
+    """Prompt tokens written into an explicit cache (billed at a premium).
+    Stays 0 on providers with an automatic prefix cache and no write fee."""
+
+    @property
+    def uncached_input_tokens(self) -> int:
+        """Prompt tokens billed at the full input rate."""
+        return max(0, self.input_tokens - self.cached_input_tokens - self.cache_write_tokens)
+
+    @property
+    def cache_hit_ratio(self) -> float:
+        """Share of the prompt served from cache, 0.0-1.0. 0.0 when no prompt."""
+        if self.input_tokens <= 0:
+            return 0.0
+        return min(1.0, self.cached_input_tokens / self.input_tokens)
 
     def calculate_cost(self) -> float:
-        """Calculate cost based on model pricing."""
+        """Calculate cost based on model pricing, discounting cached prompt tokens.
+
+        With ``cached_input_tokens`` and ``cache_write_tokens`` at their 0 defaults
+        this reduces exactly to the previous flat input-price formula, so providers
+        that report no cache data bill identically to before.
+        """
         pricing = MODEL_PRICING.get(self.model)
         if not pricing:
             return 0.0
-        input_cost = (self.input_tokens / 1_000_000) * pricing[0]
-        output_cost = (self.output_tokens / 1_000_000) * pricing[1]
+        input_price, output_price = pricing
+        read_discount = MODEL_CACHE_READ_DISCOUNT.get(
+            self.model, _DEFAULT_CACHE_READ_DISCOUNT
+        )
+        write_multiplier = MODEL_CACHE_WRITE_MULTIPLIER.get(
+            self.model, _DEFAULT_CACHE_WRITE_MULTIPLIER
+        )
+        input_cost = (
+            self.uncached_input_tokens * input_price
+            + self.cached_input_tokens * input_price * read_discount
+            + self.cache_write_tokens * input_price * write_multiplier
+        ) / 1_000_000
+        output_cost = (self.output_tokens / 1_000_000) * output_price
         self.cost_usd = round(input_cost + output_cost, 6)
         return self.cost_usd
 
@@ -74,6 +168,8 @@ class StreamUsageStats:
     input_tokens: int = 0
     output_tokens: int = 0
     latency_ms: int = 0
+    cached_input_tokens: int = 0
+    cache_write_tokens: int = 0
 
     def finalize(self) -> UsageStats:
         stats = UsageStats(
@@ -82,6 +178,8 @@ class StreamUsageStats:
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
             latency_ms=self.latency_ms,
+            cached_input_tokens=self.cached_input_tokens,
+            cache_write_tokens=self.cache_write_tokens,
         )
         stats.calculate_cost()
         return stats

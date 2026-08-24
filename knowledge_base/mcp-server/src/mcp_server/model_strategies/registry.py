@@ -10,11 +10,13 @@ from mcp_server.model_strategies.strategies import (
     CustomHarnessStrategy,
     DeepSeekModelStrategy,
     GoogleModelStrategy,
+    KimiModelStrategy,
     ModelDescriptorData,
     ModelProviderStrategy,
     OllamaModelStrategy,
     OpenCodeCliStrategy,
     OpenAIModelStrategy,
+    OpenRouterModelStrategy,
     Route33ModelStrategy,
 )
 
@@ -33,7 +35,9 @@ _STRATEGIES: tuple[ModelProviderStrategy, ...] = (
     CustomHarnessStrategy(),
     OpenAIModelStrategy(),
     DeepSeekModelStrategy(),
+    KimiModelStrategy(),
     Route33ModelStrategy(),
+    OpenRouterModelStrategy(),
     AnthropicModelStrategy(),
     GoogleModelStrategy(),
     OllamaModelStrategy(),
@@ -183,6 +187,7 @@ def resolve_generation_models(
 def _unsupported_model_message(model_id: str) -> str:
     return (
         f"Unsupported model/provider: {model_id!r}. "
-        "Supported: 'custom', 'openai/<model>', 'deepseek/<model>', 'route33/<model>', "
-        "'anthropic/<model>', 'google/<model>', 'ollama/<model>', 'claude-cli', or 'opencode-cli'."
+        "Supported: 'custom', 'openai/<model>', 'deepseek/<model>', 'kimi/<model>', 'route33/<model>', "
+        "'openrouter/<model>', 'anthropic/<model>', 'google/<model>', 'ollama/<model>', "
+        "'claude-cli', or 'opencode-cli'."
     )

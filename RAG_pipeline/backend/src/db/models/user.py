@@ -95,6 +95,13 @@ class RefreshToken(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     expires_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True))
     revoked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # Set only when this token was superseded by rotation. Stays NULL for tokens
+    # revoked on logout, password change, or admin action -- those must never be
+    # accepted again, while a just-rotated token is honoured inside the grace
+    # window so concurrent refreshes don't log the user out. See AuthService.
+    rotated_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
 
     user: Mapped[User] = relationship(back_populates="refresh_tokens")
 

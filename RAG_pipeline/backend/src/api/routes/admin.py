@@ -15,10 +15,10 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy import func as sa_func
 
 from src.api.dependencies import (
-    AdminUser,
     AuditViewer,
     DBSession,
     ManagerUser,
+    OwnerUser,
     ProjectCreator,
     ProjectManager,
 )
@@ -50,13 +50,18 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+# Owner authority is represented only by ``users.is_superadmin``. Keeping
+# these names out of the assignable role namespace avoids presenting a normal
+# role as if it could create a second Owner.
+RESERVED_OWNER_ROLE_NAMES = {"owner", "superadmin"}
+
 
 # --- Schemas ---
 
 class CreateUserRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=100)
     email: str = Field(..., min_length=3, max_length=255)
-    password: str = Field(..., min_length=8)
+    password: str = Field(..., min_length=12, max_length=128)
     role_ids: list[int] = Field(default_factory=list)
 
 
@@ -68,7 +73,7 @@ class UpdateUserRequest(BaseModel):
 
 
 class ResetPasswordRequest(BaseModel):
-    new_password: str = Field(..., min_length=8)
+    new_password: str = Field(..., min_length=12, max_length=128)
 
 
 class CreateRoleRequest(BaseModel):
@@ -146,12 +151,45 @@ def _new_invite_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _require_non_owner_target(user: User) -> None:
+    """Keep Owner accounts outside day-to-day member administration.
+
+    This guard is deliberately based on the persisted authority flag rather
+    than a role name. It remains safe if a legacy database contains more than
+    one ``is_superadmin`` row: none can be altered, deactivated, or have its
+    password reset through member-management endpoints.
+    """
+    if user.is_superadmin:
+        raise HTTPException(
+            status_code=403,
+            detail="Owner accounts cannot be managed through member administration",
+        )
+
+
+async def _load_assignable_roles(db: AsyncSession, role_ids: list[int]) -> list[Role]:
+    """Resolve a complete, non-Owner role selection or reject the request."""
+    if not role_ids:
+        return []
+
+    unique_ids = set(role_ids)
+    result = await db.execute(select(Role).where(Role.id.in_(unique_ids)))
+    roles = list(result.scalars().all())
+    if {role.id for role in roles} != unique_ids:
+        raise HTTPException(status_code=400, detail="One or more roles do not exist")
+    if any(role.name.strip().lower() in RESERVED_OWNER_ROLE_NAMES for role in roles):
+        raise HTTPException(
+            status_code=403,
+            detail="Owner authority cannot be assigned as a role",
+        )
+    return roles
+
+
 
 # --- Access requests / invites ---
 
 @router.get("/access-requests", summary="List access requests and pending invites")
 async def list_access_requests(
-    admin: AdminUser,
+    admin: ManagerUser,
     db: DBSession,
     status: str | None = Query(default="pending"),
 ):
@@ -182,7 +220,7 @@ async def list_access_requests(
 
 @router.post("/access-requests/{request_id}/approve", summary="Approve an access request and send an invite")
 async def approve_access_request(
-    request: Request, request_id: int, admin: AdminUser, db: DBSession
+    request: Request, request_id: int, admin: ManagerUser, db: DBSession
 ):
     row = (
         await db.execute(select(AccessRequest).where(AccessRequest.id == request_id))
@@ -234,7 +272,7 @@ async def approve_access_request(
 async def reject_access_request(
     request_id: int,
     body: RejectAccessRequest,
-    admin: AdminUser,
+    admin: ManagerUser,
     db: DBSession,
 ):
     row = (
@@ -260,7 +298,7 @@ async def reject_access_request(
 
 
 @router.post("/invites/{invite_id}/resend", summary="Resend an invite email")
-async def resend_invite(request: Request, invite_id: int, admin: AdminUser, db: DBSession):
+async def resend_invite(request: Request, invite_id: int, admin: ManagerUser, db: DBSession):
     """Regenerate and resend the invite token for a pending invite."""
     invite = (
         await db.execute(select(UserInvite).where(UserInvite.id == invite_id))
@@ -292,7 +330,7 @@ async def resend_invite(request: Request, invite_id: int, admin: AdminUser, db: 
 
 
 @router.post("/invites/{invite_id}/revoke", summary="Revoke a pending invite")
-async def revoke_invite(invite_id: int, admin: AdminUser, db: DBSession):
+async def revoke_invite(invite_id: int, admin: ManagerUser, db: DBSession):
     """Mark an invite as revoked so the token can no longer be used."""
     invite = (
         await db.execute(select(UserInvite).where(UserInvite.id == invite_id))
@@ -308,7 +346,7 @@ async def revoke_invite(invite_id: int, admin: AdminUser, db: DBSession):
 
 
 @router.post("/email/test", summary="Send a test email to verify SMTP config")
-async def test_email(body: TestEmailRequest, admin: AdminUser, db: DBSession):
+async def test_email(body: TestEmailRequest, _owner: OwnerUser, db: DBSession):
     """Send a test email to the specified address to verify SMTP configuration."""
     try:
         send_test_email(body.to.strip().lower())
@@ -320,7 +358,7 @@ async def test_email(body: TestEmailRequest, admin: AdminUser, db: DBSession):
 # --- User management ---
 
 @router.get("/users", summary="List all users")
-async def list_users(admin: AdminUser, db: DBSession, skip: int = 0, limit: int = Query(default=50, ge=1, le=100)):
+async def list_users(admin: ManagerUser, db: DBSession, skip: int = 0, limit: int = Query(default=50, ge=1, le=100)):
     """Return a paginated list of all users with their roles."""
     result = await db.execute(select(User).offset(skip).limit(limit))
     users = result.scalars().all()
@@ -344,7 +382,7 @@ async def list_users(admin: AdminUser, db: DBSession, skip: int = 0, limit: int 
 
 
 @router.post("/users", status_code=201, summary="Create a new user")
-async def create_user(body: CreateUserRequest, admin: AdminUser, db: DBSession):
+async def create_user(body: CreateUserRequest, admin: ManagerUser, db: DBSession):
     """Create a new active user with a password and optional role assignments."""
     # Check uniqueness
     existing = await db.execute(
@@ -357,14 +395,11 @@ async def create_user(body: CreateUserRequest, admin: AdminUser, db: DBSession):
         username=body.username,
         email=body.email,
         password_hash=hash_password(body.password),
+        is_superadmin=False,
     )
 
     # Attach roles (always set explicitly to avoid lazy-load in async context)
-    if body.role_ids:
-        roles_result = await db.execute(select(Role).where(Role.id.in_(body.role_ids)))
-        user.roles = list(roles_result.scalars().all())
-    else:
-        user.roles = []
+    user.roles = await _load_assignable_roles(db, body.role_ids)
 
     db.add(user)
     await db.flush()
@@ -385,12 +420,13 @@ async def create_user(body: CreateUserRequest, admin: AdminUser, db: DBSession):
 
 
 @router.put("/users/{user_id}", summary="Update a user's profile or role assignments")
-async def update_user(user_id: int, body: UpdateUserRequest, admin: AdminUser, db: DBSession):
+async def update_user(user_id: int, body: UpdateUserRequest, admin: ManagerUser, db: DBSession):
     """Update username, email, active status, or role list for a user."""
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
+    _require_non_owner_target(user)
 
     if body.username is not None:
         user.username = body.username
@@ -399,8 +435,7 @@ async def update_user(user_id: int, body: UpdateUserRequest, admin: AdminUser, d
     if body.is_active is not None:
         user.is_active = body.is_active
     if body.role_ids is not None:
-        roles_result = await db.execute(select(Role).where(Role.id.in_(body.role_ids)))
-        user.roles = list(roles_result.scalars().all())
+        user.roles = await _load_assignable_roles(db, body.role_ids)
 
     await db.flush()
 
@@ -416,12 +451,13 @@ async def update_user(user_id: int, body: UpdateUserRequest, admin: AdminUser, d
 
 
 @router.delete("/users/{user_id}", summary="Deactivate a user and revoke all tokens")
-async def deactivate_user(user_id: int, admin: AdminUser, db: DBSession):
+async def deactivate_user(user_id: int, admin: ManagerUser, db: DBSession):
     """Set a user to inactive and revoke all their refresh tokens."""
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
+    _require_non_owner_target(user)
     if user.id == admin.id:
         raise HTTPException(status_code=400, detail="Cannot deactivate yourself")
 
@@ -436,12 +472,13 @@ async def deactivate_user(user_id: int, admin: AdminUser, db: DBSession):
 @router.post("/users/{user_id}/reset-password", summary="Reset a user's password")
 @limiter.limit("5/minute")
 async def reset_password(
-    request: Request, user_id: int, body: ResetPasswordRequest, admin: AdminUser, db: DBSession
+    request: Request, user_id: int, body: ResetPasswordRequest, admin: ManagerUser, db: DBSession
 ):
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
+    _require_non_owner_target(user)
 
     user.password_hash = hash_password(body.new_password)
     # Revoke all existing refresh tokens
@@ -466,7 +503,7 @@ def _role_to_response(r: Role) -> RoleResponse:
 
 
 @router.get("/roles", summary="List all roles with their permissions")
-async def list_roles(admin: AdminUser, db: DBSession):
+async def list_roles(admin: ManagerUser, db: DBSession):
     """Return all roles with their associated permissions."""
     result = await db.execute(select(Role))
     roles = result.scalars().all()
@@ -474,8 +511,13 @@ async def list_roles(admin: AdminUser, db: DBSession):
 
 
 @router.post("/roles", status_code=201, summary="Create a new role")
-async def create_role(body: CreateRoleRequest, admin: AdminUser, db: DBSession):
+async def create_role(body: CreateRoleRequest, _owner: OwnerUser, db: DBSession):
     """Create a new role with the specified permissions."""
+    if body.name.strip().lower() in RESERVED_OWNER_ROLE_NAMES:
+        raise HTTPException(
+            status_code=400,
+            detail="Owner is an account authority, not an assignable role",
+        )
     existing = await db.execute(select(Role).where(Role.name == body.name))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Role already exists")
@@ -495,7 +537,7 @@ async def create_role(body: CreateRoleRequest, admin: AdminUser, db: DBSession):
 
 
 @router.put("/roles/{role_id}")
-async def update_role(role_id: int, body: UpdateRoleRequest, admin: AdminUser, db: DBSession):
+async def update_role(role_id: int, body: UpdateRoleRequest, _owner: OwnerUser, db: DBSession):
     """Update a role's name, description, and/or permissions."""
     result = await db.execute(select(Role).where(Role.id == role_id))
     role = result.scalar_one_or_none()
@@ -503,6 +545,11 @@ async def update_role(role_id: int, body: UpdateRoleRequest, admin: AdminUser, d
         raise HTTPException(status_code=404, detail="Role not found")
 
     if body.name is not None:
+        if body.name.strip().lower() in RESERVED_OWNER_ROLE_NAMES:
+            raise HTTPException(
+                status_code=400,
+                detail="Owner is an account authority, not an assignable role",
+            )
         role.name = body.name
     if body.description is not None:
         role.description = body.description
@@ -517,7 +564,7 @@ async def update_role(role_id: int, body: UpdateRoleRequest, admin: AdminUser, d
 
 
 @router.delete("/roles/{role_id}")
-async def delete_role(role_id: int, admin: AdminUser, db: DBSession):
+async def delete_role(role_id: int, _owner: OwnerUser, db: DBSession):
     """Delete a role (cannot delete built-in admin role)."""
     result = await db.execute(select(Role).where(Role.id == role_id))
     role = result.scalar_one_or_none()
@@ -532,7 +579,7 @@ async def delete_role(role_id: int, admin: AdminUser, db: DBSession):
 
 
 @router.get("/permissions")
-async def list_permissions(admin: AdminUser, db: DBSession):
+async def list_permissions(_owner: OwnerUser, db: DBSession):
     """List all available permissions."""
     result = await db.execute(select(Permission).order_by(Permission.id))
     perms = result.scalars().all()
@@ -927,7 +974,7 @@ async def list_audit_logs(
     "/auth/rotate-key",
     summary="Generate a JWT key rotation plan",
 )
-async def rotate_jwt_key(admin: AdminUser):
+async def rotate_jwt_key(_owner: OwnerUser):
     """Generate a new JWT signing key and return the exact env vars to set.
 
     This endpoint is advisory — it generates the new key value and tells you
@@ -942,18 +989,10 @@ async def rotate_jwt_key(admin: AdminUser):
     4. After access_token_expire_minutes (default 60 min), all tokens signed
        with the old key will have expired. You can then clear JWT_PREVIOUS_KEYS.
 
-    Requires superadmin.
+    Requires the deployment Owner.
     """
-    if not admin.is_superadmin:
-        raise HTTPException(status_code=403, detail="Superadmin required")
-
     new_key = secrets.token_hex(32)
     current_key = settings.jwt_secret_key
-
-    # Build the new JWT_PREVIOUS_KEYS value: prepend the current key,
-    # keep any existing previous keys that haven't expired yet.
-    existing_previous = [k.strip() for k in settings.jwt_previous_keys.split(",") if k.strip()]
-    new_previous_keys = ", ".join([current_key] + existing_previous)
 
     return {
         "new_key": new_key,

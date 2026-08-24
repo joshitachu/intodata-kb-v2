@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.db.models import HarnessAgentTurnAuditRow, QueryUsage
+from src.db.session import async_session_factory
 from src.db.models.conversation import Conversation, ConversationMessage
 from src.db.models.harness import HarnessConversationTurnClaimRow
 from src.api.metrics import (
@@ -68,9 +69,10 @@ from src.harness.readonly_runtime import (
     build_readonly_primary_chat_model,
     build_readonly_primary_runtime,
     grounding_failure_answer,
+    public_answer_chunks,
     run_readonly_primary_turn,
 )
-from src.harness.trusted_answer import TrustedAnswerSink
+from src.harness.trusted_answer import AnswerDeltaSink, TrustedAnswerSink
 from src.schemas import DocumentSource
 from src.harness.planning_runtime import build_planning_primary_runtime
 from src.harness.effect_runtime import build_effect_primary_runtime
@@ -92,19 +94,26 @@ from src.harness.task_controls import conversation_task_control_capabilities
 from src.harness.conversation_state import ConversationStateConflict
 from src.harness.conversation_tasks import ConversationTaskService
 from src.harness.evidence import build_registered_read_adapters
+from src.harness.evidence_summary import EvidenceSummary
 from src.harness.executor import HarnessCapabilityExecutor
 from src.harness.packs.draft_service import PackDraftService
-from src.harness.packs.project_service import ProjectPackService
-from src.harness.packs.runtime import compile_governed_pack_registry
 from src.harness.providers.mcp_docs import McpDocumentationProvider
 from src.harness.providers.mcp_projects import McpProjectsProvider
 from src.harness.registry import CapabilityRegistry, base_capability_registry
+from src.harness.topology_capability import TOPOLOGY_STRUCTURE_CAPABILITY, topology_capabilities
+from src.harness.topology_guidance import (
+    is_topology_surface,
+    topology_capability_enabled,
+    topology_turn_guidance,
+)
+from src.harness.turn_provenance import safe_project_turn_provenance
 from src.harness.repository import HarnessWorkflowRepository
 from src.harness.workflow_control import WorkflowCancellationController
 from src.harness.workflow_projection import AuthoritativeWorkflowCardProjector
 from src.harness.agent_runs import AgentRunProjection, AgentRunService, PublicAgentEvent
 from src.harness.agent_trace import safe_argument_shape
 from src.harness.run_budgets import LayeredBudgetController, LayeredBudgetLimits
+from src.turn_timings import TurnTimings, turn_timings_scope
 
 
 _DOCUMENTATION_WORKFLOW_KEY = "documentation.generate"
@@ -115,6 +124,15 @@ CHAT_NON_RAG_DOCUMENT_CAPABILITY_IDS = frozenset(
         GENERATED_DOCUMENT_READ_CAPABILITY.id,
     }
 )
+
+
+def _chat_denied_capability_ids(
+    query: str, page_scope: dict[str, Any] | None = None
+) -> set[str]:
+    denied = set(CHAT_NON_RAG_DOCUMENT_CAPABILITY_IDS)
+    if not topology_capability_enabled(query, page_scope):
+        denied.add(TOPOLOGY_STRUCTURE_CAPABILITY.id)
+    return denied
 logger = logging.getLogger(__name__)
 
 
@@ -130,6 +148,7 @@ class ProductionAgentTurnRuntime:
     effect_operation_service: EffectOperationService
     agent_plan_service: AgentPlanService
     trusted_answer_sink: TrustedAnswerSink
+    answer_delta_sink: AnswerDeltaSink
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +170,49 @@ class PrimaryTurnOutcome:
     cohort: CohortDecision
     manifest_snapshot_hash: str | None = None
     document_sources: list[DocumentSource] = field(default_factory=list)
+    #: Topology navigation targets observed this turn, verbatim, for the canvas.
+    topology_targets: list[dict[str, Any]] = field(default_factory=list)
+    evidence_summary: EvidenceSummary = field(default_factory=EvidenceSummary)
+
+
+@dataclass(slots=True)
+class _StepTimeline:
+    """Per-run step-boundary clock, so every recorded step gets a real duration.
+
+    A step's start is the previous recorded boundary in the same run. That makes a
+    ``runtime.update`` step's ``latency_ms`` the model decode time that preceded
+    it -- the number that was missing while every non-terminal step stored 0. A
+    tool step instead starts when its call was proposed, so a slow tool is never
+    misattributed to the model, and ``tool.proposed`` itself measures how long the
+    model took to choose it.
+
+    Only recorded steps move the boundary. Live progress heartbeats are far more
+    frequent than steps and would otherwise collapse every decode measurement.
+    """
+
+    _boundary: float = field(default_factory=time.monotonic)
+    _call_started: dict[str, float] = field(default_factory=dict)
+
+    def note_call_proposed(self, call_ref: str) -> None:
+        self._call_started[call_ref] = time.monotonic()
+
+    def measure(
+        self, *, event_type: str, call_ref: str | None
+    ) -> tuple[datetime.datetime, datetime.datetime, int]:
+        """Close the current step and return ``(started_at, finished_at, ms)``."""
+
+        now = time.monotonic()
+        started = self._boundary
+        if event_type.startswith("tool.") and event_type != "tool.proposed" and call_ref:
+            started = self._call_started.get(call_ref, self._boundary)
+        self._boundary = now
+        elapsed = max(0.0, now - started)
+        finished_at = datetime.datetime.now(datetime.UTC)
+        return (
+            finished_at - datetime.timedelta(seconds=elapsed),
+            finished_at,
+            int(round(elapsed * 1_000)),
+        )
 
 
 class AgentChatIdempotencyConflict(RuntimeError):
@@ -201,6 +263,23 @@ def _authoritative_turn_context(project_scope: list[str] | None) -> str:
     )
 
 
+def _turn_prompt_context(
+    project_scope: list[str] | None,
+    page_scope: dict[str, Any] | None,
+) -> str:
+    """Compose the authoritative scope projection with this turn's guidance.
+
+    ``project_scope`` is authoritative and comes from the authenticated request.
+    ``page_scope`` is client-supplied and untrusted: it is rendered as a prompt
+    preference only and deliberately not merged into the scope projection above,
+    so it can never widen project access or become a retrieval filter.
+    """
+
+    return "\n\n".join(
+        (_authoritative_turn_context(project_scope), topology_turn_guidance(page_scope))
+    )
+
+
 async def build_production_agent_turn_runtime(
     *,
     db: AsyncSession,
@@ -227,9 +306,16 @@ async def build_production_agent_turn_runtime(
             project_id=project_scope[0],
         )
     # Plan controls are Nexus-owned, not Pack-owned. They must be present in a
-    # planning manifest even when a project's compiled Pack omits them.
+    # planning manifest even when a project's compiled Pack omits them. Topology
+    # is registered here for the same reason: it reads published artifacts rather
+    # than a Pack-governed domain provider, so a project whose persisted Pack
+    # stack predates it must still be able to answer structural questions.
     control_registry = base_capability_registry()
-    for definition in (*agent_plan_capabilities(), *conversation_task_control_capabilities()):
+    for definition in (
+        *agent_plan_capabilities(),
+        *conversation_task_control_capabilities(),
+        *topology_capabilities(),
+    ):
         try:
             registry.get(definition.id)
         except Exception:
@@ -254,6 +340,10 @@ async def build_production_agent_turn_runtime(
         if item.role in {"user", "assistant"} and item.content
     ]
     trusted_answer_sink = TrustedAnswerSink()
+    # Inert until the harness binds `publish` below: the public event callback does
+    # not exist yet at runtime-assembly time, which is the same ordering that made
+    # `trusted_answer_sink` a mutable sink.
+    answer_delta_sink = AnswerDeltaSink()
     evidence_handlers = build_registered_read_adapters(
         qdrant=qdrant,
         db=db,
@@ -262,6 +352,7 @@ async def build_production_agent_turn_runtime(
         conversation_history=history,
         conversation_id=conversation.id,
         trusted_answer_sink=trusted_answer_sink,
+        answer_delta_sink=answer_delta_sink,
     )
     agent_plan_service = AgentPlanService(db, registry)
     executor = HarnessCapabilityExecutor(
@@ -308,6 +399,7 @@ async def build_production_agent_turn_runtime(
         effect_operation_service=EffectOperationService(db),
         agent_plan_service=agent_plan_service,
         trusted_answer_sink=trusted_answer_sink,
+        answer_delta_sink=answer_delta_sink,
     )
 
 
@@ -326,10 +418,16 @@ async def execute_production_agent_chat_turn(
     permissions: set[str] | None,
     access_token: str | None,
     transport: str,
+    page_scope: dict[str, Any] | None = None,
     model: AgentDecisionModel | None = None,
     public_event_listener: Callable[[PublicAgentEvent], Awaitable[None]] | None = None,
 ) -> AgentChatTurnExecution:
-    """Claim, execute, and persist one agent turn for either public transport."""
+    """Claim, execute, and persist one agent turn for either public transport.
+
+    ``page_scope`` is the client's untrusted viewing context. It reaches the prompt
+    as a disambiguation preference only: it never widens ``project_scope``, never
+    filters retrieval, and never authorizes anything.
+    """
 
     started = time.perf_counter()
     conversation_id = conversation.id
@@ -381,6 +479,7 @@ async def execute_production_agent_chat_turn(
     run_projection: AgentRunProjection | None = None
     budget_controller: LayeredBudgetController | None = None
     event_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
+    heartbeat_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
     if claimed_live_streaming and cohort.is_v2_readonly:
         budget_controller = LayeredBudgetController(_layered_budget_limits())
         run_service = AgentRunService(db)
@@ -419,6 +518,7 @@ async def execute_production_agent_chat_turn(
         call_context: dict[str, dict[str, Any]] = {}
         attempt_counts: dict[str, int] = {}
         last_failed_call: dict[str, str] = {}
+        timeline = _StepTimeline()
 
         async def emit_public(event_type: str, payload: dict[str, Any]) -> None:
             assert run_service is not None and run_projection is not None
@@ -426,6 +526,10 @@ async def execute_production_agent_chat_turn(
                 run_id=run_projection.run_id,
                 event_type=event_type,
                 public_payload=payload,
+                # Live progress is true only at the instant it is emitted. A
+                # reconnecting client must not be told the run is "Writing the
+                # answer... 4s" minutes later, so heartbeats are not replayed.
+                replayable=event_type != "assistant.progress",
             )
             try:
                 if event_type in {"run.started", "runtime.update"} or event_type.startswith(
@@ -433,6 +537,9 @@ async def execute_production_agent_chat_turn(
                 ):
                     call_ref = str(payload.get("call_ref") or "") or None
                     semantic_name = str(payload.get("semantic_name") or "") or None
+                    step_started_at, step_finished_at, step_latency_ms = timeline.measure(
+                        event_type=event_type, call_ref=call_ref
+                    )
                     context = call_context.get(call_ref or "", {})
                     if not semantic_name:
                         semantic_name = context.get("semantic_name")
@@ -463,6 +570,7 @@ async def execute_production_agent_chat_turn(
                             else "model_selected_capability"
                         )
                         if call_ref:
+                            timeline.note_call_proposed(call_ref)
                             call_context[call_ref] = {
                                 "semantic_name": semantic_name,
                                 "capability_id": capability_id,
@@ -538,6 +646,9 @@ async def execute_production_agent_chat_turn(
                             for item in payload.get("evidence_refs", [])
                             if isinstance(item, dict)
                         ),
+                        latency_ms=step_latency_ms,
+                        started_at=step_started_at,
+                        finished_at=step_finished_at,
                     )
             except Exception:
                 await db.rollback()
@@ -545,7 +656,56 @@ async def execute_production_agent_chat_turn(
             if public_event_listener is not None:
                 await public_event_listener(event)
 
+        async def emit_heartbeat(event_type: str, payload: dict[str, Any]) -> None:
+            """Publish one live progress heartbeat on an independent session.
+
+            This runs concurrently with the turn's own work, which may be blocked
+            for tens of seconds inside a tool call while holding an open
+            transaction on ``db``. Committing on that session from another task
+            would flush its pending state at an arbitrary point and can raise a
+            concurrent-operation error, so the heartbeat gets its own session. The
+            run's sequence allocation is already an atomic
+            ``UPDATE ... RETURNING``, which is exactly what makes this safe.
+            """
+
+            assert run_projection is not None
+            try:
+                async with async_session_factory() as heartbeat_db:
+                    event = await AgentRunService(heartbeat_db).append_public_event(
+                        run_id=run_projection.run_id,
+                        event_type=event_type,
+                        public_payload=payload,
+                        replayable=False,
+                    )
+            except Exception:
+                # Includes the benign race where the run went terminal between the
+                # tick and the append. Progress is cosmetic: never fail the turn.
+                logger.debug("Progress heartbeat was not published", exc_info=True)
+                return
+            if public_event_listener is not None:
+                await public_event_listener(event)
+
+        async def publish_answer_delta(text: str) -> None:
+            """Show one batch of the trusted RAG answer while it is generating.
+
+            Provisional by construction: emitted ``replayable=False``, so a
+            reconnect replays only the authoritative deltas written after
+            persistence. Streaming changes WHEN text appears, never what is stored
+            or replayed. Uses the heartbeat's independent session for the same
+            reason the ticker does -- this runs while the turn's own session is
+            inside the tool call that is producing the text.
+            """
+
+            await emit_heartbeat("assistant.delta", {"content": text})
+
+        # Bound only here, once the transport callback exists. Only
+        # `answer_from_documentation` can reach this sink, and only because that
+        # answer bypasses the grounding validator by already being deterministically
+        # cited -- there is no later transform for the streamed text to diverge from.
+        runtime.answer_delta_sink.publish = publish_answer_delta
+
         event_callback = emit_public
+        heartbeat_callback = emit_heartbeat
         await event_callback(
             "run.started",
             {
@@ -555,56 +715,65 @@ async def execute_production_agent_chat_turn(
                 "objective": query,
             },
         )
-    try:
-        outcome = await _run_primary_or_replay(
-            db=db,
-            conversation=conversation,
-            query=query,
-            user_id=user_id,
-            project_scope=project_scope,
-            permissions=permissions,
-            access_token=access_token,
-            runtime=runtime,
-            images=images,
-            message_id=user_message_id,
-            cohort=cohort,
-            event_callback=event_callback,
-            budget_controller=budget_controller,
-        )
-    except Exception as exc:
-        # Provider/runtime failures are transport-independent typed stops. The
-        # common persistence path below stores one safe assistant message and
-        # Agent Run terminal, so non-stream never leaks a raw HTTP 500 while SSE
-        # and reconnect replay the exact same failed result.
-        logger.error(
-            "Agent turn stopped unexpectedly conversation_id=%s message_id=%s exception_type=%s",
-            conversation_id,
-            user_message_id,
-            type(exc).__name__,
-        )
-        safe_output = (
-            "This turn stopped unexpectedly before I could finish. No completed "
-            "action was hidden; please retry the request."
-        )
-        safe_stop = AgentStopReason.PLANNER_UNAVAILABLE
-        outcome = PrimaryTurnOutcome(
-            result=AgentLoopResult(
-                action=AgentBoundaryAction.ANSWER,
-                output=safe_output,
-                stop_reason=safe_stop,
-                state_version="",
-                typed_response=render_typed_response(
-                    action=AgentBoundaryAction.ANSWER.value,
-                    content=safe_output,
-                    plan=None,
-                    facts=[],
+    # Component latencies (embedding / vector search / model) are produced deep
+    # inside the retrieval and model layers. This scope is what lets them be
+    # attributed to one turn and persisted below. It covers the failure path too:
+    # a turn that dies after 40 seconds of model time is exactly the turn whose
+    # component timings matter most.
+    with turn_timings_scope() as timings:
+        try:
+            outcome = await _run_primary_or_replay(
+                db=db,
+                conversation=conversation,
+                query=query,
+                user_id=user_id,
+                project_scope=project_scope,
+                permissions=permissions,
+                access_token=access_token,
+                runtime=runtime,
+                images=images,
+                message_id=user_message_id,
+                cohort=cohort,
+                page_scope=page_scope,
+                event_callback=event_callback,
+                heartbeat_callback=heartbeat_callback,
+                budget_controller=budget_controller,
+            )
+        except Exception as exc:
+            # Provider/runtime failures are transport-independent typed stops. The
+            # common persistence path below stores one safe assistant message and
+            # Agent Run terminal, so non-stream never leaks a raw HTTP 500 while SSE
+            # and reconnect replay the exact same failed result.
+            logger.error(
+                "Agent turn stopped unexpectedly conversation_id=%s message_id=%s "
+                "exception_type=%s",
+                conversation_id,
+                user_message_id,
+                type(exc).__name__,
+            )
+            safe_output = (
+                "This turn stopped unexpectedly before I could finish. No completed "
+                "action was hidden; please retry the request."
+            )
+            safe_stop = AgentStopReason.PLANNER_UNAVAILABLE
+            outcome = PrimaryTurnOutcome(
+                result=AgentLoopResult(
+                    action=AgentBoundaryAction.ANSWER,
+                    output=safe_output,
+                    stop_reason=safe_stop,
                     state_version="",
-                    stop_reason=safe_stop.value,
+                    typed_response=render_typed_response(
+                        action=AgentBoundaryAction.ANSWER.value,
+                        content=safe_output,
+                        plan=None,
+                        facts=[],
+                        state_version="",
+                        stop_reason=safe_stop.value,
+                    ),
                 ),
-            ),
-            grounded=None,
-            cohort=cohort,
-        )
+                grounded=None,
+                cohort=cohort,
+            )
     result = outcome.result
     assistant_message = await _get_or_create_assistant_message(
         db=db,
@@ -618,10 +787,13 @@ async def execute_production_agent_chat_turn(
         0, int((time.perf_counter() - started) * 1_000)
     )
     if event_callback is not None:
-        for index in range(0, len(result.output), 96):
-            await event_callback(
-                "assistant.delta", {"content": result.output[index : index + 96]}
-            )
+        # Answer text is published only here, after the grounding validator
+        # accepted it and after it was persisted. Live progress during generation
+        # is carried by `assistant.progress` instead, which never contains model
+        # prose -- a partially shown answer that validation then rejects would be
+        # a compliance regression, so draft prose is not streamed.
+        for chunk in public_answer_chunks(result.output):
+            await event_callback("assistant.delta", {"content": chunk})
         await event_callback(
             "assistant.completed",
             {"message_id": assistant_message.id, "status": "completed"},
@@ -636,6 +808,7 @@ async def execute_production_agent_chat_turn(
         cohort=cohort,
         transport=transport,
         latency_ms=latency_ms,
+        timings=timings,
     )
     await db.commit()
     if run_service is not None and run_projection is not None:
@@ -672,6 +845,11 @@ async def execute_production_agent_chat_turn(
                     settings.rag_default_model.split("/", 1)[0]
                     if "/" in settings.rag_default_model else None
                 ),
+                # The component split on the run itself, so a run can be diagnosed
+                # from its own row without joining query_usage.
+                **timings.component_ms(),
+                "model_calls": timings.model_calls,
+                "search_calls": timings.search_calls,
             },
             budget=budget_controller.snapshot() if budget_controller else None,
             manifest_snapshot_hash=outcome.manifest_snapshot_hash,
@@ -761,6 +939,35 @@ async def _get_or_create_user_message(
     return message
 
 
+def grounded_structured_answer(
+    outcome: PrimaryTurnOutcome,
+    grounded: GroundedAnswer,
+) -> dict[str, Any]:
+    """Build the persisted ``agent_response_v2_grounded`` payload for one turn.
+
+    ``topology_targets`` is an additive key on that existing payload, and the only
+    transport-independent channel to the client: live SSE also emits the same
+    targets per tool call, but the non-streaming transport and a page reload read
+    them from here. Targets are copied verbatim — their ids belong to whichever id
+    space the canvas is rendering and are never re-derived.
+    """
+
+    structured_answer = grounded.to_structured_answer(
+        runtime_release=READONLY_RUNTIME_RELEASE,
+        manifest_snapshot_hash=outcome.manifest_snapshot_hash or "",
+        model_profile=READONLY_MODEL_PROFILE,
+        prompt_version=READONLY_PROMPT_VERSION,
+    )
+    if outcome.topology_targets:
+        structured_answer["topology_targets"] = list(outcome.topology_targets)
+    structured_answer["evidence_summary"] = outcome.evidence_summary.model_dump(mode="json")
+    if outcome.evidence_summary.zero_evidence:
+        disclosures = structured_answer.setdefault("disclosures", [])
+        if "no_current_turn_evidence" not in disclosures:
+            disclosures.append("no_current_turn_evidence")
+    return structured_answer
+
+
 async def _get_or_create_assistant_message(
     *,
     db: AsyncSession,
@@ -771,6 +978,13 @@ async def _get_or_create_assistant_message(
 ) -> ConversationMessage:
     result = outcome.result
     grounded = outcome.grounded
+    # Flat provenance for both answer shapes. Derived from what this turn already
+    # recorded, so it costs no tool call and cannot alter the answer.
+    provenance = safe_project_turn_provenance(
+        observations=result.observations,
+        document_sources=outcome.document_sources,
+        evidence_summary=outcome.evidence_summary,
+    )
     if grounded is not None:
         # V2 read-only path: persist the validated grounded answer additively.
         # No fact-ID renderer runs and no workflow card is linked.
@@ -781,6 +995,9 @@ async def _get_or_create_assistant_message(
             in_reply_to_message_id=user_message_id,
             workflow_run_id=None,
             latency_ms=latency_ms,
+            runtime_tool_summary=provenance.runtime_tool_summary,
+            primary_source_layer=provenance.primary_source_layer,
+            fallback_used=provenance.fallback_used,
         )
         candidate.sources = (
             [source.model_dump(mode="json") for source in outcome.document_sources]
@@ -789,12 +1006,7 @@ async def _get_or_create_assistant_message(
         persist_grounded_agent_response(
             candidate,
             content=grounded.content,
-            structured_answer=grounded.to_structured_answer(
-                runtime_release=READONLY_RUNTIME_RELEASE,
-                manifest_snapshot_hash=outcome.manifest_snapshot_hash or "",
-                model_profile=READONLY_MODEL_PROFILE,
-                prompt_version=READONLY_PROMPT_VERSION,
-            ),
+            structured_answer=grounded_structured_answer(outcome, grounded),
         )
         return await _insert_or_load_assistant_message(
             db=db, candidate=candidate, user_message_id=user_message_id
@@ -810,6 +1022,9 @@ async def _get_or_create_assistant_message(
             else None
         ),
         latency_ms=latency_ms,
+        runtime_tool_summary=provenance.runtime_tool_summary,
+        primary_source_layer=provenance.primary_source_layer,
+        fallback_used=provenance.fallback_used,
     )
     persist_typed_agent_response(candidate, result)
     return await _insert_or_load_assistant_message(
@@ -834,6 +1049,9 @@ async def _insert_or_load_assistant_message(
         latency_ms=candidate.latency_ms,
         structured_answer=candidate.structured_answer,
         sources=candidate.sources,
+        runtime_tool_summary=candidate.runtime_tool_summary,
+        primary_source_layer=candidate.primary_source_layer,
+        fallback_used=candidate.fallback_used,
     ).on_conflict_do_nothing(
         index_elements=["in_reply_to_message_id"]
     ).returning(ConversationMessage.id)
@@ -863,7 +1081,9 @@ async def _persist_usage_and_audit(
     cohort: CohortDecision,
     transport: str,
     latency_ms: int,
+    timings: TurnTimings | None = None,
 ) -> bool:
+    component_ms = (timings or TurnTimings()).component_ms()
     model_name = settings.rag_default_model
     provider = model_name.split("/", 1)[0] if "/" in model_name else None
     capability_ids = list(
@@ -902,6 +1122,11 @@ async def _persist_usage_and_audit(
                 "denied": any(value == "denied" for value in observation_statuses),
                 "stale_workflow": stale_workflow,
                 "state_conflict": result.stop_reason.value == "state_conflict",
+                # Cache accounting is auditable without a schema change: the audit
+                # row has no cached-token column, so the ratio that produced the
+                # discounted `cost_usd` is recorded on this existing JSON column.
+                "cached_input_tokens": result.usage.cached_input_tokens,
+                "cache_hit_ratio": round(result.usage.cache_hit_ratio, 4),
             },
             input_tokens=result.usage.input_tokens,
             output_tokens=result.usage.output_tokens,
@@ -930,6 +1155,13 @@ async def _persist_usage_and_audit(
             cost_usd=result.usage.total_cost_usd,
             latency_ms=latency_ms,
             conversation_id=conversation_id,
+            # The three component columns exist for every interface but were only
+            # ever written by the older /query paths. Without them a chat turn's
+            # 24s was one opaque number; with them the model/retrieval split is
+            # queryable per turn.
+            embedding_ms=component_ms["embedding_ms"],
+            search_ms=component_ms["search_ms"],
+            llm_ms=component_ms["llm_ms"],
         )
     )
     return True
@@ -1017,7 +1249,9 @@ async def _run_readonly_primary_turn(
     images: list[str] | None,
     message_id: int,
     cohort: CohortDecision,
+    page_scope: dict[str, Any] | None = None,
     event_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+    heartbeat_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     budget_controller: LayeredBudgetController | None = None,
 ) -> PrimaryTurnOutcome:
     """Execute one V2 read-only turn: real reads, grounded answer, no effects."""
@@ -1039,7 +1273,7 @@ async def _run_readonly_primary_turn(
         permissions=permissions,
         access_token=access_token,
         current_message_id=message_id,
-        denied_capability_ids=set(CHAT_NON_RAG_DOCUMENT_CAPABILITY_IDS),
+        denied_capability_ids=_chat_denied_capability_ids(query, page_scope),
     )
     readonly_runtime = build_readonly_primary_runtime(
         model=build_readonly_primary_chat_model(settings),
@@ -1056,7 +1290,7 @@ async def _run_readonly_primary_turn(
             if cohort.is_v2_direct_primary
             else None
         ),
-        system_prompt_suffix=_authoritative_turn_context(project_scope),
+        system_prompt_suffix=_turn_prompt_context(project_scope, page_scope),
         budget_controller=budget_controller,
     )
     turn = await run_readonly_primary_turn(
@@ -1068,7 +1302,12 @@ async def _run_readonly_primary_turn(
         state_version=turn_input.state_version or "",
         prior_response_fingerprints=set(turn_input.prior_response_fingerprints),
         max_corrections=settings.agent_runtime_v2_max_grounding_corrections,
+        suppress_structural_citations=is_topology_surface(page_scope),
         event_callback=event_callback,
+        heartbeat_callback=heartbeat_callback,
+        # Intentionally False on all three cohorts: this caller replays the answer
+        # only after it is validated and persisted. Live feedback comes from the
+        # `assistant.progress` events the runtime emits during generation.
         emit_answer_deltas=False,
         budget_controller=budget_controller,
         trusted_answer_sink=runtime.trusted_answer_sink,
@@ -1079,6 +1318,8 @@ async def _run_readonly_primary_turn(
         cohort=cohort,
         manifest_snapshot_hash=readonly_runtime.snapshot.snapshot_hash,
         document_sources=turn.document_sources,
+        topology_targets=turn.topology_targets,
+        evidence_summary=turn.evidence_summary,
     )
 
 
@@ -1087,7 +1328,9 @@ async def _run_planning_primary_turn(
     project_scope: list[str] | None, permissions: set[str] | None,
     access_token: str | None, runtime: ProductionAgentTurnRuntime,
     images: list[str] | None, message_id: int, cohort: CohortDecision,
+    page_scope: dict[str, Any] | None = None,
     event_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+    heartbeat_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     budget_controller: LayeredBudgetController | None = None,
 ) -> PrimaryTurnOutcome:
     turn_input = await build_authoritative_agent_input(conversation=conversation, query=query, db=db, user_id=user_id, project_scope=project_scope, current_message_id=message_id, images=images, state_repository=runtime.state_repository)
@@ -1097,10 +1340,10 @@ async def _run_planning_primary_turn(
         return PrimaryTurnOutcome(result=AgentLoopResult.model_validate(claim.final_result), grounded=None, cohort=cohort)
     await db.commit()
     plan_context = await AgentPlanService(db, runtime.registry).current(conversation_id=conversation.id, owner_user_id=user_id)
-    context = CapabilityExecutionContext(user_id=user_id, conversation_id=conversation.id, project_scope=project_scope, permissions=permissions, access_token=access_token, current_message_id=message_id, conversation_state_version=state.version, conversation_turn_claim_id=claim.id, conversation_turn_claim_token=claim.lease_token, denied_capability_ids=set(CHAT_NON_RAG_DOCUMENT_CAPABILITY_IDS))
-    plan_runtime = build_planning_primary_runtime(model=build_readonly_primary_chat_model(settings), registry=runtime.registry, executor=runtime.executor, context=context, plan_context=(plan_context.model_projection() if plan_context else None), turn_context=_authoritative_turn_context(project_scope), budget_controller=budget_controller)
+    context = CapabilityExecutionContext(user_id=user_id, conversation_id=conversation.id, project_scope=project_scope, permissions=permissions, access_token=access_token, current_message_id=message_id, conversation_state_version=state.version, conversation_turn_claim_id=claim.id, conversation_turn_claim_token=claim.lease_token, denied_capability_ids=_chat_denied_capability_ids(query, page_scope))
+    plan_runtime = build_planning_primary_runtime(model=build_readonly_primary_chat_model(settings), registry=runtime.registry, executor=runtime.executor, context=context, plan_context=(plan_context.model_projection() if plan_context else None), turn_context=_turn_prompt_context(project_scope, page_scope), budget_controller=budget_controller)
     try:
-        turn = await run_readonly_primary_turn(graph=plan_runtime.graph, ledger=plan_runtime.ledger, snapshot=plan_runtime.snapshot, user_message=query, conversation_seed=turn_input.conversation_history, state_version=turn_input.state_version or "", prior_response_fingerprints=set(turn_input.prior_response_fingerprints), max_corrections=settings.agent_runtime_v2_max_grounding_corrections, event_callback=event_callback, emit_answer_deltas=False, budget_controller=budget_controller, trusted_answer_sink=runtime.trusted_answer_sink)
+        turn = await run_readonly_primary_turn(graph=plan_runtime.graph, ledger=plan_runtime.ledger, snapshot=plan_runtime.snapshot, user_message=query, conversation_seed=turn_input.conversation_history, state_version=turn_input.state_version or "", prior_response_fingerprints=set(turn_input.prior_response_fingerprints), max_corrections=settings.agent_runtime_v2_max_grounding_corrections, suppress_structural_citations=is_topology_surface(page_scope), event_callback=event_callback, heartbeat_callback=heartbeat_callback, emit_answer_deltas=False, budget_controller=budget_controller, trusted_answer_sink=runtime.trusted_answer_sink)
     except Exception:
         await db.rollback()
         await runtime.state_repository.fail_claim(
@@ -1160,6 +1403,8 @@ async def _run_planning_primary_turn(
         cohort=cohort,
         manifest_snapshot_hash=plan_runtime.snapshot.snapshot_hash,
         document_sources=turn.document_sources,
+        topology_targets=turn.topology_targets,
+        evidence_summary=turn.evidence_summary,
     )
 
 
@@ -1176,7 +1421,9 @@ async def _run_effect_primary_turn(
     images: list[str] | None,
     message_id: int,
     cohort: CohortDecision,
+    page_scope: dict[str, Any] | None = None,
     event_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+    heartbeat_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     budget_controller: LayeredBudgetController | None = None,
 ) -> PrimaryTurnOutcome:
     turn_input = await build_authoritative_agent_input(
@@ -1225,7 +1472,7 @@ async def _run_effect_primary_turn(
         allowed_capability_ids=stage_policy.allowed_effect_capability_ids(
             runtime.registry
         ),
-        denied_capability_ids=set(CHAT_NON_RAG_DOCUMENT_CAPABILITY_IDS),
+        denied_capability_ids=_chat_denied_capability_ids(query, page_scope),
     )
     effect_runtime = build_effect_primary_runtime(
         model=build_readonly_primary_chat_model(settings),
@@ -1245,6 +1492,7 @@ async def _run_effect_primary_turn(
             ),
             "turn_scope": json.loads(_authoritative_turn_context(project_scope)),
         },
+        turn_guidance=topology_turn_guidance(page_scope),
         budget_controller=budget_controller,
     )
     try:
@@ -1257,7 +1505,9 @@ async def _run_effect_primary_turn(
             state_version=turn_input.state_version or "",
             prior_response_fingerprints=set(turn_input.prior_response_fingerprints),
             max_corrections=settings.agent_runtime_v2_max_grounding_corrections,
+            suppress_structural_citations=is_topology_surface(page_scope),
             event_callback=event_callback,
+            heartbeat_callback=heartbeat_callback,
             emit_answer_deltas=False,
             budget_controller=budget_controller,
             trusted_answer_sink=runtime.trusted_answer_sink,
@@ -1271,14 +1521,24 @@ async def _run_effect_primary_turn(
         )
         await db.commit()
         raise
+    # A trusted deterministic answer is never overridden by a turn-assessment
+    # problem. Both branches below key on "no consequential tool completed", which
+    # is ALWAYS true for `answer_from_documentation` because it is a read
+    # capability -- so a malformed assessment call could replace a real, cited
+    # answer with canned failure text or a clarifying question. Now that the answer
+    # streams as it is produced, that would retract text the user has already read.
+    # The planning cohort already guards its equivalent overrides this way.
+    trusted_document_answer = runtime.trusted_answer_sink.answer is not None
     if (
         effect_runtime.middleware.interaction_grounding_failed
         and effect_runtime.middleware.completed_consequential_semantic_name is None
+        and not trusted_document_answer
     ):
         _apply_interaction_grounding_failure(turn)
     elif (
         effect_runtime.middleware.grounded_clarification is not None
         and effect_runtime.middleware.completed_consequential_semantic_name is None
+        and not trusted_document_answer
     ):
         question = effect_runtime.middleware.grounded_clarification
         fingerprint = response_fingerprint(
@@ -1321,6 +1581,8 @@ async def _run_effect_primary_turn(
         cohort=cohort,
         manifest_snapshot_hash=effect_runtime.snapshot.snapshot_hash,
         document_sources=turn.document_sources,
+        topology_targets=turn.topology_targets,
+        evidence_summary=turn.evidence_summary,
     )
 
 
@@ -1371,7 +1633,9 @@ async def _run_primary_or_replay(
     images: list[str] | None,
     message_id: int,
     cohort: CohortDecision,
+    page_scope: dict[str, Any] | None = None,
     event_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+    heartbeat_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     budget_controller: LayeredBudgetController | None = None,
 ) -> PrimaryTurnOutcome:
     if cohort.is_v2_effect_primary:
@@ -1387,7 +1651,9 @@ async def _run_primary_or_replay(
             images=images,
             message_id=message_id,
             cohort=cohort,
+            page_scope=page_scope,
             event_callback=event_callback,
+            heartbeat_callback=heartbeat_callback,
             budget_controller=budget_controller,
         )
     if cohort.is_v2_plan_primary:
@@ -1395,7 +1661,9 @@ async def _run_primary_or_replay(
             db=db, conversation=conversation, query=query, user_id=user_id,
             project_scope=project_scope, permissions=permissions, access_token=access_token,
             runtime=runtime, images=images, message_id=message_id, cohort=cohort,
-            event_callback=event_callback, budget_controller=budget_controller,
+            page_scope=page_scope, event_callback=event_callback,
+            heartbeat_callback=heartbeat_callback,
+            budget_controller=budget_controller,
         )
     if cohort.is_v2_readonly:
         return await _run_readonly_primary_turn(
@@ -1410,7 +1678,9 @@ async def _run_primary_or_replay(
             images=images,
             message_id=message_id,
             cohort=cohort,
+            page_scope=page_scope,
             event_callback=event_callback,
+            heartbeat_callback=heartbeat_callback,
             budget_controller=budget_controller,
         )
     result = await _run_legacy_primary_or_replay(
@@ -1424,6 +1694,7 @@ async def _run_primary_or_replay(
         runtime=runtime,
         images=images,
         message_id=message_id,
+        page_scope=page_scope,
     )
     return PrimaryTurnOutcome(result=result, grounded=None, cohort=cohort)
 
@@ -1440,6 +1711,7 @@ async def _run_legacy_primary_or_replay(
     runtime: ProductionAgentTurnRuntime,
     images: list[str] | None,
     message_id: int,
+    page_scope: dict[str, Any] | None = None,
 ) -> AgentLoopResult:
     try:
         return await run_authoritative_agent_turn(
@@ -1450,7 +1722,7 @@ async def _run_legacy_primary_or_replay(
             project_scope=project_scope,
             permissions=permissions,
             access_token=access_token,
-            denied_capability_ids=set(CHAT_NON_RAG_DOCUMENT_CAPABILITY_IDS),
+            denied_capability_ids=_chat_denied_capability_ids(query, page_scope),
             registry=runtime.registry,
             executor=runtime.executor,
             model=runtime.model,
@@ -1622,22 +1894,12 @@ async def _compile_exact_project_pack(
     registry: CapabilityRegistry,
     project_id: str,
 ) -> CapabilityRegistry:
-    service = ProjectPackService(db, registry)
-    compiled = await service.resolve_governed_for_execution(
-        project_id,
-        _DOCUMENTATION_WORKFLOW_KEY,
-    )
-    if compiled is None:
-        return registry
-    private_packs = await service.resolve_private_analysis_for_execution(
-        project_id,
-        _DOCUMENTATION_WORKFLOW_KEY,
-    )
-    return compile_governed_pack_registry(
-        registry,
-        compiled,
-        tuple(item.provider_payload() for item in private_packs),
-    )
+    # Project-specific stack composition was retired in favour of the MCP
+    # plugin-pack binding. Keep the registry passed by the caller intact: it
+    # remains the fixture-backed chat capability allowlist, not a creatable
+    # documentation pack.
+    _ = (db, project_id)
+    return registry
 
 
 def _validate_agent_manifest(
@@ -1661,4 +1923,5 @@ __all__ = [
     "ProductionAgentTurnRuntime",
     "build_production_agent_turn_runtime",
     "execute_production_agent_chat_turn",
+    "grounded_structured_answer",
 ]
