@@ -1,5 +1,51 @@
 # KB Sub-project Context
 
+## Current State (2026-08-24) -- the tree is committed; every state block below is ON origin/master
+
+**Last completed**: all accumulated local work was squashed into `457622c`
+"chore: sync local working state to remote" (681 files, +96,619/-20,465) via
+branch `chore/sync-local-working-state`, fast-forwarded into `master` and
+pushed. The working tree is empty and `master` is 0 ahead / 0 behind
+`origin/master`. **Read every state block below as committed, not pending** --
+the `UNCOMMITTED` suffixes on the PROGRESS_LOG session headers from 2026-08-07
+onward are stale. The 45 deletions under `mcp-server/data/plugin_packs` are the
+One Pack collapse retiring the governed pack stack, not accidental loss.
+
+Local artifacts deliberately kept OUT of git and added to root `.gitignore`:
+`deploy/backups/` (Postgres dump -- the pre-existing `.backups/` rule never
+matched this path), `mcp-server/data/opencode_cache/` (4MB regenerated
+`models.json`), `mcp-server/data/pack_architect_sessions/` (57 per-run session
+files), and three cloned pack working copies that carry their own `.git`
+(`pack-repos/nexus-baseline/`,
+`mcp-server/data/plugin_packs/swap-pack-starter__main__a4308c2e2a/`,
+`mcp-server/data/plugin_packs/users/`) -- committing those would have written
+mode-160000 gitlinks with no `.gitmodules`. `data/plugin_packs` itself stays
+TRACKED; only the clones inside it are ignored. Note `opencode_cache` is the
+SHARED `XDG_CACHE_HOME` documented under "OpenCode Runtime Homes" in
+`knowledge_base/CLAUDE.md` -- it is service-account-owned runtime state, so
+ignoring it is correct and does not change that contract.
+
+**Verification**: **no tests were run for `457622c`** -- it is a state-capture
+commit and its correctness is unverified. Verified only that it is safe to
+publish: zero secret-pattern hits across the diff and all 343 untracked files
+(`sk-*`, `sk-ant-`, `ghp_*`, `github_pat_`, `AKIA*`, `xoxb-`, `AIza*`, PEM
+headers), `.env.production.template` changes are comments/empty keys, zero
+gitlinks staged, zero excluded paths staged, zero files left untracked, largest
+blob 220KB.
+
+**Immediate next**: run `cd knowledge_base/mcp-server && pytest` and
+`cd knowledge_base/dashboard && npm test` + `tsc -b` against `457622c` to
+establish what the committed baseline actually passes. The per-workstream
+results quoted below were measured on the uncommitted tree at different times by
+different sessions and have never been reproduced together on one tree. Then
+resolve the confidentiality item: three new `.docx` files under
+`knowledge_base/deliverables/vw_werkorder_vwi/` (client integration analysis)
+are now committed and pushed. The repo is PRIVATE and 8 comparable deliverables
+were already tracked, so this matches existing practice -- but root `.gitignore`
+declares client POC material must never be committed, and these sit outside the
+paths that rule names (`/POC_Werkorder/`, `/Assetcheck/`, `/*.zip`). Decide
+before any repo split or visibility change.
+
 ## Current State (2026-08-23) -- adaptive OpenCode Gather/Analyze sessions
 
 **Last completed**: OpenCode contracts remain independent validation and resume

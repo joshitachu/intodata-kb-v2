@@ -526,3 +526,44 @@ knowledge_base/
 - **The design is complete, but breadth is not artificially capped.** The model returns the full current semantic design on each successful turn and may declare as many purposeful documents/sections as user intent requires. Only technical path and artifact-size safeguards apply.
 - **Generated boilerplate is server-owned.** Manifest serialization, README, phase guidance, document prompts, additive platform guidance, and fictional example structure are derived from the design so provider latency is spent on decisions rather than repeated file bytes.
 - **Existing-Pack AI refinement is identity-preserving.** Only the owner may seed a session from a personal Pack. Preserve its full current guidance as bounded first-turn context, retain its Git history and non-editable assets, validate before swap, and update the same Plugin Pack row so existing project selections remain valid.
+
+### Nested-`.git` gitlink hazard and the runtime-artifact ignore set (2026-08-24)
+
+- **`git add -A` at repo root is NOT safe by default in this tree.** Three
+  directories under `knowledge_base/` are independent git checkouts that carry
+  their own `.git`: `pack-repos/nexus-baseline/`,
+  `mcp-server/data/plugin_packs/swap-pack-starter__main__a4308c2e2a/`, and
+  per-user packs under `mcp-server/data/plugin_packs/users/{uid}/`. Staging them
+  records **mode-160000 gitlinks with no `.gitmodules`** -- a permanently broken
+  reference that looks like a submodule and contains nothing. They are now in
+  root `.gitignore`. This is structural, not incidental: personal packs are
+  git-initialised on creation *by design* (publishing is a push -- see the Packs
+  entry in `knowledge_base/CLAUDE.md`), so **every new personal pack creates a
+  fresh nested repo**. The `users/` ignore covers the whole lane; if the pack
+  storage layout moves, the ignore rule must move with it. Verify with
+  `git diff --cached --raw | awk '$1=="160000" || $2=="160000"'` before any bulk
+  commit -- it must print nothing.
+- **`data/plugin_packs` itself stays TRACKED.** Only the cloned working copies
+  inside it are ignored. Do not "simplify" this to ignoring the whole directory:
+  the pack *sources* are real repo content.
+- **`.gitignore` had `.backups/` but that never matched `deploy/backups/`.** A
+  73KB Postgres pre-migration dump sat untracked-but-committable for that reason.
+  `deploy/backups/` is now its own rule. When adding an ignore for a dump or
+  cache directory, anchor it to the actual path -- a bare `name/` pattern only
+  matches at the paths git walks, and a sibling directory with the same basename
+  elsewhere is not covered.
+- **`mcp-server/data/opencode_cache/` is ignored, and that is consistent with the
+  OpenCode contract, not a violation of it.** It is the deliberately SHARED
+  `XDG_CACHE_HOME` (holds `models.json` -- 4MB -- and the runtime binary) created
+  by the service process so it is always service-account-owned; see "OpenCode
+  Runtime Homes and Failure Diagnostics" in `knowledge_base/CLAUDE.md`. It is
+  regenerated runtime state. The per-invocation `XDG_DATA_HOME`/`XDG_STATE_HOME`
+  dirs are temp-rooted and never reach the repo at all.
+  `mcp-server/data/pack_architect_sessions/` (per-run Architect session state) is
+  ignored for the same reason.
+- **Baseline caveat**: commit `457622c` published this entire tree in one squashed
+  commit with **no test run**. Per-workstream pass counts recorded in
+  `.claude/PROGRESS_LOG.md` entries were each measured on the uncommitted tree at
+  different times; they have never been reproduced together. Treat `457622c` as
+  an unvalidated baseline until a full `pytest` + dashboard `npm test` is run
+  against it.
