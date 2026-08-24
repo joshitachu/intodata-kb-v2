@@ -1,8 +1,0 @@
-{
-  "generated_at": "2026-07-20T20:35:30.049577+00:00",
-  "report_version": "1.0.0",
-  "response_type": "agent_response_v2_grounded",
-  "stream_equals_nonstream": true,
-  "unvalidated_content_persisted": false,
-  "verdict": "PASS"
-}

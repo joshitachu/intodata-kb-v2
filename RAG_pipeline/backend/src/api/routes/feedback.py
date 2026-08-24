@@ -2,7 +2,8 @@
 
 Append-only ingest. Latest row per (user_id, message_id) reflects the user's
 current reaction. Powers the Week-3 knowledge-gaps admin view and the
-chat->docs learning loop (see docs/PRE_SALES_AUDIT.md).
+chat->docs learning loop (rationale was in docs/PRE_SALES_AUDIT.md, archived
+2026-08-24 to ../intodata-kb-archive/business-docs/).
 """
 
 from __future__ import annotations

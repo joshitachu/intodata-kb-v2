@@ -37,14 +37,17 @@ blob 220KB.
 `cd knowledge_base/dashboard && npm test` + `tsc -b` against `457622c` to
 establish what the committed baseline actually passes. The per-workstream
 results quoted below were measured on the uncommitted tree at different times by
-different sessions and have never been reproduced together on one tree. Then
-resolve the confidentiality item: three new `.docx` files under
-`knowledge_base/deliverables/vw_werkorder_vwi/` (client integration analysis)
-are now committed and pushed. The repo is PRIVATE and 8 comparable deliverables
-were already tracked, so this matches existing practice -- but root `.gitignore`
-declares client POC material must never be committed, and these sit outside the
-paths that rule names (`/POC_Werkorder/`, `/Assetcheck/`, `/*.zip`). Decide
-before any repo split or visibility change.
+different sessions and have never been reproduced together on one tree.
+
+**RESOLVED 2026-08-24 (confidentiality)**: all 12 client `.docx` deliverables
+under `knowledge_base/deliverables/` were untracked and moved out of the repo to
+`../intodata-kb-archive/deliverables/`. They had been committed and pushed in
+`457622c`, which contradicted the root `.gitignore` declaration that client POC
+material must never be committed -- they sat outside the paths that rule names
+(`/POC_Werkorder/`, `/Assetcheck/`, `/*.zip`). `knowledge_base/deliverables/` is
+now an explicit ignore rule, so the gap is closed by pattern and not by habit.
+Note they REMAIN in git history at `457622c`; purging history was not done and
+is a separate decision (it rewrites every published SHA).
 
 ## Current State (2026-08-23) -- adaptive OpenCode Gather/Analyze sessions
 

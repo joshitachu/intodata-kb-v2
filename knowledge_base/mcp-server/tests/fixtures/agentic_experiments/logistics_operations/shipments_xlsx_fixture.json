@@ -1,9 +1,0 @@
-{
-  "sheet": "Shipments",
-  "headers": ["shipment_id", "status", "origin"],
-  "rows": [
-    ["SHP-200", "=SUM(1,2)", "AMS"],
-    ["SHP-201", "delivered", "BER"]
-  ],
-  "formula_policy": "preserved_as_text_not_evaluated"
-}
