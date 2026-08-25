@@ -252,6 +252,39 @@ async def test_executor_restores_unique_case_insensitive_authorized_project_id()
     assert seen["project_id"] == "IntodataStreams"
 
 
+async def test_executor_pins_document_read_alias_to_the_single_authorized_project() -> None:
+    seen: dict[str, object] = {}
+
+    async def evidence_handler(arguments, _context):  # noqa: ANN001
+        seen.update(arguments)
+        return EvidenceQueryResult(
+            capability_id=DOCUMENT_SEARCH_CAPABILITY.id,
+            status="succeeded",
+            items=[],
+        )
+
+    executor = HarnessCapabilityExecutor(
+        default_capability_registry(),
+        evidence_handlers={DOCUMENT_SEARCH_CAPABILITY.id: evidence_handler},
+    )
+    observation = await executor.execute(
+        CapabilityExecutionRequest(
+            capability_id=DOCUMENT_SEARCH_CAPABILITY.id,
+            arguments={
+                "query": "overview",
+                "project_id": "Scherpenhuizen Talend Estate",
+            },
+        ),
+        CapabilityExecutionContext(
+            user_id=1,
+            project_scope=["scherpenhuizen_talend"],
+        ),
+    )
+
+    assert observation.status == "succeeded"
+    assert seen["project_id"] == "scherpenhuizen_talend"
+
+
 async def test_executor_does_not_guess_between_case_colliding_authorized_projects() -> None:
     calls = 0
 

@@ -421,22 +421,38 @@ def _canonicalize_scoped_project_arguments(
     request: CapabilityExecutionRequest,
     context: CapabilityExecutionContext,
 ) -> CapabilityExecutionRequest:
-    """Replace case-only project references with exact authorized identifiers.
+    """Replace safe project aliases with exact authorized identifiers.
 
     The model may reproduce an identifier with different casing. For a
     restricted caller, the server-owned project scope is already the
     authoritative inventory, so a unique case-insensitive match can be safely
-    restored before policy validation. Ambiguous and unmatched references stay
-    unchanged and are rejected by the normal exact scope check.
+    restored before policy validation. For documentation reads pinned to one
+    project, the sole server-owned scope also wins over a display name or typo
+    copied from natural-language conversation. This cannot widen access: the
+    replacement is the one already-authorized project. Ambiguous and unmatched
+    references in broader scopes stay unchanged and are rejected normally.
     """
 
     scope = context.project_scope
     if scope is None:
         return request
 
+    single_scope_document_read = (
+        len(scope) == 1
+        and request.capability_id
+        in {
+            "rag.docs.answer_question",
+            "rag.docs.search_evidence",
+            "rag.docs.read_document",
+            "mcp.docs.list_project_docs",
+        }
+    )
+
     def canonical(value: Any) -> Any:
         if not isinstance(value, str) or value in scope:
             return value
+        if single_scope_document_read:
+            return scope[0]
         matches = [
             candidate
             for candidate in scope

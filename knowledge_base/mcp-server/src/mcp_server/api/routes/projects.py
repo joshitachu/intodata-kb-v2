@@ -26,7 +26,7 @@ _currently_generating: set[str] = set()
 _generation_tasks: dict[str, asyncio.Task] = {}
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile, File, Form
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from sqlalchemy import func, select, text
 
 from contextlib import nullcontext
@@ -3501,10 +3501,21 @@ async def download_doc(project_id: str, filename: str, request: Request):
     if not path:
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
 
-    media_type = "application/pdf" if filename.endswith(".pdf") else "text/markdown; charset=utf-8"
+    if filename.endswith(".md"):
+        # Markdown documents are small enough to return atomically.  Serving them via
+        # FileResponse made the response vulnerable to an upstream proxy cancelling a
+        # streamed body after the Content-Length header had already been emitted.  The
+        # browser then received a 200 response with a short body and surfaced it as an
+        # Internal Server Error.  PDFs remain streamed below.
+        return Response(
+            content=path.read_bytes(),
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     return FileResponse(
         path=str(path),
-        media_type=media_type,
+        media_type="application/pdf",
         filename=filename,
     )
 

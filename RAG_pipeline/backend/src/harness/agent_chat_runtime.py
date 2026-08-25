@@ -256,7 +256,8 @@ def _authoritative_turn_context(project_scope: list[str] | None) -> str:
             "authorized_project_scope": project_scope,
             "scope_instruction": (
                 "When exactly one project is listed, use that exact project_id for "
-                "project-scoped tools, including contextual follow-up requests."
+                "project-scoped tools, including contextual follow-up requests. Do not "
+                "ask the user which project they mean when exactly one project is listed."
             ),
         },
         sort_keys=True,
