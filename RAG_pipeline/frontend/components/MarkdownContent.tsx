@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
@@ -54,6 +54,9 @@ export function MarkdownContent({ content, className }: MarkdownContentProps) {
             if (!isBlock) {
               return <code className={className}>{children}</code>;
             }
+            if (language === "mermaid") {
+              return <MermaidDiagram definition={raw} />;
+            }
             return <CodeBlock code={raw} language={language} />;
           },
           p({ children }) {
@@ -76,6 +79,66 @@ export function MarkdownContent({ content, className }: MarkdownContentProps) {
         {content}
       </ReactMarkdown>
     </div>
+  );
+}
+
+function MermaidDiagram({ definition }: { definition: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const reactId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function renderDiagram() {
+      try {
+        const { default: mermaid } = await import("mermaid");
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "strict",
+          theme: window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "default",
+          flowchart: { htmlLabels: false, curve: "basis" },
+        });
+        const { svg, bindFunctions } = await mermaid.render(
+          `nexus-mermaid-${reactId}`,
+          definition,
+        );
+        if (cancelled || !containerRef.current) return;
+        containerRef.current.innerHTML = svg;
+        bindFunctions?.(containerRef.current);
+        setError(null);
+      } catch (cause) {
+        if (!cancelled) {
+          setError(cause instanceof Error ? cause.message : "Unable to render diagram");
+        }
+      }
+    }
+
+    void renderDiagram();
+    return () => {
+      cancelled = true;
+      if (containerRef.current) containerRef.current.innerHTML = "";
+    };
+  }, [definition, reactId]);
+
+  if (error) {
+    return (
+      <div className="not-prose my-4">
+        <p className="mb-2 text-xs text-amber-700 dark:text-amber-300">
+          Diagram rendering failed; showing its Mermaid source.
+        </p>
+        <CodeBlock code={definition} language="mermaid" />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      className="not-prose my-5 flex min-h-24 w-full justify-center overflow-x-auto rounded-xl border bg-white p-4 dark:bg-slate-950 [&_svg]:h-auto [&_svg]:max-w-full"
+      role="img"
+      aria-label="Documentation flow diagram"
+    />
   );
 }
 

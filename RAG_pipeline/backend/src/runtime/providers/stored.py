@@ -64,7 +64,11 @@ from src.runtime.models import (
     RuntimeTrendInput,
     RuntimeUnhealthySummary,
 )
-from src.runtime.providers.base import CredentialField, SingleTenantIdentityMixin
+from src.runtime.providers.base import (
+    CredentialField,
+    NoScopeSelectionMixin,
+    SingleTenantIdentityMixin,
+)
 from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
 from src.runtime.store import RuntimeRecordNotFoundError, RuntimeStoreRepository
 
@@ -90,7 +94,7 @@ _LOG_SEARCH_FIELDS = (
 )
 
 
-class StoredRuntimeProvider(SingleTenantIdentityMixin):
+class StoredRuntimeProvider(NoScopeSelectionMixin, SingleTenantIdentityMixin):
     """Reads held runtime data via the repository, scoped per request."""
 
     def provider_key(self) -> str:
@@ -113,6 +117,9 @@ class StoredRuntimeProvider(SingleTenantIdentityMixin):
 
     def source_type_aliases(self) -> set[str]:
         return {self.provider_key()}
+
+    def identity_credential_fields(self) -> set[str]:
+        return set()
 
     async def validate_credentials(self, credentials: Mapping[str, Any]) -> tuple[bool, str | None]:
         return True, None
@@ -230,6 +237,7 @@ class StoredRuntimeProvider(SingleTenantIdentityMixin):
             incident_id=summary.incident_id,
             symptom_summary=incident.symptom_summary if incident else None,
             root_cause_candidate=incident.root_cause_candidate if incident else None,
+            termination_component=incident.termination_component if incident else None,
             confidence=incident.confidence if incident else None,
             cause_origin=incident.cause_origin if incident else None,
             next_checks=incident.next_checks if incident else [],

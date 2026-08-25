@@ -146,8 +146,35 @@ export interface ConnectorProvider {
   authentication_types: string[];
   capabilities: ConnectorCapability[];
   enabled: boolean;
-  kind: "live_evidence" | "runtime_sync";
-  build_state: "available" | "coming_soon";
+  /**
+   * WHICH LANE this provider feeds, and therefore which engine reads it.
+   *
+   * `"live_evidence"` is queried in-band during a run; `"runtime_sync"` is
+   * mirrored on a schedule and read back afterwards. Presentation is derived
+   * from this field alone -- see `lib/connectors.ts`. Nothing in the UI may
+   * branch on `provider_id` to decide how a source behaves.
+   *
+   * `string & {}` for the same reason as `ConnectionKind`: a kind this build
+   * has not been taught must render as unknown, never reject the catalogue
+   * parse and blank the page.
+   */
+  kind: "live_evidence" | "runtime_sync" | (string & {});
+  build_state: "available" | "coming_soon" | (string & {});
+  /**
+   * WHERE this provider's credential is stored -- not who may write it.
+   *
+   * `"connector_store"` is the MCP server's own encrypted store;
+   * `"runtime_sources"` is the RAG backend's tables, next to the scheduler that
+   * polls with the credential every 60 seconds. Both are connectable from this
+   * page; the registered dialog knows which lane to post to. The field exists so
+   * the UI can say where a secret ended up, and so a reader of this code knows
+   * that two different stores are in play.
+   *
+   * `string & {}` for the same reason as `ConnectionKind`: a value this build
+   * has not been taught yet must render as an unfamiliar storage location, never
+   * reject the catalogue parse and blank the page.
+   */
+  managed_by: "connector_store" | "runtime_sources" | (string & {});
   description: string;
 }
 
@@ -210,10 +237,125 @@ export interface ConnectorTestResult {
   details: Record<string, unknown>;
 }
 
+/** One input in a runtime provider's credential form, as the provider declares it. */
+export interface RuntimeSourceCredentialField {
+  name: string;
+  label: string;
+  /** `secret` renders write-only, `url` validates as a URL, anything else is text. */
+  type: "secret" | "url" | "text" | (string & {});
+  required: boolean;
+}
+
+/** A provider's selectable ingest scope, e.g. Talend environments. */
+export interface RuntimeScopeSelection {
+  /** Credential key that stores the chosen ids. */
+  field: string;
+  label: string;
+  description?: string | null;
+  required: boolean;
+  multiple: boolean;
+}
+
+/** One scope a live connection reported as reachable. */
+export interface RuntimeScopeOption {
+  id: string;
+  label: string;
+  /** Free-text hint such as a task count; cosmetic, may be absent. */
+  detail?: string | null;
+  default_selected: boolean;
+}
+
+export interface RuntimeSourceType {
+  /** The RAG backend's runtime key (e.g. `tmc`), not the connector id. */
+  provider_key: string;
+  provider_label: string;
+  credential_schema: RuntimeSourceCredentialField[];
+  /** Absent for providers that ingest the whole source. */
+  scope_selection?: RuntimeScopeSelection | null;
+}
+
+/**
+ * A credential the RAG backend's scheduler polls, bound to exactly one project.
+ *
+ * No credential field: secrets are write-only and no server returns them.
+ */
+export interface RuntimeSource {
+  id: number;
+  project_id: string;
+  source_type: string;
+  label: string;
+  /** `success` | `failed` | `pending` | ... -- open, so a new value renders as itself. */
+  status: string;
+  enabled: boolean;
+  sync_interval_seconds: number;
+  disabled_reason: string | null;
+  last_synced_at: string | null;
+}
+
+/**
+ * What a documentation run for one project reads out of its runtime mirror.
+ *
+ * Set per project in the RAG app; shown here because it changes what a run
+ * produces and an operator should see it before starting one.
+ */
+export interface RuntimeDocReadScope {
+  /** null means every mirrored environment. */
+  environment_ids: string[] | null;
+  environment_names: string[];
+  window_days: number | null;
+  configured: boolean;
+  unavailable_environment_ids: string[];
+}
+
+export interface RuntimeSourceSyncResult {
+  source: RuntimeSource | null;
+  status: string;
+  records_ingested: number;
+}
+
 export interface ConnectorEvidenceFinding {
   evidence_id: string;
   classification: "corroborates" | "operational_context" | "discrepancy" | "inconclusive" | string;
   summary: string | null;
+}
+
+/**
+ * Coverage of the mirrored runtime lane (Talend Management Console today).
+ *
+ * Read server-side from the project's published
+ * `_assessment/runtime_evidence_coverage.json`, so it describes the LATEST
+ * PUBLISHED DOCUMENTS rather than the historical run being inspected. The
+ * popover says so; per-run archival is deferred.
+ */
+export interface RunRuntimeEvidenceSummary {
+  available: boolean;
+  /** data | opted_out | unavailable | partial | binding_suspect, plus room for a newer writer. */
+  mode: string;
+  window_days: number | null;
+  units_requested: number;
+  units_matched: number;
+  /** A count, not names: orphan job names are customer-identifying. */
+  orphan_runtime_job_count: number;
+  partial: boolean;
+  /**
+   * The runtime source lists many jobs with no scanned counterpart. Computed
+   * server-side from an orphan-ratio threshold, so the client reads it instead
+   * of re-deriving it.
+   *
+   * `null` means the payload predates the field (older coverage artifact); only
+   * then may the client fall back to inferring the signal. A reported `false`
+   * is a denial and must silence the fallback.
+   */
+  scope_mismatch: boolean | null;
+  batches: number | null;
+  source_key: string | null;
+  /**
+   * Composite (partitioned) upload: the sub-project this figure describes.
+   * Null on a single-project run and on the aggregate of a composite upload.
+   */
+  subproject: string | null;
+  /** Sub-projects an aggregate spans. 0 on a single, non-composite artifact. */
+  subproject_count: number;
 }
 
 export interface ConnectorEvidenceSummary {
@@ -228,6 +370,13 @@ export interface ConnectorEvidenceSummary {
   observation_to: string | null;
   limitations: string[];
   findings: ConnectorEvidenceFinding[];
+  /** Headline coverage. On a composite upload this is the aggregate. */
+  runtime: RunRuntimeEvidenceSummary;
+  /**
+   * The per-sub-project rows the aggregate was built from. Empty for a
+   * non-composite run and for a composite child run.
+   */
+  runtime_subprojects: RunRuntimeEvidenceSummary[];
 }
 
 export interface LogEvent {

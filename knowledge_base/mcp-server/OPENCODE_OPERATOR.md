@@ -66,6 +66,15 @@ only the initial attempt. Non-positive ceilings and concurrency clamp to one,
 while a negative follow-up count clamps to zero. Set
 `MCP_OPENCODE_GATHER_MODE=contracts` to use adaptive contract batches instead.
 
+The initial tool-driven scope remains free to explore the sanitized staging
+workspace with native read and search tools. A recovery session is narrower:
+Nexus assigns only the units that remain unresolved and authorizes inspection
+only of their group preprocess files plus deterministic factual maps. Runtime
+bookkeeping such as `_audit`, `_transient`, prompt packs, and prior contracts is
+outside that recovery boundary. Each attempt logs the before/after remaining
+unit count and evidence/gap deltas; the coordinator does not impose a short
+wall-clock interruption on otherwise productive investigations.
+
 When a project uses `opencode-cli`, a model selected for that generation run is
 passed directly to `opencode run --model`. Current OpenAI routes include
 `openai/gpt-5.6`, `openai/gpt-5.6-luna`, `openai/gpt-5.6-sol`, and

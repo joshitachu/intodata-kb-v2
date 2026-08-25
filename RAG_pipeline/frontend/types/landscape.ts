@@ -363,7 +363,9 @@ export const ProjectLandscapeResponseSchema = z.object({
   channels: z.array(LandscapeChannelSchema).default([]),
   interfaces: z.array(LandscapeInterfaceSchema).default([]),
   diagnostics: z.array(LandscapeDiagnosticSchema).default([]),
-  business_topology: BusinessTopologySchema.optional(),
+  // The backend deliberately returns null when no current validated business
+  // overlay exists; the technical scanner landscape must remain renderable.
+  business_topology: BusinessTopologySchema.nullable().optional(),
   topology_state: TopologyStateSchema.optional(),
   topology_evidence: TopologyEvidenceSchema.optional(),
   unmapped: z.array(z.record(z.unknown())).default([]),

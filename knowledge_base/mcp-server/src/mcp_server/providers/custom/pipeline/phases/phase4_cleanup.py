@@ -124,6 +124,16 @@ class Phase4Cleanup(Phase):
         # The rmtree list itself is unchanged: staging stays the working set.
         self._store_extraction_cache(ctx)
 
+        # This list is a DENYLIST and the publish step is a whole-directory
+        # rename, so anything not named here ships into `output/{pid}/docs/`.
+        # Two runtime-evidence artifacts depend on that split and must not be
+        # moved without moving this list too:
+        #   * `_transient/runtime/runtime_evidence.json` (the fetched payload,
+        #     carrying provider failure text) and `_analysis/_runtime_profile.md`
+        #     (the rollup) are destroyed here -- they are prompt inputs, not
+        #     deliverables;
+        #   * `_assessment/runtime_evidence_coverage.json` deliberately survives:
+        #     the operator coverage endpoint reads it off the PUBLISHED tree.
         for directory in ("_preprocess", "_analysis", "_transient"):
             target = ctx.staging_dir / directory
             if target.exists():

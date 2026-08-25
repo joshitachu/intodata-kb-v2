@@ -25,7 +25,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.api.dependencies import CurrentUser, DBSession, RuntimeSourceReader, RuntimeSourceWriter
 from src.api.routes.ingest import verify_machine_topology_ingest_api_key
@@ -41,6 +41,8 @@ from src.runtime.insights.models import (
 from src.runtime.insights.repository import RuntimeInsightRepository
 from src.runtime.models import (
     RuntimeDocEvidence,
+    RuntimeDocReadScope,
+    RuntimeMirroredEnvironment,
     DetectFailuresInput,
     GetExecutionDetailsInput,
     GetExecutionLogsInput,
@@ -75,6 +77,7 @@ from src.runtime.models import (
     RuntimeJobDependency,
     RuntimeJobHealth,
     RuntimeJobReliability,
+    RuntimeJobOperationalInsight,
     RuntimeJobRun,
     RuntimeJobThroughput,
     RuntimeLogEvent,
@@ -233,6 +236,11 @@ class RuntimeJobReliabilityResponse(BaseModel):
     total: int
 
 
+class RuntimeJobOperationalInsightResponse(BaseModel):
+    insights: list[RuntimeJobOperationalInsight]
+    total: int
+
+
 class RuntimeComponentHotspotResponse(BaseModel):
     components: list[RuntimeComponentHotspot]
     total: int
@@ -257,6 +265,23 @@ class RuntimeDocEvidenceResponse(BaseModel):
     # explicitly so a document can state "no runtime data" rather than let a
     # writer infer from silence that a job never runs.
     unmatched_units: list[str]
+    # The other direction: runtime jobs in this project that matched none of
+    # the requested units. Names only, capped, no execution detail. Zero
+    # matches plus a populated orphan list means the project binding is wrong,
+    # not that the estate is idle -- which is the difference between a document
+    # that says "no runtime data" and one that quietly publishes 1-of-10
+    # coverage as if it were the whole picture.
+    #
+    # BATCHED CALLERS MUST MERGE BY INTERSECTION, NOT UNION: the field is
+    # relative to the units in one request, so a unit sent in a later batch
+    # makes its job look orphaned in an earlier one. See
+    # `RuntimeStoreRepository.list_doc_evidence` for the derivation.
+    orphan_runtime_jobs: list[str] = Field(default_factory=list)
+    # The read scope this response was produced under. Always populated, even
+    # when nothing was configured, because a consumer cannot otherwise tell a
+    # project with a quiet estate from one that was narrowed to a single
+    # environment -- and the published document has to say which it was.
+    read_scope: RuntimeDocReadScope = Field(default_factory=RuntimeDocReadScope)
 
 
 # --- Scope helper ------------------------------------------------------------
@@ -306,23 +331,90 @@ async def get_runtime_doc_evidence(
     derive.  Scope is therefore pinned to the single requested `project_id` --
     the narrowest possible -- rather than left unrestricted.
 
-    Aggregates only.  No log lines cross this boundary and the one free-text
-    field is redacted, because the response is destined for an LLM prompt.
+    Aggregates only.  No log lines and no per-run timestamps cross this
+    boundary, and the one free-text field is redacted, because the response is
+    destined for an LLM prompt.
+
+    Cadence: `gap_p25/p50/p75_seconds` + `gap_sample_size` describe the
+    inter-run gaps of the unit's DOMINANT environment, named by
+    `environments[0]`.  They exist so a consumer can classify an observed
+    interval from the MEDIAN gap; `runs_per_day` is a mean over the window and
+    must not be used for that (werkorder's `Maximo2RHM_Workorders`: mean gap
+    2204 s, median 1801 s -- the mean invents a schedule).  All four are null
+    when the dominant environment has fewer than two runs in the window, and a
+    reader that quotes an interval must qualify it with the environment
+    whenever `len(environments) > 1`.
+
+    `units` is capped at `_DOC_EVIDENCE_MAX_UNITS`; a larger scan is expected to
+    batch client-side.  `orphan_runtime_jobs` is therefore per-batch and merges
+    by INTERSECTION -- see the repository docstring.
     """
-    since = datetime.now(UTC) - timedelta(days=window_days)
-    units_, unmatched = await RuntimeStoreRepository(db).list_doc_evidence(
+    repo = RuntimeStoreRepository(db)
+    # The caller's `window_days` is the DEFAULT, not the ceiling: a per-project
+    # setting is the operator's deliberate choice about how much history
+    # describes this estate, and the generator has no basis to overrule it.
+    read_scope = await repo.resolve_doc_read_scope(
+        [project_id], project_id, default_window_days=window_days
+    )
+    effective_window = read_scope.window_days or window_days
+    since = datetime.now(UTC) - timedelta(days=effective_window)
+    units_, unmatched, orphans = await repo.list_doc_evidence(
         [project_id],
         project_id=project_id,
         unit_names=units,
         since=since,
         max_failures_per_unit=max_failures_per_unit,
+        environment_ids=read_scope.environment_ids,
     )
     return RuntimeDocEvidenceResponse(
         project_id=project_id,
-        window_days=window_days,
+        window_days=effective_window,
         since=since,
         units=units_,
         unmatched_units=unmatched,
+        orphan_runtime_jobs=orphans,
+        read_scope=read_scope,
+    )
+
+
+class RuntimeDocReadScopeResponse(BaseModel):
+    """What a project's documentation runs read, and what they could read."""
+
+    project_id: str
+    scope: RuntimeDocReadScope
+    # Every environment in the mirror, busiest first. The picker offers these;
+    # an environment absent here cannot be chosen, which is what keeps a
+    # selection from silently resolving to no evidence.
+    available_environments: list[RuntimeMirroredEnvironment] = Field(default_factory=list)
+
+
+@router.get(
+    "/doc-read-scope",
+    response_model=RuntimeDocReadScopeResponse,
+    summary="Documentation read scope for a project, with the environments available to it",
+)
+async def get_runtime_doc_read_scope(
+    project_id: str,
+    user: RuntimeSourceReader,
+    db: DBSession,
+    default_window_days: int = Query(default=90, ge=1, le=365),
+) -> RuntimeDocReadScopeResponse:
+    """Read-side companion to `PATCH /runtime/sources/{id}/config`.
+
+    A USER endpoint, unlike `/doc-evidence`: the operator choosing a scope is a
+    real human with project permissions, so this runs under their scope and
+    404s on a project they cannot see.
+    """
+    scope = await get_user_project_ids(user, db)
+    if _intersect_scope(scope, project_id) == []:
+        raise HTTPException(status_code=404, detail="Project not found")
+    repo = RuntimeStoreRepository(db)
+    return RuntimeDocReadScopeResponse(
+        project_id=project_id,
+        scope=await repo.resolve_doc_read_scope(
+            scope, project_id, default_window_days=default_window_days
+        ),
+        available_environments=await repo.list_mirrored_environments(scope, project_id),
     )
 
 
@@ -565,6 +657,44 @@ async def list_runtime_job_reliability(
     return RuntimeJobReliabilityResponse(
         jobs=await repo.list_job_reliability(selected_scope, params),
         total=await repo.count_job_reliability(selected_scope, params),
+    )
+
+
+@router.get(
+    "/job-insights",
+    response_model=RuntimeJobOperationalInsightResponse,
+    summary="List bounded per-job operational insights",
+)
+async def list_runtime_job_insights(
+    user: CurrentUser,
+    db: DBSession,
+    project_id: str,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> RuntimeJobOperationalInsightResponse:
+    """One causal story per job for operator and documentation surfaces.
+
+    The response contains aggregate coverage plus the dominant high/medium
+    deterministic diagnosis. It never returns raw log rows or stack traces.
+    """
+    scope = _intersect_scope(await get_user_project_ids(user, db), project_id)
+    repo = RuntimeStoreRepository(db)
+    count_params = ListRuntimeJobReliabilityInput(
+        project_id=project_id,
+        since=since,
+        until=until,
+        limit=limit,
+    )
+    return RuntimeJobOperationalInsightResponse(
+        insights=await repo.list_job_operational_insights(
+            scope,
+            project_id=project_id,
+            since=since,
+            until=until,
+            limit=limit,
+        ),
+        total=await repo.count_job_reliability(scope, count_params),
     )
 
 

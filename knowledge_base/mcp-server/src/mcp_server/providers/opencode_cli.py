@@ -494,6 +494,7 @@ class OpenCodeCliProvider(DocGenerationProvider):
         runtime: Any | None,
         investigation_facade: Any | None = None,
         artifact_facade: Any | None = None,
+        exploration_artifacts: tuple[str, ...] | None = None,
     ) -> OpenCodePhaseConfig:
         """Generate an isolated deny-by-default config outside model staging."""
 
@@ -507,14 +508,34 @@ class OpenCodeCliProvider(DocGenerationProvider):
         bash_policy: dict[str, str] = {"*": "deny"}
         for command in validation_commands:
             bash_policy[command] = "allow"
-        workspace_glob = str((ctx.staging_dir / "**").resolve())
-        # OpenCode passes paths to its tools relative to the active workspace
-        # (for example ``_transient/opencode/gather_contracts.json``), while
-        # the coordinator also needs to support absolute paths in tool calls.
-        # Keep both forms explicitly allow-listed.  Without the relative
-        # pattern the generated files exist on disk, but OpenCode cannot read
-        # the contract or write its investigation receipts.
-        workspace_patterns = {"*": "deny", "**": "allow", workspace_glob: "allow"}
+        workspace_root = ctx.staging_dir.resolve()
+        workspace_glob = str((workspace_root / "**").resolve())
+        if exploration_artifacts is None:
+            # OpenCode passes paths to its tools relative to the active workspace
+            # (for example ``_transient/opencode/gather_contracts.json``), while
+            # the coordinator also needs to support absolute paths in tool calls.
+            workspace_patterns = {"*": "deny", "**": "allow", workspace_glob: "allow"}
+        else:
+            # A Gather recovery pass already knows its unresolved units. Keep
+            # native inspection available, but only over the authoritative
+            # evidence files selected by the coordinator. This prevents the
+            # recovery agent from investigating Nexus' audit/transient state.
+            workspace_patterns = {"*": "deny"}
+            for raw_artifact in exploration_artifacts:
+                candidate = (workspace_root / raw_artifact).resolve()
+                try:
+                    relative = candidate.relative_to(workspace_root).as_posix()
+                except ValueError as exc:
+                    raise OpenCodeCompatibilityError(
+                        f"OpenCode exploration artifact escapes staging: {raw_artifact}"
+                    ) from exc
+                workspace_patterns[relative] = "allow"
+                workspace_patterns[str(candidate)] = "allow"
+        search_patterns = (
+            workspace_patterns
+            if exploration_artifacts is not None
+            else {"*": "deny", "**": "allow"}
+        )
         output_patterns: dict[str, str] = {"*": "deny"}
         for contract in contracts:
             output = ctx.staging_dir / contract.output_artifact
@@ -527,9 +548,9 @@ class OpenCodeCliProvider(DocGenerationProvider):
             # This prevents concurrent sessions from mutating a sibling's
             # checkpoint while keeping the workspace fully readable.
             "edit": output_patterns,
-            "glob": {"*": "deny", "**": "allow"},
-            "grep": {"*": "deny", "**": "allow"},
-            "list": {"*": "deny", "**": "allow"},
+            "glob": search_patterns,
+            "grep": search_patterns,
+            "list": search_patterns,
             "bash": bash_policy,
             "webfetch": "deny",
             "websearch": "deny",
@@ -738,9 +759,18 @@ class OpenCodeCliProvider(DocGenerationProvider):
             return False
         return result.returncode == 0 and session_id in result.stdout
 
-    def _prepare_run(self, ctx: DocGenContext):
+    async def _prepare_run(self, ctx: DocGenContext, log_cb: LogCallback):
+        """Stage the deterministic evidence tiers this engine's Phase 3 reads.
+
+        Async because runtime evidence is fetched here. This engine reuses the
+        custom harness's Phase 3 CONSUMER (`_phase3_context_files`), so any
+        producer it skips silently degrades every document it writes: before
+        this call the runtime lane was simply absent from OpenCode runs, with
+        no log line and no coverage artifact to say so.
+        """
         from mcp_server.providers.custom.engineering_facts import EngineeringFactsService
         from mcp_server.providers.custom.models import HarnessRunState
+        from mcp_server.providers.custom.pipeline.helpers import HarnessHelpersImpl
         from mcp_server.providers.custom.prompt_packs import materialize_prompt_packs
 
         facts = self._facts_for_context(ctx)
@@ -756,6 +786,8 @@ class OpenCodeCliProvider(DocGenerationProvider):
         harness = self._legacy_harness(facts)
         state = HarnessRunState(project_id=ctx.project_id, facts_manifest=facts)
         harness._write_cross_cutting_facts(ctx, state)
+        # One producer for both engines (see HarnessHelpersImpl docstring).
+        await HarnessHelpersImpl(harness).ensure_runtime_evidence(ctx, state, log_cb)
         return facts, harness, state
 
     def _gather_contracts(
@@ -1588,6 +1620,7 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
         log_cb: LogCallback,
         runtime: Any | None = None,
         investigation_facade: Any | None = None,
+        exploration_artifacts: tuple[str, ...] | None = None,
         prompt_override: str | None = None,
         require_outputs: bool = True,
     ) -> _PhaseExecution:
@@ -1614,6 +1647,7 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
             runtime=runtime if phase == "gather" else None,
             investigation_facade=investigation_facade,
             artifact_facade=artifact_facade,
+            exploration_artifacts=exploration_artifacts,
         )
         bridge: Any | None = None
 
@@ -2359,25 +2393,45 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
         evidence_scopes: list[Any],
         *,
         followup: bool,
+        progress_by_scope: dict[str, Any] | None = None,
+        recovery_artifacts: tuple[str, ...] = (),
     ) -> str:
+        progress_by_scope = progress_by_scope or {}
         assignments = [
             {
                 "scope_id": scope.scope_id,
                 "group": scope.group,
-                "allowed_units": list(scope.allowed_units),
+                "allowed_units": list(
+                    progress_by_scope[scope.scope_id].remaining_units
+                    if followup and scope.scope_id in progress_by_scope
+                    else scope.allowed_units
+                ),
                 "suggested_start": scope.source_ref,
             }
             for scope in evidence_scopes
         ]
         continuation = (
-            "This is a recovery pass. Call get_progress first and work only on remaining units. "
+            "This is a recovery pass. The assignments contain only unresolved units. "
+            "Call get_progress first, then work only on those units. Read or search only the "
+            "coordinator-authorized recovery evidence artifacts listed below; Nexus runtime "
+            "directories such as _audit, _transient, _assessment, and prior contracts are "
+            "outside this recovery boundary and are irrelevant. Authorized recovery evidence:\n"
+            + json.dumps(list(recovery_artifacts), indent=2)
+            + "\n"
             if followup
             else "Call get_progress for each scope before beginning. "
         )
+        exploration_policy = (
+            "You have native read and targeted grep/glob/list access only for the authorized "
+            "recovery evidence files; choose what to inspect within that boundary. "
+            if followup
+            else "You have native read, grep, glob, and list tools across the sanitized workspace; "
+            "choose what to inspect based on what you discover. "
+        )
         return (
             "Investigate the assigned Nexus project scope as a coding agent. "
-            "You have native read, grep, glob, and list tools across the sanitized workspace; "
-            "choose what to inspect based on what you discover. Do not edit files and do not "
+            + exploration_policy
+            + "Do not edit files and do not "
             "construct legacy JSON. Use nexus_investigation_submit_evidence in small batches as "
             "soon as findings are supported. For a unit that genuinely cannot be evidenced, use "
             "nexus_investigation_report_gap with a concrete reason. Validation errors are feedback: "
@@ -2391,6 +2445,40 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
             + json.dumps(assignments, indent=2)
             + "\nDo not stop after merely describing a plan; explore, submit, check progress, and finish."
         )
+
+    @staticmethod
+    def _investigation_recovery_artifacts(
+        ctx: DocGenContext,
+        evidence_scopes: list[Any],
+    ) -> tuple[str, ...]:
+        """Return the authoritative files a focused Gather recovery may inspect."""
+
+        candidates = [scope.source_ref for scope in evidence_scopes]
+        candidates.extend(
+            (
+                "facts_manifest.json",
+                "engineering_facts.json",
+                "engineering_facts.md",
+                "entity_index.csv",
+                "usage_index.csv",
+                "dependency_map.md",
+                "config_runtime_map.json",
+                "config_runtime_map.md",
+                "architecture_map.md",
+                "data_flow_map.md",
+            )
+        )
+        workspace_root = ctx.staging_dir.resolve()
+        allowed: list[str] = []
+        for raw_artifact in dict.fromkeys(str(item) for item in candidates if item):
+            candidate = (workspace_root / raw_artifact).resolve()
+            try:
+                relative = candidate.relative_to(workspace_root).as_posix()
+            except ValueError:
+                continue
+            if candidate.is_file():
+                allowed.append(relative)
+        return tuple(allowed)
 
     async def _execute_gather_scopes(
         self,
@@ -2509,6 +2597,18 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
                     ]
                     if not unfinished:
                         return
+                    progress_before = {
+                        scope.scope_id: store.get_progress(
+                            GetProgressRequest(scope_id=scope.scope_id)
+                        )
+                        for scope in unfinished
+                    }
+                    followup = attempt > 0
+                    recovery_artifacts = (
+                        self._investigation_recovery_artifacts(ctx, unfinished)
+                        if followup
+                        else None
+                    )
                     suffix = "" if attempt == 0 else f"_recovery_{attempt}"
                     step = f"gather_scope_{_safe_name(logical.scope_id)}{suffix}"
                     facade = InvestigationFacade(store, {scope.scope_id for scope in unfinished})
@@ -2524,10 +2624,13 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
                             ledger=ledger,
                             log_cb=log_cb,
                             investigation_facade=facade,
+                            exploration_artifacts=recovery_artifacts,
                             prompt_override=self._investigation_scope_prompt(
                                 logical,
                                 unfinished,
-                                followup=attempt > 0,
+                                followup=followup,
+                                progress_by_scope=progress_before,
+                                recovery_artifacts=recovery_artifacts or (),
                             ),
                             require_outputs=False,
                         )
@@ -2540,6 +2643,43 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
                             "accepted evidence was preserved",
                             "warning",
                         )
+                    progress_after = {
+                        scope.scope_id: store.get_progress(
+                            GetProgressRequest(scope_id=scope.scope_id)
+                        )
+                        for scope in unfinished
+                    }
+                    remaining_before = sum(
+                        len(progress.remaining_units) for progress in progress_before.values()
+                    )
+                    remaining_after = sum(
+                        len(progress.remaining_units) for progress in progress_after.values()
+                    )
+                    evidence_delta = sum(
+                        progress_after[scope_id].evidence_count - progress.evidence_count
+                        for scope_id, progress in progress_before.items()
+                    )
+                    gap_delta = sum(
+                        len(progress_after[scope_id].gap_units) - len(progress.gap_units)
+                        for scope_id, progress in progress_before.items()
+                    )
+                    made_progress = any(
+                        progress_after[scope_id].version > progress.version
+                        for scope_id, progress in progress_before.items()
+                    )
+                    boundary = (
+                        f", recovery_evidence_files={len(recovery_artifacts or ())}"
+                        if followup
+                        else ""
+                    )
+                    await log_cb(
+                        ctx.project_id,
+                        f"OpenCode Gather v2 scope {logical.scope_id} attempt "
+                        f"{attempt + 1}/{max_attempts} durable progress: "
+                        f"remaining={remaining_before}->{remaining_after}, "
+                        f"evidence_delta={evidence_delta}, gap_delta={gap_delta}{boundary}",
+                        "info" if made_progress else "warning",
+                    )
 
                 # Soft close: explicit gaps are safer and more useful than
                 # throwing away every successful scope because one agent ended.
@@ -3200,7 +3340,7 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
 
         try:
             resolved, allowlist = self._preflight()
-            facts, harness, state = self._prepare_run(ctx)
+            facts, harness, state = await self._prepare_run(ctx, log_cb)
             gather_changed = False
 
             gather = self._gather_contracts(ctx, facts, harness, allowlist)

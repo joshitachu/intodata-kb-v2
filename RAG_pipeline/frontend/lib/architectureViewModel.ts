@@ -357,8 +357,14 @@ export function normalizeArchitectureL1(topology: BusinessTopology): Architectur
   // Integration nodes are intentionally retained even though their use is
   // carried as metadata on a collapsed system-to-system relationship. This
   // supports a later "show integration routing" mode without changing data.
+  // An evidence-bounded topology may deliberately have no directional
+  // streams. Keep its non-integration systems visible in that state so a
+  // renderer never receives an empty-but-valid architecture model.
+  const hasVisibleRelationships = visibleNodeIds.size > 0;
   const visibleNodes = [...nodes.values()]
-    .filter((node) => visibleNodeIds.has(node.id) || node.layer === "integration")
+    .filter((node) => hasVisibleRelationships
+      ? visibleNodeIds.has(node.id) || node.layer === "integration"
+      : node.layer !== "integration")
     .sort((a, b) => a.layer.localeCompare(b.layer) || b.degree - a.degree || a.label.localeCompare(b.label));
 
   return {

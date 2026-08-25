@@ -43,29 +43,16 @@ export function useScan() {
 export function useGenerate() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      projectId,
-      resume = true,
-      investigationModel,
-      model,
-      writeModel,
-      generationMethod,
-    }: {
+    mutationFn: (options: {
       projectId: string;
       resume?: boolean;
       investigationModel?: string | null;
       model?: string | null;
       writeModel?: string | null;
       generationMethod?: "custom" | "opencode-cli" | null;
+      liveEvidence?: boolean;
     }): Promise<import("../types").StatusResponse> =>
-      api.generate(
-        projectId,
-        resume,
-        investigationModel,
-        model,
-        writeModel,
-        generationMethod,
-      ),
+      api.generate({ ...options, resume: options.resume ?? true }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["projects"] });
     },

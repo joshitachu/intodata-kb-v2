@@ -7,7 +7,13 @@ import GenerateDialog from "../components/GenerateDialog";
 import ProjectSettings from "../components/ProjectSettings";
 import ValidationReviewPanel from "../components/ValidationReviewPanel";
 import { api } from "../api/client";
-import type { Project } from "../types";
+import type {
+  ConnectorInstance,
+  ConnectorProvider,
+  Project,
+  ProjectConnectorBinding,
+  RuntimeSource,
+} from "../types";
 
 vi.mock("../api/client", () => ({
   api: {
@@ -29,6 +35,7 @@ vi.mock("../api/client", () => ({
     listConnectorCatalog: vi.fn(),
     listConnectors: vi.fn(),
     listProjectConnectorBindings: vi.fn(),
+    listRuntimeSources: vi.fn(),
     listConnectorSources: vi.fn(),
     listProjectAvailableConnectors: vi.fn(),
     putProjectConnectorBinding: vi.fn(),
@@ -151,11 +158,100 @@ const workspaceProject: Project = {
   updated_at: null,
 };
 
+/**
+ * Two live-data providers, NEITHER of which this build ships.
+ *
+ * That is the point. The Generate dialog's live-data panel used to describe any
+ * provider with the word "Elastic" and gave the mirrored lane no row at all --
+ * just a checkbox that named one vendor and rendered armed even when nothing
+ * was registered. These fixtures are the regression guard: if a provider name
+ * ever creeps back into a conditional or into copy meant to describe an
+ * arbitrary provider, these two rows will not render correctly.
+ */
+function provider(overrides: Partial<ConnectorProvider> & Pick<ConnectorProvider, "provider_id" | "label">): ConnectorProvider {
+  return {
+    version: "1",
+    authentication_types: ["api_key"],
+    capabilities: [],
+    enabled: true,
+    kind: "live_evidence",
+    build_state: "available",
+    managed_by: "connector_store",
+    description: "",
+    ...overrides,
+  };
+}
+
+/** Queried in-band during a run. Read by OpenCode only. */
+const inBandProvider = provider({
+  provider_id: "acme_telemetry",
+  label: "Acme Telemetry",
+  kind: "live_evidence",
+  capabilities: [
+    { id: "search", label: "Search events", description: null, read_only: true, gather_eligible: true },
+    { id: "aggregate", label: "Aggregate events", description: null, read_only: true, gather_eligible: true },
+  ],
+});
+
+/** Mirrored on a schedule into the runtime store. Read by both engines. */
+const mirroredProvider = provider({
+  provider_id: "northwind_scheduler",
+  label: "Northwind Scheduler",
+  kind: "runtime_sync",
+  managed_by: "runtime_sources",
+});
+
+const inBandInstance: ConnectorInstance = {
+  id: "conn-acme-1",
+  provider_id: "acme_telemetry",
+  display_name: "Acme Telemetry (eu)",
+  ownership_scope: "workspace",
+  enabled: true,
+  status: "connected",
+  last_checked_at: null,
+  health_code: null,
+  provider_version: "1",
+  redaction_policy_version: null,
+  has_credential: true,
+  has_kibana_credential: false,
+  created_at: null,
+  updated_at: null,
+};
+
+const inBandBinding: ProjectConnectorBinding = {
+  id: "bind-1",
+  project_id: "p1",
+  connector_instance_id: "conn-acme-1",
+  connector_display_name: "Acme Telemetry (eu)",
+  connector_provider_id: "acme_telemetry",
+  source_ids: ["src_a", "src_b", "src_c"],
+  capability_ids: ["search"],
+  budgets: {},
+  max_time_window_days: null,
+  enabled: true,
+  version: 1,
+};
+
+const MIRROR_SYNCED_AT = "2026-08-24T14:30:13Z";
+
+const mirroredSource: RuntimeSource = {
+  id: 77,
+  project_id: "p1",
+  source_type: "northwind",
+  label: "Northwind prod (eu-west)",
+  status: "success",
+  enabled: true,
+  sync_interval_seconds: 60,
+  disabled_reason: null,
+  last_synced_at: MIRROR_SYNCED_AT,
+};
+
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(api.listConnectorCatalog).mockResolvedValue({ providers: [] });
   vi.mocked(api.listConnectors).mockResolvedValue({ connectors: [], total: 0 });
   vi.mocked(api.listProjectConnectorBindings).mockResolvedValue({ project_id: "p1", bindings: [] });
+  vi.mocked(api.listRuntimeSources).mockResolvedValue({ sources: [], total: 0 });
   vi.mocked(api.listProjectAvailableConnectors).mockResolvedValue({ connectors: [] });
   vi.mocked(api.listConnectorSources).mockResolvedValue({ connector_instance_id: "none", sources: [], total: 0 });
   vi.mocked(api.listPluginPacks).mockResolvedValue([]);
@@ -341,14 +437,15 @@ describe("EP-000 dashboard panels", () => {
     fireEvent.click(screen.getByRole("button", { name: "Generate" }));
 
     await waitFor(() => {
-      expect(api.generate).toHaveBeenCalledWith(
-        "p1",
-        true,
-        null,
-        null,
-        null,
-        "custom",
-      );
+      expect(api.generate).toHaveBeenCalledWith({
+        projectId: "p1",
+        resume: true,
+        investigationModel: null,
+        model: null,
+        writeModel: null,
+        generationMethod: "custom",
+        liveEvidence: true,
+      });
     });
   });
 
@@ -436,39 +533,169 @@ describe("EP-000 dashboard panels", () => {
     fireEvent.click(generateButton);
 
     await waitFor(() => {
-      expect(api.generate).toHaveBeenCalledWith(
-        "p1",
-        true,
-        null,
-        "openai/gpt-5.6-sol",
-        null,
-        "opencode-cli",
-      );
+      expect(api.generate).toHaveBeenCalledWith({
+        projectId: "p1",
+        resume: true,
+        investigationModel: null,
+        model: "openai/gpt-5.6-sol",
+        writeModel: null,
+        generationMethod: "opencode-cli",
+        // Sent on BOTH engines: OpenCode's `_prepare_run` calls the shared
+        // runtime producer, so it honours this flag too.
+        liveEvidence: true,
+      });
     });
   });
 
-  it("shows project runtime evidence only for OpenCode", async () => {
+  // THE GUARD. Two providers, neither of them one this build ships, rendered
+  // from the catalogue alone. Each must appear with its OWN name and its OWN
+  // type, and each must state which engine reads it -- all derived from
+  // `kind`/`managed_by`, so a brand-new connector needs no change here.
+  it("lists every live-data source generically, with its own name and type", async () => {
     const manageRuntimeEvidence = vi.fn();
-    vi.mocked(api.listModels).mockResolvedValue({ models: [
-      {
-        id: "openai/gpt-5.6-sol", provider: "openai", label: "Sol", supports_analysis: true,
-        supports_writing: true, is_default_analysis: true, is_default_investigation: true,
-        is_default_writing: false, is_local: false, available: true, unavailable_reason: null, rag_capable: true,
-      },
-    ] });
-    vi.mocked(api.generate).mockResolvedValue({ status: "started", message: "ok" });
+    vi.mocked(api.listModels).mockResolvedValue({ models: [] });
+    vi.mocked(api.listConnectorCatalog).mockResolvedValue({
+      providers: [inBandProvider, mirroredProvider],
+    });
+    vi.mocked(api.listConnectors).mockResolvedValue({ connectors: [inBandInstance], total: 1 });
+    vi.mocked(api.listProjectConnectorBindings).mockResolvedValue({
+      project_id: "p1",
+      bindings: [inBandBinding],
+    });
+    vi.mocked(api.listRuntimeSources).mockResolvedValue({ sources: [mirroredSource], total: 1 });
 
-    renderWithClient(<GenerateDialog project={workspaceProject} open onClose={vi.fn()} onManageRuntimeEvidence={manageRuntimeEvidence} />);
-    expect(screen.queryByText("Connected live data")).not.toBeInTheDocument();
-    fireEvent.click(await screen.findByRole("tab", { name: "OpenCode" }));
-    expect(await screen.findByText("Connected live data")).toBeInTheDocument();
+    renderWithClient(
+      <GenerateDialog project={workspaceProject} open onClose={vi.fn()} onManageRuntimeEvidence={manageRuntimeEvidence} />,
+    );
+
+    expect(await screen.findByText("Live data sources")).toBeInTheDocument();
+
+    // Each row carries the provider's own identity and its own kind, in words.
+    expect(await screen.findByText("Acme Telemetry (eu)")).toBeInTheDocument();
+    expect(
+      screen.getByText("Acme Telemetry · Live evidence - 2 governed read capabilities"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Connected · 3 sources")).toBeInTheDocument();
+
+    expect(screen.getByText("Northwind Scheduler")).toBeInTheDocument();
+    expect(screen.getByText("Runtime sync - mirrored on a schedule")).toBeInTheDocument();
+    expect(screen.getByText("Mirroring 1 source")).toBeInTheDocument();
+
+    // No name of a shipped provider anywhere in the panel: the copy describes
+    // whatever the catalogue served, not what this build happens to bundle.
+    const panel = screen.getByText("Live data sources").closest("section")!;
+    expect(panel.textContent).not.toMatch(/elastic/i);
+    expect(panel.textContent).not.toMatch(/talend|TMC/i);
+
+    // The mirrored lane's runtime store is asked about THIS project only.
+    await waitFor(() =>
+      expect(api.listRuntimeSources).toHaveBeenCalledWith({
+        providerId: "northwind_scheduler",
+        projectId: "p1",
+      }),
+    );
+
     fireEvent.click(screen.getByRole("button", { name: "Adjust connected systems" }));
     expect(manageRuntimeEvidence).toHaveBeenCalledWith("p1");
-    fireEvent.change(screen.getByLabelText("Select OpenCode session model (required)"), { target: { value: "openai/gpt-5.6-sol" } });
+  });
+
+  // "Which source am I actually using?" -- the question the old bare checkbox
+  // could not answer, because it named a vendor and nothing else.
+  it("names the mirrored source, its project and its last sync", async () => {
+    vi.mocked(api.listModels).mockResolvedValue({ models: [] });
+    vi.mocked(api.listConnectorCatalog).mockResolvedValue({ providers: [mirroredProvider] });
+    vi.mocked(api.listRuntimeSources).mockResolvedValue({ sources: [mirroredSource], total: 1 });
+
+    renderWithClient(<GenerateDialog project={workspaceProject} open onClose={vi.fn()} />);
+
+    const line = await screen.findByRole("listitem");
+    expect(line).toHaveTextContent(
+      `Northwind prod (eu-west) · p1 · last synced ${new Date(MIRROR_SYNCED_AT).toLocaleString()}`,
+    );
+  });
+
+  // The lie this panel used to tell: an armed toggle for a project with no
+  // mirrored source at all, promising runtime history that does not exist.
+  it("arms no runtime toggle when the project has no mirrored source", async () => {
+    vi.mocked(api.listModels).mockResolvedValue({ models: [] });
+    vi.mocked(api.listConnectorCatalog).mockResolvedValue({ providers: [mirroredProvider] });
+    vi.mocked(api.listRuntimeSources).mockResolvedValue({ sources: [], total: 0 });
+
+    renderWithClient(<GenerateDialog project={workspaceProject} open onClose={vi.fn()} />);
+
+    expect(
+      await screen.findByText(
+        "No mirrored source is registered for p1, so this run has no Northwind Scheduler history to read.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Register one on the Connectors page to give this project runtime history."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("checkbox", { name: /mirrored runtime history/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  // Hard-won and still true: an in-band source is NOT read by the legacy
+  // pipeline (the custom harness has no connector code path). It is now shown
+  // in both modes and marked inert in the one that will not query it, rather
+  // than silently vanishing -- and the reason is `kind`, not a provider id.
+  it("marks an in-band source inert under the engine that will not query it", async () => {
+    vi.mocked(api.listModels).mockResolvedValue({ models: [] });
+    vi.mocked(api.listConnectorCatalog).mockResolvedValue({
+      providers: [inBandProvider, mirroredProvider],
+    });
+    vi.mocked(api.listConnectors).mockResolvedValue({ connectors: [inBandInstance], total: 1 });
+    vi.mocked(api.listProjectConnectorBindings).mockResolvedValue({
+      project_id: "p1",
+      bindings: [inBandBinding],
+    });
+    vi.mocked(api.listRuntimeSources).mockResolvedValue({ sources: [mirroredSource], total: 1 });
+
+    renderWithClient(<GenerateDialog project={workspaceProject} open onClose={vi.fn()} />);
+
+    expect(
+      await screen.findByText("Read by OpenCode runs; this run will not query it."),
+    ).toBeInTheDocument();
+    // The mirrored lane is read by both engines, in both modes.
+    expect(
+      screen.getAllByText("Read by both the legacy pipeline and OpenCode runs."),
+    ).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("tab", { name: "OpenCode" }));
+
+    expect(screen.getByText("Read by OpenCode runs.")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Read by OpenCode runs; this run will not query it."),
+    ).not.toBeInTheDocument();
+    // Still there under OpenCode: `_prepare_run` calls the same shared runtime
+    // producer, so OpenCode honours `live_evidence` too.
+    expect(
+      screen.getByRole("checkbox", { name: /mirrored runtime history/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("labels the runtime opt-out narrowly and sends it on both engine paths", async () => {
+    vi.mocked(api.listModels).mockResolvedValue({ models: [] });
+    vi.mocked(api.listConnectorCatalog).mockResolvedValue({ providers: [mirroredProvider] });
+    vi.mocked(api.listRuntimeSources).mockResolvedValue({ sources: [mirroredSource], total: 1 });
+    vi.mocked(api.generate).mockResolvedValue({ status: "started", message: "ok" });
+
+    renderWithClient(<GenerateDialog project={workspaceProject} open onClose={vi.fn()} />);
+
+    // Narrow label: the flag gates the mirrored runtime lane only. A generic
+    // "live evidence off" would read as a kill switch for every connector while
+    // an OpenCode run carried on querying its in-band sources.
+    const checkbox = await screen.findByRole("checkbox", {
+      name: /mirrored runtime history \(Northwind Scheduler\)/i,
+    });
+    expect(checkbox).toBeChecked();
+
+    fireEvent.click(checkbox);
     fireEvent.click(screen.getByRole("button", { name: "Generate" }));
 
     await waitFor(() => expect(api.generate).toHaveBeenCalledWith(
-      "p1", true, null, "openai/gpt-5.6-sol", null, "opencode-cli",
+      expect.objectContaining({ generationMethod: "custom", liveEvidence: false }),
     ));
   });
 
@@ -481,9 +708,10 @@ describe("EP-000 dashboard panels", () => {
 
     expect(await screen.findByText(/saved project pack will still be used/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Generate" }));
-    await waitFor(() => expect(api.generate).toHaveBeenCalledWith(
-      "p1", true, null, null, null, "custom",
-    ));
+    await waitFor(() => expect(api.generate).toHaveBeenCalledWith({
+      projectId: "p1", resume: true, investigationModel: null, model: null,
+      writeModel: null, generationMethod: "custom", liveEvidence: true,
+    }));
   });
 
   it("separates the OpenCode method from its session model", async () => {

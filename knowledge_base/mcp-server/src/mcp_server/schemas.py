@@ -7,7 +7,7 @@ import hashlib
 import json
 
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -47,6 +47,13 @@ class ConnectorProviderResponse(BaseModel):
     # whether a Connect action is offered at all.
     kind: str = "live_evidence"
     build_state: str = "available"
+    # Which store owns this provider's credential -- a statement of FACT about
+    # where the secret is written, not a veto on connecting here. "connector_store"
+    # is this service's own encrypted store; "runtime_sources" is the RAG
+    # backend's tables, next to the scheduler that reads the credential every 60
+    # seconds. Either way the dashboard may collect the credential; the value
+    # tells it which lane to post to (and lets the UI say so honestly).
+    managed_by: str = "connector_store"
     description: str = ""
     # Field names and shapes for a manifest-driven credential form. Never any
     # stored secret value -- `secret_fields` marks which inputs are write-only.
@@ -184,6 +191,218 @@ class ProjectAvailableConnector(BaseModel):
 
 class ProjectAvailableConnectorsResponse(BaseModel):
     connectors: list[ProjectAvailableConnector]
+
+
+# --- Runtime sources (proxied to the RAG backend) ---
+
+class RuntimeSourceCredentialField(BaseModel):
+    """One input in a runtime provider's credential form.
+
+    Mirrors ``RuntimeSourceProvider.credential_schema()`` so the dashboard
+    renders the provider's own fields and cannot invent one it does not have.
+    """
+
+    name: str
+    label: str = ""
+    # secret | url | text. A plain string, not a Literal: a new field type from
+    # a newer backend must render as text, not blank the form.
+    type: str = "text"
+    required: bool = True
+
+
+class RuntimeScopeSelection(BaseModel):
+    """A provider's selectable ingest scope, e.g. Talend environments.
+
+    Mirrors ``RuntimeSourceProvider.scope_selection()``. ``field`` names the
+    credential key holding the chosen ids, so the connect dialog stays
+    provider-neutral instead of branching on the connector.
+    """
+
+    field: str
+    label: str = "Scope"
+    description: str | None = None
+    required: bool = True
+    multiple: bool = True
+
+
+class RuntimeScopeOption(BaseModel):
+    """One scope a live connection reported as reachable."""
+
+    id: str
+    label: str = ""
+    detail: str | None = None
+    default_selected: bool = False
+
+
+class RuntimeSourceTypeResponse(BaseModel):
+    provider_key: str
+    provider_label: str = ""
+    credential_schema: list[RuntimeSourceCredentialField] = Field(default_factory=list)
+    scope_selection: RuntimeScopeSelection | None = None
+
+
+class RuntimeSourceTypeListResponse(BaseModel):
+    source_types: list[RuntimeSourceTypeResponse]
+
+
+class RuntimeSourceScopeDiscoveryRequest(BaseModel):
+    """Test unsaved credentials and ask which scopes they reach.
+
+    ``provider_id`` is the CONNECTOR id, matching
+    :class:`RuntimeSourceCreateRequest`; the bridge maps it to the runtime
+    provider key so the dashboard never sends the runtime spelling.
+    """
+
+    provider_id: str
+    credentials: dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeSourceScopesResponse(BaseModel):
+    scopes: list[RuntimeScopeOption] = Field(default_factory=list)
+
+
+class RuntimeSourceResponse(BaseModel):
+    """A registered runtime source, as the RAG backend reports it.
+
+    Deliberately a subset of ``RuntimeSourceRead``: enough for the connector row
+    to be honest about which project is covered and when it last synced. No
+    credential field exists on the RAG model either -- secrets are write-only on
+    both sides of this proxy.
+    """
+
+    id: int
+    project_id: str
+    source_type: str
+    label: str = ""
+    # success | failed | pending | ... -- a plain string so an unfamiliar status
+    # renders as itself rather than failing validation.
+    status: str = "unknown"
+    enabled: bool = True
+    sync_interval_seconds: int = 60
+    disabled_reason: str | None = None
+    last_synced_at: datetime.datetime | None = None
+
+
+class RuntimeSourceListResponse(BaseModel):
+    sources: list[RuntimeSourceResponse]
+    total: int = 0
+
+
+class RuntimeDocReadScopeResponse(BaseModel):
+    """The slice of a project's runtime mirror that documentation runs read.
+
+    Every field is optional with a safe default: this is a status surface, and
+    an older or newer RAG backend must degrade the generate dialog's scope line,
+    never blank the panel it sits in.
+    """
+
+    # None (or absent) means every mirrored environment.
+    environment_ids: list[str] | None = None
+    environment_names: list[str] = Field(default_factory=list)
+    window_days: int | None = None
+    configured: bool = False
+    unavailable_environment_ids: list[str] = Field(default_factory=list)
+
+
+class RuntimeSourceCreateRequest(BaseModel):
+    """Create a runtime source for a connector catalogue provider.
+
+    ``provider_id`` is the CONNECTOR id (e.g. ``talend_tmc``); the bridge maps it
+    to the RAG runtime ``provider_key`` (``tmc``). The dashboard never sends the
+    runtime key, so the two spellings cannot drift apart in the browser.
+
+    ``project_id`` binds the mirrored history to an intodoc project and must be
+    an id the dashboard's own project list returned. A runtime source filed
+    under a project that does not exist mirrors real executions into a namespace
+    documentation never reads.
+    """
+
+    provider_id: StrippedStr = Field(..., min_length=1, max_length=100)
+    project_id: StrippedStr = Field(..., min_length=1, max_length=255)
+    label: StrippedStr = Field(..., min_length=1, max_length=255)
+    # Values are write-only: never logged here, never returned by either service.
+    # A value may be a list: the provider's ingest-scope field (``scope_selection``,
+    # e.g. Talend ``environment_ids``) carries the chosen ids as an array, and a
+    # ``dict[str, str]`` rejected the whole save with "Input should be a valid
+    # string" after the connection test had already succeeded.
+    credentials: dict[str, str | list[str]] = Field(default_factory=dict, repr=False)
+    # Matches the RAG model's floor; the scheduler polls no faster than this.
+    sync_interval_seconds: int = Field(default=60, ge=30, le=86_400)
+
+
+class RuntimeSourceSyncResponse(BaseModel):
+    source: RuntimeSourceResponse | None = None
+    status: str = "unknown"
+    records_ingested: int = 0
+
+
+class RunRuntimeEvidenceSummary(BaseModel):
+    """Coverage of the mirrored runtime lane, read from a staged artifact.
+
+    Counts only. The coverage artifact carries unit and job *names*; those stay
+    server-side because this endpoint is a status surface, not an evidence
+    surface, and orphan job names are customer-identifying.
+    """
+
+    # Which sub-project of a composite (partitioned) upload this describes.
+    # None on a single-project run and on the aggregate of a composite upload.
+    # Sub-project names already cross this boundary as
+    # `GenerateRunResponse.partition_name`; no new disclosure.
+    subproject: str | None = None
+    # False whenever no coverage artifact could be read: a run that predates the
+    # artifact, a project whose docs were never published, or a malformed file.
+    available: bool = False
+    # One of data | opted_out | unavailable | partial | binding_suspect.
+    # Deliberately a plain string: an unknown mode from a newer writer must
+    # degrade in the client, not blank the panel.
+    mode: str = "unavailable"
+    window_days: int | None = None
+    units_requested: int = 0
+    units_matched: int = 0
+    orphan_runtime_job_count: int = 0
+    # Build-plan A4: mode and completeness are different axes. `partial` means
+    # not every batch was retrieved; `scope_mismatch` means the runtime source
+    # lists many jobs with no scanned counterpart -- which reads either as a
+    # partial scan or as a wrong project binding, and is reported as a fact
+    # rather than an accusation (A3).
+    partial: bool = False
+    scope_mismatch: bool = False
+    batches: int | None = None
+    source_key: str | None = None
+    # How many sub-projects an aggregate covers. 0 on a single artifact, so the
+    # client can tell "this upload has one zip" from "this is not composite".
+    subproject_count: int = 0
+
+
+class RunConnectorEvidenceFinding(BaseModel):
+    evidence_id: str
+    classification: str
+    summary: str | None = None
+
+
+class RunConnectorEvidenceResponse(BaseModel):
+    """Per-run evidence status for the run-history popover."""
+
+    run_id: int
+    # Live-connector call counters. No in-run connector evidence store exists
+    # yet, so these keep their defaults; only `runtime` is populated today.
+    available: bool = False
+    connector_count: int = 0
+    successful_calls: int = 0
+    failed_calls: int = 0
+    denied_calls: int = 0
+    truncated_calls: int = 0
+    observation_from: datetime.datetime | None = None
+    observation_to: datetime.datetime | None = None
+    limitations: list[str] = Field(default_factory=list)
+    findings: list[RunConnectorEvidenceFinding] = Field(default_factory=list)
+    # Headline coverage. For a composite (partitioned) upload this is the
+    # aggregate across every sub-project, never one arbitrary sub-project.
+    runtime: RunRuntimeEvidenceSummary = Field(default_factory=RunRuntimeEvidenceSummary)
+    # The per-sub-project rows the aggregate was built from, so the total can be
+    # read back apart. Empty for non-composite runs and for a composite child
+    # run, which reports its own sub-project in `runtime` directly.
+    runtime_subprojects: list[RunRuntimeEvidenceSummary] = Field(default_factory=list)
 
 
 # --- Project ---

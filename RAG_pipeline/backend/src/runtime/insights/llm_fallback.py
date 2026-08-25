@@ -18,7 +18,11 @@ Bounds (hard, enforced before the call): a single ``generate_answer`` call; at m
 characters; the assembled prompt truncated to ``_MAX_PROMPT_CHARS`` (a char-based
 proxy for an input-token cap). Only the bounded, redacted excerpts and structured
 signals are sent — never raw log windows. Every excerpt and structured value is
-re-run through ``redact_credentials`` as defense-in-depth before assembly.
+re-run through ``redact_log_text`` as defense-in-depth before assembly: credentials
+AND identifying entity shape, since this is a literal third-party prompt boundary
+and the keyword filter never fired on the real corpus. The pass is chosen so the
+diagnosis survives intact — component names, exception class names and URI schemes
+all pass through it unchanged.
 
 Provider-neutral: reuses ``src/generation/llm_client.generate_answer`` (no new
 provider, no Claude CLI dependency).
@@ -32,7 +36,7 @@ import logging
 from pydantic import BaseModel, ConfigDict
 
 from src.config import settings
-from src.runtime.insights.parser import redact_credentials
+from src.runtime.insights.parser import redact_log_text
 
 logger = logging.getLogger(__name__)
 
@@ -100,13 +104,13 @@ def build_fallback_input(
     """
     bounded: list[LlmFallbackEvidence] = []
     for role, text in excerpts[:_MAX_EXCERPTS]:
-        redacted = redact_credentials(text)[:_MAX_EXCERPT_CHARS]
+        redacted = (redact_log_text(text) or "")[:_MAX_EXCERPT_CHARS]
         bounded.append(LlmFallbackEvidence(role=role, excerpt=redacted))
     return LlmFallbackInput(
-        symptom_summary=redact_credentials(symptom_summary)[:_MAX_EXCERPT_CHARS],
-        error_code=redact_credentials(error_code) if error_code else None,
-        exception_class=redact_credentials(exception_class) if exception_class else None,
-        failed_component=redact_credentials(failed_component) if failed_component else None,
+        symptom_summary=(redact_log_text(symptom_summary) or "")[:_MAX_EXCERPT_CHARS],
+        error_code=redact_log_text(error_code),
+        exception_class=redact_log_text(exception_class),
+        failed_component=redact_log_text(failed_component),
         excerpts=bounded,
     )
 
@@ -147,8 +151,8 @@ def _parse_llm_output(raw: str) -> LlmFallbackResult | None:
     if not checks:
         return None
     return LlmFallbackResult(
-        root_cause_candidate=redact_credentials(root_cause.strip()),
-        next_checks=[redact_credentials(c) for c in checks],
+        root_cause_candidate=redact_log_text(root_cause.strip()) or "",
+        next_checks=[redact_log_text(c) or "" for c in checks],
     )
 
 

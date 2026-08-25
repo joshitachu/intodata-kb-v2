@@ -14,9 +14,20 @@ from src.runtime.models import (
     RuntimeLogSeverity,
 )
 from src.runtime.providers import RuntimeProviderError
-from src.runtime.providers.talend_tmc import TalendTmcRuntimeProvider
+from src.runtime.providers.talend_tmc import TalendTmcRuntimeProvider, _bounded_log_head_tail
 
 _TOKEN = "super-secret-talend-token-value"
+
+
+def test_long_logs_keep_startup_context_and_terminal_failure():
+    logs = [{"line": index} for index in range(12_000)]
+    bounded = _bounded_log_head_tail(logs, 10_000)
+
+    assert len(bounded) == 10_000
+    assert bounded[0]["line"] == 0
+    assert bounded[999]["line"] == 999
+    assert bounded[1_000]["line"] == 3_000
+    assert bounded[-1]["line"] == 11_999
 
 
 @pytest.fixture
@@ -28,6 +39,8 @@ def tmc(tmp_path):
     s.talend_tmc_base_url = "https://api.us.cloud.talend.com"
     s.talend_tmc_api_token_file = str(token_path)
     s.talend_tmc_request_timeout = 10.0
+    s.talend_tmc_failed_log_run_limit = 10
+    s.talend_tmc_component_metric_run_limit = 25
     s.runtime_sync_source_key = "talend_tmc"
 
     with patch("src.runtime.providers.talend_tmc.settings", s):
@@ -40,6 +53,16 @@ def tmc(tmp_path):
 
 
 class TestEndpointMapping:
+    async def test_reuses_one_http_pool_until_explicit_close(self, tmc):
+        provider = tmc.provider(lambda request: httpx.Response(200, json={"items": []}))
+
+        first = provider._client()
+        second = provider._client()
+        assert first is second
+
+        await provider.aclose()
+        assert provider._http_client is None
+
     async def test_list_and_details_use_tmc_processing_endpoints(self, tmc):
         seen: list[str] = []
 
@@ -735,10 +758,12 @@ class TestBareArrayResponses:
 
 
 class TestPaginationFallback:
-    """Some TMC list endpoints reject ``limit``/``offset`` with HTTP 400.
+    """TMC list endpoints disagree about ``limit``/``offset``.
 
-    Regression for ``GET /orchestration/artifacts returned HTTP 400`` against
-    the live API: pagination must self-correct by retrying without the params.
+    Some cap ``limit`` at their own undocumented value (``/orchestration
+    /executables/tasks`` rejects anything above 100), others reject the params
+    outright. Regression for ``GET /orchestration/artifacts returned HTTP 400``
+    against the live API.
     """
 
     async def test_retries_without_pagination_params_on_400(self, tmc):
@@ -756,9 +781,85 @@ class TestPaginationFallback:
         items = await tmc.provider(handler)._get_all_pages("/orchestration/artifacts", max_items=100)
 
         assert [item["id"] for item in items] == ["art-1", "art-2"]
-        # First call sent pagination params (rejected), second dropped them.
+        # The page size is halved down to the floor before pagination is
+        # abandoned, because a 400 does not distinguish "limit too large" from
+        # "limit unsupported". The last attempt drops the params entirely.
         assert "limit" in seen_param_sets[0]
-        assert seen_param_sets[1] == ""
+        assert seen_param_sets[-1] == ""
+
+    async def test_discovers_a_lower_page_size_cap_instead_of_dropping_pagination(self, tmc):
+        """A ``limit`` cap must not silently truncate the result to one page.
+
+        ``/orchestration/executables/tasks`` rejects limit>100. Treating that as
+        "this endpoint has no pagination" returns the first default page only,
+        which dropped 138 of 238 tasks against the live tenant.
+        """
+        seen_limits: list[str | None] = []
+        total = 250
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            limit = request.url.params.get("limit")
+            seen_limits.append(limit)
+            if limit is None:
+                return httpx.Response(200, json={"items": [{"id": "t-0"}], "total": total})
+            if int(limit) > 100:
+                return httpx.Response(
+                    400, json={"message": "limit: Parameter `limit` must be in range [1, 100]"}
+                )
+            offset = int(request.url.params.get("offset") or 0)
+            page = [{"id": f"t-{index}"} for index in range(offset, min(offset + int(limit), total))]
+            return httpx.Response(200, json={"items": page, "total": total})
+
+        items = await tmc.provider(handler)._get_all_pages(
+            "/orchestration/executables/tasks", max_items=1000
+        )
+
+        assert len(items) == total
+        assert items[-1]["id"] == "t-249"
+        # 200 rejected once, then every page served at the discovered cap.
+        assert seen_limits[0] == "200"
+        assert set(seen_limits[1:]) == {"100"}
+
+    async def test_page_size_cap_is_cached_per_path(self, tmc):
+        """The cap probe costs one wasted call per endpoint, not one per page."""
+        seen_limits: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            limit = request.url.params.get("limit")
+            seen_limits.append(limit)
+            if limit is not None and int(limit) > 100:
+                return httpx.Response(400, json={"message": "limit out of range"})
+            return httpx.Response(200, json={"items": [{"id": "t-1"}], "total": 1})
+
+        provider = tmc.provider(handler)
+        await provider._get_all_pages("/orchestration/executables/tasks", max_items=1000)
+        await provider._get_all_pages("/orchestration/executables/tasks", max_items=1000)
+
+        assert seen_limits == ["200", "100", "100"]
+
+    async def test_the_cap_is_shared_across_one_endpoints_resource_ids(self, tmc):
+        """One cap per endpoint, not per task.
+
+        ``/processing/executables/tasks/{id}/executions`` is a single endpoint
+        with a single cap, but each task has its own path. Keying the cache on
+        the raw path re-ran the probe for every task, adding one wasted request
+        per task per sync.
+        """
+        seen_limits: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            limit = request.url.params.get("limit")
+            seen_limits.append(limit)
+            if limit is not None and int(limit) > 100:
+                return httpx.Response(400, json={"message": "limit out of range"})
+            return httpx.Response(200, json={"items": [{"id": "run-1"}], "total": 1})
+
+        provider = tmc.provider(handler)
+        for task_id in ("66059329e8e3a0209a567b5f", "6745ea7fa3a9c1387e990d4f"):
+            await provider._get_all_pages(f"/processing/executables/tasks/{task_id}/executions")
+
+        # One rejection total, not one per task.
+        assert seen_limits == ["200", "100", "100"]
 
     async def test_non_400_error_is_not_swallowed(self, tmc):
         def handler(request: httpx.Request) -> httpx.Response:

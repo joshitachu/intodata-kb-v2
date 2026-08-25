@@ -6,6 +6,20 @@ import { BusinessTopologySchema } from "@/types/landscape";
 const topology = BusinessTopologySchema.parse(rawTopology);
 
 describe("normalizeArchitectureL1", () => {
+  it("keeps an evidence-bounded topology with no streams renderable", () => {
+    const noStreamTopology = BusinessTopologySchema.parse({
+      ...topology,
+      systems: [topology.systems.find((system) => system.id === "sys-maximo")!],
+      integration_solutions: [],
+      data_streams: [],
+    });
+
+    const model = normalizeArchitectureL1(noStreamTopology);
+
+    expect(model.relationships).toEqual([]);
+    expect(model.nodes).toMatchObject([{ label: "Maximo", layer: "core" }]);
+  });
+
   it("creates a bounded, traceable company architecture projection from real topology evidence", () => {
     const model = normalizeArchitectureL1(topology);
 

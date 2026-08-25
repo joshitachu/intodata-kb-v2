@@ -14,8 +14,8 @@ const mocks = vi.hoisted(() => ({
   useRuntimeExecution: vi.fn(), useRuntimeExecutions: vi.fn(), useRuntimeHealth: vi.fn(),
   useRuntimeIncidents: vi.fn(), useRuntimeIncident: vi.fn(), useRuntimeJobs: vi.fn(),
   useRuntimeOverview: vi.fn(), useRuntimePlans: vi.fn(), useRuntimeSources: vi.fn(),
-  useRuntimeEngines: vi.fn(), useUserProjects: vi.fn(), handleSendMessage: vi.fn(), push: vi.fn(),
-  useRuntimeTrend: vi.fn(), useRuntimeJobReliability: vi.fn(),
+  useRuntimeEngines: vi.fn(), useUserProjects: vi.fn(), handleSendMessage: vi.fn(), push: vi.fn(), replace: vi.fn(),
+  useRuntimeTrend: vi.fn(), useRuntimeJobReliability: vi.fn(), useRuntimeJobInsights: vi.fn(),
   useRuntimeComponentHotspots: vi.fn(), useRuntimeJobThroughput: vi.fn(),
   useRuntimeErrorSignatures: vi.fn(), useRuntimeExecutionLogs: vi.fn(),
   useRuntimeExecutionSummary: vi.fn(), useRuntimeExecutionTimeline: vi.fn(),
@@ -25,7 +25,11 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/hooks/useRuntimeLogs", () => mocks);
 vi.mock("@/hooks/useUserProjects", () => ({ useUserProjects: mocks.useUserProjects }));
 vi.mock("@/contexts/ChatContext", () => ({ useChatContext: () => ({ handleSendMessage: mocks.handleSendMessage }) }));
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: mocks.push }) }));
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: mocks.push, replace: mocks.replace }),
+  usePathname: () => "/admin/logs",
+  useSearchParams: () => new URLSearchParams(),
+}));
 
 function queryState(data: unknown) {
   return { data, isLoading: false, isError: false, isSuccess: true, refetch: vi.fn() };
@@ -63,8 +67,42 @@ const RELIABILITY = {
   total: 2,
 };
 
+const JOB_INSIGHTS = {
+  insights: [
+    {
+      project_id: "werkorder",
+      source_key: "tmc",
+      job_name: "Maximo2RHM_Workorders",
+      total_runs: 142,
+      success_runs: 138,
+      failed_runs: 4,
+      unfinished_runs: 1,
+      failure_rate: 0.0282,
+      first_run_at: "2026-08-01T00:00:00Z",
+      last_run_at: "2026-08-16T22:00:00Z",
+      failures_with_logs: 3,
+      diagnosed_failures: 2,
+      capture_ceiling_reached: 1,
+      evidence_completeness: "partial",
+      pattern_id: "database.connection_reset",
+      confidence: "medium",
+      occurrences: 2,
+      most_recent_at: "2026-08-16T22:00:00Z",
+      failed_component: "tOracleConnection_1",
+      termination_component: "tDie_1",
+      causal_message: "IO Error: Connection reset",
+      root_cause_candidate: "The database connection was reset before the job terminated.",
+      cause_origin: "deterministic",
+      next_checks: ["Check database connectivity from the runtime engine."],
+    },
+  ],
+  total: 1,
+};
+
 function setDefaults() {
-  mocks.useUserProjects.mockReturnValue(queryState({ projects: [] }));
+  mocks.useUserProjects.mockReturnValue(queryState({
+    projects: [{ id: "werkorder", display_name: "Werkorder" }],
+  }));
   mocks.useRuntimeOverview.mockReturnValue(queryState({ overview: { engines_online: 2, engines_total: 3, engines_unhealthy: 0, jobs_unhealthy: 1, plans_unhealthy: 0 } }));
   mocks.useRuntimeExecutions.mockReturnValue(queryState({ executions: [{ execution_id: "exec-1", job_name: "orders_sync", state: "failed", started_at: "2026-07-15T10:00:00Z", ended_at: "2026-07-15T10:00:10Z", duration_ms: 1000 }], total: 1 }));
   mocks.useRuntimeHealth.mockReturnValue(queryState({ health: [{ job_name: "orders_sync", failure_rate: 1, current_failure_streak: 1 }], total: 1 }));
@@ -73,10 +111,14 @@ function setDefaults() {
   mocks.useRuntimeIncident.mockReturnValue(queryState({ incident: null }));
   mocks.useRuntimeJobs.mockReturnValue(queryState({ jobs: [], total: 0 }));
   mocks.useRuntimePlans.mockReturnValue(queryState({ plans: [], total: 0 }));
-  mocks.useRuntimeSources.mockReturnValue(queryState({ sources: [], total: 0 }));
+  mocks.useRuntimeSources.mockReturnValue(queryState({
+    sources: [{ project_id: "werkorder", source_key: "tmc", label: "TMC", source_type: "tmc", status: "ok", enabled: true, sync_interval_seconds: 300, last_synced_at: null }],
+    total: 1,
+  }));
   mocks.useRuntimeEngines.mockReturnValue(queryState({ engines: [], total: 0 }));
   mocks.useRuntimeTrend.mockReturnValue(queryState(TREND));
   mocks.useRuntimeJobReliability.mockReturnValue(queryState(RELIABILITY));
+  mocks.useRuntimeJobInsights.mockReturnValue(queryState(JOB_INSIGHTS));
   mocks.useRuntimeComponentHotspots.mockReturnValue(queryState({ components: [], total: 0 }));
   mocks.useRuntimeJobThroughput.mockReturnValue(queryState({ jobs: [], total: 0 }));
   mocks.useRuntimeErrorSignatures.mockReturnValue(queryState({ signatures: [], total: 0 }));
@@ -106,7 +148,7 @@ describe("RuntimeLogsPage", () => {
 
   it("reports a live feed when the newest import is within the polling window", () => {
     mocks.useRuntimeSources.mockReturnValue(queryState({
-      sources: [{ project_id: "cdc", source_key: "tmc", label: "vw_TMC", source_type: "talend_tmc", status: "ok", enabled: true, sync_interval_seconds: 300, last_synced_at: new Date(Date.now() - 60_000).toISOString() }],
+      sources: [{ project_id: "werkorder", source_key: "tmc", label: "vw_TMC", source_type: "talend_tmc", status: "ok", enabled: true, sync_interval_seconds: 300, last_synced_at: new Date(Date.now() - 60_000).toISOString() }],
       total: 1,
     }));
     renderPage(RuntimeLogsPage);
@@ -116,7 +158,7 @@ describe("RuntimeLogsPage", () => {
 
   it("reports a stale feed when the newest import is older than three polling cycles", () => {
     mocks.useRuntimeSources.mockReturnValue(queryState({
-      sources: [{ project_id: "cdc", source_key: "tmc", label: "vw_TMC", source_type: "talend_tmc", status: "ok", enabled: true, sync_interval_seconds: 300, last_synced_at: new Date(Date.now() - 3 * 3600_000).toISOString() }],
+      sources: [{ project_id: "werkorder", source_key: "tmc", label: "vw_TMC", source_type: "talend_tmc", status: "ok", enabled: true, sync_interval_seconds: 300, last_synced_at: new Date(Date.now() - 3 * 3600_000).toISOString() }],
       total: 1,
     }));
     renderPage(RuntimeLogsPage);
@@ -145,8 +187,38 @@ describe("RuntimeLogsPage", () => {
     renderPage(RuntimeLogsPage);
     fireEvent.change(screen.getByPlaceholderText("What changed in the failed runs?"), { target: { value: "Why did orders fail?" } });
     fireEvent.click(screen.getByText("Ask Nexus"));
-    await vi.waitFor(() => expect(mocks.handleSendMessage).toHaveBeenCalledWith({ query: "Why did orders fail?", project_id: undefined }));
+    await vi.waitFor(() => expect(mocks.handleSendMessage).toHaveBeenCalledWith({ query: "Why did orders fail?", project_id: "werkorder" }));
     expect(mocks.push).toHaveBeenCalledWith("/");
+  });
+
+  it("keeps the selected project in every runtime tab link", () => {
+    mocks.useUserProjects.mockReturnValue(queryState({
+      projects: [
+        { id: "werkorder", display_name: "Werkorder" },
+        { id: "nexus_logs", display_name: "Nexus logs" },
+        { id: "docs_only", display_name: "Docs only" },
+      ],
+    }));
+    mocks.useRuntimeSources.mockReturnValue(queryState({
+      sources: [
+        { project_id: "werkorder", source_key: "tmc", label: "TMC", source_type: "talend_tmc" },
+        { project_id: "nexus_logs", source_key: "tmc-123", label: "TMC", source_type: "tmc" },
+        { project_id: "docs_only", source_key: "mock", label: "Mock", source_type: "mock" },
+      ],
+      total: 3,
+    }));
+    renderPage(RuntimeLogsPage);
+    expect(screen.queryByText("All permitted projects")).toBeNull();
+    expect(screen.queryByText("Docs only")).toBeNull();
+    selectOption("Project scope", "Nexus logs");
+    expect(screen.getByRole("link", { name: "Signatures" })).toHaveAttribute(
+      "href",
+      "/admin/logs/signatures?project=nexus_logs",
+    );
+    expect(screen.getByRole("link", { name: "Estate" })).toHaveAttribute(
+      "href",
+      "/admin/logs/estate?project=nexus_logs",
+    );
   });
 
   it("uses execution-only queries on the runs route and exposes the honest server total", () => {
@@ -185,6 +257,63 @@ describe("RuntimeLogsPage", () => {
     expect(screen.queryByText("Quintiq2Maximo_PlannedWorkOrder")).toBeNull();
     expect(screen.getByText(/4 of 142 failed/)).toBeTruthy();
     expect(screen.getByText(/1 never finished/)).toBeTruthy();
+  });
+
+  it("explains the dominant issue and keeps origin separate from termination", () => {
+    renderPage(RuntimeLogsPage);
+    expect(screen.getByText(/database · connection reset/)).toBeTruthy();
+    expect(screen.getByText(/Origin: tOracleConnection_1/)).toBeTruthy();
+    expect(screen.getByText(/Stopped by: tDie_1/)).toBeTruthy();
+    expect(screen.getByText("Observed:")).toBeTruthy();
+    expect(screen.getByText("Interpretation:")).toBeTruthy();
+    expect(screen.getByText("medium")).toBeTruthy();
+    expect(screen.getByText(/Logs 3\/4 · Diagnosed 2\/4/)).toBeTruthy();
+  });
+
+  it("shows evidence coverage without guessing causes for unexplained failures", () => {
+    renderPage(RuntimeLogsPage);
+    expect(screen.getByText("Evidence quality")).toBeTruthy();
+    expect(screen.getByText("3/4")).toBeTruthy();
+    expect(screen.getByText("2/4")).toBeTruthy();
+    expect(screen.getByText("2", { selector: "dd" })).toBeTruthy();
+    expect(screen.getByText("1 failure has no logs")).toBeTruthy();
+    expect(screen.getByText("not assigned a guessed cause")).toBeTruthy();
+  });
+
+  it("keeps a healthy source calm when there are no failures to explain", () => {
+    mocks.useRuntimeJobReliability.mockReturnValue(queryState({
+      jobs: [RELIABILITY.jobs[1]],
+      total: 1,
+    }));
+    mocks.useRuntimeJobInsights.mockReturnValue(queryState({
+      insights: [{
+        ...JOB_INSIGHTS.insights[0],
+        job_name: "Quintiq2Maximo_PlannedWorkOrder",
+        total_runs: 90,
+        success_runs: 90,
+        failed_runs: 0,
+        unfinished_runs: 0,
+        failure_rate: 0,
+        failures_with_logs: 0,
+        diagnosed_failures: 0,
+        capture_ceiling_reached: 0,
+        evidence_completeness: "no_failures",
+        pattern_id: null,
+        confidence: null,
+        occurrences: 0,
+        failed_component: null,
+        termination_component: null,
+        causal_message: null,
+        root_cause_candidate: null,
+        cause_origin: null,
+        next_checks: [],
+      }],
+      total: 1,
+    }));
+    renderPage(RuntimeLogsPage);
+    expect(screen.getByText("No failures in this window, so there is nothing to diagnose.")).toBeTruthy();
+    expect(screen.getByText("No active attention signals.")).toBeTruthy();
+    expect(screen.queryByText("No useful diagnosis yet.")).toBeNull();
   });
 
   it("surfaces the run-outcome and duration series with a legend and a table view", () => {

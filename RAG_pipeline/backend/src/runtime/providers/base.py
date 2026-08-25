@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any, Iterable, Literal, Mapping, Protocol, TypedDict, runtime_checkable
 
+from src.runtime.models import RuntimeScopeOption, RuntimeScopeSelection
 from src.runtime.sync import RuntimeSyncBatch
 
 
@@ -39,6 +40,25 @@ class RuntimeSourceProvider(Protocol):
 
     def static_ref_strategy(self) -> None:
         """Return the static-reference strategy; v1 reserves the slot as ``None``."""
+
+    def scope_selection(self) -> RuntimeScopeSelection | None:
+        """Describe the selectable ingest scope, or ``None`` for whole-source providers."""
+
+    async def discover_scopes(self, credentials: Mapping[str, Any]) -> list[RuntimeScopeOption]:
+        """Validate credentials and return the scopes they can reach.
+
+        This is the "test connection" call: reaching the source is what proves
+        the credentials work, and the scope list is the useful by-product.
+        Providers without a scope partition return an empty list.
+        """
+
+    def identity_credential_fields(self) -> set[str]:
+        """Return credential field names the physical identity is derived from.
+
+        These are frozen after registration: editing one would repoint the
+        source at a different account while keeping its stored identity and
+        ingested history, so the config-patch path refuses them.
+        """
 
     def physical_source_identity(self, credentials: Mapping[str, Any]) -> str:
         """Return the endpoint-scoped identity: stable, secret-free, offline-derivable.
@@ -95,6 +115,56 @@ class SingleTenantIdentityMixin:
         self, credentials: Mapping[str, Any], batch: RuntimeSyncBatch
     ) -> str | None:
         return None
+
+
+class NoScopeSelectionMixin:
+    """Default behaviour for providers that ingest their whole source."""
+
+    def scope_selection(self) -> RuntimeScopeSelection | None:
+        return None
+
+    async def discover_scopes(self, credentials: Mapping[str, Any]) -> list[RuntimeScopeOption]:
+        return []
+
+
+#: Per-source READ scope: which slice of the mirror documentation runs may use,
+#: and how far back. Distinct from the ingest scope a provider declares -- that
+#: one decides what gets polled and stored, this one decides what gets read out
+#: of what was stored, so narrowing it costs nothing at the vendor API and can
+#: be changed without re-mirroring. Provider-independent by construction: any
+#: source that mirrors something a document reads has the same two questions.
+#:
+#: `doc_environment_ids` absent (or None) means every mirrored environment,
+#: which is the behaviour every existing source already has.
+DOC_READ_SCOPE_FIELDS = ("doc_environment_ids", "doc_window_days")
+
+
+def editable_config_fields(provider: "RuntimeSourceProvider") -> list[str]:
+    """Return the credential keys a config patch may write.
+
+    Secrets are excluded because the patch path never asks for them, and
+    identity fields because changing one detaches the source from the account
+    its history belongs to. Everything else a provider declares -- filters,
+    windows, and the scope selection -- is operator-editable by construction,
+    so new settings become editable without touching the route.
+
+    The documentation read scope is appended for every provider. It is not in
+    any `credential_schema()` deliberately: the connect dialog renders that
+    schema, and read scope is not something an operator should have to decide
+    while holding an API token -- it is chosen later, per project, once the
+    mirror can say which environments actually exist.
+    """
+    frozen = provider.identity_credential_fields()
+    fields = [
+        name
+        for field in provider.credential_schema()
+        if (name := field.get("name")) and field.get("type") != "secret" and name not in frozen
+    ]
+    selection = provider.scope_selection()
+    if selection is not None and selection.field not in fields:
+        fields.append(selection.field)
+    fields.extend(name for name in DOC_READ_SCOPE_FIELDS if name not in fields)
+    return fields
 
 
 def compose_tenant_identity(endpoint_identity: str, tenant_markers: Iterable[str]) -> str:

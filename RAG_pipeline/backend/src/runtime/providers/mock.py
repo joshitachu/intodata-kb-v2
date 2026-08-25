@@ -31,7 +31,11 @@ from src.runtime.models import (
     RuntimeSyncStatus,
     RuntimeWorkspace,
 )
-from src.runtime.providers.base import CredentialField, SingleTenantIdentityMixin
+from src.runtime.providers.base import (
+    CredentialField,
+    NoScopeSelectionMixin,
+    SingleTenantIdentityMixin,
+)
 from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
 from src.runtime.sync import RuntimeSyncBatch
 
@@ -101,7 +105,7 @@ _LOGS: dict[str, list[RuntimeLogEvent]] = {
 _SEVERITY_RANK = list(RuntimeLogSeverity)
 
 
-class MockRuntimeProvider(SingleTenantIdentityMixin):
+class MockRuntimeProvider(NoScopeSelectionMixin, SingleTenantIdentityMixin):
     """Deterministic fixture-backed provider. No network, no secrets."""
 
     def provider_key(self) -> str:
@@ -124,6 +128,9 @@ class MockRuntimeProvider(SingleTenantIdentityMixin):
 
     def source_type_aliases(self) -> set[str]:
         return {self.provider_key()}
+
+    def identity_credential_fields(self) -> set[str]:
+        return set()
 
     async def validate_credentials(self, credentials: Mapping[str, Any]) -> tuple[bool, str | None]:
         return True, None

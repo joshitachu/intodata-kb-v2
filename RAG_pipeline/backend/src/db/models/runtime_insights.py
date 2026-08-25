@@ -135,6 +135,11 @@ class RuntimeIncidentRow(Base):
     # Verbatim (redacted) diagnostic sentence backing root_cause_candidate, so the
     # surface can quote the log rather than only a catalog template.
     causal_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A terminal wrapper (for example an explicit abort/raise component) may
+    # report the final failure without being where the substantive fault began.
+    # Persist it separately so surfaces can explain the causal chain without
+    # replacing `failed_component`, which remains the originating component.
+    termination_component: Mapped[str | None] = mapped_column(String(255), nullable=True)
     confidence: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # Origin of the root-cause attribution. "deterministic" is the only value the
     # builder writes; "llm_fallback" is reserved for the Slice 4 LLM fallback.

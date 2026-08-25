@@ -238,14 +238,14 @@ describe("API client", () => {
       }),
     );
 
-    await api.generate(
-      "p1",
-      true,
-      "investigator",
-      "analyst",
-      "writer",
-      "opencode-cli",
-    );
+    await api.generate({
+      projectId: "p1",
+      resume: true,
+      investigationModel: "investigator",
+      model: "analyst",
+      writeModel: "writer",
+      generationMethod: "opencode-cli",
+    });
 
     const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
     expect(fetchCall[0]).toBe("/mcp/generate");
@@ -257,6 +257,8 @@ describe("API client", () => {
       write_model: "writer",
       doc_generation_provider: "opencode-cli",
     });
+    // Unset means "use the project's grant"; the field is omitted, not guessed.
+    expect(JSON.parse(fetchCall[1]?.body as string)).not.toHaveProperty("live_evidence");
     expect(JSON.parse(fetchCall[1]?.body as string)).not.toHaveProperty("organization_pack_id");
     expect(JSON.parse(fetchCall[1]?.body as string)).not.toHaveProperty("private_version_ids");
     expect(JSON.parse(fetchCall[1]?.body as string)).not.toHaveProperty("plugin_pack_id");
@@ -331,12 +333,28 @@ describe("API client", () => {
       }),
     );
 
-    await api.generate("p1", true, null, "openai/gpt-5.6", null, "opencode-cli");
+    await api.generate({ projectId: "p1", model: "openai/gpt-5.6", generationMethod: "opencode-cli" });
 
     expect(JSON.parse(vi.mocked(globalThis.fetch).mock.calls[0][1]?.body as string)).toMatchObject({
       doc_generation_provider: "opencode-cli",
     });
     expect(JSON.parse(vi.mocked(globalThis.fetch).mock.calls[0][1]?.body as string)).not.toHaveProperty("use_connectors");
+  });
+
+  it("declines the runtime lane with the contract's own vocabulary", async () => {
+    // A fresh Response per call: a Body can only be read once.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ status: "generation_started", message: "ok" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await api.generate({ projectId: "p1", generationMethod: "custom", liveEvidence: false });
+    expect(JSON.parse(vi.mocked(globalThis.fetch).mock.calls[0][1]?.body as string).live_evidence).toBe("off");
+
+    await api.generate({ projectId: "p1", generationMethod: "custom", liveEvidence: true });
+    expect(JSON.parse(vi.mocked(globalThis.fetch).mock.calls[1][1]?.body as string).live_evidence).toBe("project_default");
   });
 
 });

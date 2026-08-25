@@ -348,6 +348,14 @@ def _trim_priority(name: str) -> int:
         return 0
     if "facts_manifest" in lowered or "_unit_docs_digest" in lowered:
         return 0
+    # The runtime rollup is ranked explicitly, not by matching the `_evidence_`
+    # convention above (its filename deliberately avoids that substring). At the
+    # default rank 2 it is trimmed at SECTION granularity, which can keep the
+    # coverage header while cutting the unobserved-units list -- exactly the
+    # silence the lane exists to prevent, and it would leave the header's
+    # counts describing rows the writer can no longer see.
+    if "_runtime_profile" in lowered:
+        return 0
     if "obligations" in lowered:
         return 1
     if "noncode" in lowered or "non_code" in lowered:

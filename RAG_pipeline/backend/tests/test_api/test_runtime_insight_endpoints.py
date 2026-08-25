@@ -58,6 +58,42 @@ def _scope(value):
     return patch("src.api.routes.runtime.get_user_project_ids", AsyncMock(return_value=value))
 
 
+class TestJobOperationalInsights:
+    async def test_returns_bounded_dominant_diagnosis_and_coverage(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get(
+                f"/api/v1/runtime/job-insights?project_id={_ESB}&limit=500"
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 2
+        assert len(body["insights"]) == 2
+        insight = next(
+            item for item in body["insights"] if item["job_name"] == "esb_order_sync_route"
+        )
+        assert insight["job_name"] == "esb_order_sync_route"
+        assert insight["total_runs"] == 2
+        assert insight["failed_runs"] == 1
+        assert insight["failures_with_logs"] == 1
+        assert insight["diagnosed_failures"] == 1
+        assert insight["evidence_completeness"] == "complete"
+        assert insight["pattern_id"] == "oracle.net.timeout"
+        assert insight["failed_component"] == "tOracleConnection_1"
+        assert insight["causal_message"]
+        assert insight["root_cause_candidate"]
+        assert insight["next_checks"]
+        assert "logs" not in insight
+
+    async def test_out_of_scope_project_returns_no_data(self, seeded_client):
+        with _scope([_OTHER]):
+            resp = await seeded_client.get(
+                f"/api/v1/runtime/job-insights?project_id={_ESB}"
+            )
+        assert resp.status_code == 200
+        assert resp.json() == {"insights": [], "total": 0}
+
+
 # ---------------------------------------------------------------------------
 # Execution summary
 # ---------------------------------------------------------------------------

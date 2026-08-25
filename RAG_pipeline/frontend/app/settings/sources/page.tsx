@@ -11,8 +11,10 @@ import {
   FileArchive,
   Github,
   Loader2,
+  RefreshCw,
   Search,
   RotateCw,
+  Zap,
   Trash2,
   UploadCloud,
   X,
@@ -45,6 +47,7 @@ import { AzureDevOpsConnectPanel } from "./AzureDevOpsConnectPanel";
 import { GithubAppConnectPanel } from "./GithubAppConnectPanel";
 import { ProjectConnectorBindings } from "./ProjectConnectorBindings";
 import { SimpleConnectorPanel } from "./SimpleConnectorPanel";
+import { ProjectLiveSource, useProjectLiveSources } from "./liveSources";
 
 type RowStage =
   | "pending"
@@ -814,6 +817,8 @@ export default function SourcesSettingsPage() {
   const attentionCount = projects.filter((project) => project.status === "error").length;
   const totalDocs = projects.reduce((sum, project) => sum + (project.doc_count ?? 0), 0);
   const totalUnits = projects.reduce((sum, project) => sum + (project.job_count ?? 0), 0);
+  const { byProject: liveSourcesByProject } = useProjectLiveSources();
+  const projectsWithLiveData = projects.filter((project) => (liveSourcesByProject.get(project.id)?.length ?? 0) > 0).length;
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-10 px-6 py-12">
@@ -942,6 +947,20 @@ export default function SourcesSettingsPage() {
             <p className="mt-1 text-sm text-muted-foreground">
               Select a project to manage its pipeline, GitHub settings, and logs.
             </p>
+            {projectsWithLiveData > 0 && (
+              <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                <span>
+                  {projectsWithLiveData} of {projects.length} read external data:
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <Zap className="h-3 w-3" aria-hidden /> live evidence, queried during OpenCode runs
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <RefreshCw className="h-3 w-3" aria-hidden /> runtime history, mirrored on a schedule
+                </span>
+                <span>Amber means connected but not currently read.</span>
+              </p>
+            )}
           </div>
           <p className="text-xs text-muted-foreground">
             {totalUnits} units · {totalDocs} docs · {projects.filter((p) => p.source_type === "git").length} GitHub
@@ -1006,6 +1025,7 @@ export default function SourcesSettingsPage() {
                 platformId={source.id}
                 label={source.display_name || source.id}
                 source={{ ...source, doc_count: source.doc_count ?? 0 }}
+                liveSources={liveSourcesByProject.get(source.id)}
                 platformLabel={platformLabel(source.platform)}
                 row={rows[source.id]}
                 mode={modes[source.id] ?? "zip"}
@@ -1081,11 +1101,46 @@ function Meta({ label, value }: { label: string; value: string }) {
   );
 }
 
+/** The external sources a documentation run for one project will read.
+ *
+ * Rendered on the collapsed row because that is where an operator asks the
+ * question -- the per-project connector editor further down answers it only
+ * after expanding, and it never covered scheduled runtime mirrors at all.
+ * An unhealthy source still gets a chip: "bound but not being read" is the
+ * state most worth seeing, and hiding it would read as "not configured".
+ */
+function LiveSourceChips({ sources }: { sources: ProjectLiveSource[] }) {
+  if (sources.length === 0) return null;
+  return (
+    <span className="mt-1 flex flex-wrap items-center gap-1">
+      {sources.map((entry) => {
+        const Icon = entry.kind === "runtime_sync" ? RefreshCw : Zap;
+        return (
+          <span
+            key={entry.key}
+            title={`${entry.label} - ${entry.detail}`}
+            className={cn(
+              "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium",
+              entry.healthy
+                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                : "border-amber-200 bg-amber-50 text-amber-700",
+            )}
+          >
+            <Icon className="h-3 w-3 shrink-0" aria-hidden />
+            <span className="truncate">{entry.label}</span>
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
 interface SourceRowProps {
   platformId: string;
   label: string;
   platformLabel?: string;
   source?: SourceProject;
+  liveSources?: ProjectLiveSource[];
   row: RowState | undefined;
   mode: SourceMode;
   github: GithubState | undefined;
@@ -1113,6 +1168,7 @@ function SourceRow({
   label,
   platformLabel,
   source,
+  liveSources,
   row,
   mode,
   github,
@@ -1208,6 +1264,7 @@ function SourceRow({
                 <span className="mt-0.5 block truncate text-xs text-muted-foreground">
                   {source.id} · {platformLabel ?? source.platform} · {source.source_type === "git" ? "GitHub" : "ZIP"}
                 </span>
+                <LiveSourceChips sources={liveSources ?? []} />
               </span>
             </span>
             <span className={cn(

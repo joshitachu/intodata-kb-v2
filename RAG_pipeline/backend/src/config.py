@@ -371,11 +371,15 @@ class Settings(BaseSettings):
     # Per-sync ceiling on how many FAILED runs have their logs downloaded. This was
     # a hardcoded 25, which left most failures with no log lines at all and so no
     # diagnosable content — the insight layer could only emit a placeholder cause
-    # for them. Raised to cover a full sync window; still bounded because each
-    # download is a separate TMC round trip. Set to 0 for no ceiling.
-    talend_tmc_failed_log_run_limit: int = Field(default=500, ge=0)
+    # for them. The batch still must stay bounded because each download is a
+    # separate TMC round trip and each captured run may contribute
+    # 10,000 Pydantic log models to the in-memory sync batch. Ten recent failures
+    # keeps a poll bounded under the backend's 1GiB container limit while still
+    # continuously capturing new operational evidence. Set to 0 for the provider
+    # fallback ceiling; unbounded batches are intentionally unsupported.
+    talend_tmc_failed_log_run_limit: int = Field(default=10, ge=0)
     # Per-sync ceiling on how many runs have component metrics downloaded.
-    talend_tmc_component_metric_run_limit: int = Field(default=200, ge=0)
+    talend_tmc_component_metric_run_limit: int = Field(default=25, ge=0)
 
     # Runtime source sync scheduler (Runtime-Agnostic Failure Intelligence Slice 7).
     # Disabled by default. When enabled, the backend starts a background loop that

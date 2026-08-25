@@ -32,6 +32,12 @@ import {
   ProjectSchema,
   ProjectUsageSchema,
   QualityHistoryResponseSchema,
+  RuntimeDocReadScopeSchema,
+  RuntimeSourceListResponseSchema,
+  RuntimeSourceSchema,
+  RuntimeSourceScopesResponseSchema,
+  RuntimeSourceSyncResponseSchema,
+  RuntimeSourceTypeListResponseSchema,
   QuestionnaireResponseSchema,
   ReviewAggregateResponseSchema,
   RunComparisonSchema,
@@ -496,6 +502,80 @@ export const api = {
       `/mcp/connectors/${encodeURIComponent(connectorId)}/kibana/spaces/${encodeURIComponent(space)}/data-views`, {}, KibanaDataViewListResponseSchema,
     ),
 
+  // --- Runtime sources ---
+  // The MCP server proxies these to the RAG backend on the caller's own
+  // session, so a runtime-managed credential can be collected here while still
+  // being stored where the mirroring scheduler reads it.
+
+  listRuntimeSourceTypes: () =>
+    request<{ source_types: import("../types").RuntimeSourceType[] }>(
+      "/mcp/runtime-sources/source-types",
+      {},
+      RuntimeSourceTypeListResponseSchema,
+    ),
+
+  /** The read scope a documentation run for this project will apply. */
+  getRuntimeReadScope: (projectId: string) =>
+    request<import("../types").RuntimeDocReadScope>(
+      `/mcp/runtime-sources/read-scope?project_id=${encodeURIComponent(projectId)}`,
+      {},
+      RuntimeDocReadScopeSchema,
+    ),
+
+  listRuntimeSources: (params?: { providerId?: string; projectId?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.providerId) query.set("provider_id", params.providerId);
+    if (params?.projectId) query.set("project_id", params.projectId);
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return request<{ sources: import("../types").RuntimeSource[]; total: number }>(
+      `/mcp/runtime-sources${suffix}`,
+      {},
+      RuntimeSourceListResponseSchema,
+    );
+  },
+
+  /**
+   * Test unsaved credentials and list the ingest scopes they reach.
+   *
+   * Writes nothing on either side, so it is safe to call repeatedly while the
+   * operator is still editing the form. A 200 is the connection test.
+   */
+  discoverRuntimeSourceScopes: (data: {
+    provider_id: string;
+    credentials: Record<string, string>;
+  }) =>
+    request<{ scopes: import("../types").RuntimeScopeOption[] }>(
+      "/mcp/runtime-sources/discover",
+      { method: "POST", body: JSON.stringify(data) },
+      RuntimeSourceScopesResponseSchema,
+    ),
+
+  createRuntimeSource: (data: {
+    // The CONNECTOR id (e.g. `talend_tmc`). The server maps it to the RAG
+    // runtime provider key; the browser must never send that key itself.
+    provider_id: string;
+    project_id: string;
+    label: string;
+    // Values are strings except the ingest-scope field, which is a list of ids.
+    credentials: Record<string, string | string[]>;
+    sync_interval_seconds?: number;
+  }) =>
+    request<import("../types").RuntimeSource>(
+      "/mcp/runtime-sources",
+      { method: "POST", body: JSON.stringify(data) },
+      RuntimeSourceSchema,
+    ),
+
+  syncRuntimeSource: (sourceId: number) =>
+    request<import("../types").RuntimeSourceSyncResult>(
+      `/mcp/runtime-sources/${sourceId}/sync`,
+      { method: "POST" },
+      RuntimeSourceSyncResponseSchema,
+    ),
+
+  deleteRuntimeSource: (sourceId: number) =>
+    request<void>(`/mcp/runtime-sources/${sourceId}`, { method: "DELETE" }),
+
   listProjectConnectorBindings: (projectId: string) =>
     request<{ project_id: string; bindings: import("../types").ProjectConnectorBinding[] }>(
       `/mcp/projects/${encodeURIComponent(projectId)}/connector-bindings`,
@@ -540,25 +620,42 @@ export const api = {
       ConnectorEvidenceSummarySchema,
     ),
 
-  generate: (
-    projectId: string,
-    resume = true,
-    investigationModel?: string | null,
-    model?: string | null,
-    writeModel?: string | null,
-    generationMethod?: "custom" | "opencode-cli" | null,
-  ) =>
+  /**
+   * Start a documentation run.
+   *
+   * An options object rather than a positional list: the sixth positional
+   * argument was already one miscount away from silently swapping the write
+   * model for the generation method, and `liveEvidence` would have been the
+   * seventh.
+   */
+  generate: (options: {
+    projectId: string;
+    resume?: boolean;
+    investigationModel?: string | null;
+    model?: string | null;
+    writeModel?: string | null;
+    generationMethod?: "custom" | "opencode-cli" | null;
+    /**
+     * Whether this run may use the project's mirrored runtime evidence.
+     * Omitted entirely when undefined, so the server's `project_default`
+     * stands. A run can only decline the project's grant, never widen it.
+     */
+    liveEvidence?: boolean;
+  }) =>
     request<import("../types").StatusResponse>(
       "/mcp/generate",
       {
         method: "POST",
         body: JSON.stringify({
-          project_id: projectId,
-          resume,
-          investigation_model: investigationModel ?? null,
-          model: model ?? null,
-          write_model: writeModel ?? null,
-          doc_generation_provider: generationMethod ?? null,
+          project_id: options.projectId,
+          resume: options.resume ?? true,
+          investigation_model: options.investigationModel ?? null,
+          model: options.model ?? null,
+          write_model: options.writeModel ?? null,
+          doc_generation_provider: options.generationMethod ?? null,
+          ...(options.liveEvidence === undefined
+            ? {}
+            : { live_evidence: options.liveEvidence ? "project_default" : "off" }),
         }),
       },
       StatusResponseSchema,

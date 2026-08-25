@@ -102,6 +102,31 @@ class ConnectorBuildState(StrEnum):
     COMING_SOON = "coming_soon"
 
 
+class ConnectorManagedBy(StrEnum):
+    """Which store owns this provider's credential and health.
+
+    One explicit manifest field, deliberately *not* inferred from
+    ``kind``/``capabilities``/``setup_capabilities``: those three describe what a
+    provider contributes, and a reader who infers ownership from them will get it
+    wrong the first time a runtime-sync provider gains a gather capability.
+
+    ``RUNTIME_SOURCES`` means the credential lives in the RAG backend's
+    ``runtime_sources`` tables next to the scheduler that reads it.
+
+    This field records WHERE the secret is stored. It is not a statement that
+    the provider cannot be connected from this service, and reading it that way
+    was the mistake it used to encode: the dashboard sent operators to a second
+    application to type a token. What the value governs is which lane a connect
+    form posts to -- ``CONNECTOR_STORE`` to ``/mcp/connectors``,
+    ``RUNTIME_SOURCES`` to the runtime-source proxy in
+    ``api/routes/runtime_sources.py`` -- so the credential still cannot be
+    deposited in a store nothing reads.
+    """
+
+    CONNECTOR_STORE = "connector_store"
+    RUNTIME_SOURCES = "runtime_sources"
+
+
 @dataclass(frozen=True, slots=True)
 class ConnectorProviderManifest:
     provider_id: str
@@ -115,6 +140,7 @@ class ConnectorProviderManifest:
     setup_capabilities: tuple[str, ...] = ("test", "discover")
     kind: ConnectorKind = ConnectorKind.LIVE_EVIDENCE
     build_state: ConnectorBuildState = ConnectorBuildState.AVAILABLE
+    managed_by: ConnectorManagedBy = ConnectorManagedBy.CONNECTOR_STORE
     description: str = ""
     # Field in ``safe_config`` identifying the account/domain this instance
     # points at. Instances are unique per (provider, account) so the same

@@ -35,7 +35,12 @@ from src.db.models.runtime_insights import (
 )
 from src.runtime.insights.catalog import CATALOG
 from src.runtime.insights.llm_fallback import maybe_run_llm_fallback
-from src.runtime.insights.parser import ParsedRuntimeLog, parse_runtime_log_message, redact_credentials
+from src.runtime.insights.parser import (
+    ParsedRuntimeLog,
+    parse_runtime_log_message,
+    redact_credentials,
+    redact_log_text,
+)
 
 if TYPE_CHECKING:
     from src.runtime.insights.semantic import RuntimeSemanticIndexer
@@ -43,6 +48,10 @@ if TYPE_CHECKING:
 _SEV_WARNING = "warning"
 _SEV_ERROR = "error"
 _SEV_INFO = "info"
+
+# Persisted incident-evidence excerpt length. Bounded so an evidence list cannot
+# flood an LLM prompt; applied AFTER redaction (see `_build_incident`).
+_EVIDENCE_EXCERPT_CHARS = 300
 
 _SEVERITY_ALIASES = {
     "error": _SEV_ERROR,
@@ -426,6 +435,136 @@ def _select_failed_component(
     return any_component
 
 
+_TERMINAL_WRAPPER_COMPONENT_RE = re.compile(
+    r"^(?:tdie|abort|terminate|raise|throw|fail)(?:_|$)", re.IGNORECASE
+)
+_GENERIC_TERMINAL_MESSAGES = frozenset(
+    {
+        "",
+        "null",
+        "none",
+        "error",
+        "failed",
+        "unknown",
+        "job failed",
+        "execution failed",
+    }
+)
+
+
+def _is_terminal_wrapper_component(component_name: str | None) -> bool:
+    """Whether a component's role is explicitly to abort/raise a failure.
+
+    This is a provider-neutral role test with Talend's ``tDie`` included as one
+    spelling. A wrapper is still retained as evidence; it simply cannot displace
+    an earlier, more substantive fault as the originating component.
+    """
+    return bool(component_name and _TERMINAL_WRAPPER_COMPONENT_RE.search(component_name))
+
+
+def _primary_fault_score(
+    log_row: RuntimeLogEventRow,
+    parsed: ParsedRuntimeLog,
+) -> int:
+    """Rank one fault line by diagnostic value, not merely by recency."""
+    message = parsed.causal_message or log_row.message or ""
+    pattern = CATALOG.match(
+        parsed.error_code,
+        parsed.exception_class,
+        f"{message}\n{log_row.message}",
+        parsed.error_family,
+    )
+    specificity = pattern.specificity if pattern is not None else 0
+    score = specificity
+    score += 12 * sum(bool(value) for value in (parsed.error_code, parsed.exception_class))
+    if parsed.component_name:
+        score += 3
+    if normalize_severity(log_row.severity) == _SEV_ERROR:
+        score += 4
+    if _is_substantive_diagnostic(message):
+        score += 8
+    if message.strip().lower() in _GENERIC_TERMINAL_MESSAGES:
+        score -= 15
+    if _is_terminal_wrapper_component(parsed.component_name):
+        score -= 30
+    return score
+
+
+def _select_primary_fault_index(
+    log_rows: list[RuntimeLogEventRow],
+    parsed_list: list[ParsedRuntimeLog],
+) -> int | None:
+    """Choose the substantive originating fault across one execution.
+
+    Latest-wins remains the tie-breaker, but specific catalog evidence, codes,
+    exceptions and useful diagnostic language outrank explicit terminal wrappers.
+    """
+    best: tuple[int, int] | None = None
+    for index, (log_row, parsed) in enumerate(zip(log_rows, parsed_list)):
+        if normalize_severity(log_row.severity) not in _FAULT_SEVERITIES:
+            continue
+        if not any(
+            (
+                parsed.causal_message,
+                parsed.error_code,
+                parsed.exception_class,
+                parsed.component_name,
+            )
+        ):
+            continue
+        candidate = (_primary_fault_score(log_row, parsed), index)
+        if best is None or candidate > best:
+            best = candidate
+    return best[1] if best is not None else None
+
+
+def _nearest_component_signal(
+    parsed_list: list[ParsedRuntimeLog],
+    primary_index: int | None,
+    getter: Callable[[ParsedRuntimeLog], str | None],
+) -> str | None:
+    """Complete a split multi-line diagnostic from the same component.
+
+    Runtimes commonly emit an error code and exception on adjacent lines. They
+    are one causal event when the component agrees; crossing component boundaries
+    would instead create the signal-mixing bug this builder avoids.
+    """
+    if primary_index is None:
+        return None
+    component = parsed_list[primary_index].component_name
+    if not component:
+        return None
+    candidates = [
+        (abs(index - primary_index), -index, getter(parsed))
+        for index, parsed in enumerate(parsed_list)
+        if parsed.component_name == component and getter(parsed) is not None
+    ]
+    if not candidates:
+        return None
+    return min(candidates)[2]
+
+
+def _select_termination_component(
+    log_rows: list[RuntimeLogEventRow],
+    parsed_list: list[ParsedRuntimeLog],
+    primary_index: int | None,
+    failed_component: str | None,
+) -> str | None:
+    """Return a distinct terminal wrapper observed after the origin."""
+    start = (primary_index + 1) if primary_index is not None else 0
+    for log_row, parsed in reversed(list(zip(log_rows[start:], parsed_list[start:]))):
+        if normalize_severity(log_row.severity) not in _FAULT_SEVERITIES:
+            continue
+        component = parsed.component_name
+        if (
+            component
+            and component != failed_component
+            and _is_terminal_wrapper_component(component)
+        ):
+            return component
+    return None
+
+
 def _terminal_error_message(log_rows: list[RuntimeLogEventRow]) -> str | None:
     """Return the message of the last error-severity row (the failure-attributed
     line) for unknown-failure disambiguation. None when no error row exists."""
@@ -537,6 +676,7 @@ class _SummaryData:
     first_error_at: datetime.datetime | None
     final_error_at: datetime.datetime | None
     failed_component: str | None
+    termination_component: str | None
     primary_error_code: str | None
     primary_error_family: str | None
     primary_exception_class: str | None
@@ -577,32 +717,53 @@ def _compute_summary(
         if parsed.error_code or parsed.exception_class or parsed.retry_attempt is not None:
             evidence_refs.append(log_row.id)
 
-    # Causal selection (NOT first-seen): the primary diagnostic signals must come
-    # from the failure-attributed event, i.e. the terminal causal error. A benign
-    # code emitted early in the run must not shadow the real fault.
-    primary_error_code, primary_error_family = _select_causal_code(log_rows, parsed_list)
-    primary_exception_class = _select_causal_signal(
-        log_rows, parsed_list, lambda p: p.exception_class
-    )
-    # A borrowed sentence must never outrank one the runtime actually wrote on a
-    # fault line, so intrinsic rows are offered first and context-derived rows are
-    # only consulted when no intrinsic sentence exists anywhere in the execution.
-    causal_message = _select_causal_signal(
-        *_without_context_rows(log_rows, parsed_list), lambda p: p.causal_message
-    ) or _select_causal_signal(log_rows, parsed_list, lambda p: p.causal_message)
+    # Choose one coherent originating event. This avoids combining the code from
+    # one row with the component/message from another and, critically, prevents a
+    # generic terminal wrapper such as `tDie_1 null` from hiding an earlier Oracle
+    # connection-reset line.
+    primary_index = _select_primary_fault_index(log_rows, parsed_list)
+    primary_parsed = parsed_list[primary_index] if primary_index is not None else None
+    primary_row = log_rows[primary_index] if primary_index is not None else None
+    primary_error_code = primary_parsed.error_code if primary_parsed else None
+    primary_error_family = primary_parsed.error_family if primary_parsed else None
+    if primary_error_code is None:
+        primary_error_code = _nearest_component_signal(
+            parsed_list, primary_index, lambda parsed: parsed.error_code
+        )
+        primary_error_family = _nearest_component_signal(
+            parsed_list, primary_index, lambda parsed: parsed.error_family
+        )
+    primary_exception_class = primary_parsed.exception_class if primary_parsed else None
+    if primary_exception_class is None:
+        primary_exception_class = _nearest_component_signal(
+            parsed_list, primary_index, lambda parsed: parsed.exception_class
+        )
+    causal_message = primary_parsed.causal_message if primary_parsed else None
     if causal_message is None:
         # No exception/Caused-by line. Fall back to the terminal error line's text
         # so the unknown-signature digest can still distinguish distinct faults.
         causal_message = _terminal_error_message(log_rows)
     if causal_message is not None:
-        # Persisted from here on, so redaction is mandatory rather than advisory.
-        causal_message = redact_credentials(causal_message)
-    terminal_text = _terminal_error_message(log_rows)
+        # Persisted from here on AND read straight into an LLM tool result, so
+        # redaction is mandatory rather than advisory — and it is the FULL
+        # redaction, not the credential keyword filter. Sentences reaching this
+        # line via `_terminal_error_message` never passed through the parser's
+        # own redaction at all.
+        causal_message = redact_log_text(causal_message)
+    terminal_text = primary_row.message if primary_row is not None else _terminal_error_message(log_rows)
+    # `match_text` is catalog-matching input only: never persisted, never shown,
+    # never prompted (see the field docstring). It stays on the credential filter
+    # so pattern matching keeps seeing the text the runtime actually emitted.
     match_text = redact_credentials(terminal_text) if terminal_text else None
     # Failed component: the component on the failure-attributed line — the line
     # carrying a diagnostic signal (error_code / exception_class), not the parent
     # route that merely propagates the failure ("Route failed ...").
-    failed_component = _select_failed_component(log_rows, parsed_list)
+    failed_component = primary_parsed.component_name if primary_parsed else None
+    if failed_component is None:
+        failed_component = _select_failed_component(log_rows, parsed_list)
+    termination_component = _select_termination_component(
+        log_rows, parsed_list, primary_index, failed_component
+    )
 
     summary_text = _build_summary_text(
         job_name=exec_row.job_name,
@@ -620,6 +781,7 @@ def _compute_summary(
         first_error_at=first_error_at,
         final_error_at=final_error_at,
         failed_component=failed_component,
+        termination_component=termination_component,
         primary_error_code=primary_error_code,
         primary_error_family=primary_error_family,
         primary_exception_class=primary_exception_class,
@@ -788,8 +950,14 @@ async def _build_incident(
 
     # Bounded, redacted evidence excerpts — the SAME excerpts persisted below are the
     # only payload the LLM fallback may see (never raw log windows).
+    #
+    # Redact FIRST, then truncate. Truncating first was the previous order and it
+    # leaks: a URL cut at 300 chars loses the suffix that makes the FQDN rule fire
+    # (`volkerinfra.relaticsonline.com` -> `volkerinfra.relatics`, two labels, no
+    # recognised suffix), so the partial host survives the entity pass. Redacting
+    # the whole line first also buys back characters of real diagnosis.
     evidence_excerpts: list[tuple[int, str, str]] = [
-        (log_row.id, role, redact_credentials(log_row.message[:300]))
+        (log_row.id, role, (redact_log_text(log_row.message) or "")[:_EVIDENCE_EXCERPT_CHARS])
         for log_row, role in _select_evidence_rows(log_rows, parsed_list)
     ]
 
@@ -823,6 +991,7 @@ async def _build_incident(
     inc_row.symptom_summary = symptom_summary
     inc_row.root_cause_candidate = root_cause_candidate
     inc_row.causal_message = summary.causal_message
+    inc_row.termination_component = summary.termination_component
     inc_row.confidence = confidence
     inc_row.cause_origin = cause_origin
     inc_row.pattern_id = pattern_id
@@ -1053,6 +1222,17 @@ def _compose_signature(
         strong_parts = [p for p in (error_code, exception_class, failed_component) if p]
         sig_input = "|".join(strong_parts)
     else:
+        # The digest is one-way and stores no text, so redaction here is about
+        # HASH STABILITY, not confidentiality. The caller now supplies an
+        # entity-redacted sentence, which changes the digest input wherever an
+        # address was present and therefore changes that incident's signature on
+        # the next rebuild. Measured against the stored corpus before making the
+        # change: 784 incidents take this unknown path, 783 of them have no
+        # causal sentence at all and digest their (address-free) symptom summary,
+        # and exactly ONE sees a different input. Carrying an un-redacted second
+        # copy of the sentence through the pipeline to protect one hash is a
+        # worse trade than the churn, and a full backfill rehashes every incident
+        # consistently in any case.
         digest_source = redact_credentials(causal_message or "")
         signal_digest = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()[:16]
         sig_input = f"unknown|{job_name}|{failed_component or ''}|{pattern_id or ''}|{signal_digest}"
@@ -1067,16 +1247,19 @@ def _derive_confidence(
     """Confidence reflects evidence quality: strong-signal count AND catalog match.
 
     high   : >=2 strong signals confirmed by a specific catalog pattern.
-    medium : exactly one strong signal, OR >=2 signals matched only by a
-             low-specificity pattern.
-    low    : no strong signals, OR only the fallback pattern matched
+    medium : exactly one strong signal, OR a highly specific deterministic
+             message pattern, OR >=2 signals matched only by a low-specificity
+             pattern.
+    low    : no strong signals and no specific message pattern, OR only the fallback pattern
              (generic.unknown / exception.generic). Persisted verbatim as "low"
              so Slice 4 can trigger the LLM fallback on it.
     """
     strong = sum(1 for v in (error_code, exception_class) if v is not None)
     specificity = pattern.specificity if pattern is not None else 0
-    if strong == 0 or specificity <= _FALLBACK_PATTERN_CEILING:
+    if specificity <= _FALLBACK_PATTERN_CEILING:
         return "low"
     if strong >= 2 and specificity >= _SPECIFIC_PATTERN_FLOOR:
         return "high"
+    if strong == 0 and specificity < _SPECIFIC_PATTERN_FLOOR:
+        return "low"
     return "medium"

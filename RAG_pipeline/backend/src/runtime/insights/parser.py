@@ -3,13 +3,31 @@
 Pure functions: no I/O, no side effects. Returns None/empty for fields that
 cannot be reliably extracted — never invents causes or fills uncertain values.
 
-Credential redaction is applied to any extracted values that might embed
-connection strings (endpoint). The parser does not store raw log messages
-wholesale; it returns the extracted structural signals plus ``causal_message``,
-the single diagnostic line that the emitting runtime itself wrote to explain the
-fault. That line is redacted before it leaves the parser and IS persisted — it is
-the only field that carries the runtime's own words, and reconstructing an
-equivalent sentence from tokens loses information the log already stated.
+Redaction
+---------
+Every field this parser returns that carries provider PROSE or an ADDRESS is
+redacted before it leaves, because each one is persisted into
+``runtime_enriched_events`` and flows on into text an LLM reads. Keyword
+credential filtering is not sufficient and never was: measured over the stored
+corpus it fires on zero rows, while what passed through verbatim was entity
+SHAPE — a customer object-store bucket (``gs://<customer>-talend/...``), internal
+FQDNs (``https://talend-acc.<internal>/...``), a customer SaaS host and an Azure
+tenant UUID. ``redact_log_text`` therefore composes the keyword filter with
+:func:`src.runtime.redaction.redact_entities`, and the two structurally-typed
+address fields get whole-value treatment (:func:`redact_endpoint`,
+:func:`redact_host`) because part of an address is still an address.
+
+What survives is the diagnosis: component names (``tMSSqlConnection_2``),
+Java/.NET class names (``java.net.SocketException``), URI schemes, error codes
+and field/table names. See ``src.runtime.redaction`` for why each is structurally
+protected rather than protected by luck.
+
+The parser does not store raw log messages wholesale; it returns the extracted
+structural signals plus ``causal_message``, the single diagnostic line that the
+emitting runtime itself wrote to explain the fault. That line is redacted before
+it leaves the parser and IS persisted — it is the only field that carries the
+runtime's own words, and reconstructing an equivalent sentence from tokens loses
+information the log already stated.
 
 Dialect dispatch
 ----------------
@@ -42,6 +60,22 @@ import re
 from collections.abc import Iterable
 
 from src.runtime.insights.catalog import CATALOG
+
+# `redact_credentials` lives in the leaf `src.runtime.redaction` module and is
+# re-exported here: importing it FROM this module drags in
+# `src.runtime.insights.__init__` -> `insights.repository` -> `store.repository`,
+# which imports `redaction` back, and the cycle then resolved or blew up
+# depending on which module the interpreter loaded first. Callers keep the
+# familiar `from src.runtime.insights.parser import redact_credentials`.
+#
+# The import direction is one-way and must stay that way: `redaction` is a LEAF
+# and imports nothing from `src.runtime`, so `parser -> redaction` can never
+# close a cycle no matter which module an interpreter loads first.
+from src.runtime.redaction import (  # noqa: F401
+    HOST_PLACEHOLDER,
+    redact_credentials,
+    redact_entities,
+)
 
 # ---------------------------------------------------------------------------
 # Regex library
@@ -79,12 +113,6 @@ _HTTP_URL_RE = re.compile(r"https?://[^\s,)\]]+")
 _HTTP_HOST_RE = re.compile(r"https?://([^\s:/]+)")
 _JMS_QUEUE_RE = re.compile(r"jms:queue:([^\s(,\]]+)", re.IGNORECASE)
 _SELECT_TABLE_RE = re.compile(r"\bSELECT(?:\s+\w+)?\s+on\s+(\w+)", re.IGNORECASE)
-_CREDENTIAL_RE = re.compile(
-    r"(?i)(password|passwd|pwd|token|secret|api[_\-]?key)\s*[=:]\s*\S+",
-)
-# Inline URL/JDBC userinfo: scheme://user:pass@host or jdbc:...user/pass@host.
-# Requires a trailing "@host" so plain "host:port" (no userinfo) is never touched.
-_USERINFO_RE = re.compile(r"[^\s:/@]+[:/][^\s:/@]+@(?=/*[^\s/@])")
 # Field violations are intentionally conservative: a field name must be
 # explicitly labelled by the emitting runtime.  Capturing arbitrary quoted text
 # would turn values/payload data into invented lineage evidence.
@@ -144,19 +172,105 @@ _VIOLATION_UNKNOWN_FIELD = "unknown_field"
 
 
 # ---------------------------------------------------------------------------
+# Redaction of prompt-facing values
+# ---------------------------------------------------------------------------
+#
+# One composed helper, used at every point where provider log text becomes a
+# stored or prompt-facing value. Having a single entry point is the whole point:
+# the reason `endpoint` shipped 10.4k rows of customer buckets and internal
+# hostnames is that each assignment site independently chose `redact_credentials`
+# and none of them was wrong on its own terms.
+
+# Returned instead of the input when redaction itself fails. Degradation over
+# failure: a value that could not be proven safe is not emitted, and no caller in
+# the ingest path is ever aborted by a redaction bug.
+REDACTION_FAILED_PLACEHOLDER = "<redacted>"
+
+# Any authority still standing after `redact_entities` has run. The generic URI
+# rule keys on `scheme://`, which Talend's Oracle driver URL does not have:
+# `jdbc:oracle:thin:@//db-prod-scan:1521/ORCLPDB1` puts `:@` between the scheme
+# chain and the `//`, so both the URI rule and the FQDN rule missed it and the
+# single-label internal host survived intact (verified in the stored corpus).
+# Applied to the `endpoint` field only, where every `//authority` is by
+# definition an address. The lookahead keeps the pass idempotent.
+_RESIDUAL_AUTHORITY_RE = re.compile(r"//(?!<host>|<bucket>)[^\s/?#]+")
+
+# `redact_entities` is not idempotent over its OWN output. Its URI rule stops the
+# authority at `>` (part of the delimiter class that keeps trailing punctuation
+# out of a match), so a second pass over `https://<host>/...` reads the authority
+# as `<host` with no path, re-emits `https://<host>`, and leaves the orphaned `>`
+# behind: `https://<host>>/...`, growing by one character per pass.
+#
+# That matters here and not in the doc-evidence lane because this lane redacts
+# twice by design -- once on write so nothing identifying is stored, once on read
+# so the rows written before the fix are covered too. Collapsing the artefact
+# makes the composition a true no-op on already-clean text, which is the property
+# the read path is entitled to assume.
+#
+# The underlying non-idempotency is a one-character fix in `src.runtime.redaction`
+# (admit `>` inside the URI remainder) and belongs to that module's owner.
+_PLACEHOLDER_ARTEFACT_RE = re.compile(r"(<host>|<bucket>)>+")
+
+
+def redact_log_text(text: str | None) -> str | None:
+    """Redact credentials AND identifying entity shapes from provider log text.
+
+    The standard treatment for any free-text value derived from a provider log
+    line that is persisted or sent to a model. ``None``/empty passes through
+    unchanged so callers keep "absent" distinct from "redacted".
+
+    Idempotent: re-running it over already-redacted text is a no-op, which is
+    what makes it safe to apply on the read path as well as the write path.
+
+    Never raises. Both underlying passes are pure regex over ``str`` and cannot
+    fail for a string input, but a non-string slipping in from an adapter must
+    degrade to a placeholder rather than take down an ingest batch.
+    """
+    if not text:
+        return text
+    try:
+        redacted = redact_entities(redact_credentials(str(text)))
+        return _PLACEHOLDER_ARTEFACT_RE.sub(r"\1", redacted)
+    except Exception:  # pragma: no cover - defensive; see docstring
+        return REDACTION_FAILED_PLACEHOLDER
+
+
+def redact_endpoint(value: str | None) -> str | None:
+    """Redact a value whose entire content is an endpoint address.
+
+    ``redact_log_text`` plus a flattening of any authority the shared URI rule
+    could not see. Structurally-typed, so it can be stricter than the free-text
+    pass without losing diagnosis: the scheme, the driver chain and the object
+    path all survive, and only the host/bucket identity is normalised.
+    """
+    redacted = redact_log_text(value)
+    if not redacted:
+        return redacted
+    return _RESIDUAL_AUTHORITY_RE.sub(f"//{HOST_PLACEHOLDER}", redacted)
+
+
+def redact_host(value: str | None) -> str | None:
+    """Normalise a value whose entire content is a host.
+
+    Whole-value, not shape-matched. ``redact_entities`` recognises a host by dot
+    structure, so it correctly flattens ``mas.manage.infranl.almhosting.com`` but
+    leaves the single-label internal names this field is full of — ``SRVA0673``,
+    ``srvo0667``, ``db-prod-scan`` — untouched. A field that holds nothing but an
+    address does not need shape inference: the address IS the value.
+
+    The field is kept rather than dropped because presence, not content, is what
+    the pipeline reads from it (``_infer_message_family``, ``_derive_confidence``,
+    ``builder._carries_no_signal``, and the catalog's ``{host}`` slot). Returning
+    the placeholder preserves every one of those decisions exactly.
+    """
+    if not value:
+        return value
+    return HOST_PLACEHOLDER
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-
-
-def redact_credentials(text: str) -> str:
-    """Replace credential patterns with <redacted>.
-
-    Covers both keyword forms (password=..., token:...) and inline URL/JDBC
-    userinfo (user:pass@host, user/pass@host). Userinfo is stripped first so a
-    secret embedded in a connection string never survives into a persisted field.
-    """
-    redacted = _USERINFO_RE.sub("<redacted>@", text)
-    return _CREDENTIAL_RE.sub(r"\1=<redacted>", redacted)
 
 
 def _simple_class_name(qualified: str) -> str:
@@ -489,6 +603,10 @@ class ParsedRuntimeLog:
     retry_max: int | None = None
     duration_ms: int | None = None
     timeout_ms: int | None = None
+    # Redacted address fields. `endpoint` keeps its scheme/driver/object path and
+    # loses the authority; `host` is the `<host>` placeholder whenever a host was
+    # present at all. Both are persisted, so "was there an address" survives and
+    # "whose address" does not.
     endpoint: str | None = None
     host: str | None = None
     database_name: str | None = None
@@ -516,8 +634,9 @@ def parse_runtime_log_message(
     """Extract structural signals from a runtime log message string.
 
     Conservative extraction: returns None for a field when the signal is absent
-    or ambiguous. Does not invent causes. Credential-like values in extracted
-    endpoint strings and in ``causal_message`` are redacted before returning.
+    or ambiguous. Does not invent causes. ``endpoint``, ``host`` and
+    ``causal_message`` are redacted before returning — credentials AND
+    identifying entity shape, not credentials alone (see the module docstring).
 
     ``known_components`` is the authoritative component inventory for the
     project (``runtime_component_metrics.component_key``). Supplying it lets the
@@ -569,7 +688,7 @@ def parse_runtime_log_message(
         (causal_line, diagnostic, _self_describing_fault(message))
     )
     if causal:
-        result.causal_message = redact_credentials(causal)
+        result.causal_message = redact_log_text(causal)
 
     # Retry attempt / max — only when the dialect did not already state it.
     if result.retry_attempt is None:
@@ -613,20 +732,28 @@ def _extract_endpoints(message: str, result: ParsedRuntimeLog) -> None:
 
     Ordered by specificity: an explicit JDBC URL beats an HTTP URL beats a
     storage URI, because the more specific form also identifies the database.
+
+    ``endpoint`` and ``host`` are ADDRESSES and are normalised on the way out
+    (:func:`redact_endpoint`, :func:`redact_host`). ``database_name`` /
+    ``table_name`` / ``queue_name`` are deliberately NOT: they are single-token
+    schema object names inside an already-anonymised system, they are the
+    diagnosis itself ("Invalid dataset ID ..."), and running the entity pass over
+    them would buy nothing while risking a lowercase dotted object name being
+    read as an FQDN.
     """
     jdbc_m = _JDBC_AT_URL_RE.search(message) or _JDBC_AUTHORITY_URL_RE.search(message)
     if jdbc_m:
-        result.host = jdbc_m.group(1)
+        result.host = redact_host(jdbc_m.group(1))
         result.database_name = jdbc_m.group(2)
-        result.endpoint = redact_credentials(message[jdbc_m.start() : jdbc_m.end()])
+        result.endpoint = redact_endpoint(message[jdbc_m.start() : jdbc_m.end()])
 
     if result.endpoint is None:
         http_m = _HTTP_URL_RE.search(message)
         if http_m:
-            result.endpoint = redact_credentials(http_m.group(0))
+            result.endpoint = redact_endpoint(http_m.group(0))
             host_m = _HTTP_HOST_RE.search(message)
             if host_m and result.host is None:
-                result.host = host_m.group(1)
+                result.host = redact_host(host_m.group(1))
 
     # BigQuery states the offending object explicitly.
     bq_dataset = _BQ_INVALID_DATASET_RE.search(message)
@@ -634,11 +761,11 @@ def _extract_endpoints(message: str, result: ParsedRuntimeLog) -> None:
         result.database_name = bq_dataset.group(1)
     bq_missing = _BQ_NOT_FOUND_URI_RE.search(message)
     if bq_missing and result.endpoint is None:
-        result.endpoint = redact_credentials(bq_missing.group(1))
+        result.endpoint = redact_endpoint(bq_missing.group(1))
     if result.endpoint is None:
         gcs_m = _GCS_URI_RE.search(message)
         if gcs_m:
-            result.endpoint = redact_credentials(gcs_m.group(0))
+            result.endpoint = redact_endpoint(gcs_m.group(0))
 
     jms_m = _JMS_QUEUE_RE.search(message)
     if jms_m:

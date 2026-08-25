@@ -9,6 +9,7 @@ from pathlib import Path
 import markdown
 
 from mcp_server.config import config
+from mcp_server.services.doc_quality_scorer import is_published_doc_filename
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,11 @@ class PdfService:
         if not docs_dir.is_dir():
             return {"converted": 0, "failed": 0, "errors": [f"No docs dir: {docs_dir}"]}
 
-        md_files = sorted(docs_dir.glob("*.md"))
+        md_files = sorted(
+            path
+            for path in docs_dir.glob("*.md")
+            if is_published_doc_filename(path.name)
+        )
         if not md_files:
             return {"converted": 0, "failed": 0, "errors": ["No .md files found"]}
 
@@ -137,6 +142,8 @@ class PdfService:
 
         result: list[dict] = []
         for md_file in sorted(docs_dir.glob("*.md")):
+            if not is_published_doc_filename(md_file.name):
+                continue
             stat = md_file.stat()
             pdf_exists = (pdf_dir / md_file.with_suffix(".pdf").name).exists() if pdf_dir.is_dir() else False
             result.append({

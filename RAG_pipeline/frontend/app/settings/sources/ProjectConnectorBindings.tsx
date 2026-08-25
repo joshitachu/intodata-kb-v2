@@ -172,7 +172,260 @@ export function ProjectConnectorBindings({ projectId }: { projectId: string }) {
           {mutation.error instanceof Error ? mutation.error.message : "Connector binding could not be saved."}
         </p>
       )}
+
+      <RuntimeMirrorScopeRow projectId={projectId} />
     </section>
+  );
+}
+
+interface MirroredEnvironment {
+  environment_id: string;
+  name: string;
+  run_count: number;
+  last_run_at: string | null;
+}
+
+interface DocReadScope {
+  environment_ids: string[] | null;
+  environment_names: string[];
+  window_days: number | null;
+  configured: boolean;
+  unavailable_environment_ids: string[];
+}
+
+interface DocReadScopeResponse {
+  project_id: string;
+  scope: DocReadScope;
+  available_environments: MirroredEnvironment[];
+}
+
+interface RuntimeSourceSummary {
+  id: number;
+  project_id: string;
+  source_type: string;
+  label: string;
+  enabled: boolean;
+  last_synced_at?: string | null;
+}
+
+/** Which slice of the runtime mirror this project's documentation reads.
+ *
+ * The counterpart of a connector binding, for the other kind of live data. It
+ * is a READ scope: narrowing it costs nothing at the vendor API and needs no
+ * re-mirroring, unlike the ingest scope set when the connection was registered.
+ *
+ * Two rules hold this together and are worth not breaking:
+ *   - the environment list comes from the MIRROR, never from a live provider
+ *     call, so a chosen environment always has data behind it;
+ *   - "every environment" is a real, distinct state from a selection that
+ *     happens to include all of them, because a later ingest-scope change adds
+ *     environments to the former and not to the latter.
+ */
+function RuntimeMirrorScopeRow({ projectId }: { projectId: string }) {
+  const queryClient = useQueryClient();
+  const scopeKey = ["runtime-doc-read-scope", projectId] as const;
+
+  const scopeQuery = useQuery({
+    queryKey: scopeKey,
+    queryFn: async (): Promise<DocReadScopeResponse> => {
+      const response = await fetch(
+        `/api/runtime/doc-read-scope?project_id=${encodeURIComponent(projectId)}`,
+        { credentials: "include", cache: "no-store" },
+      );
+      if (!response.ok) throw new Error(await errorMessage(response));
+      return response.json();
+    },
+    retry: false,
+  });
+
+  const sourcesQuery = useQuery({
+    queryKey: ["runtime-sources"],
+    queryFn: async (): Promise<{ sources: RuntimeSourceSummary[] }> => {
+      const response = await fetch("/api/runtime/sources", {
+        credentials: "include",
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error(await errorMessage(response));
+      return response.json();
+    },
+    retry: false,
+  });
+
+  const sources = (sourcesQuery.data?.sources ?? []).filter(
+    (source) => source.project_id === projectId,
+  );
+  const scope = scopeQuery.data?.scope;
+  const environments = scopeQuery.data?.available_environments ?? [];
+
+  const [allEnvironments, setAllEnvironments] = useState(true);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [windowDays, setWindowDays] = useState("");
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!scope) return;
+    setAllEnvironments(scope.environment_ids === null);
+    setSelected(scope.environment_ids ?? []);
+    setWindowDays(scope.window_days ? String(scope.window_days) : "");
+  }, [scope?.environment_ids?.join(","), scope?.window_days]);
+
+  const save = useMutation({
+    mutationFn: async () => {
+      const parsedWindow = Number.parseInt(windowDays, 10);
+      const config = {
+        // null clears the narrowing back to "every mirrored environment".
+        doc_environment_ids: allEnvironments ? null : selected,
+        doc_window_days: Number.isFinite(parsedWindow) && parsedWindow > 0 ? parsedWindow : null,
+      };
+      // Every source feeding this project gets the same read scope. They mirror
+      // one estate into one document set, so a per-source split would produce a
+      // document whose halves describe different environments.
+      for (const source of sources) {
+        const response = await fetch(`/api/runtime/sources/${source.id}/config`, {
+          method: "PATCH",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ config }),
+        });
+        if (!response.ok) throw new Error(await errorMessage(response));
+      }
+    },
+    onSuccess: () => {
+      setSaveError(null);
+      queryClient.invalidateQueries({ queryKey: scopeKey });
+    },
+    onError: (error) => {
+      setSaveError(error instanceof Error ? error.message : "Read scope could not be saved.");
+    },
+  });
+
+  if (scopeQuery.isLoading || sourcesQuery.isLoading) return null;
+  // No mirror for this project: there is nothing to scope, and an empty picker
+  // would imply the project is missing a setting rather than a connection.
+  if (sources.length === 0) return null;
+
+  const savedIds = scope?.environment_ids ?? null;
+  const dirty =
+    allEnvironments !== (savedIds === null) ||
+    (!allEnvironments &&
+      (selected.length !== (savedIds?.length ?? 0) ||
+        selected.some((id) => !(savedIds ?? []).includes(id)))) ||
+    windowDays !== (scope?.window_days ? String(scope.window_days) : "");
+
+  const lastSynced = sources
+    .map((source) => source.last_synced_at)
+    .filter(Boolean)
+    .sort()
+    .pop();
+
+  return (
+    <div className="mt-4 rounded-md border border-border p-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-sky-300/50 bg-sky-50 text-sky-700">
+          <PlugZap className="h-4 w-4" aria-hidden />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium">Runtime history</p>
+          <p className="text-xs text-muted-foreground">
+            Mirrored · every run
+            {lastSynced ? ` · last synced ${new Date(lastSynced).toLocaleString()}` : ""}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-2 space-y-2 pl-12">
+        <label className="flex items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            checked={allEnvironments}
+            onChange={(event) => {
+              setAllEnvironments(event.target.checked);
+              if (!event.target.checked && selected.length === 0) {
+                setSelected(environments.map((environment) => environment.environment_id));
+              }
+            }}
+          />
+          Read every mirrored environment
+        </label>
+
+        {!allEnvironments && (
+          <div className="flex flex-wrap gap-1.5">
+            {environments.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No environment has appeared in the mirror yet. Wait for a sync, or widen this
+                connection&apos;s ingest scope.
+              </p>
+            ) : (
+              environments.map((environment) => {
+                const active = selected.includes(environment.environment_id);
+                return (
+                  <button
+                    key={environment.environment_id}
+                    type="button"
+                    onClick={() =>
+                      setSelected((current) =>
+                        current.includes(environment.environment_id)
+                          ? current.filter((id) => id !== environment.environment_id)
+                          : [...current, environment.environment_id],
+                      )
+                    }
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors",
+                      active
+                        ? "border-primary/40 bg-primary/5 text-foreground"
+                        : "border-border text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {active && <Check className="h-3 w-3 shrink-0" />}
+                    {environment.name}
+                    <span className="text-muted-foreground">{environment.run_count} runs</span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        )}
+
+        {scope && scope.unavailable_environment_ids.length > 0 && (
+          <p className="text-xs text-amber-700">
+            {scope.unavailable_environment_ids.length} selected environment
+            {scope.unavailable_environment_ids.length === 1 ? " is" : "s are"} not in the mirror and
+            contribute nothing. Widen the ingest scope or deselect them.
+          </p>
+        )}
+
+        <label className="flex items-center gap-2 text-xs">
+          Look back
+          <input
+            type="number"
+            min={1}
+            max={365}
+            value={windowDays}
+            onChange={(event) => setWindowDays(event.target.value)}
+            placeholder="90"
+            className="h-7 w-20 rounded-md border border-input bg-background px-2 text-xs"
+          />
+          days
+          <span className="text-muted-foreground">(blank uses the generator&apos;s default)</span>
+        </label>
+      </div>
+
+      <div className={cn("mt-3 flex items-center justify-end gap-3", !dirty && !save.isPending && "hidden")}>
+        {!allEnvironments && selected.length === 0 && (
+          <span className="text-xs text-muted-foreground">Select at least one environment.</span>
+        )}
+        <Button
+          size="sm"
+          variant="secondary"
+          isLoading={save.isPending}
+          disabled={!allEnvironments && selected.length === 0}
+          onClick={() => save.mutate()}
+        >
+          Save read scope
+        </Button>
+      </div>
+      {saveError && <p className="mt-2 text-xs text-destructive">{saveError}</p>}
+    </div>
   );
 }
 

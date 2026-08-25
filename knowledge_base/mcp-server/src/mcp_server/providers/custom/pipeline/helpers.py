@@ -240,6 +240,20 @@ class HarnessHelpersImpl:  # noqa: PLR0904 — intentionally wide delegation sur
 
     # ── Phase 3 helpers ──────────────────────────────────────────────────────
 
+    def ensure_runtime_evidence(
+        self, ctx: "DocGenContext", state: "HarnessRunState", log_cb: "LogCallback"
+    ):
+        """Produce the run's runtime-evidence artifacts (idempotent per run).
+
+        Deliberately on the facade rather than inside a phase driver: the custom
+        pipeline reaches it from `phases/phase3_docs.py` and the OpenCode engine
+        from `_prepare_run`, so both engines share ONE producer. Runtime
+        evidence used to be provider state populated inside the custom engine's
+        Phase 3 driver, which is why OpenCode reused the consumer
+        (`phase3_context_files`) and never the producer.
+        """
+        return self._p._ensure_runtime_evidence(ctx, state, log_cb)  # type: ignore[attr-defined]
+
     def phase3_docs(self, ctx: "DocGenContext", state: "HarnessRunState", log_cb: "LogCallback"):
         return self._p._phase3_docs(ctx, state, log_cb)  # type: ignore[attr-defined]
 

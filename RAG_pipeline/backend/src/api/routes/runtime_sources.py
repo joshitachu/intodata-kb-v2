@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import datetime
 import logging
 import re
 
@@ -10,16 +12,20 @@ from src.api.dependencies import DBSession, QdrantClient, RuntimeSourceReader, R
 from src.config import settings
 from src.rbac.permissions import get_user_project_ids
 from src.runtime.models import (
+    RuntimeScopeOption,
+    RuntimeSourceConfigUpdate,
     RuntimeSourceCreate,
     RuntimeSourceRead,
     RuntimeSourceRotateCredentials,
+    RuntimeSourceScopeDiscovery,
     RuntimeSourceUpdate,
 )
 from src.runtime.providers import RuntimeProviderError
-from src.runtime.providers.base import find_non_ascii_credential_field
+from src.runtime.providers.base import editable_config_fields, find_non_ascii_credential_field
 from src.runtime.source_registry import get_source_provider
 from src.runtime.store import ProjectScope, RuntimeDuplicateSourceError, RuntimeRecordNotFoundError, RuntimeStoreRepository
 from src.runtime.sync import run_runtime_source_sync_cycle
+from src.runtime.sync.progress import sync_progress
 from src.runtime.audit import log_runtime_source_event
 
 logger = logging.getLogger(__name__)
@@ -42,6 +48,58 @@ class RuntimeSourceSyncResponse(BaseModel):
     source: RuntimeSourceRead
     status: str
     records_ingested: int
+
+
+class RuntimeSourceScopesResponse(BaseModel):
+    scopes: list[RuntimeScopeOption]
+
+
+class RuntimeSourceSyncStatusResponse(BaseModel):
+    """Live state of an in-flight sync; all fields absent when nothing runs."""
+
+    running: bool
+    phase: str | None = None
+    records: int = 0
+    started_at: datetime.datetime | None = None
+
+
+def _assert_scope_selection_valid(provider, credentials: dict) -> None:
+    """Reject a save that leaves a required ingest scope unset.
+
+    Without this an operator who skips the connection test silently registers a
+    whole-tenant poll, which is the expensive default the selection exists to
+    avoid.
+    """
+    selection = provider.scope_selection()
+    if selection is None or not selection.required:
+        return
+    value = credentials.get(selection.field)
+    chosen = [item for item in value if str(item).strip()] if isinstance(value, list) else []
+    if not chosen:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Select at least one {selection.label.rstrip('s').lower()} before saving",
+        )
+
+
+async def _discover_scopes(provider, credentials: dict) -> list[RuntimeScopeOption]:
+    """Run a provider's connection test and return what it can reach."""
+    bad_field = find_non_ascii_credential_field(provider.credential_schema(), credentials)
+    if bad_field is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Field '{bad_field}' contains a non-ASCII character. Re-type it instead of pasting from a rich-text source.",
+        )
+    ok, error = await provider.validate_credentials(credentials)
+    if not ok:
+        raise HTTPException(status_code=400, detail=_sanitize_error(error) or "Connection validation failed")
+    try:
+        return await provider.discover_scopes(credentials)
+    except (RuntimeProviderError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=_sanitize_error(str(exc)) or "Could not list the scopes for these credentials",
+        )
 
 
 def _intersect_scope(scope: ProjectScope, project_id: str | None) -> ProjectScope:
@@ -78,6 +136,100 @@ async def list_runtime_sources(
     return RuntimeSourceListResponse(sources=sources, total=len(sources))
 
 
+@router.post("/discover", response_model=RuntimeSourceScopesResponse)
+async def discover_runtime_source_scopes(
+    body: RuntimeSourceScopeDiscovery,
+    user: RuntimeSourceWriter,
+    db: DBSession,
+) -> RuntimeSourceScopesResponse:
+    """Test unsaved credentials and list the ingest scopes they can reach.
+
+    This is the Add-source dialog's "test connection": a 200 means the
+    credentials work, and the payload is what the operator picks from. Nothing
+    is written, so it is safe to call repeatedly while typing.
+    """
+    provider = get_source_provider(body.provider_key)
+    if provider is None:
+        raise HTTPException(status_code=400, detail="Unknown runtime source type")
+    return RuntimeSourceScopesResponse(scopes=await _discover_scopes(provider, body.credentials))
+
+
+@router.post("/{source_id}/scopes", response_model=RuntimeSourceScopesResponse)
+async def list_runtime_source_scopes(
+    source_id: int,
+    user: RuntimeSourceWriter,
+    db: DBSession,
+) -> RuntimeSourceScopesResponse:
+    """List the ingest scopes reachable with a registered source's stored credentials."""
+    repo = RuntimeStoreRepository(db)
+    try:
+        source = await repo.get_source_config(source_id, await get_user_project_ids(user, db))
+        credentials, _key_id = await repo.read_credentials(source_id)
+    except RuntimeRecordNotFoundError:
+        raise HTTPException(status_code=404, detail="Runtime source not found")
+    provider = get_source_provider(source.source_type)
+    if provider is None:
+        raise HTTPException(status_code=400, detail="Unknown runtime source type")
+    return RuntimeSourceScopesResponse(scopes=await _discover_scopes(provider, credentials))
+
+
+@router.patch("/{source_id}/config", response_model=RuntimeSourceResponse)
+async def update_runtime_source_config(
+    source_id: int,
+    body: RuntimeSourceConfigUpdate,
+    user: RuntimeSourceWriter,
+    db: DBSession,
+) -> RuntimeSourceResponse:
+    """Update the non-secret settings stored beside a source's credentials.
+
+    Ingest scope, filters, and history windows live in the credential blob
+    because that is this connector framework's per-source config store. Editing
+    them through the rotation path would force an operator to re-type the API
+    token, so this route merges the declared non-secret fields in place and
+    leaves the secret untouched. Identity-bearing fields stay frozen: changing
+    one would repoint the source at a different account while keeping the
+    history ingested from the old one.
+    """
+    repo = RuntimeStoreRepository(db)
+    scope = await get_user_project_ids(user, db)
+    try:
+        source = await repo.get_source_config(source_id, scope)
+        credentials, _key_id = await repo.read_credentials(source_id)
+    except RuntimeRecordNotFoundError:
+        raise HTTPException(status_code=404, detail="Runtime source not found")
+    provider = get_source_provider(source.source_type)
+    if provider is None:
+        raise HTTPException(status_code=400, detail="Unknown runtime source type")
+    allowed = set(editable_config_fields(provider))
+    rejected = sorted(set(body.config) - allowed)
+    if rejected:
+        raise HTTPException(
+            status_code=400,
+            detail=f"These fields cannot be changed here: {', '.join(rejected)}",
+        )
+    merged = {**credentials, **body.config}
+    _assert_scope_selection_valid(provider, merged)
+    ok, error = await provider.validate_credentials(merged)
+    if not ok:
+        raise HTTPException(status_code=400, detail=_sanitize_error(error) or "Configuration is not valid")
+    await repo.write_credentials(
+        source_id=source_id,
+        plaintext_payload=merged,
+        credential_type=source.source_type,
+        rotated_by=str(user.id),
+    )
+    await log_runtime_source_event(
+        db,
+        user=user,
+        action="source_config_updated",
+        source_id=source_id,
+        # Values can name environments and filters but never a secret: the
+        # allow-list above excludes every field the provider marks secret.
+        details={"fields": sorted(body.config)},
+    )
+    return RuntimeSourceResponse(source=await repo.get_source_config(source_id, scope))
+
+
 @router.post("", response_model=RuntimeSourceResponse)
 async def create_runtime_source(
     body: RuntimeSourceCreate,
@@ -89,16 +241,24 @@ async def create_runtime_source(
     provider = get_source_provider(body.provider_key)
     if provider is None:
         raise HTTPException(status_code=400, detail="Unknown runtime source type")
+    repo = RuntimeStoreRepository(db)
+    if provider.provider_key() == "tmc" and await repo.find_source_id_by_project_and_type(
+        body.project_id, "tmc"
+    ) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This project already has a TMC source. Edit its ingest scope to add environments.",
+        )
     bad_field = find_non_ascii_credential_field(provider.credential_schema(), body.credentials)
     if bad_field is not None:
         raise HTTPException(
             status_code=400,
             detail=f"Field '{bad_field}' contains a non-ASCII character. Re-type it instead of pasting from a rich-text source.",
         )
+    _assert_scope_selection_valid(provider, body.credentials)
     ok, error = await provider.validate_credentials(body.credentials)
     if not ok:
         raise HTTPException(status_code=400, detail=_sanitize_error(error) or "Connection validation failed")
-    repo = RuntimeStoreRepository(db)
     try:
         physical_identity = await provider.resolve_physical_identity(body.credentials)
     except (RuntimeProviderError, ValueError) as exc:
@@ -220,14 +380,24 @@ async def rotate_runtime_source_credentials(
             status_code=400,
             detail=f"Field '{bad_field}' contains a non-ASCII character. Re-type it instead of pasting from a rich-text source.",
         )
-    ok, error = await provider.validate_credentials(body.credentials)
+    # A rotation replaces the secret, not the source's configuration. Carrying
+    # the stored non-secret settings forward keeps the ingest scope, filters,
+    # and history window intact instead of silently resetting them to defaults
+    # whenever a token is renewed.
+    try:
+        stored, _key_id = await repo.read_credentials(source_id)
+    except RuntimeRecordNotFoundError:
+        stored = {}
+    rotated_credentials = {**stored, **body.credentials}
+    _assert_scope_selection_valid(provider, rotated_credentials)
+    ok, error = await provider.validate_credentials(rotated_credentials)
     if not ok:
         raise HTTPException(status_code=400, detail=_sanitize_error(error) or "Connection validation failed")
     # A rotated credential can point at a different account than the one this
     # source was registered for. The identity has to follow the credentials,
     # and may not land on an account another source already owns.
     try:
-        rotated_identity = await provider.resolve_physical_identity(body.credentials)
+        rotated_identity = await provider.resolve_physical_identity(rotated_credentials)
         await repo.promote_source_identity(source_id, rotated_identity)
     except (RuntimeProviderError, ValueError) as exc:
         raise HTTPException(
@@ -241,7 +411,7 @@ async def rotate_runtime_source_credentials(
         )
     await repo.write_credentials(
         source_id=source_id,
-        plaintext_payload=body.credentials,
+        plaintext_payload=rotated_credentials,
         credential_type=source.source_type,
         rotated_by=str(user.id),
     )
@@ -255,6 +425,48 @@ async def rotate_runtime_source_credentials(
     return RuntimeSourceResponse(source=await repo.get_source_config(source_id, scope))
 
 
+async def _run_sync_detached(source_id: int, semantic_indexer) -> None:
+    """Run one cycle on its own session, outside the request that started it."""
+    from src.db.session import async_session_factory
+
+    async with async_session_factory() as session:
+        try:
+            await run_runtime_source_sync_cycle(
+                session, source_id=source_id, semantic_indexer=semantic_indexer
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            # The cycle records its own failure on the source's health row; this
+            # only catches what escapes that, and must not kill the task silently.
+            logger.exception("Detached runtime sync failed for source %s", source_id)
+        finally:
+            sync_progress.finish(source_id)
+
+
+@router.get("/{source_id}/sync", response_model=RuntimeSourceSyncStatusResponse)
+async def get_runtime_source_sync_status(
+    source_id: int,
+    user: RuntimeSourceReader,
+    db: DBSession,
+) -> RuntimeSourceSyncStatusResponse:
+    """Report whether a sync is in flight, and what it is doing."""
+    repo = RuntimeStoreRepository(db)
+    try:
+        await repo.get_source_config(source_id, await get_user_project_ids(user, db))
+    except RuntimeRecordNotFoundError:
+        raise HTTPException(status_code=404, detail="Runtime source not found")
+    progress = sync_progress.get(source_id)
+    if progress is None:
+        return RuntimeSourceSyncStatusResponse(running=False)
+    return RuntimeSourceSyncStatusResponse(
+        running=True,
+        phase=progress.phase,
+        records=progress.records,
+        started_at=progress.started_at,
+    )
+
+
 @router.post("/{source_id}/sync", response_model=RuntimeSourceSyncResponse)
 async def sync_runtime_source_now(
     source_id: int,
@@ -262,52 +474,40 @@ async def sync_runtime_source_now(
     db: DBSession,
     qdrant: QdrantClient,
 ) -> RuntimeSourceSyncResponse:
+    """Start one sync cycle and return immediately.
+
+    A full cycle takes minutes -- every executable's run history, plus a log
+    download per failure -- so awaiting it here left the caller with a hanging
+    request, no progress, and usually a client timeout that read as "nothing
+    happened". Worse, there was no guard: each retry of that apparently-dead
+    button launched ANOTHER complete import of the same tenant alongside the
+    first. The cycle now runs detached and the caller polls GET on this path.
+    """
     repo = RuntimeStoreRepository(db)
     scope = await get_user_project_ids(user, db)
     try:
-        await repo.get_source_config(source_id, scope)
-        semantic_indexer = None
-        if settings.runtime_semantic_enabled:
-            from src.runtime.semantic.service import RuntimeSemanticService
-
-            semantic_indexer = RuntimeSemanticService(qdrant)
-        result = await run_runtime_source_sync_cycle(
-            db,
-            source_id=source_id,
-            semantic_indexer=semantic_indexer,
-        )
         source = await repo.get_source_config(source_id, scope)
     except RuntimeRecordNotFoundError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    records = (
-        result.executions_written
-        + result.failures_written
-        + result.log_events_written
-        + result.component_metrics_written
-        + result.sources_written
-        + result.environments_written
-        + result.workspaces_written
-        + result.engines_written
-        + result.jobs_written
-        + result.artifacts_written
-        + result.connections_written
-        + result.job_dependencies_written
-        + result.job_runs_written
-        + result.plans_written
-        + result.plan_runs_written
-    )
+    if sync_progress.get(source_id) is not None:
+        raise HTTPException(status_code=409, detail="A sync is already running for this source")
+    semantic_indexer = None
+    if settings.runtime_semantic_enabled:
+        from src.runtime.semantic.service import RuntimeSemanticService
+
+        semantic_indexer = RuntimeSemanticService(qdrant)
+    # Claimed here rather than inside the cycle so a second POST arriving before
+    # the task is scheduled is still refused.
+    sync_progress.begin(source_id, now=datetime.datetime.now(datetime.UTC))
+    asyncio.create_task(_run_sync_detached(source_id, semantic_indexer))
     await log_runtime_source_event(
         db,
         user=user,
         action="source_manual_sync",
         source_id=source_id,
-        details={"status": result.status.value, "records_ingested": records},
+        details={"status": "started"},
     )
-    return RuntimeSourceSyncResponse(
-        source=source,
-        status=result.status.value,
-        records_ingested=records,
-    )
+    return RuntimeSourceSyncResponse(source=source, status="started", records_ingested=0)
 
 
 @router.delete("/{source_id}", status_code=204)

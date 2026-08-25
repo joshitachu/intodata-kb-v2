@@ -358,14 +358,33 @@ function TopologyContent() {
     setCopilotViewContext({});
   }, [navCurrent]);
   const landscapeQuery = useProjectLandscape(selectedProject);
+  // The business canvas is useful only when the validated overlay establishes
+  // at least one directional business stream. A valid, evidence-bounded
+  // overlay may intentionally contain no streams; in that case the existing
+  // design overview is the more useful and truthful root view.
+  const hasRenderableBusinessLandscape = Boolean(
+    landscapeQuery.data?.business_topology
+    && landscapeQuery.data.topology_state?.validated
+    && !landscapeQuery.data.topology_state.stale
+    && landscapeQuery.data.business_topology.data_streams.length > 0,
+  );
   // The scanner-computed landscape supersedes the legacy group roll-up at the
-  // root only. Group detail remains available as the existing Designs path.
-  const showLandscapeRoot = navCurrent.kind === "project" && landscapeQuery.isSuccess;
+  // root only when it can actually render inter-system relationships. Group
+  // detail remains available as the existing Designs path.
+  const showLandscapeRoot = navCurrent.kind === "project"
+    && landscapeQuery.isSuccess
+    && hasRenderableBusinessLandscape;
   const landscapeUnavailable = landscapeQuery.error instanceof LandscapeUnavailableError;
+  const landscapeHasNoDirectionalStreams = navCurrent.kind === "project"
+    && landscapeQuery.isSuccess
+    && !hasRenderableBusinessLandscape;
   const landscapeFailure = Boolean(
     selectedProject && navCurrent.kind === "project" && landscapeQuery.isError && !landscapeUnavailable,
   );
-  const showLegacyCanvas = navCurrent.kind === "group" || (navCurrent.kind === "project" && landscapeUnavailable);
+  const showLegacyCanvas = navCurrent.kind === "group" || (
+    navCurrent.kind === "project"
+    && (landscapeUnavailable || landscapeHasNoDirectionalStreams)
+  );
   const integrationSelection = navCurrent.kind === "integration" ? navCurrent.selection : null;
   const selectedLandscapeEdge = useMemo<TopologyEdge | undefined>(() => {
     if (!landscapeQuery.data || integrationSelection?.kind !== "edge") return undefined;
@@ -2517,6 +2536,11 @@ function TopologyContent() {
         {landscapeUnavailable && navCurrent.kind === "project" && (
           <div className="absolute inset-x-4 top-3 z-30 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900 shadow-sm">
             This project needs a rescan for the organization landscape. Showing the existing project-design topology instead.
+          </div>
+        )}
+        {landscapeHasNoDirectionalStreams && (
+          <div className="absolute inset-x-4 top-3 z-30 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950 shadow-sm">
+            No directional business-system streams were established by this scan. Showing the project-design topology and evidenced external-system participation instead.
           </div>
         )}
         {loading && (

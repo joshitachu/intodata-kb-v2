@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class MCPServerConfig(BaseSettings):
@@ -370,6 +374,29 @@ class MCPServerConfig(BaseSettings):
     runtime_evidence_max_failures: int = 5  # MCP_RUNTIME_EVIDENCE_MAX_FAILURES
     phase3_runtime_evidence_bytes: int = 8_000  # MCP_PHASE3_RUNTIME_EVIDENCE_BYTES
     runtime_evidence_timeout_s: float = 20.0  # MCP_RUNTIME_EVIDENCE_TIMEOUT_S
+    # Project-level runtime rollup (`_analysis/_runtime_profile.md`) attached to
+    # every GROUP/SUMMARY Phase 3 document. It must stay strictly below
+    # `phase3_shared_context_file_bytes` or `plan_phase3_slices` reclassifies it
+    # from SHARED to EVIDENCE and bin-packs it, so slice 1 would see the failing
+    # jobs while slice 3 does not. Clamped (never asserted) in the validator
+    # below: an operator lowering the shared threshold must not crash the server
+    # at import, and `assert` is stripped under `python -O` anyway.
+    phase3_runtime_profile_bytes: int = 12_000  # MCP_PHASE3_RUNTIME_PROFILE_BYTES
+    # Client-side batching for the doc-evidence fetch. The server caps `units`
+    # at 200 (a FastAPI `max_length`; over it the response is a 422 that used to
+    # degrade to "no runtime data for the whole project"), and 200 names at ~30
+    # characters is ~7 KB of query string against a common 8 KB request-line
+    # limit -- so the batch is bounded by BOTH count and encoded query bytes.
+    runtime_evidence_batch_units: int = 200  # MCP_RUNTIME_EVIDENCE_BATCH_UNITS
+    runtime_evidence_max_query_bytes: int = 6_000  # MCP_RUNTIME_EVIDENCE_MAX_QUERY_BYTES
+    # Runtime-side orphan ratio above which the rollup reports a scope mismatch.
+    # Verified: werkorder 1/6 = 0.17 (a correct, deliberately partial scan of a
+    # tRunJob-heavy estate) versus alitalend 91/92 = 0.99 (the one confirmed
+    # mis-binding). The flag states the asymmetry; it never accuses.
+    runtime_evidence_scope_mismatch_ratio: float = 0.75  # MCP_RUNTIME_EVIDENCE_SCOPE_MISMATCH_RATIO
+    runtime_evidence_scope_mismatch_min_orphans: int = 5  # MCP_RUNTIME_EVIDENCE_SCOPE_MISMATCH_MIN_ORPHANS
+    # A matched unit with no execution in this many days is reported as silent.
+    runtime_evidence_silent_days: int = 30  # MCP_RUNTIME_EVIDENCE_SILENT_DAYS
     # A token present in more than this fraction of scanned units is treated as
     # non-distinctive (project-wide boilerplate) and is dropped from non-code
     # association, so ubiquitous identifiers do not attach an item to every unit.
@@ -443,6 +470,17 @@ class MCPServerConfig(BaseSettings):
     docgen_empty_outputs_per_doc_limit: int = 3  # MCP_DOCGEN_EMPTY_OUTPUTS_PER_DOC_LIMIT
     docgen_empty_outputs_per_run_limit: int = 10  # MCP_DOCGEN_EMPTY_OUTPUTS_PER_RUN_LIMIT
     docgen_allowed_slices_per_doc: int = 4  # MCP_DOCGEN_ALLOWED_SLICES_PER_DOC
+    # Stub floor for the doc-depth gate. This is a "did anything get written"
+    # check, NOT a depth measure. Depth is judged per required section against
+    # the contract the Phase 3 prompt actually states (enumerated items / table
+    # rows / substantive prose) -- see `validators.validate_doc_depth`.
+    # It replaced `max(8_000, min(45_000, preprocess_bytes * 0.04))`, which
+    # scaled the required document SIZE with the volume of scanned evidence: on
+    # a large estate every document had to clear 45 KB, so padding and repeated
+    # structure were the cheapest way to pass. Nothing measured redundancy, so
+    # the multi-slice restatements the old Phase 3 slicing produced read as
+    # depth. Never re-derive this from evidence volume.
+    docgen_min_doc_bytes: int = 2_000  # MCP_DOCGEN_MIN_DOC_BYTES
     docgen_min_run_call_budget: int = 40  # MCP_DOCGEN_MIN_RUN_CALL_BUDGET
     docgen_call_budget_base: int = 20  # MCP_DOCGEN_CALL_BUDGET_BASE
     docgen_call_budget_per_group: int = 4  # MCP_DOCGEN_CALL_BUDGET_PER_GROUP
@@ -576,6 +614,10 @@ class MCPServerConfig(BaseSettings):
     rag_push_timeout_s: float = 60.0  # MCP_RAG_PUSH_TIMEOUT_S
     rag_delete_timeout_s: float = 60.0  # MCP_RAG_DELETE_TIMEOUT_S
     rag_usage_timeout_s: float = 10.0  # MCP_RAG_USAGE_TIMEOUT_S
+    # Runtime-source proxy calls are slower than a doc push: creating a source
+    # makes the RAG backend call the vendor API twice (validate_credentials,
+    # then resolve_physical_identity) before it answers.
+    runtime_sources_timeout_s: float = 60.0  # MCP_RUNTIME_SOURCES_TIMEOUT_S
 
     # Vector-store content-hash skip (Slice 2).
     # When enabled, push_docs() skips re-embedding docs whose SHA-256 matches
@@ -607,6 +649,35 @@ class MCPServerConfig(BaseSettings):
         "manual_full_rebuild"  # MCP_MANUAL_FULL_REBUILD_REASON_CODE
     )
     manual_full_rebuild_trigger: str = "manual_full_rebuild"  # MCP_MANUAL_FULL_REBUILD_TRIGGER
+
+    @model_validator(mode="after")
+    def _clamp_runtime_profile_bytes(self) -> "MCPServerConfig":
+        """Keep the runtime rollup strictly under the SHARED-context threshold.
+
+        `plan_phase3_slices` classifies a Phase 3 context file as SHARED purely
+        by size against `phase3_shared_context_file_bytes`. One byte over and
+        the project runtime rollup is treated as splittable evidence, so slice 1
+        sees the failure census and slice 3 does not -- a silently inconsistent
+        document set rather than a visible failure.
+
+        This CLAMPS rather than asserts. `MCPServerConfig` is instantiated at
+        import time, so an unconditional assert turns "an operator lowered
+        MCP_PHASE3_SHARED_CONTEXT_FILE_BYTES" into "the MCP server will not
+        start"; `assert` is also stripped under `python -O`, which makes it no
+        guarantee at all. Consistent with R17: runtime evidence never gates.
+        """
+        ceiling = max(1, self.phase3_shared_context_file_bytes - 1)
+        if self.phase3_runtime_profile_bytes > ceiling:
+            logger.warning(
+                "phase3_runtime_profile_bytes (%d) must stay below "
+                "phase3_shared_context_file_bytes (%d) or the runtime rollup is "
+                "bin-packed as evidence instead of shared context; clamping to %d",
+                self.phase3_runtime_profile_bytes,
+                self.phase3_shared_context_file_bytes,
+                ceiling,
+            )
+            self.phase3_runtime_profile_bytes = ceiling
+        return self
 
     @property
     def logs_dir(self) -> Path:

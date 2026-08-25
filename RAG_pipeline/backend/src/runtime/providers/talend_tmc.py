@@ -50,6 +50,8 @@ from src.runtime.models import (
     RuntimePlanRun,
     RuntimePlanRunStepResult,
     RuntimePlanStep,
+    RuntimeScopeOption,
+    RuntimeScopeSelection,
     RuntimeSource,
     RuntimeSyncStatus,
     RuntimeWorkspace,
@@ -63,6 +65,11 @@ logger = logging.getLogger(__name__)
 # TMC rejects log page sizes above 200 with HTTP 400.
 _LOG_PAGE_SIZE = 200
 _LOG_CAPTURE_LIMIT = 10_000
+# A long-running Route can exceed the capture ceiling by orders of magnitude.
+# Keeping only the first N lines preserves startup noise and loses the terminal
+# failure.  Reserve a small head for lifecycle context and spend the rest on
+# the tail, where TMC reports the final component/error sequence.
+_LOG_HEAD_CAPTURE = 1_000
 _LOG_MAX_POLL_ATTEMPTS = 3
 _LOG_POLL_INTERVAL_SECONDS = 0.0
 _COMPONENT_PAGE_SIZE = 50
@@ -74,11 +81,20 @@ _EXECUTION_WINDOW_DAYS = 10
 # from settings (talend_tmc_failed_log_run_limit /
 # talend_tmc_component_metric_run_limit) so the capture window is tunable per
 # deployment rather than hardcoded.
-_FAILED_LOG_RUN_LIMIT = 500
-_COMPONENT_METRIC_RUN_LIMIT = 200
+_FAILED_LOG_RUN_LIMIT = 10
+_COMPONENT_METRIC_RUN_LIMIT = 25
 _DETAIL_FETCH_CONCURRENCY = 5
 _TRANSPORT_MAX_ATTEMPTS = 3
 _TRANSPORT_RETRY_DELAY_SECONDS = 0.25
+# TMC caps page size per endpoint and does not publish the cap: /orchestration
+# /executables/tasks rejects anything above 100 with HTTP 400 while others take
+# 200. _get_all_pages halves its page size on rejection down to this floor
+# before concluding the endpoint takes no pagination at all.
+_MAX_PAGE_SIZE = 200
+_MIN_PAGE_SIZE = 25
+# The scope-discovery probe only needs each environment's task count, so it
+# asks for the smallest legal page and reads the envelope total.
+_SCOPE_PROBE_PAGE_SIZE = 1
 
 # A source may provide its own comma-separated filters. The WerkOrder default
 # stays business-object-specific: application-only terms such as ``Maximo`` or
@@ -129,6 +145,15 @@ class TalendTmcRuntimeProvider:
         self._base_url_override: str | None = None
         self._task_scope_keywords: tuple[str, ...] = ()
         self._history_days = _DEFAULT_HISTORY_DAYS
+        self._environment_ids: tuple[str, ...] = ()
+        # One client/connection pool per sync. Creating a new AsyncClient for
+        # every history page, log poll and metric probe repeatedly constructs
+        # SSL contexts and transports; hundreds of short-lived clients caused
+        # RSS to climb to the 1GiB container limit during one import.
+        self._http_client: httpx.AsyncClient | None = None
+        # Page-size caps are per endpoint and discovered on first rejection;
+        # caching them keeps the retry cost to one wasted call per path.
+        self._page_size_by_path: dict[str, int] = {}
 
     def provider_key(self) -> str:
         return "tmc"
@@ -153,6 +178,75 @@ class TalendTmcRuntimeProvider:
                 "required": False,
             },
         ]
+
+    def scope_selection(self) -> RuntimeScopeSelection:
+        return RuntimeScopeSelection(
+            field="environment_ids",
+            label="Environments",
+            description=(
+                "Only tasks, plans, and run history from the selected environments "
+                "are polled."
+            ),
+            required=True,
+            multiple=True,
+        )
+
+    def identity_credential_fields(self) -> set[str]:
+        return {"base_url"}
+
+    async def discover_scopes(self, credentials: Mapping[str, Any]) -> list[RuntimeScopeOption]:
+        """List the TMC environments the token can see, with their task counts.
+
+        Reaching /orchestration/environments is exactly what validate_credentials
+        does, so a successful discovery is also a successful connection test.
+        Counts come from the tasks endpoint's envelope total, one cheap probe per
+        environment, so an operator can tell PROD from an empty scratch env
+        before committing to a poll interval.
+        """
+        token = str(credentials.get("api_token") or "").strip()
+        base_url = str(credentials.get("base_url") or "").strip().rstrip("/")
+        if not token or not base_url:
+            raise RuntimeProviderError("Missing required TMC credentials")
+        probe = TalendTmcRuntimeProvider(transport=self._transport)
+        probe._token = token
+        probe._base_url_override = base_url
+        try:
+            environments = await probe._get_all_pages(
+                "/orchestration/environments", max_items=_DEFAULT_FETCH_LIMIT
+            )
+
+            async def option(item: dict[str, Any]) -> RuntimeScopeOption | None:
+                environment_id = _str_field(item, "id", "environment_id")
+                if not environment_id:
+                    return None
+                name = _str_field(item, "name") or environment_id
+                try:
+                    count = await probe._count_tasks_in_environment(environment_id)
+                except RuntimeProviderError:
+                    # A count is a nicety; failing to get one must not hide the
+                    # environment from the operator choosing scopes.
+                    logger.warning("Could not count TMC tasks for environment %s", environment_id)
+                    count = None
+                return RuntimeScopeOption(
+                    id=environment_id,
+                    label=name,
+                    detail=None if count is None else f"{count} task{'' if count == 1 else 's'}",
+                    # Empty environments are almost never what an operator wants to
+                    # poll, so they start unticked while staying selectable.
+                    default_selected=bool(count),
+                )
+
+            options = await asyncio.gather(*(option(item) for item in environments))
+            return [item for item in options if item is not None]
+        finally:
+            await probe.aclose()
+
+    async def _count_tasks_in_environment(self, environment_id: str) -> int | None:
+        page = await self._get(
+            "/orchestration/executables/tasks",
+            params={"environmentId": environment_id, "limit": _SCOPE_PROBE_PAGE_SIZE, "offset": 0},
+        )
+        return _page_total(page, "total", "totalSize")
 
     def container_key_field(self) -> str:
         return "workspace_id"
@@ -222,6 +316,7 @@ class TalendTmcRuntimeProvider:
             return False, "Missing required TMC credentials"
         try:
             _history_days(credentials)
+            _environment_ids(credentials)
         except RuntimeProviderError as error:
             return False, str(error)
         try:
@@ -255,7 +350,11 @@ class TalendTmcRuntimeProvider:
         provider._base_url_override = base_url
         provider._task_scope_keywords = _task_scope_keywords(credentials, project_id)
         provider._history_days = _history_days(credentials)
-        return await provider.fetch_runtime_batch(project_id=project_id)
+        provider._environment_ids = _environment_ids(credentials)
+        try:
+            return await provider.fetch_runtime_batch(project_id=project_id)
+        finally:
+            await provider.aclose()
 
     def _read_token(self) -> str:
         if self._token is not None:
@@ -282,23 +381,31 @@ class TalendTmcRuntimeProvider:
         return base_url.rstrip("/")
 
     def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            base_url=self._base_url(),
-            timeout=settings.talend_tmc_request_timeout,
-            transport=self._transport,
-            headers={"Authorization": f"Bearer {self._read_token()}"},
-        )
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(
+                base_url=self._base_url(),
+                timeout=settings.talend_tmc_request_timeout,
+                transport=self._transport,
+                headers={"Authorization": f"Bearer {self._read_token()}"},
+            )
+        return self._http_client
+
+    async def aclose(self) -> None:
+        """Close the sync-scoped HTTP pool, if it was opened."""
+        if self._http_client is not None:
+            await self._http_client.aclose()
+            self._http_client = None
 
     async def _get(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any] | list[dict[str, Any]]:
         for attempt in range(_TRANSPORT_MAX_ATTEMPTS):
             try:
-                async with self._client() as client:
-                    response = await client.get(
-                        path,
-                        params={k: v for k, v in (params or {}).items() if v is not None},
-                    )
-                    response.raise_for_status()
-                    data = response.json()
+                client = self._client()
+                response = await client.get(
+                    path,
+                    params={k: v for k, v in (params or {}).items() if v is not None},
+                )
+                response.raise_for_status()
+                data = response.json()
                 break
             except httpx.HTTPStatusError as e:
                 raise RuntimeProviderError(
@@ -327,13 +434,13 @@ class TalendTmcRuntimeProvider:
     async def _post(self, path: str, *, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
         for attempt in range(_TRANSPORT_MAX_ATTEMPTS):
             try:
-                async with self._client() as client:
-                    response = await client.post(
-                        path,
-                        json={k: v for k, v in (json_body or {}).items() if v is not None},
-                    )
-                    response.raise_for_status()
-                    data = response.json()
+                client = self._client()
+                response = await client.post(
+                    path,
+                    json={k: v for k, v in (json_body or {}).items() if v is not None},
+                )
+                response.raise_for_status()
+                data = response.json()
                 break
             except httpx.HTTPStatusError as e:
                 raise RuntimeProviderError(
@@ -364,11 +471,16 @@ class TalendTmcRuntimeProvider:
     ) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         offset = 0
-        page_size = min(max_items, 200)
-        # TMC list endpoints do not share a uniform pagination contract: some
-        # reject limit/offset with HTTP 400. Send the params, and if the
-        # endpoint rejects them, retry without pagination and treat the bare
-        # array as one complete page.
+        cache_key = _page_size_cache_key(path)
+        page_size = min(max_items, self._page_size_by_path.get(cache_key, _MAX_PAGE_SIZE))
+        # TMC list endpoints do not share a uniform pagination contract: each
+        # caps `limit` at its own undocumented value (tasks reject anything over
+        # 100), and some reject limit/offset outright. A rejection therefore
+        # cannot be read as "no pagination here" -- doing so drops every page
+        # after the first and silently truncates the result to one default page.
+        # Halve the page size instead, and only give up on pagination once even
+        # the floor is refused. The working size is cached per path so the probe
+        # costs one wasted call per endpoint rather than one per page.
         supports_pagination = True
         while len(items) < max_items:
             page_params = dict(params or {})
@@ -378,10 +490,20 @@ class TalendTmcRuntimeProvider:
             try:
                 page = await self._get(path, params=page_params)
             except RuntimeProviderError as err:
-                if supports_pagination and _is_pagination_rejected(err):
-                    supports_pagination = False
+                if not supports_pagination or not _is_pagination_rejected(err):
+                    raise
+                if page_size > _MIN_PAGE_SIZE:
+                    page_size = max(_MIN_PAGE_SIZE, page_size // 2)
+                    logger.info(
+                        "Talend TMC %s rejected the page size; retrying with limit=%d",
+                        path,
+                        page_size,
+                    )
                     continue
-                raise
+                supports_pagination = False
+                continue
+            if supports_pagination:
+                self._page_size_by_path[cache_key] = page_size
             batch = _extract_items(page)
             items.extend(batch)
             total = _page_total(page, "total", "totalSize") or len(items)
@@ -439,7 +561,7 @@ class TalendTmcRuntimeProvider:
         if logs is None:
             logs = await self._get_execution_logs_paginated(params.execution_id, params.limit)
         else:
-            logs = logs[: params.limit]
+            logs = _bounded_log_head_tail(logs, params.limit)
         events = [_to_log_event(item, params.execution_id, ordinal) for ordinal, item in enumerate(logs)]
         if params.min_severity is not None:
             allowed = _severities_at_or_above(params.min_severity)
@@ -450,6 +572,34 @@ class TalendTmcRuntimeProvider:
         items = await self._get_component_items(execution_id)
         return [_to_component_metric(item, execution_id) for item in items if _is_component_edge(item)]
 
+    async def _fetch_executables(self, path: str) -> list[dict[str, Any]]:
+        """Fetch tasks or plans, narrowed to the selected environments.
+
+        TMC honours ``environmentId`` on the executable endpoints, so scoping
+        happens server-side: the request never carries the environments an
+        operator excluded, and the expensive per-executable run-history fan-out
+        downstream shrinks with it. Results are de-duplicated by executable id
+        because the per-environment requests are independent.
+        """
+        if not self._environment_ids:
+            return await self._get_all_pages(path, max_items=_DEFAULT_FETCH_LIMIT)
+        pages = await asyncio.gather(
+            *(
+                self._get_all_pages(
+                    path,
+                    params={"environmentId": environment_id},
+                    max_items=_DEFAULT_FETCH_LIMIT,
+                )
+                for environment_id in self._environment_ids
+            )
+        )
+        merged: dict[str, dict[str, Any]] = {}
+        for index, page in enumerate(pages):
+            for item in page:
+                key = _str_field(item, "executable", "id") or f"{index}:{len(merged)}"
+                merged.setdefault(key, item)
+        return list(merged.values())
+
     async def fetch_runtime_batch(self, *, project_id: str) -> RuntimeSyncBatch:
         synced_at = datetime.now(UTC)
         source_key = settings.runtime_sync_source_key or "talend_tmc"
@@ -459,8 +609,8 @@ class TalendTmcRuntimeProvider:
         engines_raw = await self._get_all_pages("/processing/runtimes/remote-engines", max_items=_DEFAULT_FETCH_LIMIT)
         artifacts_raw = await self._get_all_pages("/orchestration/artifacts", max_items=_DEFAULT_FETCH_LIMIT)
         connections_raw = await self._get_all_pages("/orchestration/connections", max_items=_DEFAULT_FETCH_LIMIT)
-        tasks_raw = await self._get_all_pages("/orchestration/executables/tasks", max_items=_DEFAULT_FETCH_LIMIT)
-        plans_raw = await self._get_all_pages("/orchestration/executables/plans", max_items=_DEFAULT_FETCH_LIMIT)
+        tasks_raw = await self._fetch_executables("/orchestration/executables/tasks")
+        plans_raw = await self._fetch_executables("/orchestration/executables/plans")
 
         all_environments = [_to_environment(item, source_key, synced_at) for item in environments_raw]
         all_workspaces = [_to_workspace(item, source_key, synced_at) for item in workspaces_raw]
@@ -471,6 +621,26 @@ class TalendTmcRuntimeProvider:
         all_connections_by_id = {
             connection.connection_id: connection for connection in all_connections
         }
+
+        if self._environment_ids:
+            known_environment_ids = {item.environment_id for item in all_environments}
+            unknown = [
+                environment_id
+                for environment_id in self._environment_ids
+                if environment_id not in known_environment_ids
+            ]
+            if unknown:
+                # An environment deleted or moved out of the token's reach would
+                # otherwise just shrink the batch, which reads downstream as
+                # "those jobs stopped existing" rather than "the scope is stale".
+                raise RuntimeProviderError(
+                    f"{len(unknown)} selected Talend TMC environment(s) are no longer visible to "
+                    "this token. Re-select the environments for this source."
+                )
+            if not tasks_raw:
+                raise RuntimeProviderError(
+                    "No Talend TMC tasks exist in the selected environments"
+                )
 
         if self._task_scope_keywords:
             tasks_raw = [
@@ -505,19 +675,49 @@ class TalendTmcRuntimeProvider:
             if (engine_id := _str_field(_dict_field(item, "runtime"), "id", "engineId", "engine_id"))
         }
 
+        # Environments are never narrowed. They are the markers the physical
+        # identity is derived from (see physical_identity_from_batch), so
+        # shipping a scoped subset would recompute a different identity on every
+        # sync and let a re-registration of the same tenant slip past the
+        # duplicate guard. They are also only a handful of rows: the estate has
+        # these environments whether or not this source ingests jobs from them.
+        environments = all_environments
         if self._task_scope_keywords:
             artifacts = [item for item in all_artifacts if item.artifact_id in selected_artifact_ids]
             connections = [item for item in all_connections if item.connection_id in selected_connection_ids]
             workspaces = [item for item in all_workspaces if item.workspace_id in selected_workspace_ids]
             engines = [item for item in all_engines if item.engine_id in selected_engine_ids]
-            selected_environment_ids = {
-                item.environment_id for item in workspaces + engines if item.environment_id is not None
-            }
-            environments = [
-                item for item in all_environments if item.environment_id in selected_environment_ids
+        elif self._environment_ids:
+            selected = set(self._environment_ids)
+            workspaces = [
+                item
+                for item in all_workspaces
+                if item.environment_id in selected or item.workspace_id in selected_workspace_ids
+            ]
+            # An engine referenced by a surviving task is kept even when it sits
+            # outside the scope: dropping it would resolve that task's engine to
+            # None and blank the engine name on every one of its runs.
+            engines = [
+                item
+                for item in all_engines
+                if item.environment_id in selected or item.engine_id in selected_engine_ids
+            ]
+            # Artifacts and connections carry a workspace but no environment, so
+            # they follow the scoped workspaces plus anything a task references.
+            scoped_workspace_ids = {item.workspace_id for item in workspaces}
+            artifacts = [
+                item
+                for item in all_artifacts
+                if item.workspace_id in scoped_workspace_ids
+                or item.artifact_id in selected_artifact_ids
+            ]
+            connections = [
+                item
+                for item in all_connections
+                if item.workspace_id in scoped_workspace_ids
+                or item.connection_id in selected_connection_ids
             ]
         else:
-            environments = all_environments
             workspaces = all_workspaces
             engines = all_engines
             artifacts = all_artifacts
@@ -625,6 +825,7 @@ class TalendTmcRuntimeProvider:
             )
         metric_runs = runs_by_recency[:metric_ceiling]
         detail_fetch_semaphore = asyncio.Semaphore(_DETAIL_FETCH_CONCURRENCY)
+        metric_failures = 0
 
         async def fetch_logs(run: RuntimeJobRun) -> list[RuntimeLogEvent]:
             try:
@@ -637,11 +838,12 @@ class TalendTmcRuntimeProvider:
                 return []
 
         async def fetch_metrics(run: RuntimeJobRun) -> list[RuntimeComponentMetric]:
+            nonlocal metric_failures
             try:
                 async with detail_fetch_semaphore:
                     return await self.get_component_metrics(run.run_id)
             except RuntimeProviderError:
-                logger.warning("TMC component metric fetch failed for execution %s", run.run_id)
+                metric_failures += 1
                 return []
 
         detail_results = await asyncio.gather(
@@ -653,6 +855,13 @@ class TalendTmcRuntimeProvider:
         component_metrics = [
             item for result in detail_results[log_result_count:] for item in result
         ]
+        if metric_failures:
+            logger.warning(
+                "TMC component metric fetch failed for %d of %d bounded executions; "
+                "execution and log import continues",
+                metric_failures,
+                len(metric_runs),
+            )
         return RuntimeSyncBatch(
             sources=[
                 RuntimeSource(
@@ -712,29 +921,74 @@ class TalendTmcRuntimeProvider:
 
     async def _download_logs(self, url: str) -> list[dict[str, Any]]:
         try:
-            async with self._client() as client:
-                response = await client.get(url, timeout=60)
-                response.raise_for_status()
-                data = response.json()
+            response = await self._client().get(url, timeout=60)
+            response.raise_for_status()
+            data = response.json()
         except (httpx.HTTPError, ValueError) as e:
             raise RuntimeProviderError(f"Talend TMC log download failed: {type(e).__name__}") from e
         return _extract_items(data)
 
-    async def _get_execution_logs_paginated(self, execution_id: str, max_entries: int) -> list[dict[str, Any]]:
-        all_logs: list[dict[str, Any]] = []
-        start_index = 0
-        while len(all_logs) < max_entries:
-            page = await self._get(
-                f"/monitoring/executions/{execution_id}/logs",
-                params={"count": _LOG_PAGE_SIZE, "startIndex": start_index, "order": "ASC"},
+    async def _get_execution_logs_paginated(
+        self, execution_id: str, max_entries: int
+    ) -> list[dict[str, Any]]:
+        """Fetch a bounded chronological head+tail window.
+
+        The first page discovers TMC's total.  Short logs retain every line. A
+        long log keeps up to 1,000 startup lines and fills the remaining budget
+        from the terminal tail. This costs no more pages than the former
+        first-10k loop and preserves the evidence closest to failure.
+        """
+        path = f"/monitoring/executions/{execution_id}/logs"
+
+        async def page(start: int, count: int) -> tuple[list[dict[str, Any]], int]:
+            payload = await self._get(
+                path,
+                params={
+                    "count": min(_LOG_PAGE_SIZE, count),
+                    "startIndex": start,
+                    "order": "ASC",
+                },
             )
-            batch = _extract_items(page)
-            all_logs.extend(batch)
-            total = _page_total(page, "totalSize", "total") or len(all_logs)
-            start_index += len(batch)
-            if not batch or start_index >= total:
+            batch = _extract_items(payload)
+            total = _page_total(payload, "totalSize", "total") or (start + len(batch))
+            return batch, total
+
+        first, total = await page(0, max_entries)
+        if not first or len(first) >= max_entries:
+            return first[:max_entries]
+
+        if total <= max_entries:
+            result = list(first)
+            start = len(result)
+            while start < total and len(result) < max_entries:
+                batch, _ = await page(start, max_entries - len(result))
+                if not batch:
+                    break
+                result.extend(batch)
+                start += len(batch)
+            return result[:max_entries]
+
+        head_target = min(_LOG_HEAD_CAPTURE, max_entries)
+        head = list(first)
+        start = len(head)
+        while start < head_target:
+            batch, _ = await page(start, head_target - len(head))
+            if not batch:
                 break
-        return all_logs[:max_entries]
+            head.extend(batch)
+            start += len(batch)
+        head = head[:head_target]
+
+        tail_target = max_entries - len(head)
+        tail: list[dict[str, Any]] = []
+        start = max(total - tail_target, len(head))
+        while start < total and len(tail) < tail_target:
+            batch, _ = await page(start, tail_target - len(tail))
+            if not batch:
+                break
+            tail.extend(batch)
+            start += len(batch)
+        return (head + tail)[:max_entries]
 
     async def _get_component_items(self, execution_id: str) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -761,6 +1015,24 @@ def _task_scope_keywords(credentials: Mapping[str, Any], project_id: str) -> tup
         return tuple(dict.fromkeys(part.strip() for part in configured.split(",") if part.strip()))
     project_key = re.sub(r"[^a-z0-9]+", "", project_id.casefold())
     return _PROJECT_SCOPE_KEYWORDS.get(project_key, ())
+
+
+def _environment_ids(credentials: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return the selected TMC environment ids, empty meaning the whole tenant.
+
+    Sources registered before scope selection existed carry no value, and must
+    keep ingesting everything rather than silently narrowing to nothing.
+    """
+    configured = credentials.get("environment_ids")
+    if configured is None:
+        return ()
+    if isinstance(configured, str):
+        parts: list[str] = [part.strip() for part in configured.split(",")]
+    elif isinstance(configured, (list, tuple)):
+        parts = [str(part).strip() for part in configured]
+    else:
+        raise RuntimeProviderError("TMC environment selection must be a list of environment ids")
+    return tuple(dict.fromkeys(part for part in parts if part))
 
 
 def _history_days(credentials: Mapping[str, Any]) -> int:
@@ -854,6 +1126,21 @@ def _page_total(page: dict[str, Any] | list[dict[str, Any]], *keys: str) -> int 
             if value is not None:
                 return value
     return None
+
+
+def _page_size_cache_key(path: str) -> str:
+    """Collapse resource ids so a page-size cap is learned once per endpoint.
+
+    ``/processing/executables/tasks/{id}/executions`` is one endpoint with one
+    cap, but every task has its own path. Caching against the raw path made the
+    discovery probe cost one wasted request per task per sync instead of one per
+    endpoint. Any segment carrying a digit and long enough to be an identifier
+    (TMC uses 24-char hex ids; executions use UUIDs) stands in as ``{id}``.
+    """
+    return "/".join(
+        "{id}" if len(segment) >= 8 and any(char.isdigit() for char in segment) else segment
+        for segment in path.split("/")
+    )
 
 
 def _is_pagination_rejected(err: RuntimeProviderError) -> bool:
@@ -1262,6 +1549,21 @@ def _execution_from_job_run(run: RuntimeJobRun, project_id: str) -> RuntimeExecu
         ended_at=run.ended_at,
         duration_ms=run.duration_ms,
     )
+
+
+def _bounded_log_head_tail(
+    items: list[dict[str, Any]], limit: int
+) -> list[dict[str, Any]]:
+    """Keep lifecycle context and terminal evidence when a download is oversized."""
+    if limit <= 0:
+        return []
+    if len(items) <= limit:
+        return items
+    head_size = min(_LOG_HEAD_CAPTURE, limit)
+    tail_size = limit - head_size
+    if tail_size <= 0:
+        return items[:limit]
+    return items[:head_size] + items[-tail_size:]
 
 
 def _to_log_event(item: Any, fallback_execution_id: str, line_ordinal: int = 0) -> RuntimeLogEvent:

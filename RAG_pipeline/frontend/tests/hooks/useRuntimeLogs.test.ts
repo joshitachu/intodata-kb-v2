@@ -28,6 +28,7 @@ import {
   useRuntimeSimilarFailures,
   useRuntimeTrend,
   useRuntimeJobReliability,
+  useRuntimeJobInsights,
   useRuntimeComponentHotspots,
   useRuntimeJobThroughput,
   useRuntimeErrorSignatures,
@@ -991,6 +992,53 @@ describe("useRuntimeLogs aggregate rollups", () => {
     expect(result.current.data?.jobs[0].current_failure_streak).toBe(4);
     expect(result.current.data?.jobs[0].latest_state).toBe("failed");
     expect(result.current.data?.total).toBe(1);
+  });
+
+  it("useRuntimeJobInsights parses bounded operational explanations", async () => {
+    const fetchSpy = mockFetchOnce({
+      insights: [
+        {
+          project_id: "cdc_job_route",
+          source_key: "talend_tmc",
+          job_name: "j002_TriggerInterface_Cloud_PD920-2025",
+          total_runs: 7,
+          success_runs: 4,
+          failed_runs: 3,
+          unfinished_runs: 1,
+          failure_rate: 0.4286,
+          first_run_at: "2026-08-01T00:00:00Z",
+          last_run_at: "2026-08-25T00:00:00Z",
+          failures_with_logs: 3,
+          diagnosed_failures: 3,
+          capture_ceiling_reached: 0,
+          evidence_completeness: "complete",
+          pattern_id: "database.connection_reset",
+          confidence: "medium",
+          occurrences: 3,
+          most_recent_at: "2026-08-25T00:00:00Z",
+          failed_component: "tWaitForSqlData_1",
+          termination_component: "tDie_1",
+          causal_message: "IO Error: Connection reset",
+          root_cause_candidate: "The database connection was reset before termination.",
+          cause_origin: "deterministic",
+          next_checks: ["Check Oracle connectivity from the runtime engine."],
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(
+      () => useRuntimeJobInsights({ projectId: "cdc_job_route", since: "2026-08-01T00:00:00Z", limit: 100 }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = fetchSpy.mock.calls[0][0] as string;
+    expect(url).toContain("/api/runtime/job-insights?");
+    expect(url).toContain("project_id=cdc_job_route");
+    expect(result.current.data?.insights[0].failed_component).toBe("tWaitForSqlData_1");
+    expect(result.current.data?.insights[0].termination_component).toBe("tDie_1");
+    expect(result.current.data?.insights[0].next_checks).toHaveLength(1);
   });
 
   it("useRuntimeComponentHotspots sends component filters", async () => {

@@ -1,10 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 
-export function useConnectorCatalog() {
+// `enabled` so a modal can list the catalogue without every closed instance of
+// that modal holding a live query.
+export function useConnectorCatalog(enabled = true) {
   return useQuery({
     queryKey: ["connector-catalog"],
     queryFn: api.listConnectorCatalog,
+    enabled,
     staleTime: 60_000,
   });
 }

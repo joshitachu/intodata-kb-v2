@@ -385,7 +385,7 @@ app.add_middleware(
 )
 
 # Import and register routes
-from mcp_server.api.routes import azure_devops, connectors, discovery, estimate as estimate_routes, generate_runs, health, instance_settings, logs, ops_control, plugins, projects, webhook  # noqa: E402
+from mcp_server.api.routes import azure_devops, connectors, discovery, estimate as estimate_routes, generate_runs, health, instance_settings, logs, ops_control, plugins, projects, runtime_sources, webhook  # noqa: E402
 
 app.include_router(health.router)  # /health stays open
 app.include_router(ops_control.router)  # Mission Control triggers — own Bearer auth
@@ -416,6 +416,13 @@ app.include_router(
 )
 app.include_router(
     connectors.router,
+    prefix="/mcp",
+    dependencies=[Depends(require_auth)],
+)
+# Runtime sources live in the RAG backend's tables; these routes proxy there on
+# the caller's own cookie. See the module docstring for the full auth model.
+app.include_router(
+    runtime_sources.router,
     prefix="/mcp",
     dependencies=[Depends(require_auth)],
 )

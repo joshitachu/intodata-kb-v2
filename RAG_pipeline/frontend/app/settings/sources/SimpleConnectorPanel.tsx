@@ -7,67 +7,36 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-
-type ConnectorStatus = "connected" | "degraded" | "not_connected" | "disabled" | "unknown";
-
-interface ConnectorInstance {
-  id: string;
-  provider_id: string;
-  display_name: string;
-  enabled: boolean;
-  status: ConnectorStatus;
-  last_checked_at: string | null;
-  health_code: string | null;
-}
-
-interface ConnectorListResponse {
-  connectors: ConnectorInstance[];
-}
-
-interface ConnectorUsageEntry {
-  project_id: string;
-  display_name: string;
-  source_count: number;
-  enabled: boolean;
-}
-
-interface ConnectorUsageResponse {
-  usage: Record<string, ConnectorUsageEntry[]>;
-}
+import {
+  ConnectorInstance,
+  ConnectorStatus,
+  ConnectorUsageEntry,
+  ConnectorUsageResponse,
+  RuntimeSource,
+  fetchConnectorUsage,
+  fetchConnectors,
+  fetchRuntimeSourceTypes,
+  fetchRuntimeSources,
+  responseError,
+  runtimeProviderLabel,
+} from "./liveSources";
 
 interface ConnectorTestResponse {
   status: string;
   message?: string | null;
 }
 
-async function responseError(response: Response): Promise<string> {
-  try {
-    const payload = (await response.json()) as { detail?: unknown; error?: unknown; message?: unknown };
-    const value = payload.detail ?? payload.error ?? payload.message;
-    if (typeof value === "string" && value.trim()) return value;
-  } catch {
-    // The status fallback below is safe to display and never exposes credentials.
-  }
-  if (response.status === 403) return "Connector management permission is required.";
-  return `Request failed (${response.status})`;
+function runtimeStatusVariant(source: RuntimeSource): "success" | "warning" | "muted" | "destructive" {
+  if (!source.enabled) return "muted";
+  if (source.status === "success") return "success";
+  if (source.status === "pending") return "warning";
+  return "destructive";
 }
 
-async function fetchConnectors(): Promise<ConnectorListResponse> {
-  const response = await fetch("/api/source/connectors", {
-    credentials: "include",
-    cache: "no-store",
-  });
-  if (!response.ok) throw new Error(await responseError(response));
-  return response.json() as Promise<ConnectorListResponse>;
-}
-
-async function fetchConnectorUsage(): Promise<ConnectorUsageResponse> {
-  const response = await fetch("/api/source/connectors/usage", {
-    credentials: "include",
-    cache: "no-store",
-  });
-  if (!response.ok) throw new Error(await responseError(response));
-  return response.json() as Promise<ConnectorUsageResponse>;
+function runtimeStatusLabel(source: RuntimeSource): string {
+  if (!source.enabled) return "disabled";
+  if (source.status === "success") return "connected";
+  return source.status.replaceAll("_", " ");
 }
 
 function usageEntries(data: ConnectorUsageResponse | undefined, connectorId: string): ConnectorUsageEntry[] | null {
@@ -110,6 +79,18 @@ export function SimpleConnectorPanel() {
     queryFn: fetchConnectorUsage,
     retry: false,
   });
+  // Read-only: a caller without runtime-source permission simply sees no
+  // mirrored rows rather than an error over the Elastic connections.
+  const runtimeSourcesQuery = useQuery({
+    queryKey: ["runtime-sources"],
+    queryFn: fetchRuntimeSources,
+    retry: false,
+  });
+  const runtimeTypesQuery = useQuery({
+    queryKey: ["runtime-source-types"],
+    queryFn: fetchRuntimeSourceTypes,
+    retry: false,
+  });
   const [formOpen, setFormOpen] = useState(false);
   const [displayName, setDisplayName] = useState("Elastic Stack");
   const [endpoint, setEndpoint] = useState("");
@@ -120,6 +101,7 @@ export function SimpleConnectorPanel() {
   const [notice, setNotice] = useState<string | null>(null);
 
   const connectors = connectorsQuery.data?.connectors ?? [];
+  const runtimeSources = runtimeSourcesQuery.data?.sources ?? [];
 
   async function testConnector(connector: ConnectorInstance): Promise<ConnectorTestResponse> {
     setTestingId(connector.id);
@@ -219,7 +201,8 @@ export function SimpleConnectorPanel() {
             <div className="min-w-0">
               <h2 id="live-connections-heading" className="text-base font-semibold">Live data connections</h2>
               <p className="mt-1 max-w-2xl text-sm leading-relaxed text-muted-foreground">
-                Connect Elastic for runtime evidence. Source discovery, project access, capabilities,
+                Connect Elastic for runtime evidence, and see the scheduled runtime mirrors that
+                documentation runs read. Source discovery, project access, capabilities,
                 and model testing remain managed in the Nexus operator dashboard.
               </p>
             </div>
@@ -249,7 +232,7 @@ export function SimpleConnectorPanel() {
             </div>
           )}
 
-          {!connectorsQuery.isLoading && !connectorsQuery.isError && connectors.length === 0 && !formOpen && (
+          {!connectorsQuery.isLoading && !connectorsQuery.isError && connectors.length === 0 && runtimeSources.length === 0 && !formOpen && (
             <div className="rounded-lg border border-dashed border-border px-4 py-5 text-sm text-muted-foreground">
               No live data connection has been added yet.
             </div>
@@ -293,6 +276,50 @@ export function SimpleConnectorPanel() {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+
+          {runtimeSources.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Scheduled runtime mirrors
+              </p>
+              <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+                {runtimeSources.map((source) => (
+                  <div key={source.id} className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/40 text-muted-foreground">
+                        <Database className="h-4 w-4" aria-hidden />
+                      </span>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium">{source.label || `Source ${source.id}`}</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {runtimeProviderLabel(runtimeTypesQuery.data, source.source_type)}
+                          {` · project ${source.project_id}`}
+                          {source.last_synced_at
+                            ? ` · last synced ${new Date(source.last_synced_at).toLocaleString()}`
+                            : " · not synced yet"}
+                        </p>
+                        <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                          {source.enabled
+                            ? `Documentation runs for ${source.project_id} read this mirrored history.`
+                            : source.disabled_reason?.trim() ||
+                              "Disabled - documentation runs read no history from it."}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Badge variant={runtimeStatusVariant(source)} className="capitalize">
+                        {runtimeStatusLabel(source)}
+                      </Badge>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Registered and removed on the Nexus dashboard&apos;s Connectors page, where the
+                credential and its ingest scope are set.
+              </p>
             </div>
           )}
 

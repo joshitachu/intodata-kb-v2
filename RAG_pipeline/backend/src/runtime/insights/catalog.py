@@ -526,6 +526,22 @@ _DEFAULT_PATTERNS: tuple[FailurePattern, ...] = (
         ),
         specificity=30,
     ),
+    FailurePattern(
+        # Provider-neutral form observed when JDBC/Oracle-style components emit
+        # the transport diagnosis without a vendor error code or exception class.
+        pattern_id="database.connection_reset",
+        message_contains=("io error", "connection reset"),
+        root_cause_template=(
+            "The database connection was reset during the operation; the runtime "
+            "lost its established network session before the component completed."
+        ),
+        next_checks=(
+            "Check database availability and listener health at the failure times",
+            "Review network, firewall, proxy, and idle-connection resets between the runtime and database",
+            "Compare the failure times with database restarts, failovers, or maintenance",
+        ),
+        specificity=29,
+    ),
     # --- Google BigQuery (tBigQueryOutput / tBQBE) --------------------------
     FailurePattern(
         pattern_id="bigquery.source_not_found",
@@ -679,6 +695,79 @@ _DEFAULT_PATTERNS: tuple[FailurePattern, ...] = (
             "Verify the payload matches the contract the endpoint expects",
         ),
         specificity=28,
+    ),
+    # --- Concrete Java/Talend failures observed in the alitalend TMC source -
+    FailurePattern(
+        pattern_id="filesystem.access_denied",
+        exception_contains="FileNotFoundException",
+        message_contains=("access is denied",),
+        root_cause_template=(
+            "The runtime could not open the required file because the operating system "
+            "denied access ({exception_class})."
+        ),
+        next_checks=(
+            "Verify that the runtime service account can read and write the reported path",
+            "Check whether the directory exists and is not locked by another process",
+            "Review recent service-account or filesystem permission changes",
+        ),
+        specificity=32,
+    ),
+    FailurePattern(
+        pattern_id="network.unknown_host",
+        exception_contains="UnknownHostException",
+        root_cause_template=(
+            "DNS resolution failed for a downstream host ({exception_class}); the runtime "
+            "could not translate the configured host name to an address."
+        ),
+        next_checks=(
+            "Verify the configured host name and DNS record",
+            "Resolve the host from the runtime engine network",
+            "Check DNS, proxy, and environment-specific endpoint configuration changes",
+        ),
+        specificity=30,
+    ),
+    FailurePattern(
+        pattern_id="sharepoint.server_exception",
+        exception_contains="SPException",
+        evidence_contains=("microsoft.sharepoint.spexception",),
+        root_cause_template=(
+            "SharePoint rejected the operation with {exception_class}; the provider's "
+            "fault message contains the server-side error detail."
+        ),
+        next_checks=(
+            "Review the SharePoint fault code and message retained with this incident",
+            "Verify the target list, item, and service-account permissions",
+            "Check whether the SharePoint API contract or target resource changed",
+        ),
+        specificity=30,
+    ),
+    FailurePattern(
+        pattern_id="soap.fault",
+        exception_contains="SOAPException",
+        root_cause_template=(
+            "The web-service operation failed with {exception_class}; the runtime reported "
+            "a SOAP processing or fault response rather than a successful call."
+        ),
+        next_checks=(
+            "Review the retained SOAP fault message and response status",
+            "Validate the endpoint, operation, authentication, and request contract",
+            "Check the downstream service logs at the failure time",
+        ),
+        specificity=22,
+    ),
+    FailurePattern(
+        pattern_id="java.null_pointer",
+        exception_contains="NullPointerException",
+        root_cause_template=(
+            "The failing component raised {exception_class}; the runtime proves a null "
+            "reference symptom but does not identify which input or value was null."
+        ),
+        next_checks=(
+            "Inspect nullable inputs, context variables, and lookup results entering the failing component",
+            "Compare the failed component's input shape with the most recent successful execution",
+            "Add an explicit null guard or diagnostic output before the failing component",
+        ),
+        specificity=20,
     ),
     # --- Camel / Talend ESB error handler -----------------------------------
     FailurePattern(

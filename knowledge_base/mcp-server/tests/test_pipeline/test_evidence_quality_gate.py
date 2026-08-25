@@ -187,6 +187,9 @@ async def test_phase3_prepends_notice_for_thin_groups(
 
     helpers = MagicMock()
     helpers.phase3_docs = AsyncMock()
+    # Phase 3 stages the deterministic runtime-evidence tier before dispatch;
+    # a bare MagicMock attribute is not awaitable.
+    helpers.ensure_runtime_evidence = AsyncMock()
     helpers.reconcile_sql_usage_classification.return_value = 0
     helpers.validate_sql_usage_publication.return_value = []
     helpers.required_docs_list = ["01_OVERVIEW"]
@@ -258,6 +261,9 @@ async def test_phase3_no_notice_on_clean_run(
 
     helpers = MagicMock()
     helpers.phase3_docs = AsyncMock()
+    # Phase 3 stages the deterministic runtime-evidence tier before dispatch;
+    # a bare MagicMock attribute is not awaitable.
+    helpers.ensure_runtime_evidence = AsyncMock()
     helpers.reconcile_sql_usage_classification.return_value = 0
     helpers.validate_sql_usage_publication.return_value = []
     helpers.required_docs_list = ["01_OVERVIEW"]

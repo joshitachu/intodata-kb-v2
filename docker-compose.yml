@@ -172,6 +172,10 @@ services:
       RUNTIME_SEMANTIC_ENABLED: ${RUNTIME_SEMANTIC_ENABLED:-false}
       TALEND_TMC_BASE_URL: ${TALEND_TMC_BASE_URL:-}
       TALEND_TMC_API_TOKEN_FILE: ${TALEND_TMC_API_TOKEN_FILE:-}
+      # Keep each live import bounded in the local 1 GiB backend container. The
+      # dashboard exposes the resulting capture ceiling instead of pretending
+      # uncaptured failures were diagnosed.
+      TALEND_TMC_FAILED_LOG_RUN_LIMIT: ${TALEND_TMC_FAILED_LOG_RUN_LIMIT:-10}
       # Runtime source credential encryption (EP-004). Primary Fernet key is
       # required to persist any runtime source credentials; the *_previous vars
       # are optional and only used during a lazy key rotation window.
@@ -198,7 +202,9 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_healthy
-    mem_limit: 1g
+    # A full TMC estate sync materializes the bounded run-history batch before
+    # persistence; the Alitalend source peaks above 1 GiB during that phase.
+    mem_limit: ${BACKEND_MEMORY_LIMIT:-2g}
     cpus: 2.0
     restart: unless-stopped
 
@@ -417,6 +423,7 @@ services:
       args:
         VITE_LOGIN_URL: ${VITE_LOGIN_URL:-${PUBLIC_APP_URL:-http://localhost:3000}/login}
         VITE_FLEET_ENABLED: ${FLEET_ENABLED:-true}
+        VITE_RAG_APP_URL: ${PUBLIC_APP_URL:-http://localhost:3000}
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-8001}:8001"
     environment:

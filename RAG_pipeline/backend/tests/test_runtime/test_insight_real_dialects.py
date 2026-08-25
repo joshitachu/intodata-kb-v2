@@ -57,6 +57,18 @@ CAMEL_EXHAUSTED = (
     "caught: javax.ws.rs.ProcessingException: java.net.ConnectException: ConnectException "
     "invoking https://SRVA0673:9200/talend-esb-monitoring-alias/_doc: Connection timed out: connect"
 )
+ALITALEND_ACCESS_DENIED = (
+    "tFileOutputDelimited_3 java.io.FileNotFoundException: "
+    r"D:\Talend\Process\Logs\run.txt (Access is denied)"
+)
+ALITALEND_UNKNOWN_HOST = (
+    "tWebServiceInput_1 java.net.UnknownHostException: integration.invalid"
+)
+ALITALEND_SHAREPOINT = (
+    'tSOAP_2 {"Message":"500 - Microsoft.SharePoint.SPException: target item rejected"}'
+)
+ALITALEND_SOAP = "tSOAP_2 javax.xml.soap.SOAPException: response could not be processed"
+ALITALEND_NULL_POINTER = "tSetGlobalVar_3 java.lang.NullPointerException: null"
 SEEDED_ORACLE = (
     "[tOracleConnection_1] Connection attempt 3/3 failed after 30000ms: "
     "ORA-12170: TNS:Connect timeout occurred"
@@ -155,11 +167,15 @@ class TestCausalMessageIsTheRuntimesOwnWords:
 
 class TestPlatformSignals:
     def test_jtds_sqlserver_jdbc_url_yields_host_and_database(self):
-        """The Oracle-only ``@//`` pattern extracted nothing from jTDS URLs."""
+        """The Oracle-only ``@//`` pattern extracted nothing from jTDS URLs.
+
+        The host is now recorded as present rather than named (``redact_host``);
+        the database name is a schema object and is kept.
+        """
         parsed = parse_runtime_log_message(
             "tMSSqlConnection_1 Opening connection jdbc:jtds:sqlserver://SRVDB01:1433/MAXIMO"
         )
-        assert parsed.host == "SRVDB01"
+        assert parsed.host == "<host>"
         assert parsed.database_name == "MAXIMO"
 
     def test_bigquery_dataset_recorded_as_database(self):
@@ -173,7 +189,8 @@ class TestPlatformSignals:
         assert parsed.retry_max == 3
 
     def test_camel_endpoint_host_extracted(self):
-        assert parse_runtime_log_message(CAMEL_EXHAUSTED).host == "SRVA0673"
+        """SRVA0673 is an internal hostname; the signal kept is that there was one."""
+        assert parse_runtime_log_message(CAMEL_EXHAUSTED).host == "<host>"
 
     @pytest.mark.parametrize(
         ("message", "family"),
@@ -222,6 +239,11 @@ class TestCatalogAttribution:
             (SALESFORCE_INVALID_FIELD, "salesforce.invalid_field"),
             (SQLSERVER_CONN_RESET, "sqlserver.connection_reset"),
             (CAMEL_EXHAUSTED, "camel.delivery_exhausted"),
+            (ALITALEND_ACCESS_DENIED, "filesystem.access_denied"),
+            (ALITALEND_UNKNOWN_HOST, "network.unknown_host"),
+            (ALITALEND_SHAREPOINT, "sharepoint.server_exception"),
+            (ALITALEND_SOAP, "soap.fault"),
+            (ALITALEND_NULL_POINTER, "java.null_pointer"),
             (SEEDED_ORACLE, "oracle.net.timeout"),
         ],
     )

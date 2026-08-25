@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useGenerateRuns } from "../hooks/useProjects";
 import { useRunConnectorEvidence } from "../hooks/useConnectors";
-import type { GenerateRun } from "../types";
+import type { GenerateRun, RunRuntimeEvidenceSummary } from "../types";
 
 interface Props {
   projectId: string | null;
@@ -234,6 +234,115 @@ function LegacyRunRow({
   );
 }
 
+/** "tmc" -> "Runtime (TMC)". No source key -> plain "Runtime". */
+function runtimeLabel(sourceKey: string | null): string {
+  return sourceKey ? `Runtime (${sourceKey.toUpperCase()})` : "Runtime";
+}
+
+/**
+ * Does the runtime source list jobs this scan does not contain?
+ *
+ * `scope_mismatch` is computed server-side against an orphan-ratio threshold,
+ * so it is READ, not re-derived: a low match count on its own is normal and
+ * correct (the runtime source lists scheduled tasks, and most scanned units are
+ * child jobs that are never scheduled), and treating it as a fault produces a
+ * confident false alarm on a healthy project.
+ *
+ * The fallback exists only for coverage artifacts written before the field --
+ * `scope_mismatch === null`. A payload that reports `false` denies the signal
+ * and the guess stays silent.
+ */
+function runtimeScopeMismatch(runtime: RunRuntimeEvidenceSummary): boolean {
+  if (!runtime.available) return false;
+  if (runtime.scope_mismatch != null) return runtime.scope_mismatch;
+  return runtime.mode === "binding_suspect" ||
+    (runtime.units_matched === 0 && runtime.orphan_runtime_job_count > 0);
+}
+
+/** "5/120 units matched", or the absence of an artifact for that sub-project. */
+function subprojectLine(row: RunRuntimeEvidenceSummary): string {
+  const name = row.subproject ?? "unnamed sub-project";
+  if (!row.available) return `${name}: no coverage artifact`;
+  return `${name}: ${row.units_matched}/${row.units_requested} units matched`;
+}
+
+/**
+ * Coverage of the mirrored runtime lane for a run.
+ *
+ * Absence is stated, never silent: the block always renders exactly one of a
+ * coverage line, a scope observation, or the skipped/unavailable line. A run
+ * that shipped no runtime data must not read as a run whose jobs never execute.
+ *
+ * Counts only, by design -- unit and runtime job NAMES stay server-side.
+ */
+function RuntimeEvidenceBlock({
+  runtime,
+  subprojects,
+}: {
+  runtime: RunRuntimeEvidenceSummary;
+  subprojects: RunRuntimeEvidenceSummary[];
+}) {
+  const label = runtimeLabel(runtime.source_key);
+  const window = runtime.window_days ? ` - ${runtime.window_days}-day window` : "";
+  const scopeMismatch = runtimeScopeMismatch(runtime);
+  const hasCoverage = runtime.available && !scopeMismatch && runtime.units_matched > 0;
+  const orphans = runtime.orphan_runtime_job_count;
+  // An aggregate spans several sub-projects; a composite CHILD run names the one
+  // sub-project it describes. The two are mutually exclusive server-side.
+  const isAggregate = runtime.available && runtime.subproject_count > 1;
+
+  return (
+    <div className="mt-2 border-t border-white/[0.06] pt-2">
+      {scopeMismatch ? (
+        <p className="text-amber-400">
+          {label}: {runtime.units_matched}/{runtime.units_requested} units matched. {orphans}{" "}
+          runtime job{orphans === 1 ? " has" : "s have"} no scanned counterpart - the runtime
+          source lists jobs this scan does not contain.
+        </p>
+      ) : hasCoverage ? (
+        <p className="text-slate-300">
+          {label}: {runtime.units_matched}/{runtime.units_requested} units matched{window}
+        </p>
+      ) : (
+        <p className="text-slate-500">Runtime evidence was skipped or unavailable for this run.</p>
+      )}
+      {hasCoverage && runtime.units_matched < runtime.units_requested && (
+        // Said plainly so a low ratio is not read as a defect: the runtime source
+        // is the deployed orchestration surface, not the artifact inventory.
+        <p className="mt-1 text-slate-600">
+          Unmatched units are expected: the runtime source lists scheduled tasks, not every
+          scanned unit.
+        </p>
+      )}
+      {runtime.available && runtime.subproject && (
+        <p className="mt-1 text-slate-500">Describes sub-project {runtime.subproject}.</p>
+      )}
+      {isAggregate && (
+        <p className="mt-1 text-slate-500">
+          Aggregate across {runtime.subproject_count} sub-projects.
+        </p>
+      )}
+      {isAggregate && subprojects.length > 0 && (
+        <ul className="mt-1 space-y-0.5 font-mono text-slate-500">
+          {subprojects.map((row, index) => (
+            <li key={row.subproject ?? `row-${index}`}>{subprojectLine(row)}</li>
+          ))}
+        </ul>
+      )}
+      {runtime.available && runtime.partial && (
+        <p className="mt-1 text-amber-400">Coverage is partial: not every batch was retrieved.</p>
+      )}
+      {runtime.available && (
+        // The coverage artifact is read from the project's published docs. Per-run
+        // archival does not exist, so this figure can describe a later run.
+        <p className="mt-1 text-slate-600">
+          Describes the latest published docs for this project, not this run.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function RunEvidenceButton({ runId }: { runId: number }) {
   const [open, setOpen] = useState(false);
   const evidence = useRunConnectorEvidence(runId, open);
@@ -249,13 +358,18 @@ function RunEvidenceButton({ runId }: { runId: number }) {
         <div className="mt-2 min-w-64 rounded border border-white/[0.08] bg-surface-raised p-3 text-xs">
           {evidence.isLoading && <p className="text-slate-500">Loading evidence summary…</p>}
           {evidence.isError && <p className="text-slate-500">No connector evidence summary is available for this run.</p>}
-          {evidence.data && !evidence.data.available && <p className="text-slate-500">Runtime evidence was skipped or unavailable for this run.</p>}
           {evidence.data?.available && <>
             <p className="text-slate-300">{evidence.data.successful_calls} successful · {evidence.data.failed_calls} failed · {evidence.data.denied_calls} denied{evidence.data.truncated_calls ? ` · ${evidence.data.truncated_calls} truncated` : ""}</p>
             {(evidence.data.observation_from || evidence.data.observation_to) && <p className="mt-1 text-slate-500">Observed {evidence.data.observation_from ? new Date(evidence.data.observation_from).toLocaleString() : "?"} – {evidence.data.observation_to ? new Date(evidence.data.observation_to).toLocaleString() : "?"}</p>}
             {evidence.data.findings.length > 0 && <ul className="mt-2 space-y-1 text-slate-400">{evidence.data.findings.slice(0, 3).map((finding) => <li key={finding.evidence_id}><span className="font-mono text-slate-500">{finding.classification}</span>{finding.summary ? ` — ${finding.summary}` : ""}</li>)}</ul>}
             {evidence.data.limitations.length > 0 && <p className="mt-2 text-amber-400">{evidence.data.limitations.join(", ")}</p>}
           </>}
+          {evidence.data && (
+            <RuntimeEvidenceBlock
+              runtime={evidence.data.runtime}
+              subprojects={evidence.data.runtime_subprojects ?? []}
+            />
+          )}
         </div>
       )}
     </div>

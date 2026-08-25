@@ -47,6 +47,7 @@ from mcp_server.providers.custom.prompts import doc_prompt
 # Per-unit catalog entries expand at run start ({base}__{group}__{unit});
 # the base name never exists as a file.
 REQUIRED_DOCS = [d.name for d in _load_test_catalog().docs if not d.per_unit]
+DOC_SECTION_REQUIREMENTS = _load_test_catalog().section_requirements
 from mcp_server.providers.custom.providers import OpenAICompatibleProvider, _execute_staging_tool
 from mcp_server.providers.custom.validators import (
     build_facts_manifest,
@@ -1802,7 +1803,76 @@ def test_doc_depth_gate_fails_on_slim_docs_with_correct_counts(tmp_path):
     report = validate_doc_depth(staging, facts)
 
     assert not report.ok
-    assert any("too shallow" in e for e in report.errors)
+    assert any("is a stub" in e for e in report.errors)
+
+
+def test_doc_depth_gate_is_not_satisfied_by_padding(tmp_path):
+    """A large document whose required sections are empty is still not deep.
+
+    The old gate required `preprocess_bytes * 0.04` per document, so repeating
+    the same structure was the cheapest way to pass. Depth is now judged per
+    required section, so volume buys nothing.
+    """
+    _write_scan(tmp_path / "scan", platform="talend", jobs=[_job("a"), _job("b")])
+    facts = build_facts_manifest("proj", tmp_path / "scan")
+    staging = tmp_path / "staging"
+    staging.mkdir(parents=True)
+    padding = "This document restates the same orientation paragraph. " * 900
+    for doc in REQUIRED_DOCS:
+        headings = "\n".join(
+            f"## {section}\nSee the evidence of record.\n"
+            for section in DOC_SECTION_REQUIREMENTS.get(doc, [])
+        )
+        (staging / f"{doc}.md").write_text(
+            f"# {doc}\n\n{padding}\n\n{headings}\n", encoding="utf-8"
+        )
+
+    report = validate_doc_depth(staging, facts)
+
+    assert not report.ok
+    assert any("no substantive content" in e for e in report.errors)
+    # Size alone must never be the complaint any more.
+    assert not any("is a stub" in e for e in report.errors)
+
+
+def test_doc_depth_gate_accepts_compact_docs_that_answer_every_section(tmp_path):
+    """A concise document that answers each section passes, whatever its size."""
+    _write_scan(tmp_path / "scan", platform="talend", jobs=[_job("a"), _job("b")])
+    facts = build_facts_manifest("proj", tmp_path / "scan")
+    staging = tmp_path / "staging"
+    (staging / "_preprocess").mkdir(parents=True)
+    # A large evidence corpus: under the old rule this forced 45 KB per doc.
+    (staging / "_preprocess" / "A.md").write_text("source scan facts " * 80_000, encoding="utf-8")
+    unit_names = ", ".join(u.name for u in facts.units)
+    for doc in REQUIRED_DOCS:
+        headings = "\n".join(
+            f"## {section}\n"
+            f"- {section}: job a reads GroupA input and writes the staging table; "
+            "evidence facts_manifest.json, HIGH confidence.\n"
+            f"- {section}: job b depends on a via tRunJob and inherits its context "
+            "group; evidence dependency_map.md, MEDIUM confidence.\n"
+            f"- {section}: no runtime observation is available for GroupA, so "
+            "schedules and volumes remain unproven; LOW confidence.\n"
+            f"- {section}: the shared context group supplies the connection used "
+            "by both jobs; evidence config_runtime_map.md, HIGH confidence.\n"
+            f"- {section}: no orphaned or inactive artifact was observed in the "
+            "frozen scan for this group; evidence facts_manifest.json, HIGH.\n"
+            for section in DOC_SECTION_REQUIREMENTS.get(doc, [])
+        )
+        (staging / f"{doc}.md").write_text(
+            f"# {doc}\n\nCanonical inventory: {facts.unit_count} jobs. "
+            f"Units covered: {unit_names}. Group GroupA.\n\n{headings}\n",
+            encoding="utf-8",
+        )
+
+    report = validate_doc_depth(staging, facts)
+
+    assert report.ok, report.errors
+    # The point of the fixture: every doc is far below the 45 KB the old
+    # volume-scaled rule would have demanded for this evidence corpus.
+    assert all(
+        (staging / f"{doc}.md").stat().st_size < 10_000 for doc in REQUIRED_DOCS
+    )
 
 
 def test_docs_validation_fails_when_scanned_config_is_called_unavailable(tmp_path):

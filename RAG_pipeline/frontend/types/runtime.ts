@@ -716,6 +716,55 @@ export type RuntimeJobReliabilityResponse = z.infer<
   typeof RuntimeJobReliabilityResponseSchema
 >;
 
+/**
+ * A bounded, job-level explanation of recent operational behaviour.
+ *
+ * The backend derives this from execution summaries and incidents; it never
+ * includes raw log lines. Nullable diagnosis fields are intentional: a failure
+ * without enough evidence must remain unexplained instead of becoming a guess.
+ */
+export const RuntimeJobInsightSchema = z.object({
+  project_id: z.string(),
+  source_key: z.string(),
+  job_name: z.string(),
+  total_runs: z.number(),
+  success_runs: z.number(),
+  failed_runs: z.number(),
+  unfinished_runs: z.number(),
+  failure_rate: z.number(),
+  first_run_at: z.string().nullable().optional(),
+  last_run_at: z.string().nullable().optional(),
+  failures_with_logs: z.number(),
+  diagnosed_failures: z.number(),
+  capture_ceiling_reached: z.number(),
+  evidence_completeness: z.enum([
+    "no_failures",
+    "complete",
+    "partial",
+    "logs_only",
+    "missing",
+  ]),
+  pattern_id: z.string().nullable().optional(),
+  confidence: z.string().nullable().optional(),
+  occurrences: z.number(),
+  most_recent_at: z.string().nullable().optional(),
+  failed_component: z.string().nullable().optional(),
+  termination_component: z.string().nullable().optional(),
+  causal_message: z.string().nullable().optional(),
+  root_cause_candidate: z.string().nullable().optional(),
+  cause_origin: z.string().nullable().optional(),
+  next_checks: z.array(z.string()),
+});
+export type RuntimeJobInsight = z.infer<typeof RuntimeJobInsightSchema>;
+
+export const RuntimeJobInsightResponseSchema = z.object({
+  insights: z.array(RuntimeJobInsightSchema),
+  total: z.number(),
+});
+export type RuntimeJobInsightResponse = z.infer<
+  typeof RuntimeJobInsightResponseSchema
+>;
+
 export const RuntimeComponentHotspotSchema = z.object({
   project_id: z.string(),
   source_key: z.string(),

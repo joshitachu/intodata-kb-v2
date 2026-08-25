@@ -19,8 +19,10 @@ import re
 import uuid
 from collections import defaultdict
 from collections.abc import Sequence
+from typing import NamedTuple
 
 from sqlalchemy import and_, case, delete, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models.runtime_data import (
@@ -44,7 +46,11 @@ from src.db.models.runtime_data import (
     RuntimeSyncStateRow,
     RuntimeWorkspaceRow,
 )
-from src.db.models.runtime_insights import RuntimeErrorSignatureRow, RuntimeIncidentRow
+from src.db.models.runtime_insights import (
+    RuntimeErrorSignatureRow,
+    RuntimeExecutionSummaryRow,
+    RuntimeIncidentRow,
+)
 from src.db.models.runtime_topology import RuntimeJobScanMapRow
 from src.runtime.models import (
     DetectFailuresInput,
@@ -83,8 +89,13 @@ from src.runtime.models import (
     RuntimeJobDependency,
     RuntimeJobHealth,
     RuntimeDocEvidence,
+    RuntimeDocReadScope,
+    RuntimeMirroredEnvironment,
     RuntimeDocEvidenceFailure,
+    RuntimeDocIncidentInsight,
+    RuntimeDocLogQuality,
     RuntimeJobReliability,
+    RuntimeJobOperationalInsight,
     RuntimeJobRun,
     RuntimeJobThroughput,
     RuntimeComponentMetric,
@@ -113,7 +124,7 @@ from src.runtime.secrets import (
     encrypt,
 )
 from src.runtime.insights.parser import redact_credentials
-from src.runtime.redaction import sanitize_sync_error
+from src.runtime.redaction import sanitize_doc_evidence_error
 from src.runtime.store import ProjectScope, RuntimeDuplicateSourceError, RuntimeRecordNotFoundError
 
 # Severity ordering for min_severity filtering (low -> high).
@@ -186,10 +197,49 @@ def _percentile_at_rank(rank_col, count_col, value_col, percentile: int):
     )
 
 
+def _epoch_seconds(dialect: str, column):
+    """A stored UTC timestamp as absolute epoch seconds, on either backend.
+
+    Needed because an inter-run GAP is arithmetic on timestamps and the two
+    backends disagree on how to do it: Postgres subtracts to an ``interval``,
+    SQLite stores these columns as naive UTC strings and will not subtract at
+    all. Reducing each timestamp to a number FIRST leaves one gap expression for
+    both. ``extract(epoch)`` is absolute, so unlike ``date_trunc`` it does not
+    depend on the session TimeZone; ``julianday`` keeps the sub-second part that
+    ``strftime('%s')`` would truncate, so the two backends agree to the
+    millisecond on the same data.
+    """
+    if dialect == "postgresql":
+        return func.extract("epoch", column)
+    return (func.julianday(column) - 2_440_587.5) * 86_400.0
+
+
+class _GapStats(NamedTuple):
+    """Inter-run gap quantiles for ONE job in ONE environment, seconds."""
+
+    p25: int | None
+    p50: int | None
+    p75: int | None
+    sample_size: int
+
+
 def _ratio(numerator: int | None, denominator: int | None) -> float | None:
     if numerator is None or not denominator:
         return None
     return numerator / denominator
+
+
+def _evidence_completeness(failed: int, logged: int, diagnosed: int) -> str:
+    """Compact quality label for dashboard and documentation consumers."""
+    if failed <= 0:
+        return "no_failures"
+    if logged <= 0:
+        return "missing"
+    if diagnosed >= failed and logged >= failed:
+        return "complete"
+    if diagnosed > 0:
+        return "partial"
+    return "logs_only"
 
 
 _FAILURE_VOLATILE_RE = re.compile(
@@ -200,6 +250,13 @@ _FAILURE_VOLATILE_RE = re.compile(
     """,
     re.IGNORECASE | re.VERBOSE,
 )
+
+
+# Orphan runtime jobs are a tripwire, not an inventory: the name list exists so
+# a document can say "N runtime jobs have no scanned code", and the count is
+# what carries the finding once the list is long.  Bounded so a mis-bound
+# project with a large runtime vocabulary cannot inflate an LLM-bound payload.
+_DOC_EVIDENCE_MAX_ORPHAN_JOBS = 200
 
 
 def _failure_signature(summary: str) -> str:
@@ -230,6 +287,40 @@ def _observed_runs_per_day(rollup: RuntimeJobReliability) -> float | None:
     if span_days < 1:
         return None
     return round(rollup.total_runs / span_days, 2)
+
+
+def _dominant_environment_gaps(
+    gaps: dict[tuple[str, str | None], _GapStats],
+    job_name: str,
+    environments: Sequence[str],
+) -> _GapStats | None:
+    """Gap statistics for the ONE environment the payload already names.
+
+    A runtime job NAME is not a schedule: `runtime_jobs` is unique on
+    `(project_id, source_key, job_id)`, so one name can carry a DEV, a TEST and
+    a PROD deployment (verified in werkorder -- `maximoFourpsWorkOrder` runs in
+    both ACC and TST, `Maximo2Quintiq_Workorder_Route` likewise; alitalend has
+    124 job rows under 92 distinct names). Pooling their starts interleaves an
+    hourly PROD schedule with ad-hoc DEV runs, which does not merely add noise:
+    it produces a median and an IQR that describe no deployment that exists.
+    Pooled, `maximoFourpsWorkOrder` reports a median gap of 75_475 s; its ACC
+    deployment's real median is 2 s.
+
+    So the reported quantiles are always one environment's, and the environment
+    is the highest-volume one -- which is exactly `environments[0]`, since
+    `_doc_evidence_environments` already returns them most-frequent-first from
+    the same table and the same window. Selecting via that list rather than
+    recomputing "dominant" here is deliberate: it makes it impossible for the
+    named environment and the measured one to drift apart, including under a
+    volume tie.
+
+    `environments` is empty only when the provider reported no environment at
+    all, in which case the unnamed group is the whole population and pooling it
+    blends nothing.
+    """
+    if environments:
+        return gaps.get((job_name, environments[0]))
+    return gaps.get((job_name, None))
 
 
 def _as_utc(value: datetime.datetime | None) -> datetime.datetime | None:
@@ -587,6 +678,126 @@ class RuntimeStoreRepository:
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_source(row) for row in rows]
 
+    async def list_mirrored_environments(
+        self, scope: ProjectScope, project_id: str
+    ) -> list[RuntimeMirroredEnvironment]:
+        """Environments present in this project's mirror, busiest first.
+
+        Built from the environment inventory AND from observed job runs, then
+        merged. Neither alone is sufficient: the inventory can list an
+        environment that has never produced a run in the retained window, and a
+        run can carry an environment the inventory sweep has not caught up with.
+        A picker driven by only one would offer a dead choice or hide a live one.
+        """
+        if self._denies_all(scope):
+            return []
+        inventory = select(
+            RuntimeEnvironmentRow.environment_id, RuntimeEnvironmentRow.name
+        ).where(RuntimeEnvironmentRow.project_id == project_id)
+        inventory = self._apply_scope(inventory, RuntimeEnvironmentRow.project_id, scope)
+
+        observed = (
+            select(
+                RuntimeJobRunRow.environment_id,
+                func.max(RuntimeJobRunRow.environment_name).label("name"),
+                func.count().label("run_count"),
+                func.max(RuntimeJobRunRow.started_at).label("last_run_at"),
+            )
+            .where(RuntimeJobRunRow.project_id == project_id)
+            .where(RuntimeJobRunRow.environment_id.is_not(None))
+            .group_by(RuntimeJobRunRow.environment_id)
+        )
+        observed = self._apply_scope(observed, RuntimeJobRunRow.project_id, scope)
+
+        merged: dict[str, RuntimeMirroredEnvironment] = {}
+        for environment_id, name in (await self._session.execute(inventory)).all():
+            if environment_id:
+                merged[environment_id] = RuntimeMirroredEnvironment(
+                    environment_id=environment_id, name=name or environment_id
+                )
+        for environment_id, name, run_count, last_run_at in (
+            await self._session.execute(observed)
+        ).all():
+            entry = merged.get(environment_id)
+            if entry is None:
+                merged[environment_id] = RuntimeMirroredEnvironment(
+                    environment_id=environment_id,
+                    name=name or environment_id,
+                    run_count=run_count,
+                    last_run_at=_as_utc(last_run_at),
+                )
+            else:
+                entry.run_count = run_count
+                entry.last_run_at = _as_utc(last_run_at)
+        return sorted(
+            merged.values(), key=lambda item: (-item.run_count, item.name.lower())
+        )
+
+    async def resolve_doc_read_scope(
+        self, scope: ProjectScope, project_id: str, *, default_window_days: int
+    ) -> RuntimeDocReadScope:
+        """The documentation read scope configured for a project, if any.
+
+        Read scope is stored in each source's non-secret config, which lives in
+        the credential blob -- this connector framework's per-source config
+        store, and where ingest scope, filters and history windows already sit.
+        Reading it therefore costs a decrypt; that is why it is resolved ONCE
+        per doc-evidence request rather than per sub-query.
+
+        A project with several sources (the two-spelling TMC case) unions their
+        environment selections and takes the widest window: a configured source
+        can only ever narrow ITS OWN contribution, so combining by intersection
+        would let one source's narrow scope silently suppress another's data.
+        """
+        if self._denies_all(scope):
+            return RuntimeDocReadScope(window_days=default_window_days)
+        # Selected by row id, not through `list_sources`: that returns the
+        # id-less inventory model, and resolving back to an id by
+        # (project, type) would silently collapse two sources of one type.
+        id_stmt = select(RuntimeSourceRow.id).where(RuntimeSourceRow.project_id == project_id)
+        id_stmt = self._apply_scope(id_stmt, RuntimeSourceRow.project_id, scope)
+        source_ids = list((await self._session.execute(id_stmt)).scalars().all())
+        if not source_ids:
+            return RuntimeDocReadScope(window_days=default_window_days)
+
+        selected: list[str] = []
+        window: int | None = None
+        configured = False
+        for source_id in source_ids:
+            try:
+                credentials, _key_id = await self.read_credentials(source_id)
+            except RuntimeRecordNotFoundError:
+                continue
+            raw_environments = credentials.get("doc_environment_ids")
+            if isinstance(raw_environments, list):
+                cleaned = [str(item).strip() for item in raw_environments if str(item).strip()]
+                if cleaned:
+                    configured = True
+                    selected.extend(item for item in cleaned if item not in selected)
+            raw_window = credentials.get("doc_window_days")
+            if isinstance(raw_window, (int, str)):
+                try:
+                    parsed = int(raw_window)
+                except (TypeError, ValueError):
+                    parsed = 0
+                if parsed > 0:
+                    configured = True
+                    window = parsed if window is None else max(window, parsed)
+
+        if not selected:
+            return RuntimeDocReadScope(
+                window_days=window or default_window_days, configured=configured
+            )
+        mirrored = {item.environment_id: item.name for item in
+                    await self.list_mirrored_environments(scope, project_id)}
+        return RuntimeDocReadScope(
+            environment_ids=selected,
+            environment_names=[mirrored[item] for item in selected if item in mirrored],
+            unavailable_environment_ids=[item for item in selected if item not in mirrored],
+            window_days=window or default_window_days,
+            configured=configured,
+        )
+
     # --- source management (credentials never returned) ---
 
     async def create_source_config(
@@ -598,6 +809,12 @@ class RuntimeStoreRepository:
         physical_identity: str | None = None,
         sync_interval_seconds: int = 60,
     ) -> RuntimeSourceRead:
+        if source_type == "tmc":
+            existing_tmc = await self.find_source_id_by_project_and_type(project_id, source_type)
+            if existing_tmc is not None:
+                raise RuntimeDuplicateSourceError(
+                    "This project already has a TMC source. Edit its ingest scope to add environments."
+                )
         physical_identity = physical_identity or f"local:{source_type}:{uuid.uuid4().hex}"
         existing = (await self._session.execute(select(RuntimeSourceRow.id).where(
             RuntimeSourceRow.physical_identity == physical_identity,
@@ -620,11 +837,28 @@ class RuntimeStoreRepository:
             ingested_at=now,
             last_seen_at=now,
         )
-        self._session.add(row)
-        await self._session.flush()
-        health = RuntimeSourceHealthRow(source_id=row.id)
-        self._session.add(health)
-        await self._session.flush()
+        try:
+            # The partial unique index is the concurrency backstop. A savepoint
+            # keeps the caller's transaction usable when two registrations race.
+            async with self._session.begin_nested():
+                self._session.add(row)
+                await self._session.flush()
+                health = RuntimeSourceHealthRow(source_id=row.id)
+                self._session.add(health)
+                await self._session.flush()
+        except IntegrityError as exc:
+            constraint = getattr(getattr(exc, "orig", None), "diag", None)
+            constraint_name = getattr(constraint, "constraint_name", None)
+            sqlite_message = str(getattr(exc, "orig", exc))
+            is_project_tmc_collision = constraint_name == "uq_runtime_sources_project_tmc" or (
+                source_type == "tmc"
+                and "UNIQUE constraint failed: runtime_sources.project_id" in sqlite_message
+            )
+            if is_project_tmc_collision:
+                raise RuntimeDuplicateSourceError(
+                    "This project already has a TMC source. Edit its ingest scope to add environments."
+                ) from exc
+            raise
         return _to_source_read(row, health)
 
     async def get_source_config(self, source_id: int, scope: ProjectScope) -> RuntimeSourceRead:
@@ -650,6 +884,14 @@ class RuntimeStoreRepository:
     async def find_source_id_by_physical_identity(self, physical_identity: str) -> int | None:
         return (await self._session.execute(select(RuntimeSourceRow.id).where(
             RuntimeSourceRow.physical_identity == physical_identity,
+        ))).scalar_one_or_none()
+
+    async def find_source_id_by_project_and_type(
+        self, project_id: str, source_type: str
+    ) -> int | None:
+        return (await self._session.execute(select(RuntimeSourceRow.id).where(
+            RuntimeSourceRow.project_id == project_id,
+            RuntimeSourceRow.source_type == source_type,
         ))).scalar_one_or_none()
 
     async def list_unresolved_identity_source_ids(
@@ -1513,6 +1755,30 @@ class RuntimeStoreRepository:
     # summarise thousands of runs. Grouping, counting, percentiles and ordering all
     # happen in the database; only the already-aggregated rows cross the boundary.
 
+    def _environment_execution_ids(
+        self, project_id: str | None, environment_ids: Sequence[str]
+    ):
+        """Execution ids whose run was observed in one of these environments.
+
+        `runtime_executions` carries no environment column; `runtime_job_runs`
+        does. For a TMC mirror the two are one-to-one -- the provider derives
+        each execution FROM a job run (`_execution_from_job_run`) and copies
+        `run_id` into `execution_id` -- so the job-run table is the environment
+        authority for an execution, joined on that id.
+
+        A run whose provider reported no environment is excluded. That is the
+        honest reading of "only PROD": a run that cannot be shown to be PROD is
+        not evidence for it.
+        """
+        stmt = (
+            select(RuntimeJobRunRow.execution_id)
+            .where(RuntimeJobRunRow.environment_id.in_(list(environment_ids)))
+            .where(RuntimeJobRunRow.execution_id.is_not(None))
+        )
+        if project_id is not None:
+            stmt = stmt.where(RuntimeJobRunRow.project_id == project_id)
+        return stmt
+
     def _scoped_execution_base(
         self,
         scope: ProjectScope,
@@ -1522,8 +1788,17 @@ class RuntimeStoreRepository:
         job_name: str | None,
         since: datetime.datetime | None,
         until: datetime.datetime | None,
+        environment_ids: Sequence[str] | None = None,
     ):
-        """Scoped, filtered execution rows as a subquery for aggregate composition."""
+        """Scoped, filtered execution rows as a subquery for aggregate composition.
+
+        `environment_ids` narrows the population to runs observed in those
+        environments. Because every execution-derived aggregate (reliability,
+        streak, duration percentiles) composes over this subquery, applying the
+        filter here is what keeps a scoped rollup internally consistent -- a
+        per-aggregate filter would let one number describe PROD while its
+        neighbour described PROD+TST.
+        """
         stmt = select(
             RuntimeExecutionRow.id.label("id"),
             RuntimeExecutionRow.project_id.label("project_id"),
@@ -1546,6 +1821,12 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeExecutionRow.started_at >= since)
         if until is not None:
             stmt = stmt.where(RuntimeExecutionRow.started_at <= until)
+        if environment_ids is not None:
+            stmt = stmt.where(
+                RuntimeExecutionRow.execution_id.in_(
+                    self._environment_execution_ids(project_id, environment_ids)
+                )
+            )
         return stmt.subquery()
 
     @staticmethod
@@ -1654,6 +1935,7 @@ class RuntimeStoreRepository:
             job_name=params.job_name,
             since=params.since,
             until=params.until,
+            environment_ids=params.environment_ids,
         )
         group = [base.c.project_id, base.c.source_key, base.c.job_name]
         percentiles = self._duration_percentiles(base, group)
@@ -1791,6 +2073,243 @@ class RuntimeStoreRepository:
         )
         return int((await self._session.execute(select(func.count()).select_from(groups))).scalar_one())
 
+    async def list_job_operational_insights(
+        self,
+        scope: ProjectScope,
+        *,
+        project_id: str,
+        since: datetime.datetime | None,
+        until: datetime.datetime | None,
+        limit: int,
+    ) -> list[RuntimeJobOperationalInsight]:
+        """Return one bounded operational story per job, never raw logs.
+
+        Reliability defines the job population. Diagnostic coverage and one
+        dominant useful incident are then joined only for those bounded jobs.
+        Grouping includes `source_key`, so identically named jobs from different
+        providers cannot contaminate each other's evidence.
+        """
+        reliability = await self.list_job_reliability(
+            scope,
+            ListRuntimeJobReliabilityInput(
+                project_id=project_id,
+                since=since,
+                until=until,
+                limit=limit,
+            ),
+        )
+        if not reliability:
+            return []
+
+        keys = {(row.source_key, row.job_name) for row in reliability}
+        key_filter = or_(
+            *(
+                and_(
+                    RuntimeExecutionRow.source_key == source_key,
+                    RuntimeExecutionRow.job_name == job_name,
+                )
+                for source_key, job_name in keys
+            )
+        )
+        log_counts = (
+            select(
+                RuntimeLogEventRow.project_id.label("project_id"),
+                RuntimeLogEventRow.execution_id.label("execution_id"),
+                func.count(RuntimeLogEventRow.id).label("log_lines"),
+            )
+            .where(RuntimeLogEventRow.project_id == project_id)
+            .group_by(RuntimeLogEventRow.project_id, RuntimeLogEventRow.execution_id)
+            .subquery()
+        )
+        useful_diagnoses = (
+            select(
+                RuntimeIncidentRow.project_id.label("project_id"),
+                RuntimeIncidentRow.execution_id.label("execution_id"),
+            )
+            .where(RuntimeIncidentRow.project_id == project_id)
+            .where(RuntimeIncidentRow.confidence.in_(("high", "medium")))
+            .where(RuntimeIncidentRow.pattern_id.notin_(("generic.unknown", "exception.generic")))
+            .distinct()
+            .subquery()
+        )
+        coverage_stmt = (
+            select(
+                RuntimeExecutionRow.source_key,
+                RuntimeExecutionRow.job_name,
+                func.count(func.distinct(RuntimeExecutionRow.execution_id)).label("failed"),
+                func.count(
+                    func.distinct(
+                        case(
+                            (log_counts.c.execution_id.is_not(None), RuntimeExecutionRow.execution_id)
+                        )
+                    )
+                ).label("logged"),
+                func.count(
+                    func.distinct(
+                        case(
+                            (
+                                useful_diagnoses.c.execution_id.is_not(None),
+                                RuntimeExecutionRow.execution_id,
+                            )
+                        )
+                    )
+                ).label("diagnosed"),
+                func.count(
+                    func.distinct(
+                        case(
+                            (log_counts.c.log_lines >= 10_000, RuntimeExecutionRow.execution_id)
+                        )
+                    )
+                ).label("ceiling"),
+            )
+            .outerjoin(
+                log_counts,
+                and_(
+                    log_counts.c.project_id == RuntimeExecutionRow.project_id,
+                    log_counts.c.execution_id == RuntimeExecutionRow.execution_id,
+                ),
+            )
+            .outerjoin(
+                useful_diagnoses,
+                and_(
+                    useful_diagnoses.c.project_id == RuntimeExecutionRow.project_id,
+                    useful_diagnoses.c.execution_id == RuntimeExecutionRow.execution_id,
+                ),
+            )
+            .where(RuntimeExecutionRow.project_id == project_id)
+            .where(RuntimeExecutionRow.state == RuntimeExecutionState.FAILED.value)
+            .where(key_filter)
+            .group_by(RuntimeExecutionRow.source_key, RuntimeExecutionRow.job_name)
+        )
+        if since is not None:
+            coverage_stmt = coverage_stmt.where(RuntimeExecutionRow.started_at >= since)
+        if until is not None:
+            coverage_stmt = coverage_stmt.where(RuntimeExecutionRow.started_at <= until)
+        coverage_stmt = self._apply_scope(coverage_stmt, RuntimeExecutionRow.project_id, scope)
+        coverage = {
+            (row.source_key, row.job_name): (
+                int(row.failed or 0),
+                int(row.logged or 0),
+                int(row.diagnosed or 0),
+                int(row.ceiling or 0),
+            )
+            for row in (await self._session.execute(coverage_stmt)).all()
+        }
+
+        incident_stmt = (
+            select(
+                RuntimeExecutionRow.source_key,
+                RuntimeExecutionRow.job_name,
+                RuntimeIncidentRow.signature_hash,
+                RuntimeIncidentRow.pattern_id,
+                RuntimeIncidentRow.confidence,
+                RuntimeIncidentRow.first_bad_at,
+                RuntimeExecutionRow.started_at,
+                RuntimeIncidentRow.causal_message,
+                RuntimeIncidentRow.root_cause_candidate,
+                RuntimeIncidentRow.cause_origin,
+                RuntimeIncidentRow.termination_component,
+                RuntimeIncidentRow.next_checks,
+                RuntimeExecutionSummaryRow.failed_component,
+            )
+            .join(
+                RuntimeIncidentRow,
+                and_(
+                    RuntimeIncidentRow.project_id == RuntimeExecutionRow.project_id,
+                    RuntimeIncidentRow.execution_id == RuntimeExecutionRow.execution_id,
+                ),
+            )
+            .outerjoin(
+                RuntimeExecutionSummaryRow,
+                and_(
+                    RuntimeExecutionSummaryRow.project_id == RuntimeExecutionRow.project_id,
+                    RuntimeExecutionSummaryRow.execution_id == RuntimeExecutionRow.execution_id,
+                ),
+            )
+            .where(RuntimeExecutionRow.project_id == project_id)
+            .where(key_filter)
+            .where(RuntimeIncidentRow.confidence.in_(("high", "medium")))
+            .where(RuntimeIncidentRow.pattern_id.notin_(("generic.unknown", "exception.generic")))
+        )
+        if since is not None:
+            incident_stmt = incident_stmt.where(RuntimeExecutionRow.started_at >= since)
+        if until is not None:
+            incident_stmt = incident_stmt.where(RuntimeExecutionRow.started_at <= until)
+        incident_stmt = self._apply_scope(incident_stmt, RuntimeExecutionRow.project_id, scope)
+
+        grouped: dict[tuple[str, str], dict[str, dict[str, object]]] = {}
+        for row in (await self._session.execute(incident_stmt)).all():
+            key = (str(row.source_key), str(row.job_name))
+            signature = str(
+                row.signature_hash
+                or f"{row.pattern_id}|{row.failed_component}|{row.termination_component}"
+            )
+            bucket = grouped.setdefault(key, {})
+            current = bucket.get(signature)
+            if current is None:
+                current = {
+                    "pattern_id": str(row.pattern_id),
+                    "confidence": str(row.confidence),
+                    "occurrences": 0,
+                    "most_recent_at": _as_utc(row.first_bad_at or row.started_at),
+                    "failed_component": row.failed_component,
+                    "termination_component": row.termination_component,
+                    "causal_message": sanitize_doc_evidence_error(row.causal_message),
+                    "root_cause_candidate": sanitize_doc_evidence_error(
+                        row.root_cause_candidate
+                    ),
+                    "cause_origin": row.cause_origin,
+                    "next_checks": [
+                        check
+                        for check in (
+                            sanitize_doc_evidence_error(value)
+                            for value in (row.next_checks or [])[:3]
+                        )
+                        if check
+                    ],
+                }
+                bucket[signature] = current
+            current["occurrences"] = int(current["occurrences"]) + 1
+
+        dominant: dict[tuple[str, str], dict[str, object]] = {}
+        for key, signatures in grouped.items():
+            dominant[key] = sorted(
+                signatures.values(),
+                key=lambda item: (
+                    0 if item["confidence"] == "high" else 1,
+                    -int(item["occurrences"]),
+                    -(_as_utc(item["most_recent_at"]) or datetime.datetime.min.replace(tzinfo=datetime.UTC)).timestamp(),
+                ),
+            )[0]
+
+        insights: list[RuntimeJobOperationalInsight] = []
+        for rollup in reliability:
+            key = (rollup.source_key, rollup.job_name)
+            failed, logged, diagnosed, ceiling = coverage.get(key, (0, 0, 0, 0))
+            diagnosis = dominant.get(key, {})
+            insights.append(
+                RuntimeJobOperationalInsight(
+                    project_id=rollup.project_id,
+                    source_key=rollup.source_key,
+                    job_name=rollup.job_name,
+                    total_runs=rollup.total_runs,
+                    success_runs=rollup.success_runs,
+                    failed_runs=rollup.failed_runs,
+                    unfinished_runs=rollup.unfinished_runs,
+                    failure_rate=rollup.failure_rate,
+                    first_run_at=rollup.first_run_at,
+                    last_run_at=rollup.last_run_at,
+                    failures_with_logs=logged,
+                    diagnosed_failures=diagnosed,
+                    capture_ceiling_reached=ceiling,
+                    evidence_completeness=_evidence_completeness(
+                        failed, logged, diagnosed
+                    ),
+                    **diagnosis,
+                )
+            )
+        return insights
+
     async def list_doc_evidence(
         self,
         scope: ProjectScope,
@@ -1799,8 +2318,10 @@ class RuntimeStoreRepository:
         unit_names: Sequence[str],
         since: datetime.datetime,
         max_failures_per_unit: int = 5,
-    ) -> tuple[list[RuntimeDocEvidence], list[str]]:
-        """Runtime profiles for scanned units, plus the units with no data.
+        environment_ids: Sequence[str] | None = None,
+    ) -> tuple[list[RuntimeDocEvidence], list[str], list[str]]:
+        """Runtime profiles for scanned units, the units with no data, and the
+        runtime jobs with no unit.
 
         Unit-to-runtime resolution is EXACT, never substring: a scan commonly
         holds sibling units whose names differ by one character (verified in
@@ -1811,12 +2332,63 @@ class RuntimeStoreRepository:
         hand; the table is empty in practice today, which is why name equality
         is the working path rather than the fallback.
 
-        Returns aggregates only.  Callers get no log lines, and the single free
-        text field (`error_summary`) is redacted before it leaves.
+        Returns aggregates only.  Callers get no log lines, no per-run
+        timestamps, and the single free text field (`error_summary`) is redacted
+        before it leaves.  Cadence is carried by gap QUANTILES
+        (`gap_p25/p50/p75_seconds`, `gap_sample_size`) for the same reason --
+        they answer "how often does this run" without shipping the run log that
+        would answer it by enumeration.
+
+        Third element -- `orphan_runtime_jobs`
+        --------------------------------------
+        Runtime job names observed in this project and this window that matched
+        NONE of the units in THIS call.  It is the mis-binding tripwire: scan
+        directory `alitalend` holds the AssetCheck estate whose units match, set
+        for set, the runtime jobs filed under `reverse_engineer_VW`, while
+        runtime `alitalend` holds a different 28-job workspace.  Without this
+        field a document publishes 1-of-10 coverage in silence; with it the
+        generator can state "27 runtime jobs have no scanned code" and flag the
+        binding as suspect.
+
+        **A batched caller must merge by INTERSECTION, never by union.**  The
+        field is relative to the units in one request, so a unit sent in batch 2
+        makes its job look orphaned in batch 1.  Writing
+        `A` for the project's runtime job vocabulary (identical for every batch:
+        the reliability query depends only on `project_id` and `since`) and
+        `M_i` for the jobs matched by batch `i`, this method returns
+        `O_i = A - M_i`, and the true orphan set is
+        `A - union(M_i) = intersection(O_i)`.  Union would report every runtime
+        job as an orphan as soon as the unit list is split.
+
+        The list is capped at `_DOC_EVIDENCE_MAX_ORPHAN_JOBS`, sorted by name so
+        the cap selects a stable prefix across batches.  The cap is fail-safe
+        under intersection: dropping names can only shrink the merged result, so
+        a truncated response can under-report orphans but can never invent one.
+        An empty `unit_names` yields an empty orphan list rather than the whole
+        vocabulary -- with nothing requested, "orphaned" is not a claim the
+        evidence supports.
+
+        Read scope -- `environment_ids`
+        -------------------------------
+        None reads every mirrored environment (the historical behaviour). A list
+        narrows EVERY aggregate here to runs observed in those environments, so
+        a project documenting only production gets production's failure rate,
+        production's latency and production's cadence, rather than figures that
+        blend a nightly TST loop into them. The narrowing also moves the orphan
+        line: a job that only ever runs in an excluded environment becomes
+        unmatched, which is correct -- within this scope there is no evidence
+        for it -- and is why the applied scope must be reported alongside the
+        result rather than left implicit.
         """
         requested = list(dict.fromkeys(name for name in unit_names if name))
         if self._denies_all(scope) or not requested:
-            return [], requested
+            return [], requested, []
+        # An explicitly empty selection is not "everything". Callers resolve a
+        # configured-but-unsatisfiable scope before reaching here; this guard
+        # exists so a future caller cannot turn one into a silent full read.
+        scoped = list(environment_ids) if environment_ids is not None else None
+        if scoped is not None and not scoped:
+            return [], requested, []
 
         overrides = await self._doc_evidence_scan_map(scope, project_id, requested)
         # A mapped unit is looked up by its runtime name; everything else by its
@@ -1836,23 +2408,45 @@ class RuntimeStoreRepository:
                 # Bounded by the runtime vocabulary of one project, not by the
                 # scan: a project mirrors tens of jobs, not hundreds.
                 limit=500,
+                environment_ids=scoped,
             ),
         )
         matched = {row.job_name: row for row in reliability if row.job_name in lookup}
+        orphans = sorted({row.job_name for row in reliability if row.job_name not in lookup})[
+            :_DOC_EVIDENCE_MAX_ORPHAN_JOBS
+        ]
         if not matched:
-            return [], requested
+            # Zero matches with a non-empty orphan list is the binding-suspect
+            # signal, so the orphans have to survive this exit -- it is the one
+            # case where they carry the whole finding.
+            return [], requested, orphans
 
         job_names = list(matched)
-        durations = await self._doc_evidence_durations(scope, project_id, job_names, since)
-        environments = await self._doc_evidence_environments(scope, project_id, job_names, since)
+        durations = await self._doc_evidence_durations(
+            scope, project_id, job_names, since, environment_ids=scoped
+        )
+        environments = await self._doc_evidence_environments(
+            scope, project_id, job_names, since, environment_ids=scoped
+        )
+        gaps = await self._doc_evidence_gap_quantiles(
+            scope, project_id, job_names, since, environment_ids=scoped
+        )
         plans = await self._doc_evidence_plans(scope, project_id, job_names)
         failures = await self._doc_evidence_failures(
-            scope, project_id, job_names, since, max_failures_per_unit
+            scope, project_id, job_names, since, max_failures_per_unit, environment_ids=scoped
+        )
+        log_quality = await self._doc_evidence_log_quality(
+            scope, project_id, job_names, since, environment_ids=scoped
+        )
+        incident_insights = await self._doc_evidence_incidents(
+            scope, project_id, job_names, since, environment_ids=scoped
         )
 
         evidence: list[RuntimeDocEvidence] = []
         for job_name, rollup in matched.items():
             p50, p95, max_duration_ms = durations.get(job_name, (None, None, None))
+            job_environments = environments.get(job_name, [])
+            gap = _dominant_environment_gaps(gaps, job_name, job_environments)
             for unit_name, resolved_by in lookup[job_name]:
                 evidence.append(
                     RuntimeDocEvidence(
@@ -1860,7 +2454,7 @@ class RuntimeStoreRepository:
                         job_name=job_name,
                         source_key=rollup.source_key,
                         resolved_by=resolved_by,
-                        environments=environments.get(job_name, []),
+                        environments=job_environments,
                         total_runs=rollup.total_runs,
                         success_runs=rollup.success_runs,
                         failed_runs=rollup.failed_runs,
@@ -1873,13 +2467,23 @@ class RuntimeStoreRepository:
                         p50_duration_ms=p50,
                         p95_duration_ms=p95,
                         max_duration_ms=max_duration_ms,
+                        # Cadence evidence for the dominant environment only,
+                        # which `environments[0]` names. All four stay None when
+                        # that environment has fewer than two runs in the
+                        # window -- one run is not a gap.
+                        gap_p25_seconds=gap.p25 if gap else None,
+                        gap_p50_seconds=gap.p50 if gap else None,
+                        gap_p75_seconds=gap.p75 if gap else None,
+                        gap_sample_size=gap.sample_size if gap else None,
                         plans=plans.get(job_name, []),
                         recent_failures=failures.get(job_name, []),
+                        log_quality=log_quality.get(job_name, RuntimeDocLogQuality()),
+                        incident_insights=incident_insights.get(job_name, []),
                     )
                 )
         evidence.sort(key=lambda item: item.unit_name)
         covered = {item.unit_name for item in evidence}
-        return evidence, [unit for unit in requested if unit not in covered]
+        return evidence, [unit for unit in requested if unit not in covered], orphans
 
     async def _doc_evidence_scan_map(
         self, scope: ProjectScope, project_id: str, unit_names: Sequence[str]
@@ -1909,6 +2513,7 @@ class RuntimeStoreRepository:
         project_id: str,
         job_names: Sequence[str],
         since: datetime.datetime,
+        environment_ids: Sequence[str] | None = None,
     ) -> dict[str, tuple[int | None, int | None, int | None]]:
         """Duration percentiles over SUCCESSFUL runs only, as p50/p95/max.
 
@@ -1933,6 +2538,12 @@ class RuntimeStoreRepository:
             RuntimeExecutionRow.ended_at.is_not(None),
             RuntimeExecutionRow.duration_ms.is_not(None),
         )
+        if environment_ids is not None:
+            base = base.where(
+                RuntimeExecutionRow.execution_id.in_(
+                    self._environment_execution_ids(project_id, environment_ids)
+                )
+            )
         base = self._apply_scope(base, RuntimeExecutionRow.project_id, scope).subquery()
         group = [base.c.project_id, base.c.job_name]
         percentiles = self._duration_percentiles(base, group)
@@ -1954,14 +2565,129 @@ class RuntimeStoreRepository:
         rows = (await self._session.execute(stmt)).all()
         return {job_name: (p50, p95, max_ms) for job_name, p50, p95, max_ms in rows}
 
+    async def _doc_evidence_gap_quantiles(
+        self,
+        scope: ProjectScope,
+        project_id: str,
+        job_names: Sequence[str],
+        since: datetime.datetime,
+        environment_ids: Sequence[str] | None = None,
+    ) -> dict[tuple[str, str | None], _GapStats]:
+        """Inter-run gap quantiles per (job, environment), in seconds.
+
+        The evidence a cadence claim needs. `runs_per_day` is a mean over the
+        window and cannot support one: verified in werkorder,
+        `Maximo2RHM_Workorders` has a mean gap of 2204 s and a median of 1801 s,
+        so a document derived from the mean announces a 37-minute schedule that
+        nobody configured, while the median lands on the half-hour it actually
+        runs on. Publishing p25/p50/p75 lets the consumer test the SPREAD as
+        well as the centre, which is the difference between a schedule and a
+        coincidence.
+
+        Grouped BY ENVIRONMENT, never pooled across them -- see
+        `_dominant_environment_gaps` for why that is the load-bearing part.
+
+        Read from `runtime_job_runs` rather than `runtime_executions` because
+        only the job-run fact carries `environment_name`; the two tables mirror
+        the same stream (3394/3394 rows for werkorder, 914/914 for alitalend on
+        the live mirror). A project whose job-run mirror is empty therefore
+        reports no cadence rather than a pooled one, which is the safe
+        direction.
+
+        Everything -- gap, rank, quantile -- is computed in the database, in
+        the sibling style of `_doc_evidence_durations`: only one already
+        aggregated row per (job, environment) crosses the boundary, so a job
+        with thousands of runs costs the same as one with ten. Bounded by the
+        matched job set and the caller's window.
+
+        The quantile is the discrete nearest-rank pick shared with every other
+        percentile in this file (`_percentile_at_rank`), so it is always a gap
+        that was actually observed, never an interpolation between two.
+        """
+        started = _epoch_seconds(self._dialect, RuntimeJobRunRow.started_at)
+        base = select(
+            RuntimeJobRunRow.job_name.label("job_name"),
+            RuntimeJobRunRow.environment_name.label("environment_name"),
+            started.label("started_epoch"),
+        ).where(
+            RuntimeJobRunRow.project_id == project_id,
+            RuntimeJobRunRow.job_name.in_(job_names),
+            RuntimeJobRunRow.started_at >= since,
+        )
+        if environment_ids is not None:
+            base = base.where(RuntimeJobRunRow.environment_id.in_(list(environment_ids)))
+        base = self._apply_scope(base, RuntimeJobRunRow.project_id, scope).subquery()
+
+        # NULL environments partition together: SQL PARTITION BY treats NULLs as
+        # equal, which is the wanted grouping -- "the deployment the provider
+        # did not name" is one population, not one per row.
+        partition = [base.c.job_name, base.c.environment_name]
+        previous_start = func.lag(base.c.started_epoch).over(
+            partition_by=partition, order_by=base.c.started_epoch.asc()
+        )
+        gaps = select(
+            base.c.job_name,
+            base.c.environment_name,
+            (base.c.started_epoch - previous_start).label("gap_seconds"),
+        ).subquery()
+        # The first run of every group has no predecessor and yields NULL. A
+        # single-run group therefore contributes no rows at all and simply never
+        # appears in the result -- the caller reads that as "no cadence
+        # evidence", which is what one run means.
+        gap_partition = [gaps.c.job_name, gaps.c.environment_name]
+        ranked = (
+            select(
+                gaps.c.job_name,
+                gaps.c.environment_name,
+                gaps.c.gap_seconds,
+                func.row_number()
+                .over(partition_by=gap_partition, order_by=gaps.c.gap_seconds.asc())
+                .label("rn"),
+                func.count().over(partition_by=gap_partition).label("cnt"),
+            )
+            .where(gaps.c.gap_seconds.is_not(None))
+            .subquery()
+        )
+        stmt = select(
+            ranked.c.job_name,
+            ranked.c.environment_name,
+            func.max(ranked.c.cnt).label("sample_size"),
+            _percentile_at_rank(ranked.c.rn, ranked.c.cnt, ranked.c.gap_seconds, 25).label("p25"),
+            _percentile_at_rank(ranked.c.rn, ranked.c.cnt, ranked.c.gap_seconds, 50).label("p50"),
+            _percentile_at_rank(ranked.c.rn, ranked.c.cnt, ranked.c.gap_seconds, 75).label("p75"),
+        ).group_by(ranked.c.job_name, ranked.c.environment_name)
+
+        result: dict[tuple[str, str | None], _GapStats] = {}
+        for job_name, environment_name, sample_size, p25, p50, p75 in (
+            await self._session.execute(stmt)
+        ).all():
+            result[(job_name, environment_name)] = _GapStats(
+                # Seconds, rounded: the underlying value is a float on both
+                # backends (Postgres `extract` is numeric, SQLite julianday is a
+                # double) and sub-second precision says nothing about a
+                # schedule.
+                p25=None if p25 is None else int(round(float(p25))),
+                p50=None if p50 is None else int(round(float(p50))),
+                p75=None if p75 is None else int(round(float(p75))),
+                sample_size=int(sample_size),
+            )
+        return result
+
     async def _doc_evidence_environments(
         self,
         scope: ProjectScope,
         project_id: str,
         job_names: Sequence[str],
         since: datetime.datetime,
+        environment_ids: Sequence[str] | None = None,
     ) -> dict[str, list[str]]:
-        """Environments each job was observed running in, most frequent first."""
+        """Environments each job was observed running in, most frequent first.
+
+        The order is a contract, not a presentation choice: `environments[0]` is
+        the environment the gap quantiles describe (see
+        `_dominant_environment_gaps`), so the tie-break is pinned to the name
+        rather than left to whatever order the backend returns equal counts in.
+        """
         stmt = (
             select(
                 RuntimeJobRunRow.job_name,
@@ -1973,8 +2699,14 @@ class RuntimeStoreRepository:
             .where(RuntimeJobRunRow.started_at >= since)
             .where(RuntimeJobRunRow.environment_name.is_not(None))
             .group_by(RuntimeJobRunRow.job_name, RuntimeJobRunRow.environment_name)
-            .order_by(func.count().desc())
+            .order_by(func.count().desc(), RuntimeJobRunRow.environment_name.asc())
         )
+        if environment_ids is not None:
+            # Keeps the `environments[0]` contract true under a read scope: the
+            # dominant environment must be the dominant SELECTED one, or the
+            # gap quantiles would be attributed to an environment the reader was
+            # told is out of scope.
+            stmt = stmt.where(RuntimeJobRunRow.environment_id.in_(list(environment_ids)))
         stmt = self._apply_scope(stmt, RuntimeJobRunRow.project_id, scope)
         result: dict[str, list[str]] = {}
         for job_name, environment_name, _runs in (await self._session.execute(stmt)).all():
@@ -1990,6 +2722,20 @@ class RuntimeStoreRepository:
         the step's own `job_name` field rather than through a JSON containment
         query -- the column is portable JSON on SQLite in tests and JSONB in
         production, and the plan inventory per project is tens of rows.
+
+        Resolving instead (or additionally) through `steps[].job_id ->
+        runtime_jobs.job_id -> name` was proposed on the observation that TMC
+        leaves most step `job_name` values null.  Measured over the whole live
+        mirror it recovers NOTHING: of 343 plan steps, 219 have a null
+        `job_name`, and every one of those carries a `job_id` that is absent
+        from `runtime_jobs` (the provider also copies the id into the step's
+        `name` field, which is the tell).  Counting distinct jobs that gain a
+        plan attribution, name resolution gives 16/64/1/2 for
+        alitalend/cdc/werkorder/reingest-drill and id resolution gives
+        16/60/1/2 -- strictly not better, and a union adds zero.  Null step
+        names are a mirror-coverage gap (plan steps pointing at tasks in
+        environments the sync does not hold), not a lookup-key mistake, so the
+        `job_name` path stays until the job inventory covers them.
         """
         stmt = (
             select(RuntimePlanRow.name, RuntimePlanRow.display_name, RuntimePlanRow.steps)
@@ -2018,6 +2764,7 @@ class RuntimeStoreRepository:
         job_names: Sequence[str],
         since: datetime.datetime,
         max_per_job: int,
+        environment_ids: Sequence[str] | None = None,
     ) -> dict[str, list[RuntimeDocEvidenceFailure]]:
         """Distinct failure MODES per job, most recent first, redacted and capped.
 
@@ -2038,16 +2785,27 @@ class RuntimeStoreRepository:
             .where(RuntimeFailureRow.failed_at >= since)
             .order_by(RuntimeFailureRow.failed_at.desc(), RuntimeFailureRow.id.desc())
         )
+        if environment_ids is not None:
+            # A failure row carries no environment either, and joining through
+            # the job run is what stops a TST stack trace being published as the
+            # production failure mode -- the exact class of error the scope was
+            # selected to exclude.
+            stmt = stmt.where(
+                RuntimeFailureRow.execution_id.in_(
+                    self._environment_execution_ids(project_id, environment_ids)
+                )
+            )
         stmt = self._apply_scope(stmt, RuntimeFailureRow.project_id, scope)
         # job -> signature -> accumulating entry, insertion-ordered so the first
         # sighting of each signature (the most recent, given the ORDER BY) keeps
         # its position and its wording.
         grouped: dict[str, dict[str, RuntimeDocEvidenceFailure]] = {}
         for job_name, failed_at, error_summary in (await self._session.execute(stmt)).all():
-            # Reuse the sync-path redactor rather than a second implementation:
-            # one filter means one place to strengthen when a new secret shape
-            # shows up in provider error text.
-            summary = sanitize_sync_error(error_summary)
+            # The prompt-bound variant of the shared redactor: same keyword,
+            # credential and entity-shape filters as the persistence path, plus
+            # execution-id stripping, which is safe here and only here (the
+            # stored row keeps the id an operator needs to pull the run).
+            summary = sanitize_doc_evidence_error(error_summary)
             if not summary:
                 continue
             buckets = grouped.setdefault(job_name, {})
@@ -2062,6 +2820,217 @@ class RuntimeStoreRepository:
                 failed_at=_as_utc(failed_at), error_summary=summary
             )
         return {job_name: list(buckets.values()) for job_name, buckets in grouped.items()}
+
+    async def _doc_evidence_log_quality(
+        self,
+        scope: ProjectScope,
+        project_id: str,
+        job_names: Sequence[str],
+        since: datetime.datetime,
+        environment_ids: Sequence[str] | None = None,
+    ) -> dict[str, RuntimeDocLogQuality]:
+        """Measure diagnostic coverage without shipping a single raw log line.
+
+        A row count at the current 10k provider ceiling is a conservative
+        truncation signal.  It may undercount truncation if a future provider
+        lowers its own cap, but it never labels a complete shorter log as cut.
+        """
+        log_counts = (
+            select(
+                RuntimeLogEventRow.project_id.label("project_id"),
+                RuntimeLogEventRow.execution_id.label("execution_id"),
+                func.count(RuntimeLogEventRow.id).label("log_lines"),
+            )
+            .where(RuntimeLogEventRow.project_id == project_id)
+            .group_by(RuntimeLogEventRow.project_id, RuntimeLogEventRow.execution_id)
+            .subquery()
+        )
+        diagnosed = (
+            select(
+                RuntimeIncidentRow.project_id.label("project_id"),
+                RuntimeIncidentRow.execution_id.label("execution_id"),
+            )
+            .where(RuntimeIncidentRow.project_id == project_id)
+            .where(RuntimeIncidentRow.confidence.in_(("high", "medium")))
+            .where(RuntimeIncidentRow.pattern_id.notin_(("generic.unknown", "exception.generic")))
+            .distinct()
+            .subquery()
+        )
+        stmt = (
+            select(
+                RuntimeExecutionRow.job_name,
+                func.count(func.distinct(RuntimeExecutionRow.execution_id)).label("failed"),
+                func.count(
+                    func.distinct(
+                        case(
+                            (log_counts.c.execution_id.is_not(None), RuntimeExecutionRow.execution_id)
+                        )
+                    )
+                ).label("logged"),
+                func.count(
+                    func.distinct(
+                        case(
+                            (diagnosed.c.execution_id.is_not(None), RuntimeExecutionRow.execution_id)
+                        )
+                    )
+                ).label("diagnosed"),
+                func.count(
+                    func.distinct(
+                        case(
+                            (log_counts.c.log_lines >= 10_000, RuntimeExecutionRow.execution_id)
+                        )
+                    )
+                ).label("ceiling"),
+            )
+            .outerjoin(
+                log_counts,
+                and_(
+                    log_counts.c.project_id == RuntimeExecutionRow.project_id,
+                    log_counts.c.execution_id == RuntimeExecutionRow.execution_id,
+                ),
+            )
+            .outerjoin(
+                diagnosed,
+                and_(
+                    diagnosed.c.project_id == RuntimeExecutionRow.project_id,
+                    diagnosed.c.execution_id == RuntimeExecutionRow.execution_id,
+                ),
+            )
+            .where(RuntimeExecutionRow.project_id == project_id)
+            .where(RuntimeExecutionRow.job_name.in_(job_names))
+            .where(RuntimeExecutionRow.started_at >= since)
+            .where(RuntimeExecutionRow.state == RuntimeExecutionState.FAILED.value)
+            .group_by(RuntimeExecutionRow.job_name)
+        )
+        if environment_ids is not None:
+            stmt = stmt.where(
+                RuntimeExecutionRow.execution_id.in_(
+                    self._environment_execution_ids(project_id, environment_ids)
+                )
+            )
+        stmt = self._apply_scope(stmt, RuntimeExecutionRow.project_id, scope)
+        return {
+            job_name: RuntimeDocLogQuality(
+                failed_executions=int(failed or 0),
+                executions_with_logs=int(logged or 0),
+                diagnosed_executions=int(diagnosed_count or 0),
+                capture_ceiling_reached=int(ceiling or 0),
+            )
+            for job_name, failed, logged, diagnosed_count, ceiling in (
+                await self._session.execute(stmt)
+            ).all()
+        }
+
+    async def _doc_evidence_incidents(
+        self,
+        scope: ProjectScope,
+        project_id: str,
+        job_names: Sequence[str],
+        since: datetime.datetime,
+        max_per_job: int = 3,
+        environment_ids: Sequence[str] | None = None,
+    ) -> dict[str, list[RuntimeDocIncidentInsight]]:
+        """Return recurring diagnoses backed by useful log evidence.
+
+        The live alitalend source shows the important dividing line: SQL Server
+        deadlocks and exhausted Camel delivery carry medium confidence and
+        concrete signals; generic exception/unknown rows merely say to review a
+        log.  Only the first category is allowed into a documentation prompt.
+        """
+        stmt = (
+            select(
+                RuntimeExecutionRow.job_name,
+                RuntimeIncidentRow.signature_hash,
+                RuntimeIncidentRow.pattern_id,
+                RuntimeIncidentRow.confidence,
+                RuntimeIncidentRow.first_bad_at,
+                RuntimeExecutionRow.started_at,
+                RuntimeIncidentRow.causal_message,
+                RuntimeIncidentRow.root_cause_candidate,
+                RuntimeIncidentRow.cause_origin,
+                RuntimeIncidentRow.termination_component,
+                RuntimeIncidentRow.next_checks,
+                RuntimeExecutionSummaryRow.failed_component,
+                RuntimeExecutionSummaryRow.primary_error_code,
+                RuntimeExecutionSummaryRow.primary_exception_class,
+            )
+            .join(
+                RuntimeIncidentRow,
+                and_(
+                    RuntimeIncidentRow.project_id == RuntimeExecutionRow.project_id,
+                    RuntimeIncidentRow.execution_id == RuntimeExecutionRow.execution_id,
+                ),
+            )
+            .join(
+                RuntimeExecutionSummaryRow,
+                and_(
+                    RuntimeExecutionSummaryRow.project_id == RuntimeExecutionRow.project_id,
+                    RuntimeExecutionSummaryRow.execution_id == RuntimeExecutionRow.execution_id,
+                ),
+                isouter=True,
+            )
+            .where(RuntimeExecutionRow.project_id == project_id)
+            .where(RuntimeExecutionRow.job_name.in_(job_names))
+            .where(RuntimeExecutionRow.started_at >= since)
+            .where(RuntimeIncidentRow.confidence.in_(("high", "medium")))
+            .where(RuntimeIncidentRow.pattern_id.notin_(("generic.unknown", "exception.generic")))
+            .order_by(RuntimeExecutionRow.job_name, RuntimeIncidentRow.first_bad_at.desc())
+        )
+        if environment_ids is not None:
+            stmt = stmt.where(
+                RuntimeExecutionRow.execution_id.in_(
+                    self._environment_execution_ids(project_id, environment_ids)
+                )
+            )
+        stmt = self._apply_scope(stmt, RuntimeExecutionRow.project_id, scope)
+        grouped: dict[str, dict[str, dict[str, object]]] = {}
+        for row in (await self._session.execute(stmt)).all():
+            job_name = str(row.job_name)
+            signature = str(
+                row.signature_hash
+                or f"{row.pattern_id}|{row.failed_component}|{row.primary_exception_class}"
+            )
+            by_signature = grouped.setdefault(job_name, {})
+            current = by_signature.get(signature)
+            if current is None:
+                current = {
+                    "pattern_id": str(row.pattern_id),
+                    "confidence": str(row.confidence),
+                    "occurrences": 0,
+                    "most_recent_at": _as_utc(row.first_bad_at or row.started_at),
+                    "failed_component": row.failed_component,
+                    "termination_component": row.termination_component,
+                    "error_code": row.primary_error_code,
+                    "exception_class": row.primary_exception_class,
+                    "causal_message": sanitize_doc_evidence_error(row.causal_message),
+                    "root_cause_candidate": sanitize_doc_evidence_error(
+                        row.root_cause_candidate
+                    ),
+                    "cause_origin": row.cause_origin,
+                    "next_checks": [
+                        check
+                        for check in (
+                            sanitize_doc_evidence_error(value)
+                            for value in (row.next_checks or [])[:3]
+                        )
+                        if check
+                    ],
+                }
+                by_signature[signature] = current
+            current["occurrences"] = int(current["occurrences"]) + 1
+
+        result: dict[str, list[RuntimeDocIncidentInsight]] = {}
+        for job_name, by_signature in grouped.items():
+            ordered = sorted(
+                by_signature.values(),
+                key=lambda item: (
+                    0 if item["confidence"] == "high" else 1,
+                    -int(item["occurrences"]),
+                    str(item["pattern_id"]),
+                ),
+            )[:max_per_job]
+            result[job_name] = [RuntimeDocIncidentInsight(**item) for item in ordered]
+        return result
 
     def _scoped_metric_base(
         self,

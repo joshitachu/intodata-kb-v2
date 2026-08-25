@@ -43,7 +43,12 @@ export default function AddRepoDialog({ open, onClose }: Props) {
     { id: "generic", label: "Generic" },
   ];
 
-  const isGithubUrl = url.includes("github.com");
+  // Credentials are injected as HTTPS userinfo by the server, so they only apply
+  // to http(s) remotes — never to a local path or an SSH (git@) URL, which
+  // authenticates on the agent key instead.
+  const trimmedUrl = url.trim();
+  const isHttpUrl = /^https?:\/\//i.test(trimmedUrl);
+  const isGithubUrl = /^https?:\/\/([^/@]*@)?(www\.)?github\.com\//i.test(trimmedUrl);
 
   // Detect the post-install redirect (?installation_id=...) and load its repos.
   useEffect(() => {
@@ -91,7 +96,13 @@ export default function AddRepoDialog({ open, onClose }: Props) {
   const handleSubmitPath = () => {
     if (!url || !projectId) return;
     addRepo.mutate(
-      { url, project_id: projectId, platform, github_token: githubToken || undefined },
+      {
+        url,
+        project_id: projectId,
+        platform,
+        // Only an https remote can carry the token; never ship it for a local path or SSH URL.
+        github_token: isHttpUrl && githubToken ? githubToken : undefined,
+      },
       { onSuccess: () => { onClose(); reset(); } }
     );
   };
@@ -211,22 +222,25 @@ export default function AddRepoDialog({ open, onClose }: Props) {
                     onChange={(e) => setUrl(e.target.value)}
                   />
                 </div>
-                {isGithubUrl && (
+                {isHttpUrl && (
                   <div>
                     <label className="block text-sm font-medium text-slate-400 mb-1">
-                      GitHub Token{" "}
+                      Access Token{" "}
                       <span className="text-slate-500 font-normal">(optional — required for private repos)</span>
                     </label>
                     <input
                       type="password"
                       className="input-dark"
-                      placeholder="ghp_..."
+                      placeholder="ghp_... / glpat-... / PAT"
                       value={githubToken}
                       onChange={(e) => setGithubToken(e.target.value)}
                       autoComplete="new-password"
                     />
                     <p className="text-xs text-slate-500 mt-1">
-                      Scopes needed: <code className="font-mono">repo</code>. Or use the GitHub App tab to connect without storing a token.
+                      GitHub PAT (scope <code className="font-mono">repo</code>), GitLab or Azure DevOps PAT,
+                      or a Bitbucket app password. Sent as the HTTPS password with the username{" "}
+                      <code className="font-mono">x-access-token</code> and stored encrypted for later fetches.
+                      {isGithubUrl && " Or use the GitHub App tab to connect without storing a token."}
                     </p>
                   </div>
                 )}

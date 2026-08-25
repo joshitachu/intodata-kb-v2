@@ -13,6 +13,9 @@ for both unknown and out-of-scope records so callers cannot distinguish the two.
 
 Timeline and evidence reads use a two-step gate: verify the parent record is in scope
 (→ 404 if not), then return an empty list if no matching rows exist (→ 200 empty).
+
+Free-text fields are redacted on the way out as well as on the way in — see
+"Read-path redaction" below for which ones and why.
 """
 
 from __future__ import annotations
@@ -50,6 +53,7 @@ from src.runtime.insights.models import (
     RuntimeSimilarIncident,
     RuntimeTimelineEvent,
 )
+from src.runtime.insights.parser import redact_log_text
 from src.runtime.store import ProjectScope, RuntimeRecordNotFoundError
 
 # Severity ordering for min_severity filtering (lowest -> highest).
@@ -70,6 +74,43 @@ def _as_utc(value: datetime.datetime | None) -> datetime.datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=datetime.UTC)
     return value.astimezone(datetime.UTC)
+
+
+# ---------------------------------------------------------------------------
+# Read-path redaction
+# ---------------------------------------------------------------------------
+#
+# The write path is the primary fix, but it only cleans rows written AFTER it
+# lands. Every field below already exists on disk in its pre-fix form, and every
+# one of them is read straight into an LLM tool result by
+# `providers/stored.py` (`analyze_execution_failure`, `get_runtime_incident`,
+# `find_similar_failures`). Redacting on read is the only protection that reaches
+# data already stored without a migration, and it stays valuable afterwards as
+# defense-in-depth against a future write path that forgets.
+#
+# Safe to layer because `redact_log_text` is idempotent: applied to a row the
+# fixed write path produced, it returns that row's text byte for byte.
+#
+# Covered: `causal_message` (the runtime's own sentence), `root_cause_candidate`
+# (a catalog template with a `{host}` slot, or a quoted runtime sentence),
+# `next_checks` (same templates) and `excerpt` (a slice of a raw provider line).
+#
+# Deliberately NOT redacted here: `summary_text` (execution and signature) and
+# `symptom_summary`. Those are composed by `builder._build_summary_text` /
+# `_build_symptom_summary` from structured fields alone -- job name, component,
+# error code, exception class -- and never carry provider prose or an address.
+# Running the entity pass over them would risk a lowercase dotted job name being
+# read as an FQDN in exchange for nothing.
+
+
+def _redacted(value: str | None) -> str | None:
+    """Redact one stored free-text field on its way out of the repository."""
+    return redact_log_text(value)
+
+
+def _redacted_list(values: list | None) -> list[str]:
+    """Redact a stored list of free-text checks (``next_checks``)."""
+    return [redact_log_text(str(item)) or "" for item in (values or [])]
 
 
 class RuntimeInsightRepository:
@@ -129,7 +170,7 @@ class RuntimeInsightRepository:
             primary_error_code=summary_row.primary_error_code,
             primary_exception_class=summary_row.primary_exception_class,
             summary_text=summary_row.summary_text,
-            causal_message=summary_row.causal_message,
+            causal_message=_redacted(summary_row.causal_message),
             evidence_refs=summary_row.evidence_refs,
             state=exec_row.state if exec_row else None,
             started_at=_as_utc(exec_row.started_at) if exec_row else None,
@@ -338,7 +379,7 @@ class RuntimeInsightRepository:
                 RuntimeIncidentEvidence(
                     log_event_id=ev.log_event_id,
                     evidence_role=ev.evidence_role,
-                    excerpt=ev.excerpt,
+                    excerpt=_redacted(ev.excerpt),
                     timestamp=_as_utc(log_row.timestamp),
                     severity=log_row.severity,
                 )
@@ -433,7 +474,7 @@ class RuntimeInsightRepository:
                 else None,
                 first_bad_at=_as_utc(row.first_bad_at),
                 symptom_summary=row.symptom_summary,
-                root_cause_candidate=row.root_cause_candidate,
+                root_cause_candidate=_redacted(row.root_cause_candidate),
                 confidence=row.confidence,
             )
             for row in similar_rows
@@ -707,14 +748,15 @@ def _to_incident_insight(
         execution_id=row.execution_id,
         signature_hash=row.signature_hash,
         symptom_summary=row.symptom_summary,
-        root_cause_candidate=row.root_cause_candidate,
-        causal_message=row.causal_message,
+        root_cause_candidate=_redacted(row.root_cause_candidate),
+        causal_message=_redacted(row.causal_message),
+        termination_component=_redacted(row.termination_component),
         confidence=row.confidence,
         cause_origin=row.cause_origin,
         pattern_id=row.pattern_id,
         first_bad_at=_as_utc(row.first_bad_at),
         last_healthy_at=_as_utc(row.last_healthy_at),
-        next_checks=row.next_checks or [],
+        next_checks=_redacted_list(row.next_checks),
         job_name=exec_row.job_name if exec_row else None,
         state=exec_row.state if exec_row else None,
         estate_context=estate_context,

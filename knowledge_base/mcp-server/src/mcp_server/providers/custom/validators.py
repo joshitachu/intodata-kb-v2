@@ -1147,6 +1147,119 @@ def _doc_evidence_pack_errors(staging_dir: Path, *, required_docs: list[str] | N
     return errors
 
 
+# Per-section substance thresholds. These mirror the contract the Phase 3
+# document prompt already states ("Each section must contain at least 3
+# enumerated items or a table with at least 2 data rows; a section with only a
+# heading or a single vague sentence is too thin" --
+# data/prompt_templates/phase3_doc.md). Validating the stated contract per
+# section is what makes the gate immune to padding: restating a fact cannot
+# satisfy a section that was never answered, and answering it concisely cannot
+# fail one.
+_SECTION_MIN_LIST_ITEMS = 3
+_SECTION_MIN_TABLE_ROWS = 2
+_SECTION_MIN_PROSE_CHARS = 400
+
+_DOC_HEADING_LINE_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+_LIST_ITEM_RE = re.compile(r"^\s{0,3}(?:[-*+]|\d+[.)])\s+\S", re.MULTILINE)
+_TABLE_SEPARATOR_ROW_RE = re.compile(r"^\s*\|[\s:|-]+\|?\s*$")
+_TABLE_ANY_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+
+
+def _document_sections(text: str) -> list[tuple[int, str, str]]:
+    """Return ``[(heading level, title, body)]`` for every heading in order.
+
+    Fenced code blocks are respected so a ``#`` comment inside an SQL or Java
+    excerpt never opens a phantom section.
+    """
+    sections: list[tuple[int, str, str]] = []
+    level = 0
+    title: str | None = None
+    body: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+        match = None if in_fence else _DOC_HEADING_LINE_RE.match(line)
+        if match:
+            if title is not None:
+                sections.append((level, title, "\n".join(body)))
+            level = len(match.group(1))
+            title = match.group(2)
+            body = []
+            continue
+        if title is not None:
+            body.append(line)
+    if title is not None:
+        sections.append((level, title, "\n".join(body)))
+    return sections
+
+
+def _section_has_substance(body: str) -> bool:
+    """True when a section body answers something rather than announcing itself."""
+    if len(_LIST_ITEM_RE.findall(body)) >= _SECTION_MIN_LIST_ITEMS:
+        return True
+    data_rows = sum(
+        1
+        for line in body.splitlines()
+        if _TABLE_ANY_ROW_RE.match(line) and not _TABLE_SEPARATOR_ROW_RE.match(line)
+    )
+    # The first matched row is the header; the rest are data.
+    if data_rows - 1 >= _SECTION_MIN_TABLE_ROWS:
+        return True
+    if "```" in body:
+        # A verbatim code/SQL/expression excerpt is evidence, never padding.
+        return True
+    prose = "\n".join(
+        line
+        for line in body.splitlines()
+        if line.strip() and not line.lstrip().startswith(("|", "#"))
+    )
+    return len(prose.strip()) >= _SECTION_MIN_PROSE_CHARS
+
+
+def _section_with_children_has_substance(
+    sections: list[tuple[int, str, str]], index: int
+) -> bool:
+    """Judge a section together with its nested sub-sections.
+
+    A parent heading whose own body is a single line but whose sub-sections are
+    fully populated is complete, not thin.
+    """
+    level, _, body = sections[index]
+    combined = [body]
+    for deeper_level, deeper_title, deeper_body in sections[index + 1:]:
+        if deeper_level <= level:
+            break
+        combined.append(deeper_title)
+        combined.append(deeper_body)
+    return _section_has_substance("\n".join(combined))
+
+
+def _thin_section_titles(text: str, section_terms: list[str]) -> list[str]:
+    """Required sections that exist as headings but carry no substantive content.
+
+    A required section whose heading is worded differently is already reported
+    by the presence check above; this check stays silent on it so one gap is
+    never reported twice. When a title occurs more than once (a document that
+    still carries restarted structure), one substantive occurrence is enough.
+    """
+    if not section_terms:
+        return []
+    sections = _document_sections(text)
+    thin: list[str] = []
+    for term in section_terms:
+        wanted = term.strip().casefold()
+        indexes = [
+            i for i, (_, title, _) in enumerate(sections)
+            if title.strip().casefold() == wanted
+        ]
+        if not indexes:
+            continue
+        if not any(_section_with_children_has_substance(sections, i) for i in indexes):
+            thin.append(term)
+    return thin
+
+
 def validate_doc_depth(
     staging_dir: Path,
     facts: FactsManifest,
@@ -1154,17 +1267,26 @@ def validate_doc_depth(
     required_docs: list[str] | None = None,
     enforce_default_contract: bool = True,
 ) -> CoverageReport:
-    """Validate docs have enough depth for the scanned project shape."""
+    """Validate docs have enough depth for the scanned project shape.
+
+    Depth is measured PER REQUIRED SECTION against the contract the Phase 3
+    prompt states ("at least 3 enumerated items or a table with at least 2 data
+    rows"; "a heading plus one vague sentence is non-compliant" --
+    `data/prompt_templates/phase3_doc.md`). The byte count is only a stub floor.
+
+    It used to be the other way round: the gate required every document to
+    exceed `preprocess_bytes * 0.04` (capped at 45 KB), so the required document
+    SIZE scaled with the volume of scanned evidence and padding was the cheapest
+    way to pass. Combined with Phase 3 slicing -- which asked every slice for the
+    whole document -- restated structure was indistinguishable from depth,
+    because nothing in the pipeline measured redundancy. A document that answers
+    its sections completely in 20 KB is not shallow, and a 45 KB document that
+    says the same thing four times is not deep.
+    """
 
     errors: list[str] = []
     covered_ids: set[str] = set()
-    preprocess_dir = staging_dir / "_preprocess"
-    total_preprocess_bytes = sum(
-        p.stat().st_size
-        for p in preprocess_dir.glob("*.md")
-        if not p.name.startswith("_")
-    ) if preprocess_dir.exists() else 0
-    min_doc_bytes = max(8_000, min(45_000, int(total_preprocess_bytes * 0.04))) if enforce_default_contract else 50
+    min_doc_bytes = max(1, config.docgen_min_doc_bytes) if enforce_default_contract else 50
 
     for doc in (required_docs or REQUIRED_DOCS):
         path = staging_dir / f"{doc}.md"
@@ -1175,7 +1297,7 @@ def validate_doc_depth(
         doc_bytes = len(text.encode("utf-8"))
         if doc_bytes < min_doc_bytes:
             errors.append(
-                f"Generated doc {doc}.md is too shallow: {doc_bytes} bytes < {min_doc_bytes} required"
+                f"Generated doc {doc}.md is a stub: {doc_bytes} bytes < {min_doc_bytes} required"
             )
         lower = text.lower()
         section_terms = DOC_SECTION_REQUIREMENTS.get(doc, []) if enforce_default_contract else []
@@ -1183,6 +1305,12 @@ def validate_doc_depth(
         if missing_terms:
             errors.append(
                 f"Generated doc {doc}.md missing expected sections/terms: {', '.join(missing_terms)}"
+            )
+        thin_sections = _thin_section_titles(text, section_terms)
+        if thin_sections:
+            errors.append(
+                f"Generated doc {doc}.md has sections with no substantive content: "
+                f"{', '.join(thin_sections)}"
             )
         covered_ids.update(_unit_id(unit) for unit in facts.units if unit.name in text)
 

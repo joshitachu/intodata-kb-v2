@@ -27,6 +27,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     LargeBinary,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -141,6 +142,13 @@ class RuntimeSourceRow(Base):
         UniqueConstraint("project_id", "source_key", name="uq_runtime_sources_project_source"),
         Index("ix_runtime_sources_project_id", "project_id"),
         Index("ix_runtime_sources_source_key", "source_key"),
+        Index(
+            "uq_runtime_sources_project_tmc",
+            "project_id",
+            unique=True,
+            postgresql_where=text("source_type = 'tmc'"),
+            sqlite_where=text("source_type = 'tmc'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

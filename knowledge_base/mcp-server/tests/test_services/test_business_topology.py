@@ -132,6 +132,58 @@ def _write_scan(root: Path) -> None:
     )
 
 
+def test_evidence_deduplicates_scanner_facts_and_namespaces_claim_collisions(
+    tmp_path: Path,
+) -> None:
+    scan_root = tmp_path / "scan-output"
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    _write_scan(scan_root)
+
+    manifest_path = scan_root / "scan" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifact_endpoints"].append(dict(manifest["artifact_endpoints"][0]))
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    claims = staging / "_analysis" / "_claims"
+    claims.mkdir(parents=True)
+    for index, statement in enumerate(("First meaning.", "Second meaning."), start=1):
+        (claims / f"task_{index}.jsonl").write_text(
+            json.dumps(
+                {
+                    "record_type": "claim",
+                    "claim_id": "SHARED-001",
+                    "task_id": f"task-{index}",
+                    "statement": statement,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    bundle = build_business_topology_evidence(
+        project_id="demo",
+        scan_output_dir=scan_root,
+        staging_dir=staging,
+    )
+    reloaded = load_business_topology_evidence(bundle.root)
+    claim_ids = [
+        evidence_id
+        for evidence_id, evidence_type in reloaded.evidence_types.items()
+        if evidence_type == "phase2_claim"
+    ]
+    endpoint_ids = [
+        evidence_id
+        for evidence_id, evidence_type in reloaded.evidence_types.items()
+        if evidence_type == "scanner_endpoint"
+    ]
+
+    assert len(claim_ids) == 2
+    assert "SHARED-001" in claim_ids
+    assert len(set(claim_ids)) == 2
+    assert len(endpoint_ids) == 1
+
+
 def test_fingerprint_ignores_removed_semantic_overlay(tmp_path: Path) -> None:
     _write_scan(tmp_path)
     first = compute_scan_fingerprint(tmp_path)

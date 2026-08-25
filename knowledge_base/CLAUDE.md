@@ -197,6 +197,97 @@ This is the primary method for generating project documentation. Follow it exact
   (`_transient/claim_repair/`), same pattern as slice instructions — mutating the
   prompt head invalidated the provider prefix cache for the whole packet (verified:
   phase2.claims cache-hit ratio 0.7% vs 66% for the prefix-stable scorecard slices).
+- **Runtime evidence (TMC) is a staging artifact, not provider state** (2026-08-24).
+  `providers/custom/runtime_evidence.py` fetches bounded, redacted aggregates from the RAG
+  backend's runtime mirror (`GET /api/v1/runtime/doc-evidence`) and renders them
+  deterministically -- no LLM, no tools. `harness._ensure_runtime_evidence`, exposed on the
+  shared facade as `HarnessHelpersImpl.ensure_runtime_evidence`, is the ONE producer: the
+  custom pipeline calls it from `Phase3Docs.run`, OpenCode from `_prepare_run`. It writes
+  three artifacts and every consumer reads them by name -- the cache
+  (`_transient/runtime/runtime_evidence.json`, destroyed by Phase 4),
+  `_analysis/_runtime_profile.md` (the project rollup), and
+  `_assessment/runtime_evidence_coverage.json` (survives the swap; read by
+  `GET /mcp/generate-runs/{run_id}/connector-evidence`). Runtime evidence was previously
+  an in-memory attribute populated inside one engine's phase driver, which is exactly why
+  OpenCode -- which reuses the CONSUMER (`_phase3_context_files`) but could not reuse the
+  producer -- silently shipped zero runtime facts. Producer writes files; consumers read files.
+  * **Two identifier keys, always.** `FactsManifest.unit_names()` returns `job_id`
+    (`validators.py:184`), NOT the display name TMC schedules under; 79 of werkorder's 429
+    job rows differ. The fetch sends `unit.name` AND `unit.display_name` and keys `by_unit`
+    on the manifest name. Verified live: manifest-key-only matches 4 units, both keys match
+    6. Do NOT add a normaliser or fuzzy matcher -- `AssetCheck_GetLocation` and
+    `AssetCheck_GetLocations` are both real, separately-scheduled jobs.
+  * **Rollup goes to group/summary docs ONLY** (after `_cross_cutting_facts.md`, plus an
+    explicit attach for `09_EXECUTIVE_SUMMARY`, which early-returns before that append).
+    Unit docs keep their own per-unit section. A project-wide failure census names other
+    units' components, and Phase 3 component-echo validates a unit doc against its own
+    bundle -- attaching it there manufactures fabrication rejections, and costs ~1.3M extra
+    input tokens on werkorder with unit docs enabled.
+  * `phase3_runtime_profile_bytes` (12,000) is CLAMPED at config load to
+    `phase3_shared_context_file_bytes - 1`: `plan_phase3_slices` classifies context files
+    as SHARED purely by size, so an oversized rollup would be bin-packed and slice 1 would
+    see failing jobs that slice 3 does not. `_runtime_profile` also has an explicit rank-0
+    branch in `phase3_slices._trim_priority` (its filename must never contain `_evidence_`,
+    which auto-promotes).
+  * **Absence is always stated.** The rollup is written unconditionally in one of three
+    modes (`data`/`opted_out`/`unavailable`) with independent `partial` and
+    `scope_mismatch` flags, and the coverage artifact is written even when the fetch fails.
+    Low coverage is CORRECT, not a defect: TMC schedules tasks, so werkorder's 6 of 429 is
+    right -- the rest are `tRunJob` children and joblets. Never accuse a project of a bad
+    binding from match ratio alone; report the runtime-side orphan ratio as an observation.
+  * The once-per-run guard is keyed on `(run_id, staging_dir)` **in memory**. An on-disk
+    check would make a resumed run adopt a failed run's snapshot and pin `unavailable`.
+  * Cadence is classified in Python from server-supplied gap quantiles (per environment,
+    named by `environments[0]`), never from `runs_per_day`: the mean gap for
+    `Maximo2RHM_Workorders` is 2202 s against a true median of 1801 s, so a mean-fed
+    classifier downgrades a 30-minute schedule to "ad hoc".
+  * KNOWN LIMITS: the living-docs patch lane (`services/true_patch_executor.py`) never
+    reads `_phase3_context_files`, so patched documents gain no runtime prose; the
+    tool-enabled Phase 3 first pass discards context files; scoped runs record a
+    project-wide coverage denominator with a `run_scope` block noting the discrepancy.
+- **Runtime READ scope is per project, and separate from ingest scope** (2026-08-25).
+  Ingest scope (`environment_ids`, set in the connect dialog) decides what the
+  scheduler POLLS. Read scope (`doc_environment_ids`, `doc_window_days`) decides what a
+  documentation run READS out of what was polled -- it costs nothing at the vendor API
+  and needs no re-mirroring. Both live in the source's non-secret config (the credential
+  blob, this framework's per-source config store); `providers/base.py::DOC_READ_SCOPE_FIELDS`
+  appends the read-scope keys to `editable_config_fields` for EVERY provider, and
+  deliberately keeps them out of `credential_schema()` so the connect form does not ask
+  for them while an operator is holding an API token.
+  * **The filter is applied server-side, once**, in `GET /runtime/doc-evidence` via
+    `RuntimeStoreRepository.resolve_doc_read_scope`. Both engines inherit it because both
+    call the same producer; nothing in the harness passes an environment.
+  * **`runtime_executions` carries no environment column; `runtime_job_runs` does.**
+    `_environment_execution_ids` joins them on `execution_id` -- safe because the TMC
+    provider DERIVES each execution from a job run (`_execution_from_job_run`, copying
+    `run_id` into `execution_id`), so the two tables are one-to-one. Every
+    execution-based aggregate (reliability, streak, durations) inherits the filter from
+    `_scoped_execution_base`; failures join through the same id; environments and gap
+    quantiles filter `runtime_job_runs` directly. Filtering per-aggregate instead would
+    let one number describe PROD while its neighbour described PROD+TST.
+  * **Why it matters, measured on the live werkorder mirror**: unscoped, the estate
+    reports 3392 runs / 785 failures = 23.1% failure rate. That figure describes no
+    environment that exists -- PROD alone is 2122 runs / 17 failures (0.8%), ACC is 1266
+    / 768 (60.7%). Same defect class as the pooled-cadence bug that
+    `_dominant_environment_gaps` already guards against.
+  * **A run must state its scope.** `RuntimeDocEvidenceResponse.read_scope` is always
+    populated (even unconfigured), carried on `RuntimeEvidenceStore.read_environments`,
+    and published in the rollup's coverage table plus
+    `_assessment/runtime_evidence_coverage.json`. Without it two runs of one project are
+    not comparable and a narrowed read is indistinguishable from a shrinking estate.
+  * **The picker offers mirrored environments only** (`list_mirrored_environments`, the
+    environment inventory UNIONed with observed job runs, backing
+    `GET /runtime/doc-read-scope`). Offering the provider's live list would let an
+    operator select an environment that was never ingested -- empty evidence, no visible
+    cause. A selection that later goes stale is reported as
+    `unavailable_environment_ids`, never silently dropped.
+  * `environment_ids: None` ("every mirrored environment") is a DISTINCT state from a
+    selection listing all of them: a later ingest-scope widening extends the former and
+    not the latter. An explicitly empty list returns no evidence rather than everything.
+  * NOT DONE: connection and binding are still coupled -- a runtime source carries one
+    `project_id`, so one Talend tenant serving N projects means N stored credentials and
+    N polls. `runtime_workspace_map` (source -> many projects) exists and is RBAC'd but
+    is not wired into the connect flow.
 - **Composite child runs** record `triggered_by="composite"` +
   `GenerateRun.partition_name` (new column; idempotent startup migration in
   `api/app.py::_apply_column_migrations`) instead of overflowing `triggered_by` with

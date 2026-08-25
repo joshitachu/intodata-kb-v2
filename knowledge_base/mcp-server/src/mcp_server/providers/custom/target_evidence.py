@@ -192,17 +192,22 @@ class TargetEvidenceBuilder:
         *,
         noncode_plan: "NonCodeAssociationPlan | None" = None,
         noncode_section_bytes: int = 0,
-        runtime_store: "RuntimeEvidenceStore | None" = None,
         runtime_section_bytes: int = 0,
     ) -> None:
         self.scan_output_dir = scan_output_dir
         self.staging_dir = staging_dir
         self.max_bytes = max_bytes
         # Observed production behaviour for this unit (run counts, outcomes,
-        # latency, redacted failure headlines). Prefetched once per run by the
-        # harness -- this builder is synchronous and must not do I/O.
-        self._runtime_store = runtime_store
+        # latency, redacted failure headlines). REHYDRATED from the staging
+        # cache inside `build()`, never injected here: this builder is cached
+        # for the life of a staging dir, so a store passed at construction time
+        # freezes whatever was known then -- `None` for any builder created
+        # before the fetch -- for the whole run. Reading the file is also what
+        # lets a second engine reuse this class without duplicating the fetch.
+        # Still synchronous and still no network I/O.
         self._runtime_section_bytes = runtime_section_bytes
+        self._runtime_store: "RuntimeEvidenceStore | None" = None
+        self._runtime_loaded = False
         # Optional Tier-3 documented-context (non-code) attachment. Additive
         # redacted intent appended after the verbatim evidence; bounded by its
         # own byte budget and dropped before any verbatim evidence, never ahead.
@@ -260,6 +265,35 @@ class TargetEvidenceBuilder:
 
     def _job_by_unit(self, unit_name: str) -> dict[str, Any] | None:
         return self._job_lookup().get(unit_name)
+
+    def _runtime(self) -> "RuntimeEvidenceStore | None":
+        """The run's runtime store, read once from the staging cache.
+
+        Absence is normal (the lane is off, the source is unreachable, or this
+        is a fixture with no runtime layer) and always degrades to no per-unit
+        section, never to an exception.
+        """
+        if self._runtime_loaded:
+            return self._runtime_store
+        self._runtime_loaded = True
+        from mcp_server.providers.custom.runtime_evidence import (
+            RUNTIME_CACHE_JSON,
+            RuntimeEvidenceStore,
+        )
+
+        path = self.staging_dir / RUNTIME_CACHE_JSON
+        try:
+            if path.is_file():
+                self._runtime_store = RuntimeEvidenceStore.from_json(
+                    json.loads(path.read_text(encoding="utf-8"))
+                )
+        except Exception:  # noqa: BLE001 - additive lane, never a gate
+            logger.warning(
+                "target_evidence: unreadable runtime evidence cache at %s", path,
+                exc_info=True,
+            )
+            self._runtime_store = None
+        return self._runtime_store
 
     # ── section renderers ────────────────────────────────────────────
 
@@ -542,12 +576,14 @@ class TargetEvidenceBuilder:
                 unit_name, max_bytes=self._noncode_section_bytes
             ) or ""
         runtime_md = ""
-        if self._runtime_store is not None and self._runtime_section_bytes > 0:
-            runtime_md = self._runtime_store.section_for(
-                unit_name,
-                is_esb_route=self._is_esb_route(unit_name),
-                max_bytes=self._runtime_section_bytes,
-            )
+        if self._runtime_section_bytes > 0:
+            runtime_store = self._runtime()
+            if runtime_store is not None:
+                runtime_md = runtime_store.section_for(
+                    unit_name,
+                    is_esb_route=self._is_esb_route(unit_name),
+                    max_bytes=self._runtime_section_bytes,
+                )
 
         def _assemble(
             inventory: str, connections: str, noncode: str, runtime: str = ""

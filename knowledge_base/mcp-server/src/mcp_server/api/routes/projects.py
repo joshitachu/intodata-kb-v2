@@ -3454,11 +3454,13 @@ async def list_project_docs(
         svc = PdfService()
         docs = svc.list_docs(project_id)
     else:
+        from mcp_server.services.doc_quality_scorer import is_published_doc_filename
+
         docs_dir = config.project_root / "output" / project_id / "docs_staging"
         docs = []
         if docs_dir.is_dir():
             for md_file in sorted(docs_dir.glob("*.md")):
-                if md_file.name.startswith("_"):
+                if not is_published_doc_filename(md_file.name):
                     continue
                 stat = md_file.stat()
                 docs.append({

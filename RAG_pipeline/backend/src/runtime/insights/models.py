@@ -94,6 +94,7 @@ class RuntimeIncidentInsight(BaseModel):
     # root_cause_candidate, which is a rendered catalog template: this is what the
     # log actually said. None when no causal line could be resolved.
     causal_message: str | None = None
+    termination_component: str | None = None
     confidence: str | None
     # "deterministic" (default) or "llm_fallback" (Slice 4). Lets callers tell
     # whether the root cause came from the rule engine or the LLM fallback.
@@ -144,6 +145,7 @@ class RuntimeFailureAnalysis(BaseModel):
     incident_id: str | None
     symptom_summary: str | None
     root_cause_candidate: str | None
+    termination_component: str | None = None
     confidence: str | None
     cause_origin: str | None
     next_checks: list[str]

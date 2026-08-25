@@ -43,6 +43,13 @@ class Phase3Docs(Phase):
         )
         from mcp_server.providers.custom.models import CoverageReport
 
+        # Deterministic evidence tier: fetch observed production behaviour once
+        # and stage the rollup + cache + coverage record BEFORE any doc writer
+        # asks for its context files. Shared with the OpenCode engine through
+        # the facade so the two cannot diverge again. Never a gate -- absence is
+        # a stated mode, not an exception.
+        await self._helpers.ensure_runtime_evidence(ctx, state, log_cb)
+
         await self._helpers.phase3_docs(ctx, state, log_cb)
 
         if state.thin_bundle_groups:

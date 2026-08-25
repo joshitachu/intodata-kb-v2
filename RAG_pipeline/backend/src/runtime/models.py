@@ -74,10 +74,40 @@ class RuntimeSourceCredentialField(BaseModel):
     required: bool = True
 
 
+class RuntimeScopeSelection(BaseModel):
+    """Describes a provider's discoverable ingest scope for the source dialog.
+
+    Providers whose estate is partitioned (TMC environments, and any future
+    connector with tenants/regions/folders) declare the partition here instead
+    of the UI hardcoding a per-provider branch. ``field`` names the credential
+    key that stores the selected ids, so the whole flow stays provider-neutral.
+    """
+
+    field: str
+    label: str
+    description: str | None = None
+    required: bool = True
+    multiple: bool = True
+
+
+class RuntimeScopeOption(BaseModel):
+    """One selectable ingest scope discovered from a live source."""
+
+    id: str
+    label: str
+    detail: str | None = None
+    default_selected: bool = False
+
+
 class RuntimeSourceTypeInfo(BaseModel):
     provider_key: str
     provider_label: str
     credential_schema: list[RuntimeSourceCredentialField]
+    scope_selection: RuntimeScopeSelection | None = None
+    # Non-secret fields that are safe to edit without re-supplying the secret.
+    # Excludes anything the physical identity is derived from, since changing
+    # those would silently repoint the source at a different account.
+    editable_config_fields: list[str] = Field(default_factory=list)
 
 
 class RuntimeSourceHealth(BaseModel):
@@ -105,6 +135,24 @@ class RuntimeSourceUpdate(BaseModel):
 
 
 class RuntimeSourceRotateCredentials(BaseModel):
+    credentials: dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeSourceConfigUpdate(BaseModel):
+    """Partial update of the non-secret settings stored alongside credentials.
+
+    Secrets and identity-bearing fields are rejected by the route; this exists
+    so ingest scope, filters, and history windows can be changed without
+    forcing an operator to re-type the API token.
+    """
+
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeSourceScopeDiscovery(BaseModel):
+    """Validate unsaved credentials and list the scopes they can reach."""
+
+    provider_key: str
     credentials: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -148,6 +196,44 @@ class RuntimeEnvironment(BaseModel):
     name: str
     description: str | None = None
     last_seen_at: datetime | None = None
+
+
+class RuntimeMirroredEnvironment(BaseModel):
+    """An environment actually present in a project's mirror.
+
+    The documentation read-scope picker offers these and only these. Offering
+    the provider's live environment list instead would let an operator select an
+    environment that was never ingested, which yields empty evidence with no
+    visible cause -- the failure mode this model exists to prevent. `run_count`
+    is shown so the choice is informed rather than nominal.
+    """
+
+    environment_id: str
+    name: str
+    run_count: int = 0
+    last_run_at: datetime | None = None
+
+
+class RuntimeDocReadScope(BaseModel):
+    """What a documentation run for one project is allowed to read.
+
+    Distinct from ingest scope: this narrows what is read OUT of the mirror,
+    costs nothing at the vendor API, and can change without re-mirroring.
+    """
+
+    # None means every mirrored environment. A list is a deliberate narrowing.
+    environment_ids: list[str] | None = None
+    # Display names for the selected ids, resolved against the mirror. Empty
+    # when the selection is unresolvable, which is reported, never guessed.
+    environment_names: list[str] = Field(default_factory=list)
+    window_days: int | None = None
+    # True when an operator set either field. Distinguishes "defaults" from
+    # "deliberately chose the defaults", which matters in the coverage record.
+    configured: bool = False
+    # Selected ids with nothing in the mirror -- an ingest scope that no longer
+    # covers them, or an environment retired at the vendor. Surfaced rather than
+    # dropped: silently reading less than requested is the worse failure.
+    unavailable_environment_ids: list[str] = Field(default_factory=list)
 
 
 class RuntimeWorkspace(BaseModel):
@@ -497,6 +583,72 @@ class RuntimeDocEvidenceFailure(BaseModel):
     occurrences: int = 1
 
 
+class RuntimeDocIncidentInsight(BaseModel):
+    """One recurring, evidence-backed incident safe for documentation prompts.
+
+    Low-confidence and generic placeholder incidents are deliberately excluded
+    by the repository.  This model is for diagnoses the runtime logs actually
+    support, not for the fact that an execution failed.
+    """
+
+    pattern_id: str
+    confidence: Literal["high", "medium"]
+    occurrences: int
+    most_recent_at: datetime
+    failed_component: str | None = None
+    termination_component: str | None = None
+    error_code: str | None = None
+    exception_class: str | None = None
+    causal_message: str | None = None
+    root_cause_candidate: str | None = None
+    cause_origin: str | None = None
+    next_checks: list[str] = Field(default_factory=list)
+
+
+class RuntimeJobOperationalInsight(BaseModel):
+    """Bounded, provider-neutral operational story for one runtime job.
+
+    This intentionally contains aggregates and one dominant diagnosis only. Raw
+    logs and per-execution records belong to drill-down endpoints, not this card.
+    """
+
+    project_id: str
+    source_key: str
+    job_name: str
+    total_runs: int
+    success_runs: int
+    failed_runs: int
+    unfinished_runs: int
+    failure_rate: float
+    first_run_at: datetime | None = None
+    last_run_at: datetime | None = None
+    failures_with_logs: int = 0
+    diagnosed_failures: int = 0
+    capture_ceiling_reached: int = 0
+    evidence_completeness: Literal[
+        "no_failures", "complete", "partial", "logs_only", "missing"
+    ]
+    pattern_id: str | None = None
+    confidence: Literal["high", "medium"] | None = None
+    occurrences: int = 0
+    most_recent_at: datetime | None = None
+    failed_component: str | None = None
+    termination_component: str | None = None
+    causal_message: str | None = None
+    root_cause_candidate: str | None = None
+    cause_origin: str | None = None
+    next_checks: list[str] = Field(default_factory=list)
+
+
+class RuntimeDocLogQuality(BaseModel):
+    """How much of a unit's failed-execution population logs can explain."""
+
+    failed_executions: int = 0
+    executions_with_logs: int = 0
+    diagnosed_executions: int = 0
+    capture_ceiling_reached: int = 0
+
+
 class RuntimeDocEvidence(BaseModel):
     """Runtime execution profile for ONE scanned unit, safe for LLM context.
 
@@ -526,8 +678,35 @@ class RuntimeDocEvidence(BaseModel):
     p50_duration_ms: int | None = None
     p95_duration_ms: int | None = None
     max_duration_ms: int | None = None
+    # Inter-run gap quantiles, in seconds, over successive run STARTS.  These
+    # exist so a consumer can classify an OBSERVED CADENCE ("runs every 15
+    # minutes") from the median gap and the spread, which `runs_per_day` cannot
+    # support: it is a mean over the whole window, and a mean gap is dragged by
+    # outages and backfills.  Verified in werkorder --
+    # `Maximo2RHM_Workorders` has a mean gap of 2204 s against a median of
+    # 1801 s, so the mean would publish a 37-minute schedule nobody configured.
+    #
+    # SINGLE-ENVIRONMENT BY CONSTRUCTION: the quantiles describe the job's
+    # dominant (highest-volume) environment, which is `environments[0]`.  A
+    # name can span DEV/TEST/PROD (`runtime_jobs` is unique on
+    # `(project_id, source_key, job_id)`, not on name), and gaps pooled across
+    # environments blend an hourly PROD schedule with ad-hoc DEV runs -- an
+    # inflated spread that reads as "no schedule" for exactly the jobs whose
+    # schedule is worth publishing.  A reader that reports the interval MUST
+    # qualify it with `environments[0]` when `len(environments) > 1`.
+    #
+    # None whenever the dominant environment has fewer than two runs in the
+    # window: one run is a sighting, not a cadence.
+    gap_p25_seconds: int | None = None
+    gap_p50_seconds: int | None = None
+    gap_p75_seconds: int | None = None
+    # Number of GAPS the quantiles were computed from (runs - 1), not the run
+    # count -- a cadence rule with an `n >= 20` floor is counting intervals.
+    gap_sample_size: int | None = None
     plans: list[str] = Field(default_factory=list)
     recent_failures: list[RuntimeDocEvidenceFailure] = Field(default_factory=list)
+    log_quality: RuntimeDocLogQuality = Field(default_factory=RuntimeDocLogQuality)
+    incident_insights: list[RuntimeDocIncidentInsight] = Field(default_factory=list)
 
 
 class RuntimeComponentHotspot(BaseModel):
@@ -719,6 +898,11 @@ class ListRuntimeJobReliabilityInput(ListRuntimeInventoryInput):
     job_name: str | None = None
     since: datetime | None = None
     until: datetime | None = None
+    # Restrict the rollup to runs observed in these environment ids. None means
+    # every mirrored environment, which is the historical behaviour and stays
+    # the default -- an empty list would be a different claim ("no environment")
+    # and is rejected by the caller rather than silently treated as "all".
+    environment_ids: list[str] | None = None
 
 
 class ListRuntimeComponentHotspotsInput(ListRuntimeInventoryInput):

@@ -12,10 +12,19 @@ lives. Moving the secret here would mean migrating a live credential across two
 databases and rewiring a working poller to fetch it back cross-service, for no
 behaviour a user can see.
 
+That storage split is NOT a reason to make the operator visit a second app.
+`managed_by=RUNTIME_SOURCES` states where the credential is written, not who may
+write it: the dashboard collects it on the Connectors page and
+`api/routes/runtime_sources.py` proxies the write to the RAG backend's
+runtime-sources API on the caller's own identity. The connector store still
+never holds a TMC secret.
+
 `test` and `execute` therefore refuse rather than pretend. The catalogue's
 `register` contract requires both to exist; a provider that cannot be queried
 in-band should say so loudly instead of returning an empty envelope that reads
-as "TMC had nothing to report".
+as "TMC had nothing to report". Connection testing for TMC is not missing --
+it happens where the credential lands: the RAG create route calls
+`validate_credentials` and `resolve_physical_identity` before persisting a row.
 """
 
 from __future__ import annotations
@@ -25,6 +34,7 @@ from ..domain import (
     ConnectorBuildState,
     ConnectorInstanceConfig,
     ConnectorKind,
+    ConnectorManagedBy,
     ConnectorProviderManifest,
     ConnectorSourceProfile,
     EvidenceEnvelope,
@@ -47,6 +57,11 @@ TALEND_TMC_MANIFEST = ConnectorProviderManifest(
     capabilities=(),
     kind=ConnectorKind.RUNTIME_SYNC,
     build_state=ConnectorBuildState.AVAILABLE,
+    # The credential lives in the RAG backend's `runtime_sources` tables, with
+    # the scheduler that reads it. The directory still offers a connect form --
+    # it posts to the runtime-source proxy rather than the connector store, and
+    # the row reports which projects are actually covered; see ConnectorManagedBy.
+    managed_by=ConnectorManagedBy.RUNTIME_SOURCES,
     description=(
         "Mirror Talend job executions, plans and failures for runtime evidence "
         "in generated documentation."

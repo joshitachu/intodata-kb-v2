@@ -13,13 +13,19 @@ from src.runtime.insights.models import (
     RuntimeIncidentInsight,
     RuntimeTimelineEvent,
 )
-from src.runtime.insights.parser import ParsedRuntimeLog, parse_runtime_log_message, redact_credentials
+from src.runtime.insights.parser import (
+    ParsedRuntimeLog,
+    parse_runtime_log_message,
+    redact_credentials,
+    redact_log_text,
+)
 from src.runtime.insights.repository import RuntimeInsightRepository
 
 __all__ = [
     "ParsedRuntimeLog",
     "parse_runtime_log_message",
     "redact_credentials",
+    "redact_log_text",
     "InsightBuildResult",
     "build_runtime_insights_for_execution",
     "RuntimeExecutionSummaryInsight",

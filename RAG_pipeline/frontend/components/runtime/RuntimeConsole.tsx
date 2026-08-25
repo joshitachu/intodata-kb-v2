@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -35,6 +35,7 @@ import {
   useRuntimeExecutions,
   useRuntimeIncident,
   useRuntimeIncidents,
+  useRuntimeJobInsights,
   useRuntimeJobReliability,
   useRuntimeJobs,
   useRuntimeOverview,
@@ -51,6 +52,7 @@ import type {
   RuntimeExecutionState,
   RuntimeIncidentInsight,
   RuntimeJob,
+  RuntimeJobInsight,
   RuntimeJobReliability,
   RuntimePlan,
   RuntimeSource,
@@ -193,14 +195,63 @@ interface ViewProps {
 }
 
 export function RuntimeConsole({ view }: { view: RuntimeConsoleView }) {
-  const [projectId, setProjectId] = useState("");
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const requestedProjectId = searchParams.get("project")?.trim() ?? "";
+  const [projectId, setProjectId] = useState(requestedProjectId);
   const [windowKey, setWindowKey] = useState<RuntimeWindowKey>(DEFAULT_WINDOW_KEY);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [live, setLive] = useState(true);
   const projects = useUserProjects();
+  const sourceCatalog = useRuntimeSources({ limit: 100 });
   const queryClient = useQueryClient();
-  const scope = projectId || undefined;
+
+  const tmcProjectIds = useMemo(
+    () => new Set(
+      (sourceCatalog.data?.sources ?? [])
+        .filter((source) => ["tmc", "talend_tmc"].includes(source.source_type.toLowerCase()))
+        .map((source) => source.project_id),
+    ),
+    [sourceCatalog.data?.sources],
+  );
+  const permittedProjects = useMemo(
+    () => (projects.data?.projects ?? []).filter((project) => tmcProjectIds.has(project.id)),
+    [projects.data?.projects, tmcProjectIds],
+  );
+  const projectListLoading = projects.isLoading || sourceCatalog.isLoading;
+  const hasSelectedProject = permittedProjects.some((project) => project.id === projectId);
+
+  // Never issue an aggregate runtime query while the permitted-project list is
+  // loading. The console is intentionally single-project: an absent project is
+  // a transient selection state, not permission to query every project.
+  const scope = hasSelectedProject ? projectId : "__no_runtime_project_selected__";
   const freshness = useSyncFreshness(scope);
+
+  useEffect(() => {
+    if (projectListLoading) return;
+    const permittedIds = new Set(permittedProjects.map((project) => project.id));
+    const nextProjectId = permittedIds.has(requestedProjectId)
+      ? requestedProjectId
+      : permittedIds.has(projectId)
+        ? projectId
+        : permittedProjects[0]?.id ?? "";
+
+    if (nextProjectId !== projectId) setProjectId(nextProjectId);
+    if (nextProjectId && nextProjectId !== requestedProjectId) {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("project", nextProjectId);
+      router.replace(`${pathname}?${params.toString()}`);
+    }
+  }, [pathname, permittedProjects, projectId, projectListLoading, requestedProjectId, router, searchParams]);
+
+  const selectProject = useCallback((nextProjectId: string) => {
+    if (!permittedProjects.some((project) => project.id === nextProjectId)) return;
+    setProjectId(nextProjectId);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("project", nextProjectId);
+    router.replace(`${pathname}?${params.toString()}`);
+  }, [pathname, permittedProjects, router, searchParams]);
 
   // Recomputed only when the window changes, so a re-render does not shift the
   // lower bound and refetch every aggregate.
@@ -219,13 +270,10 @@ export function RuntimeConsole({ view }: { view: RuntimeConsoleView }) {
     return () => clearInterval(timer);
   }, [live, refresh]);
 
-  const projectOptions = [
-    { value: "", label: "All permitted projects" },
-    ...(projects.data?.projects ?? []).map((project) => ({
-      value: project.id,
-      label: project.display_name,
-    })),
-  ];
+  const projectOptions = permittedProjects.map((project) => ({
+    value: project.id,
+    label: project.display_name,
+  }));
 
   return (
     <section className="mx-auto flex w-full max-w-7xl flex-col gap-5 overflow-x-hidden pb-10">
@@ -256,9 +304,9 @@ export function RuntimeConsole({ view }: { view: RuntimeConsoleView }) {
         <div className="flex flex-wrap items-center gap-2">
           <SelectMenu
             value={projectId}
-            onChange={setProjectId}
+            onChange={selectProject}
             options={projectOptions}
-            placeholder="All permitted projects"
+            placeholder={projectListLoading ? "Loading TMC projects…" : "No TMC projects"}
             icon={FolderOpen}
             ariaLabel="Project scope"
             variant="field"
@@ -306,7 +354,7 @@ export function RuntimeConsole({ view }: { view: RuntimeConsoleView }) {
           return (
             <Link
               key={item.view}
-              href={item.href}
+              href={projectId ? `${item.href}?project=${encodeURIComponent(projectId)}` : item.href}
               aria-current={isActive ? "page" : undefined}
               className={cn(
                 "inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors motion-reduce:transition-none",
@@ -321,14 +369,17 @@ export function RuntimeConsole({ view }: { view: RuntimeConsoleView }) {
           );
         })}
       </nav>
-      {view === "hub" && <Hub {...viewProps} freshness={freshness} />}
-      {view === "executions" && <Executions {...viewProps} />}
-      {view === "jobs" && <Jobs {...viewProps} />}
-      {view === "plans" && <Plans {...viewProps} />}
-      {view === "incidents" && <Incidents {...viewProps} />}
-      {view === "performance" && <Performance {...viewProps} />}
-      {view === "signatures" && <RuntimeSignaturesPanel scope={scope} since={since} />}
-      {view === "estate" && <Estate {...viewProps} />}
+      {!hasSelectedProject && !projectListLoading && (
+        <Empty label="No TMC projects" hint="Connect a Talend Management Console source to a permitted project." />
+      )}
+      {hasSelectedProject && view === "hub" && <Hub {...viewProps} freshness={freshness} />}
+      {hasSelectedProject && view === "executions" && <Executions {...viewProps} />}
+      {hasSelectedProject && view === "jobs" && <Jobs {...viewProps} />}
+      {hasSelectedProject && view === "plans" && <Plans {...viewProps} />}
+      {hasSelectedProject && view === "incidents" && <Incidents {...viewProps} />}
+      {hasSelectedProject && view === "performance" && <Performance {...viewProps} />}
+      {hasSelectedProject && view === "signatures" && <RuntimeSignaturesPanel scope={scope} since={since} />}
+      {hasSelectedProject && view === "estate" && <Estate {...viewProps} />}
       <DetailDrawer detail={detail} onClose={() => setDetail(null)} />
     </section>
   );
@@ -346,12 +397,20 @@ function Hub({
   const trend = useRuntimeTrend({ projectId: scope, since, bucket });
   // Window-scoped, so a job that last ran before the window cannot appear here.
   const reliability = useRuntimeJobReliability({ projectId: scope, since, limit: 100 });
+  const jobInsights = useRuntimeJobInsights({ projectId: scope, since, limit: 500 });
   const runs = useRuntimeExecutions({ projectId: scope, since, limit: 12 });
   const incidents = useRuntimeIncidents({ projectId: scope, since, limit: 1 });
 
   const estate = overview.data?.overview;
   const points = trend.data?.points ?? [];
   const jobs = reliability.data?.jobs ?? [];
+  const insights = jobInsights.data?.insights ?? [];
+  const insightsByJob = new Map(
+    insights.map((insight) => [
+      `${insight.source_key}:${insight.job_name}`,
+      insight,
+    ]),
+  );
 
   const totals = points.reduce(
     (acc, point) => ({
@@ -378,7 +437,7 @@ function Hub({
   return (
     <div className="flex flex-col gap-5">
       <SyncStatusBanner freshness={freshness} />
-      <QueryState queries={[overview, trend, reliability, runs, incidents]}>
+      <QueryState queries={[overview, trend, reliability, jobInsights, runs, incidents]}>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <Kpi
             icon={Activity}
@@ -413,6 +472,7 @@ function Hub({
             }
           />
         </div>
+        <EvidenceQuality insights={insights} totalJobs={jobInsights.data?.total ?? insights.length} />
         <div className="grid gap-5 xl:grid-cols-[1.35fr_0.65fr]">
           <Panel
             title="Outcome trend"
@@ -452,7 +512,10 @@ function Hub({
               <ul className="divide-y divide-border">
                 {attention.map((job) => (
                   <li key={`${job.source_key}:${job.job_name}`} className="px-5 py-3">
-                    <AttentionRow job={job} />
+                    <AttentionRow
+                      job={job}
+                      insight={insightsByJob.get(`${job.source_key}:${job.job_name}`)}
+                    />
                   </li>
                 ))}
               </ul>
@@ -481,7 +544,115 @@ function Hub({
   );
 }
 
-function AttentionRow({ job }: { job: RuntimeJobReliability }) {
+function EvidenceQuality({
+  insights,
+  totalJobs,
+}: {
+  insights: RuntimeJobInsight[];
+  totalJobs: number;
+}) {
+  const totals = insights.reduce(
+    (acc, insight) => ({
+      failures: acc.failures + insight.failed_runs,
+      withLogs: acc.withLogs + insight.failures_with_logs,
+      diagnosed: acc.diagnosed + insight.diagnosed_failures,
+      capped: acc.capped + insight.capture_ceiling_reached,
+    }),
+    { failures: 0, withLogs: 0, diagnosed: 0, capped: 0 },
+  );
+
+  if (totals.failures === 0) {
+    const isPartial = insights.length < totalJobs;
+    return (
+      <Panel
+        title="Evidence quality"
+        icon={CheckCircle2}
+        description="Whether failed runs have enough captured evidence to explain them."
+      >
+        <p className="text-sm text-muted-foreground">
+          {isPartial
+            ? "No failures appear in the retrieved job evidence."
+            : "No failures in this window, so there is nothing to diagnose."}
+        </p>
+        {isPartial && (
+          <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+            This covers {formatCompact(insights.length)} of {formatCompact(totalJobs)} jobs; the estate-wide result is incomplete.
+          </p>
+        )}
+      </Panel>
+    );
+  }
+
+  const unexplained = Math.max(0, totals.failures - totals.diagnosed);
+  const missingLogs = Math.max(0, totals.failures - totals.withLogs);
+  const isPartial = insights.length < totalJobs;
+  const metrics = [
+    {
+      label: "Failure logs",
+      value: `${formatCompact(totals.withLogs)}/${formatCompact(totals.failures)}`,
+      hint: missingLogs === 0
+        ? "captured for every failure"
+        : `${formatCompact(missingLogs)} failure${missingLogs === 1 ? " has" : "s have"} no logs`,
+    },
+    {
+      label: "Useful diagnoses",
+      value: `${formatCompact(totals.diagnosed)}/${formatCompact(totals.failures)}`,
+      hint: "supported by captured evidence",
+    },
+    {
+      label: "Still unexplained",
+      value: formatCompact(unexplained),
+      hint: "not assigned a guessed cause",
+    },
+    {
+      label: "Capture ceiling",
+      value: formatCompact(totals.capped),
+      hint: "logs that reached the line limit",
+    },
+  ];
+
+  return (
+    <Panel
+      title="Evidence quality"
+      icon={CheckCircle2}
+      description="How much of the failure population the captured logs can honestly explain."
+    >
+      <dl className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {metrics.map((metric) => (
+          <div key={metric.label} className="min-w-0 rounded-lg border border-border bg-muted/20 p-3">
+            <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              {metric.label}
+            </dt>
+            <dd className="mt-1 text-lg font-semibold text-foreground">{metric.value}</dd>
+            <p className="mt-0.5 text-xs text-muted-foreground">{metric.hint}</p>
+          </div>
+        ))}
+      </dl>
+      {isPartial && (
+        <p className="mt-3 text-xs text-amber-700 dark:text-amber-400">
+          Evidence totals cover {formatCompact(insights.length)} of {formatCompact(totalJobs)} jobs in this window.
+        </p>
+      )}
+    </Panel>
+  );
+}
+
+function patternLabel(patternId: string): string {
+  return patternId
+    .replaceAll("_", " ")
+    .split(".")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function AttentionRow({
+  job,
+  insight,
+}: {
+  job: RuntimeJobReliability;
+  insight?: RuntimeJobInsight;
+}) {
   const parts = [
     `${job.failed_runs} of ${job.total_runs} failed (${formatPercent(job.failure_rate)})`,
   ];
@@ -495,7 +666,53 @@ function AttentionRow({ job }: { job: RuntimeJobReliability }) {
       </span>
       <div className="min-w-0">
         <p className="truncate text-sm font-medium text-foreground">{job.job_name}</p>
-        <p className="truncate text-xs text-muted-foreground">{parts.join(" · ")}</p>
+        <p className="text-xs text-muted-foreground">{parts.join(" · ")}</p>
+        {insight?.pattern_id ? (
+          <div className="mt-1.5 space-y-1">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+              <span className="font-medium text-foreground">
+                {patternLabel(insight.pattern_id)}
+                {insight.occurrences > 0 ? ` · ${insight.occurrences} occurrence${insight.occurrences === 1 ? "" : "s"}` : ""}
+              </span>
+              <ConfidenceBadge confidence={insight.confidence} />
+            </div>
+            {(insight.failed_component || insight.termination_component) && (
+              <p className="text-xs text-muted-foreground">
+                {insight.failed_component ? `Origin: ${insight.failed_component}` : "Origin not identified"}
+                {insight.termination_component
+                  ? ` · Stopped by: ${insight.termination_component}`
+                  : ""}
+              </p>
+            )}
+            {insight.causal_message && (
+              <p className="line-clamp-2 text-xs text-muted-foreground">
+                <span className="font-medium text-foreground/80">Observed:</span>{" "}
+                {insight.causal_message}
+              </p>
+            )}
+            {insight.root_cause_candidate && (
+              <p className="line-clamp-2 text-xs text-muted-foreground">
+                <span className="font-medium text-foreground/80">Interpretation:</span>{" "}
+                {insight.root_cause_candidate}
+              </p>
+            )}
+          </div>
+        ) : insight && job.failed_runs > 0 ? (
+          <p className="mt-1 text-xs font-medium text-muted-foreground">
+            No useful diagnosis yet.
+          </p>
+        ) : null}
+        {insight && job.failed_runs > 0 && (
+          <p className="mt-1 text-xs text-muted-foreground/80">
+            {insight.failures_with_logs === 0
+              ? `No logs captured for ${job.failed_runs} failure${job.failed_runs === 1 ? "" : "s"}`
+              : `Logs ${insight.failures_with_logs}/${job.failed_runs}`}
+            {` · Diagnosed ${insight.diagnosed_failures}/${job.failed_runs}`}
+            {insight.capture_ceiling_reached > 0
+              ? ` · ${insight.capture_ceiling_reached} reached the capture ceiling`
+              : ""}
+          </p>
+        )}
         <p className="text-xs text-muted-foreground/80">
           Last run <RelativeTime value={job.last_run_at} />
         </p>

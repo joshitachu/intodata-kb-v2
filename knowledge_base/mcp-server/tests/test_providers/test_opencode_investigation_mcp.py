@@ -134,6 +134,37 @@ def test_investigation_phase_config_is_native_read_only_and_tool_write_only(
         phase_config.cleanup()
 
 
+def test_investigation_recovery_config_limits_native_exploration_to_evidence_files(
+    tmp_path: Path,
+) -> None:
+    store, scope, ctx = _setup(tmp_path)
+    facade = InvestigationFacade(store, {scope.scope_id})
+    artifacts = ("_preprocess/Group.md",)
+    phase_config = OpenCodeCliProvider()._phase_config(
+        ctx=ctx,
+        phase="gather",
+        contracts=[],
+        runtime=None,
+        investigation_facade=facade,
+        exploration_artifacts=artifacts,
+    )
+    try:
+        payload = json.loads(phase_config.path.read_text(encoding="utf-8"))
+        expected_relative = "_preprocess/Group.md"
+        expected_absolute = str((ctx.staging_dir / expected_relative).resolve())
+        for tool in ("read", "grep", "glob", "list"):
+            policy = payload["permission"][tool]
+            assert policy["*"] == "deny"
+            assert policy[expected_relative] == "allow"
+            assert policy[expected_absolute] == "allow"
+            assert "**" not in policy
+            assert not any("_audit" in path or "_transient" in path for path in policy)
+        assert payload["permission"]["edit"] == {"*": "deny"}
+        assert payload["permission"]["bash"] == {"*": "deny"}
+    finally:
+        phase_config.cleanup()
+
+
 def test_adaptive_scope_runner_uses_tool_commits_and_finishes_scope(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -212,6 +243,88 @@ def test_adaptive_scope_runner_uses_tool_commits_and_finishes_scope(
     assert reports[0].report.skipped_units == {
         "UnitB": "No executable detail exists for this unit"
     }
+
+
+def test_scope_recovery_receives_only_remaining_units_and_evidence_files(
+    monkeypatch, tmp_path: Path
+) -> None:
+    store, _, ctx = _setup(tmp_path)
+    facts = store.facts
+    provider = OpenCodeCliProvider()
+    contract = OpenCodeTaskContract(
+        phase="gather",
+        target="investigation_Group",
+        prompt_artifact="test",
+        evidence_artifacts=("_preprocess/Group.md",),
+        output_artifact="_transient/opencode/investigation_raw/Group.json",
+        metadata={
+            "task_id": "investigation_Group",
+            "group": "Group",
+            "allowed_units": ["UnitA", "UnitB"],
+            "source_ref": "_preprocess/Group.md",
+            "validation_receipt": "_transient/opencode/gather_guard/Group.validated.json",
+        },
+    )
+    calls: list[dict[str, object]] = []
+
+    async def execute_step(**kwargs):
+        calls.append(kwargs)
+        facade = kwargs["investigation_facade"]
+        scope_id = next(iter(facade.scope_ids))
+        unit_name = "UnitA" if len(calls) == 1 else "UnitB"
+        await facade.call(
+            "submit_evidence",
+            {
+                "scope_id": scope_id,
+                "evidence": [
+                    {
+                        "unit_name": unit_name,
+                        "category": "data flow",
+                        "snippet": "customer records through the integration route to UnitB",
+                        "observation": f"{unit_name} participates in the evidenced route.",
+                    }
+                ],
+            },
+        )
+        if len(calls) == 2:
+            await facade.call("finish_scope", {"scope_id": scope_id})
+        return _PhaseExecution(session_id=f"session-{len(calls)}", events=[])
+
+    monkeypatch.setattr(provider, "_execute_step", execute_step)
+    monkeypatch.setattr(config, "opencode_scope_max_units", 40)
+    monkeypatch.setattr(config, "opencode_scope_max_groups", 6)
+    monkeypatch.setattr(config, "opencode_scope_concurrency", 1)
+    monkeypatch.setattr(config, "opencode_scope_max_followups", 1)
+    logs: list[tuple[str, str]] = []
+
+    async def run() -> OpenCodeEvidenceStore:
+        async def log_cb(_project, message, level="info"):
+            logs.append((message, level))
+
+        return await provider._execute_gather_scopes(
+            resolved="/usr/bin/opencode",
+            ctx=ctx,
+            facts=facts,
+            contracts=[contract],
+            ledger=OpenCodeAttemptLedger(ctx.staging_dir),
+            log_cb=log_cb,
+            on_complete=lambda *_args: None,
+        )
+
+    result = asyncio.run(run())
+    assert len(result.list_scope_reports()) == 1
+    assert len(calls) == 2
+    assert calls[0]["exploration_artifacts"] is None
+    assert calls[1]["exploration_artifacts"] == ("_preprocess/Group.md",)
+    recovery_prompt = str(calls[1]["prompt_override"])
+    assert '"UnitB"' in recovery_prompt
+    assert '"UnitA"' not in recovery_prompt
+    assert "Authorized recovery evidence" in recovery_prompt
+    assert any("remaining=2->1" in message for message, _ in logs)
+    assert any(
+        "remaining=1->0" in message and "recovery_evidence_files=1" in message
+        for message, _ in logs
+    )
 
 
 def test_scope_failure_preserves_run_and_becomes_explicit_gaps(monkeypatch, tmp_path: Path) -> None:

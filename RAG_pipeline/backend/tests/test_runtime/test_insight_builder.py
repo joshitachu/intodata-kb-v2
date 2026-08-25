@@ -119,6 +119,41 @@ class TestSummaryContents:
         assert summary.evidence_refs is not None
         assert len(summary.evidence_refs) > 0
 
+    async def test_originating_fault_outranks_terminal_wrapper(self, db_session):
+        """The real CDC sequence must explain Oracle loss, not `tDie_1 null`."""
+        execution_id = "cdc-connection-reset"
+        await _seed_custom_failed_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=execution_id,
+            job_name="j002_TriggerInterface_Cloud_PD920-2025",
+            lines=[
+                (10, "error", "tWaitForSqlData_1 IO Error: Connection reset"),
+                (11, "error", "tDie_1 DB Connection Lost"),
+                (12, "error", "tDie_1 null"),
+            ],
+        )
+
+        await build_runtime_insights_for_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=execution_id,
+            source_key="mock",
+            ingested_at=_SYNCED_AT,
+        )
+
+        summary = await _get_summary(db_session, _PROJECT, execution_id)
+        incident = await _get_incident(db_session, _PROJECT, execution_id)
+        assert summary is not None
+        assert incident is not None
+        assert summary.failed_component == "tWaitForSqlData_1"
+        assert summary.causal_message == "IO Error: Connection reset"
+        assert incident.termination_component == "tDie_1"
+        assert incident.pattern_id == "database.connection_reset"
+        assert incident.confidence == "medium"
+        assert "connection was reset" in (incident.root_cause_candidate or "").lower()
+        assert incident.next_checks
+
     async def test_success_execution_summary(self, db_session):
         await seed_rich_runtime_data(db_session, project_id=_PROJECT, synced_at=_SYNCED_AT)
         result = await build_runtime_insights_for_execution(

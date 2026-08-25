@@ -10,6 +10,32 @@ to new syncs only and the historical corpus keeps showing the old, weaker output
 
 This module re-runs the deterministic build path over stored executions.
 
+A REDACTION fix is one of those improvements, and the only one where staleness is
+a confidentiality problem rather than a quality one. When entity-shape redaction
+was added to the parser (``redact_endpoint`` / ``redact_host`` /
+``redact_log_text``), the stored corpus already held 10,406
+``runtime_enriched_events.endpoint`` rows and 10,303 ``.host`` rows carrying
+customer object-store buckets, internal FQDNs and single-label internal
+hostnames verbatim. Two of those columns have NO reader anywhere in the codebase,
+so the read-path redaction in ``repository.py`` cannot reach them: rebuilding is
+the only thing that cleans them. Running this backfill is therefore an
+operational step of that fix, not an optional tidy-up::
+
+    python -m src.runtime.insights.backfill --dry-run
+    python -m src.runtime.insights.backfill
+
+Two things to know before running it for that reason:
+
+  * It rewrites ``signature_hash`` for any incident on the unknown path whose
+    digest input changed. Measured on the reference corpus that was 1 incident of
+    827, and a full rebuild rehashes every incident consistently, but stale
+    ``runtime_error_signatures`` rows under the OLD hashes are not deleted by
+    this module.
+  * It is the only fix for a host already interpolated into catalog prose
+    (``Confirm host 'SRVA0673' resolves ...``): once the ``{host}`` slot is
+    filled, a single-label hostname is structurally indistinguishable from any
+    other word and no read-path filter can recover it. 3 incidents of 827.
+
 Design constraints:
   * Reuses ``build_runtime_insights_for_execution`` — the algorithm lives in one
     place, so a backfill can never drift from live ingest.

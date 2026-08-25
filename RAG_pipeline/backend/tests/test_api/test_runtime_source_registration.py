@@ -53,11 +53,18 @@ def _handler(request: httpx.Request) -> httpx.Response:
 
 
 def _body(token: str, label: str, project_id: str = "p1") -> dict:
+    # TMC requires an explicit environment selection, so every registration
+    # carries the scope its token can actually see.
+    environment_ids = _TOKENS.get(token) or ["env-unknown"]
     return {
         "project_id": project_id,
         "provider_key": "tmc",
         "label": label,
-        "credentials": {"api_token": token, "base_url": _EU},
+        "credentials": {
+            "api_token": token,
+            "base_url": _EU,
+            "environment_ids": environment_ids,
+        },
         "sync_interval_seconds": 60,
     }
 
@@ -104,7 +111,11 @@ async def _seed_source(client, *, token: str, identity: str, project_id: str, la
     )
     await client.repo.write_credentials(
         source_id=source.id,
-        plaintext_payload={"api_token": token, "base_url": _EU},
+        plaintext_payload={
+            "api_token": token,
+            "base_url": _EU,
+            "environment_ids": _TOKENS.get(token) or ["env-unknown"],
+        },
         credential_type="tmc",
         rotated_by="1",
     )
@@ -112,6 +123,18 @@ async def _seed_source(client, *, token: str, identity: str, project_id: str, la
 
 
 class TestCreate:
+    async def test_second_tmc_source_in_same_project_is_refused(self, client):
+        first = await client.http.post("/api/v1/runtime/sources", json=_body("token-a", "Customer A"))
+        second = await client.http.post(
+            "/api/v1/runtime/sources", json=_body("token-b", "Customer B", project_id="p1")
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 409
+        assert second.json()["detail"] == (
+            "This project already has a TMC source. Edit its ingest scope to add environments."
+        )
+
     async def test_second_account_on_the_same_endpoint_registers(self, client):
         first = await client.http.post("/api/v1/runtime/sources", json=_body("token-a", "Customer A"))
         second = await client.http.post(

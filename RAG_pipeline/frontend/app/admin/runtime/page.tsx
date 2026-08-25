@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Database,
   KeyRound,
+  Layers,
   MapPinned,
   Pause,
   Play,
@@ -39,10 +40,34 @@ type CredentialField = {
   required?: boolean;
 };
 
+/**
+ * A provider's selectable ingest scope, e.g. TMC environments.
+ *
+ * Declared by the backend rather than branched on per provider, so a new
+ * connector with its own partition (regions, tenants, folders) gets the
+ * test-then-choose flow without a change here.
+ */
+type ScopeSelection = {
+  field: string;
+  label: string;
+  description?: string | null;
+  required: boolean;
+  multiple: boolean;
+};
+
+type ScopeOption = {
+  id: string;
+  label: string;
+  detail?: string | null;
+  default_selected: boolean;
+};
+
 type SourceType = {
   provider_key: string;
   provider_label: string;
   credential_schema: CredentialField[];
+  scope_selection?: ScopeSelection | null;
+  editable_config_fields?: string[];
 };
 
 type SourceHealth = {
@@ -84,6 +109,14 @@ type AuditEvent = {
   username?: string | null;
   details?: Record<string, unknown> | null;
   created_at?: string | null;
+};
+
+/** Live state of a running import, polled from the source's sync endpoint. */
+type SyncProgress = {
+  running: boolean;
+  phase?: string | null;
+  records?: number;
+  started_at?: string | null;
 };
 
 type SourceStatus = "enabled" | "disabled" | "auto-disabled" | "error";
@@ -132,6 +165,8 @@ export default function AdminRuntimePage() {
   const [busyId, setBusyId] = useState<number | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [rotateFor, setRotateFor] = useState<RuntimeSource | null>(null);
+  const [scopeFor, setScopeFor] = useState<RuntimeSource | null>(null);
+  const [syncing, setSyncing] = useState<Record<number, SyncProgress>>({});
   const [deleteTarget, setDeleteTarget] = useState<RuntimeSource | null>(null);
 
   const refresh = useCallback(async () => {
@@ -162,6 +197,47 @@ export default function AdminRuntimePage() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  /**
+   * Poll every source for in-flight sync state.
+   *
+   * A cycle commits in one transaction at the end, so until this existed the
+   * page had nothing to show for the minutes an import was running: the row
+   * looked idle, which is why an unanswered "Sync now" invited a second click.
+   */
+  const pollSyncStatus = useCallback(async () => {
+    const ids = sources.map((source) => source.id);
+    if (ids.length === 0) return;
+    const entries = await Promise.all(
+      ids.map(async (id) => {
+        try {
+          const res = await fetch(`/api/runtime/sources/${id}/sync`, { cache: "no-store" });
+          if (!res.ok) return [id, null] as const;
+          const body = (await res.json()) as SyncProgress & { running?: boolean };
+          return [id, body.running ? body : null] as const;
+        } catch {
+          return [id, null] as const;
+        }
+      }),
+    );
+    const next: Record<number, SyncProgress> = {};
+    for (const [id, value] of entries) {
+      if (value !== null) next[id] = value;
+    }
+    setSyncing(next);
+  }, [sources]);
+
+  useEffect(() => {
+    void pollSyncStatus();
+    const timer = setInterval(() => void pollSyncStatus(), 3000);
+    return () => clearInterval(timer);
+  }, [pollSyncStatus]);
+
+  // A finished import leaves stale counts on screen until the list is re-read.
+  const runningCount = Object.keys(syncing).length;
+  useEffect(() => {
+    if (runningCount === 0) void refresh();
+  }, [runningCount, refresh]);
 
   const filteredSources = useMemo(
     () =>
@@ -219,6 +295,10 @@ export default function AdminRuntimePage() {
     return run(source.id, async () => {
       const res = await fetch(`/api/runtime/sources/${source.id}/sync`, { method: "POST" });
       if (!res.ok) throw new Error(await failureMessage(res, "Sync failed"));
+      // The cycle now runs detached, so the POST returning does not mean the
+      // import finished. Poll once immediately so the row flips to "importing"
+      // without waiting for the next tick.
+      void pollSyncStatus();
     });
   }
 
@@ -369,11 +449,26 @@ export default function AdminRuntimePage() {
                 </span>
               </span>,
               source.project_id,
-              <StatusBadge key="status" status={sourceStatus(source)} />,
-              <RelativeTime
-                key="success"
-                value={source.health?.last_success_at ?? source.last_synced_at}
-              />,
+              syncing[source.id] ? (
+                <span key="status" className="flex items-center gap-1.5 text-xs text-primary">
+                  <RefreshCw className="h-3 w-3 animate-spin" aria-hidden />
+                  Importing
+                </span>
+              ) : (
+                <StatusBadge key="status" status={sourceStatus(source)} />
+              ),
+              syncing[source.id] ? (
+                <span key="success" className="text-xs text-muted-foreground">
+                  {syncing[source.id].phase}
+                  {(syncing[source.id].records ?? 0) > 0 &&
+                    ` · ${formatCompact(syncing[source.id].records ?? 0)} records`}
+                </span>
+              ) : (
+                <RelativeTime
+                  key="success"
+                  value={source.health?.last_success_at ?? source.last_synced_at}
+                />
+              ),
               formatInterval(source.sync_interval_seconds),
               <span
                 key="actions"
@@ -381,15 +476,21 @@ export default function AdminRuntimePage() {
                 onClick={(event) => event.stopPropagation()}
               >
                 <IconButton
-                  label="Sync now"
+                  label={syncing[source.id] ? "Import already running" : "Sync now"}
                   onClick={() => void syncNow(source)}
-                  disabled={!source.enabled || busyId === source.id}
+                  disabled={!source.enabled || busyId === source.id || Boolean(syncing[source.id])}
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
                 </IconButton>
                 <IconButton label="Rotate credentials" onClick={() => setRotateFor(source)}>
                   <KeyRound className="h-3.5 w-3.5" />
                 </IconButton>
+                {sourceTypes.find((type) => type.provider_key === source.source_type)
+                  ?.scope_selection && (
+                  <IconButton label="Edit ingest scope" onClick={() => setScopeFor(source)}>
+                    <Layers className="h-3.5 w-3.5" />
+                  </IconButton>
+                )}
                 <IconButton
                   label={source.enabled ? "Disable" : "Enable"}
                   onClick={() => void patchSource(source, { enabled: !source.enabled })}
@@ -425,6 +526,7 @@ export default function AdminRuntimePage() {
       <SourceDialog
         open={addOpen}
         projects={projectOptions}
+        sources={sources}
         sourceTypes={sourceTypes}
         onClose={() => setAddOpen(false)}
         onSaved={async () => {
@@ -441,6 +543,18 @@ export default function AdminRuntimePage() {
         onClose={() => setRotateFor(null)}
         onSaved={async () => {
           setRotateFor(null);
+          await refresh();
+        }}
+      />
+
+      <ScopeDialog
+        source={scopeFor}
+        sourceType={
+          sourceTypes.find((type) => type.provider_key === scopeFor?.source_type) ?? null
+        }
+        onClose={() => setScopeFor(null)}
+        onSaved={async () => {
+          setScopeFor(null);
           await refresh();
         }}
       />
@@ -520,6 +634,75 @@ function IconButton({
   );
 }
 
+/**
+ * Checkbox list of the scopes a successful connection test discovered.
+ *
+ * Rendered only after the test succeeds: the list is what the source can
+ * actually reach, not a guess, so an operator picks from real names and task
+ * counts instead of pasting ids.
+ */
+function ScopePicker({
+  selection,
+  options,
+  selected,
+  onToggle,
+  onSelectAll,
+}: {
+  selection: ScopeSelection;
+  options: ScopeOption[];
+  selected: string[];
+  onToggle: (id: string) => void;
+  onSelectAll: () => void;
+}) {
+  const allSelected = options.length > 0 && selected.length === options.length;
+  return (
+    <div className="space-y-1.5 rounded-md border border-border bg-muted/30 p-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium text-muted-foreground">
+          {selection.label}
+          {selection.required && <span className="ml-1 text-destructive">*</span>}
+        </p>
+        {selection.multiple && options.length > 1 && (
+          <button
+            type="button"
+            onClick={onSelectAll}
+            className="text-xs font-medium text-primary hover:underline"
+          >
+            {allSelected ? "Clear all" : "Select all"}
+          </button>
+        )}
+      </div>
+      {selection.description && (
+        <p className="text-xs text-muted-foreground">{selection.description}</p>
+      )}
+      {options.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          The connection succeeded but returned no {selection.label.toLowerCase()}.
+        </p>
+      ) : (
+        <ul className="space-y-1">
+          {options.map((option) => (
+            <li key={option.id}>
+              <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-muted">
+                <input
+                  type={selection.multiple ? "checkbox" : "radio"}
+                  className="h-4 w-4 accent-primary"
+                  checked={selected.includes(option.id)}
+                  onChange={() => onToggle(option.id)}
+                />
+                <span className="font-medium">{option.label}</span>
+                {option.detail && (
+                  <span className="text-xs text-muted-foreground">{option.detail}</span>
+                )}
+              </label>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 /** Text input for a provider credential field, typed from its schema entry. */
 function CredentialInput({
   field,
@@ -548,12 +731,14 @@ function CredentialInput({
 function SourceDialog({
   open,
   projects,
+  sources,
   sourceTypes,
   onClose,
   onSaved,
 }: {
   open: boolean;
   projects: { id: string; display_name: string }[];
+  sources: RuntimeSource[];
   sourceTypes: SourceType[];
   onClose: () => void;
   onSaved: () => void;
@@ -565,20 +750,93 @@ function SourceDialog({
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [scopes, setScopes] = useState<ScopeOption[] | null>(null);
+  const [selectedScopes, setSelectedScopes] = useState<string[]>([]);
+
+  const connectedTmcProjects = useMemo(
+    () => new Set(sources.filter((source) => source.source_type === "tmc").map((source) => source.project_id)),
+    [sources],
+  );
+  const availableProjects = useMemo(
+    () =>
+      providerKey === "tmc"
+        ? projects.filter((project) => !connectedTmcProjects.has(project.id))
+        : projects,
+    [providerKey, projects, connectedTmcProjects],
+  );
+  const tmcUnavailable = providerKey === "tmc" && availableProjects.length === 0;
 
   // Defaults are applied when the dialog opens, not at first mount: the options
   // arrive from two async queries and were previously read once, while empty.
   useEffect(() => {
     if (!open) return;
     setProviderKey(sourceTypes[0]?.provider_key ?? "");
-    setProjectId(projects[0]?.id ?? "");
     setError("");
-  }, [open, sourceTypes, projects]);
+  }, [open, sourceTypes]);
+
+  useEffect(() => {
+    if (!open) return;
+    setProjectId((current) =>
+      availableProjects.some((project) => project.id === current)
+        ? current
+        : availableProjects[0]?.id ?? "",
+    );
+  }, [open, availableProjects]);
 
   const selectedType = sourceTypes.find((type) => type.provider_key === providerKey);
+  const selection = selectedType?.scope_selection ?? null;
+
+  // A discovered scope list belongs to the credentials that produced it.
+  // Editing either the provider or a credential invalidates it, otherwise a
+  // typo could be saved against environments listed by the previous token.
+  useEffect(() => {
+    setScopes(null);
+    setSelectedScopes([]);
+  }, [providerKey, credentials]);
+
+  function toggleScope(id: string) {
+    setSelectedScopes((prev) => {
+      if (!selection?.multiple) return [id];
+      return prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id];
+    });
+  }
+
+  function selectAllScopes() {
+    const all = (scopes ?? []).map((scope) => scope.id);
+    setSelectedScopes((prev) => (prev.length === all.length ? [] : all));
+  }
+
+  async function testConnection() {
+    setTesting(true);
+    setError("");
+    try {
+      const res = await fetch("/api/runtime/sources/discover", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider_key: providerKey, credentials }),
+      });
+      if (!res.ok) {
+        setError(await failureMessage(res, "Could not reach the source"));
+        return;
+      }
+      const body = (await res.json()) as { scopes?: ScopeOption[] };
+      const discovered = body.scopes ?? [];
+      setScopes(discovered);
+      setSelectedScopes(discovered.filter((scope) => scope.default_selected).map((scope) => scope.id));
+    } catch {
+      setError("Network error while testing the connection");
+    } finally {
+      setTesting(false);
+    }
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (selection?.required && selectedScopes.length === 0) {
+      setError(`Test the connection and choose at least one ${selection.label.toLowerCase()}`);
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -590,7 +848,7 @@ function SourceDialog({
           provider_key: providerKey,
           label: label || selectedType?.provider_label || providerKey,
           sync_interval_seconds: intervalSeconds,
-          credentials,
+          credentials: selection ? { ...credentials, [selection.field]: selectedScopes } : credentials,
         }),
       });
       // Only clear the typed secrets once the write actually succeeded —
@@ -601,6 +859,8 @@ function SourceDialog({
       }
       setCredentials({});
       setLabel("");
+      setScopes(null);
+      setSelectedScopes([]);
       onSaved();
     } catch {
       setError("Network error while creating the source");
@@ -621,7 +881,15 @@ function SourceDialog({
           <Button variant="secondary" size="sm" onClick={onClose}>
             Cancel
           </Button>
-          <Button size="sm" form="add-source-form" type="submit" isLoading={busy}>
+          <Button
+            size="sm"
+            form="add-source-form"
+            type="submit"
+            isLoading={busy}
+            // Saving before the scope is chosen would register a whole-source
+            // poll, which is exactly what the selection exists to prevent.
+            disabled={tmcUnavailable || (Boolean(selection?.required) && selectedScopes.length === 0)}
+          >
             Save source
           </Button>
         </>
@@ -650,7 +918,7 @@ function SourceDialog({
             <SelectMenu
               value={projectId}
               onChange={setProjectId}
-              options={projects.map((project) => ({
+              options={availableProjects.map((project) => ({
                 value: project.id,
                 label: project.display_name,
               }))}
@@ -662,6 +930,11 @@ function SourceDialog({
             />
           </div>
         </div>
+        {tmcUnavailable && (
+          <p role="status" className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+            Every permitted project already has a TMC source. Use Edit ingest scope on that source to add environments.
+          </p>
+        )}
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="space-y-1.5 text-xs font-medium text-muted-foreground">
             Name
@@ -689,6 +962,36 @@ function SourceDialog({
             onChange={(value) => setCredentials((prev) => ({ ...prev, [field.name]: value }))}
           />
         ))}
+        {selection && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={testConnection}
+                isLoading={testing}
+                disabled={tmcUnavailable}
+              >
+                Test connection
+              </Button>
+              {scopes !== null && !testing && (
+                <span className="text-xs text-emerald-600">
+                  Connected &mdash; {scopes.length} {selection.label.toLowerCase()} found
+                </span>
+              )}
+            </div>
+            {scopes !== null && (
+              <ScopePicker
+                selection={selection}
+                options={scopes}
+                selected={selectedScopes}
+                onToggle={toggleScope}
+                onSelectAll={selectAllScopes}
+              />
+            )}
+          </div>
+        )}
         {error && (
           <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
             {error}
@@ -769,6 +1072,143 @@ function RotateDialog({
             onChange={(value) => setCredentials((prev) => ({ ...prev, [field.name]: value }))}
           />
         ))}
+        {error && (
+          <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+            {error}
+          </p>
+        )}
+      </form>
+    </Modal>
+  );
+}
+
+/**
+ * Change a registered source's ingest scope without re-supplying its secret.
+ *
+ * Opening the dialog re-runs discovery against the stored credentials, so the
+ * list reflects the source as it is now: an environment deleted in TMC simply
+ * stops being offered rather than silently failing the next sync.
+ */
+function ScopeDialog({
+  source,
+  sourceType,
+  onClose,
+  onSaved,
+}: {
+  source: RuntimeSource | null;
+  sourceType: SourceType | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [scopes, setScopes] = useState<ScopeOption[] | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const sourceId = source?.id ?? null;
+  const selection = sourceType?.scope_selection ?? null;
+
+  useEffect(() => {
+    if (sourceId === null) {
+      setScopes(null);
+      setSelected([]);
+      setError("");
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/runtime/sources/${sourceId}/scopes`, { method: "POST" });
+        if (cancelled) return;
+        if (!res.ok) {
+          setError(await failureMessage(res, "Could not reach the source"));
+          return;
+        }
+        const body = (await res.json()) as { scopes?: ScopeOption[] };
+        setScopes(body.scopes ?? []);
+      } catch {
+        if (!cancelled) setError("Network error while reading the source");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceId]);
+
+  function toggle(id: string) {
+    setSelected((prev) => {
+      if (!selection?.multiple) return [id];
+      return prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id];
+    });
+  }
+
+  function selectAll() {
+    const all = (scopes ?? []).map((scope) => scope.id);
+    setSelected((prev) => (prev.length === all.length ? [] : all));
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (sourceId === null || selection === null) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/runtime/sources/${sourceId}/config`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ config: { [selection.field]: selected } }),
+      });
+      if (!res.ok) {
+        setError(await failureMessage(res, "Could not update the ingest scope"));
+        return;
+      }
+      onSaved();
+    } catch {
+      setError("Network error while updating the ingest scope");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      open={source !== null}
+      title={`Ingest scope — ${source?.label ?? ""}`}
+      description="Only the selected scopes are polled. The stored credentials are not changed."
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="secondary" size="sm" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            form="scope-form"
+            type="submit"
+            isLoading={busy}
+            disabled={Boolean(selection?.required) && selected.length === 0}
+          >
+            Save scope
+          </Button>
+        </>
+      }
+    >
+      <form id="scope-form" className="space-y-3" onSubmit={submit}>
+        {selection === null ? (
+          <p className="text-sm text-muted-foreground">This source type has no selectable scope.</p>
+        ) : scopes === null && !error ? (
+          <p className="text-sm text-muted-foreground">Reading the source…</p>
+        ) : (
+          scopes !== null && (
+            <ScopePicker
+              selection={selection}
+              options={scopes}
+              selected={selected}
+              onToggle={toggle}
+              onSelectAll={selectAll}
+            />
+          )
+        )}
         {error && (
           <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
             {error}

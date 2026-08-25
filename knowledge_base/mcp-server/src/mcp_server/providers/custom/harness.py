@@ -59,8 +59,14 @@ from mcp_server.providers.custom.fabrication_validators import (
     unit_count_claim_errors,
 )
 from mcp_server.providers.custom.runtime_evidence import (
+    RUNTIME_CACHE_JSON,
+    RUNTIME_COVERAGE_JSON,
+    RUNTIME_PROFILE_MD,
+    RUNTIME_REDACTION_FLAGS_JSON,
     RuntimeEvidenceStore,
+    RuntimeMode,
     fetch_runtime_evidence,
+    project_rollup,
 )
 from mcp_server.providers.custom.target_evidence import (
     TargetEvidence,
@@ -689,8 +695,13 @@ class CustomHarnessProvider(DocGenerationProvider):
         self._target_evidence: dict[str, TargetEvidence] = {}
         self._target_evidence_builder: TargetEvidenceBuilder | None = None
         # Observed production behaviour, fetched once at the start of Phase 3
-        # (the evidence builder is synchronous and must not do I/O per doc).
+        # (the evidence builder is synchronous and must not do network I/O).
+        # `_runtime_evidence_key` is the once-per-run guard and is deliberately
+        # IN MEMORY, keyed on (run_id, staging_dir): staging survives a resume,
+        # so an on-disk existence check would make every resumed run adopt the
+        # failed run's snapshot and pin `mode: unavailable` forever (A10).
         self._runtime_evidence: "RuntimeEvidenceStore | None" = None
+        self._runtime_evidence_key: tuple[int | None, str] | None = None
         # Tier-3 non-code documented-context plan (built once per staging dir).
         # ``False`` means "attempted, unavailable" so we do not retry per doc.
         self._noncode_plan: NonCodeAssociationPlan | None | bool = None
@@ -4118,7 +4129,10 @@ Fallback plan example:
         # every slice of a partitioned doc) so no two outputs can disagree on
         # scanner-derived counts.
         self._write_cross_cutting_facts(ctx, state)
-        await self._load_runtime_evidence(ctx, log_cb)
+        # Runtime evidence is produced by `_ensure_runtime_evidence`, called from
+        # the Phase 3 phase object (`pipeline/phases/phase3_docs.py`) so both
+        # engines go through one producer. It is idempotent per run, so this
+        # driver does not repeat it.
         _doc_write_provider = self._provider_for_phase("doc_write")
 
         _calls_lock = asyncio.Lock()
@@ -4188,6 +4202,17 @@ Fallback plan example:
                         calls_lock=_calls_lock,
                         task_contract=task,
                         scoped_tools=tools,
+                        # Output-sized planning (slicing redesign). Without these
+                        # inputs `_complete_core_generation` cannot size the plan
+                        # by expected output and every over-ceiling document falls
+                        # back to the R2.5 input-partitioned path, where each slice
+                        # receives the byte-stable whole-document prompt (mandatory
+                        # headings, "a response missing any heading is REJECTED")
+                        # and writes the WHOLE document from its evidence chunk.
+                        # That is the verified duplication driver: N restarts, then
+                        # a lossy dedupe merge. This is the ONLY phase3 doc-write
+                        # call site, so it is the only place the plan can be seeded.
+                        phase3_inputs=self._phase3_plan_inputs(state, doc_name),
                     )
 
                 task_result = await runtime.run(
@@ -6778,56 +6803,222 @@ Allowed docs:
         )
         return plan
 
-    async def _load_runtime_evidence(self, ctx: DocGenContext, log_cb: LogCallback) -> None:
-        """Fetch observed production behaviour for every unit-scoped doc, once.
+    async def _ensure_runtime_evidence(
+        self,
+        ctx: DocGenContext,
+        state: HarnessRunState,
+        log_cb: LogCallback,
+    ) -> RuntimeEvidenceStore:
+        """Produce the run's runtime-evidence artifacts, once. Never raises.
 
-        Scoped to the units this run actually writes about, so a partitioned run
-        never asks about a sibling sub-project's units. A miss is degradation,
-        never a run failure: documents are still written, just without runtime
-        facts, and the coverage line below is what tells an operator which it
-        was.
+        This is the PRODUCER for both engines (R1/R3). It fetches once and
+        writes files; every consumer -- the group/summary rollup attachment, the
+        per-unit sections in ``TargetEvidenceBuilder``, the operator coverage
+        endpoint -- reads those files by name. Holding the store as provider
+        state and populating it inside one engine's phase driver is what let the
+        OpenCode engine reuse the consumer and never the producer.
+
+        Scope comes from ``state.facts_manifest.units`` (R2/A1), which is
+        already partition-filtered in both engines and is the scoping authority
+        everywhere else. Both identifier keys are sent: ``UnitFact.name`` is the
+        scanner's ``job_id``, while the runtime source schedules tasks under the
+        DISPLAY name, so passing the manifest units straight through is what
+        makes the two-key request happen. The old ``_per_job_doc_units`` gate is
+        gone -- it made the whole lane dead on default configuration, because
+        that map is only populated when per-unit docs are switched on.
+
+        Artifacts written (all relative to ``ctx.staging_dir``):
+
+        * ``_transient/runtime/runtime_evidence.json`` -- the fetched payload,
+          rehydrated by the synchronous evidence builder. ``_transient/`` because
+          Phase 4 cleanup is a denylist and the swap is a whole-directory
+          rename; anywhere else and the cached provider failure text publishes
+          into ``output/{pid}/docs/`` forever (A7).
+        * ``_analysis/_runtime_profile.md`` -- the project rollup. Also removed
+          by Phase 4, so it never publishes.
+        * ``_assessment/runtime_evidence_coverage.json`` -- written in ALL cases
+          including a failed fetch (R7), because an operator must be able to
+          tell "no runtime section" from "the lookup failed". Survives Phase 4
+          and the swap; the shape is ``store.coverage_payload()`` (A12), with a
+          ``run_scope`` block added here because only the wiring layer knows
+          whether this was a full, scoped or partitioned run.
+        * ``_assessment/runtime_redaction_flags.json`` -- only when flags exist.
+
+        KNOWN LIMITATION (recorded, deliberately not fixed here): the
+        living-docs patch lane (``services/true_patch_executor.py``) never reads
+        ``_phase3_context_files``, so a patched document gains no runtime prose
+        even though the coverage artifact beside it describes the whole project.
         """
-        if not ctx.live_evidence:
-            # An explicit code-only run. Say so in the log: a reader comparing
-            # two runs of the same project must be able to tell a deliberate
-            # opt-out from a lookup that silently found nothing.
+        run_key = (getattr(ctx, "run_id", None), str(ctx.staging_dir))
+        if self._runtime_evidence is not None and self._runtime_evidence_key == run_key:
+            return self._runtime_evidence
+
+        units = list(getattr(state.facts_manifest, "units", ()) or ())
+        # `fetch_runtime_evidence` never raises and never returns None: absence
+        # is a mode. The guard is for anything unforeseeable in the transport --
+        # runtime absence must never be able to fail a run (R17).
+        try:
+            store = await fetch_runtime_evidence(
+                ctx.project_id, units, live_evidence=ctx.live_evidence
+            )
+        except Exception:  # noqa: BLE001 - never a gate
+            logger.exception(
+                "runtime evidence: fetch raised for project %s; continuing without it",
+                ctx.project_id,
+            )
+            store = RuntimeEvidenceStore(
+                window_days=config.runtime_evidence_window_days,
+                mode=RuntimeMode.UNAVAILABLE,
+                requested_units=len(units),
+                unretrieved_units=tuple(
+                    str(getattr(unit, "name", "") or "") for unit in units
+                ),
+            )
+
+        self._runtime_evidence = store
+        self._runtime_evidence_key = run_key
+        self._write_runtime_evidence_artifacts(ctx, store)
+        await self._log_runtime_evidence(ctx, store, log_cb)
+        return store
+
+    def _runtime_run_scope(self, ctx: DocGenContext) -> dict[str, Any]:
+        """What this coverage record actually describes.
+
+        A scoped run (``scoped_docs``) narrows ``_required_docs`` but NOT the
+        unit set, so the fetch legitimately covers the whole project while only
+        a couple of documents are rewritten. Narrowing the fetch instead was
+        rejected: the rollup's coverage denominator would then disagree with the
+        sibling documents preserved byte-stable from the baseline, and the
+        published artifact would describe a scope no reader can see. So the
+        record stays project-wide and states the discrepancy here.
+        """
+        scoped = sorted(getattr(ctx, "scoped_docs", None) or ())
+        partition = getattr(ctx, "partition", None)
+        partition_name = str(getattr(partition, "name", "") or "") if partition is not None else ""
+        if scoped:
+            kind = "scoped_docs"
+            note = (
+                "Doc-targeted run: only the listed documents were regenerated, but "
+                "the runtime lookup covers every unit in scope for the project. "
+                "Documents preserved from the previous baseline are NOT described "
+                "by this record."
+            )
+        elif partition_name:
+            kind = "partition"
+            note = (
+                "Composite sub-project run: units, rollup and this record are "
+                "scoped to this partition only. Sibling sub-projects write their "
+                "own record under their own output directory."
+            )
+        else:
+            kind = "full"
+            note = "Full run: this record describes every document produced by it."
+        return {
+            "kind": kind,
+            "scoped_docs": scoped,
+            "partition": partition_name or None,
+            "covers_all_documents": not scoped,
+            "note": note,
+        }
+
+    def _write_runtime_evidence_artifacts(
+        self, ctx: DocGenContext, store: RuntimeEvidenceStore
+    ) -> None:
+        """Stage the cache, the rollup, the coverage record and any flags.
+
+        Each write is isolated: a failure to persist one artifact degrades that
+        consumer, it does not lose the others and it never fails the run.
+        """
+        def _write(relative: str, text: str) -> None:
+            try:
+                path = ctx.staging_dir / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8")
+            except Exception:  # noqa: BLE001 - never a gate
+                logger.exception(
+                    "runtime evidence: could not write %s for project %s",
+                    relative, ctx.project_id,
+                )
+
+        _write(RUNTIME_CACHE_JSON, json.dumps(store.to_json(), indent=2))
+        _write(
+            RUNTIME_PROFILE_MD,
+            project_rollup(store, max_bytes=config.phase3_runtime_profile_bytes),
+        )
+        coverage = dict(store.coverage_payload())
+        coverage["run_scope"] = self._runtime_run_scope(ctx)
+        _write(RUNTIME_COVERAGE_JSON, json.dumps(coverage, indent=2))
+        if store.redaction_flags:
+            _write(
+                RUNTIME_REDACTION_FLAGS_JSON,
+                json.dumps(store.redaction_flags_payload(), indent=2),
+            )
+
+    async def _log_runtime_evidence(
+        self, ctx: DocGenContext, store: RuntimeEvidenceStore, log_cb: LogCallback
+    ) -> None:
+        """Three distinguishable outcomes in the run log.
+
+        Before this, two of the three failure states were silent: an operator
+        reading a green run could not tell a deliberate code-only run from a
+        backend that was unreachable from a lookup that genuinely found nothing.
+        """
+        if store.mode is RuntimeMode.OPTED_OUT:
             await log_cb(
                 ctx.project_id,
-                "[custom] runtime evidence: skipped (live evidence off for this run)",
+                "[custom] runtime evidence: OPTED OUT -- live evidence is off for "
+                f"this run, so no lookup was made for {store.requested_units} unit(s). "
+                "Documents will state that no runtime data was available.",
                 "info",
             )
             return
-        if self._runtime_evidence is not None or not self._per_job_doc_units:
+        if store.mode is RuntimeMode.UNAVAILABLE:
+            await log_cb(
+                ctx.project_id,
+                "[custom] runtime evidence: UNAVAILABLE -- the runtime source could "
+                f"not be read ({store.failed_batches}/{store.batches} request batch(es) "
+                f"failed) for {store.requested_units} unit(s). Documents will state "
+                "that no runtime data was available; they will NOT infer that jobs "
+                "are idle.",
+                "warning",
+            )
             return
-        unit_names = sorted(set(self._per_job_doc_units.values()))
-        store = await fetch_runtime_evidence(ctx.project_id, unit_names)
-        if store is None:
-            return
-        self._runtime_evidence = store
-        coverage = f"{len(store.by_unit)}/{len(unit_names)}"
         await log_cb(
             ctx.project_id,
-            f"[custom] runtime evidence: {coverage} units have observed production "
-            f"data (last {store.window_days} days)",
+            f"[custom] runtime evidence: FETCHED {len(store.by_unit)}/"
+            f"{store.requested_units} unit(s) have observed production data over the "
+            f"last {store.window_days} days from source "
+            f"'{store.source_key or 'unknown'}'; {len(store.orphan_runtime_jobs)} "
+            "runtime job(s) have no scanned unit",
             "info",
         )
-        # Coverage is a first-class run fact: a reviewer must be able to tell a
-        # document with no runtime section from a run where the lookup was thin.
-        out_path = ctx.staging_dir / "_assessment" / "runtime_evidence_coverage.json"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(
-            json.dumps(
-                {
-                    "window_days": store.window_days,
-                    "units_requested": len(unit_names),
-                    "units_matched": len(store.by_unit),
-                    "matched": sorted(store.by_unit),
-                    "unmatched": list(store.unmatched_units),
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        if store.partial:
+            await log_cb(
+                ctx.project_id,
+                f"[custom] runtime evidence: PARTIAL -- {store.failed_batches} of "
+                f"{store.batches} request batches failed; "
+                f"{len(store.unretrieved_units)} unit(s) have no lookup result and "
+                "are unknown rather than idle",
+                "warning",
+            )
+        if store.scope_mismatch:
+            await log_cb(
+                ctx.project_id,
+                "[custom] runtime evidence: scan/runtime asymmetry -- "
+                f"{len(store.orphan_runtime_jobs)} runtime job(s) have no scanned "
+                "counterpart. Either this scan covers a subset of the deployed "
+                "estate or the project binding is wrong; the rollup states both "
+                "readings without asserting either.",
+                "warning",
+            )
+        if store.redaction_flags:
+            await log_cb(
+                ctx.project_id,
+                f"[custom] runtime evidence: dropped {len(store.redaction_flags)} "
+                "failure headline(s) that still carried an identifier shape; see "
+                f"{RUNTIME_REDACTION_FLAGS_JSON}",
+                "warning",
+            )
 
     def _build_target_evidence(self, ctx: DocGenContext, doc_name: str) -> TargetEvidence | None:
         """Build (and cache) the deterministic evidence bundle for a unit-scoped doc.
@@ -6851,7 +7042,10 @@ Allowed docs:
                 max_bytes=config.phase3_target_evidence_bytes,
                 noncode_plan=plan or None,
                 noncode_section_bytes=config.phase3_noncode_evidence_bytes,
-                runtime_store=self._runtime_evidence,
+                # No `runtime_store=`: the builder rehydrates the run's store
+                # from `_transient/runtime/runtime_evidence.json` inside
+                # `build()`. A store injected here freezes whatever was known
+                # when the builder was first constructed for this staging dir.
                 runtime_section_bytes=config.phase3_runtime_evidence_bytes,
             )
         evidence = self._target_evidence_builder.build(doc_name, unit_name)
@@ -6859,11 +7053,71 @@ Allowed docs:
             self._target_evidence[doc_name] = evidence
         return evidence
 
+    @staticmethod
+    def _runtime_rollup_relevant(doc_name: str) -> bool:
+        """Whether project-level operational insight belongs in this document.
+
+        Runtime evidence is fetched once for the run, but it must not therefore
+        be pasted into every writer's context.  In particular, failure stories
+        pollute mapping, lineage, business-rule, inventory and architecture
+        documents without helping those documents fulfil their contract.
+
+        Standard operational/risk/change/summary documents are explicit.  The
+        keyword fallback supports plugin packs without making provider-specific
+        assumptions.  Exclusions win when a custom title mixes concerns.
+        """
+        name = doc_name.split("__", 1)[0].upper()
+        excluded = (
+            "MAPPING",
+            "BUSINESS_RULE",
+            "BUSINESS-RULE",
+            "DATA_FLOW",
+            "LINEAGE",
+            "SCHEMA",
+            "COMPONENT_INVENTORY",
+            "ARCHITECTURE",
+        )
+        if any(token in name for token in excluded):
+            return False
+        if name in {
+            "06_OPERATIONS_TESTING_AND_DEBUGGING",
+            "07_QUALITY_SECURITY_RISK_SCORECARD",
+            "08_CHANGE_PLAYBOOK",
+            "09_EXECUTIVE_SUMMARY",
+        }:
+            return True
+        return any(
+            token in name
+            for token in (
+                "OPERATION",
+                "TROUBLESHOOT",
+                "DEBUG",
+                "SUPPORT",
+                "RUNBOOK",
+                "INCIDENT",
+                "RELIABILITY",
+                "HEALTH",
+                "RISK",
+                "RECOVERY",
+                "MONITOR",
+                "SUMMARY",
+                "GROUP",
+            )
+        )
+
     def _phase3_context_files(self, ctx: DocGenContext, doc_name: str) -> list[Path]:
         # Executive summary reads from scorecard + completed docs, not from analysis.
         if doc_name == "09_EXECUTIVE_SUMMARY":
             scorecard = ctx.staging_dir / "_assessment" / "scorecard.md"
             files: list[Path] = [scorecard] if scorecard.exists() else []
+            # A6: this branch returns BEFORE the shared-facts append below, so
+            # without an explicit attachment the one document most likely to
+            # make an unsupported reliability claim would be the one document
+            # that never sees the runtime rollup. It is a summary doc, so the
+            # A5 group/summary rule applies to it.
+            runtime_profile = ctx.staging_dir / RUNTIME_PROFILE_MD
+            if self._runtime_rollup_relevant(doc_name) and runtime_profile.exists():
+                files.append(runtime_profile)
             # Add all other completed docs as context (but not the summary itself)
             for other in sorted(self._required_docs):
                 if other == "09_EXECUTIVE_SUMMARY":
@@ -6903,6 +7157,19 @@ Allowed docs:
         cross_cutting = ctx.staging_dir / "_analysis" / "_cross_cutting_facts.md"
         if cross_cutting.exists():
             files.append(cross_cutting)
+        # Project-level runtime rollup, immediately after the cross-cutting
+        # facts and only for operational/risk/change/summary group documents.
+        # Mapping, lineage, business-rule, inventory and architecture writers do
+        # not receive it. Unit-scoped docs are excluded on purpose: the rollup's
+        # failure-mode census names components
+        # owned by OTHER units, Phase 3 component-echo validates a unit doc
+        # against its own bundle alone, and the writer would be rejected for
+        # fabrication over a component that is real. Unit docs already carry
+        # their own correctly-scoped per-unit section from the evidence bundle.
+        if target_evidence is None and self._runtime_rollup_relevant(doc_name):
+            runtime_profile = ctx.staging_dir / RUNTIME_PROFILE_MD
+            if runtime_profile.exists():
+                files.append(runtime_profile)
         # Pack path: analysis was skipped — Phase 3 writes from evidence bundle +
         # investigation output (when investigation: run).
         # bounded/run analysis falls through to the enterprise context path below.

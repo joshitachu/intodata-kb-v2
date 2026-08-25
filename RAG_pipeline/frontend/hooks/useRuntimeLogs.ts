@@ -59,6 +59,8 @@ import {
   RuntimeErrorSignatureResponseSchema,
   RuntimeJobReliabilityResponse,
   RuntimeJobReliabilityResponseSchema,
+  RuntimeJobInsightResponse,
+  RuntimeJobInsightResponseSchema,
   RuntimeJobThroughputResponse,
   RuntimeJobThroughputResponseSchema,
   RuntimeTrendBucket,
@@ -900,6 +902,36 @@ export function useRuntimeJobReliability(
   return useQuery({
     queryKey: ["runtime", "job-reliability", filters],
     queryFn: () => fetchJobReliability(filters),
+    enabled,
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchJobInsights(
+  filters: AggregateFilters,
+): Promise<RuntimeJobInsightResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    since: filters.since,
+    until: filters.until,
+    limit: filters.limit,
+    offset: filters.offset,
+  });
+  const res = await fetch(`/api/runtime/job-insights${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch runtime job insights");
+  }
+  return RuntimeJobInsightResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeJobInsights(
+  filters: AggregateFilters = {},
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ["runtime", "job-insights", filters],
+    queryFn: () => fetchJobInsights(filters),
     enabled,
     staleTime: STALE_MS,
   });

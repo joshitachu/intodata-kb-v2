@@ -232,7 +232,7 @@ def _phase2_claim_records(staging_dir: Path) -> list[dict[str, Any]]:
     data-stream edge.
     """
 
-    records: list[dict[str, Any]] = []
+    records_by_id: dict[str, dict[str, Any]] = {}
     claim_root = staging_dir / "_analysis" / "_claims"
     for path in sorted(claim_root.glob("*.jsonl")):
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -245,24 +245,48 @@ def _phase2_claim_records(staging_dir: Path) -> list[dict[str, Any]]:
             claim_id = str(row.get("claim_id") or "")
             if not claim_id:
                 continue
-            records.append(
+            record = {
+                "id": claim_id,
+                "type": "phase2_claim",
+                "claim_id": claim_id,
+                "group": row.get("group") or "",
+                "task_id": row.get("task_id") or "",
+                "concern": row.get("concern") or "",
+                "section": row.get("section") or "",
+                "kind": row.get("kind") or "",
+                "unit_names": row.get("unit_names") or [],
+                "related_units": row.get("related_units") or [],
+                "statement": row.get("statement") or "",
+                "source_evidence_refs": row.get("evidence_refs") or [],
+                "confidence": row.get("confidence") or "unknown",
+                "source_ledger": path.relative_to(staging_dir).as_posix(),
+            }
+            existing = records_by_id.get(claim_id)
+            if existing is None:
+                records_by_id[claim_id] = record
+                continue
+            if existing == record:
+                continue
+
+            # Claim IDs are authored independently by concern tasks and are not
+            # guaranteed to be unique across their ledgers. Preserve the first
+            # occurrence for backwards-compatible citations, then give every
+            # collision a stable evidence identity derived from its provenance.
+            collision_id = _evidence_id(
+                "phase2-claim",
                 {
-                    "id": claim_id,
-                    "type": "phase2_claim",
-                    "group": row.get("group") or "",
-                    "task_id": row.get("task_id") or "",
-                    "concern": row.get("concern") or "",
-                    "section": row.get("section") or "",
-                    "kind": row.get("kind") or "",
-                    "unit_names": row.get("unit_names") or [],
-                    "related_units": row.get("related_units") or [],
-                    "statement": row.get("statement") or "",
-                    "source_evidence_refs": row.get("evidence_refs") or [],
-                    "confidence": row.get("confidence") or "unknown",
-                    "source_ledger": path.relative_to(staging_dir).as_posix(),
-                }
+                    "claim_id": claim_id,
+                    "task_id": record["task_id"],
+                    "statement": record["statement"],
+                    "source_ledger": record["source_ledger"],
+                },
             )
-    return records
+            record["id"] = collision_id
+            collision = records_by_id.get(collision_id)
+            if collision is not None and collision != record:
+                raise ValueError(f"conflicting Phase 2 claim evidence ID: {collision_id}")
+            records_by_id[collision_id] = record
+    return list(records_by_id.values())
 
 
 def _starter_pack(staging_dir: Path, overview: dict[str, Any]) -> str:
@@ -507,14 +531,21 @@ def build_business_topology_evidence(
         ("artifact_endpoints", "endpoint"),
         ("artifact_channels", "channel"),
     ):
-        rows: list[dict[str, Any]] = []
+        rows_by_id: dict[str, dict[str, Any]] = {}
         for item in manifest.get(key) or []:
             if not isinstance(item, dict):
                 continue
             record = {"id": _evidence_id(prefix, item), "type": f"scanner_{prefix}", **item}
-            rows.append(record)
+            existing = rows_by_id.get(record["id"])
+            if existing is not None:
+                if existing != record:
+                    raise ValueError(
+                        f"conflicting scanner {prefix} evidence ID: {record['id']}"
+                    )
+                continue
+            rows_by_id[record["id"]] = record
             records.append(record)
-        typed_manifest_rows[key] = rows
+        typed_manifest_rows[key] = list(rows_by_id.values())
 
     lineage_rows: list[dict[str, Any]] = []
     for item in lineage.get("entries") or []:

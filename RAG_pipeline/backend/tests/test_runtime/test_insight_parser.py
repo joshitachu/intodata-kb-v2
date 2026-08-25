@@ -101,10 +101,16 @@ class TestDurationAndTimeout:
 
 class TestJdbcExtraction:
     def test_host_and_database_extracted(self):
+        """The host is recorded as PRESENT, not as an address.
+
+        ``host`` is redacted whole (see ``parser.redact_host``): the field held
+        internal hostnames verbatim, and everything downstream reads presence,
+        not content. The database name is a schema object and survives.
+        """
         result = parse_runtime_log_message(
             "[tOracleConnection_1] Opening connection jdbc:oracle:thin:@//db-prod-scan:1521/ORCLPDB1 (pool=esb_main, timeout=30s)"
         )
-        assert result.host == "db-prod-scan"
+        assert result.host == "<host>"
         assert result.database_name == "ORCLPDB1"
 
     def test_jdbc_message_family(self):
@@ -214,7 +220,7 @@ class TestCredentialRedaction:
         assert result.endpoint is not None
         assert "scott" not in result.endpoint
         assert "tiger" not in result.endpoint
-        assert result.host == "db-prod"
+        assert result.host == "<host>"
         assert result.database_name == "ORCLPDB1"
 
 

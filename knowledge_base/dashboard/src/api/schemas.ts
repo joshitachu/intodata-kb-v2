@@ -393,8 +393,26 @@ export const ConnectorProviderSchema = z.object({
   enabled: z.boolean().optional().default(true),
   // Directory presentation, served from the provider manifest so adding a
   // connector needs no dashboard change. Defaults keep older servers working.
-  kind: z.enum(["live_evidence", "runtime_sync"]).optional().default("live_evidence"),
-  build_state: z.enum(["available", "coming_soon"]).optional().default("available"),
+  // Plain strings, not enums, for the same reason as `managed_by` below: this
+  // schema is validated as an ARRAY, so ONE provider carrying a kind or build
+  // state this build has not been taught yet would reject the whole catalogue
+  // and blank every connector row -- in the directory AND in the Generate
+  // dialog's live-data panel. An unfamiliar value must render as itself and be
+  // treated as unknown (see `lib/connectors.ts`), never take the page down.
+  kind: z.string().optional().default("live_evidence"),
+  build_state: z.string().optional().default("available"),
+  // WHERE this provider's credential is stored: "connector_store" (the MCP
+  // server's own encrypted store) or "runtime_sources" (the RAG backend's
+  // tables, next to the scheduler that polls with it). It says nothing about
+  // whether the provider can be connected from this page -- the dialog registry
+  // decides that, and each dialog knows which lane to post to.
+  //
+  // Deliberately a plain string, not an enum, for the reason documented on
+  // `connection_kind` above: this schema is validated as an ARRAY, so one
+  // provider carrying a `managed_by` this build has not been taught yet would
+  // reject the whole catalogue and blank every connector row. An unknown value
+  // renders as an unfamiliar storage location and is otherwise inert.
+  managed_by: z.string().optional().default("connector_store"),
   description: z.string().optional().default(""),
 });
 
@@ -484,6 +502,100 @@ export const ProjectConnectorBindingListResponseSchema = z.object({
   bindings: z.array(ProjectConnectorBindingSchema),
 });
 
+// --- Runtime sources (proxied by the MCP server to the RAG backend) ---
+//
+// A runtime source is a credential the RAG backend's scheduler polls. The MCP
+// server proxies these on the caller's own session, so the dashboard can offer
+// a connect form without the secret ever passing through the connector store.
+// As with the connector schemas above, nothing here models a credential value:
+// they are write-only and no server returns them.
+
+export const RuntimeSourceCredentialFieldSchema = z.object({
+  name: z.string(),
+  label: z.string().optional().default(""),
+  // secret | url | text. A plain string, not an enum: this is validated as an
+  // ARRAY, so one unfamiliar field type from a newer backend would otherwise
+  // reject the whole schema and leave the connect form with no inputs at all.
+  // An unknown type must degrade to a text box.
+  type: z.string().optional().default("text"),
+  required: z.boolean().optional().default(true),
+});
+
+/**
+ * A provider's selectable ingest scope, e.g. Talend environments.
+ *
+ * Its presence is what tells the connect dialog to show the test-then-choose
+ * step, so a provider that ingests everything simply omits it and the dialog
+ * needs no per-connector branch.
+ */
+export const RuntimeScopeSelectionSchema = z.object({
+  field: z.string(),
+  label: z.string().optional().default("Scope"),
+  description: z.string().nullish(),
+  required: z.boolean().optional().default(true),
+  multiple: z.boolean().optional().default(true),
+});
+
+export const RuntimeScopeOptionSchema = z.object({
+  id: z.string(),
+  label: z.string().optional().default(""),
+  detail: z.string().nullish(),
+  default_selected: z.boolean().optional().default(false),
+});
+
+export const RuntimeSourceTypeSchema = z.object({
+  provider_key: z.string(),
+  provider_label: z.string().optional().default(""),
+  credential_schema: z.array(RuntimeSourceCredentialFieldSchema).optional().default([]),
+  scope_selection: RuntimeScopeSelectionSchema.nullish(),
+});
+
+export const RuntimeSourceTypeListResponseSchema = z.object({
+  source_types: z.array(RuntimeSourceTypeSchema).optional().default([]),
+});
+
+export const RuntimeSourceScopesResponseSchema = z.object({
+  scopes: z.array(RuntimeScopeOptionSchema).optional().default([]),
+});
+
+/** The slice of a project's runtime mirror that documentation runs read.
+ *
+ * `environment_ids: null` means every mirrored environment -- a distinct state
+ * from a selection that lists them all, because a later ingest-scope change
+ * widens the former and not the latter. */
+export const RuntimeDocReadScopeSchema = z.object({
+  environment_ids: z.array(z.string()).nullable().optional().default(null),
+  environment_names: z.array(z.string()).optional().default([]),
+  window_days: z.number().nullable().optional().default(null),
+  configured: z.boolean().optional().default(false),
+  unavailable_environment_ids: z.array(z.string()).optional().default([]),
+});
+
+export const RuntimeSourceSchema = z.object({
+  id: z.number(),
+  project_id: z.string(),
+  source_type: z.string(),
+  label: z.string().optional().default(""),
+  // Same reasoning as `managed_by`: a status this build has not been taught
+  // must render as itself, not blank the row.
+  status: z.string().optional().default("unknown"),
+  enabled: z.boolean().optional().default(true),
+  sync_interval_seconds: z.number().optional().default(60),
+  disabled_reason: z.string().nullable().optional().default(null),
+  last_synced_at: z.string().nullable().optional().default(null),
+});
+
+export const RuntimeSourceListResponseSchema = z.object({
+  sources: z.array(RuntimeSourceSchema).optional().default([]),
+  total: z.number().optional().default(0),
+});
+
+export const RuntimeSourceSyncResponseSchema = z.object({
+  source: RuntimeSourceSchema.nullable().optional().default(null),
+  status: z.string().optional().default("unknown"),
+  records_ingested: z.number().optional().default(0),
+});
+
 export const ConnectorTestResultSchema = z.object({
   status: z.string(),
   message: z.string().nullable().optional().default(null),
@@ -495,6 +607,32 @@ export const ConnectorEvidenceFindingSchema = z.object({
   evidence_id: z.string(),
   classification: z.string(),
   summary: z.string().nullable().optional().default(null),
+});
+
+// Coverage of the mirrored runtime lane. Every field defaults, and `mode` is a
+// plain string, so a run predating the coverage artifact -- or one written by a
+// newer producer -- still renders instead of collapsing the popover.
+export const RunRuntimeEvidenceSummarySchema = z.object({
+  available: z.boolean().optional().default(false),
+  mode: z.string().optional().default("unavailable"),
+  window_days: z.number().nullable().optional().default(null),
+  units_requested: z.number().optional().default(0),
+  units_matched: z.number().optional().default(0),
+  orphan_runtime_job_count: z.number().optional().default(0),
+  partial: z.boolean().optional().default(false),
+  // Defaults to null, NOT false: the backend always sends a boolean, so null
+  // means "this payload predates the field" and the client may fall back to
+  // inferring the signal. A payload that DOES report `false` must silence the
+  // fallback -- an explicit denial outranks a guess.
+  scope_mismatch: z.boolean().nullable().optional().default(null),
+  batches: z.number().nullable().optional().default(null),
+  source_key: z.string().nullable().optional().default(null),
+  // Composite (partitioned) uploads. `subproject` names the sub-project a
+  // figure describes; `subproject_count` is how many an aggregate spans (0 on a
+  // single artifact, so "one zip" stays distinguishable from "not composite").
+  // Plain strings, never an enum: sub-project names are project data.
+  subproject: z.string().nullable().optional().default(null),
+  subproject_count: z.number().optional().default(0),
 });
 
 export const ConnectorEvidenceSummarySchema = z.object({
@@ -509,4 +647,22 @@ export const ConnectorEvidenceSummarySchema = z.object({
   observation_to: z.string().nullable().optional().default(null),
   limitations: z.array(z.string()).optional().default([]),
   findings: z.array(ConnectorEvidenceFindingSchema).optional().default([]),
+  runtime: RunRuntimeEvidenceSummarySchema.optional().default({
+    available: false,
+    mode: "unavailable",
+    window_days: null,
+    units_requested: 0,
+    units_matched: 0,
+    orphan_runtime_job_count: 0,
+    partial: false,
+    scope_mismatch: null,
+    batches: null,
+    source_key: null,
+    subproject: null,
+    subproject_count: 0,
+  }),
+  // The per-sub-project rows behind an aggregated `runtime`. Empty for a
+  // non-composite run and for a composite child run, which reports its own
+  // sub-project in `runtime` directly.
+  runtime_subprojects: z.array(RunRuntimeEvidenceSummarySchema).optional().default([]),
 });

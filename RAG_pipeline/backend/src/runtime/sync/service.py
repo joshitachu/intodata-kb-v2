@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.runtime.insights.builder import InsightBuildResult, build_runtime_insights_for_execution
 from src.runtime.redaction import sanitize_sync_error
+from src.runtime.sync.progress import sync_progress
 from src.runtime.models import (
     RuntimeArtifact,
     RuntimeConnection,
@@ -116,6 +117,29 @@ class _RuntimeSourceAdapter:
         return await self._provider.sync(credentials=self._credentials, project_id=project_id)
 
 
+def _batch_record_count(batch: RuntimeSyncBatch) -> int:
+    """How many records a fetched batch will write, known before persisting."""
+    return sum(
+        len(getattr(batch, name))
+        for name in (
+            "executions",
+            "failures",
+            "log_events",
+            "component_metrics",
+            "environments",
+            "workspaces",
+            "engines",
+            "jobs",
+            "artifacts",
+            "connections",
+            "job_dependencies",
+            "job_runs",
+            "plans",
+            "plan_runs",
+        )
+    )
+
+
 def _record_count(result: RuntimeSyncCycleResult) -> int:
     return (
         result.executions_written
@@ -156,9 +180,16 @@ async def run_runtime_source_sync_cycle(
     if provider is None:
         raise RuntimeRecordNotFoundError(f"Runtime source provider not found: {source.source_type}")
     await repo.record_source_sync_attempt(source_id, cycle_at)
+    claimed = sync_progress.begin(source_id, now=cycle_at)
     try:
         credentials, _key_id = await repo.read_credentials(source_id)
+        sync_progress.update(source_id, phase="Reading from the source")
         batch = await provider.sync(credentials=credentials, project_id=source.project_id)
+        sync_progress.update(
+            source_id,
+            phase="Saving imported records",
+            records=_batch_record_count(batch),
+        )
         result = await _persist_source_batch_with_project_map(
             session,
             repo=repo,
@@ -172,6 +203,8 @@ async def run_runtime_source_sync_cycle(
         )
         await repo.prune_expired_log_events(now=cycle_at)
     except Exception as exc:
+        if claimed:
+            sync_progress.finish(source_id)
         error_summary = sanitize_sync_error(str(exc) or exc.__class__.__name__)
         await repo.record_source_sync_failure(
             source_id,
@@ -186,6 +219,8 @@ async def run_runtime_source_sync_cycle(
             failure_reason_code=exc.__class__.__name__[:80],
             error_summary=error_summary,
         )
+    if claimed:
+        sync_progress.finish(source_id)
     if result.status == RuntimeSyncStatus.SUCCESS:
         await _refresh_source_identity(repo, source_id=source_id, provider=provider, credentials=credentials, batch=batch)
         await repo.record_source_sync_success(
@@ -264,8 +299,21 @@ async def _persist_source_batch_with_project_map(
     failure_reason = _clean_reason_code(batch.failure_reason_code) if batch.partial else None
     error_summary = sanitize_sync_error(batch.error_summary) if batch.error_summary else None
 
-    for runtime_source in batch.sources:
-        await repo.upsert_source(default_project_id, runtime_source, synced_at)
+    # ``batch.sources`` is deliberately NOT persisted here.
+    #
+    # A provider's batch declares its own source row because the original
+    # deploy-level scheduler (``run_runtime_sync_cycle``) had no registered
+    # source to attribute data to -- the declared row WAS the source. This path
+    # is the self-service one: the operator already registered a row, it already
+    # holds the credentials, health and schedule, and it is the row this cycle
+    # was launched from. Upserting the declared row here produced a SECOND,
+    # credential-less row per project (``observed:talend_tmc``), which the admin
+    # list and the dashboard's connector panel both rendered as if it were a
+    # real, polling connection.
+    #
+    # It never even described this data: the declared key is a provider
+    # constant (``talend_tmc``) while every record below is stamped with
+    # ``source_key`` -- the registered row's own type. Nothing referenced it.
     for environment in batch.environments:
         await repo.upsert_environment(default_project_id, environment, source_key, synced_at)
     for workspace in batch.workspaces:
@@ -335,7 +383,9 @@ async def _persist_source_batch_with_project_map(
         failures_written=len(batch.failures),
         log_events_written=len(batch.log_events),
         component_metrics_written=len(batch.component_metrics),
-        sources_written=len(batch.sources),
+        # Zero: the declared source row is skipped above, so counting it
+        # would inflate "records ingested" by one on every cycle.
+        sources_written=0,
         environments_written=len(batch.environments),
         workspaces_written=len(batch.workspaces),
         engines_written=len(batch.engines),

@@ -86,6 +86,7 @@ async def connector_catalogue(request: Request):
             "redaction_policy_version": manifest.redaction_policy_version,
             "kind": manifest.kind.value,
             "build_state": manifest.build_state.value,
+            "managed_by": manifest.managed_by.value,
             "description": manifest.description,
             # Field NAMES and shapes only. A stored secret is never returned:
             # `secret_fields` tells a client which inputs to render write-only,
