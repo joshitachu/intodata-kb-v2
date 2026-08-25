@@ -228,6 +228,27 @@ class Settings(BaseSettings):
     rung2_entity_match_limit: int = 25
     rung2_section_expansion_limit: int = 40
 
+    # Rung 2 activation. `search_layered` had every knob above and no caller, so
+    # the internal partitions were unreachable in production: on one measured
+    # corpus 88% of the chunks (the per-group Phase 2 analyses and the
+    # deterministic support maps) could not be retrieved by any question.
+    #
+    # Escalation is conditional, not unconditional: `search_layered` forces an
+    # LLM query expansion, and chat turns are decode-bound, so paying for it on
+    # every turn would tax the majority of questions that rung 1 already answers
+    # well. Firing it when rung 1 comes back thin spends that budget exactly
+    # where the alternative is an answer with no sources at all.
+    deep_layer_escalation_enabled: bool = True
+    deep_layer_source_layers: list[str] = [
+        "technical_analysis",
+        "support_maps",
+        "scorecard",
+        "evidence_slices",
+    ]
+    #: Escalate when rung 1 returned fewer than this many source chunks.
+    deep_layer_min_source_hits: int = 3
+    deep_layer_top_k: int = 6
+
     # Metadata queries
     metadata_queries_enabled: bool = True
     system_knowledge_injection: bool = True

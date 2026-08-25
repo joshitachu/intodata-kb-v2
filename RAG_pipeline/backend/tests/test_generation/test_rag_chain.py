@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.generation.rag_chain import run_rag_query
+from src.generation.rag_chain import _execute_deep_layer_search, run_rag_query
 from src.schemas import DocumentSource, QueryRequest, Source
 
 
@@ -20,12 +20,19 @@ def mock_db():
 
 @pytest.fixture(autouse=True)
 def disable_new_features():
-    """Disable hybrid search, reranking, and query expansion for unit tests."""
+    """Disable hybrid search, reranking, and query expansion for unit tests.
+
+    Deep-layer escalation is off here for the same reason: these cases assert
+    rung 1 in isolation, and rung 2 would otherwise fire on every one of them
+    (their fixtures return fewer than ``deep_layer_min_source_hits`` chunks).
+    ``TestDeepLayerEscalation`` covers it deliberately instead.
+    """
     with patch("src.generation.rag_chain.settings") as mock_settings:
         mock_settings.query_expansion_enabled = False
         mock_settings.reranker_enabled = False
         mock_settings.hybrid_search_enabled = False
         mock_settings.system_knowledge_injection = False
+        mock_settings.deep_layer_escalation_enabled = False
         yield mock_settings
 
 
@@ -154,3 +161,79 @@ async def test_rag_query_does_not_keyword_select_template_context(mock_qdrant, m
         for call in mock_search.await_args_list
     )
     assert response.sources == []
+
+
+class TestDeepLayerEscalation:
+    """Rung 2 exists so the internal partitions are reachable at all.
+
+    ``search_layered`` shipped with five tuning settings and no production
+    caller, so every internal chunk -- the per-group Phase 2 analyses and the
+    deterministic support maps, 88% of one measured corpus -- could not be
+    retrieved by any question, whatever its wording.
+    """
+
+    @pytest.fixture(autouse=True)
+    def enable_escalation(self, disable_new_features):
+        settings = disable_new_features
+        settings.deep_layer_escalation_enabled = True
+        settings.deep_layer_source_layers = ["technical_analysis", "support_maps"]
+        settings.deep_layer_min_source_hits = 3
+        settings.deep_layer_top_k = 6
+        return settings
+
+    async def test_thin_rung1_escalates_to_the_internal_layers(self) -> None:
+        request = QueryRequest(query="What does tSendMail do?")
+        with patch(
+            "src.generation.rag_chain.search_layered", new_callable=AsyncMock
+        ) as mock_deep:
+            mock_deep.return_value = []
+            await _execute_deep_layer_search(
+                "What does tSendMail do?",
+                request,
+                ["engineering"],
+                AsyncMock(),
+                ["project-a"],
+                rung1_hits=0,
+            )
+
+        assert mock_deep.await_count == 1
+        assert mock_deep.await_args.kwargs["source_layers"] == [
+            "technical_analysis",
+            "support_maps",
+        ]
+
+    async def test_a_healthy_rung1_never_pays_for_rung2(self) -> None:
+        """`search_layered` forces an LLM query expansion, so the ordinary
+        question that rung 1 already answered must not trigger it."""
+        request = QueryRequest(query="What does tSendMail do?")
+        with patch(
+            "src.generation.rag_chain.search_layered", new_callable=AsyncMock
+        ) as mock_deep:
+            result = await _execute_deep_layer_search(
+                "What does tSendMail do?",
+                request,
+                ["engineering"],
+                AsyncMock(),
+                ["project-a"],
+                rung1_hits=7,
+            )
+
+        assert mock_deep.await_count == 0
+        assert result == []
+
+    async def test_a_rung2_failure_degrades_instead_of_failing_the_turn(self) -> None:
+        request = QueryRequest(query="What does tSendMail do?")
+        with patch(
+            "src.generation.rag_chain.search_layered", new_callable=AsyncMock
+        ) as mock_deep:
+            mock_deep.side_effect = RuntimeError("qdrant unavailable")
+            result = await _execute_deep_layer_search(
+                "What does tSendMail do?",
+                request,
+                ["engineering"],
+                AsyncMock(),
+                ["project-a"],
+                rung1_hits=0,
+            )
+
+        assert result == []

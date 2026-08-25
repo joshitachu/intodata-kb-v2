@@ -39,6 +39,7 @@ from src.memory.hindsight_client import (
 from src.retrieval.search import (
     merge_sources_by_document,
     search_and_rerank,
+    search_layered,
     search_multi_query,
     search_similar,
     search_similar_hybrid,
@@ -196,7 +197,81 @@ async def _execute_role_aware_search(
             results[2],
             max_items=request.top_k + min(4, request.top_k),
         )
+    deep_sources = await _execute_deep_layer_search(
+        query,
+        request,
+        user_groups,
+        qdrant,
+        project_ids,
+        rung1_hits=len(source_sources),
+        knowledge_revisions=knowledge_revisions,
+    )
+    if deep_sources:
+        # Merged as AUXILIARY, not source: an internal analysis interprets the
+        # code, the canonical documents are the published account of it, and the
+        # distinction is what `document_role` exists to preserve. Auxiliary
+        # sources still reach `merge_sources_by_document`, so they receive
+        # reference numbers and are citable -- they simply do not outrank a
+        # canonical hit that answers the same question.
+        auxiliary_sources = _merge_retrieval_sources(
+            auxiliary_sources,
+            deep_sources,
+            max_items=len(auxiliary_sources) + settings.deep_layer_top_k,
+        )
     return source_sources, auxiliary_sources
+
+
+async def _execute_deep_layer_search(
+    query: str,
+    request: QueryRequest,
+    user_groups: list[str],
+    qdrant: AsyncQdrantClient,
+    project_ids: list[str] | None,
+    *,
+    rung1_hits: int,
+    knowledge_revisions: Mapping[str, str] | None = None,
+) -> list[Source]:
+    """Retrieval-ladder rung 2: search the internal corpus partitions.
+
+    Returns ``[]`` unless rung 1 came back thin, so the ordinary question pays
+    nothing. When it did come back thin the alternative is not a worse answer,
+    it is an answer with no sources: ``run_rag_query`` falls through to
+    ``build_no_results_messages`` and the model is asked to respond with no
+    retrieved context at all.
+
+    A failure here is swallowed deliberately. This rung is supplementary by
+    construction, and rung 1's result is already in hand -- degrading to the
+    canonical-only answer is strictly better than failing the turn.
+    """
+
+    if not settings.deep_layer_escalation_enabled:
+        return []
+    if not settings.deep_layer_source_layers:
+        return []
+    if rung1_hits >= settings.deep_layer_min_source_hits:
+        return []
+    try:
+        sources = await search_layered(
+            client=qdrant,
+            query=query,
+            user_groups=user_groups,
+            source_layers=list(settings.deep_layer_source_layers),
+            top_k=settings.deep_layer_top_k,
+            threshold=request.threshold,
+            project_ids=project_ids,
+            knowledge_revisions=knowledge_revisions,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Deep-layer escalation failed, continuing without it: %s", exc)
+        return []
+    logger.info(
+        "Deep-layer escalation: rung1=%d hits (< %d) -> %d internal chunk(s) from %s",
+        rung1_hits,
+        settings.deep_layer_min_source_hits,
+        len(sources),
+        ",".join(settings.deep_layer_source_layers),
+    )
+    return sources
 
 
 def _merge_retrieval_sources(
