@@ -99,3 +99,65 @@ def test_new_turn_does_not_inherit_prior_failure_or_evidence() -> None:
     assert second.successful_sources == []
     assert second.zero_evidence is True
 
+
+
+def test_trusted_documentation_sources_count_as_current_turn_evidence() -> None:
+    """A trusted RAG answer bypasses the grounding block, so its sources never
+    reach ``evidence_refs``. Counted from observations alone, a correctly sourced
+    answer reported ``zero_evidence`` and the UI badge contradicted the citations
+    printed beneath it."""
+
+    summary = build_evidence_summary([], document_source_count=4)
+
+    assert summary.zero_evidence is False
+    assert summary.evidence_step_count == 4
+    assert [item.model_dump() for item in summary.successful_sources] == [
+        {"family": "documentation", "role": "explanation", "evidence_count": 4}
+    ]
+
+
+def test_delivered_sources_do_not_double_count_reported_documentation_refs() -> None:
+    summary = build_evidence_summary(
+        [
+            CapabilityObservation(
+                capability_id="rag.docs.answer_question",
+                status="succeeded",
+                evidence_refs=[
+                    {"evidence_id": "doc:1", "source_type": "rag_document"},
+                    {"evidence_id": "doc:2", "source_type": "rag_document"},
+                ],
+            )
+        ],
+        document_source_count=4,
+    )
+
+    assert summary.evidence_step_count == 2
+    assert [item.model_dump() for item in summary.successful_sources] == [
+        {"family": "documentation", "role": "explanation", "evidence_count": 2}
+    ]
+
+
+def test_delivered_sources_are_additive_to_other_evidence_families() -> None:
+    summary = build_evidence_summary(
+        [
+            CapabilityObservation(
+                capability_id="topology.landscape.read_structure",
+                status="succeeded",
+                evidence_refs=[{"evidence_id": "t:1", "source_type": "topology_structure"}],
+            )
+        ],
+        document_source_count=5,
+    )
+
+    assert summary.evidence_step_count == 6
+    assert [(item.family, item.evidence_count) for item in summary.successful_sources] == [
+        ("documentation", 5),
+        ("topology", 1),
+    ]
+
+
+def test_no_delivered_sources_leaves_the_turn_unevidenced() -> None:
+    summary = build_evidence_summary([], document_source_count=0)
+
+    assert summary.zero_evidence is True
+    assert summary.successful_sources == []

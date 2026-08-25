@@ -85,12 +85,21 @@ def build_evidence_summary(
     observations: Sequence[CapabilityObservation],
     *,
     documentation_trace: Mapping[str, Any] | None = None,
+    document_source_count: int = 0,
 ) -> EvidenceSummary:
     """Build one answer's provenance without consulting conversation history.
 
     Attempts and successful calls with zero references never inflate the evidence
     count. Repeated reads are counted because they are distinct validated evidence
     steps in this turn; source-family rows are aggregated for compact persistence.
+
+    ``document_source_count`` covers evidence that never appears in an
+    observation. A trusted documentation answer hands its content and document
+    sources straight to the turn loop (see ``harness.trusted_answer``), which by
+    design bypasses the self-reported grounding block -- so its sources are
+    absent from ``evidence_refs`` and, counted from observations alone, a
+    correctly sourced answer reported ``zero_evidence``. Pass the count of
+    document sources actually delivered with the answer.
     """
 
     counts: dict[tuple[EvidenceFamily, EvidenceRole], int] = defaultdict(int)
@@ -118,9 +127,16 @@ def build_evidence_summary(
             message=message,
         )
 
+    # Only when the observations carried no documentation evidence of their own:
+    # if the capability did report refs, those are the authoritative count and
+    # adding the delivered sources on top would double-count one lookup.
+    if document_source_count > 0 and not counts[("documentation", "explanation")]:
+        counts[("documentation", "explanation")] = document_source_count
+
     successful = [
         SuccessfulEvidenceSource(family=family, role=role, evidence_count=count)
         for (family, role), count in sorted(counts.items())
+        if count
     ]
     provider_metadata = _documentation_metadata(documentation_trace)
     if provider_metadata.attempts and provider_metadata.provider_used is None:

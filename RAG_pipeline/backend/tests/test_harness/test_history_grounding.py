@@ -20,6 +20,8 @@ from src.harness.agent_loop_context import (
     _UNVERIFIED_REPLAY_NOTE,
     _is_zero_evidence,
     _replayed_content,
+    persist_grounded_agent_response,
+    strip_replay_note,
 )
 
 
@@ -86,3 +88,46 @@ class TestUnevidencedAnswersAreMarked:
     def test_the_note_tells_the_model_to_re_look_up_rather_than_repeat(self) -> None:
         assert "Do not repeat any of them as fact" in _UNVERIFIED_REPLAY_NOTE
         assert "look the subject up again" in _UNVERIFIED_REPLAY_NOTE
+
+
+class TestTheReplayMarkerNeverReachesTheUser:
+    """The marker is prompt-internal. Observed failure: once several history
+    entries carried it, the model opened its own reply with the phrase verbatim,
+    so an instruction addressed to the model was rendered in the chat as though
+    it were part of the answer."""
+
+    def test_a_copied_marker_is_stripped_before_persistence(self) -> None:
+        message = _Message("assistant", "")
+
+        persist_grounded_agent_response(
+            message,
+            content=f"{_UNVERIFIED_REPLAY_NOTE}The estate has 95 jobs.",
+            structured_answer={"response_type": "agent_response_v2_grounded"},
+        )
+
+        assert message.content == "The estate has 95 jobs."
+        assert "UNVERIFIED EARLIER ANSWER" not in message.content
+
+    def test_a_clean_answer_is_persisted_verbatim(self) -> None:
+        message = _Message("assistant", "")
+
+        persist_grounded_agent_response(
+            message,
+            content="The estate has 95 jobs.",
+            structured_answer={"response_type": "agent_response_v2_grounded"},
+        )
+
+        assert message.content == "The estate has 95 jobs."
+
+    def test_a_marker_quoted_mid_answer_is_preserved(self) -> None:
+        """Only a leading marker is an echo. An answer that legitimately
+        discusses the note keeps its text."""
+        text = "I saw [UNVERIFIED EARLIER ANSWER x] earlier in this thread."
+
+        assert strip_replay_note(text) == text
+
+    def test_the_prompt_mechanism_still_marks_replayed_history(self) -> None:
+        """Stripping happens at persistence, so replay marking is unaffected."""
+        replayed = _replayed_content(_answer("Two systems exist.", zero_evidence=True))
+
+        assert replayed.startswith(_UNVERIFIED_REPLAY_NOTE)

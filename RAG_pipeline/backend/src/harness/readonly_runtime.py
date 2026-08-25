@@ -1028,6 +1028,7 @@ async def _run_readonly_attempts(
         topology_targets=collected_targets,
         evidence_summary=build_evidence_summary(
             evidence_observations,
+            document_source_count=len(document_sources),
             documentation_trace=(
                 trusted_answer_sink.documentation_provider_trace
                 if trusted_answer_sink is not None

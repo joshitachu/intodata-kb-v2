@@ -406,7 +406,7 @@ def persist_grounded_agent_response(
     ``agent_response_v2_grounded`` response type that old clients ignore.
     """
 
-    message.content = content
+    message.content = strip_replay_note(content)
     message.structured_answer = structured_answer
     return structured_answer
 
@@ -419,6 +419,37 @@ _UNVERIFIED_REPLAY_NOTE = (
     "repeat any of them as fact and do not build on them; look the subject up again "
     "before making the claim yourself.]\n"
 )
+
+
+#: Matched instead of the whole note: the note carries an em-dash, and the model
+#: reproduces the phrase without reliably reproducing the punctuation.
+_REPLAY_NOTE_OPENING = "[UNVERIFIED EARLIER ANSWER"
+
+
+def strip_replay_note(content: str) -> str:
+    """Drop the replay marker if the model copied it into its own answer.
+
+    The note is prompt-internal: it is prefixed onto REPLAYED history so an
+    unevidenced turn cannot be read back as fact. Observed failure: once several
+    history entries carried it, the model opened its own reply with the marker
+    verbatim, so an internal instruction addressed to the model reached the chat
+    UI as if it were part of the answer.
+
+    Stripped at the persistence boundary rather than in the prompt, because the
+    prompt mechanism is correct and still needed -- only the echo is wrong. This
+    removes a leading marker, never one quoted mid-answer, so a turn that
+    legitimately discusses the note keeps its text.
+    """
+
+    if not isinstance(content, str):
+        return content
+    text = content.lstrip()
+    if not text.startswith(_REPLAY_NOTE_OPENING):
+        return content
+    closing = text.find("]")
+    if closing == -1:
+        return content
+    return text[closing + 1 :].lstrip()
 
 
 def _is_zero_evidence(message: Any) -> bool:
