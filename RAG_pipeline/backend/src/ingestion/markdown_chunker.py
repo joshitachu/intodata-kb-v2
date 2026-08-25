@@ -17,6 +17,7 @@ from typing import NamedTuple
 import tiktoken
 from pydantic import BaseModel
 
+from src.config import settings
 from src.ingestion.semantic_chunker import (
     DEFAULT_MAX_TOKENS,
     ENCODING_NAME,
@@ -79,6 +80,10 @@ def chunk_markdown(
         ]
 
     sections = _parse_sections(text, doc_name)
+    if not sections:
+        return []
+
+    sections = _drop_excluded_sections(sections, doc_name)
     if not sections:
         return []
 
@@ -152,6 +157,66 @@ def _parse_sections(text: str, doc_name: str) -> list[_Section]:
 
     _flush()
     return sections
+
+
+def _drop_excluded_sections(
+    sections: list[_Section], doc_name: str
+) -> list[_Section]:
+    """Remove configured sections, and their descendants, before chunking.
+
+    Matches on heading TITLE at any level rather than on a fixed depth, because
+    the same section is authored as ``##`` in one document and ``###`` in
+    another. Descendants go with it: ``heading_path`` carries every ancestor, so
+    a subsection of an excluded section matches on its parent's title and is
+    dropped with it.
+
+    The document-name root of the path is deliberately not matched. It is not a
+    heading the author wrote, and matching it would let a document *named* after
+    an excluded section delete its own body.
+
+    Fails OPEN. If exclusion would empty a document, the sections are kept and a
+    warning is logged: a document ingested as zero chunks still reports success
+    and is simply unretrievable afterwards, which is a worse and much quieter
+    failure than an unwanted section staying in the index.
+    """
+
+    excluded = {
+        title.strip().casefold()
+        for title in settings.chunk_excluded_sections
+        if title and title.strip()
+    }
+    if not excluded:
+        return sections
+
+    kept = [
+        section
+        for section in sections
+        if not _matches_excluded(section, excluded)
+    ]
+    if kept:
+        if len(kept) != len(sections):
+            logger.debug(
+                "Dropped %d excluded section(s) from %s",
+                len(sections) - len(kept),
+                doc_name,
+            )
+        return kept
+
+    logger.warning(
+        "Section exclusion would drop every section of %s; keeping all %d "
+        "to avoid ingesting an unretrievable document",
+        doc_name,
+        len(sections),
+    )
+    return sections
+
+
+def _matches_excluded(section: _Section, excluded: set[str]) -> bool:
+    # [1:] skips the doc_name root; only authored headings are candidates.
+    return any(
+        part.strip().casefold() in excluded
+        for part in section.heading_path.split(" > ")[1:]
+    )
 
 
 def _emit_chunks(sections: list[_Section], max_tokens: int) -> list[MarkdownChunk]:

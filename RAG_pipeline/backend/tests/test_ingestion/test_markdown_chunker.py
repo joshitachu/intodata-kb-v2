@@ -142,3 +142,85 @@ class TestSiblingMerge:
         intro = [c for c in chunks if c.section == "doc"]
         assert intro, "Expected pre-heading content under doc_name section"
         assert "Intro text" in intro[0].text
+
+
+class TestExcludedSections:
+    """Configured sections are dropped before chunking.
+
+    "Evidence Register" is a per-document provenance table with identical
+    columns and heavily overlapping artifact paths in every document carrying
+    one -- 64 KB across 12 of 13 documents on the measured corpus. A query
+    naming an artifact path could spend most of its top-k on interchangeable
+    registers from different documents instead of the prose that answers it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def exclude_registers(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from src.ingestion import markdown_chunker
+
+        monkeypatch.setattr(
+            markdown_chunker.settings, "chunk_excluded_sections", ["Evidence Register"]
+        )
+
+    def _text(self, chunks: list[MarkdownChunk]) -> str:
+        return "\n".join(chunk.text for chunk in chunks)
+
+    def test_excluded_section_body_is_not_chunked(self) -> None:
+        md = (
+            "## Overview\n\nReal prose about the estate.\n\n"
+            "## Evidence Register\n\n| Topic | Artifact |\n|---|---|\n"
+            "| Jobs | facts_manifest.json |\n"
+        )
+        body = self._text(chunk_markdown(md, doc_name="Doc"))
+
+        assert "facts_manifest.json" not in body
+        assert "Real prose about the estate." in body
+
+    def test_descendants_of_an_excluded_section_are_dropped_too(self) -> None:
+        md = (
+            "## Evidence Register\n\nregister-body\n\n"
+            "### Confidence Notes\n\nnested-body\n\n"
+            "## Keep This\n\nkept-body\n"
+        )
+        body = self._text(chunk_markdown(md, doc_name="Doc"))
+
+        assert "register-body" not in body
+        assert "nested-body" not in body
+        assert "kept-body" in body
+
+    def test_matching_is_case_insensitive_and_level_agnostic(self) -> None:
+        md = "## Keep\n\nkept-body\n\n### evidence register\n\nregister-body\n"
+        body = self._text(chunk_markdown(md, doc_name="Doc"))
+
+        assert "register-body" not in body
+        assert "kept-body" in body
+
+    def test_the_document_name_root_is_never_matched(self) -> None:
+        """A document *named* after an excluded section keeps its body: the root
+        of the heading path is not an authored heading."""
+        md = "## Overview\n\nkept-body\n"
+        body = self._text(chunk_markdown(md, doc_name="Evidence Register"))
+
+        assert "kept-body" in body
+
+    def test_exclusion_that_would_empty_a_document_fails_open(self) -> None:
+        """Zero chunks would report a successful ingest for a document that is
+        then unretrievable -- quieter and worse than keeping the section."""
+        md = "## Evidence Register\n\n| Topic | Artifact |\n|---|---|\n| Jobs | x |\n"
+        chunks = chunk_markdown(md, doc_name="RegisterOnly")
+
+        assert chunks != []
+
+    def test_no_exclusions_configured_changes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from src.ingestion import markdown_chunker
+
+        md = "## Evidence Register\n\nregister-body\n\n## Keep\n\nkept-body\n"
+        monkeypatch.setattr(
+            markdown_chunker.settings, "chunk_excluded_sections", []
+        )
+        body = self._text(chunk_markdown(md, doc_name="Doc"))
+
+        assert "register-body" in body
+        assert "kept-body" in body

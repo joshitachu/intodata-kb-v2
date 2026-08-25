@@ -218,6 +218,20 @@ class Settings(BaseSettings):
     # ensures legacy chunks (no source_layer payload key) are always included too.
     default_source_layers: list[str] = ["canonical_docs"]
 
+    # Markdown sections dropped at chunk time, matched on heading title (any
+    # level, case-insensitive) together with their descendants.
+    #
+    # "Evidence Register" is a per-document provenance table: same columns, same
+    # confidence tokens, heavily overlapping artifact paths in every document
+    # that carries one. On the Scherpenhuizen corpus that is 64 KB across 12 of
+    # 13 documents -- ~7% of the curated bytes -- and it is near-duplicate by
+    # construction, so a query naming an artifact path can spend most of its
+    # top-k on five interchangeable registers from five different documents
+    # instead of on the prose that answers the question. The registers remain in
+    # the published documents, where a human reading one wants them; they simply
+    # stop competing for retrieval slots.
+    chunk_excluded_sections: list[str] = ["Evidence Register"]
+
     # Retrieval ladder rung 2 (internal layers). Wider recall than rung 1:
     # the deep rung exists to find what rung 1 missed, so it can afford a
     # larger candidate pool, forced query expansion, and section expansion.
