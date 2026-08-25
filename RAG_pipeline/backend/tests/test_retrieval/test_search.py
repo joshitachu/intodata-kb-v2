@@ -817,6 +817,54 @@ class TestEnsureCollectionIndexes:
             "section",
         } <= indexed
 
+    async def test_filterable_fields_are_all_indexed_with_their_written_type(self) -> None:
+        """chunk_index and project_id were filtered on but never indexed.
+
+        Strict mode is enabled on the collection with
+        ``unindexed_filtering_retrieve`` disabled, so a filter on an unindexed
+        field is a hard 400 rather than a slow scan. ``expand_neighbor_chunks``
+        filtered on ``chunk_index`` and was failing on every query as a result.
+        The types are not interchangeable: ``chunk_index`` is written as an int
+        and Qdrant demands an INTEGER index for it.
+        """
+        from qdrant_client.models import PayloadSchemaType
+
+        from src.retrieval.vector_store import PAYLOAD_INDEXES
+
+        assert PAYLOAD_INDEXES["chunk_index"] is PayloadSchemaType.INTEGER
+        assert PAYLOAD_INDEXES["project_id"] is PayloadSchemaType.KEYWORD
+
+    def test_every_filtered_payload_key_has_an_index_declared(self) -> None:
+        """Guards the map against drift from the filters that actually run.
+
+        The index list used to be ten hand-copied calls, and two fields the
+        query path filters on were simply never added -- silently, because the
+        neighbour-expansion handler degrades instead of raising. Any module that
+        imports COLLECTION_NAME queries the documents collection, so every
+        FieldCondition key in such a module must appear in PAYLOAD_INDEXES.
+        """
+        import re
+        from pathlib import Path
+
+        from src.retrieval.vector_store import PAYLOAD_INDEXES
+
+        src_root = Path(__file__).resolve().parents[2] / "src"
+        key_pattern = re.compile(r'FieldCondition\(\s*key="([^"]+)"')
+
+        missing: dict[str, set[str]] = {}
+        scanned = 0
+        for path in src_root.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            if "COLLECTION_NAME" not in text:
+                continue
+            scanned += 1
+            unindexed = {k for k in key_pattern.findall(text) if k not in PAYLOAD_INDEXES}
+            if unindexed:
+                missing[str(path.relative_to(src_root))] = unindexed
+
+        assert scanned >= 3, f"expected to scan the documents-collection queriers, scanned {scanned}"
+        assert not missing, f"payload fields filtered but not indexed: {missing}"
+
 
 async def test_retrieval_reports_embedding_and_search_time_to_the_turn(mock_qdrant):
     """The retriever already measured embedding time; now it is not discarded.

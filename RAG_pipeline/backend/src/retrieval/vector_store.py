@@ -24,6 +24,25 @@ logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = settings.qdrant_collection
 
+# Payload fields that are filtered on at query time, and the index type each
+# needs. The collection runs with strict mode (``unindexed_filtering_retrieve``
+# disabled), so Qdrant rejects any retrieve/scroll filtering on a field absent
+# from this map with HTTP 400 rather than falling back to a scan. Every key used
+# in a ``FieldCondition`` anywhere in ``src/`` must therefore appear here, with a
+# schema type matching how the value is written in ``_build_payload``.
+PAYLOAD_INDEXES: dict[str, PayloadSchemaType] = {
+    "allowed_groups": PayloadSchemaType.KEYWORD,
+    "document_id": PayloadSchemaType.INTEGER,
+    "source_layer": PayloadSchemaType.KEYWORD,
+    "document_role": PayloadSchemaType.KEYWORD,
+    "knowledge_revision_id": PayloadSchemaType.KEYWORD,
+    "artifact_id": PayloadSchemaType.KEYWORD,
+    "unit": PayloadSchemaType.KEYWORD,
+    "section": PayloadSchemaType.KEYWORD,
+    "project_id": PayloadSchemaType.KEYWORD,
+    "chunk_index": PayloadSchemaType.INTEGER,
+}
+
 
 async def ensure_collection(client: AsyncQdrantClient) -> None:
     """Create the documents collection with named vectors if it doesn't exist.
@@ -61,72 +80,13 @@ async def ensure_collection(client: AsyncQdrantClient) -> None:
         )
         logger.info(f"Created Qdrant collection: {COLLECTION_NAME} (dim={dim})")
 
-    # Ensure payload indexes exist (idempotent — safe to call on every startup)
-    await client.create_payload_index(
-        collection_name=COLLECTION_NAME,
-        field_name="allowed_groups",
-        field_schema=PayloadSchemaType.KEYWORD,
-    )
-    await client.create_payload_index(
-        collection_name=COLLECTION_NAME,
-        field_name="document_id",
-        field_schema=PayloadSchemaType.INTEGER,
-    )
-    await client.create_payload_index(
-        collection_name=COLLECTION_NAME,
-        field_name="source_layer",
-        field_schema=PayloadSchemaType.KEYWORD,
-    )
-    await client.create_payload_index(
-        collection_name=COLLECTION_NAME,
-        field_name="document_role",
-        field_schema=PayloadSchemaType.KEYWORD,
-    )
-    await client.create_payload_index(
-        collection_name=COLLECTION_NAME,
-        field_name="knowledge_revision_id",
-        field_schema=PayloadSchemaType.KEYWORD,
-    )
-    await client.create_payload_index(
-        collection_name=COLLECTION_NAME,
-        field_name="artifact_id",
-        field_schema=PayloadSchemaType.KEYWORD,
-    )
-    await client.create_payload_index(
-        collection_name=COLLECTION_NAME,
-        field_name="unit",
-        field_schema=PayloadSchemaType.KEYWORD,
-    )
-    await client.create_payload_index(
-        collection_name=COLLECTION_NAME,
-        field_name="section",
-        field_schema=PayloadSchemaType.KEYWORD,
-    )
-    # project_id and chunk_index are FILTERED on but were never indexed here, and
-    # the production collection runs with strict_mode
-    # ``unindexed_filtering_retrieve`` disabled -- so Qdrant REFUSES a retrieve
-    # filtered on them rather than scanning.
-    #
-    # The casualty was neighbour chunk expansion: it scrolls with a chunk_index
-    # filter (``search._build_neighbor_filter``), received HTTP 400 "Index
-    # required but not found for chunk_index", and the caller swallows that
-    # exception -- so ``neighbor_chunk_expansion_enabled = True`` was a no-op in
-    # production and every answer shipped without its surrounding context. It
-    # stayed invisible because strict mode is production-only: with it off,
-    # development scans instead of refusing and the feature appears to work.
-    #
-    # chunk_index MUST be INTEGER (the filter is MatchAny over ints). A keyword
-    # index does not satisfy the requirement and the 400 would persist.
-    await client.create_payload_index(
-        collection_name=COLLECTION_NAME,
-        field_name="project_id",
-        field_schema=PayloadSchemaType.KEYWORD,
-    )
-    await client.create_payload_index(
-        collection_name=COLLECTION_NAME,
-        field_name="chunk_index",
-        field_schema=PayloadSchemaType.INTEGER,
-    )
+    # Ensure payload indexes exist (idempotent -- safe to call on every startup)
+    for field_name, field_schema in PAYLOAD_INDEXES.items():
+        await client.create_payload_index(
+            collection_name=COLLECTION_NAME,
+            field_name=field_name,
+            field_schema=field_schema,
+        )
 
 
 async def delete_collection(client: AsyncQdrantClient) -> None:
