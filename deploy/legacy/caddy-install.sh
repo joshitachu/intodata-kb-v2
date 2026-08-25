@@ -34,7 +34,7 @@ fi
 
 # ── 2. Copy Caddyfile ───────────────────────────────────────────────────────
 
-cp "$INSTALL_DIR/Caddyfile" /etc/caddy/Caddyfile
+cp "$INSTALL_DIR/deploy/legacy/Caddyfile" /etc/caddy/Caddyfile
 
 # Set the domain as environment variable for Caddy
 mkdir -p /etc/caddy

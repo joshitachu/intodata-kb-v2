@@ -70,7 +70,7 @@ Session-start reads these files to recover the pipeline position after a crash.
 ```
 intodata-kb/
 ├── CLAUDE.md                          -- This file
-├── docker-compose.yml                 -- Full stack (6 services)
+├── docker-compose.yml                 -- Full stack (8 services; 7 in the health boundary)
 ├── .env.production.template           -- Production env vars
 ├── knowledge_base/                    -- intodoc code intelligence platform
 │   ├── CLAUDE.md                      -- Sub-project docs (read for KB tasks)
@@ -86,8 +86,12 @@ intodata-kb/
 │   └── frontend/                      -- Next.js UI (port 3000)
 ├── deploy/                            -- Deployment scripts + systemd services
 ├── scripts/                           -- Utility scripts
-└── vaxxinova-talend/                  -- Sample Talend codebase for testing
+└── mission_control/                   -- Heartbeat aggregator (operator-side; 8th Compose service)
 ```
+
+Client source trees and sample codebases are deliberately NOT in the repo. They
+are gitignored (see the "Confidential client materials" block in `.gitignore`)
+and any local copies live outside it in `../intodata-kb-archive/client-source/`.
 
 ## Architecture
 
@@ -98,6 +102,9 @@ Two independent sub-systems sharing infrastructure:
 
 ## Services (docker-compose.yml)
 
+Eight services are defined. Seven are the EP-001 Compose health boundary;
+`mission-control` is the exception (see below).
+
 | Service | Image/Build | Port | Purpose |
 |---------|------------|------|---------|
 | postgres | postgres:16-alpine | 5432 | Document storage + RBAC |
@@ -105,7 +112,15 @@ Two independent sub-systems sharing infrastructure:
 | hindsight | ghcr.io/vectorize-io/hindsight | 8888, 9999 | Long-context memory |
 | backend | RAG_pipeline/backend | 8000 | RAG API server |
 | frontend | RAG_pipeline/frontend | 3000 | RAG UI (Next.js) |
+| mcp-server | knowledge_base/mcp-server | `${MCP_PORT:-8002}` | MCP + REST API (nginx webhooks, operator tunnels) |
 | dashboard | knowledge_base/dashboard | 8001 | intodoc control panel |
+| mission-control | mission_control/ | `${MC_PORT:-9100}` (127.0.0.1) | Aggregates heartbeat snapshots from customer instances. NOT part of the health boundary -- it is an operator-side aggregator, not a per-client service. |
+
+`RAG_pipeline/docker-compose.yml` is a **dev-only** file that redefines four of
+these (`postgres`, `qdrant`, `hindsight`, `backend`) so the RAG stack can run
+without the full eight. It is not the production topology; this file is. Its
+port and Hindsight-model values are hardcoded where the root file parameterises
+them, so treat root as authoritative on any disagreement.
 
 ## Deployment Foundation Status (EP-001)
 
