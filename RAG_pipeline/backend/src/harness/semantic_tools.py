@@ -1802,17 +1802,48 @@ def project_capability_observation(
 
 
 def serialize_tool_envelope(envelope: ToolEnvelope) -> str:
+    """Encode one tool result for the model, shrinking it to the byte cap.
+
+    ``evidence_refs`` is the LAST thing sacrificed, and never merely to make room
+    for prose. This envelope is not only the model's view of the call: provenance
+    is rebuilt from it verbatim by ``readonly_runtime._collect_envelope_observations``,
+    so whatever is dropped here is also dropped from the turn's evidence record.
+
+    Dropping the refs first is what produced the observed failure: an
+    ``answer_from_documentation`` envelope carries an ``answer_draft`` of up to
+    8,000 characters plus its items, so a rich answer clears 16 KB routinely, the
+    refs were zeroed, and the turn persisted ``zero_evidence`` -- while the answer
+    it shipped cited [1][2][3] from those very sources. Downstream, that flag
+    drives the "No current-turn evidence" badge and prefixes the unverified-replay
+    note onto a sound answer, so the model is then told its own grounded work is
+    untrustworthy. Five of six documentation turns in one measured thread were
+    recorded that way; the topology turn in the same thread kept its two refs only
+    because its payload happened to be small.
+
+    ``data`` is the large field and the recoverable one -- the model can call
+    again -- so it is dropped first and the bounded refs are kept.
+    """
+
     payload = envelope.model_dump(mode="json", exclude_none=True)
     encoded = _canonical_json(payload)
     if len(encoded.encode("utf-8")) <= MAX_TOOL_MESSAGE_BYTES:
         return encoded
     payload["data"] = {"truncated": True, "reason": "model_context_limit"}
-    payload["evidence_refs"] = []
     payload.pop("workflow_ref", None)
     payload.pop("receipt_ref", None)
     encoded = _canonical_json(payload)
     if len(encoded.encode("utf-8")) <= MAX_TOOL_MESSAGE_BYTES:
         return encoded
+    # Still over cap with no data left: the refs themselves are oversized. Shed
+    # them from the tail so the surviving ones stay counted rather than losing
+    # the whole set.
+    references = list(payload.get("evidence_refs") or [])
+    while references:
+        references.pop()
+        payload["evidence_refs"] = references
+        encoded = _canonical_json(payload)
+        if len(encoded.encode("utf-8")) <= MAX_TOOL_MESSAGE_BYTES:
+            return encoded
     minimal = ToolEnvelope(
         status=envelope.status,
         summary=_safe_string(envelope.summary, limit=160),

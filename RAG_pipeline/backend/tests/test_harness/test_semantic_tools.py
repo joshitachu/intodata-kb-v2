@@ -41,6 +41,7 @@ from src.harness.semantic_shadow_runtime import build_semantic_shadow_runtime
 from src.harness.semantic_tools import (
     MAX_TOOL_MESSAGE_BYTES,
     SemanticSnapshotError,
+    ToolEnvelope,
     SemanticEventLedger,
     SemanticToolMiddleware,
     SemanticToolGateway,
@@ -1455,3 +1456,71 @@ async def test_shadow_safe_read_still_executes_in_shadow_mode() -> None:
     assert executor.calls == ["nexus.conversations.read_summary_facts"]
     started = [e for e in gateway.ledger.events if e.kind == "gateway.executor_started"]
     assert started[-1].policy_class == "shadow_safe_read"
+
+
+def _oversized_envelope(refs: int = 10) -> ToolEnvelope:
+    return ToolEnvelope(
+        status="succeeded",
+        summary=f"Retrieved {refs} evidence item(s).",
+        data={
+            "answer_draft": "x" * 8_000,
+            "items": [{"id": f"doc:{i}", "summary": "y" * 2_000} for i in range(refs)],
+        },
+        evidence_refs=[
+            {
+                "evidence_id": f"doc:{i}:0-1",
+                "source_type": "rag_document",
+                "title": f"0{i}_DOC.md",
+            }
+            for i in range(refs)
+        ],
+    )
+
+
+class TestTruncationKeepsTheEvidenceRecord:
+    """Provenance is rebuilt from this envelope verbatim by
+    ``readonly_runtime._collect_envelope_observations``, so anything dropped here
+    is also dropped from the turn's evidence summary. Observed failure: an
+    ``answer_from_documentation`` envelope carrying an 8,000-character
+    answer_draft cleared the 16 KB cap, the refs were zeroed, and the turn
+    persisted zero_evidence while the answer it shipped cited [1][2][3] from
+    those same sources."""
+
+    def test_refs_survive_when_data_is_too_large(self) -> None:
+        encoded = serialize_tool_envelope(_oversized_envelope())
+        payload = json.loads(encoded)
+
+        assert len(encoded.encode("utf-8")) <= MAX_TOOL_MESSAGE_BYTES
+        assert payload["data"]["truncated"] is True
+        # The whole point: data is recoverable by calling again, provenance is not.
+        assert len(payload["evidence_refs"]) == 10
+
+    def test_a_within_cap_envelope_is_untouched(self) -> None:
+        envelope = ToolEnvelope(
+            status="succeeded",
+            summary="Retrieved 2 evidence item(s).",
+            data={"items": [{"id": "doc:1"}, {"id": "doc:2"}]},
+            evidence_refs=[{"evidence_id": "doc:1"}, {"evidence_id": "doc:2"}],
+        )
+        payload = json.loads(serialize_tool_envelope(envelope))
+
+        assert payload["data"] == {"items": [{"id": "doc:1"}, {"id": "doc:2"}]}
+        assert len(payload["evidence_refs"]) == 2
+
+    def test_oversized_refs_are_shed_from_the_tail_not_wholesale(self) -> None:
+        """When the refs themselves blow the cap, keep as many as fit rather than
+        losing the entire set."""
+        envelope = ToolEnvelope(
+            status="succeeded",
+            summary="Retrieved 10 evidence item(s).",
+            data={},
+            evidence_refs=[
+                {"evidence_id": "d" * 3_000, "source_type": "rag_document"}
+                for _ in range(10)
+            ],
+        )
+        payload = json.loads(serialize_tool_envelope(envelope))
+
+        kept = payload["evidence_refs"]
+        assert 1 <= len(kept) < 10
+        assert len(serialize_tool_envelope(envelope).encode("utf-8")) <= MAX_TOOL_MESSAGE_BYTES
