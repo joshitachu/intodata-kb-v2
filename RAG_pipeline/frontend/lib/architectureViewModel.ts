@@ -97,7 +97,6 @@ const CORE_SYSTEM_IDS = new Set([
 
 const INTEGRATION_SYSTEM_IDS = new Set([
   "sys-enterpriseservicebus",
-  "sys-activemq",
 ]);
 
 const SUPPORTING_SYSTEM_IDS = new Set([
@@ -113,8 +112,6 @@ const SUPPORTING_SYSTEM_IDS = new Set([
 const SUPPORTING_GROUP_ID = "group:supporting-and-unresolved";
 const SPECIALISED_TALEND_ID = "integration:specialised-talend";
 const MAX_VISIBLE_RELATIONSHIPS = 18;
-const ANCHOR_NODE_ID = "system:sys-maximo";
-
 const WERKORDER_COLUMNS: Record<string, ArchitectureColumn> = {
   "sys-afas": "upstream",
   "sys-ortec": "upstream",
@@ -195,8 +192,99 @@ export function architecturePairId(first: string, second: string): string {
   return `pair:${endpoints[0]}<->${endpoints[1]}`;
 }
 
-function columnForSystem(systemId: string, layer: ArchitectureLayer): ArchitectureColumn {
-  return WERKORDER_COLUMNS[systemId] ?? (layer === "supporting" ? "supporting" : layer === "integration" ? "integration" : "secondary");
+function topologyTitle(topology: BusinessTopology): string {
+  const project = topology.metadata.project_id
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toLocaleUpperCase());
+  return `${project || "Company"} architecture`;
+}
+
+function systemDegrees(topology: BusinessTopology): Map<string, { incoming: number; outgoing: number }> {
+  const degrees = new Map(topology.systems.map((system) => [system.id, { incoming: 0, outgoing: 0 }]));
+  for (const stream of topology.data_streams) {
+    const source = degrees.get(stream.source_system_id);
+    const destination = degrees.get(stream.destination_system_id);
+    if (source) source.outgoing += 1;
+    if (destination) destination.incoming += 1;
+  }
+  return degrees;
+}
+
+function selectAnchorSystemId(topology: BusinessTopology): string | null {
+  const degrees = systemDegrees(topology);
+  const maximo = degrees.get("sys-maximo");
+  if (maximo && maximo.incoming + maximo.outgoing > 0) return "sys-maximo";
+
+  return [...topology.systems]
+    .filter((system) => !INTEGRATION_SYSTEM_IDS.has(system.id) && !SUPPORTING_SYSTEM_IDS.has(system.id))
+    .sort((left, right) => {
+      const leftDegree = degrees.get(left.id) ?? { incoming: 0, outgoing: 0 };
+      const rightDegree = degrees.get(right.id) ?? { incoming: 0, outgoing: 0 };
+      const leftScore = (leftDegree.incoming + leftDegree.outgoing) * 10 + Math.min(leftDegree.incoming, leftDegree.outgoing);
+      const rightScore = (rightDegree.incoming + rightDegree.outgoing) * 10 + Math.min(rightDegree.incoming, rightDegree.outgoing);
+      return rightScore - leftScore || left.name.localeCompare(right.name);
+    })[0]?.id ?? null;
+}
+
+function reachableDistances(topology: BusinessTopology, anchorId: string, reverse: boolean): Map<string, number> {
+  const adjacency = new Map<string, Set<string>>();
+  for (const stream of topology.data_streams) {
+    const source = reverse ? stream.destination_system_id : stream.source_system_id;
+    const destination = reverse ? stream.source_system_id : stream.destination_system_id;
+    adjacency.set(source, new Set([...(adjacency.get(source) ?? []), destination]));
+  }
+  const distances = new Map([[anchorId, 0]]);
+  const queue = [anchorId];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const next of adjacency.get(current) ?? []) {
+      if (distances.has(next)) continue;
+      distances.set(next, distances.get(current)! + 1);
+      queue.push(next);
+    }
+  }
+  return distances;
+}
+
+function topologyColumns(topology: BusinessTopology, anchorId: string | null): Map<string, ArchitectureColumn> {
+  if (!anchorId) return new Map();
+  if (anchorId === "sys-maximo") return new Map(Object.entries(WERKORDER_COLUMNS));
+
+  const degrees = systemDegrees(topology);
+  const fromAnchor = reachableDistances(topology, anchorId, false);
+  const toAnchor = reachableDistances(topology, anchorId, true);
+  const directToAnchor = new Map<string, number>();
+  const directFromAnchor = new Map<string, number>();
+  for (const stream of topology.data_streams) {
+    if (stream.destination_system_id === anchorId) directToAnchor.set(stream.source_system_id, (directToAnchor.get(stream.source_system_id) ?? 0) + 1);
+    if (stream.source_system_id === anchorId) directFromAnchor.set(stream.destination_system_id, (directFromAnchor.get(stream.destination_system_id) ?? 0) + 1);
+  }
+
+  const columns = new Map<string, ArchitectureColumn>([[anchorId, "anchor"]]);
+  for (const system of topology.systems) {
+    if (system.id === anchorId) continue;
+    if (SUPPORTING_SYSTEM_IDS.has(system.id)) {
+      columns.set(system.id, "supporting");
+      continue;
+    }
+    const toward = toAnchor.get(system.id);
+    const away = fromAnchor.get(system.id);
+    const intoAnchor = directToAnchor.get(system.id) ?? 0;
+    const outOfAnchor = directFromAnchor.get(system.id) ?? 0;
+    const degree = degrees.get(system.id) ?? { incoming: 0, outgoing: 0 };
+    if (intoAnchor > outOfAnchor || (toward !== undefined && away === undefined)) {
+      columns.set(system.id, "upstream");
+    } else if (away === 1 || outOfAnchor > 0) {
+      columns.set(system.id, "downstream");
+    } else if (away !== undefined || degree.incoming > 0) {
+      columns.set(system.id, "secondary");
+    } else if (degree.outgoing > 0) {
+      columns.set(system.id, "upstream");
+    } else {
+      columns.set(system.id, "supporting");
+    }
+  }
+  return columns;
 }
 
 function isSpecialisedTalend(solution: BusinessIntegrationSolution): boolean {
@@ -253,20 +341,25 @@ function unique<T>(items: T[]): T[] {
 export function normalizeArchitectureL1(topology: BusinessTopology): ArchitectureL1ViewModel {
   const systemById = new Map(topology.systems.map((system) => [system.id, system]));
   const objectById = new Map(topology.business_objects.map((object) => [object.id, object]));
+  const anchorSystemId = selectAnchorSystemId(topology);
+  const columns = topologyColumns(topology, anchorSystemId);
 
   const nodes = new Map<string, ArchitectureNode>();
   for (const system of topology.systems) {
     if (INTEGRATION_SYSTEM_IDS.has(system.id)) continue;
     const id = systemNodeId(system.id);
     if (id === SUPPORTING_GROUP_ID) continue;
-    const layer: ArchitectureLayer = CORE_SYSTEM_IDS.has(system.id) ? "core" : "external";
+    const column = columns.get(system.id) ?? "supporting";
+    const layer: ArchitectureLayer = system.id === anchorSystemId || CORE_SYSTEM_IDS.has(system.id)
+      ? "core"
+      : column === "supporting" ? "supporting" : "external";
     nodes.set(id, {
       id,
-      label: system.name,
+      label: system.id === "sys-activemq" ? "ActiveMQ" : system.name,
       description: titleFromSystem(system),
       layer,
-      column: columnForSystem(system.id, layer),
-      kind: "system",
+      column,
+      kind: system.id === "sys-activemq" ? "broker" : "system",
       systemIds: [system.id],
       integrationSolutionIds: [],
       degree: 0,
@@ -299,15 +392,6 @@ export function normalizeArchitectureL1(topology: BusinessTopology): Architectur
       nodes.set(node.id, node);
     }
   }
-  const activeMq = systemById.get("sys-activemq");
-  if (activeMq) {
-    nodes.set("integration:activemq", {
-      id: "integration:activemq", label: "ActiveMQ", description: titleFromSystem(activeMq), layer: "integration", column: "integration", kind: "broker",
-      systemIds: [activeMq.id], integrationSolutionIds: [], degree: 0,
-      status: relationshipStatus([activeMq.status]),
-    });
-  }
-
   const grouped = new Map<string, BusinessDataStream[]>();
   const hiddenInternalStreamIds: string[] = [];
   for (const stream of topology.data_streams) {
@@ -363,14 +447,14 @@ export function normalizeArchitectureL1(topology: BusinessTopology): Architectur
   const hasVisibleRelationships = visibleNodeIds.size > 0;
   const visibleNodes = [...nodes.values()]
     .filter((node) => hasVisibleRelationships
-      ? visibleNodeIds.has(node.id) || node.layer === "integration"
+      ? visibleNodeIds.has(node.id) || node.layer === "integration" || node.kind === "broker"
       : node.layer !== "integration")
     .sort((a, b) => a.layer.localeCompare(b.layer) || b.degree - a.degree || a.label.localeCompare(b.label));
 
   return {
     level: "L1",
-    title: "Company architecture overview",
-    anchorId: ANCHOR_NODE_ID,
+    title: topologyTitle(topology),
+    anchorId: anchorSystemId ? systemNodeId(anchorSystemId) : "",
     source: "business_topology",
     nodes: visibleNodes,
     relationships: visibleRelationships,

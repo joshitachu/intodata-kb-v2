@@ -56,9 +56,6 @@ from src.harness.cohort import CohortDecision, CohortSelector, live_streaming_se
 from src.harness.grounding import GroundedAnswer
 from src.harness.response_synthesis import render_typed_response
 from src.harness.models import (
-    DOCUMENT_LIST_CAPABILITY,
-    DOCUMENT_READ_CAPABILITY,
-    GENERATED_DOCUMENT_READ_CAPABILITY,
     HarnessRiskTier,
 )
 from src.harness.manifest import ManifestScope
@@ -100,11 +97,13 @@ from src.harness.packs.draft_service import PackDraftService
 from src.harness.providers.mcp_docs import McpDocumentationProvider
 from src.harness.providers.mcp_projects import McpProjectsProvider
 from src.harness.registry import CapabilityRegistry, base_capability_registry
-from src.harness.topology_capability import TOPOLOGY_STRUCTURE_CAPABILITY, topology_capabilities
+from src.harness.topology_capability import topology_capabilities
 from src.harness.topology_guidance import (
     is_topology_surface,
-    topology_capability_enabled,
     topology_turn_guidance,
+)
+from src.harness.surface_policy import (
+    surface_denied_capability_ids,
 )
 from src.harness.turn_provenance import safe_project_turn_provenance
 from src.harness.repository import HarnessWorkflowRepository
@@ -117,22 +116,23 @@ from src.turn_timings import TurnTimings, turn_timings_scope
 
 
 _DOCUMENTATION_WORKFLOW_KEY = "documentation.generate"
-CHAT_NON_RAG_DOCUMENT_CAPABILITY_IDS = frozenset(
-    {
-        DOCUMENT_LIST_CAPABILITY.id,
-        DOCUMENT_READ_CAPABILITY.id,
-        GENERATED_DOCUMENT_READ_CAPABILITY.id,
-    }
-)
 
 
 def _chat_denied_capability_ids(
-    query: str, page_scope: dict[str, Any] | None = None
+    registry: CapabilityRegistry, page_scope: dict[str, Any] | None = None
 ) -> set[str]:
-    denied = set(CHAT_NON_RAG_DOCUMENT_CAPABILITY_IDS)
-    if not topology_capability_enabled(query, page_scope):
-        denied.add(TOPOLOGY_STRUCTURE_CAPABILITY.id)
-    return denied
+    """Capabilities withheld from this turn, by surface.
+
+    Takes the registry rather than a static list so the narrowing applies to
+    pack-contributed capabilities too, and takes no query: exposure is a
+    property of the surface, not of how the question happens to be worded.
+    """
+
+    return surface_denied_capability_ids(
+        (capability.id for capability in registry.list()), page_scope
+    )
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -1274,7 +1274,7 @@ async def _run_readonly_primary_turn(
         permissions=permissions,
         access_token=access_token,
         current_message_id=message_id,
-        denied_capability_ids=_chat_denied_capability_ids(query, page_scope),
+        denied_capability_ids=_chat_denied_capability_ids(runtime.registry, page_scope),
     )
     readonly_runtime = build_readonly_primary_runtime(
         model=build_readonly_primary_chat_model(settings),
@@ -1341,7 +1341,7 @@ async def _run_planning_primary_turn(
         return PrimaryTurnOutcome(result=AgentLoopResult.model_validate(claim.final_result), grounded=None, cohort=cohort)
     await db.commit()
     plan_context = await AgentPlanService(db, runtime.registry).current(conversation_id=conversation.id, owner_user_id=user_id)
-    context = CapabilityExecutionContext(user_id=user_id, conversation_id=conversation.id, project_scope=project_scope, permissions=permissions, access_token=access_token, current_message_id=message_id, conversation_state_version=state.version, conversation_turn_claim_id=claim.id, conversation_turn_claim_token=claim.lease_token, denied_capability_ids=_chat_denied_capability_ids(query, page_scope))
+    context = CapabilityExecutionContext(user_id=user_id, conversation_id=conversation.id, project_scope=project_scope, permissions=permissions, access_token=access_token, current_message_id=message_id, conversation_state_version=state.version, conversation_turn_claim_id=claim.id, conversation_turn_claim_token=claim.lease_token, denied_capability_ids=_chat_denied_capability_ids(runtime.registry, page_scope))
     plan_runtime = build_planning_primary_runtime(model=build_readonly_primary_chat_model(settings), registry=runtime.registry, executor=runtime.executor, context=context, plan_context=(plan_context.model_projection() if plan_context else None), turn_context=_turn_prompt_context(project_scope, page_scope), budget_controller=budget_controller)
     try:
         turn = await run_readonly_primary_turn(graph=plan_runtime.graph, ledger=plan_runtime.ledger, snapshot=plan_runtime.snapshot, user_message=query, conversation_seed=turn_input.conversation_history, state_version=turn_input.state_version or "", prior_response_fingerprints=set(turn_input.prior_response_fingerprints), max_corrections=settings.agent_runtime_v2_max_grounding_corrections, suppress_structural_citations=is_topology_surface(page_scope), event_callback=event_callback, heartbeat_callback=heartbeat_callback, emit_answer_deltas=False, budget_controller=budget_controller, trusted_answer_sink=runtime.trusted_answer_sink)
@@ -1473,7 +1473,7 @@ async def _run_effect_primary_turn(
         allowed_capability_ids=stage_policy.allowed_effect_capability_ids(
             runtime.registry
         ),
-        denied_capability_ids=_chat_denied_capability_ids(query, page_scope),
+        denied_capability_ids=_chat_denied_capability_ids(runtime.registry, page_scope),
     )
     effect_runtime = build_effect_primary_runtime(
         model=build_readonly_primary_chat_model(settings),
@@ -1723,7 +1723,7 @@ async def _run_legacy_primary_or_replay(
             project_scope=project_scope,
             permissions=permissions,
             access_token=access_token,
-            denied_capability_ids=_chat_denied_capability_ids(query, page_scope),
+            denied_capability_ids=_chat_denied_capability_ids(runtime.registry, page_scope),
             registry=runtime.registry,
             executor=runtime.executor,
             model=runtime.model,

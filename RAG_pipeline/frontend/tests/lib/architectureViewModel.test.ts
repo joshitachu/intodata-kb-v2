@@ -6,6 +6,49 @@ import { BusinessTopologySchema } from "@/types/landscape";
 const topology = BusinessTopologySchema.parse(rawTopology);
 
 describe("normalizeArchitectureL1", () => {
+  it("derives a non-Werkorder anchor and directional columns from business streams", () => {
+    const claim = {
+      aliases: [], kind: "software_system" as const, description: "", purpose: "", owner: "",
+      status: "confirmed" as const, confidence: 0.9, evidence_ids: [],
+    };
+    const stream = (id: string, source: string, destination: string) => ({
+      id, source_system_id: source, destination_system_id: destination, name: id, description: "",
+      business_object_ids: [], business_summary: id, integration_solution_ids: [], protocols: [],
+      requiredness: "not_established" as const, delivery_path_id: null, status: "confirmed" as const,
+      confidence: 0.9, control_ids: [], risk_ids: [], unknown_ids: [], runtime_observation_ids: [],
+      conflict_ids: [], artifact_ids: [], evidence_ids: [],
+    });
+    const scherpenhuizen = BusinessTopologySchema.parse({
+      ...rawTopology,
+      metadata: { ...rawTopology.metadata, project_id: "scherpenhuizen-talend" },
+      systems: [
+        { ...claim, id: "sys-oxin", name: "Oxin" },
+        { ...claim, id: "sys-jde", name: "JD Edwards" },
+        { ...claim, id: "sys-centric-edi", name: "Centric" },
+        { ...claim, id: "sys-tmc", name: "Talend Cloud" },
+      ],
+      integration_solutions: [], business_objects: [],
+      data_streams: [
+        stream("oxin-to-jde-1", "sys-oxin", "sys-jde"),
+        stream("oxin-to-jde-2", "sys-oxin", "sys-jde"),
+        stream("jde-to-centric", "sys-jde", "sys-centric-edi"),
+        stream("centric-to-tmc", "sys-centric-edi", "sys-tmc"),
+      ],
+      delivery_paths: [], transformations: [], controls: [], runtime_observations: [], conflicts: [], risks: [], unknowns: [],
+      artifact_annotations: [], component_annotations: [], lineage_annotations: [],
+    });
+
+    const model = normalizeArchitectureL1(scherpenhuizen);
+
+    expect(model.title).toBe("Scherpenhuizen Talend architecture");
+    expect(model.anchorId).toBe("system:sys-jde");
+    expect(model.nodes.find((node) => node.label === "JD Edwards")?.column).toBe("anchor");
+    expect(model.nodes.find((node) => node.label === "Oxin")?.column).toBe("upstream");
+    expect(model.nodes.find((node) => node.label === "Centric")?.column).toBe("downstream");
+    expect(model.nodes.find((node) => node.label === "Talend Cloud")?.column).toBe("secondary");
+    expect(model.relationships).toHaveLength(3);
+  });
+
   it("keeps an evidence-bounded topology with no streams renderable", () => {
     const noStreamTopology = BusinessTopologySchema.parse({
       ...topology,

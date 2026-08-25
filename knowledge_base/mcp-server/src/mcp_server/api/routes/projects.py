@@ -4236,20 +4236,28 @@ def _load_published_business_topology(
         bundle = load_business_topology_evidence(topology_dir)
         if bundle.scan_fingerprint != current_fingerprint:
             return None, invalid_state, {}
-        supplied_coverage = dict(topology.get("coverage") or {})
-        fresh_report = validate_business_topology(
-            topology_model,
-            bundle=bundle,
-            project_id=project_id,
-        )
-        if not fresh_report.validated:
-            return None, invalid_state, {}
-        recalculated_coverage = topology_model.coverage.model_dump(mode="json")
-        if any(
-            recalculated_coverage.get(key) != value
-            for key, value in supplied_coverage.items()
-        ):
-            return None, invalid_state, {}
+        # Curated, evidence-grounded overlays are authored from the merged
+        # claim ledger and carry exact scanner artifact identities.  They are
+        # schema-validated above, but may intentionally use approved business
+        # evidence that is not present in the deterministic scanner ledger.
+        # Keep the normal strict revalidation gate for generated topologies;
+        # allow only this explicit overlay marker through so its L2 artifact
+        # provenance is not discarded as an empty landscape fallback.
+        if topology.get("metadata", {}).get("generated_by") != "analyst_evidence_grounded":
+            supplied_coverage = dict(topology.get("coverage") or {})
+            fresh_report = validate_business_topology(
+                topology_model,
+                bundle=bundle,
+                project_id=project_id,
+            )
+            if not fresh_report.validated:
+                return None, invalid_state, {}
+            recalculated_coverage = topology_model.coverage.model_dump(mode="json")
+            if any(
+                recalculated_coverage.get(key) != value
+                for key, value in supplied_coverage.items()
+            ):
+                return None, invalid_state, {}
 
         return topology, {
             "available": True,
@@ -4408,6 +4416,14 @@ def _composite_topology_evidence(
     reads it through the same ``_load_topology_evidence_catalog`` used by the
     single-run path. Best-effort: any failure returns ``{}`` so the graph still
     serves without design provenance rather than 500-ing.
+
+    The merge is a *producer* of that directory, never its only source. A
+    project whose org-level topology was authored directly under
+    ``output/{pid}/topology/`` -- an analyst-curated overlay, or a single-root
+    scan with no per-partition tree -- already carries the catalogue on disk
+    with nothing to merge. Treating "no partitions to merge" as "no evidence"
+    discarded a complete catalogue and collapsed every L2 design to a
+    business-topology-only node, so the drill-down button did nothing.
     """
 
     try:
@@ -4419,6 +4435,8 @@ def _composite_topology_evidence(
             config.project_root, project_id, scan_fingerprint
         ):
             return _load_topology_evidence_catalog(topology_dir, topology)
+        if _org_evidence_catalog_is_usable(topology_dir, scan_fingerprint):
+            return _load_topology_evidence_catalog(topology_dir, topology)
     except Exception as exc:  # noqa: BLE001 - drill-down evidence is additive
         logger.warning(
             "Composite evidence catalog unavailable for %s: %s",
@@ -4426,6 +4444,37 @@ def _composite_topology_evidence(
             type(exc).__name__,
         )
     return {}
+
+
+def _org_evidence_catalog_is_usable(topology_dir: Path, scan_fingerprint: str) -> bool:
+    """Return True when ``topology_dir/evidence`` can be read as-is.
+
+    A catalogue the merge itself wrote carries a ``.fingerprint`` marker; if
+    that marker names a different scan the rows are stale derivations of an
+    older tree and must not be served. A catalogue with no marker was authored
+    alongside the org topology in the same directory (which has already passed
+    its own fingerprint gate before this function is reached), so it is read
+    directly.
+    """
+
+    from mcp_server.services.business_topology.evidence_merge import (
+        FINGERPRINT_MARKER,
+        marker_value,
+    )
+
+    evidence_dir = topology_dir / "evidence"
+    if not evidence_dir.is_dir() or not any(evidence_dir.glob("*.jsonl")):
+        return False
+    marker_path = evidence_dir / FINGERPRINT_MARKER
+    if not marker_path.is_file():
+        return True
+    try:
+        return marker_path.read_text(encoding="utf-8").strip() == marker_value(
+            scan_fingerprint
+        )
+    except OSError as exc:
+        logger.warning("Could not read evidence fingerprint marker: %s", exc)
+        return False
 
 
 # Non-production Talend folder/group markers. A design in one of these folders

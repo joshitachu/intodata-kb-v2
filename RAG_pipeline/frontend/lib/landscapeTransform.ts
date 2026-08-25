@@ -173,6 +173,24 @@ function businessStreamAsEdge(
       });
     }
   }
+  // Preserve L2 when the curated overlay is present but its optional
+  // evidence catalogue has not reached the API response yet. The declared
+  // integration solution is still an exact business-topology implementation
+  // reference; scanner artifacts remain preferred whenever available.
+  if (provenanceByIdentity.size === 0 && stream.integration_solution_ids.length > 0) {
+    for (const solutionId of stream.integration_solution_ids) {
+      const solution = landscape.business_topology?.integration_solutions.find((item) => item.id === solutionId);
+      if (!solution) continue;
+      const qualifiedArtifactId = `business-solution::${solution.id}`;
+      provenanceByIdentity.set(qualifiedArtifactId, {
+        artifact_id: solution.name,
+        qualified_artifact_id: qualifiedArtifactId,
+        source_root: "business topology",
+        component_name: "",
+        fact_type: "business_topology_solution",
+      });
+    }
+  }
   const provenance = [...provenanceByIdentity.values()];
   return {
     source: stream.source_system_id,

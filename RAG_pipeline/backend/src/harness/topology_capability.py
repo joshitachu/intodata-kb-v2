@@ -24,11 +24,14 @@ second copy of the tool copy would drift from the dispatcher that validates the
 call, and drift in steering text is invisible until a whole operation stops
 being used.
 
-Registration is unconditional and surface-independent. The capability is
-reachable from every chat surface, including ``/chat``; what varies by surface is
-how loudly the turn guidance points at it (see ``src.harness.topology_guidance``).
-Gating availability instead would mean a clearly structural question asked outside
-the topology page could only be answered from some other source.
+Registration is unconditional; EXPOSURE is not. The capability is always in the
+registry, and ``src.harness.surface_policy`` then withholds it from every surface
+except the topology canvas. That is a deliberate product boundary: a structural
+question asked in ``/chat`` is answered from documentation, or referred to the
+topology page, rather than answered from this artifact without the diagram beside
+it. ``src.harness.topology_guidance`` supplies the matching prompt text on each
+surface. Do not re-read this paragraph as "available everywhere" -- an earlier
+version of it said exactly that, and stayed there after the gate was added.
 
 Definition and handler are co-located here (the ``agent_plans`` /
 ``task_controls`` pattern) because both are pure functions of the topology

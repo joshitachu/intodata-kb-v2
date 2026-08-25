@@ -357,7 +357,7 @@ export function ArchitectureTopologyCanvas({
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <Network className="h-5 w-5 shrink-0 text-blue-700" />
             <div className="min-w-0">
-              <h1 className="truncate text-sm font-bold text-slate-900">Werkorder architecture</h1>
+              <h1 className="truncate text-sm font-bold text-slate-900">{model.title}</h1>
               <p className="text-[10px] text-slate-500">Interactive company landscape</p>
             </div>
           </div>

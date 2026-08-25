@@ -154,7 +154,7 @@ def compute_extraction_key(
        therefore a cache miss. No second fingerprint is invented here.
     2. :data:`EXTRACTION_CODE_VERSION` -- see that constant's comment; bump it
        by hand when the preprocess/redaction/bundling code changes. This
-       follows the ``evidence_merge._marker_value`` precedent of composing the
+       follows the ``evidence_merge.marker_value`` precedent of composing the
        scan fingerprint with a code-version input.
     3. the normalised platform.
     4. :func:`unit_allowlist_digest` of the partition unit allowlist.

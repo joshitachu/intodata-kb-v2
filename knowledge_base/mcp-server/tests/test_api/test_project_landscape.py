@@ -458,6 +458,84 @@ def test_topology_evidence_catalog_expands_invoked_design_context(tmp_path):
     assert "secret" not in json.dumps(result)
 
 
+def _write_org_evidence(topology_dir, marker: str | None = None) -> None:
+    evidence_dir = topology_dir / "evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    (evidence_dir / "artifacts.jsonl").write_text(
+        json.dumps({
+            "id": "artifact:transport",
+            "name": "pTransportOutboundFileCopy",
+            "job_id": "pTransportOutboundFileCopy",
+            "source_root": "REFERENCE",
+            "artifact_kind": "job",
+            "artifact_role": "execution",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    if marker is not None:
+        (evidence_dir / ".fingerprint").write_text(marker, encoding="utf-8")
+
+
+ORG_TOPOLOGY = {
+    "data_streams": [],
+    "integration_solutions": [{"artifact_ids": ["artifact:transport"]}],
+    "artifact_annotations": [],
+    "component_annotations": [],
+    "lineage_annotations": [],
+}
+
+
+def test_org_evidence_catalog_is_served_when_there_is_nothing_to_merge(tmp_path):
+    """An org-level catalogue on disk must not be discarded for lack of partitions.
+
+    A single-root or analyst-curated project authors
+    ``output/{pid}/topology/evidence/`` directly, so the composite merge finds
+    no per-partition dirs and returns False. Treating that as "no evidence"
+    left every L2 node a business-topology-only stub with a dead drill-down.
+    """
+
+    from mcp_server.api.routes.projects import _composite_topology_evidence
+
+    topology_dir = tmp_path / "output" / "curated" / "topology"
+    _write_org_evidence(topology_dir)
+
+    result = _composite_topology_evidence(
+        "curated", ORG_TOPOLOGY, topology_dir, "fp-current"
+    )
+
+    assert [row["name"] for row in result["artifacts"]] == [
+        "pTransportOutboundFileCopy",
+    ]
+
+
+def test_org_evidence_catalog_with_stale_merge_marker_is_not_served(tmp_path):
+    from mcp_server.api.routes.projects import _composite_topology_evidence
+    from mcp_server.services.business_topology.evidence_merge import marker_value
+
+    topology_dir = tmp_path / "output" / "curated" / "topology"
+    _write_org_evidence(topology_dir, marker=marker_value("fp-older-scan"))
+
+    assert _composite_topology_evidence(
+        "curated", ORG_TOPOLOGY, topology_dir, "fp-current"
+    ) == {}
+
+    _write_org_evidence(topology_dir, marker=marker_value("fp-current"))
+    assert _composite_topology_evidence(
+        "curated", ORG_TOPOLOGY, topology_dir, "fp-current"
+    )["artifacts"]
+
+
+def test_missing_org_evidence_catalog_still_returns_empty(tmp_path):
+    from mcp_server.api.routes.projects import _composite_topology_evidence
+
+    topology_dir = tmp_path / "output" / "curated" / "topology"
+    topology_dir.mkdir(parents=True)
+
+    assert _composite_topology_evidence(
+        "curated", ORG_TOPOLOGY, topology_dir, "fp-current"
+    ) == {}
+
+
 async def test_project_landscape_rejects_stale_business_topology(
     client,
     landscape_fixture,

@@ -33,10 +33,12 @@ somewhere else unannounced, which is how a question about one integration gets
 answered about a different one), and disclosing that a relationship is inferred
 or human-authored rather than read out of the code.
 
-Availability follows the turn. The topology capability is always available on the
-topology surface. In plain chat it is available only for an explicitly structural
-question; purpose and business questions use documentation without topology
-competing for the answer. Explicit source exclusions win on every surface.
+Availability is decided elsewhere, and no longer by question shape. The topology
+capability is exposed on the topology surface and withheld in plain chat, full
+stop -- see ``src.harness.surface_policy``. This module only chooses how loudly
+the surviving guidance speaks; nothing here gates a tool. The former
+``topology_capability_enabled`` read the question text to decide, which meant a
+structural question phrased outside its regexes silently lost the tool.
 """
 
 from __future__ import annotations
@@ -84,29 +86,6 @@ _PATH_SEPARATOR = "/"
 
 #: The surface whose questions are predominantly structural.
 _TOPOLOGY_SURFACE = "topology"
-
-_TOPOLOGY_EXCLUSION_RE = re.compile(
-    r"\b(?:do\s+not|don't|dont|without|exclude)\s+(?:use\s+)?(?:the\s+)?topolog(?:y|ical)\b"
-    r"|\bnot\s+from\s+(?:the\s+)?topology\b",
-    re.IGNORECASE,
-)
-_TOPOLOGY_MENTION_RE = re.compile(r"\btopolog(?:y|ical)\b", re.IGNORECASE)
-_STRUCTURAL_RELATION_RE = re.compile(
-    r"\b(?:upstream|downstream|depend(?:s|encies|ency)?|connected|connects?|"
-    r"feeds?|consumes?|data\s+flows?|lineage|what\s+breaks\s+if)\b",
-    re.IGNORECASE,
-)
-_STRUCTURAL_INVENTORY_RE = re.compile(
-    r"\b(?:list|count|how\s+many|all|inventory)\b.{0,80}"
-    r"\b(?:systems?|applications?|integrations?|jobs?|components?|flows?|streams?)\b",
-    re.IGNORECASE,
-)
-_STRUCTURAL_IMPLEMENTATION_RE = re.compile(
-    r"\b(?:which|what)\s+(?:jobs?|components?)\b.{0,100}"
-    r"\b(?:implement|implements|built|runs?|calls?)\b"
-    r"|\b(?:where)\b.{0,80}\b(?:jobs?|components?)\b.{0,80}\b(?:sit|located)\b",
-    re.IGNORECASE,
-)
 
 
 #: Whitespace that is safe to collapse inside an IDENTIFIER. Deliberately not
@@ -322,38 +301,43 @@ NAVIGATION_INTENT_GUIDANCE = (
 )
 
 
-#: Everywhere other than the topology page. Enough that a clearly structural
-#: question still reaches the tools, without steering an unrelated conversation
-#: toward topology: the tool definitions are present either way, so this only has
-#: to remove the ambiguity about which source owns structure.
+#: Everywhere other than the topology page, where the structural reader is NOT
+#: exposed (``src.harness.surface_policy``). This text used to tell the model to
+#: "gather topology before a terminal documentation call", which became an
+#: instruction to use a tool that is not in the list -- the reliable way to get a
+#: model to improvise the structure it was told to look up. It now does the
+#: opposite job: name the boundary, and make handing the user to the canvas the
+#: sanctioned move rather than a failure.
 TOPOLOGY_MINIMAL_GUIDANCE = (
-    "Structural questions use complementary sources by question shape. The project's "
-    "published topology "
-    "owns complete inventory and counts, connections, dependency traversal, which "
-    "jobs or components structurally implement a flow, and what the code does field "
-    "by field -- including column-level mappings and the expressions that compute "
-    "them. Indexed documentation owns why something exists: "
-    "purpose, business meaning, and business policy. A question about how a value is "
-    "computed is a topology question even when it is phrased as a business rule. "
-    "Runtime records and logs own present-tense executions, "
-    "failures, health, and timestamps. For mixed questions, gather topology/runtime "
-    "before a terminal answer_from_documentation call so every observation remains in "
-    "the current-turn evidence summary. Never silently substitute one source for a "
-    "missing or failed source. If the topology artifact did not cover it, say so "
-    "before using complementary evidence. Honor explicit source "
-    "exclusions; if an excluded source is required, disclose the unsupported portion "
-    "or ask permission.\n"
-    "Presence and absence are lookups, not judgements: never state that a system, "
-    "design or field exists, or exists-but-unconnected, unless a tool returned it, and "
-    "never explain an entity name no result contained — say you cannot find it and name "
-    "the closest ones that do exist. Confidence claims are per row; a blanket 'all "
-    "confirmed' is false if one row is inferred or proposed.\n"
-    "Label each claim by origin here — '(from topology)' for structural claims, "
-    "'(from logs)' for runtime and log results, '(from <doc name>)' for document "
-    "claims. There is no diagram on screen on this surface, so the label is the only "
-    "thing that separates published structure from a written document or a live "
-    "observation. (On the topology canvas the opposite rule applies: the user is "
-    "looking at the artifact, so a topology label there is tautology and is "
+    "You cannot read the project's published topology on this surface. Complete "
+    "inventory and counts, what connects to what, dependency traversal, which jobs "
+    "or components implement a flow, and column-level field mappings all live in "
+    "that artifact, and the tool that reads it is deliberately not available here — "
+    "it is available on the topology page, where the user can see the diagram the "
+    "answer refers to.\n"
+    "So for a structural question: answer whatever indexed documentation genuinely "
+    "supports, say plainly which part you could not verify, and point the user to "
+    "the topology page for the structural detail. That referral is a correct and "
+    "complete answer, not an apology — do not pad it with speculation to look more "
+    "helpful.\n"
+    "Never infer structure to fill the gap. Do not state that a system, design or "
+    "field exists, that two things are connected, or that something is unconnected, "
+    "unless a document you actually read says so and you name it. Do not explain an "
+    "entity name that appeared in no result — say you cannot find it. A remembered "
+    "or plausible-sounding integration landscape is not evidence.\n"
+    "Indexed documentation owns why something exists: purpose, business meaning, "
+    "and business policy. Runtime records and logs own present-tense executions, "
+    "failures, health, and timestamps — those tools ARE available here. For a "
+    "question that spans both, gather runtime evidence before a terminal "
+    "answer_from_documentation call so every observation remains in the "
+    "current-turn evidence summary. Never silently substitute one source for a "
+    "missing or failed one, and honor explicit source exclusions; if an excluded "
+    "source is required, disclose the unsupported portion or ask permission.\n"
+    "Label each claim by origin — '(from logs)' for runtime and log results, "
+    "'(from <doc name>)' for document claims. There is no diagram on screen on this "
+    "surface, so the label is the only thing separating a written document from a "
+    "live observation. (On the topology canvas the opposite rule applies: the user "
+    "is looking at the artifact, so a topology label there is tautology and is "
     "suppressed. Same goal, different surface.)"
 )
 
@@ -623,39 +607,14 @@ def describe_page_scope(page_scope: Any) -> str | None:
 def is_topology_surface(page_scope: Any) -> bool:
     """Whether this turn was asked from the topology canvas.
 
-    Untrusted client input, and used only to decide how prominent the guidance is
-    — never to decide what the model may call. A forged or absent value can only
-    make the guidance shorter or longer, which is why no authorization decision
-    is allowed to read it.
+    Untrusted client input. It selects which capabilities are OFFERED (see
+    ``src.harness.surface_policy``) and how prominent the guidance is; it is
+    never an authorization decision. Project scope and permissions remain the
+    only authority over what a surviving capability may read, so a forged value
+    changes the tool list and reaches no data its holder is not entitled to.
     """
 
     return isinstance(page_scope, dict) and page_scope.get("surface") == _TOPOLOGY_SURFACE
-
-
-def topology_capability_enabled(query: str, page_scope: Any = None) -> bool:
-    """Deterministically expose topology for this turn's question shape.
-
-    This is capability selection, not authorization: the normal project scope
-    still controls what the tool may read. Keeping the decision outside the
-    model prevents a purpose question in plain chat from drifting toward the
-    thin topology artifact merely because the tool happened to be registered.
-    """
-
-    normalized = " ".join(str(query or "").split())
-    if _TOPOLOGY_EXCLUSION_RE.search(normalized):
-        return False
-    if is_topology_surface(page_scope):
-        return True
-    if _TOPOLOGY_MENTION_RE.search(normalized):
-        return True
-    return any(
-        pattern.search(normalized)
-        for pattern in (
-            _STRUCTURAL_RELATION_RE,
-            _STRUCTURAL_INVENTORY_RE,
-            _STRUCTURAL_IMPLEMENTATION_RE,
-        )
-    )
 
 
 def topology_turn_guidance(page_scope: Any = None) -> str:
@@ -693,6 +652,5 @@ __all__ = [
     "TOPOLOGY_MINIMAL_GUIDANCE",
     "describe_page_scope",
     "is_topology_surface",
-    "topology_capability_enabled",
     "topology_turn_guidance",
 ]

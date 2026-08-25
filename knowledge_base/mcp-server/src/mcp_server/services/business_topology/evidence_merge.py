@@ -27,11 +27,11 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_FINGERPRINT_MARKER = ".fingerprint"
+FINGERPRINT_MARKER = ".fingerprint"
 _CATALOG_VERSION = "2"
 
 
-def _marker_value(scan_fingerprint: str) -> str:
+def marker_value(scan_fingerprint: str) -> str:
     """Version the derived catalogue independently of the source scan."""
 
     return f"{scan_fingerprint}:{_CATALOG_VERSION}"
@@ -160,14 +160,14 @@ def build_composite_evidence_catalog(
     if not partition_dirs:
         return False
 
-    marker_path = org_evidence / _FINGERPRINT_MARKER
+    marker_path = org_evidence / FINGERPRINT_MARKER
     if org_evidence.is_dir() and marker_path.is_file():
         try:
             current = marker_path.read_text(encoding="utf-8").strip()
         except OSError as exc:
             logger.warning("Could not read evidence fingerprint marker: %s", exc)
             current = None
-        if current == _marker_value(scan_fingerprint):
+        if current == marker_value(scan_fingerprint):
             return True
 
     filenames: set[str] = set()
@@ -221,7 +221,7 @@ def build_composite_evidence_catalog(
             continue
 
     try:
-        marker_path.write_text(_marker_value(scan_fingerprint), encoding="utf-8")
+        marker_path.write_text(marker_value(scan_fingerprint), encoding="utf-8")
     except OSError as exc:
         logger.warning("Could not write evidence fingerprint marker: %s", exc)
         return False

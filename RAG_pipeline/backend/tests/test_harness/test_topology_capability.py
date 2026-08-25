@@ -17,7 +17,6 @@ from langchain_core.messages import ToolMessage
 
 from src.harness.agent_chat_runtime import (
     PrimaryTurnOutcome,
-    _chat_denied_capability_ids,
     _turn_prompt_context,
     grounded_structured_answer,
 )
@@ -52,8 +51,12 @@ from src.harness.topology_capability import (
 )
 from src.harness.topology_guidance import (
     describe_page_scope,
-    topology_capability_enabled,
     topology_turn_guidance,
+)
+from src.harness.surface_policy import (
+    CONTROL_PLANE_PREFIXES,
+    TOPOLOGY_SURFACE_CAPABILITY_IDS,
+    surface_denied_capability_ids,
 )
 from src.runtime.models import (
     RuntimeToolError,
@@ -476,14 +479,14 @@ class TestPageScopeIsUntrusted:
     def test_the_guidance_is_present_without_a_page_scope(self) -> None:
         """No page scope means no page hint, but the source rules still apply.
 
-        The tools stay reachable off the topology page, so the honesty rule that
-        keeps a structural question from being answered silently from documents
-        has to travel with every turn, not only with topology-page turns.
+        The structural reader is NOT reachable off the topology page, so the
+        rule that has to travel with every turn is the boundary itself: say what
+        cannot be read here, and refer rather than improvise.
         """
         guidance = topology_turn_guidance(None)
 
-        assert "Structural questions" in guidance
-        assert "the topology artifact did not cover it" in guidance
+        assert "cannot read the project's published topology on this surface" in guidance
+        assert "Never infer structure to fill the gap" in guidance
         assert "PAGE CONTEXT" not in guidance
 
 
@@ -684,11 +687,16 @@ class TestFabricationRules:
         assert "CONFIDENCE IS PER ROW" in guidance
 
     def test_the_rules_also_apply_off_the_topology_surface(self) -> None:
-        """Same defect class, same fix, both surfaces (no special-casing)."""
+        """Same defect class, same fix, both surfaces (no special-casing).
+
+        Off-canvas the rule matters MORE, not less: the structural reader is
+        withheld there, so an invented connection has no tool result to
+        contradict it.
+        """
         guidance = topology_turn_guidance(None)
 
-        assert "Presence and absence are lookups" in guidance
-        assert "never explain an entity name no result contained" in guidance
+        assert "Do not state that a system, design or field exists" in guidance
+        assert "Do not explain an entity name that appeared in no result" in guidance
 
 
 class TestTurnPlumbing:
@@ -804,16 +812,20 @@ class TestPromptGuidance:
         assert "is a defect" in guidance
         assert "NO CITATION MACHINERY" in guidance
 
-    def test_the_off_canvas_surface_keeps_the_topology_label(self) -> None:
+    def test_the_off_canvas_surface_labels_the_sources_it_still_has(self) -> None:
         """The suppression is surface-scoped, not a global relaxation.
 
-        Off the canvas there is no diagram to make the label redundant, so it is the
-        only thing distinguishing published structure from a document or a log line.
+        Off the canvas there is no diagram to make a label redundant, so the
+        label is the only thing separating a document from a live observation.
+        A '(from topology)' label is deliberately NOT taught here any more: the
+        structural reader is withheld on this surface, so the only way to emit
+        that label would be to have made the claim up.
         """
         from src.harness.topology_guidance import TOPOLOGY_MINIMAL_GUIDANCE
 
-        assert "(from topology)" in TOPOLOGY_MINIMAL_GUIDANCE
         assert "(from logs)" in TOPOLOGY_MINIMAL_GUIDANCE
+        assert "(from <doc name>)" in TOPOLOGY_MINIMAL_GUIDANCE
+        assert "'(from topology)'" not in TOPOLOGY_MINIMAL_GUIDANCE
 
     def test_the_capability_contract_carries_the_name_and_ambiguity_guidance(self) -> None:
         snapshot = build_semantic_tool_snapshot(
@@ -1337,8 +1349,8 @@ class TestGuidanceSalienceBySurface:
     def test_other_surfaces_get_the_short_reminder_only(self, page_scope) -> None:
         guidance = topology_turn_guidance(page_scope)
 
-        assert "Structural questions" in guidance
-        assert "the topology artifact did not cover it" in guidance
+        assert "cannot read the project's published topology on this surface" in guidance
+        assert "point the user to the topology page" in guidance
         # Not nudged toward topology in a conversation about something else.
         assert "Navigation intent" not in guidance
         assert "360px" not in guidance
@@ -1364,52 +1376,101 @@ class TestGuidanceSalienceBySurface:
         assert record is not None
         assert "surface" not in json.dumps(record.input_schema)
 
-    @pytest.mark.parametrize(
-        "query",
-        [
-            "What does Maximo do?",
-            "Tell me about the business purpose of Maximo",
-            "Which rules apply to planned work orders?",
-        ],
-    )
-    def test_plain_chat_purpose_questions_do_not_expose_topology(self, query) -> None:
-        assert topology_capability_enabled(query, None) is False
-        assert TOPOLOGY_STRUCTURE_CAPABILITY.id in _chat_denied_capability_ids(
-            query, None
-        )
+    @staticmethod
+    def _registered() -> list[str]:
+        from src.harness.registry import base_capability_registry
 
-    @pytest.mark.parametrize(
-        "query",
-        [
-            "List all systems in this project",
-            "What is upstream of Maximo?",
-            "What data flows from AFAR to Maximo?",
-            "Which jobs implement this integration?",
-            "Use the topology to show the connections",
-        ],
-    )
-    def test_plain_chat_structural_questions_can_expose_topology(self, query) -> None:
-        assert topology_capability_enabled(query, None) is True
-        assert TOPOLOGY_STRUCTURE_CAPABILITY.id not in _chat_denied_capability_ids(
-            query, None
-        )
+        return [capability.id for capability in base_capability_registry().list()]
 
-    def test_topology_surface_exposes_topology_for_ordinary_questions(self) -> None:
-        assert topology_capability_enabled("What am I looking at?", TOPOLOGY_PAGE_SCOPE)
+    def test_topology_structure_is_withheld_from_plain_chat(self) -> None:
+        """Withheld by SURFACE, not by question shape.
 
-    @pytest.mark.parametrize(
-        "query",
-        [
-            "Do not use topology; answer from documentation",
-            "Tell me this without topology",
-            "Not from the topology please",
-        ],
-    )
-    def test_explicit_exclusion_wins_even_on_the_topology_surface(self, query) -> None:
-        assert topology_capability_enabled(query, TOPOLOGY_PAGE_SCOPE) is False
-        assert TOPOLOGY_STRUCTURE_CAPABILITY.id in _chat_denied_capability_ids(
-            query, TOPOLOGY_PAGE_SCOPE
-        )
+        The wording is deliberately structural: under the old regex gate this
+        question exposed the tool. Exposure must no longer depend on how the
+        user phrased it, because a structural question outside the regexes
+        silently lost the tool and was answered from somewhere else.
+        """
+
+        denied = surface_denied_capability_ids(self._registered(), None)
+        assert TOPOLOGY_STRUCTURE_CAPABILITY.id in denied
+
+    def test_topology_surface_exposes_only_the_measured_capabilities(self) -> None:
+        registered = self._registered()
+        denied = surface_denied_capability_ids(registered, TOPOLOGY_PAGE_SCOPE)
+        exposed = {item for item in registered if item not in denied}
+        domain = {
+            item
+            for item in exposed
+            if not item.startswith(CONTROL_PLANE_PREFIXES)
+        }
+        assert domain == set(TOPOLOGY_SURFACE_CAPABILITY_IDS)
+
+    def test_topology_surface_keeps_the_forced_control_plane(self) -> None:
+        """The plan cohort force-calls these; denying one is a hard turn failure.
+
+        ``SemanticToolMiddleware.__init__`` raises when the tool it is about to
+        demand via ``tool_choice`` is absent from the snapshot, and cohort
+        assignment is per-user, so a plan-cohort user on the canvas would hit it
+        on every turn.
+        """
+
+        registered = self._registered()
+        denied = surface_denied_capability_ids(registered, TOPOLOGY_PAGE_SCOPE)
+        control_plane = {
+            item for item in registered if item.startswith(CONTROL_PLANE_PREFIXES)
+        }
+        assert control_plane, "expected agent-plan control capabilities to exist"
+        assert not (control_plane & denied)
+        assert "nexus.agent_plan.project_objective" in control_plane
+
+    def test_a_new_capability_is_withheld_from_the_topology_surface(self) -> None:
+        """Fail closed: the policy subtracts a keep-list from the live registry.
+
+        A capability registered later -- including one contributed by a pack --
+        must not appear on the narrowed surface just because nobody remembered
+        to add it to a denial list.
+        """
+
+        registered = [*self._registered(), "vendor.newthing.do_something"]
+        denied = surface_denied_capability_ids(registered, TOPOLOGY_PAGE_SCOPE)
+        assert "vendor.newthing.do_something" in denied
+
+    def test_denied_set_never_names_an_unregistered_capability(self) -> None:
+        """Denial is reported in operator telemetry; phantom ids read as bugs."""
+
+        for page_scope in (None, TOPOLOGY_PAGE_SCOPE):
+            denied = surface_denied_capability_ids(["rag.docs.answer_question"], page_scope)
+            assert denied <= {"rag.docs.answer_question"}
+
+    def test_exposure_cannot_depend_on_question_wording(self) -> None:
+        """Message text is not an input to exposure, structurally.
+
+        Asserted on the signature rather than by sampling phrasings: a sample
+        only shows the wordings someone thought to try, whereas the absence of
+        the parameter is what actually makes "phrased outside the regexes, so
+        the tool vanished" unrepresentable. The escape hatch this replaces
+        ("answer without topology") is gone by design; the model is told about
+        the boundary in TOPOLOGY_MINIMAL_GUIDANCE instead.
+        """
+
+        import inspect
+
+        parameters = inspect.signature(surface_denied_capability_ids).parameters
+        assert list(parameters) == ["registered_capability_ids", "page_scope"]
+
+    def test_chat_keeps_everything_except_the_structural_reader(self) -> None:
+        """The split is one-directional: /chat loses topology and nothing else.
+
+        Guards against a keep-list intended for the canvas leaking onto the
+        surface that is supposed to stay broad.
+        """
+
+        registered = self._registered()
+        denied = surface_denied_capability_ids(registered, None)
+        assert TOPOLOGY_STRUCTURE_CAPABILITY.id in denied
+        assert "nexus.packs.create" not in denied
+        assert "nexus.workflow.onboard_project" not in denied
+        assert "rag.docs.search_evidence" not in denied
 
 
 class TestDepthOperationsOnTheCapability:
@@ -1606,12 +1667,20 @@ class TestDepthSteering:
         assert "SAY WHAT IS UNCERTAIN" in guidance
         assert "NEVER COLLAPSE A PLURAL INTO A SINGULAR HEADLINE" in guidance
 
-    def test_the_minimal_guidance_moved_mapping_to_topology(self) -> None:
+    def test_the_minimal_guidance_names_mapping_as_out_of_reach_here(self) -> None:
+        """Mapping still belongs to topology; on this surface it is unreachable.
+
+        The point is not to hide that column-level mapping exists -- the model
+        should know it does, and say where to get it -- but to stop it being
+        presented as something answerable from here.
+        """
         from src.harness.topology_guidance import TOPOLOGY_MINIMAL_GUIDANCE
 
-        assert "column-level mappings" in TOPOLOGY_MINIMAL_GUIDANCE
+        assert "column-level field mappings" in TOPOLOGY_MINIMAL_GUIDANCE
+        assert "deliberately not available here" in TOPOLOGY_MINIMAL_GUIDANCE
         assert "mapping explanation" not in TOPOLOGY_MINIMAL_GUIDANCE
-        # Contracts the source-ownership policy tests depend on, kept intact.
+        # Contracts the source-ownership policy tests depend on, kept intact:
+        # runtime is still reachable here, so its ordering rule still applies.
         assert "current-turn evidence summary" in TOPOLOGY_MINIMAL_GUIDANCE
         assert "not from documents" not in TOPOLOGY_MINIMAL_GUIDANCE.casefold()
 
