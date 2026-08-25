@@ -544,6 +544,79 @@ class TestLogRetentionAndSearch:
         assert len(str(results[0]["snippet"])) <= 40
         assert results[0]["occurrence_count"] == 2
 
+    async def test_blank_query_returns_newest_first_instead_of_nothing(self, db_session):
+        """Recency mode. Every path required a keyword, so "show me the latest
+        logs" matched nothing and was indistinguishable from an empty corpus:
+        `plainto_tsquery('simple','latest logs')` hit 0 of 173,537 real rows."""
+        repo = RuntimeStoreRepository(db_session)
+        older = _T0
+        newer = _T0 + datetime.timedelta(hours=5)
+        await repo.upsert_log_event(
+            "project-a", _log(message="older entry", ts=older), _SRC, _T0
+        )
+        await repo.upsert_log_event(
+            "project-a",
+            _log(message="newest entry", ts=newer).model_copy(update={"line_ordinal": 1}),
+            _SRC,
+            _T0,
+        )
+
+        results = await repo.search_log_events(["project-a"], query="")
+
+        assert [str(row["snippet"]) for row in results] == ["newest entry", "older entry"]
+
+    async def test_blank_query_still_honours_scope_and_window(self, db_session):
+        repo = RuntimeStoreRepository(db_session)
+        await repo.upsert_log_event("project-a", _log(message="mine"), _SRC, _T0)
+        await repo.upsert_log_event("project-b", _log(message="theirs"), _SRC, _T0)
+
+        results = await repo.search_log_events(["project-a"], query="")
+
+        assert [row["project_id"] for row in results] == ["project-a"]
+
+    async def test_exception_class_inside_a_dotted_fqn_is_findable(self, db_session):
+        """to_tsvector('simple') keeps `java.lang.NullPointerException` as ONE
+        lexeme, so the bare class name matched nothing: 0 tsquery hits against 30
+        rows that contained it. Trigram similarity could not rescue it either --
+        a short query against a long log line falls under the 0.3 threshold."""
+        repo = RuntimeStoreRepository(db_session)
+        await repo.upsert_log_event(
+            "project-a",
+            _log(
+                message=(
+                    "Exception in component tSetGlobalVar_3 "
+                    "java.lang.NullPointerException: null at foo.Bar(Bar.java:42)"
+                )
+            ),
+            _SRC,
+            _T0,
+        )
+
+        results = await repo.search_log_events(["project-a"], query="NullPointerException")
+
+        assert len(results) == 1
+
+    async def test_component_name_with_an_underscore_is_matched_literally(self, db_session):
+        """`_` is a LIKE single-character wildcard and it appears in nearly every
+        Talend component name, so an unescaped token would silently widen."""
+        repo = RuntimeStoreRepository(db_session)
+        await repo.upsert_log_event(
+            "project-a", _log(message="failure in tSetGlobalVar_3 during load"), _SRC, _T0
+        )
+        await repo.upsert_log_event(
+            "project-a",
+            _log(message="tSetGlobalVarX3 must not match").model_copy(
+                update={"line_ordinal": 1}
+            ),
+            _SRC,
+            _T0,
+        )
+
+        results = await repo.search_log_events(["project-a"], query="tSetGlobalVar_3")
+
+        assert len(results) == 1
+        assert "tSetGlobalVar_3" in str(results[0]["snippet"])
+
 
 class TestPagination:
     async def test_execution_pagination_has_stable_tiebreaker_and_honest_total(self, db_session):

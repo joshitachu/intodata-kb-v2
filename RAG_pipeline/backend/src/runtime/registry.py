@@ -58,9 +58,15 @@ class RuntimeToolSpec:
 
 
 class SearchLogsInput(BaseModel):
-    """Narrow tool input for held-log search until the store owns richer filters."""
+    """Narrow tool input for held-log search until the store owns richer filters.
 
-    question: str = Field(min_length=1, max_length=2_000)
+    ``question`` may be empty: that selects newest-first within the other
+    filters instead of keyword matching. Without it there is no way to express
+    "the latest logs" -- the only entry point was a keyword, so a recency
+    request returned nothing and looked identical to an empty corpus.
+    """
+
+    question: str = Field(default="", max_length=2_000)
     project_id: str | None = None
     execution_id: str | None = None
     since: datetime | None = None
@@ -77,7 +83,12 @@ _TOOL_SPECS: dict[str, RuntimeToolSpec] = {
                 "Search held runtime log content for a question or error phrase. Returns only "
                 "a bounded, credential-redacted snippet and an execution reference for each "
                 "match; it never returns complete raw logs. Use this for specific log-content "
-                "questions and incident evidence, not general execution inventory."
+                "questions and incident evidence, not general execution inventory. "
+                "Matching is by keyword, so pass the distinctive term you are looking for "
+                "(an exception class, component name, or error phrase) rather than the user's "
+                "whole sentence. For 'the latest logs', 'what happened overnight' or any other "
+                "request with no keyword in it, omit 'question' entirely (or send it empty) to "
+                "get the most recent entries first, and narrow with 'since'/'until'."
             ),
             input_model=SearchLogsInput,
         ),

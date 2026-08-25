@@ -136,6 +136,49 @@ def _severities_at_or_above(minimum: RuntimeLogSeverity) -> list[str]:
     return [s.value for s in _SEVERITY_ORDER[min_rank:]]
 
 
+#: Substring matching is only selective enough to be worth a scan above this
+#: length. "in", "the", "a" would each match most of the corpus.
+_LOG_TOKEN_MIN_CHARS = 4
+#: Bounded so a long question cannot assemble an unbounded OR chain.
+_LOG_TOKEN_MAX_COUNT = 6
+_LOG_TOKEN_SPLIT_RE = re.compile(r"[^A-Za-z0-9_.$]+")
+
+
+def _like_escape(value: str) -> str:
+    """Escape LIKE metacharacters so a literal stays literal.
+
+    ``_`` matches any single character and appears in nearly every Talend
+    component name (``tSetGlobalVar_3``), so an unescaped needle silently
+    widened the match -- ``tSetGlobalVarX3`` came back as a hit for it.
+    """
+
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _log_search_tokens(query: str) -> list[str]:
+    """Selective substring tokens for a log search, longest first.
+
+    Splits on separators but KEEPS ``. _ $``, because the identifiers worth
+    finding contain them: ``java.lang.NullPointerException``,
+    ``tSetGlobalVar_3``, ``Foo$Bar``. Deduplicated, length-filtered and capped.
+
+    LIKE metacharacters are escaped: ``_`` is a single-character wildcard and it
+    appears in nearly every Talend component name, so an unescaped token would
+    silently widen the match.
+    """
+
+    seen: list[str] = []
+    for raw in _LOG_TOKEN_SPLIT_RE.split(query):
+        token = raw.strip(".$_")
+        if len(token) < _LOG_TOKEN_MIN_CHARS:
+            continue
+        escaped = _like_escape(token)
+        if escaped not in seen:
+            seen.append(escaped)
+    seen.sort(key=len, reverse=True)
+    return seen[:_LOG_TOKEN_MAX_COUNT]
+
+
 def log_event_fingerprint(event: RuntimeLogEvent) -> str:
     """Deterministic fingerprint for log idempotency (no natural unique id upstream)."""
     raw = f"{event.timestamp.isoformat()}|{event.severity.value}|{event.line_ordinal}|{event.message}"
@@ -511,8 +554,17 @@ class RuntimeStoreRepository:
         execution_id: str | None = None, since: datetime.datetime | None = None,
         until: datetime.datetime | None = None, limit: int = 20, snippet_chars: int = 300,
     ) -> list[dict[str, object]]:
-        """Search redacted raw logs with bounded snippets; scope is always server-derived."""
-        if self._denies_all(scope) or not query.strip():
+        """Search redacted raw logs with bounded snippets; scope is always server-derived.
+
+        A blank ``query`` is the RECENCY mode: newest-first within the other
+        filters, no text predicate. "Show me the latest logs" / "what happened
+        overnight" are the natural questions and were previously unanswerable --
+        every path required a keyword, so the request came back empty and
+        indistinguishable from "this project has no logs". Verified against a
+        173,537-row corpus: ``plainto_tsquery('simple', 'latest logs')`` matched
+        zero rows.
+        """
+        if self._denies_all(scope):
             return []
         stmt = select(RuntimeLogEventRow)
         stmt = self._apply_scope(stmt, RuntimeLogEventRow.project_id, scope)
@@ -525,19 +577,44 @@ class RuntimeStoreRepository:
         if until is not None:
             stmt = stmt.where(RuntimeLogEventRow.timestamp <= until)
         dialect = self._session.bind.dialect.name if self._session.bind is not None else ""
-        if dialect == "postgresql":
+        if not query.strip():
+            stmt = stmt.order_by(
+                RuntimeLogEventRow.timestamp.desc(), RuntimeLogEventRow.id.desc()
+            )
+        elif dialect == "postgresql":
             vector = func.to_tsvector("simple", RuntimeLogEventRow.message)
             tsquery = func.plainto_tsquery("simple", query)
-            stmt = stmt.where(
-                vector.op("@@")(tsquery) | RuntimeLogEventRow.message.op("%")(query)
-            ).order_by(
+            # Token-wise substring match alongside the full-text predicate.
+            # to_tsvector('simple') keeps a dotted Java FQN as ONE token, so
+            # 'java.lang.NullPointerException' is a single lexeme and searching
+            # for the bare class name matches nothing: measured 0 tsquery hits
+            # against 30 rows containing it. The trigram fallback cannot rescue
+            # that either -- similarity() of a short query against a long log
+            # line falls under the default 0.3 threshold. Substring matching per
+            # token finds the class name wherever it is embedded, which is the
+            # main thing anyone searches logs for.
+            predicate = vector.op("@@")(tsquery) | RuntimeLogEventRow.message.op("%")(query)
+            for token in _log_search_tokens(query):
+                predicate = predicate | RuntimeLogEventRow.message.ilike(
+                    f"%{token}%", escape="\\"
+                )
+            stmt = stmt.where(predicate).order_by(
                 func.ts_rank_cd(vector, tsquery).desc(),
                 func.similarity(RuntimeLogEventRow.message, query).desc(),
                 RuntimeLogEventRow.timestamp.desc(),
                 RuntimeLogEventRow.id.desc(),
             )
         else:
-            stmt = stmt.where(RuntimeLogEventRow.message.ilike(f"%{query}%")).order_by(RuntimeLogEventRow.timestamp.desc(), RuntimeLogEventRow.id.desc())
+            predicate = RuntimeLogEventRow.message.ilike(
+                f"%{_like_escape(query)}%", escape="\\"
+            )
+            for token in _log_search_tokens(query):
+                predicate = predicate | RuntimeLogEventRow.message.ilike(
+                    f"%{token}%", escape="\\"
+                )
+            stmt = stmt.where(predicate).order_by(
+                RuntimeLogEventRow.timestamp.desc(), RuntimeLogEventRow.id.desc()
+            )
         rows = (
             await self._session.execute(stmt.limit(min(max(limit * 5, limit), 500)))
         ).scalars().all()

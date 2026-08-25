@@ -1436,16 +1436,22 @@ LOG_SEARCH_EVIDENCE_CAPABILITY = CapabilityDefinition(
         "Search bounded redacted present-tense runtime log evidence for an operational "
         "question."
     ),
-    preconditions=["A concrete operational question is available."],
+    preconditions=[
+        "A keyword to match, or a time window for a recency-only read.",
+    ],
     failure_recovery=_STANDARD_FAILURE_RECOVERY,
     provider_type=HarnessProviderType.LOG,
     provider_id="runtime.stored",
     action="search_logs",
     input_schema={
         "type": "object",
-        "required": ["question"],
+        # `question` is optional: empty selects newest-first instead of keyword
+        # matching. Requiring it made "show me the latest logs" unexpressible,
+        # so the model sent the user's whole sentence as a keyword and matched
+        # nothing.
+        "required": [],
         "properties": {
-            "question": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "question": {"type": "string", "maxLength": 4000},
             "project_id": {"type": ["string", "null"], "maxLength": 255},
             "project_ids": {
                 "type": ["array", "null"],

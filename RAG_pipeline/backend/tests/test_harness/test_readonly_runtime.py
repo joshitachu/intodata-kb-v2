@@ -738,3 +738,79 @@ async def test_empty_trusted_answer_sink_does_not_change_existing_behavior() -> 
     assert turn.used_fallback is False
     assert "help" in turn.grounded.content
     assert turn.document_sources == []
+
+
+class RecordingModel(ScriptedModel):
+    """ScriptedModel that keeps every message list it was invoked with."""
+
+    seen: list[list] = []
+
+    def bind_tools(self, tools, *, tool_choice=None, **kwargs):  # noqa: ANN001, ANN201
+        del tools, tool_choice, kwargs
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):  # noqa: ANN001, ANN201
+        type(self).seen.append(list(messages))
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+async def test_grounding_correction_is_not_delivered_as_a_user_turn() -> None:
+    """The validator must not be able to put words in the user's mouth.
+
+    Delivered with role="user", the correction was indistinguishable from the
+    person saying "that answer was not accepted", so the model answered the
+    reprimand it believed it had received: corrected replies opened with "You're
+    right - I should have been upfront about the limitation" and conceded fault
+    to someone who had said nothing.
+    """
+    calls: list[str] = []
+    registry, executor = _make_executor(calls)
+    RecordingModel.seen = []
+    runtime = build_readonly_primary_runtime(
+        model=RecordingModel(
+            responses=[
+                _metadata_call("read-a"),
+                AIMessage(content="You have two projects.\n" + _grounding_block("grounded", [], [])),
+                AIMessage(
+                    content="You have two authorized projects.\n"
+                    + _grounding_block("grounded", ["ev-1"], [])
+                ),
+            ]
+        ),
+        registry=registry,
+        executor=executor,
+        context=_context(),
+        scope=_scope(),
+        interrupt_before_tools=False,
+    )
+    turn = await run_readonly_primary_turn(
+        graph=runtime.graph,
+        ledger=runtime.ledger,
+        snapshot=runtime.snapshot,
+        user_message="Which projects exist?",
+        max_corrections=1,
+    )
+
+    assert turn.correction_rounds == 1
+
+    def _role_of(message) -> str:  # noqa: ANN001
+        if isinstance(message, dict):
+            return str(message.get("role") or "")
+        return str(getattr(message, "type", ""))
+
+    def _text_of(message) -> str:  # noqa: ANN001
+        if isinstance(message, dict):
+            return str(message.get("content") or "")
+        return str(getattr(message, "content", ""))
+
+    corrections = [
+        message
+        for batch in RecordingModel.seen
+        for message in batch
+        if "was not accepted" in _text_of(message)
+    ]
+    assert corrections, "the correction was never delivered to the model"
+    for message in corrections:
+        assert _role_of(message) not in {"user", "human"}
+        # And it must tell the model to stay silent about it.
+        assert "do not acknowledge" in _text_of(message)

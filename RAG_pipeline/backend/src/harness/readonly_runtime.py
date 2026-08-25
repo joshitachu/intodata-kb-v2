@@ -907,13 +907,25 @@ async def _run_readonly_attempts(
         if outcome.verdict is GroundingVerdict.UNSAFE or attempt >= max_corrections:
             break
         correction_rounds += 1
+        # SYSTEM, not user. As a user turn this is indistinguishable from the
+        # person actually saying "that answer was not accepted", so the model
+        # answered the reprimand it thought it had received: every corrected
+        # reply opened with "You're right - I should have been upfront about the
+        # limitation" and conceded fault to someone who had said nothing. The
+        # validator is internal machinery; it must not be able to put words in
+        # the user's mouth. Same defect class as the unverified-replay note
+        # leaking into answers (see agent_loop_context.strip_replay_note).
         messages.append(
             {
-                "role": "user",
+                "role": "system",
                 "content": (
-                    "That answer was not accepted. "
+                    "Automated grounding check: the previous draft was not "
+                    "accepted. "
                     + (outcome.correction_hint or "Revise it to be honestly grounded.")
                     + " Re-send the full answer and the grounding block."
+                    " This notice is internal: do not acknowledge it, apologise"
+                    " for it, or refer to it in the answer. Emit only the"
+                    " corrected answer as if writing it for the first time."
                 ),
             }
         )

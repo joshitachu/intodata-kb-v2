@@ -502,7 +502,8 @@ def build_registered_read_adapters(
 
     async def logs_adapter(arguments, context):  # noqa: ANN001
         return await search_runtime_log_evidence(
-            question=str(arguments["question"]),
+            # Absent/None question is the recency read, not an error.
+            question=str(arguments.get("question") or ""),
             project_scope=context.project_scope,
             db=db,
             qdrant=qdrant,
@@ -967,7 +968,15 @@ def _generic_runtime_items(
 
 
 def _runtime_record_summary(value: dict[str, Any]) -> str:
+    # project_id is included deliberately. Runtime reads are ordered by recency
+    # across the whole authorized scope, so an unscoped question returns
+    # whichever project failed most recently. Observed live: a question about one
+    # estate was answered with a DIFFERENT project's failing jobs, named
+    # individually, with nothing indicating they belonged elsewhere. The id was
+    # already present in the evidence item's metadata but absent from the prose
+    # the model actually reads, so nothing made the attribution unavoidable.
     safe_keys = (
+        "project_id",
         "name",
         "engine_name",
         "job_name",

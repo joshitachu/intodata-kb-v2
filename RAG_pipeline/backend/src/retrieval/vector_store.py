@@ -102,6 +102,31 @@ async def ensure_collection(client: AsyncQdrantClient) -> None:
         field_name="section",
         field_schema=PayloadSchemaType.KEYWORD,
     )
+    # project_id and chunk_index are FILTERED on but were never indexed here, and
+    # the production collection runs with strict_mode
+    # ``unindexed_filtering_retrieve`` disabled -- so Qdrant REFUSES a retrieve
+    # filtered on them rather than scanning.
+    #
+    # The casualty was neighbour chunk expansion: it scrolls with a chunk_index
+    # filter (``search._build_neighbor_filter``), received HTTP 400 "Index
+    # required but not found for chunk_index", and the caller swallows that
+    # exception -- so ``neighbor_chunk_expansion_enabled = True`` was a no-op in
+    # production and every answer shipped without its surrounding context. It
+    # stayed invisible because strict mode is production-only: with it off,
+    # development scans instead of refusing and the feature appears to work.
+    #
+    # chunk_index MUST be INTEGER (the filter is MatchAny over ints). A keyword
+    # index does not satisfy the requirement and the 400 would persist.
+    await client.create_payload_index(
+        collection_name=COLLECTION_NAME,
+        field_name="project_id",
+        field_schema=PayloadSchemaType.KEYWORD,
+    )
+    await client.create_payload_index(
+        collection_name=COLLECTION_NAME,
+        field_name="chunk_index",
+        field_schema=PayloadSchemaType.INTEGER,
+    )
 
 
 async def delete_collection(client: AsyncQdrantClient) -> None:
