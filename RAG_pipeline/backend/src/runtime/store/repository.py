@@ -18,7 +18,7 @@ import math
 import re
 import uuid
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import NamedTuple
 
 from sqlalchemy import and_, case, delete, func, or_, select
@@ -42,6 +42,7 @@ from src.db.models.runtime_data import (
     RuntimeSourceRow,
     RuntimeSourceCredentialsRow,
     RuntimeSourceHealthRow,
+    RuntimeSourceReadGrantRow,
     RuntimeWorkspaceProjectMapRow,
     RuntimeSyncStateRow,
     RuntimeWorkspaceRow,
@@ -110,8 +111,10 @@ from src.runtime.models import (
     RuntimeSource,
     RuntimeSourceHealth,
     RuntimeSourceRead,
+    RuntimeSourceReadGrant,
     RuntimeSourceUpdate,
     RuntimeTrendBucket,
+    RuntimeTrendCoverage,
     RuntimeTrendInput,
     RuntimeWorkspaceProjectMap,
     RuntimeSyncState,
@@ -266,6 +269,77 @@ class _GapStats(NamedTuple):
     sample_size: int
 
 
+class _ResolvedReadGrant(NamedTuple):
+    """One grant, with the projects reading through it actually reaches.
+
+    `exposes` is the grant's real blast radius: the granting source's own
+    project plus every project its workspace map re-points rows to. It is
+    computed rather than assumed so the API can state it at grant time -- a
+    grant that silently exposed a third project's rows would be the worst kind
+    of quiet.
+    """
+
+    source_id: int
+    source_key: str
+    source_label: str
+    source_project_id: str
+    environment_ids: list[str] | None
+    window_days: int | None
+    exposes: list[str]
+
+
+def _merge_reliability_by_job_name(
+    rollups: "Iterable[RuntimeJobReliability]",
+) -> dict[str, RuntimeJobReliability]:
+    """Collapse reliability rollups to one row per job name.
+
+    `list_job_reliability` groups by (project_id, source_key, job_name), which
+    is right for an operations console. A documentation read that spans several
+    projects -- a shared tenant -- can therefore return two rows for one name,
+    and the dict comprehension this replaces kept whichever arrived last,
+    silently discarding the other's runs.
+
+    Counts are summed and the rate recomputed from the sums rather than
+    averaged, `first/last_run_at` take the true extremes, and the streak takes
+    the maximum: a failure streak spanning two independently scheduled estates
+    is not a quantity that adds up, and the longer one is the conservative
+    alarm. `source_key` follows the largest contributor, since the field names
+    one mirror and cannot describe two.
+    """
+    merged: dict[str, RuntimeJobReliability] = {}
+    for rollup in rollups:
+        existing = merged.get(rollup.job_name)
+        if existing is None:
+            merged[rollup.job_name] = rollup
+            continue
+        total = existing.total_runs + rollup.total_runs
+        failed = existing.failed_runs + rollup.failed_runs
+        dominant = existing if existing.total_runs >= rollup.total_runs else rollup
+        merged[rollup.job_name] = existing.model_copy(
+            update={
+                "project_id": dominant.project_id,
+                "source_key": dominant.source_key,
+                "total_runs": total,
+                "success_runs": existing.success_runs + rollup.success_runs,
+                "failed_runs": failed,
+                "unfinished_runs": existing.unfinished_runs + rollup.unfinished_runs,
+                "failure_rate": (failed / total) if total else 0.0,
+                "current_failure_streak": max(
+                    existing.current_failure_streak, rollup.current_failure_streak
+                ),
+                "first_run_at": min(
+                    (item for item in (existing.first_run_at, rollup.first_run_at) if item),
+                    default=None,
+                ),
+                "last_run_at": max(
+                    (item for item in (existing.last_run_at, rollup.last_run_at) if item),
+                    default=None,
+                ),
+            }
+        )
+    return merged
+
+
 def _ratio(numerator: int | None, denominator: int | None) -> float | None:
     if numerator is None or not denominator:
         return None
@@ -395,6 +469,21 @@ class RuntimeStoreRepository:
         if scope is None:
             return stmt
         return stmt.where(column.in_(scope))
+
+    @staticmethod
+    def _apply_read_projects(stmt, column, project_ids: Sequence[str]):
+        """Filter to the projects one documentation read may draw from.
+
+        Distinct from `_apply_scope`, which is RBAC. This is the read set a
+        project resolved to: itself, plus the projects whose rows a granted
+        source stamps (`resolve_runtime_read_projects`). A single-element set
+        emits the identical `==` predicate the lane used before read grants
+        existed, so the unshared path keeps its query plan and its index use.
+        """
+        values = list(project_ids)
+        if len(values) == 1:
+            return stmt.where(column == values[0])
+        return stmt.where(column.in_(values))
 
     @property
     def _dialect(self) -> str:
@@ -756,7 +845,11 @@ class RuntimeStoreRepository:
         return [_to_source(row) for row in rows]
 
     async def list_mirrored_environments(
-        self, scope: ProjectScope, project_id: str
+        self,
+        scope: ProjectScope,
+        project_id: str,
+        *,
+        project_ids: Sequence[str] | None = None,
     ) -> list[RuntimeMirroredEnvironment]:
         """Environments present in this project's mirror, busiest first.
 
@@ -765,12 +858,20 @@ class RuntimeStoreRepository:
         environment that has never produced a run in the retained window, and a
         run can carry an environment the inventory sweep has not caught up with.
         A picker driven by only one would offer a dead choice or hide a live one.
+
+        `project_ids` widens the mirror to a resolved read set (see
+        `resolve_runtime_read_projects`) so a project reading a granted source
+        is offered that source's environments. Without it the picker would show
+        a reader an empty list and its selection would resolve to no evidence --
+        the exact failure this model exists to prevent.
         """
         if self._denies_all(scope):
             return []
-        inventory = select(
-            RuntimeEnvironmentRow.environment_id, RuntimeEnvironmentRow.name
-        ).where(RuntimeEnvironmentRow.project_id == project_id)
+        read_projects = list(project_ids) if project_ids else [project_id]
+        inventory = select(RuntimeEnvironmentRow.environment_id, RuntimeEnvironmentRow.name)
+        inventory = self._apply_read_projects(
+            inventory, RuntimeEnvironmentRow.project_id, read_projects
+        )
         inventory = self._apply_scope(inventory, RuntimeEnvironmentRow.project_id, scope)
 
         observed = (
@@ -780,9 +881,11 @@ class RuntimeStoreRepository:
                 func.count().label("run_count"),
                 func.max(RuntimeJobRunRow.started_at).label("last_run_at"),
             )
-            .where(RuntimeJobRunRow.project_id == project_id)
             .where(RuntimeJobRunRow.environment_id.is_not(None))
             .group_by(RuntimeJobRunRow.environment_id)
+        )
+        observed = self._apply_read_projects(
+            observed, RuntimeJobRunRow.project_id, read_projects
         )
         observed = self._apply_scope(observed, RuntimeJobRunRow.project_id, scope)
 
@@ -825,6 +928,16 @@ class RuntimeStoreRepository:
         environment selections and takes the widest window: a configured source
         can only ever narrow ITS OWN contribution, so combining by intersection
         would let one source's narrow scope silently suppress another's data.
+
+        Two scope STORES, one rule
+        --------------------------
+        An owned source keeps its scope in the credential blob, as above. A
+        source this project only READS keeps the scope on the grant row
+        (`runtime_source_read_grants`), because the reason two projects share a
+        tenant is normally that they care about different environments of it --
+        the setting belongs to the (source, project) pair, not to the
+        credential. Both are unioned here by the same rule, so a project that
+        owns one source and reads another gets one coherent scope.
         """
         if self._denies_all(scope):
             return RuntimeDocReadScope(window_days=default_window_days)
@@ -834,8 +947,20 @@ class RuntimeStoreRepository:
         id_stmt = select(RuntimeSourceRow.id).where(RuntimeSourceRow.project_id == project_id)
         id_stmt = self._apply_scope(id_stmt, RuntimeSourceRow.project_id, scope)
         source_ids = list((await self._session.execute(id_stmt)).scalars().all())
-        if not source_ids:
-            return RuntimeDocReadScope(window_days=default_window_days)
+        grants = await self.resolve_read_grants_for_project(project_id)
+        # Derived from the grants already in hand rather than by calling
+        # `resolve_runtime_read_projects`, which would re-run the same queries.
+        # Same rule and same order: the reading project first.
+        read_projects = [project_id]
+        for grant in grants:
+            for exposed in grant.exposes:
+                if exposed not in read_projects:
+                    read_projects.append(exposed)
+        shared_from = [grant.source_label for grant in grants]
+        if not source_ids and not grants:
+            return RuntimeDocReadScope(
+                window_days=default_window_days, read_project_ids=read_projects
+            )
 
         selected: list[str] = []
         window: int | None = None
@@ -861,18 +986,35 @@ class RuntimeStoreRepository:
                     configured = True
                     window = parsed if window is None else max(window, parsed)
 
+        for grant in grants:
+            if grant.environment_ids:
+                configured = True
+                selected.extend(item for item in grant.environment_ids if item not in selected)
+            if grant.window_days and grant.window_days > 0:
+                configured = True
+                window = grant.window_days if window is None else max(window, grant.window_days)
+
         if not selected:
             return RuntimeDocReadScope(
-                window_days=window or default_window_days, configured=configured
+                window_days=window or default_window_days,
+                configured=configured,
+                shared_read=bool(grants),
+                shared_from=shared_from,
+                read_project_ids=read_projects,
             )
         mirrored = {item.environment_id: item.name for item in
-                    await self.list_mirrored_environments(scope, project_id)}
+                    await self.list_mirrored_environments(
+                        scope, project_id, project_ids=read_projects
+                    )}
         return RuntimeDocReadScope(
             environment_ids=selected,
             environment_names=[mirrored[item] for item in selected if item in mirrored],
             unavailable_environment_ids=[item for item in selected if item not in mirrored],
             window_days=window or default_window_days,
             configured=configured,
+            shared_read=bool(grants),
+            shared_from=shared_from,
+            read_project_ids=read_projects,
         )
 
     # --- source management (credentials never returned) ---
@@ -1075,6 +1217,11 @@ class RuntimeStoreRepository:
         await self._session.execute(delete(RuntimeSourceCredentialsRow).where(RuntimeSourceCredentialsRow.source_id == row.id))
         await self._session.execute(delete(RuntimeSourceHealthRow).where(RuntimeSourceHealthRow.source_id == row.id))
         await self._session.execute(delete(RuntimeWorkspaceProjectMapRow).where(RuntimeWorkspaceProjectMapRow.source_id == row.id))
+        # Grants are deleted explicitly rather than left to the FK cascade:
+        # SQLite does not enforce it without `PRAGMA foreign_keys`, and a
+        # surviving grant would keep widening a reader's scope to a source that
+        # no longer exists.
+        await self._session.execute(delete(RuntimeSourceReadGrantRow).where(RuntimeSourceReadGrantRow.source_id == row.id))
         await self._session.delete(row)
         await self._session.flush()
 
@@ -1124,6 +1271,159 @@ class RuntimeStoreRepository:
             )
         )
         await self._session.flush()
+
+    # --- read grants (share a mirror; see RuntimeSourceReadGrantRow) ---
+
+    async def _projects_exposed_by_source(self, source_id: int, source_project_id: str) -> list[str]:
+        """Every project whose rows a read of this source can reach.
+
+        The source's own project, plus every project its workspace map
+        re-points containers to -- because a grant filters by project id, and
+        those rows carry the mapped project, not the source's.
+        """
+        mapped = (
+            await self._session.execute(
+                select(RuntimeWorkspaceProjectMapRow.project_id)
+                .where(RuntimeWorkspaceProjectMapRow.source_id == source_id)
+                .distinct()
+            )
+        ).scalars().all()
+        exposed = [source_project_id]
+        for project_id in mapped:
+            if project_id and project_id not in exposed:
+                exposed.append(project_id)
+        return exposed
+
+    @staticmethod
+    def _clean_environment_ids(raw: object) -> list[str] | None:
+        """None means every mirrored environment; [] is a deliberate 'nothing'."""
+        if not isinstance(raw, list):
+            return None
+        return [str(item).strip() for item in raw if str(item).strip()]
+
+    async def add_read_grant(
+        self,
+        *,
+        source_id: int,
+        project_id: str,
+        environment_ids: Sequence[str] | None,
+        window_days: int | None,
+        created_by: str | None,
+    ) -> RuntimeSourceReadGrant:
+        source = await self._get_source_row(source_id, None)
+        if project_id == source.project_id:
+            # Ownership already implies read. Storing it would create a row that
+            # can be revoked, which would read as revoking the owner's access.
+            raise RuntimeDuplicateSourceError(
+                "That project already owns this runtime source"
+            )
+        now = datetime.datetime.now(datetime.UTC)
+        stmt = select(RuntimeSourceReadGrantRow).where(
+            RuntimeSourceReadGrantRow.source_id == source_id,
+            RuntimeSourceReadGrantRow.project_id == project_id,
+        )
+        row = (await self._session.execute(stmt)).scalars().first()
+        if row is None:
+            row = RuntimeSourceReadGrantRow(
+                source_id=source_id,
+                project_id=project_id,
+                created_at=now,
+                created_by=created_by,
+            )
+            self._session.add(row)
+        row.environment_ids = (
+            None if environment_ids is None else [str(item) for item in environment_ids]
+        )
+        row.window_days = window_days
+        await self._session.flush()
+        return await self._to_read_grant(row, source)
+
+    async def list_read_grants(self, source_id: int) -> list[RuntimeSourceReadGrant]:
+        source = await self._get_source_row(source_id, None)
+        rows = (
+            await self._session.execute(
+                select(RuntimeSourceReadGrantRow)
+                .where(RuntimeSourceReadGrantRow.source_id == source_id)
+                .order_by(RuntimeSourceReadGrantRow.project_id.asc())
+            )
+        ).scalars().all()
+        return [await self._to_read_grant(row, source) for row in rows]
+
+    async def delete_read_grant(self, source_id: int, project_id: str) -> None:
+        await self._session.execute(
+            delete(RuntimeSourceReadGrantRow).where(
+                RuntimeSourceReadGrantRow.source_id == source_id,
+                RuntimeSourceReadGrantRow.project_id == project_id,
+            )
+        )
+        await self._session.flush()
+
+    async def _to_read_grant(
+        self, row: RuntimeSourceReadGrantRow, source: RuntimeSourceRow
+    ) -> RuntimeSourceReadGrant:
+        return RuntimeSourceReadGrant(
+            id=row.id,
+            source_id=row.source_id,
+            project_id=row.project_id,
+            source_project_id=source.project_id,
+            source_label=source.label,
+            environment_ids=self._clean_environment_ids(row.environment_ids),
+            window_days=row.window_days,
+            exposes_project_ids=await self._projects_exposed_by_source(
+                row.source_id, source.project_id
+            ),
+            created_at=_as_utc(row.created_at) or row.created_at,
+            created_by=row.created_by,
+        )
+
+    async def resolve_read_grants_for_project(
+        self, project_id: str
+    ) -> list[_ResolvedReadGrant]:
+        """Grants this project reads THROUGH, with each grant's blast radius.
+
+        Ordered by source id so a resolved read set is deterministic across
+        calls -- two documentation runs of one project must not differ because
+        the database returned rows in another order.
+        """
+        stmt = (
+            select(RuntimeSourceReadGrantRow, RuntimeSourceRow)
+            .join(RuntimeSourceRow, RuntimeSourceRow.id == RuntimeSourceReadGrantRow.source_id)
+            .where(RuntimeSourceReadGrantRow.project_id == project_id)
+            .order_by(RuntimeSourceReadGrantRow.source_id.asc())
+        )
+        resolved: list[_ResolvedReadGrant] = []
+        for grant, source in (await self._session.execute(stmt)).all():
+            resolved.append(
+                _ResolvedReadGrant(
+                    source_id=source.id,
+                    source_key=source.source_key,
+                    source_label=source.label,
+                    source_project_id=source.project_id,
+                    environment_ids=self._clean_environment_ids(grant.environment_ids),
+                    window_days=grant.window_days,
+                    exposes=await self._projects_exposed_by_source(source.id, source.project_id),
+                )
+            )
+        return resolved
+
+    async def resolve_runtime_read_projects(self, project_id: str) -> list[str]:
+        """The project ids one project's documentation read may draw from.
+
+        Always starts with `project_id` itself, so an ungranted project
+        resolves to a single-element list and every downstream predicate stays
+        the `==` it was before read grants existed.
+
+        Widening comes ONLY from stored grant rows. No caller may pass a set in;
+        `GET /runtime/doc-evidence` authenticates with a machine key and has no
+        user scope to fall back on, so a request-supplied read set would be an
+        authorization bypass with no second gate behind it.
+        """
+        projects = [project_id]
+        for grant in await self.resolve_read_grants_for_project(project_id):
+            for exposed in grant.exposes:
+                if exposed not in projects:
+                    projects.append(exposed)
+        return projects
 
     async def resolve_project_id(self, source_id: int, container_key: str | None) -> tuple[str, bool]:
         source = await self._get_source_row(source_id, None)
@@ -1833,7 +2133,10 @@ class RuntimeStoreRepository:
     # happen in the database; only the already-aggregated rows cross the boundary.
 
     def _environment_execution_ids(
-        self, project_id: str | None, environment_ids: Sequence[str]
+        self,
+        project_id: str | None,
+        environment_ids: Sequence[str],
+        project_ids: Sequence[str] | None = None,
     ):
         """Execution ids whose run was observed in one of these environments.
 
@@ -1846,13 +2149,21 @@ class RuntimeStoreRepository:
         A run whose provider reported no environment is excluded. That is the
         honest reading of "only PROD": a run that cannot be shown to be PROD is
         not evidence for it.
+
+        `project_ids` (a resolved shared read set) takes precedence over
+        `project_id`. Both must narrow the same way: this subquery decides which
+        executions every downstream aggregate is allowed to see, so leaving it
+        on one project while the aggregates span several would filter a shared
+        read down to the reader's own -- usually empty -- executions.
         """
         stmt = (
             select(RuntimeJobRunRow.execution_id)
             .where(RuntimeJobRunRow.environment_id.in_(list(environment_ids)))
             .where(RuntimeJobRunRow.execution_id.is_not(None))
         )
-        if project_id is not None:
+        if project_ids:
+            stmt = self._apply_read_projects(stmt, RuntimeJobRunRow.project_id, project_ids)
+        elif project_id is not None:
             stmt = stmt.where(RuntimeJobRunRow.project_id == project_id)
         return stmt
 
@@ -1866,6 +2177,7 @@ class RuntimeStoreRepository:
         since: datetime.datetime | None,
         until: datetime.datetime | None,
         environment_ids: Sequence[str] | None = None,
+        project_ids: Sequence[str] | None = None,
     ):
         """Scoped, filtered execution rows as a subquery for aggregate composition.
 
@@ -1888,7 +2200,9 @@ class RuntimeStoreRepository:
             RuntimeExecutionRow.duration_ms.label("duration_ms"),
         )
         stmt = self._apply_scope(stmt, RuntimeExecutionRow.project_id, scope)
-        if project_id is not None:
+        if project_ids:
+            stmt = self._apply_read_projects(stmt, RuntimeExecutionRow.project_id, project_ids)
+        elif project_id is not None:
             stmt = stmt.where(RuntimeExecutionRow.project_id == project_id)
         if source_key is not None:
             stmt = stmt.where(RuntimeExecutionRow.source_key == source_key)
@@ -1901,7 +2215,7 @@ class RuntimeStoreRepository:
         if environment_ids is not None:
             stmt = stmt.where(
                 RuntimeExecutionRow.execution_id.in_(
-                    self._environment_execution_ids(project_id, environment_ids)
+                    self._environment_execution_ids(project_id, environment_ids, project_ids)
                 )
             )
         return stmt.subquery()
@@ -1999,6 +2313,38 @@ class RuntimeStoreRepository:
         ]
         return points
 
+    async def get_outcome_trend_coverage(
+        self, scope: ProjectScope, params: RuntimeTrendInput
+    ) -> RuntimeTrendCoverage:
+        """Return captured execution bounds without claiming interval completeness.
+
+        The display window is deliberately excluded: callers need to distinguish
+        "before captured history" from a gap inside known history. Entity filters
+        and authorization scope still apply.
+        """
+        if self._denies_all(scope):
+            return RuntimeTrendCoverage()
+        base = self._scoped_execution_base(
+            scope,
+            project_id=params.project_id,
+            source_key=params.source_key,
+            job_name=params.job_name,
+            since=None,
+            until=None,
+        )
+        row = (
+            await self._session.execute(
+                select(
+                    func.min(base.c.started_at).label("observed_from"),
+                    func.max(base.c.started_at).label("observed_until"),
+                )
+            )
+        ).mappings().one()
+        return RuntimeTrendCoverage(
+            observed_from=_as_utc(row["observed_from"]) if row["observed_from"] else None,
+            observed_until=_as_utc(row["observed_until"]) if row["observed_until"] else None,
+        )
+
     async def list_job_reliability(
         self, scope: ProjectScope, params: ListRuntimeJobReliabilityInput
     ) -> list[RuntimeJobReliability]:
@@ -2013,6 +2359,7 @@ class RuntimeStoreRepository:
             since=params.since,
             until=params.until,
             environment_ids=params.environment_ids,
+            project_ids=params.project_ids,
         )
         group = [base.c.project_id, base.c.source_key, base.c.job_name]
         percentiles = self._duration_percentiles(base, group)
@@ -2076,18 +2423,30 @@ class RuntimeStoreRepository:
                 percentiles.c.p95,
                 streak.c.current_failure_streak,
                 recent.c.latest_state,
+                recent.c.latest_unfinished,
             )
             .join(percentiles, join_keys(percentiles), isouter=True)
             .join(streak, join_keys(streak), isouter=True)
             .join(recent, join_keys(recent), isouter=True)
-            .order_by(
+        )
+        if params.attention_only:
+            # "Needs attention" is a current-state surface. Historical failures
+            # followed by a healthy run are intentionally excluded.
+            stmt = stmt.where(
+                (recent.c.latest_state == RuntimeExecutionState.FAILED.value)
+                | recent.c.latest_unfinished.is_(True)
+            ).order_by(
+                recent.c.latest_unfinished.desc(),
+                aggregated.c.last_run_at.desc(),
+                aggregated.c.job_name.asc(),
+            )
+        else:
+            stmt = stmt.order_by(
                 aggregated.c.failed_runs.desc(),
                 aggregated.c.last_run_at.desc(),
                 aggregated.c.job_name.asc(),
             )
-            .offset(params.offset)
-            .limit(params.limit)
-        )
+        stmt = stmt.offset(params.offset).limit(params.limit)
         rows = (await self._session.execute(stmt)).mappings().all()
         return [
             RuntimeJobReliability(
@@ -2105,6 +2464,7 @@ class RuntimeStoreRepository:
                 latest_state=(
                     RuntimeExecutionState(row["latest_state"]) if row["latest_state"] else None
                 ),
+                latest_unfinished=bool(row["latest_unfinished"]),
                 p50_duration_ms=row["p50"],
                 p95_duration_ms=row["p95"],
                 max_duration_ms=row["max_duration_ms"],
@@ -2118,6 +2478,14 @@ class RuntimeStoreRepository:
         ranked = select(
             *group_columns,
             base.c.state.label("state"),
+            case(
+                (
+                    (base.c.ended_at.is_(None))
+                    & (base.c.state != RuntimeExecutionState.RUNNING.value),
+                    True,
+                ),
+                else_=False,
+            ).label("latest_unfinished"),
             func.row_number()
             .over(
                 partition_by=group_columns,
@@ -2127,7 +2495,11 @@ class RuntimeStoreRepository:
         ).subquery()
         ranked_groups = [ranked.c[column.name] for column in group_columns]
         return (
-            select(*ranked_groups, ranked.c.state.label("latest_state"))
+            select(
+                *ranked_groups,
+                ranked.c.state.label("latest_state"),
+                ranked.c.latest_unfinished,
+            )
             .where(ranked.c.rn == 1)
             .subquery()
         )
@@ -2144,10 +2516,22 @@ class RuntimeStoreRepository:
             job_name=params.job_name,
             since=params.since,
             until=params.until,
+            environment_ids=params.environment_ids,
+            project_ids=params.project_ids,
         )
-        groups = (
-            select(base.c.project_id, base.c.source_key, base.c.job_name).distinct().subquery()
-        )
+        group = [base.c.project_id, base.c.source_key, base.c.job_name]
+        if params.attention_only:
+            recent = self._latest_state_subquery(base, group)
+            groups = (
+                select(*[recent.c[column.name] for column in group])
+                .where(
+                    (recent.c.latest_state == RuntimeExecutionState.FAILED.value)
+                    | recent.c.latest_unfinished.is_(True)
+                )
+                .subquery()
+            )
+        else:
+            groups = select(*group).distinct().subquery()
         return int((await self._session.execute(select(func.count()).select_from(groups))).scalar_one())
 
     async def list_job_operational_insights(
@@ -2396,6 +2780,7 @@ class RuntimeStoreRepository:
         since: datetime.datetime,
         max_failures_per_unit: int = 5,
         environment_ids: Sequence[str] | None = None,
+        project_ids: Sequence[str] | None = None,
     ) -> tuple[list[RuntimeDocEvidence], list[str], list[str]]:
         """Runtime profiles for scanned units, the units with no data, and the
         runtime jobs with no unit.
@@ -2456,6 +2841,24 @@ class RuntimeStoreRepository:
         unmatched, which is correct -- within this scope there is no evidence
         for it -- and is why the applied scope must be reported alongside the
         result rather than left implicit.
+
+        Read set -- `project_ids`
+        -------------------------
+        Defaults to `[project_id]`, which emits the identical `==` predicate
+        this lane used before read grants existed.  A longer list is a resolved
+        SHARED read (`resolve_runtime_read_projects`): one vendor tenant backing
+        several scanned projects, mirrored once and read by each.  Two
+        consequences the CALLER owns rather than this method:
+
+        * the runtime job vocabulary widens to the whole granted tenant, so
+          `orphan_runtime_jobs` will count jobs that belong to a sibling
+          project.  Under a shared read that is not a mis-binding signal, and
+          `RuntimeDocReadScope.shared_read` is what lets the generator say so.
+          Narrowing the grant's environment scope is the other half: it holds
+          the vocabulary to the environments this project actually documents.
+        * one job name can appear under two project ids.  Reliability rollups
+          are therefore merged by name (`_merge_reliability_by_job_name`)
+          instead of the last-write-wins dict this used to build.
         """
         requested = list(dict.fromkeys(name for name in unit_names if name))
         if self._denies_all(scope) or not requested:
@@ -2466,8 +2869,9 @@ class RuntimeStoreRepository:
         scoped = list(environment_ids) if environment_ids is not None else None
         if scoped is not None and not scoped:
             return [], requested, []
+        read_projects = list(project_ids) if project_ids else [project_id]
 
-        overrides = await self._doc_evidence_scan_map(scope, project_id, requested)
+        overrides = await self._doc_evidence_scan_map(scope, read_projects, requested)
         # A mapped unit is looked up by its runtime name; everything else by its
         # own name.  Both directions are needed because one runtime job may back
         # several units and the response is keyed by unit.
@@ -2481,14 +2885,21 @@ class RuntimeStoreRepository:
             scope,
             ListRuntimeJobReliabilityInput(
                 project_id=project_id,
+                project_ids=read_projects,
                 since=since,
                 # Bounded by the runtime vocabulary of one project, not by the
-                # scan: a project mirrors tens of jobs, not hundreds.
-                limit=500,
+                # scan: a project mirrors tens of jobs, not hundreds. A shared
+                # read spans several projects, so the ceiling scales with the
+                # read set -- truncating here would turn a mirrored job into
+                # "no runtime data", with nothing in the response to show that
+                # it was cut rather than absent.
+                limit=min(500 * len(read_projects), 5000),
                 environment_ids=scoped,
             ),
         )
-        matched = {row.job_name: row for row in reliability if row.job_name in lookup}
+        matched = _merge_reliability_by_job_name(
+            row for row in reliability if row.job_name in lookup
+        )
         orphans = sorted({row.job_name for row in reliability if row.job_name not in lookup})[
             :_DOC_EVIDENCE_MAX_ORPHAN_JOBS
         ]
@@ -2500,23 +2911,23 @@ class RuntimeStoreRepository:
 
         job_names = list(matched)
         durations = await self._doc_evidence_durations(
-            scope, project_id, job_names, since, environment_ids=scoped
+            scope, read_projects, job_names, since, environment_ids=scoped
         )
         environments = await self._doc_evidence_environments(
-            scope, project_id, job_names, since, environment_ids=scoped
+            scope, read_projects, job_names, since, environment_ids=scoped
         )
         gaps = await self._doc_evidence_gap_quantiles(
-            scope, project_id, job_names, since, environment_ids=scoped
+            scope, read_projects, job_names, since, environment_ids=scoped
         )
-        plans = await self._doc_evidence_plans(scope, project_id, job_names)
+        plans = await self._doc_evidence_plans(scope, read_projects, job_names)
         failures = await self._doc_evidence_failures(
-            scope, project_id, job_names, since, max_failures_per_unit, environment_ids=scoped
+            scope, read_projects, job_names, since, max_failures_per_unit, environment_ids=scoped
         )
         log_quality = await self._doc_evidence_log_quality(
-            scope, project_id, job_names, since, environment_ids=scoped
+            scope, read_projects, job_names, since, environment_ids=scoped
         )
         incident_insights = await self._doc_evidence_incidents(
-            scope, project_id, job_names, since, environment_ids=scoped
+            scope, read_projects, job_names, since, environment_ids=scoped
         )
 
         evidence: list[RuntimeDocEvidence] = []
@@ -2563,7 +2974,7 @@ class RuntimeStoreRepository:
         return evidence, [unit for unit in requested if unit not in covered], orphans
 
     async def _doc_evidence_scan_map(
-        self, scope: ProjectScope, project_id: str, unit_names: Sequence[str]
+        self, scope: ProjectScope, project_ids: Sequence[str], unit_names: Sequence[str]
     ) -> dict[str, str]:
         """Explicit static-unit -> runtime-job-name overrides, when any exist."""
         stmt = (
@@ -2576,10 +2987,10 @@ class RuntimeStoreRepository:
                     RuntimeJobRunRow.job_id == RuntimeJobScanMapRow.runtime_job_id,
                 ),
             )
-            .where(RuntimeJobScanMapRow.project_id == project_id)
             .where(RuntimeJobScanMapRow.static_job_id.in_(unit_names))
             .distinct()
         )
+        stmt = self._apply_read_projects(stmt, RuntimeJobScanMapRow.project_id, project_ids)
         stmt = self._apply_scope(stmt, RuntimeJobScanMapRow.project_id, scope)
         rows = (await self._session.execute(stmt)).all()
         return {static_job_id: job_name for static_job_id, job_name in rows}
@@ -2587,7 +2998,7 @@ class RuntimeStoreRepository:
     async def _doc_evidence_durations(
         self,
         scope: ProjectScope,
-        project_id: str,
+        project_ids: Sequence[str],
         job_names: Sequence[str],
         since: datetime.datetime,
         environment_ids: Sequence[str] | None = None,
@@ -2602,27 +3013,32 @@ class RuntimeStoreRepository:
         a p50 of 1.7 days, neither of which describes how long the job takes.
         Restricting to completed successes gives the figure a reader expects
         from "how long does this job run".
+
+        Grouped by job name ALONE, not by (project, job).  The result is keyed
+        by name, so under a shared read a project id in the GROUP BY would
+        return two rows for one key and the dict below would silently keep
+        whichever arrived last.  For a single-project read the project id is
+        constant within the group, so dropping it changes nothing.
         """
         base = select(
-            RuntimeExecutionRow.project_id.label("project_id"),
             RuntimeExecutionRow.job_name.label("job_name"),
             RuntimeExecutionRow.duration_ms.label("duration_ms"),
         ).where(
-            RuntimeExecutionRow.project_id == project_id,
             RuntimeExecutionRow.job_name.in_(job_names),
             RuntimeExecutionRow.started_at >= since,
             RuntimeExecutionRow.state == RuntimeExecutionState.SUCCESS.value,
             RuntimeExecutionRow.ended_at.is_not(None),
             RuntimeExecutionRow.duration_ms.is_not(None),
         )
+        base = self._apply_read_projects(base, RuntimeExecutionRow.project_id, project_ids)
         if environment_ids is not None:
             base = base.where(
                 RuntimeExecutionRow.execution_id.in_(
-                    self._environment_execution_ids(project_id, environment_ids)
+                    self._environment_execution_ids(None, environment_ids, project_ids)
                 )
             )
         base = self._apply_scope(base, RuntimeExecutionRow.project_id, scope).subquery()
-        group = [base.c.project_id, base.c.job_name]
+        group = [base.c.job_name]
         percentiles = self._duration_percentiles(base, group)
         maxima = (
             select(*group, func.max(base.c.duration_ms).label("max_duration_ms"))
@@ -2633,10 +3049,7 @@ class RuntimeStoreRepository:
             maxima.c.job_name, percentiles.c.p50, percentiles.c.p95, maxima.c.max_duration_ms
         ).join(
             percentiles,
-            and_(
-                percentiles.c.project_id == maxima.c.project_id,
-                percentiles.c.job_name == maxima.c.job_name,
-            ),
+            percentiles.c.job_name == maxima.c.job_name,
             isouter=True,
         )
         rows = (await self._session.execute(stmt)).all()
@@ -2645,7 +3058,7 @@ class RuntimeStoreRepository:
     async def _doc_evidence_gap_quantiles(
         self,
         scope: ProjectScope,
-        project_id: str,
+        project_ids: Sequence[str],
         job_names: Sequence[str],
         since: datetime.datetime,
         environment_ids: Sequence[str] | None = None,
@@ -2687,10 +3100,10 @@ class RuntimeStoreRepository:
             RuntimeJobRunRow.environment_name.label("environment_name"),
             started.label("started_epoch"),
         ).where(
-            RuntimeJobRunRow.project_id == project_id,
             RuntimeJobRunRow.job_name.in_(job_names),
             RuntimeJobRunRow.started_at >= since,
         )
+        base = self._apply_read_projects(base, RuntimeJobRunRow.project_id, project_ids)
         if environment_ids is not None:
             base = base.where(RuntimeJobRunRow.environment_id.in_(list(environment_ids)))
         base = self._apply_scope(base, RuntimeJobRunRow.project_id, scope).subquery()
@@ -2753,7 +3166,7 @@ class RuntimeStoreRepository:
     async def _doc_evidence_environments(
         self,
         scope: ProjectScope,
-        project_id: str,
+        project_ids: Sequence[str],
         job_names: Sequence[str],
         since: datetime.datetime,
         environment_ids: Sequence[str] | None = None,
@@ -2771,13 +3184,13 @@ class RuntimeStoreRepository:
                 RuntimeJobRunRow.environment_name,
                 func.count().label("runs"),
             )
-            .where(RuntimeJobRunRow.project_id == project_id)
             .where(RuntimeJobRunRow.job_name.in_(job_names))
             .where(RuntimeJobRunRow.started_at >= since)
             .where(RuntimeJobRunRow.environment_name.is_not(None))
             .group_by(RuntimeJobRunRow.job_name, RuntimeJobRunRow.environment_name)
             .order_by(func.count().desc(), RuntimeJobRunRow.environment_name.asc())
         )
+        stmt = self._apply_read_projects(stmt, RuntimeJobRunRow.project_id, project_ids)
         if environment_ids is not None:
             # Keeps the `environments[0]` contract true under a read scope: the
             # dominant environment must be the dominant SELECTED one, or the
@@ -2791,7 +3204,7 @@ class RuntimeStoreRepository:
         return result
 
     async def _doc_evidence_plans(
-        self, scope: ProjectScope, project_id: str, job_names: Sequence[str]
+        self, scope: ProjectScope, project_ids: Sequence[str], job_names: Sequence[str]
     ) -> dict[str, list[str]]:
         """Orchestration plans that reference each job as one of their steps.
 
@@ -2814,11 +3227,10 @@ class RuntimeStoreRepository:
         environments the sync does not hold), not a lookup-key mistake, so the
         `job_name` path stays until the job inventory covers them.
         """
-        stmt = (
-            select(RuntimePlanRow.name, RuntimePlanRow.display_name, RuntimePlanRow.steps)
-            .where(RuntimePlanRow.project_id == project_id)
-            .where(RuntimePlanRow.steps.is_not(None))
-        )
+        stmt = select(
+            RuntimePlanRow.name, RuntimePlanRow.display_name, RuntimePlanRow.steps
+        ).where(RuntimePlanRow.steps.is_not(None))
+        stmt = self._apply_read_projects(stmt, RuntimePlanRow.project_id, project_ids)
         stmt = self._apply_scope(stmt, RuntimePlanRow.project_id, scope)
         wanted = set(job_names)
         result: dict[str, list[str]] = {}
@@ -2837,7 +3249,7 @@ class RuntimeStoreRepository:
     async def _doc_evidence_failures(
         self,
         scope: ProjectScope,
-        project_id: str,
+        project_ids: Sequence[str],
         job_names: Sequence[str],
         since: datetime.datetime,
         max_per_job: int,
@@ -2857,11 +3269,11 @@ class RuntimeStoreRepository:
                 RuntimeFailureRow.failed_at,
                 RuntimeFailureRow.error_summary,
             )
-            .where(RuntimeFailureRow.project_id == project_id)
             .where(RuntimeFailureRow.job_name.in_(job_names))
             .where(RuntimeFailureRow.failed_at >= since)
             .order_by(RuntimeFailureRow.failed_at.desc(), RuntimeFailureRow.id.desc())
         )
+        stmt = self._apply_read_projects(stmt, RuntimeFailureRow.project_id, project_ids)
         if environment_ids is not None:
             # A failure row carries no environment either, and joining through
             # the job run is what stops a TST stack trace being published as the
@@ -2869,7 +3281,7 @@ class RuntimeStoreRepository:
             # selected to exclude.
             stmt = stmt.where(
                 RuntimeFailureRow.execution_id.in_(
-                    self._environment_execution_ids(project_id, environment_ids)
+                    self._environment_execution_ids(None, environment_ids, project_ids)
                 )
             )
         stmt = self._apply_scope(stmt, RuntimeFailureRow.project_id, scope)
@@ -2901,7 +3313,7 @@ class RuntimeStoreRepository:
     async def _doc_evidence_log_quality(
         self,
         scope: ProjectScope,
-        project_id: str,
+        project_ids: Sequence[str],
         job_names: Sequence[str],
         since: datetime.datetime,
         environment_ids: Sequence[str] | None = None,
@@ -2911,6 +3323,14 @@ class RuntimeStoreRepository:
         A row count at the current 10k provider ceiling is a conservative
         truncation signal.  It may undercount truncation if a future provider
         lowers its own cap, but it never labels a complete shorter log as cut.
+
+        The two derived subqueries carry NO project predicate of their own.
+        `runtime_log_events` and `runtime_incidents` are reachable only through
+        the execution population, which is already scoped, and both joins equate
+        `project_id` column-to-column -- so scope arrives through the join and a
+        second literal filter would be a duplicate rule to keep in step. That
+        matters here more than elsewhere: the insights tables carry no
+        `source_key`, so the join IS their only scoping mechanism.
         """
         log_counts = (
             select(
@@ -2918,7 +3338,6 @@ class RuntimeStoreRepository:
                 RuntimeLogEventRow.execution_id.label("execution_id"),
                 func.count(RuntimeLogEventRow.id).label("log_lines"),
             )
-            .where(RuntimeLogEventRow.project_id == project_id)
             .group_by(RuntimeLogEventRow.project_id, RuntimeLogEventRow.execution_id)
             .subquery()
         )
@@ -2927,7 +3346,6 @@ class RuntimeStoreRepository:
                 RuntimeIncidentRow.project_id.label("project_id"),
                 RuntimeIncidentRow.execution_id.label("execution_id"),
             )
-            .where(RuntimeIncidentRow.project_id == project_id)
             .where(RuntimeIncidentRow.confidence.in_(("high", "medium")))
             .where(RuntimeIncidentRow.pattern_id.notin_(("generic.unknown", "exception.generic")))
             .distinct()
@@ -2973,16 +3391,16 @@ class RuntimeStoreRepository:
                     diagnosed.c.execution_id == RuntimeExecutionRow.execution_id,
                 ),
             )
-            .where(RuntimeExecutionRow.project_id == project_id)
             .where(RuntimeExecutionRow.job_name.in_(job_names))
             .where(RuntimeExecutionRow.started_at >= since)
             .where(RuntimeExecutionRow.state == RuntimeExecutionState.FAILED.value)
             .group_by(RuntimeExecutionRow.job_name)
         )
+        stmt = self._apply_read_projects(stmt, RuntimeExecutionRow.project_id, project_ids)
         if environment_ids is not None:
             stmt = stmt.where(
                 RuntimeExecutionRow.execution_id.in_(
-                    self._environment_execution_ids(project_id, environment_ids)
+                    self._environment_execution_ids(None, environment_ids, project_ids)
                 )
             )
         stmt = self._apply_scope(stmt, RuntimeExecutionRow.project_id, scope)
@@ -3001,7 +3419,7 @@ class RuntimeStoreRepository:
     async def _doc_evidence_incidents(
         self,
         scope: ProjectScope,
-        project_id: str,
+        project_ids: Sequence[str],
         job_names: Sequence[str],
         since: datetime.datetime,
         max_per_job: int = 3,
@@ -3013,6 +3431,13 @@ class RuntimeStoreRepository:
         deadlocks and exhausted Camel delivery carry medium confidence and
         concrete signals; generic exception/unknown rows merely say to review a
         log.  Only the first category is allowed into a documentation prompt.
+
+        The incident and summary rows are scoped by their INNER/OUTER JOIN to
+        the execution population -- both join `project_id` column-to-column --
+        so the project predicate belongs on the execution table alone. Neither
+        insights table carries a `source_key`, which makes that join their only
+        scoping mechanism; a literal filter here would be a second copy of the
+        same rule, free to drift out of step with it.
         """
         stmt = (
             select(
@@ -3046,17 +3471,17 @@ class RuntimeStoreRepository:
                 ),
                 isouter=True,
             )
-            .where(RuntimeExecutionRow.project_id == project_id)
             .where(RuntimeExecutionRow.job_name.in_(job_names))
             .where(RuntimeExecutionRow.started_at >= since)
             .where(RuntimeIncidentRow.confidence.in_(("high", "medium")))
             .where(RuntimeIncidentRow.pattern_id.notin_(("generic.unknown", "exception.generic")))
             .order_by(RuntimeExecutionRow.job_name, RuntimeIncidentRow.first_bad_at.desc())
         )
+        stmt = self._apply_read_projects(stmt, RuntimeExecutionRow.project_id, project_ids)
         if environment_ids is not None:
             stmt = stmt.where(
                 RuntimeExecutionRow.execution_id.in_(
-                    self._environment_execution_ids(project_id, environment_ids)
+                    self._environment_execution_ids(None, environment_ids, project_ids)
                 )
             )
         stmt = self._apply_scope(stmt, RuntimeExecutionRow.project_id, scope)

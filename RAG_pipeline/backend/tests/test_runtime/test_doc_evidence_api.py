@@ -226,6 +226,68 @@ class TestScopePinning:
         assert body["orphan_runtime_jobs"] == []
 
 
+class TestSharedRead:
+    """Scope widens through a stored grant, and through nothing else.
+
+    This endpoint authenticates with a machine key and has no user scope behind
+    it, so the grant row is the ONLY gate. A caller that could name its own read
+    set would be reading anything it liked.
+    """
+
+    async def test_no_grant_means_no_widening(self, client, db_session):
+        resp = await client.get(_URL, params=_params())
+        body = resp.json()
+
+        assert body["units"][0]["total_runs"] == 2
+        assert body["read_scope"]["shared_read"] is False
+        assert body["read_scope"]["read_project_ids"] == [_P]
+
+    async def test_a_grant_widens_the_read_to_the_granted_project(self, client, db_session):
+        store = RuntimeStoreRepository(db_session)
+        source = await store.create_source_config(
+            project_id=_OTHER, source_type="mock", label="Shared tenant"
+        )
+        await store.add_read_grant(
+            source_id=source.id,
+            project_id=_P,
+            environment_ids=None,
+            window_days=None,
+            created_by="1",
+        )
+
+        resp = await client.get(_URL, params=_params())
+        body = resp.json()
+
+        # 2 runs of its own + the 5 the granting project mirrored.
+        assert body["units"][0]["total_runs"] == 7
+        assert body["read_scope"]["shared_read"] is True
+        assert body["read_scope"]["shared_from"] == ["Shared tenant"]
+        assert body["read_scope"]["read_project_ids"] == [_P, _OTHER]
+
+    async def test_a_caller_cannot_name_its_own_read_set(self, client):
+        """The widening parameter does not exist, and adding one is inert.
+
+        Pinned as a test rather than left to code review: this endpoint has no
+        second gate, so a future signature change that accepted a project list
+        would be an authorization bypass with nothing behind it.
+        """
+        resp = await client.get(
+            _URL,
+            params={
+                "project_id": _P,
+                "units": [_SHARED_JOB],
+                "project_ids": [_P, _OTHER],
+                "read_project_ids": [_OTHER],
+            },
+        )
+        body = resp.json()
+
+        assert resp.status_code == 200
+        assert body["units"][0]["total_runs"] == 2
+        assert body["read_scope"]["read_project_ids"] == [_P]
+        assert "OTHER-PROJECT-ONLY" not in resp.text
+
+
 class TestResponseShape:
     async def test_orphan_runtime_jobs_are_reported(self, client):
         resp = await client.get(_URL, params=_params())

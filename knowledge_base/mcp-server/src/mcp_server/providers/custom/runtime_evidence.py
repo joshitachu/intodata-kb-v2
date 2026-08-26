@@ -804,6 +804,16 @@ class RuntimeEvidenceStore:
     # cadences, and a document that does not name its scope cannot be compared
     # with the one generated before the scope changed.
     read_environments: tuple[str, ...] = ()
+    # True when this project read a mirror it does not own, through a read
+    # grant: one vendor tenant backing several scanned projects, mirrored once.
+    # It changes how the coverage numbers must be read -- the runtime job
+    # vocabulary belongs to the whole tenant, so jobs owned by a SIBLING project
+    # legitimately appear as orphans. Without this flag that is indistinguishable
+    # from the mis-binding it is meant to detect.
+    shared_read: bool = False
+    # Labels of the granting sources. Labels rather than project ids: the
+    # reading project may hold no permission to see the owner's project.
+    shared_from: tuple[str, ...] = ()
     # Units whose two keys matched two DIFFERENT runtime jobs. Rare and worth
     # seeing: it means the estate holds a job named after another job's id.
     alias_conflicts: tuple[str, ...] = ()
@@ -864,6 +874,8 @@ class RuntimeEvidenceStore:
             "orphan_runtime_jobs": list(self.orphan_runtime_jobs),
             "alias_conflicts": list(self.alias_conflicts),
             "read_environments": list(self.read_environments),
+            "shared_read": self.shared_read,
+            "shared_from": list(self.shared_from),
             "redaction_flags": [flag.to_json() for flag in self.redaction_flags],
         }
 
@@ -905,6 +917,8 @@ class RuntimeEvidenceStore:
             ),
             alias_conflicts=tuple(str(x) for x in payload.get("alias_conflicts") or ()),
             read_environments=tuple(str(x) for x in payload.get("read_environments") or ()),
+            shared_read=bool(payload.get("shared_read", False)),
+            shared_from=tuple(str(x) for x in payload.get("shared_from") or ()),
         )
 
     # --- artifacts the wiring package writes --------------------------------
@@ -946,6 +960,12 @@ class RuntimeEvidenceStore:
             # comparison between two runs can tell a narrowed read from a
             # shrinking estate.
             "read_environments": list(self.read_environments),
+            # A shared read draws its numbers from a mirror this project does
+            # not own, so `orphan_ratio` above counts jobs that belong to a
+            # sibling project by design. Recorded beside the ratio because the
+            # ratio is meaningless without it.
+            "shared_read": self.shared_read,
+            "shared_from": list(self.shared_from),
             "redaction_flag_count": len(self.redaction_flags),
         }
 
@@ -1445,6 +1465,9 @@ async def fetch_runtime_evidence(
     failed_batches = 0
     observed_window: int | None = None
     read_environments: tuple[str, ...] = ()
+    shared_read = False
+    shared_from: tuple[str, ...] = ()
+    scope_seen = False
 
     async with httpx.AsyncClient(timeout=config.runtime_evidence_timeout_s) as client:
         for batch in batches:
@@ -1466,13 +1489,25 @@ async def fetch_runtime_evidence(
             retrieved_aliases.update(batch)
             if observed_window is None:
                 observed_window = int(payload.get("window_days") or window_days)
-            if not read_environments:
+            if not scope_seen:
                 scope_payload = payload.get("read_scope")
                 if isinstance(scope_payload, dict):
+                    # Read once, on the first batch that came back: the scope is
+                    # a property of the project, identical on every batch. The
+                    # guard is `scope_seen` rather than a truthiness check on
+                    # the values, because "every mirrored environment" and "not
+                    # a shared read" are both legitimately empty.
+                    scope_seen = True
                     read_environments = tuple(
                         str(name)
                         for name in scope_payload.get("environment_names") or []
                         if str(name).strip()
+                    )
+                    shared_read = bool(scope_payload.get("shared_read", False))
+                    shared_from = tuple(
+                        str(label)
+                        for label in scope_payload.get("shared_from") or []
+                        if str(label).strip()
                     )
             successful_orphan_lists.append(
                 [str(name) for name in payload.get("orphan_runtime_jobs") or []]
@@ -1536,6 +1571,13 @@ async def fetch_runtime_evidence(
     scope_mismatch = (
         len(orphans) >= config.runtime_evidence_scope_mismatch_min_orphans
         and orphan_ratio >= config.runtime_evidence_scope_mismatch_ratio
+        # A shared read draws on a tenant that backs several scanned projects,
+        # so jobs owned by a SIBLING project are orphans BY DESIGN and the
+        # ratio no longer measures what this flag means. Leaving it armed would
+        # make a correctly configured share indistinguishable from the
+        # mis-binding it exists to catch, and publish the accusation. The
+        # orphan figures are still reported -- only the verdict is withheld.
+        and not shared_read
     )
     source_key = next(
         (item.source_key for item in by_unit.values() if item.source_key), ""
@@ -1557,6 +1599,8 @@ async def fetch_runtime_evidence(
         redaction_flags=tuple(flags),
         alias_conflicts=tuple(sorted(alias_conflicts)),
         read_environments=read_environments,
+        shared_read=shared_read,
+        shared_from=shared_from,
     )
     logger.info(
         "runtime_evidence: project %s matched %d/%d units over %d batch(es) "
@@ -1781,6 +1825,11 @@ def _rollup_header(store: RuntimeEvidenceStore, silent_days: int) -> list[str]:
         f"| Runtime source | {store.source_key or 'unknown'} |",
         f"| Request batches | {store.batches} ({store.failed_batches} failed) |",
     ]
+    if store.shared_read:
+        lines.append(
+            "| Mirror ownership | shared read of "
+            f"{', '.join(store.shared_from) or 'another project'} |"
+        )
     if store.unretrieved_units:
         lines.append(f"| Units with no lookup result | {len(store.unretrieved_units)} |")
     lines.append("")
@@ -1812,16 +1861,29 @@ def _rollup_header(store: RuntimeEvidenceStore, silent_days: int) -> list[str]:
         # project binding is wrong". So both readings are offered, neither
         # asserted.
         emphasis = "**" if store.scope_mismatch else ""
+        # A shared read makes a THIRD reading not merely possible but expected:
+        # the runtime source is one tenant serving several scanned projects, so
+        # every job belonging to a sibling project is an orphan here by design.
+        # Offering the mis-binding reading in that case would accuse a correct
+        # configuration.
+        shared_note = (
+            " This project reads a runtime mirror it does not own, shared with "
+            "other scanned projects, so runtime jobs belonging to those projects "
+            "appear here as having no scanned counterpart. That is expected and "
+            "is NOT evidence of a mis-bound project."
+            if store.shared_read
+            else " Two readings fit these numbers equally well: this scan may "
+            "cover a deliberate subset of a larger deployed estate, or this "
+            "project's scan and runtime source may describe different estates "
+            "entirely. Do not assert either one."
+        )
         lines.append(
             f"> {emphasis}Scan/runtime asymmetry.{emphasis} "
             f"{len(store.by_unit)} of {store.requested_units} scanned units have "
             f"runtime data ({match_ratio * 100:.1f}%), and "
             f"{len(store.orphan_runtime_jobs)} of {orphan_total} runtime jobs have "
-            f"no scanned counterpart ({orphan_ratio * 100:.1f}%). Two readings fit "
-            "these numbers equally well: this scan may cover a deliberate subset "
-            "of a larger deployed estate, or this project's scan and runtime "
-            "source may describe different estates entirely. Do not assert either "
-            "one; if the document discusses coverage, state both figures."
+            f"no scanned counterpart ({orphan_ratio * 100:.1f}%)."
+            f"{shared_note} If the document discusses coverage, state both figures."
         )
         lines.append("")
     if multi_env:

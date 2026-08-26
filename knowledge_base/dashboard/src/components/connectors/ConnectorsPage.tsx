@@ -18,8 +18,11 @@ import {
   useUpdateConnector,
 } from "../../hooks/useConnectors";
 import {
+  useAddRuntimeSourceReader,
   useCreateRuntimeSource,
   useDeleteRuntimeSource,
+  useRemoveRuntimeSourceReader,
+  useRuntimeSourceReaders,
   useRuntimeSourceTypes,
   useRuntimeSources,
   useSyncRuntimeSource,
@@ -559,6 +562,7 @@ function RuntimeSourcePanel({ provider, sources, canManage, onConnect }: {
                 </button>
               </>
             )}
+            <SourceReaders source={source} canManage={canManage} />
           </div>
         ))}
       </div>
@@ -581,6 +585,143 @@ function RuntimeSourcePanel({ provider, sources, canManage, onConnect }: {
             Runtime sources
           </a>
         </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * "Shared with": the projects reading this mirror without owning it.
+ *
+ * This is the whole point of the control. One Talend tenant commonly backs
+ * several scanned projects, and registering its credential a second time is
+ * refused -- that would poll the vendor twice and leave two mirrors of one
+ * estate free to drift apart. Before this existed, an operator hitting that
+ * 409 had no supported way forward at all.
+ *
+ * Deliberately NOT merged with workspace mapping. A mapping SPLITS one source's
+ * rows between projects at write time; this SHARES the same rows with a second
+ * reader. They answer different questions, and one combined control is how an
+ * operator picks the wrong one.
+ *
+ * Full width on its own line because it is a per-source relationship list, not
+ * another action button on the row above it.
+ */
+function SourceReaders({ source, canManage }: { source: RuntimeSource; canManage: boolean }) {
+  const [open, setOpen] = useState(false);
+  const readers = useRuntimeSourceReaders(source.id, open);
+  const add = useAddRuntimeSourceReader(source.id);
+  const revoke = useRemoveRuntimeSourceReader(source.id);
+  const projects = useProjects();
+  const [projectId, setProjectId] = useState("");
+
+  const grants = readers.data?.grants ?? [];
+  // Neither the owner (it already reads its own mirror; the API 409s) nor a
+  // project that is already a reader.
+  const taken = new Set([source.project_id, ...grants.map((grant) => grant.project_id)]);
+  const candidates = (projects.data?.projects ?? []).filter(
+    (project) => !taken.has(project.id),
+  );
+
+  return (
+    <div className="w-full border-t border-white/[0.05] pt-2">
+      <button
+        className="text-xs text-slate-500 hover:text-slate-300"
+        onClick={() => setOpen((value) => !value)}
+      >
+        {open ? "Hide" : "Shared with"}
+        {!open && grants.length > 0 && ` (${grants.length})`}
+      </button>
+
+      {open && (
+        <div className="mt-2 space-y-2">
+          <p className="text-xs text-slate-600">
+            Other projects that read this mirror for their documentation. The tenant is
+            still polled once; a reader does not add vendor load.
+          </p>
+
+          {readers.isError && (
+            <p className="text-xs text-amber-400">
+              Could not load sharing: {parseApiError(readers.error)}
+            </p>
+          )}
+
+          {grants.map((grant) => (
+            <div key={grant.id} className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-slate-300">{grant.project_id}</span>
+              <span className="text-slate-600">
+                {grant.environment_ids?.length
+                  ? grant.environment_ids.join(", ")
+                  : "every mirrored environment"}
+                {grant.window_days ? ` · last ${grant.window_days} days` : ""}
+              </span>
+              {canManage && (
+                <button
+                  className="text-red-400 hover:text-red-300 disabled:opacity-50"
+                  disabled={revoke.isPending}
+                  onClick={() => revoke.mutate(grant.project_id)}
+                >
+                  Revoke
+                </button>
+              )}
+            </div>
+          ))}
+
+          {!readers.isLoading && grants.length === 0 && (
+            <p className="text-xs text-slate-600">No other project reads this mirror.</p>
+          )}
+
+          {canManage && (
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                className="input text-xs"
+                value={projectId}
+                onChange={(event) => setProjectId(event.target.value)}
+              >
+                <option value="">Add a project...</option>
+                {candidates.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.display_name === project.id
+                      ? project.id
+                      : `${project.display_name} (${project.id})`}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="btn-ghost text-xs"
+                disabled={!projectId || add.isPending}
+                onClick={() =>
+                  add.mutate(
+                    { project_id: projectId },
+                    { onSuccess: () => setProjectId("") },
+                  )
+                }
+              >
+                Grant read
+              </button>
+            </div>
+          )}
+
+          {add.isError && (
+            <p className="text-xs text-red-400">Grant failed: {parseApiError(add.error)}</p>
+          )}
+          {revoke.isError && (
+            <p className="text-xs text-red-400">Revoke failed: {parseApiError(revoke.error)}</p>
+          )}
+          {/* A grant filters by project id, so it also reaches whatever the
+              source's workspace map re-points rows to. Stated, never implied. */}
+          {add.data && add.data.grant.exposes_project_ids.length > 1 && (
+            <p className="text-xs text-amber-400">
+              This grant also exposes runtime data attributed to{" "}
+              {add.data.grant.exposes_project_ids.slice(1).join(", ")}, because this
+              source maps workspaces to those projects.
+            </p>
+          )}
+          <p className="text-xs text-slate-600">
+            A reader can narrow which environments and how much history its documents
+            use in that project's read scope.
+          </p>
+        </div>
       )}
     </div>
   );

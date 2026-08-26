@@ -313,6 +313,36 @@ export interface RuntimeSourceSyncResult {
   records_ingested: number;
 }
 
+/**
+ * One project's permission to read a runtime mirror it does not own.
+ *
+ * One Talend tenant commonly backs several scanned projects, and registering
+ * its credential twice is refused -- that would poll the vendor twice and leave
+ * two mirrors of one estate free to drift apart. A second project therefore
+ * SHARES the existing mirror through a grant.
+ *
+ * Not to be confused with a workspace mapping, which SPLITS one source's rows
+ * between projects at write time. Share vs split: different answers to
+ * different questions.
+ */
+export interface RuntimeSourceReadGrant {
+  id: number;
+  source_id: number;
+  /** The reader. The source's own project is the grantor and never appears. */
+  project_id: string;
+  source_project_id: string;
+  source_label: string;
+  /** null means every mirrored environment. */
+  environment_ids: string[] | null;
+  window_days: number | null;
+  /**
+   * Every project whose rows this grant exposes -- the source's own project
+   * plus any project its workspace map re-points rows to. Shown so a grant can
+   * never widen past what the operator intended without saying so.
+   */
+  exposes_project_ids: string[];
+}
+
 export interface ConnectorEvidenceFinding {
   evidence_id: string;
   classification: "corroborates" | "operational_context" | "discrepancy" | "inconclusive" | string;

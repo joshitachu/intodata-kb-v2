@@ -681,10 +681,18 @@ export const RuntimeOutcomeTrendPointSchema = z.object({
 });
 export type RuntimeOutcomeTrendPoint = z.infer<typeof RuntimeOutcomeTrendPointSchema>;
 
+export const RuntimeTrendCoverageSchema = z.object({
+  observed_from: z.string().nullable(),
+  observed_until: z.string().nullable(),
+  completeness: z.literal("unknown"),
+});
+export type RuntimeTrendCoverage = z.infer<typeof RuntimeTrendCoverageSchema>;
+
 export const RuntimeTrendResponseSchema = z.object({
   bucket: RuntimeTrendBucketSchema,
   points: z.array(RuntimeOutcomeTrendPointSchema),
   total: z.number(),
+  coverage: RuntimeTrendCoverageSchema,
 });
 export type RuntimeTrendResponse = z.infer<typeof RuntimeTrendResponseSchema>;
 
@@ -702,6 +710,9 @@ export const RuntimeJobReliabilitySchema = z.object({
   first_run_at: z.string().nullable().optional(),
   last_run_at: z.string().nullable().optional(),
   latest_state: RuntimeExecutionStateSchema.nullable().optional(),
+  // Current-state signal: true only when the latest run has no end time and
+  // is not normally running. Historical unfinished work is kept separately.
+  latest_unfinished: z.boolean().default(false),
   p50_duration_ms: z.number().nullable().optional(),
   p95_duration_ms: z.number().nullable().optional(),
   max_duration_ms: z.number().nullable().optional(),

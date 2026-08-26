@@ -241,6 +241,7 @@ describe("useRuntimeLogs", () => {
           current_failure_streak: 1,
           latest_run_at: "2026-07-02T10:00:00Z",
           latest_state: "failed",
+          latest_unfinished: false,
           p50_duration_ms: 32000,
           p95_duration_ms: 32000,
         },
@@ -898,6 +899,11 @@ describe("useRuntimeLogs aggregate rollups", () => {
       },
     ],
     total: 1,
+    coverage: {
+      observed_from: "2026-07-13T11:16:06Z",
+      observed_until: "2026-08-16T23:59:00Z",
+      completeness: "unknown",
+    },
   };
 
   it("useRuntimeTrend passes bucket and window through", async () => {
@@ -941,6 +947,11 @@ describe("useRuntimeLogs aggregate rollups", () => {
         },
       ],
       total: 1,
+      coverage: {
+        observed_from: "2026-07-13T11:16:06Z",
+        observed_until: "2026-08-16T23:59:00Z",
+        completeness: "unknown",
+      },
     });
 
     const { result } = renderHook(() => useRuntimeTrend({ bucket: "week" }), {
@@ -950,6 +961,7 @@ describe("useRuntimeLogs aggregate rollups", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data?.bucket).toBe("week");
     expect(result.current.data?.points[0].p50_duration_ms).toBeNull();
+    expect(result.current.data?.coverage.completeness).toBe("unknown");
   });
 
   it("useRuntimeTrend does not fetch when disabled", () => {
@@ -974,6 +986,7 @@ describe("useRuntimeLogs aggregate rollups", () => {
           first_run_at: "2026-05-26T00:00:00Z",
           last_run_at: "2026-07-01T00:00:00Z",
           latest_state: "failed",
+          latest_unfinished: false,
           p50_duration_ms: 23700,
           p95_duration_ms: 33700,
           max_duration_ms: 41000,
@@ -991,7 +1004,20 @@ describe("useRuntimeLogs aggregate rollups", () => {
     expect(fetchSpy.mock.calls[0][0] as string).toContain("/api/runtime/job-reliability?");
     expect(result.current.data?.jobs[0].current_failure_streak).toBe(4);
     expect(result.current.data?.jobs[0].latest_state).toBe("failed");
+    expect(result.current.data?.jobs[0].latest_unfinished).toBe(false);
     expect(result.current.data?.total).toBe(1);
+  });
+
+  it("requests current attention without applying a history window", async () => {
+    const fetchSpy = mockFetchOnce({ jobs: [], total: 0 });
+    const { result } = renderHook(
+      () => useRuntimeJobReliability({ projectId: "werkorder", attentionOnly: true }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(fetchSpy.mock.calls[0][0] as string).toContain("attention_only=true");
+    expect(fetchSpy.mock.calls[0][0] as string).not.toContain("since=");
   });
 
   it("useRuntimeJobInsights parses bounded operational explanations", async () => {

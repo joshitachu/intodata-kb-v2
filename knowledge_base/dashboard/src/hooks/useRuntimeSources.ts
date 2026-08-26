@@ -97,3 +97,54 @@ export function useDeleteRuntimeSource() {
     onSuccess: () => invalidateRuntimeSources(queryClient),
   });
 }
+
+/**
+ * Projects granted read access to one source's mirror.
+ *
+ * The supported answer to "That physical runtime source is already registered":
+ * one Talend tenant is polled ONCE, and every other project documenting the
+ * same estate reads that mirror through a grant. Registering the credential
+ * again is refused on purpose -- it would double the vendor poll and leave two
+ * mirrors of one estate free to drift apart.
+ */
+export function useRuntimeSourceReaders(sourceId: number | null, enabled = true) {
+  return useQuery({
+    queryKey: ["runtime-source-readers", sourceId],
+    queryFn: () => api.listRuntimeSourceReaders(sourceId as number),
+    enabled: enabled && sourceId !== null,
+    // Best-effort, like the read scope: a caller without permission sees the
+    // source row without its sharing line, not an error in place of the list.
+    retry: false,
+    staleTime: 15_000,
+  });
+}
+
+function invalidateReaders(
+  queryClient: ReturnType<typeof useQueryClient>,
+  sourceId: number,
+) {
+  queryClient.invalidateQueries({ queryKey: ["runtime-source-readers", sourceId] });
+  // A grant changes what a documentation run for the READING project reads,
+  // so the scope line for every project is now potentially stale.
+  queryClient.invalidateQueries({ queryKey: ["runtime-read-scope"] });
+}
+
+export function useAddRuntimeSourceReader(sourceId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      project_id: string;
+      environment_ids?: string[] | null;
+      window_days?: number | null;
+    }) => api.addRuntimeSourceReader(sourceId, data),
+    onSuccess: () => invalidateReaders(queryClient, sourceId),
+  });
+}
+
+export function useRemoveRuntimeSourceReader(sourceId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) => api.removeRuntimeSourceReader(sourceId, projectId),
+    onSuccess: () => invalidateReaders(queryClient, sourceId),
+  });
+}

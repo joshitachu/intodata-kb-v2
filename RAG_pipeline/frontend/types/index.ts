@@ -1014,6 +1014,7 @@ export {
   // Aggregate rollup schemas
   RuntimeTrendBucketSchema,
   RuntimeOutcomeTrendPointSchema,
+  RuntimeTrendCoverageSchema,
   RuntimeTrendResponseSchema,
   RuntimeJobReliabilitySchema,
   RuntimeJobReliabilityResponseSchema,
@@ -1089,6 +1090,7 @@ export type {
   // Aggregate rollup types
   RuntimeTrendBucket,
   RuntimeOutcomeTrendPoint,
+  RuntimeTrendCoverage,
   RuntimeTrendResponse,
   RuntimeJobReliability,
   RuntimeJobReliabilityResponse,

@@ -123,6 +123,37 @@ def _assert_scope_allows(scope: ProjectScope, project_id: str) -> None:
         raise HTTPException(status_code=403, detail="Project access required")
 
 
+async def _already_registered_detail(
+    repo: RuntimeStoreRepository, existing_id: int, scope: ProjectScope
+) -> str:
+    """Explain the duplicate-source 409 and name the supported way forward.
+
+    The bare message this replaces was a dead end: an operator adding a second
+    project against one Talend tenant was told the source exists, with no hint
+    that the same tenant is meant to be SHARED rather than registered twice.
+    Registering it twice is refused on purpose -- it would mean a second poll
+    and two mirrors of one estate free to drift apart.
+
+    The owning project is named only when the caller can already see it. A 409
+    is reachable by anyone holding a working token for the tenant, so naming an
+    out-of-scope project here would leak it to someone with no access to it.
+    """
+    action = (
+        "Grant this project read access to the existing source instead "
+        "(Shared with, on the source), or split the tenant by workspace."
+    )
+    try:
+        # Scope None: an unrestricted operator, who may see every project.
+        existing = await repo.get_source_config(existing_id, None)
+    except RuntimeRecordNotFoundError:
+        return f"That physical runtime source is already registered. {action}"
+    if scope is None or existing.project_id in scope:
+        where = f"as '{existing.label}' in project '{existing.project_id}'"
+    else:
+        where = "in another project"
+    return f"That physical runtime source is already registered {where}. {action}"
+
+
 @router.get("", response_model=RuntimeSourceListResponse)
 async def list_runtime_sources(
     user: RuntimeSourceReader,
@@ -268,8 +299,12 @@ async def create_runtime_source(
         )
     endpoint_identity = provider.physical_source_identity(body.credentials)
     source_type_aliases = provider.source_type_aliases()
-    if await repo.find_source_id_by_physical_identity(physical_identity) is not None:
-        raise HTTPException(status_code=409, detail="That physical runtime source is already registered")
+    existing_id = await repo.find_source_id_by_physical_identity(physical_identity)
+    if existing_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=await _already_registered_detail(repo, existing_id, scope),
+        )
     # Sources registered under an older identity rule cannot be compared against
     # a resolved identity as stored, so re-resolve each from its own credentials
     # and repair the row before judging this registration.
@@ -294,7 +329,10 @@ async def create_runtime_source(
             )
             continue
         if resolved == physical_identity:
-            raise HTTPException(status_code=409, detail="That physical runtime source is already registered")
+            raise HTTPException(
+                status_code=409,
+                detail=await _already_registered_detail(repo, source_id, scope),
+            )
     try:
         source = await repo.create_source_config(
             project_id=body.project_id,

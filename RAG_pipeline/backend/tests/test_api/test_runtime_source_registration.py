@@ -104,6 +104,19 @@ async def client(db_session, monkeypatch):
     app.dependency_overrides.clear()
 
 
+def _restricted_scope(project_ids: list[str]):
+    """Re-patch the caller's project scope for one assertion.
+
+    The client fixture pins scope to None (unrestricted). Nesting a second
+    patch over the same target is what lets a single test ask what a
+    narrower-scoped operator would have been told.
+    """
+    return patch(
+        "src.api.routes.runtime_sources.get_user_project_ids",
+        AsyncMock(return_value=project_ids),
+    )
+
+
 async def _seed_source(client, *, token: str, identity: str, project_id: str, label: str) -> int:
     """Insert a source carrying an identity written under an older rule."""
     source = await client.repo.create_source_config(
@@ -152,7 +165,44 @@ class TestCreate:
         )
 
         assert again.status_code == 409
-        assert again.json()["detail"] == "That physical runtime source is already registered"
+        assert again.json()["detail"].startswith(
+            "That physical runtime source is already registered"
+        )
+
+    async def test_the_refusal_names_the_owner_and_the_way_forward(self, client):
+        """A duplicate 409 has to be a signpost, not a dead end.
+
+        One Talend tenant backing two scanned projects is the normal case, and
+        the supported answer is a read grant. An operator who is only told the
+        source exists has no way to discover that.
+        """
+        await client.http.post("/api/v1/runtime/sources", json=_body("token-a", "Customer A"))
+        again = await client.http.post(
+            "/api/v1/runtime/sources", json=_body("token-a", "Customer A again", project_id="p2")
+        )
+
+        detail = again.json()["detail"]
+        assert "'Customer A'" in detail and "'p1'" in detail
+        assert "read access" in detail
+
+    async def test_the_refusal_hides_a_project_the_caller_cannot_see(self, client):
+        """A 409 is reachable by anyone holding a working token for the tenant.
+
+        Naming an out-of-scope project there would hand it to someone with no
+        access to it, so the owner is named only when already visible.
+        """
+        await client.http.post("/api/v1/runtime/sources", json=_body("token-a", "Customer A"))
+
+        with _restricted_scope(["p2"]):
+            again = await client.http.post(
+                "/api/v1/runtime/sources",
+                json=_body("token-a", "Customer A again", project_id="p2"),
+            )
+
+        detail = again.json()["detail"]
+        assert again.status_code == 409
+        assert "p1" not in detail and "Customer A" not in detail
+        assert "in another project" in detail
 
     async def test_same_account_under_a_second_token_is_refused(self, client):
         """The mirror case the guard exists for: one TMC, two registrations."""

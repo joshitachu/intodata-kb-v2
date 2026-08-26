@@ -302,6 +302,49 @@ class RuntimeDocReadScopeResponse(BaseModel):
     window_days: int | None = None
     configured: bool = False
     unavailable_environment_ids: list[str] = Field(default_factory=list)
+    # True when this project reads a mirror it does not own, through a read
+    # grant on another project's runtime source. Surfaced in the generate
+    # dialog so an operator can see that the runtime figures in the resulting
+    # documents come from a tenant shared with other projects.
+    shared_read: bool = False
+    shared_from: list[str] = Field(default_factory=list)
+    read_project_ids: list[str] = Field(default_factory=list)
+
+
+class RuntimeSourceReadGrant(BaseModel):
+    """One project's permission to read a runtime source it does not own.
+
+    Not a workspace mapping. A mapping SPLITS a source's rows between projects
+    at write time; a grant SHARES the same rows with a second reader. The UI
+    keeps them apart for that reason.
+    """
+
+    id: int = 0
+    source_id: int = 0
+    project_id: str = ""
+    source_project_id: str = ""
+    source_label: str = ""
+    environment_ids: list[str] | None = None
+    window_days: int | None = None
+    # Every project whose rows the grant exposes: the source's own project plus
+    # any project its workspace map re-points rows to. Shown in the UI so a
+    # grant cannot quietly widen past what the operator intended.
+    exposes_project_ids: list[str] = Field(default_factory=list)
+
+
+class RuntimeSourceReadGrantRequest(BaseModel):
+    project_id: str
+    environment_ids: list[str] | None = None
+    window_days: int | None = None
+
+
+class RuntimeSourceReadGrantResponse(BaseModel):
+    grant: RuntimeSourceReadGrant
+
+
+class RuntimeSourceReadGrantListResponse(BaseModel):
+    grants: list[RuntimeSourceReadGrant] = Field(default_factory=list)
+    total: int = 0
 
 
 class RuntimeSourceCreateRequest(BaseModel):

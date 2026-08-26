@@ -56,6 +56,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -307,6 +308,52 @@ class RuntimeSourcesBridge:
             params={"project_id": project_id},
         )
         return dict((payload or {}).get("scope") or {})
+
+    async def list_read_grants(
+        self, identity: ForwardedIdentity, source_id: int
+    ) -> list[dict[str, Any]]:
+        """Projects allowed to read this source's mirror without owning it.
+
+        One vendor tenant commonly backs several scanned projects, and
+        registering its credential twice is refused on purpose -- that would
+        mean a second poll and two mirrors free to drift apart. Sharing is
+        therefore a read grant, and the operator needs to see the grants to
+        manage them.
+        """
+        payload = await self._request(
+            "GET", f"/api/v1/runtime/sources/{source_id}/readers", identity
+        )
+        return [dict(item) for item in (payload or {}).get("grants") or []]
+
+    async def add_read_grant(
+        self,
+        identity: ForwardedIdentity,
+        source_id: int,
+        *,
+        project_id: str,
+        environment_ids: list[str] | None,
+        window_days: int | None,
+    ) -> dict[str, Any]:
+        payload = await self._request(
+            "POST",
+            f"/api/v1/runtime/sources/{source_id}/readers",
+            identity,
+            payload={
+                "project_id": project_id,
+                "environment_ids": environment_ids,
+                "window_days": window_days,
+            },
+        )
+        return dict((payload or {}).get("grant") or {})
+
+    async def delete_read_grant(
+        self, identity: ForwardedIdentity, source_id: int, project_id: str
+    ) -> None:
+        await self._request(
+            "DELETE",
+            f"/api/v1/runtime/sources/{source_id}/readers/{quote(project_id, safe='')}",
+            identity,
+        )
 
     async def delete_source(self, identity: ForwardedIdentity, source_id: int) -> None:
         await self._request("DELETE", f"/api/v1/runtime/sources/{source_id}", identity)

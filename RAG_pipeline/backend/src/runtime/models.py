@@ -190,6 +190,38 @@ class RuntimeWorkspaceProjectMapCreate(BaseModel):
     project_id: str
 
 
+class RuntimeSourceReadGrant(BaseModel):
+    """One project's permission to read another project's runtime mirror.
+
+    Distinct from `RuntimeWorkspaceProjectMap`, which SPLITS a source's rows
+    between projects at write time. A grant SHARES the same rows with a second
+    reader. Presenting them as one control is how an operator picks the wrong
+    one.
+    """
+
+    id: int
+    source_id: int
+    # The reader. The source's own project is the grantor and never appears.
+    project_id: str
+    source_project_id: str
+    source_label: str
+    # None means every mirrored environment; [] is a deliberate "nothing".
+    environment_ids: list[str] | None = None
+    window_days: int | None = None
+    # Every project whose rows this grant exposes: the source's own project
+    # plus any project its workspace map re-points rows to. Returned so a grant
+    # can never expose a third project's data without saying so.
+    exposes_project_ids: list[str] = Field(default_factory=list)
+    created_at: datetime
+    created_by: str | None = None
+
+
+class RuntimeSourceReadGrantCreate(BaseModel):
+    project_id: str
+    environment_ids: list[str] | None = None
+    window_days: int | None = Field(default=None, ge=1, le=365)
+
+
 class RuntimeEnvironment(BaseModel):
     environment_id: str
     source_key: str
@@ -234,6 +266,17 @@ class RuntimeDocReadScope(BaseModel):
     # covers them, or an environment retired at the vendor. Surfaced rather than
     # dropped: silently reading less than requested is the worse failure.
     unavailable_environment_ids: list[str] = Field(default_factory=list)
+    # True when this project read a mirror it does not own, via a read grant.
+    # A shared read is not comparable to an owned one -- the runtime job
+    # vocabulary belongs to the whole tenant, not to this project -- so the
+    # published document has to be able to say which it was.
+    shared_read: bool = False
+    # Labels of the granting sources, for the coverage record. Labels, not
+    # project ids: the reader may have no permission to see the owner's project.
+    shared_from: list[str] = Field(default_factory=list)
+    # The project ids this read was actually scoped to: this project plus every
+    # project the granted sources stamp their rows with.
+    read_project_ids: list[str] = Field(default_factory=list)
 
 
 class RuntimeWorkspace(BaseModel):
@@ -550,6 +593,14 @@ class RuntimeOutcomeTrendPoint(BaseModel):
     max_duration_ms: int | None = None
 
 
+class RuntimeTrendCoverage(BaseModel):
+    """Observed execution bounds; missing buckets are not known-complete windows."""
+
+    observed_from: datetime | None = None
+    observed_until: datetime | None = None
+    completeness: Literal["unknown"] = "unknown"
+
+
 class RuntimeJobReliability(BaseModel):
     """Per-job reliability and latency rollup over the requested window."""
 
@@ -565,6 +616,10 @@ class RuntimeJobReliability(BaseModel):
     first_run_at: datetime | None = None
     last_run_at: datetime | None = None
     latest_state: RuntimeExecutionState | None = None
+    # The latest observed run has no end time, excluding normally-running work.
+    # This is intentionally a current-state signal, unlike `unfinished_runs`,
+    # which is a historical count over the requested window.
+    latest_unfinished: bool = False
     p50_duration_ms: int | None = None
     p95_duration_ms: int | None = None
     max_duration_ms: int | None = None
@@ -898,11 +953,26 @@ class ListRuntimeJobReliabilityInput(ListRuntimeInventoryInput):
     job_name: str | None = None
     since: datetime | None = None
     until: datetime | None = None
+    # A resolved SHARED read set, which takes precedence over `project_id` when
+    # set. Only the documentation lane sets it -- the operations console reads
+    # one project at a time, and widening its rollups would mean a page headed
+    # with one project's name showing another's jobs.
+    project_ids: list[str] | None = None
+    # Raised from the inherited 500 for shared reads only: the documentation
+    # lane needs the WHOLE runtime vocabulary of every project in the read set
+    # (truncating it turns a mirrored job into "no runtime data" with nothing
+    # to show that it was cut), and it scales that ceiling with the set size.
+    # The user-facing endpoint keeps its own `Query(le=500)`, so this does not
+    # widen anything a caller can ask for.
+    limit: int = Field(default=100, ge=1, le=5000)
     # Restrict the rollup to runs observed in these environment ids. None means
     # every mirrored environment, which is the historical behaviour and stays
     # the default -- an empty list would be a different claim ("no environment")
     # and is rejected by the caller rather than silently treated as "all".
     environment_ids: list[str] | None = None
+    # Only jobs whose latest observed run still needs intervention: it failed,
+    # or it has no end time and is not still running.
+    attention_only: bool = False
 
 
 class ListRuntimeComponentHotspotsInput(ListRuntimeInventoryInput):

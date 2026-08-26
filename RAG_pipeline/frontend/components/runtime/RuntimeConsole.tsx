@@ -427,23 +427,30 @@ function Hub({
   );
   const overview = useRuntimeOverview({ projectId: scope });
   const trend = useRuntimeTrend({ projectId: scope, since, bucket });
-  // Window-scoped, so a job that last ran before the window cannot appear here.
+  // Window-scoped aggregates power the historical KPIs and evidence cards.
   const reliability = useRuntimeJobReliability({ projectId: scope, since, limit: 100 });
   const jobInsights = useRuntimeJobInsights({ projectId: scope, since, limit: 500 });
+  // Attention deliberately has no selected-window filter: it answers whether
+  // a job is unresolved now, not whether it had a problem sometime in history.
+  const attentionReliability = useRuntimeJobReliability({
+    projectId: scope,
+    attentionOnly: true,
+    limit: 100,
+  });
+  const attentionInsights = useRuntimeJobInsights({ projectId: scope, limit: 500 });
   const runs = useRuntimeExecutions({ projectId: scope, since, limit: 12 });
-  const incidents = useRuntimeIncidents({ projectId: scope, since, limit: 1 });
 
   const estate = overview.data?.overview;
   const points = trend.data?.points ?? [];
   const jobs = reliability.data?.jobs ?? [];
   const insights = jobInsights.data?.insights ?? [];
-  const insightsByJob = new Map(
-    insights.map((insight) => [
+  const currentAttentionJobs = attentionReliability.data?.jobs ?? [];
+  const attentionInsightsByJob = new Map(
+    (attentionInsights.data?.insights ?? []).map((insight) => [
       `${insight.source_key}:${insight.job_name}`,
       insight,
     ]),
   );
-
   const totals = points.reduce(
     (acc, point) => ({
       runs: acc.runs + point.total_runs,
@@ -454,14 +461,10 @@ function Hub({
   const failureRate = totals.runs > 0 ? totals.failed / totals.runs : 0;
   const unfinished = jobs.reduce((sum, job) => sum + job.unfinished_runs, 0);
 
-  const attention = jobs
-    .filter((job) => job.failed_runs > 0 || job.unfinished_runs > 0)
-    .sort(
-      (a, b) =>
-        b.failed_runs - a.failed_runs ||
-        b.unfinished_runs - a.unfinished_runs ||
-        b.failure_rate - a.failure_rate,
-    )
+  // The API is authoritative, but keep the display safe if an older backend
+  // responds during a rolling deploy or a cached response is replayed.
+  const attention = currentAttentionJobs
+    .filter((job) => job.latest_state === "failed" || job.latest_unfinished)
     .slice(0, 5);
 
   const windowLabel = resolveWindow(windowKey).label.toLowerCase();
@@ -469,7 +472,15 @@ function Hub({
   return (
     <div className="flex flex-col gap-5">
       <SyncStatusBanner freshness={freshness} />
-      <QueryState queries={[overview, trend, reliability, jobInsights, runs, incidents]}>
+      <QueryState queries={[
+        overview,
+        trend,
+        reliability,
+        jobInsights,
+        attentionReliability,
+        attentionInsights,
+        runs,
+      ]}>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <Kpi
             icon={Activity}
@@ -522,6 +533,11 @@ function Hub({
             <RuntimeOutcomeTrend
               points={points}
               bucket={trend.data?.bucket ?? bucket}
+              coverage={trend.data?.coverage ?? {
+                observed_from: null,
+                observed_until: null,
+                completeness: "unknown",
+              }}
               rangeStart={since}
               rangeEnd={until}
             />
@@ -529,13 +545,13 @@ function Hub({
           <Panel
             title="Needs attention"
             icon={AlertTriangle}
-            description="Jobs that ran in this window and are failing or never finishing."
+            description="Jobs with a latest observed run that is still unresolved."
             action={
               <Link
-                href={runtimeHref("/admin/logs/incidents")}
+                href={runtimeHref("/admin/logs/jobs")}
                 className="text-xs font-medium text-primary hover:underline"
               >
-                {incidents.data?.total ?? 0} incidents
+                {attentionReliability.data?.total ?? attention.length} active
               </Link>
             }
             flush
@@ -543,7 +559,7 @@ function Hub({
             {attention.length === 0 ? (
               <Empty
                 label="No active attention signals."
-                hint="Every job that ran in this window finished without failures."
+                hint="Each latest observed run is healthy or still in progress."
               />
             ) : (
               <ul className="divide-y divide-border">
@@ -551,7 +567,7 @@ function Hub({
                   <li key={`${job.source_key}:${job.job_name}`} className="px-5 py-3">
                     <AttentionRow
                       job={job}
-                      insight={insightsByJob.get(`${job.source_key}:${job.job_name}`)}
+                      insight={attentionInsightsByJob.get(`${job.source_key}:${job.job_name}`)}
                     />
                   </li>
                 ))}
@@ -690,11 +706,12 @@ function AttentionRow({
   job: RuntimeJobReliability;
   insight?: RuntimeJobInsight;
 }) {
-  const parts = [
-    `${job.failed_runs} of ${job.total_runs} failed (${formatPercent(job.failure_rate)})`,
-  ];
-  if (job.unfinished_runs > 0) parts.push(`${job.unfinished_runs} never finished`);
-  if (job.current_failure_streak > 1) parts.push(`${job.current_failure_streak} in a row`);
+  const parts = [];
+  if (job.latest_state === "failed") {
+    parts.push("Latest run failed");
+    if (job.current_failure_streak > 1) parts.push(`${job.current_failure_streak} failures in a row`);
+  }
+  if (job.latest_unfinished) parts.push("Latest run never finished");
 
   return (
     <div className="flex items-start gap-2.5">
@@ -734,12 +751,12 @@ function AttentionRow({
               </p>
             )}
           </div>
-        ) : insight && job.failed_runs > 0 ? (
+        ) : insight && job.latest_state === "failed" ? (
           <p className="mt-1 text-xs font-medium text-muted-foreground">
             No useful diagnosis yet.
           </p>
         ) : null}
-        {insight && job.failed_runs > 0 && (
+        {insight && job.latest_state === "failed" && (
           <p className="mt-1 text-xs text-muted-foreground/80">
             {insight.failures_with_logs === 0
               ? `No logs captured for ${job.failed_runs} failure${job.failed_runs === 1 ? "" : "s"}`

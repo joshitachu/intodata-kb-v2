@@ -34,6 +34,8 @@ import {
   QualityHistoryResponseSchema,
   RuntimeDocReadScopeSchema,
   RuntimeSourceListResponseSchema,
+  RuntimeSourceReadGrantListResponseSchema,
+  RuntimeSourceReadGrantResponseSchema,
   RuntimeSourceSchema,
   RuntimeSourceScopesResponseSchema,
   RuntimeSourceSyncResponseSchema,
@@ -575,6 +577,33 @@ export const api = {
 
   deleteRuntimeSource: (sourceId: number) =>
     request<void>(`/mcp/runtime-sources/${sourceId}`, { method: "DELETE" }),
+
+  // --- Read grants: share one mirror with a second project ---
+  // The answer to "already registered". A tenant is polled once; other projects
+  // documenting the same estate read that mirror instead of re-registering it.
+
+  listRuntimeSourceReaders: (sourceId: number) =>
+    request<{ grants: import("../types").RuntimeSourceReadGrant[]; total: number }>(
+      `/mcp/runtime-sources/${sourceId}/readers`,
+      {},
+      RuntimeSourceReadGrantListResponseSchema,
+    ),
+
+  addRuntimeSourceReader: (
+    sourceId: number,
+    data: { project_id: string; environment_ids?: string[] | null; window_days?: number | null },
+  ) =>
+    request<{ grant: import("../types").RuntimeSourceReadGrant }>(
+      `/mcp/runtime-sources/${sourceId}/readers`,
+      { method: "POST", body: JSON.stringify(data) },
+      RuntimeSourceReadGrantResponseSchema,
+    ),
+
+  removeRuntimeSourceReader: (sourceId: number, projectId: string) =>
+    request<void>(
+      `/mcp/runtime-sources/${sourceId}/readers/${encodeURIComponent(projectId)}`,
+      { method: "DELETE" },
+    ),
 
   listProjectConnectorBindings: (projectId: string) =>
     request<{ project_id: string; bindings: import("../types").ProjectConnectorBinding[] }>(

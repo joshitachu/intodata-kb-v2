@@ -17,6 +17,7 @@ make a published document wrong:
 * the output must stay ASCII (generated docs target Windows cp1252).
 """
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -918,6 +919,42 @@ def test_the_asymmetry_is_stated_with_both_readings_and_no_accusation():
     assert "Do not assert either" in text
     assert "BINDING SUSPECT" not in text
     assert "binding_suspect" not in text
+
+
+def test_a_shared_read_states_that_orphans_are_expected():
+    """One tenant backing several scanned projects makes a sibling project's
+    jobs orphans BY DESIGN. Offering the mis-binding reading there would accuse
+    a correct configuration -- the same class of error `scope_mismatch` was
+    already narrowed to avoid."""
+    store = _rollup_store(1, unmatched=9, orphans=91)
+    shared = replace(store, shared_read=True, shared_from=("Talend EU",))
+
+    text = project_rollup(shared, max_bytes=40_000, now=_NOW)
+
+    assert "Scan/runtime asymmetry" in text
+    assert "shared with other scanned projects" in text
+    assert "NOT evidence of a mis-bound project" in text
+    # The competing readings belong to an OWNED mirror; here they would be wrong.
+    assert "may describe different estates" not in text
+    # The figures themselves are still published either way.
+    assert "91 of 92 runtime jobs" in text
+
+
+def test_a_shared_read_names_the_mirror_it_borrowed():
+    shared = replace(
+        _rollup_store(2), shared_read=True, shared_from=("Talend EU", "Talend US")
+    )
+
+    text = project_rollup(shared, max_bytes=40_000, now=_NOW)
+
+    assert "| Mirror ownership | shared read of Talend EU, Talend US |" in text
+
+
+def test_an_owned_read_says_nothing_about_sharing():
+    text = project_rollup(_rollup_store(2), max_bytes=40_000, now=_NOW)
+
+    assert "Mirror ownership" not in text
+    assert "shared read" not in text
 
 
 def test_a_correct_partial_scan_is_not_accused():

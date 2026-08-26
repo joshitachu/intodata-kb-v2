@@ -268,6 +268,18 @@ class TestOutcomeTrend:
     async def test_empty_scope_denies_all(self, repo):
         assert await repo.get_outcome_trend([], RuntimeTrendInput()) == []
 
+    async def test_coverage_bounds_ignore_display_window_but_honor_scope(self, repo):
+        coverage = await repo.get_outcome_trend_coverage(
+            [_A], RuntimeTrendInput(bucket=RuntimeTrendBucket.DAY, since=_DAY_TWO)
+        )
+        assert coverage.observed_from == _DAY_ONE
+        assert coverage.observed_until == _DAY_TWO
+        assert coverage.completeness == "unknown"
+
+        denied = await repo.get_outcome_trend_coverage([], RuntimeTrendInput())
+        assert denied.observed_from is None
+        assert denied.observed_until is None
+
 
 class TestJobReliability:
     async def test_counts_streak_and_percentiles(self, repo):
@@ -279,6 +291,7 @@ class TestJobReliability:
         # a4 and a5 are the two most recent runs and both failed.
         assert job_a.current_failure_streak == 2
         assert job_a.latest_state is RuntimeExecutionState.FAILED
+        assert job_a.latest_unfinished is False
         # durations 100..500 (n=5): p50 -> ceil(2.5)=3 -> 300; p95 -> ceil(4.75)=5 -> 500.
         assert (job_a.p50_duration_ms, job_a.p95_duration_ms) == (300, 500)
         assert job_a.max_duration_ms == 500
@@ -299,8 +312,46 @@ class TestJobReliability:
         assert job_b.total_runs == 2
         assert job_b.unfinished_runs == 1
         assert job_b.latest_state is RuntimeExecutionState.UNKNOWN
+        assert job_b.latest_unfinished is True
         # Only b1 has a duration, so both percentiles collapse onto it.
         assert (job_b.p50_duration_ms, job_b.p95_duration_ms) == (1_000_000, 1_000_000)
+
+    async def test_attention_only_keeps_only_latest_unresolved_state(self, repo):
+        # jobC had a failure, but its later successful run resolved it. jobD is
+        # still running and therefore is not "never finished" attention.
+        await _add_execution(
+            repo,
+            project_id=_A,
+            execution_id="c1",
+            job_name="jobC",
+            state="failed",
+            started_at=_DAY_ONE,
+            duration_ms=100,
+        )
+        await _add_execution(
+            repo,
+            project_id=_A,
+            execution_id="c2",
+            job_name="jobC",
+            state="success",
+            started_at=_DAY_TWO + datetime.timedelta(hours=1),
+            duration_ms=100,
+        )
+        await _add_execution(
+            repo,
+            project_id=_A,
+            execution_id="d1",
+            job_name="jobD",
+            state="running",
+            started_at=_DAY_TWO + datetime.timedelta(hours=2),
+            duration_ms=None,
+            ended=False,
+        )
+
+        params = ListRuntimeJobReliabilityInput(attention_only=True)
+        rows = await repo.list_job_reliability([_A], params)
+        assert [row.job_name for row in rows] == ["jobB", "jobA"]
+        assert await repo.count_job_reliability([_A], params) == 2
 
     async def test_ordering_puts_most_failures_first(self, repo):
         rows = await repo.list_job_reliability([_A], ListRuntimeJobReliabilityInput())

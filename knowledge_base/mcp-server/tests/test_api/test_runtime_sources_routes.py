@@ -38,6 +38,9 @@ class FakeBridge:
         self.discover_calls: list[dict] = []
         self.sync_calls: list[int] = []
         self.delete_calls: list[int] = []
+        self.grants: list[dict] = []
+        self.grant_calls: list[dict] = []
+        self.revoke_calls: list[dict] = []
         self.identities: list[ForwardedIdentity] = []
 
     def _maybe_raise(self):
@@ -98,6 +101,40 @@ class FakeBridge:
     async def delete_source(self, identity, source_id):
         self.identities.append(identity)
         self.delete_calls.append(source_id)
+        self._maybe_raise()
+
+    async def list_read_grants(self, identity, source_id):
+        self.identities.append(identity)
+        self._maybe_raise()
+        return list(self.grants)
+
+    async def add_read_grant(self, identity, source_id, *, project_id, environment_ids, window_days):
+        self.identities.append(identity)
+        self.grant_calls.append(
+            {
+                "source_id": source_id,
+                "project_id": project_id,
+                "environment_ids": environment_ids,
+                "window_days": window_days,
+            }
+        )
+        self._maybe_raise()
+        grant = {
+            "id": 7,
+            "source_id": source_id,
+            "project_id": project_id,
+            "source_project_id": "werkorder",
+            "source_label": "Talend TMC",
+            "environment_ids": environment_ids,
+            "window_days": window_days,
+            "exposes_project_ids": ["werkorder"],
+        }
+        self.grants.append(grant)
+        return grant
+
+    async def delete_read_grant(self, identity, source_id, project_id):
+        self.identities.append(identity)
+        self.revoke_calls.append({"source_id": source_id, "project_id": project_id})
         self._maybe_raise()
 
 
@@ -505,3 +542,62 @@ class TestDiscover:
 
         assert response.status_code == 200
         assert "super-secret-token" not in response.text
+
+
+class TestReadGrants:
+    """Sharing a tenant is the supported answer to the duplicate-source 409.
+
+    A second project documenting the same Talend estate is granted READ over
+    the existing mirror; registering the credential again is refused, because
+    that would poll the vendor twice and leave two mirrors free to drift.
+    """
+
+    async def test_granting_forwards_the_project_and_its_scope(self, client, bridge):
+        response = await client.post(
+            "/mcp/runtime-sources/42/readers",
+            json={"project_id": "scherpenhuizen", "environment_ids": ["env-prod"], "window_days": 30},
+        )
+
+        assert response.status_code == 200, response.text
+        assert bridge.grant_calls[0] == {
+            "source_id": 42,
+            "project_id": "scherpenhuizen",
+            "environment_ids": ["env-prod"],
+            "window_days": 30,
+        }
+
+    async def test_a_grant_reports_every_project_it_exposes(self, client, bridge):
+        """A grant filters by project id, so it also reaches whatever the
+        source's workspace map re-points rows to. The operator sees that."""
+        response = await client.post(
+            "/mcp/runtime-sources/42/readers", json={"project_id": "scherpenhuizen"}
+        )
+
+        assert response.json()["grant"]["exposes_project_ids"] == ["werkorder"]
+
+    async def test_listing_returns_the_current_grants(self, client, bridge):
+        await client.post("/mcp/runtime-sources/42/readers", json={"project_id": "scherpenhuizen"})
+
+        response = await client.get("/mcp/runtime-sources/42/readers")
+
+        assert response.status_code == 200
+        assert response.json()["total"] == 1
+        assert response.json()["grants"][0]["project_id"] == "scherpenhuizen"
+
+    async def test_revoking_forwards_the_project_id(self, client, bridge):
+        response = await client.delete("/mcp/runtime-sources/42/readers/scherpenhuizen")
+
+        assert response.status_code == 204
+        assert bridge.revoke_calls[0] == {"source_id": 42, "project_id": "scherpenhuizen"}
+
+    async def test_the_backends_refusal_is_relayed_verbatim(self, client, bridge):
+        """The RAG backend owns the both-sides authorization check; a 404 from
+        it must not be flattened into a 500 here."""
+        bridge.error = RuntimeSourcesBridgeError(404, "Project not found")
+
+        response = await client.post(
+            "/mcp/runtime-sources/42/readers", json={"project_id": "not-mine"}
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Project not found"

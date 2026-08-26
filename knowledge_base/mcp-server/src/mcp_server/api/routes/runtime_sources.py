@@ -62,6 +62,9 @@ from mcp_server.schemas import (
     RuntimeDocReadScopeResponse,
     RuntimeSourceCreateRequest,
     RuntimeSourceListResponse,
+    RuntimeSourceReadGrantListResponse,
+    RuntimeSourceReadGrantRequest,
+    RuntimeSourceReadGrantResponse,
     RuntimeSourceResponse,
     RuntimeSourceScopeDiscoveryRequest,
     RuntimeSourceScopesResponse,
@@ -224,6 +227,55 @@ async def delete_runtime_source(source_id: int, request: Request):
     await require_connector_management(request)
     try:
         await _bridge(request).delete_source(_identity(request), source_id)
+    except RuntimeSourcesBridgeError as exc:
+        _raise(exc)
+    return None
+
+
+@router.get(
+    "/runtime-sources/{source_id}/readers", response_model=RuntimeSourceReadGrantListResponse
+)
+async def list_runtime_source_readers(source_id: int, request: Request):
+    """Projects that read this source's mirror without owning its credential.
+
+    The answer to the duplicate-registration 409: a second project documenting
+    the same Talend tenant is granted read here rather than registering the
+    tenant again, which would double the poll and create a second mirror free
+    to drift from the first.
+    """
+    await require_connector_view(request)
+    try:
+        grants = await _bridge(request).list_read_grants(_identity(request), source_id)
+    except RuntimeSourcesBridgeError as exc:
+        _raise(exc)
+    return {"grants": grants, "total": len(grants)}
+
+
+@router.post(
+    "/runtime-sources/{source_id}/readers", response_model=RuntimeSourceReadGrantResponse
+)
+async def add_runtime_source_reader(
+    source_id: int, payload: RuntimeSourceReadGrantRequest, request: Request
+):
+    await require_connector_management(request)
+    try:
+        grant = await _bridge(request).add_read_grant(
+            _identity(request),
+            source_id,
+            project_id=payload.project_id,
+            environment_ids=payload.environment_ids,
+            window_days=payload.window_days,
+        )
+    except RuntimeSourcesBridgeError as exc:
+        _raise(exc)
+    return {"grant": grant}
+
+
+@router.delete("/runtime-sources/{source_id}/readers/{project_id}", status_code=204)
+async def delete_runtime_source_reader(source_id: int, project_id: str, request: Request):
+    await require_connector_management(request)
+    try:
+        await _bridge(request).delete_read_grant(_identity(request), source_id, project_id)
     except RuntimeSourcesBridgeError as exc:
         _raise(exc)
     return None

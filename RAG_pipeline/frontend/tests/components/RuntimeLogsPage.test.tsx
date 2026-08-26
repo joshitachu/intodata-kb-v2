@@ -7,7 +7,10 @@ import RuntimeExecutionsPage from "@/app/admin/logs/executions/page";
 import RuntimePerformancePage from "@/app/admin/logs/performance/page";
 import RuntimeSignaturesPage from "@/app/admin/logs/signatures/page";
 import RuntimeIncidentsPage from "@/app/admin/logs/incidents/page";
-import { alignTrendPoints } from "@/components/runtime/RuntimeOutcomeTrend";
+import {
+  alignTrendPoints,
+  buildDurationScale,
+} from "@/components/runtime/RuntimeOutcomeTrend";
 
 // The whole hooks module is replaced, so every hook the console tree touches must
 // be present here — including the ones the insight panel and log viewer use.
@@ -59,6 +62,11 @@ const TREND = {
     { bucket_start: "2026-08-15T00:00:00Z", total_runs: 72, success_runs: 68, failed_runs: 4, running_runs: 0, unknown_runs: 0, failure_rate: 0.0556, p50_duration_ms: 10600, p95_duration_ms: 43500 },
   ],
   total: 2,
+  coverage: {
+    observed_from: "2026-07-13T11:16:06Z",
+    observed_until: "2026-08-15T23:59:00Z",
+    completeness: "unknown",
+  },
 };
 
 const RELIABILITY = {
@@ -120,7 +128,11 @@ function setDefaults() {
   }));
   mocks.useRuntimeEngines.mockReturnValue(queryState({ engines: [], total: 0 }));
   mocks.useRuntimeTrend.mockReturnValue(queryState(TREND));
-  mocks.useRuntimeJobReliability.mockReturnValue(queryState(RELIABILITY));
+  mocks.useRuntimeJobReliability.mockImplementation((filters: { attentionOnly?: boolean } = {}) =>
+    queryState(filters.attentionOnly
+      ? { jobs: [RELIABILITY.jobs[0]], total: 1 }
+      : RELIABILITY),
+  );
   mocks.useRuntimeJobInsights.mockReturnValue(queryState(JOB_INSIGHTS));
   mocks.useRuntimeComponentHotspots.mockReturnValue(queryState({ components: [], total: 0 }));
   mocks.useRuntimeJobThroughput.mockReturnValue(queryState({ jobs: [], total: 0 }));
@@ -264,25 +276,31 @@ describe("RuntimeLogsPage", () => {
     expect(screen.getByText("4 failed")).toBeTruthy();
   });
 
-  it("scopes every hub aggregate to the selected time window", () => {
+  it("scopes history aggregates to the selected time window, while attention is current", () => {
     renderPage(RuntimeLogsPage);
     for (const hook of [mocks.useRuntimeTrend, mocks.useRuntimeJobReliability]) {
       const filters = hook.mock.calls[0][0] as { since?: string };
       expect(typeof filters.since).toBe("string");
     }
+    const attentionFilters = mocks.useRuntimeJobReliability.mock.calls[1][0] as {
+      since?: string;
+      attentionOnly?: boolean;
+    };
+    expect(attentionFilters.since).toBeUndefined();
+    expect(attentionFilters.attentionOnly).toBe(true);
     selectOption("Time window", /24 hours/i);
     const trendCalls = mocks.useRuntimeTrend.mock.calls;
     const last = trendCalls[trendCalls.length - 1][0] as { bucket?: string };
     expect(last.bucket).toBe("hour");
   });
 
-  it("ranks needs-attention by live failure signal and shows the last run", () => {
+  it("shows only unresolved latest-run signals, rather than historical failure totals", () => {
     renderPage(RuntimeLogsPage);
     expect(screen.getByText("Maximo2RHM_Workorders")).toBeTruthy();
     // A job with no failures and no unfinished runs is not an attention signal.
     expect(screen.queryByText("Quintiq2Maximo_PlannedWorkOrder")).toBeNull();
-    expect(screen.getByText(/4 of 142 failed/)).toBeTruthy();
-    expect(screen.getByText(/1 never finished/)).toBeTruthy();
+    expect(screen.getByText(/Latest run failed/)).toBeTruthy();
+    expect(screen.getByText(/2 failures in a row/)).toBeTruthy();
   });
 
   it("explains the dominant issue and keeps origin separate from termination", () => {
@@ -344,12 +362,16 @@ describe("RuntimeLogsPage", () => {
 
   it("surfaces the run-outcome and duration series with a legend and a table view", () => {
     renderPage(RuntimeLogsPage);
-    expect(screen.getByText("Runs per day")).toBeTruthy();
+    expect(screen.getByText("Captured runs")).toBeTruthy();
+    expect(screen.getAllByText("Failure rate").length).toBeGreaterThan(0);
     expect(screen.getByText("p95 duration")).toBeTruthy();
+    expect(screen.getByText("2 buckets")).toBeTruthy();
+    expect(screen.getByText("72 runs")).toBeTruthy();
+    expect(screen.getByText(/Captured history starts 13 Jul 2026/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "table" }));
-    // "Failure rate" is also a KPI label, so assert on values unique to the table.
-    expect(screen.getByText("44s")).toBeTruthy();
-    expect(screen.getByText("6%")).toBeTruthy();
+    expect(screen.getAllByText("No captured records").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("44s")).toHaveLength(2);
+    expect(screen.getAllByText("5.56%").length).toBeGreaterThan(0);
   });
 
   it("aligns trend buckets to the selected range from oldest to newest", () => {
@@ -366,6 +388,55 @@ describe("RuntimeLogsPage", () => {
       "2026-08-15",
     ]);
     expect(aligned.map((point) => point.total_runs)).toEqual([0, 70, 72]);
+    expect(aligned.map((point) => point.has_captured_records)).toEqual([false, true, true]);
+    expect(aligned.map((point) => point.volume_plot)).toEqual([null, 70, 72]);
+    expect(aligned.map((point) => point.is_partial)).toEqual([false, false, true]);
+  });
+
+  it("uses an explicit logarithmic duration scale when one outlier would flatten normal runs", () => {
+    const scale = buildDurationScale([
+      { ...TREND.points[0], p50_duration_ms: 5_000, p95_duration_ms: 20_000 },
+      { ...TREND.points[1], p50_duration_ms: 6_000, p95_duration_ms: 2_203_200_000 },
+    ]);
+
+    expect(scale.mode).toBe("log");
+    expect(scale.plot(20_000)).toBeLessThan(scale.plot(2_203_200_000)!);
+    expect(scale.formatTick(scale.plot(2_203_200_000)!)).toBe("25.5d");
+  });
+
+  it("keeps a linear duration scale when measurements share a readable range", () => {
+    const scale = buildDurationScale(TREND.points);
+
+    expect(scale.mode).toBe("linear");
+    expect(scale.plot(43_500)).toBe(43_500);
+  });
+
+  it("does not select log scale by comparing unlike percentile series", () => {
+    const scale = buildDurationScale([
+      { ...TREND.points[0], p50_duration_ms: 2_319, p95_duration_ms: 60_933 },
+      { ...TREND.points[1], p50_duration_ms: 6_925, p95_duration_ms: 358_503 },
+    ]);
+
+    expect(scale.mode).toBe("linear");
+  });
+
+  it("surfaces the precise peak bucket failure rate separately from volume", () => {
+    mocks.useRuntimeTrend.mockReturnValue(queryState({
+      ...TREND,
+      points: [{
+        ...TREND.points[0],
+        bucket_start: "2026-07-30T00:00:00Z",
+        total_runs: 62,
+        success_runs: 59,
+        failed_runs: 3,
+        failure_rate: 3 / 62,
+      }],
+      total: 1,
+    }));
+
+    renderPage(RuntimeLogsPage);
+    expect(screen.getAllByText("4.84%").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/3 of 62/).length).toBeGreaterThan(0);
   });
 
   // --- drill-down now shows logs, insights and structured fields ---

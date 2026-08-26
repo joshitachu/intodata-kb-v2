@@ -227,6 +227,49 @@ class RuntimeWorkspaceProjectMapRow(Base):
     created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
+class RuntimeSourceReadGrantRow(Base):
+    """Grants one project permission to READ another project's runtime mirror.
+
+    `runtime_sources.project_id` conflates three relations: who holds the
+    credential and pays the poll, which project a mirrored row is stamped with
+    (`RuntimeWorkspaceProjectMapRow` already re-points that), and which projects
+    may read the result. This table is the third one, made explicit.
+
+    It exists because one Talend tenant commonly backs several scanned projects,
+    and the registration guard -- correctly -- refuses to store the same
+    credential twice: a second row would mean a second poll and two mirrors of
+    one estate that drift apart. Sharing therefore has to happen on the read
+    side.
+
+    Scope lives on the grant, not on the source's credential blob, because the
+    reason two projects share a tenant is usually that they care about different
+    environments of it. `environment_ids` NULL means every mirrored environment;
+    an empty list is a deliberate "nothing", the same distinction
+    `RuntimeDocReadScope` draws.
+    """
+
+    __tablename__ = "runtime_source_read_grants"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id", "project_id", name="uq_runtime_source_read_grants_source_project"
+        ),
+        Index("ix_runtime_source_read_grants_source_id", "source_id"),
+        Index("ix_runtime_source_read_grants_project_id", "project_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("runtime_sources.id", ondelete="CASCADE"), nullable=False
+    )
+    # The READER. The source's own project_id is the grantor and is never a row
+    # here -- ownership already implies read.
+    project_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    environment_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    window_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
 class RuntimeEnvironmentRow(Base):
     """Current-state runtime environment inventory."""
 

@@ -65,6 +65,13 @@ _FALLBACK_COVERAGE_FIELDS = frozenset(
         "source_key",
         "resolved_by_alias",
         "alias_conflicts",
+        # Which slice of the mirror was read, and whose mirror it was. Both are
+        # needed to compare two runs of one project: a narrowed read and a
+        # shrinking estate produce the same smaller numbers, and a shared read
+        # counts a sibling project's jobs as orphans by design.
+        "read_environments",
+        "shared_read",
+        "shared_from",
         "redaction_flag_count",
     }
 )

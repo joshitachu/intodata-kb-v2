@@ -173,6 +173,7 @@ export interface TrendFilters extends Omit<AggregateFilters, "offset"> {
 
 export interface JobReliabilityFilters extends AggregateFilters {
   jobName?: string;
+  attentionOnly?: boolean;
 }
 
 export interface ComponentHotspotFilters extends AggregateFilters {
@@ -887,6 +888,7 @@ async function fetchJobReliability(
     until: filters.until,
     limit: filters.limit,
     offset: filters.offset,
+    attention_only: filters.attentionOnly,
   });
   const res = await fetch(`/api/runtime/job-reliability${query}`, { cache: "no-store" });
   if (!res.ok) {

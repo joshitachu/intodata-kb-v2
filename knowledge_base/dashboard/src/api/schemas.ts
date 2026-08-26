@@ -590,6 +590,26 @@ export const RuntimeSourceListResponseSchema = z.object({
   total: z.number().optional().default(0),
 });
 
+export const RuntimeSourceReadGrantSchema = z.object({
+  id: z.number().optional().default(0),
+  source_id: z.number().optional().default(0),
+  project_id: z.string().optional().default(""),
+  source_project_id: z.string().optional().default(""),
+  source_label: z.string().optional().default(""),
+  environment_ids: z.array(z.string()).nullable().optional().default(null),
+  window_days: z.number().nullable().optional().default(null),
+  exposes_project_ids: z.array(z.string()).optional().default([]),
+});
+
+export const RuntimeSourceReadGrantListResponseSchema = z.object({
+  grants: z.array(RuntimeSourceReadGrantSchema).optional().default([]),
+  total: z.number().optional().default(0),
+});
+
+export const RuntimeSourceReadGrantResponseSchema = z.object({
+  grant: RuntimeSourceReadGrantSchema,
+});
+
 export const RuntimeSourceSyncResponseSchema = z.object({
   source: RuntimeSourceSchema.nullable().optional().default(null),
   status: z.string().optional().default("unknown"),

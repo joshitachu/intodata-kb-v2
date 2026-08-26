@@ -46,6 +46,11 @@ const createRuntimeSourceMutation = {
 };
 const syncRuntimeSourceMutation = { ...idleMutation, mutate: vi.fn(), mutateAsync: vi.fn() };
 const deleteRuntimeSourceMutation = { ...idleMutation, mutate: vi.fn(), mutateAsync: vi.fn() };
+// Read grants: the projects sharing one mirror. Defaults to none, so the
+// existing row-state assertions see a source that nobody else reads.
+const addReaderMutation = { ...idleMutation, mutate: vi.fn(), mutateAsync: vi.fn() };
+const removeReaderMutation = { ...idleMutation, mutate: vi.fn(), mutateAsync: vi.fn() };
+const readerGrants = { grants: [] as Array<Record<string, unknown>> };
 
 vi.mock("../hooks/useConnectors", () => ({
   useConnectorCatalog: connectorHooks.catalog,
@@ -67,6 +72,14 @@ vi.mock("../hooks/useRuntimeSources", () => ({
   useCreateRuntimeSource: () => createRuntimeSourceMutation,
   useSyncRuntimeSource: () => syncRuntimeSourceMutation,
   useDeleteRuntimeSource: () => deleteRuntimeSourceMutation,
+  useRuntimeSourceReaders: () => ({
+    data: readerGrants,
+    isLoading: false,
+    isError: false,
+    error: null,
+  }),
+  useAddRuntimeSourceReader: () => addReaderMutation,
+  useRemoveRuntimeSourceReader: () => removeReaderMutation,
 }));
 
 vi.mock("../hooks/useProjects", () => ({
@@ -379,6 +392,100 @@ describe("runtime-managed row state", () => {
 
     expect(screen.queryByRole("button", { name: "Sync now" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Disconnect" })).toBeNull();
+  });
+});
+
+/**
+ * Sharing one mirror with a second project.
+ *
+ * This is the operator's way out of "That physical runtime source is already
+ * registered". One Talend tenant is polled once; every other project
+ * documenting the same estate reads that mirror instead of re-registering it,
+ * which would double the vendor poll and create a second, drifting mirror.
+ */
+describe("runtime mirror sharing", () => {
+  beforeEach(() => {
+    connectorHooks.catalog.mockReturnValue({
+      data: { providers: [tmcProvider] }, isLoading: false, isError: false, error: null,
+    });
+    connectorHooks.runtimeSources.mockReturnValue({
+      data: { sources: [runtimeSource()], total: 1 }, isLoading: false, isError: false, error: null,
+    });
+    readerGrants.grants = [];
+  });
+
+  function openSharing() {
+    render(<ConnectorsPage canManage />);
+    fireEvent.click(screen.getByRole("button", { name: "✓ Connected" }));
+    fireEvent.click(screen.getByRole("button", { name: /Shared with/ }));
+  }
+
+  it("grants a second project read access to the existing mirror", () => {
+    openSharing();
+
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "IntodataStreams" } });
+    fireEvent.click(screen.getByRole("button", { name: "Grant read" }));
+
+    expect(addReaderMutation.mutate).toHaveBeenCalledWith(
+      { project_id: "IntodataStreams" },
+      expect.anything(),
+    );
+  });
+
+  it("never offers the owning project, which already reads its own mirror", () => {
+    openSharing();
+
+    // `werkorder` owns the source; the API 409s on granting it to itself, so
+    // offering it would be a dead option.
+    const options = Array.from(screen.getByRole("combobox").querySelectorAll("option"));
+    expect(options.map((option) => option.getAttribute("value"))).not.toContain("werkorder");
+  });
+
+  it("lists an existing reader with the slice it reads", () => {
+    readerGrants.grants = [
+      {
+        id: 7,
+        source_id: 35,
+        project_id: "IntodataStreams",
+        source_project_id: "werkorder",
+        source_label: "Talend TMC",
+        environment_ids: ["env-prod"],
+        window_days: 30,
+        exposes_project_ids: ["werkorder"],
+      },
+    ];
+    openSharing();
+
+    expect(screen.getByText("IntodataStreams")).toBeInTheDocument();
+    expect(screen.getByText(/env-prod · last 30 days/)).toBeInTheDocument();
+  });
+
+  it("says plainly when no other project reads the mirror", () => {
+    openSharing();
+
+    expect(screen.getByText("No other project reads this mirror.")).toBeInTheDocument();
+  });
+
+  it("hides granting and revoking from a read-only operator", () => {
+    readerGrants.grants = [
+      {
+        id: 7,
+        source_id: 35,
+        project_id: "IntodataStreams",
+        source_project_id: "werkorder",
+        source_label: "Talend TMC",
+        environment_ids: null,
+        window_days: null,
+        exposes_project_ids: ["werkorder"],
+      },
+    ];
+    render(<ConnectorsPage canManage={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "✓ Connected" }));
+    fireEvent.click(screen.getByRole("button", { name: /Shared with/ }));
+
+    expect(screen.getByText("IntodataStreams")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Grant read" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Revoke" })).toBeNull();
   });
 });
 

@@ -284,10 +284,61 @@ This is the primary method for generating project documentation. Follow it exact
   * `environment_ids: None` ("every mirrored environment") is a DISTINCT state from a
     selection listing all of them: a later ingest-scope widening extends the former and
     not the latter. An explicitly empty list returns no evidence rather than everything.
-  * NOT DONE: connection and binding are still coupled -- a runtime source carries one
-    `project_id`, so one Talend tenant serving N projects means N stored credentials and
-    N polls. `runtime_workspace_map` (source -> many projects) exists and is RBAC'd but
-    is not wired into the connect flow.
+- **One mirror, several documenting projects: read grants** (2026-08-26). One Talend
+  tenant commonly backs several scanned projects, and registering its credential twice
+  is refused -- `resolve_physical_identity` is `tmc:{base_url}#sha256(all environment ids
+  the token sees)`, global, not per project, so the second project got a bare 409 and had
+  no supported way forward. A second project now reads the EXISTING mirror through a
+  grant (`runtime_source_read_grants`, migration 095); the tenant is still polled once.
+  * **Three relations, previously one column.** `runtime_sources.project_id` conflated
+    credential ownership (1:1, unchanged), write attribution (`resolve_project_id` +
+    `runtime_workspace_project_map`, unchanged -- it SPLITS rows between projects), and
+    read entitlement (now explicit -- it SHARES the same rows). Split vs share are
+    different answers to different questions and are separate controls in the UI.
+  * **Scope lives on the grant row, not the credential blob.** Two projects share a
+    tenant precisely because they care about different environments of it, so
+    `environment_ids` / `window_days` belong to the (source, project) pair.
+    `resolve_doc_read_scope` unions the owner path (credential blob, unchanged) and the
+    grant path by one rule.
+  * **Filter on `project_id`, never `source_key`.** Every table in `runtime_data.py`
+    carries both, but the four insights tables (`runtime_incidents`,
+    `runtime_enriched_events`, `runtime_execution_summaries`, `runtime_error_signatures`)
+    carry `project_id` only. A mixed predicate is two scoping rules in one lane -- how one
+    aggregate ends up describing a different population than its neighbour.
+  * **The insights subqueries carry NO project predicate.** Their scope arrives through
+    the join to the already-scoped execution population (`log_counts` / `diagnosed` in
+    `_doc_evidence_log_quality`, the incident/summary joins in `_doc_evidence_incidents`).
+    Since those tables have no `source_key`, that join is their ONLY scoping mechanism; a
+    literal filter beside it is a second copy of the rule, free to drift.
+  * **The doc lane groups by job name alone.** Every `_doc_evidence_*` helper returns
+    `dict[job_name, ...]`, so a `project_id` in the GROUP BY returns two rows for one key
+    under a shared read and the dict keeps the last. Constant within a single-project
+    read, so dropping it changes nothing there. Reliability rollups come from
+    `list_job_reliability` (shared with the console, still grouped by project) and are
+    merged by `_merge_reliability_by_job_name`: counts summed, rate recomputed, streak
+    maxed, `source_key` from the largest contributor.
+  * **Widening comes ONLY from stored grant rows.** `GET /runtime/doc-evidence`
+    authenticates with the machine ingest key and has no user scope behind it, so the
+    grant route is the whole gate -- it requires the caller to hold BOTH the source's
+    project and the reader project. The endpoint signature is unchanged and a test pins
+    that a request-supplied project set is inert.
+  * **A shared read suppresses the mis-binding verdict, not the numbers.**
+    `scope_mismatch` is derived from the orphan ratio, and under a shared read a sibling
+    project's jobs are orphans BY DESIGN -- leaving it armed publishes an accusation
+    against a correct configuration. `RuntimeDocReadScope.shared_read` flows to
+    `RuntimeEvidenceStore`, into `_analysis/_runtime_profile.md` (a "Mirror ownership"
+    row plus a rewritten asymmetry note) and into
+    `_assessment/runtime_evidence_coverage.json`. `_FALLBACK_COVERAGE_FIELDS` in
+    `api/routes/generate_runs.py` had already drifted from `coverage_payload()`
+    (`read_environments` was missing); it is back in step.
+  * **A grant states its blast radius.** Because it filters by project id, a grant also
+    reaches whatever the source's workspace map re-points rows to. `exposes_project_ids`
+    is computed and returned on POST, shown in the UI, and recorded in the audit entry.
+  * NOT DONE: there is still no route to REBIND a source to a different project
+    (`RuntimeSourceUpdate` exposes label/enabled/interval only); owner read scope still
+    lives in the credential blob while grant scope lives on the row; the reader project's
+    freshness watermark is not resolved through the grant (`runtime_sync_state` is keyed
+    `(source_key, project_id)` and a reader has no row).
 - **Composite child runs** record `triggered_by="composite"` +
   `GenerateRun.partition_name` (new column; idempotent startup migration in
   `api/app.py::_apply_column_migrations`) instead of overflowing `triggered_by` with

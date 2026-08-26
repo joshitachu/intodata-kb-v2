@@ -444,6 +444,9 @@ class TestOutcomeTrendEndpoint:
         assert body["total"] == len(body["points"])
         assert sum(point["total_runs"] for point in body["points"]) == 3
         assert sum(point["failed_runs"] for point in body["points"]) == 1
+        assert body["coverage"]["observed_from"] is not None
+        assert body["coverage"]["observed_until"] is not None
+        assert body["coverage"]["completeness"] == "unknown"
 
     async def test_bucket_is_validated(self, seeded_client):
         with _scope([_ESB]):
@@ -455,12 +458,18 @@ class TestOutcomeTrendEndpoint:
             resp = await seeded_client.get(f"/api/v1/runtime/trend?project_id={_OTHER}")
         assert resp.status_code == 200
         assert resp.json()["points"] == []
+        assert resp.json()["coverage"]["observed_from"] is None
 
     async def test_empty_scope_returns_empty(self, seeded_client):
         with _scope([]):
             resp = await seeded_client.get("/api/v1/runtime/trend")
         assert resp.status_code == 200
         assert resp.json()["points"] == []
+        assert resp.json()["coverage"] == {
+            "observed_from": None,
+            "observed_until": None,
+            "completeness": "unknown",
+        }
 
 
 class TestJobReliabilityEndpoint:
@@ -473,7 +482,17 @@ class TestJobReliabilityEndpoint:
         failing = next(job for job in body["jobs"] if job["failed_runs"] > 0)
         assert failing["current_failure_streak"] >= 1
         assert failing["latest_state"] == "failed"
+        assert failing["latest_unfinished"] is False
         assert failing["p50_duration_ms"] is not None
+
+    async def test_attention_only_returns_currently_unresolved_jobs(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/job-reliability?attention_only=true")
+        assert resp.status_code == 200
+        assert all(
+            job["latest_state"] == "failed" or job["latest_unfinished"]
+            for job in resp.json()["jobs"]
+        )
 
     async def test_pagination_keeps_total_honest(self, seeded_client):
         with _scope([_ESB]):

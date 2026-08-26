@@ -90,6 +90,7 @@ from src.runtime.models import (
     RuntimeSyncState,
     RuntimeStatusResponse,
     RuntimeTrendBucket,
+    RuntimeTrendCoverage,
     RuntimeTrendInput,
 )
 from src.runtime.status import get_runtime_status
@@ -229,6 +230,7 @@ class RuntimeTrendResponse(BaseModel):
     bucket: RuntimeTrendBucket
     points: list[RuntimeOutcomeTrendPoint]
     total: int
+    coverage: RuntimeTrendCoverage
 
 
 class RuntimeJobReliabilityResponse(BaseModel):
@@ -328,8 +330,19 @@ async def get_runtime_doc_evidence(
 
     This is a MACHINE endpoint: the doc-generation service authenticates with
     the MCP ingest key, not a user session, so there is no user project scope to
-    derive.  Scope is therefore pinned to the single requested `project_id` --
-    the narrowest possible -- rather than left unrestricted.
+    derive.  Scope is therefore pinned to the requested `project_id` -- the
+    narrowest possible -- rather than left unrestricted.
+
+    Scope widens ONLY through stored read grants
+    --------------------------------------------
+    `resolve_runtime_read_projects` adds the projects whose runtime rows this
+    project has been granted, so one vendor tenant, mirrored once, can be read
+    by every scanned project it backs instead of being registered (and polled)
+    once per project.  The signature is deliberately unchanged: no caller may
+    pass a project set in.  With no user behind this key there is no second
+    gate, so a request-supplied read set would be an authorization bypass with
+    nothing behind it.  `read_scope.shared_read` reports whether the widening
+    actually applied, and `read_scope.read_project_ids` says to what.
 
     Aggregates only.  No log lines and no per-run timestamps cross this
     boundary, and the one free-text field is redacted, because the response is
@@ -347,24 +360,28 @@ async def get_runtime_doc_evidence(
 
     `units` is capped at `_DOC_EVIDENCE_MAX_UNITS`; a larger scan is expected to
     batch client-side.  `orphan_runtime_jobs` is therefore per-batch and merges
-    by INTERSECTION -- see the repository docstring.
+    by INTERSECTION -- see the repository docstring.  Under a shared read the
+    orphan list also spans the granted tenant, which is not a mis-binding
+    signal; `read_scope.shared_read` is how a consumer tells the two apart.
     """
     repo = RuntimeStoreRepository(db)
+    read_projects = await repo.resolve_runtime_read_projects(project_id)
     # The caller's `window_days` is the DEFAULT, not the ceiling: a per-project
     # setting is the operator's deliberate choice about how much history
     # describes this estate, and the generator has no basis to overrule it.
     read_scope = await repo.resolve_doc_read_scope(
-        [project_id], project_id, default_window_days=window_days
+        read_projects, project_id, default_window_days=window_days
     )
     effective_window = read_scope.window_days or window_days
     since = datetime.now(UTC) - timedelta(days=effective_window)
     units_, unmatched, orphans = await repo.list_doc_evidence(
-        [project_id],
+        read_projects,
         project_id=project_id,
         unit_names=units,
         since=since,
         max_failures_per_unit=max_failures_per_unit,
         environment_ids=read_scope.environment_ids,
+        project_ids=read_projects,
     )
     return RuntimeDocEvidenceResponse(
         project_id=project_id,
@@ -404,17 +421,28 @@ async def get_runtime_doc_read_scope(
     A USER endpoint, unlike `/doc-evidence`: the operator choosing a scope is a
     real human with project permissions, so this runs under their scope and
     404s on a project they cannot see.
+
+    Access to `project_id` is checked FIRST, against the user's own scope; only
+    then is the read set resolved from stored grants.  A grant may name a
+    granting project this user cannot otherwise see -- that is the point of a
+    grant, and it was created by someone holding both sides -- so the picker
+    offers the shared tenant's environments.  Without that the reader's
+    operator could not configure a scope for the data their documentation runs
+    will actually read.
     """
     scope = await get_user_project_ids(user, db)
     if _intersect_scope(scope, project_id) == []:
         raise HTTPException(status_code=404, detail="Project not found")
     repo = RuntimeStoreRepository(db)
+    read_projects = await repo.resolve_runtime_read_projects(project_id)
     return RuntimeDocReadScopeResponse(
         project_id=project_id,
         scope=await repo.resolve_doc_read_scope(
-            scope, project_id, default_window_days=default_window_days
+            read_projects, project_id, default_window_days=default_window_days
         ),
-        available_environments=await repo.list_mirrored_environments(scope, project_id),
+        available_environments=await repo.list_mirrored_environments(
+            read_projects, project_id, project_ids=read_projects
+        ),
     )
 
 
@@ -611,19 +639,24 @@ async def get_runtime_trend(
 ) -> RuntimeTrendResponse:
     scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    points = await repo.get_outcome_trend(
-        _intersect_scope(scope, project_id),
-        RuntimeTrendInput(
-            project_id=project_id,
-            source_key=source_key,
-            job_name=job_name,
-            bucket=bucket,
-            since=since,
-            until=until,
-            limit=limit,
-        ),
+    scoped_projects = _intersect_scope(scope, project_id)
+    params = RuntimeTrendInput(
+        project_id=project_id,
+        source_key=source_key,
+        job_name=job_name,
+        bucket=bucket,
+        since=since,
+        until=until,
+        limit=limit,
     )
-    return RuntimeTrendResponse(bucket=bucket, points=points, total=len(points))
+    points = await repo.get_outcome_trend(scoped_projects, params)
+    coverage = await repo.get_outcome_trend_coverage(scoped_projects, params)
+    return RuntimeTrendResponse(
+        bucket=bucket,
+        points=points,
+        total=len(points),
+        coverage=coverage,
+    )
 
 
 @router.get(
@@ -639,6 +672,10 @@ async def list_runtime_job_reliability(
     job_name: str | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
+    attention_only: bool = Query(
+        default=False,
+        description="Only jobs whose latest observed run still needs attention.",
+    ),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> RuntimeJobReliabilityResponse:
@@ -651,6 +688,7 @@ async def list_runtime_job_reliability(
         job_name=job_name,
         since=since,
         until=until,
+        attention_only=attention_only,
         limit=limit,
         offset=offset,
     )
