@@ -89,6 +89,7 @@ def tmc():
     s.runtime_sync_source_key = "talend_tmc"
     s.talend_tmc_failed_log_run_limit = 100
     s.talend_tmc_component_metric_run_limit = 100
+    s.talend_tmc_runs_per_executable_limit = 250
     def build(handler):
         # Mirrors what ``sync()`` does with a source's stored credentials, so
         # these tests exercise the same configured-instance path.

@@ -41,6 +41,7 @@ def tmc(tmp_path):
     s.talend_tmc_request_timeout = 10.0
     s.talend_tmc_failed_log_run_limit = 10
     s.talend_tmc_component_metric_run_limit = 25
+    s.talend_tmc_runs_per_executable_limit = 250
     s.runtime_sync_source_key = "talend_tmc"
 
     with patch("src.runtime.providers.talend_tmc.settings", s):

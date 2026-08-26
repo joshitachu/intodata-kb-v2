@@ -79,7 +79,8 @@ _RUNS_PER_EXECUTABLE_LIMIT = 250
 _EXECUTION_WINDOW_DAYS = 10
 # Fallback ceilings used when settings supply none. The operative values come
 # from settings (talend_tmc_failed_log_run_limit /
-# talend_tmc_component_metric_run_limit) so the capture window is tunable per
+# talend_tmc_component_metric_run_limit /
+# talend_tmc_runs_per_executable_limit) so the capture window is tunable per
 # deployment rather than hardcoded.
 _FAILED_LOG_RUN_LIMIT = 10
 _COMPONENT_METRIC_RUN_LIMIT = 25
@@ -741,11 +742,19 @@ class TalendTmcRuntimeProvider:
 
         run_fetch_semaphore = asyncio.Semaphore(_DETAIL_FETCH_CONCURRENCY)
 
+        # Decides how far back each executable's history actually reaches: the
+        # windows below are walked newest-first and abandoned once this budget is
+        # spent, so a high-frequency task stops far short of history_days while a
+        # low-frequency one covers all of it.
+        runs_per_executable = (
+            settings.talend_tmc_runs_per_executable_limit or _RUNS_PER_EXECUTABLE_LIMIT
+        )
+
         async def fetch_execution_history(path: str) -> list[dict[str, Any]]:
             collected: list[dict[str, Any]] = []
             seen_execution_ids: set[str] = set()
             for window_start, window_end in _execution_windows(synced_at, self._history_days):
-                remaining = _RUNS_PER_EXECUTABLE_LIMIT - len(collected)
+                remaining = runs_per_executable - len(collected)
                 if remaining <= 0:
                     break
                 page = await self._get_all_pages(

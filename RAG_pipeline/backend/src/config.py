@@ -415,6 +415,17 @@ class Settings(BaseSettings):
     talend_tmc_failed_log_run_limit: int = Field(default=10, ge=0)
     # Per-sync ceiling on how many runs have component metrics downloaded.
     talend_tmc_component_metric_run_limit: int = Field(default=25, ge=0)
+    # Per-executable ceiling on how many runs of execution HISTORY are ingested per
+    # sync. The provider walks its 10-day windows newest-first and stops as soon as
+    # this budget is spent, so the value decides how far back a task's history
+    # actually reaches -- not talend_tmc history_days, which only sets the outer
+    # window. At 250 a task running every 10 minutes reaches back about 1.7 days
+    # while a twice-weekly task reaches the full window, which produces a
+    # two-tiered history that reads as a broken trend chart. Raise it to even the
+    # coverage out, remembering that every sync re-walks the whole window: runs
+    # ingested per poll is roughly tasks x this value. Set to 0 for the provider
+    # fallback ceiling.
+    talend_tmc_runs_per_executable_limit: int = Field(default=250, ge=0)
 
     # Runtime source sync scheduler (Runtime-Agnostic Failure Intelligence Slice 7).
     # Disabled by default. When enabled, the backend starts a background loop that

@@ -96,6 +96,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      TALEND_TMC_RUNS_PER_EXECUTABLE_LIMIT: ${TALEND_TMC_RUNS_PER_EXECUTABLE_LIMIT:-250}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       # Documentation answers may fail over only to this explicit, ordered list.
       # Keep the default empty until a contract-compatible model is approved.
