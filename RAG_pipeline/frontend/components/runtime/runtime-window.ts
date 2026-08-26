@@ -23,6 +23,10 @@ export const RUNTIME_WINDOWS: RuntimeWindow[] = [
 
 export const DEFAULT_WINDOW_KEY: RuntimeWindowKey = "30d";
 
+export function isRuntimeWindowKey(value: string | null | undefined): value is RuntimeWindowKey {
+  return RUNTIME_WINDOWS.some((item) => item.key === value);
+}
+
 export function resolveWindow(key: RuntimeWindowKey): RuntimeWindow {
   return RUNTIME_WINDOWS.find((item) => item.key === key) ?? RUNTIME_WINDOWS[2];
 }

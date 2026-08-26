@@ -7,6 +7,7 @@ import RuntimeExecutionsPage from "@/app/admin/logs/executions/page";
 import RuntimePerformancePage from "@/app/admin/logs/performance/page";
 import RuntimeSignaturesPage from "@/app/admin/logs/signatures/page";
 import RuntimeIncidentsPage from "@/app/admin/logs/incidents/page";
+import { alignTrendPoints } from "@/components/runtime/RuntimeOutcomeTrend";
 
 // The whole hooks module is replaced, so every hook the console tree touches must
 // be present here — including the ones the insight panel and log viewer use.
@@ -15,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   useRuntimeIncidents: vi.fn(), useRuntimeIncident: vi.fn(), useRuntimeJobs: vi.fn(),
   useRuntimeOverview: vi.fn(), useRuntimePlans: vi.fn(), useRuntimeSources: vi.fn(),
   useRuntimeEngines: vi.fn(), useUserProjects: vi.fn(), handleSendMessage: vi.fn(), push: vi.fn(), replace: vi.fn(),
+  searchParams: vi.fn(),
   useRuntimeTrend: vi.fn(), useRuntimeJobReliability: vi.fn(), useRuntimeJobInsights: vi.fn(),
   useRuntimeComponentHotspots: vi.fn(), useRuntimeJobThroughput: vi.fn(),
   useRuntimeErrorSignatures: vi.fn(), useRuntimeExecutionLogs: vi.fn(),
@@ -28,7 +30,7 @@ vi.mock("@/contexts/ChatContext", () => ({ useChatContext: () => ({ handleSendMe
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: mocks.push, replace: mocks.replace }),
   usePathname: () => "/admin/logs",
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => new URLSearchParams(mocks.searchParams()),
 }));
 
 function queryState(data: unknown) {
@@ -100,6 +102,7 @@ const JOB_INSIGHTS = {
 };
 
 function setDefaults() {
+  mocks.searchParams.mockReturnValue("");
   mocks.useUserProjects.mockReturnValue(queryState({
     projects: [{ id: "werkorder", display_name: "Werkorder" }],
   }));
@@ -213,12 +216,35 @@ describe("RuntimeLogsPage", () => {
     selectOption("Project scope", "Nexus logs");
     expect(screen.getByRole("link", { name: "Signatures" })).toHaveAttribute(
       "href",
-      "/admin/logs/signatures?project=nexus_logs",
+      "/admin/logs/signatures?project=nexus_logs&window=30d",
     );
     expect(screen.getByRole("link", { name: "Estate" })).toHaveAttribute(
       "href",
-      "/admin/logs/estate?project=nexus_logs",
+      "/admin/logs/estate?project=nexus_logs&window=30d",
     );
+  });
+
+  it("keeps the selected time window in the URL and every runtime tab link", () => {
+    renderPage(RuntimeLogsPage);
+    selectOption("Time window", /Last 7 days/i);
+
+    expect(mocks.replace).toHaveBeenLastCalledWith(
+      "/admin/logs?project=werkorder&window=7d",
+    );
+    expect(screen.getByRole("link", { name: "Incidents" })).toHaveAttribute(
+      "href",
+      "/admin/logs/incidents?project=werkorder&window=7d",
+    );
+    expect(screen.getByRole("link", { name: "Jobs" })).toHaveAttribute(
+      "href",
+      "/admin/logs/jobs?project=werkorder&window=7d",
+    );
+  });
+
+  it("restores the selected time window from the URL after changing routes", () => {
+    mocks.searchParams.mockReturnValue("project=werkorder&window=7d");
+    renderPage(RuntimeIncidentsPage);
+    expect(screen.getByRole("button", { name: "Time window" })).toHaveTextContent("Last 7 days");
   });
 
   it("uses execution-only queries on the runs route and exposes the honest server total", () => {
@@ -324,6 +350,22 @@ describe("RuntimeLogsPage", () => {
     // "Failure rate" is also a KPI label, so assert on values unique to the table.
     expect(screen.getByText("44s")).toBeTruthy();
     expect(screen.getByText("6%")).toBeTruthy();
+  });
+
+  it("aligns trend buckets to the selected range from oldest to newest", () => {
+    const aligned = alignTrendPoints(
+      [...TREND.points].reverse(),
+      "day",
+      "2026-08-13T12:00:00Z",
+      "2026-08-15T12:00:00Z",
+    );
+
+    expect(aligned.map((point) => point.bucket_start.slice(0, 10))).toEqual([
+      "2026-08-13",
+      "2026-08-14",
+      "2026-08-15",
+    ]);
+    expect(aligned.map((point) => point.total_runs)).toEqual([0, 70, 72]);
   });
 
   // --- drill-down now shows logs, insights and structured fields ---

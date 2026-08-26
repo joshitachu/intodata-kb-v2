@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -77,17 +77,28 @@ const BUCKET_NOUN: Record<RuntimeTrendBucket, string> = {
 interface Props {
   points: RuntimeOutcomeTrendPoint[];
   bucket: RuntimeTrendBucket;
+  rangeStart: string;
+  rangeEnd: string;
 }
 
-export function RuntimeOutcomeTrend({ points, bucket }: Props) {
+export function RuntimeOutcomeTrend({ points, bucket, rangeStart, rangeEnd }: Props) {
   const [view, setView] = useState<"chart" | "table">("chart");
 
-  if (points.length === 0) {
+  const orderedPoints = useMemo(
+    () => [...points].sort((left, right) => Date.parse(left.bucket_start) - Date.parse(right.bucket_start)),
+    [points],
+  );
+  const chartPoints = useMemo(
+    () => alignTrendPoints(orderedPoints, bucket, rangeStart, rangeEnd),
+    [bucket, orderedPoints, rangeEnd, rangeStart],
+  );
+
+  if (orderedPoints.length === 0) {
     return <Empty label="No runs were recorded in this window." />;
   }
 
-  const maxFailed = points.reduce((max, point) => Math.max(max, point.failed_runs), 0);
-  const hasDuration = points.some(
+  const maxFailed = orderedPoints.reduce((max, point) => Math.max(max, point.failed_runs), 0);
+  const hasDuration = orderedPoints.some(
     (point) => point.p50_duration_ms != null || point.p95_duration_ms != null,
   );
 
@@ -128,7 +139,7 @@ export function RuntimeOutcomeTrend({ points, bucket }: Props) {
       </div>
 
       {view === "table" ? (
-        <TrendTable points={points} bucket={bucket} />
+        <TrendTable points={orderedPoints} bucket={bucket} />
       ) : (
         <div className="flex flex-col gap-4">
           <figure
@@ -136,7 +147,7 @@ export function RuntimeOutcomeTrend({ points, bucket }: Props) {
             aria-label={`Runs and failures per ${BUCKET_NOUN[bucket]}`}
           >
             <ResponsiveContainer width="100%" height={172}>
-              <BarChart data={points} barGap={2} margin={{ top: 16, right: 8, bottom: 0, left: 0 }}>
+              <BarChart data={chartPoints} barGap={2} margin={{ top: 16, right: 8, bottom: 0, left: 0 }}>
                 <CartesianGrid stroke="var(--rv-grid)" strokeWidth={1} vertical={false} />
                 <XAxis
                   dataKey="bucket_start"
@@ -184,7 +195,7 @@ export function RuntimeOutcomeTrend({ points, bucket }: Props) {
           {hasDuration && (
             <figure className="m-0" aria-label="Run duration percentiles">
               <ResponsiveContainer width="100%" height={132}>
-                <LineChart data={points} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                <LineChart data={chartPoints} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
                   <CartesianGrid stroke="var(--rv-grid)" strokeWidth={1} vertical={false} />
                   <XAxis
                     dataKey="bucket_start"
@@ -214,7 +225,7 @@ export function RuntimeOutcomeTrend({ points, bucket }: Props) {
                     strokeLinejoin="round"
                     strokeLinecap="round"
                     dot={{ r: 4, fill: "var(--rv-p50)", stroke: "var(--rv-surface)", strokeWidth: 2 }}
-                    connectNulls
+                    connectNulls={false}
                     isAnimationActive={false}
                   />
                   <Line
@@ -226,7 +237,7 @@ export function RuntimeOutcomeTrend({ points, bucket }: Props) {
                     strokeLinejoin="round"
                     strokeLinecap="round"
                     dot={{ r: 4, fill: "var(--rv-p95)", stroke: "var(--rv-surface)", strokeWidth: 2 }}
-                    connectNulls
+                    connectNulls={false}
                     isAnimationActive={false}
                   />
                 </LineChart>
@@ -237,6 +248,70 @@ export function RuntimeOutcomeTrend({ points, bucket }: Props) {
       )}
     </div>
   );
+}
+
+function bucketStart(value: string, bucket: RuntimeTrendBucket): Date | null {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  date.setUTCMinutes(0, 0, 0);
+  if (bucket !== "hour") date.setUTCHours(0, 0, 0, 0);
+  if (bucket === "week") {
+    const daysSinceMonday = (date.getUTCDay() + 6) % 7;
+    date.setUTCDate(date.getUTCDate() - daysSinceMonday);
+  }
+  return date;
+}
+
+function nextBucket(date: Date, bucket: RuntimeTrendBucket): Date {
+  const next = new Date(date);
+  if (bucket === "hour") next.setUTCHours(next.getUTCHours() + 1);
+  if (bucket === "day") next.setUTCDate(next.getUTCDate() + 1);
+  if (bucket === "week") next.setUTCDate(next.getUTCDate() + 7);
+  return next;
+}
+
+function emptyPoint(bucket_start: string): RuntimeOutcomeTrendPoint {
+  return {
+    bucket_start,
+    total_runs: 0,
+    success_runs: 0,
+    failed_runs: 0,
+    running_runs: 0,
+    unknown_runs: 0,
+    failure_rate: 0,
+    p50_duration_ms: null,
+    p95_duration_ms: null,
+    max_duration_ms: null,
+  };
+}
+
+/**
+ * Give the chart a real time axis: oldest on the left, newest on the right,
+ * with empty buckets retained so the visible span matches the selected window.
+ */
+export function alignTrendPoints(
+  points: RuntimeOutcomeTrendPoint[],
+  bucket: RuntimeTrendBucket,
+  rangeStart: string,
+  rangeEnd: string,
+): RuntimeOutcomeTrendPoint[] {
+  if (points.length === 0) return [];
+  const start = bucketStart(rangeStart, bucket);
+  const end = bucketStart(rangeEnd, bucket);
+  if (!start || !end || start > end) return points;
+
+  const byBucket = new Map<string, RuntimeOutcomeTrendPoint>();
+  for (const point of points) {
+    const normalized = bucketStart(point.bucket_start, bucket);
+    if (normalized) byBucket.set(normalized.toISOString(), point);
+  }
+
+  const aligned: RuntimeOutcomeTrendPoint[] = [];
+  for (let cursor = start; cursor <= end && aligned.length < 500; cursor = nextBucket(cursor, bucket)) {
+    const key = cursor.toISOString();
+    aligned.push(byBucket.get(key) ?? emptyPoint(key));
+  }
+  return aligned;
 }
 
 function LegendKey({ color, label, line }: { color: string; label: string; line?: boolean }) {

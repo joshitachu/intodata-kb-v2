@@ -88,6 +88,7 @@ import {
 import {
   DEFAULT_WINDOW_KEY,
   RUNTIME_WINDOWS,
+  isRuntimeWindowKey,
   resolveWindow,
   windowSince,
   type RuntimeWindowKey,
@@ -199,8 +200,11 @@ export function RuntimeConsole({ view }: { view: RuntimeConsoleView }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const requestedProjectId = searchParams.get("project")?.trim() ?? "";
+  const requestedWindowKey = searchParams.get("window");
   const [projectId, setProjectId] = useState(requestedProjectId);
-  const [windowKey, setWindowKey] = useState<RuntimeWindowKey>(DEFAULT_WINDOW_KEY);
+  const [windowKey, setWindowKey] = useState<RuntimeWindowKey>(
+    isRuntimeWindowKey(requestedWindowKey) ? requestedWindowKey : DEFAULT_WINDOW_KEY,
+  );
   const [detail, setDetail] = useState<Detail | null>(null);
   const [live, setLive] = useState(true);
   const projects = useUserProjects();
@@ -241,17 +245,35 @@ export function RuntimeConsole({ view }: { view: RuntimeConsoleView }) {
     if (nextProjectId && nextProjectId !== requestedProjectId) {
       const params = new URLSearchParams(searchParams.toString());
       params.set("project", nextProjectId);
+      params.set("window", windowKey);
       router.replace(`${pathname}?${params.toString()}`);
     }
-  }, [pathname, permittedProjects, projectId, projectListLoading, requestedProjectId, router, searchParams]);
+  }, [pathname, permittedProjects, projectId, projectListLoading, requestedProjectId, router, searchParams, windowKey]);
 
   const selectProject = useCallback((nextProjectId: string) => {
     if (!permittedProjects.some((project) => project.id === nextProjectId)) return;
     setProjectId(nextProjectId);
     const params = new URLSearchParams(searchParams.toString());
     params.set("project", nextProjectId);
+    params.set("window", windowKey);
     router.replace(`${pathname}?${params.toString()}`);
-  }, [pathname, permittedProjects, router, searchParams]);
+  }, [pathname, permittedProjects, router, searchParams, windowKey]);
+
+  const selectWindow = useCallback((nextWindowKey: string) => {
+    if (!isRuntimeWindowKey(nextWindowKey)) return;
+    setWindowKey(nextWindowKey);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("window", nextWindowKey);
+    if (projectId) params.set("project", projectId);
+    router.replace(`${pathname}?${params.toString()}`);
+  }, [pathname, projectId, router, searchParams]);
+
+  const runtimeHref = useCallback((href: string) => {
+    const params = new URLSearchParams();
+    if (projectId) params.set("project", projectId);
+    params.set("window", windowKey);
+    return `${href}?${params.toString()}`;
+  }, [projectId, windowKey]);
 
   // Recomputed only when the window changes, so a re-render does not shift the
   // lower bound and refetch every aggregate.
@@ -315,7 +337,7 @@ export function RuntimeConsole({ view }: { view: RuntimeConsoleView }) {
           />
           <SelectMenu
             value={windowKey}
-            onChange={(value) => setWindowKey(value as RuntimeWindowKey)}
+            onChange={selectWindow}
             options={RUNTIME_WINDOWS.map((option) => ({ value: option.key, label: option.label }))}
             icon={Clock}
             ariaLabel="Time window"
@@ -354,7 +376,7 @@ export function RuntimeConsole({ view }: { view: RuntimeConsoleView }) {
           return (
             <Link
               key={item.view}
-              href={projectId ? `${item.href}?project=${encodeURIComponent(projectId)}` : item.href}
+              href={runtimeHref(item.href)}
               aria-current={isActive ? "page" : undefined}
               className={cn(
                 "inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors motion-reduce:transition-none",
@@ -372,7 +394,9 @@ export function RuntimeConsole({ view }: { view: RuntimeConsoleView }) {
       {!hasSelectedProject && !projectListLoading && (
         <Empty label="No TMC projects" hint="Connect a Talend Management Console source to a permitted project." />
       )}
-      {hasSelectedProject && view === "hub" && <Hub {...viewProps} freshness={freshness} />}
+      {hasSelectedProject && view === "hub" && (
+        <Hub {...viewProps} freshness={freshness} runtimeHref={runtimeHref} />
+      )}
       {hasSelectedProject && view === "executions" && <Executions {...viewProps} />}
       {hasSelectedProject && view === "jobs" && <Jobs {...viewProps} />}
       {hasSelectedProject && view === "plans" && <Plans {...viewProps} />}
@@ -391,8 +415,16 @@ function Hub({
   windowKey,
   onDetail,
   freshness,
-}: ViewProps & { freshness: SyncFreshness | null }) {
+  runtimeHref,
+}: ViewProps & {
+  freshness: SyncFreshness | null;
+  runtimeHref: (href: string) => string;
+}) {
   const bucket = resolveWindow(windowKey).bucket;
+  const until = useMemo(
+    () => new Date(new Date(since).getTime() + resolveWindow(windowKey).hours * 3_600_000).toISOString(),
+    [since, windowKey],
+  );
   const overview = useRuntimeOverview({ projectId: scope });
   const trend = useRuntimeTrend({ projectId: scope, since, bucket });
   // Window-scoped, so a job that last ran before the window cannot appear here.
@@ -480,14 +512,19 @@ function Hub({
             description={`Run outcomes and duration across the ${windowLabel}.`}
             action={
               <Link
-                href="/admin/logs/executions"
+                href={runtimeHref("/admin/logs/executions")}
                 className="text-xs font-medium text-primary hover:underline"
               >
                 View runs
               </Link>
             }
           >
-            <RuntimeOutcomeTrend points={points} bucket={trend.data?.bucket ?? bucket} />
+            <RuntimeOutcomeTrend
+              points={points}
+              bucket={trend.data?.bucket ?? bucket}
+              rangeStart={since}
+              rangeEnd={until}
+            />
           </Panel>
           <Panel
             title="Needs attention"
@@ -495,7 +532,7 @@ function Hub({
             description="Jobs that ran in this window and are failing or never finishing."
             action={
               <Link
-                href="/admin/logs/incidents"
+                href={runtimeHref("/admin/logs/incidents")}
                 className="text-xs font-medium text-primary hover:underline"
               >
                 {incidents.data?.total ?? 0} incidents
@@ -528,7 +565,7 @@ function Hub({
           description="Newest first. Select a row for logs, evidence and the derived cause."
           action={
             <Link
-              href="/admin/logs/executions"
+              href={runtimeHref("/admin/logs/executions")}
               className="text-xs font-medium text-primary hover:underline"
             >
               All runs

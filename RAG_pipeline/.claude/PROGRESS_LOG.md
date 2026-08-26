@@ -3788,3 +3788,14 @@ Then open http://localhost:3000
 - **A batched caller MUST merge `orphan_runtime_jobs` by INTERSECTION, never union**: the endpoint returns `A - M_i` per call, so union reports every runtime job as orphaned the moment the unit list is split. Documented at the source and pinned by a test.
 - **Rejected on evidence**: resolving plan membership via `steps[].job_id -> runtime_jobs` was specified in the plan but measured WORSE on live data (75 vs 79 resolved on cdc; union adds zero). Every null-name step points at a task the mirror does not hold -- a coverage gap, not a lookup-key mistake. Code left unchanged, finding recorded in the docstring and pinned by a test so it is not re-attempted.
 - **Verification**: `tests/test_runtime/` **680 passed, 0 failed**. Live endpoint re-verified after `docker compose up -d --build backend`.
+
+## Session: 2026-08-26
+
+### [Fix]: Align runtime trends with the selected window and preserve it across views
+
+- **Files changed**: `frontend/components/runtime/RuntimeConsole.tsx`; `frontend/components/runtime/RuntimeOutcomeTrend.tsx`; `frontend/components/runtime/runtime-window.ts`; `frontend/tests/components/RuntimeLogsPage.test.tsx`; `.claude/context.md`; `.claude/PROGRESS_LOG.md`; `.claude/PROJECT_MEMORY.md`.
+- **Problem**: the Overview graphs displayed newest dates on the left and only rendered buckets returned by the backend, so a sparse 30-day selection could look like a five-day reversed chart. The selected window also reset to 30 days when navigating between Runs, Jobs, Incidents, and the other runtime views.
+- **Root cause**: the aggregate API deliberately returns newest-first non-empty buckets, while Recharts treated that array as its categorical axis without normalization. Separately, `windowKey` lived only in page-local React state and runtime links preserved only `project`.
+- **Change**: sort displayed data chronologically, materialize zero-run UTC buckets across the exact selected range, and leave duration gaps unconnected when no measurement exists. Validate and persist the selected `window` in the URL, preserving it alongside `project` in tab and Overview drill-through links; protect the URL update against the existing automatic-project-selection effect.
+- **Why this approach**: the API's newest-first order remains appropriate for bounded consumers, while the chart gets an explicit time-axis adapter. URL state makes navigation, refresh, back/forward behavior, and shareable links agree without introducing a second browser-storage source of truth.
+- **Verification**: `npx vitest run tests/components/RuntimeLogsPage.test.tsx` **30 passed**; `npx tsc --noEmit --incremental false` passed; `git diff --check` passed. Full `npm test`: **908 passed / 5 failed** in unrelated suites (four `TopologyPageCopilot` canvas-mock failures and the existing `SimpleConnectorPanel` provider-id mismatch).
