@@ -9,14 +9,15 @@ then delegates all visibility changes to :mod:`candidate_publisher`.
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Mapping, Protocol
 
 from mcp_server.services.group_doc_dependency import DOC_PACK_MANIFEST_FILENAME, GroupDocDependency
 from mcp_server.services.living_docs.candidate_publisher import CandidatePublisher, CandidatePublicationReceipt
-from mcp_server.services.living_docs.candidate_store import FileCandidateStore
+from mcp_server.services.living_docs.candidate_store import FileCandidateStore, CandidateNotFound
 from mcp_server.services.living_docs.contracts import (
     ArtifactKind,
     CandidateState,
@@ -47,6 +48,7 @@ class GitPatchOutcome:
     patched_docs: tuple[str, ...] = ()
     reason_code: str | None = None
     publication: CandidatePublicationReceipt | None = None
+    patch_summary: Mapping[str, object] | None = None
 
 
 class GitPatchCoordinator:
@@ -113,6 +115,101 @@ class GitPatchCoordinator:
             knowledge_revision_id=f"kr-{hashlib.sha256(source.key.encode()).hexdigest()[:24]}",
         )
         return self._store.create(candidate)
+
+    def create_agent_candidate(
+        self,
+        *,
+        project_id: str,
+        source_identity: str,
+        before_sha: str,
+        after_sha: str,
+        changed_files: list[object],
+        base_knowledge_revision_id: str | None,
+    ) -> PatchCandidate:
+        """Create an idempotent candidate whose semantic scope is agent-owned.
+
+        Unlike the legacy group patch lane, this candidate does not require a
+        source path to contain a scanner group name.  The deterministic floor is
+        the immutable Git diff plus the single patch-report boundary; the
+        OpenCode worker may propose document operations only through that report.
+        """
+
+        if not changed_files:
+            raise ValueError("An OpenCode Git patch candidate requires changed files")
+        source = SourceRevision(
+            project_id=project_id,
+            origin=SourceOrigin.GIT,
+            source_identity=source_identity,
+            revision_id=after_sha,
+            content_sha256=hashlib.sha256(after_sha.encode("utf-8")).hexdigest(),
+        )
+        changes: list[SemanticChange] = []
+        for item in changed_files:
+            status = str(getattr(item, "status", "M") or "M").upper()
+            path = str(getattr(item, "path", "") or "")
+            previous = getattr(item, "previous_path", None)
+            if not path:
+                raise ValueError("Changed file path is required")
+            kind = {
+                "A": ChangeKind.ADDED,
+                "D": ChangeKind.DELETED,
+                "R": ChangeKind.RENAMED,
+            }.get(status[:1], ChangeKind.MODIFIED)
+            changes.append(
+                SemanticChange(
+                    kind=kind,
+                    logical_path=path,
+                    before_sha256=(
+                        None
+                        if kind is ChangeKind.ADDED
+                        else hashlib.sha256(f"{before_sha}:{previous or path}".encode()).hexdigest()
+                    ),
+                    after_sha256=(
+                        None
+                        if kind is ChangeKind.DELETED
+                        else hashlib.sha256(f"{after_sha}:{path}".encode()).hexdigest()
+                    ),
+                    previous_logical_path=(
+                        str(previous) if kind is ChangeKind.RENAMED and previous else None
+                    ),
+                )
+            )
+        change_set = ChangeSet(
+            source_revision=source,
+            base_source_revision_id=before_sha or None,
+            # An immutable source revision is replay-safe within one contract
+            # version.  A contract revision intentionally gets a new candidate,
+            # retaining any prior held candidate as audit evidence.
+            idempotency_key=f"git:{project_id}:{after_sha}:opencode-v3",
+            changes=tuple(changes),
+        )
+        floor = DeterministicImpactFloor(
+            source_revision_key=source.key,
+            targets=(
+                PatchTarget(
+                    artifact_id="support/opencode-patch-report.json",
+                    section_id="report",
+                    artifact_kind=ArtifactKind.SUPPORT,
+                ),
+            ),
+            evidence_ids=("git:diff",),
+            mapper_version="opencode-v3",
+        )
+        candidate = PatchCandidate.new(
+            change_set=change_set,
+            impact_floor=floor,
+            base_knowledge_revision_id=base_knowledge_revision_id,
+            knowledge_revision_id=(
+                f"kr-{hashlib.sha256(source.key.encode()).hexdigest()[:24]}"
+            ),
+        )
+        try:
+            existing = self._store.get_candidate(candidate.id)
+        except CandidateNotFound:
+            return self._store.create(candidate)
+        if existing.change_set.source_revision.key != source.key:
+            raise ValueError("Existing idempotent candidate is bound to another source revision")
+        return existing
 
     def create_zip_candidate(
         self,
@@ -182,12 +279,21 @@ class GitPatchCoordinator:
         rollout_stage: str = "auto_scoped",
         approved: bool = False,
         low_risk_max_artifacts: int = 3,
+        changed_files: list[object] | None = None,
+        full_diff_text: str = "",
+        scan_before_patch: bool = True,
     ) -> GitPatchOutcome:
         """Patch, stage, validate, and activate without any full fallback."""
 
         status = self._store.status(candidate.id)
         if status.state is CandidateState.ACTIVE:
-            return GitPatchOutcome("active", candidate.id, candidate.knowledge_revision_id)
+            return GitPatchOutcome(
+                "active",
+                candidate.id,
+                candidate.knowledge_revision_id,
+                patched_docs=self._reported_docs(candidate.id),
+                reason_code="already_active",
+            )
         if status.state in {CandidateState.RAG_PREPARED, CandidateState.RECOVERY_REQUIRED}:
             return GitPatchOutcome(
                 "prepared",
@@ -202,7 +308,7 @@ class GitPatchCoordinator:
         workspace_output = self._workspace_output(candidate.id, active_output_dir)
         self._copy_active_output(active_output_dir, workspace_output)
         scan_output_dir = candidate_scan_output_dir
-        if source_path is not None:
+        if source_path is not None and scan_before_patch:
             scan = await ScannerService(log_manager=log_mgr).run_scan(
                 project_id=candidate.change_set.source_revision.project_id,
                 repo_path=source_path,
@@ -218,6 +324,7 @@ class GitPatchCoordinator:
             scan_output_dir = workspace_output
         result = await self._executor.run(
             project_id=candidate.change_set.source_revision.project_id,
+            candidate_id=candidate.id,
             output_dir=workspace_output,
             changed_groups=changed_groups,
             platform=platform,
@@ -227,9 +334,17 @@ class GitPatchCoordinator:
             trigger="living_document_candidate",
             scan_output_dir=scan_output_dir,
             publish_rag=False,
+            changed_files=changed_files or [],
+            full_diff_text=full_diff_text,
         )
         if result.action != "true_patch":
-            return self._hold(candidate, result.error or "patch_validation_failed", "patch_validation_failed")
+            reason_code = str(result.summary.get("reason_code") or "patch_validation_failed")
+            return self._hold(
+                candidate,
+                result.error or "patch_validation_failed",
+                reason_code,
+                patch_summary=result.summary,
+            )
         try:
             publication = await self._publisher.prepare(
                 candidate,
@@ -251,6 +366,7 @@ class GitPatchCoordinator:
                     patched_docs=tuple(result.patched_docs),
                     reason_code=activation_reason,
                     publication=publication,
+                    patch_summary=result.summary,
                 )
             await self._publisher.activate(
                 candidate,
@@ -259,13 +375,19 @@ class GitPatchCoordinator:
                 active_source_revision_key=active_source_revision_key,
             )
         except Exception as exc:
-            return self._hold(candidate, str(exc), "candidate_publication_failed")
+            return self._hold(
+                candidate,
+                str(exc),
+                "candidate_publication_failed",
+                patch_summary=result.summary,
+            )
         return GitPatchOutcome(
             action="active",
             candidate_id=candidate.id,
             knowledge_revision_id=candidate.knowledge_revision_id,
             patched_docs=tuple(result.patched_docs),
             publication=publication,
+            patch_summary=result.summary,
         )
 
     @staticmethod
@@ -323,6 +445,23 @@ class GitPatchCoordinator:
         root = self._store.candidate_root(candidate_id) / "workspace"
         return root / "output"
 
+    def _reported_docs(self, candidate_id: str) -> tuple[str, ...]:
+        path = self._workspace_output(candidate_id, Path(".")) / "_reingestion" / "patch_report.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            operations = payload.get("operations") if isinstance(payload, dict) else None
+            if not isinstance(operations, list):
+                return ()
+            return tuple(
+                sorted(
+                    str(item["path"])
+                    for item in operations
+                    if isinstance(item, dict) and isinstance(item.get("path"), str)
+                )
+            )
+        except (OSError, json.JSONDecodeError):
+            return ()
+
     @staticmethod
     def _copy_active_output(active_output_dir: Path, workspace_output: Path) -> None:
         if workspace_output.exists():
@@ -334,7 +473,14 @@ class GitPatchCoordinator:
             ignore=shutil.ignore_patterns("docs_staging", "docs_prev", ".living_docs"),
         )
 
-    def _hold(self, candidate: PatchCandidate, detail: str, reason_code: str) -> GitPatchOutcome:
+    def _hold(
+        self,
+        candidate: PatchCandidate,
+        detail: str,
+        reason_code: str,
+        *,
+        patch_summary: Mapping[str, object] | None = None,
+    ) -> GitPatchOutcome:
         status = self._store.status(candidate.id)
         if status.state is CandidateState.RECOVERY_REQUIRED:
             reason_code = status.reason_code or "docs_activation_recovery_required"
@@ -350,4 +496,5 @@ class GitPatchCoordinator:
             candidate_id=candidate.id,
             knowledge_revision_id=candidate.knowledge_revision_id,
             reason_code=reason_code,
+            patch_summary=patch_summary,
         )

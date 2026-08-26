@@ -141,6 +141,38 @@ mcp-server/src/mcp_server/
 
 Note: all `/mcp/*` routes require JWT cookie auth. The GitHub webhook route explicitly bypasses JWT and uses HMAC verification instead.
 
+## OpenCode Reingestion
+
+When `MCP_LIVING_DOC_PATCHING_ENABLED=true`, every Git push that survives the
+cheap non-document filter bypasses the legacy path-to-scan-group router and runs
+through one bounded OpenCode candidate session:
+
+1. The webhook revision is reconciled from `last_ingested_commit_sha`, not
+   blindly from the webhook's `before` value. Queued pushes therefore cannot
+   skip an earlier held revision.
+2. Existing validated docs without an active knowledge revision are imported
+   byte-for-byte through `living_docs/baseline.py`; no generation call occurs.
+3. `GitPatchCoordinator.create_agent_candidate()` binds the candidate to the
+   exact before/after SHAs and makes the Git diff the deterministic evidence
+   floor. Candidate IDs are idempotent per project and after SHA.
+4. `OpenCodeReingestionExecutor` gives OpenCode a credential-redacted diff, the
+   changed-file list, existing doc hashes, and a read-only candidate docs copy.
+   The only permitted write is `_reingestion/patch_report.json` through the
+   artifact-submission MCP facade. OpenCode has no active-doc or RAG tool.
+5. Nexus verifies every operation's path, base/content hash, evidence citation,
+   secret scan, uniqueness, and blast-radius limit before applying it inside the
+   candidate workspace.
+6. `CandidatePublisher` stages only changed/deleted logical IDs, validates the
+   complete membership, then activates the RAG revision and matching docs tree.
+   A replay returns the already-active candidate before starting OpenCode.
+
+Append-only receipts live under
+`data/living_docs/audit/{project_id}.jsonl` and include Git SHAs, candidate and
+knowledge revisions, changed/deleted artifacts, embedding reuse, OpenCode usage,
+files read, duration, and reason codes. The legacy deterministic patch and
+targeted-regeneration paths remain available only when living-doc patching is
+disabled.
+
 ## Swap Pack Starter
 
 The dashboard-facing Swap Pack flow is backed by the existing `PluginPack`

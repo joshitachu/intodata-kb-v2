@@ -759,6 +759,87 @@ class OpenCodeCliProvider(DocGenerationProvider):
             return False
         return result.returncode == 0 and session_id in result.stdout
 
+    async def run_bounded_contract(
+        self,
+        *,
+        project_id: str,
+        workspace: Path,
+        contract: OpenCodeTaskContract,
+        log_cb: LogCallback,
+        step: str,
+        prompt: str,
+    ) -> AgentResult:
+        """Execute one isolated OpenCode contract outside full generation.
+
+        Incremental reingestion needs the same pinned runtime, deny-by-default
+        permissions, artifact submission boundary, event accounting, and
+        credential isolation as the three-phase generator.  This public seam
+        deliberately exposes only a single contract and a single declared
+        output; it does not run Gather/Analyze/Produce orchestration and grants
+        no publication or RAG capability.
+        """
+
+        workspace = workspace.resolve()
+        workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
+        audit_dir = workspace / "_audit"
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        ctx = DocGenContext(
+            project_id=project_id,
+            staging_dir=workspace,
+            staging_abs=str(workspace),
+            logs_abs=str(audit_dir),
+            preprocess_groups=[],
+            total_jobs=0,
+            total_groups=0,
+            effective_model=self.model_route or "opencode-default",
+            write_model=self.model_route or "opencode-default",
+            platform="generic",
+            analysis_guide_file="",
+            enterprise_mode=True,
+        )
+        started = time.monotonic()
+        resolved, allowlist = self._preflight()
+        execution = await self._execute_step(
+            resolved=resolved,
+            ctx=ctx,
+            phase="produce",
+            step=step,
+            contracts=[contract],
+            allowlist=allowlist,
+            session_id=None,
+            ledger=OpenCodeAttemptLedger(workspace),
+            log_cb=log_cb,
+            prompt_override=prompt,
+        )
+        events_path = audit_dir / "opencode_events.json"
+        events_path.write_text(json.dumps(execution.events, indent=2), encoding="utf-8")
+        self._write_usage_receipts(
+            audit_dir,
+            [
+                {
+                    "phase": "reingestion",
+                    "step": step,
+                    "status": "model_completed",
+                    "session_id": execution.session_id,
+                    "input_tokens": execution.input_tokens,
+                    "output_tokens": execution.output_tokens,
+                    "cost_usd": execution.cost_usd,
+                    "latency_ms": execution.latency_ms,
+                }
+            ],
+        )
+        return AgentResult(
+            success=True,
+            input_tokens=execution.input_tokens,
+            output_tokens=execution.output_tokens,
+            cost_usd=execution.cost_usd,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            duration_api_ms=execution.latency_ms,
+            num_turns=1,
+            session_id=execution.session_id,
+            model_name=self.model_route or "opencode-default",
+        )
+
     async def _prepare_run(self, ctx: DocGenContext, log_cb: LogCallback):
         """Stage the deterministic evidence tiers this engine's Phase 3 reads.
 

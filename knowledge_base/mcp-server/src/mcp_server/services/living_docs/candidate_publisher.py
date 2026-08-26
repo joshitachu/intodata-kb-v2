@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mcp_server.services.atomic_swap import swap_docs
+from mcp_server.services.doc_quality_scorer import is_published_doc_filename
 from mcp_server.services.living_docs.candidate_store import FileCandidateStore
 from mcp_server.services.living_docs.contracts import ArtifactKind, CandidateState, PatchCandidate
 from mcp_server.services.living_docs.rag_revisions import RagArtifact, RagMutation
@@ -44,12 +45,14 @@ def collect_revision_artifacts(project_id: str, docs_dir: Path) -> dict[str, Rag
         raise CandidatePublicationError(f"Docs tree is absent: {docs_dir}")
     artifacts: dict[str, RagArtifact] = {}
     for path in sorted(docs_dir.glob("*.md")):
-        if path.name.startswith("_") or not path.name[:1].isdigit():
+        if not is_published_doc_filename(path.name):
             continue
         content = path.read_text(encoding="utf-8", errors="replace")
         if not content.strip():
             continue
         logical_id = f"canonical/{path.name}"
+        if logical_id in artifacts:
+            raise CandidatePublicationError(f"Duplicate document logical id: {logical_id}")
         artifacts[logical_id] = RagArtifact(
             logical_id=logical_id,
             content=content,
@@ -62,6 +65,8 @@ def collect_revision_artifacts(project_id: str, docs_dir: Path) -> dict[str, Rag
         metadata = dict(item["metadata"])
         filename = str(item["filename"])
         logical_id = f"internal/{filename}"
+        if logical_id in artifacts:
+            raise CandidatePublicationError(f"Duplicate internal logical id: {logical_id}")
         artifacts[logical_id] = RagArtifact(
             logical_id=logical_id,
             content=str(item["content"]),

@@ -555,6 +555,18 @@ Set `MCP_PIPELINE_DEBUG=1` to materialize the full forensic record under `docs_s
 
 ### OpenCode Runtime Homes and Failure Diagnostics
 
+- **Git reingestion uses OpenCode as a candidate worker, never as publisher.**
+  With `MCP_LIVING_DOC_PATCHING_ENABLED=true`, `auto_doc_update.py` reconciles
+  the exact diff from the last successfully ingested SHA, primes a missing
+  revisioned-RAG baseline from the existing doc bytes, and invokes
+  `living_docs/opencode_reingestion.py`. The session can read the redacted diff
+  and candidate docs, but can submit only one JSON patch report through the
+  artifact facade. Nexus validates and applies that report in the candidate;
+  `CandidatePublisher` alone prepares and activates docs plus RAG. Never add an
+  active-doc write, direct RAG tool, or path-to-group prerequisite to this lane.
+  Replays must resolve the active candidate before any model call. Audit receipts
+  are append-only under `data/living_docs/audit/`.
+
 - **A failed OpenCode step now leaves evidence.** `_audit/opencode_errors.json`
   records phase, step, model route, returncode, the *raw* error events (up to 20)
   and stderr (up to 8 KB); the short reason is appended to the raised exception

@@ -32,6 +32,9 @@ from mcp_server.services.doc_version_history import record_push_outcome
 from mcp_server.services.living_docs.candidate_publisher import CandidatePublisher
 from mcp_server.services.living_docs.candidate_store import FileCandidateStore
 from mcp_server.services.living_docs.git_patch_coordinator import GitPatchCoordinator
+from mcp_server.services.living_docs.audit import FilePatchAuditStore, PatchAuditReceipt, PatchUsage
+from mcp_server.services.living_docs.baseline import prime_project_baseline
+from mcp_server.services.living_docs.opencode_reingestion import OpenCodeReingestionExecutor
 from mcp_server.services.living_docs.rollout import RolloutStage, inspect_project_patch_readiness
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
@@ -133,8 +136,10 @@ class AutoDocAgentRuntime:
             inspect_result = await self._inspect_diff(ctx, before_sha, after_sha)
             summary.update(inspect_result)
             quick_scan: QuickScanReport = inspect_result["_quick_scan"]
+            full_diff_text = str(inspect_result["_full_diff_text"])
             summary.pop("_quick_scan", None)
             summary.pop("_changed_files", None)
+            summary.pop("_full_diff_text", None)
 
             if not quick_scan.doc_relevant_files:
                 return await self._skip(
@@ -142,6 +147,16 @@ class AutoDocAgentRuntime:
                     after_sha,
                     summary,
                     "Only ignored/non-doc-impacting files changed",
+                )
+
+            if config.living_doc_patching_enabled:
+                return await self._opencode_reingestion(
+                    ctx,
+                    before_sha=before_sha,
+                    after_sha=after_sha,
+                    summary=summary,
+                    changed_files=inspect_result["_changed_files"],
+                    full_diff_text=full_diff_text,
                 )
 
             decision = await self._decide(
@@ -297,7 +312,195 @@ class AutoDocAgentRuntime:
             "changed_groups": changed_groups,
             "_quick_scan": quick_scan,
             "_changed_files": changed_file_list,
+            "_full_diff_text": full_diff_text,
         }
+
+    async def _opencode_reingestion(
+        self,
+        ctx: AutoDocUpdateContext,
+        *,
+        before_sha: str,
+        after_sha: str,
+        summary: dict[str, Any],
+        changed_files: list[ChangedFile],
+        full_diff_text: str,
+    ) -> DiffPatchResult:
+        """Run every doc-relevant push through one candidate OpenCode session."""
+
+        output_dir = config.project_root / "output" / ctx.project_id
+        docs_dir = output_dir / "docs"
+        raw_bridge = RagBridge(log_manager=self.log_mgr)
+        revision_bridge = RagBridge(
+            log_manager=self.log_mgr,
+            revisioned_rag=raw_bridge.http_revisioned_adapter(),
+        )
+        store = FileCandidateStore(
+            (config.data_dir / "living_docs" / "candidates" / ctx.project_id).resolve()
+        )
+        audit = FilePatchAuditStore((config.data_dir / "living_docs" / "audit").resolve())
+        try:
+            base_revision = await revision_bridge.active_knowledge_revision(ctx.project_id)
+            preflight = inspect_project_patch_readiness(
+                project_id=ctx.project_id,
+                output_dir=output_dir,
+                feature_enabled=True,
+                stage=RolloutStage(config.living_doc_rollout_stage),
+                source_revision_id=before_sha or None,
+                # Validate every non-RAG prerequisite before a legacy baseline
+                # import is allowed to create externally visible RAG state.
+                active_knowledge_revision_id=base_revision or "baseline-pending",
+            )
+            if not preflight.ready:
+                return self._held(
+                    summary,
+                    f"Living-document baseline is not ready: {', '.join(preflight.reason_codes)}",
+                    reason_code=preflight.reason_codes[0],
+                )
+            baseline_receipt = None
+            if base_revision is None:
+                baseline_receipt = await prime_project_baseline(
+                    project_id=ctx.project_id,
+                    source_revision_id=before_sha,
+                    docs_dir=docs_dir,
+                    rag=revision_bridge,
+                )
+                base_revision = baseline_receipt.knowledge_revision_id
+                await self.log_mgr.emit(
+                    ctx.project_id,
+                    (
+                        "Living-document baseline activated "
+                        f"({baseline_receipt.artifact_count} artifacts, "
+                        f"revision={base_revision})"
+                    ),
+                    "info",
+                )
+            readiness = inspect_project_patch_readiness(
+                project_id=ctx.project_id,
+                output_dir=output_dir,
+                feature_enabled=True,
+                stage=RolloutStage(config.living_doc_rollout_stage),
+                source_revision_id=before_sha or None,
+                active_knowledge_revision_id=base_revision,
+            )
+            if not readiness.ready:
+                return self._held(
+                    summary,
+                    f"Living-document baseline is not ready: {', '.join(readiness.reason_codes)}",
+                    reason_code=readiness.reason_codes[0],
+                )
+            coordinator = GitPatchCoordinator(
+                store=store,
+                publisher=CandidatePublisher(store=store, rag=revision_bridge),
+                executor=OpenCodeReingestionExecutor(),
+            )
+            candidate = coordinator.create_agent_candidate(
+                project_id=ctx.project_id,
+                source_identity=ctx.local_path,
+                before_sha=before_sha,
+                after_sha=after_sha,
+                changed_files=changed_files,
+                base_knowledge_revision_id=base_revision,
+            )
+            outcome = await coordinator.run(
+                candidate,
+                active_output_dir=output_dir,
+                candidate_scan_output_dir=config.intodoc_output_dir / ctx.project_id,
+                changed_groups=[],
+                platform=await self._project_platform(ctx.project_id),
+                log_mgr=self.log_mgr,
+                before_sha=before_sha,
+                after_sha=after_sha,
+                active_source_revision_key=candidate.change_set.source_revision.key,
+                source_path=None,
+                rollout_stage=config.living_doc_rollout_stage,
+                low_risk_max_artifacts=config.living_doc_low_risk_max_artifacts,
+                changed_files=changed_files,
+                full_diff_text=full_diff_text,
+                scan_before_patch=False,
+            )
+        except Exception as exc:
+            logger.exception("OpenCode reingestion failed for %s", ctx.project_id)
+            return self._held(
+                summary,
+                f"OpenCode candidate creation or baseline import failed: {exc}",
+                reason_code="opencode_reingestion_setup_failed",
+            )
+
+        patch_summary = dict(outcome.patch_summary or {})
+        publication = outcome.publication
+        usage = PatchUsage(
+            input_tokens=int(patch_summary.get("input_tokens") or 0),
+            output_tokens=int(patch_summary.get("output_tokens") or 0),
+            provider_calls=0 if outcome.reason_code == "already_active" else 1,
+            billed_cost_usd=float(patch_summary.get("cost_usd") or 0.0),
+            elapsed_ms=int(patch_summary.get("elapsed_ms") or 0),
+        )
+        audit.append(
+            PatchAuditReceipt(
+                candidate_id=outcome.candidate_id,
+                project_id=ctx.project_id,
+                source_revision_id=after_sha,
+                knowledge_revision_id=outcome.knowledge_revision_id,
+                state=outcome.action,
+                reason_code=outcome.reason_code,
+                changed_artifacts=(publication.changed_logical_ids if publication else outcome.patched_docs),
+                deleted_artifacts=(publication.deleted_logical_ids if publication else ()),
+                rag_mutation_count=(
+                    len(publication.changed_logical_ids) + len(publication.deleted_logical_ids)
+                    if publication else 0
+                ),
+                embedded_content_count=publication.embedded_content_count if publication else 0,
+                reused_content_count=publication.reused_content_count if publication else 0,
+                deterministic_scope=False,
+                usage=usage,
+                metadata={
+                    "before_sha": before_sha,
+                    "after_sha": after_sha,
+                    "files_read": patch_summary.get("files_read", []),
+                    "created_docs": patch_summary.get("created_docs", []),
+                    "updated_docs": patch_summary.get("updated_docs", []),
+                    "deleted_docs": patch_summary.get("deleted_docs", []),
+                },
+            )
+        )
+        if outcome.action != "active":
+            return self._held(
+                {**summary, **patch_summary, "candidate_id": outcome.candidate_id},
+                "OpenCode candidate patch held; active docs and RAG revision are unchanged",
+                reason_code=outcome.reason_code or "candidate_patch_held",
+            )
+        merged = {
+            **summary,
+            **patch_summary,
+            "mode": "opencode_reingestion",
+            "candidate_id": outcome.candidate_id,
+            "knowledge_revision_id": outcome.knowledge_revision_id,
+            "baseline_knowledge_revision_id": base_revision,
+            "idempotent_replay": outcome.reason_code == "already_active",
+            "publication": (
+                {
+                    "changed_logical_ids": publication.changed_logical_ids,
+                    "deleted_logical_ids": publication.deleted_logical_ids,
+                    "embedded_content_count": publication.embedded_content_count,
+                    "reused_content_count": publication.reused_content_count,
+                }
+                if publication else {}
+            ),
+        }
+        return DiffPatchResult(
+            action="true_patch",
+            summary=self._finalize_summary(
+                merged,
+                action="true_patch",
+                touched_docs=list(outcome.patched_docs),
+                reason_code=(
+                    "already_active" if outcome.reason_code == "already_active"
+                    else "opencode_patch_succeeded"
+                ),
+            ),
+            patched_docs=list(outcome.patched_docs),
+            advance_commit=True,
+        )
 
     async def _generated_doc_names(self, docs_dir: Path) -> list[str]:
         def read_names() -> list[str]:
@@ -839,7 +1042,7 @@ class AutoDocAgentRuntime:
         reason_code: str | None = None,
     ) -> dict[str, Any]:
         final = dict(summary)
-        final["mode"] = "tool_loop_agent"
+        final.setdefault("mode", "tool_loop_agent")
         final["tool_calls"] = list(self._tool_calls)
         final["tool_call_count"] = len(self._tool_calls)
         final["touched_docs"] = touched_docs if touched_docs is not None else _summary_docs(final)
@@ -894,7 +1097,22 @@ class AutoDocUpdateService:
             "info",
         )
 
-        result = await self._run(ctx, before_sha=before_sha, after_sha=after_sha, trigger=trigger)
+        effective_before = ctx.last_ingested_commit_sha or before_sha
+        if effective_before != before_sha:
+            await self.log_mgr.emit(
+                project_id,
+                (
+                    "Webhook base differs from the active documentation baseline; "
+                    f"reconciling {effective_before[:12]}..{after_sha[:12]}"
+                ),
+                "warning",
+            )
+        result = await self._run(
+            ctx,
+            before_sha=effective_before,
+            after_sha=after_sha,
+            trigger=trigger,
+        )
         await self._persist_result(project_id, after_sha, result)
         return result.error is None
 

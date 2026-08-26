@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from mcp_server.services.git_diff_patcher import FileChange
@@ -128,6 +129,131 @@ async def test_auto_doc_update_skip_advances_commit_and_persists_summary(
     repo = DocVersionHistoryRepository("proj", tmp_path / "output" / "proj")
     assert not repo.history_path.exists()
     assert not repo.sidecar_path.exists()
+
+
+async def test_enabled_opencode_path_primes_baseline_and_reconciles_from_last_ingested_sha(
+    session_factory,
+    monkeypatch,
+    tmp_path,
+    log_manager,
+):
+    """A queued webhook cannot skip an earlier un-ingested source revision."""
+
+    import mcp_server.services.auto_doc_update as auto_doc_update
+    from mcp_server.config import config
+    from mcp_server.services.living_docs.rag_revisions import InMemoryRevisionedRagStore
+    from mcp_server.services.rag_bridge import RagBridge as RealRagBridge
+    from mcp_server.services.true_patch_executor import PatchResult
+
+    monkeypatch.setattr(auto_doc_update, "async_session_factory", session_factory)
+    monkeypatch.setattr(config, "project_root", tmp_path)
+    monkeypatch.setattr(config, "data_dir", tmp_path / "data")
+    monkeypatch.setattr(config, "intodoc_output_dir", tmp_path / "intodoc-output")
+    monkeypatch.setattr(config, "living_doc_patching_enabled", True)
+    monkeypatch.setattr(config, "living_doc_rollout_stage", "auto_scoped")
+
+    before_active = "a" * 40
+    webhook_before = "b" * 40
+    after = "c" * 40
+
+    async def git_stub(local_path: str, *args: str) -> str:
+        if args[:2] == ("diff", "--name-status"):
+            assert args[2:4] == (before_active, after)
+            return "M\ttest_demo.py\n"
+        if args and args[0] == "diff":
+            assert before_active in args and after in args
+            return (
+                "diff --git a/test_demo.py b/test_demo.py\n"
+                "@@ -1 +1 @@\n-old = 1\n+new = 2\n"
+            )
+        return ""
+
+    monkeypatch.setattr(auto_doc_update, "_git", git_stub)
+    rag_store = InMemoryRevisionedRagStore()
+
+    class _Bridge(RealRagBridge):
+        def http_revisioned_adapter(self):
+            return rag_store
+
+    monkeypatch.setattr(auto_doc_update, "RagBridge", _Bridge)
+
+    class _AgentPatch:
+        async def run(self, **kwargs):
+            doc = kwargs["output_dir"] / "docs" / "01_ARCHITECTURE_MAP.md"
+            doc.write_text("# Architecture\n\nnew = 2\n", encoding="utf-8")
+            return PatchResult(
+                action="true_patch",
+                patched_groups=[],
+                patched_docs=["01_ARCHITECTURE_MAP.md"],
+                summary={
+                    "reason_code": "opencode_patch_succeeded",
+                    "patch_plan_producer": "opencode",
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "elapsed_ms": 20,
+                    "files_read": ["test_demo.py"],
+                    "updated_docs": ["01_ARCHITECTURE_MAP.md"],
+                },
+                advance_commit=True,
+            )
+
+    monkeypatch.setattr(auto_doc_update, "OpenCodeReingestionExecutor", _AgentPatch)
+
+    class _RouterMustNotRun:
+        def decide(self, **kwargs):
+            raise AssertionError("enabled OpenCode reingestion must bypass path/group routing")
+
+        async def expand(self, *args, **kwargs):
+            raise AssertionError("enabled OpenCode reingestion must bypass semantic expansion")
+
+    async with session_factory() as session:
+        registry = ProjectRegistry(session)
+        project = await registry.add_project(
+            "poly-test",
+            str(tmp_path / "repo"),
+            repo_url="https://github.com/example/repo.git",
+            source_type="git",
+        )
+        project.last_ingested_commit_sha = before_active
+        await session.commit()
+
+    output = tmp_path / "output" / "poly-test"
+    docs = output / "docs"
+    support = docs / "_rag_support" / "phase2_analysis"
+    cache = output / "analysis_cache"
+    support.mkdir(parents=True)
+    cache.mkdir(parents=True)
+    (docs / "01_ARCHITECTURE_MAP.md").write_text(
+        "# Architecture\n\nold = 1\n", encoding="utf-8"
+    )
+    (support / "root.md").write_text("# root analysis\n", encoding="utf-8")
+    (cache / "root.md").write_text("# root analysis\n", encoding="utf-8")
+    (support.parent / "_doc_pack_manifest.json").write_text("{}", encoding="utf-8")
+
+    ok = await auto_doc_update.AutoDocUpdateService(
+        log_mgr=log_manager,
+        router=_RouterMustNotRun(),
+    ).run(
+        project_id="poly-test",
+        before_sha=webhook_before,
+        after_sha=after,
+        trigger="webhook",
+    )
+
+    assert ok is True
+    assert (docs / "01_ARCHITECTURE_MAP.md").read_text() == "# Architecture\n\nnew = 2\n"
+    assert await rag_store.active_revision("poly-test") is not None
+    async with session_factory() as session:
+        project = await ProjectRegistry(session).get_project("poly-test")
+        assert project is not None
+        assert project.last_ingested_commit_sha == after
+        assert project.git_update_summary["before"] == before_active
+        assert project.git_update_summary["mode"] == "opencode_reingestion"
+        assert project.git_update_summary["reason_code"] == "opencode_patch_succeeded"
+    audit_path = tmp_path / "data" / "living_docs" / "audit" / "poly-test.jsonl"
+    audit = json.loads(audit_path.read_text().splitlines()[-1])
+    assert audit["usage"]["provider_calls"] == 1
+    assert audit["metadata"]["before_sha"] == before_active
 
 
 async def test_auto_doc_update_true_patch_success(
@@ -352,8 +478,6 @@ async def test_auto_doc_update_legacy_full_regen_decision_is_held(
             reason="no provenance manifest",
         )
     )
-
-    seen: dict[str, object] = {}
 
     async def regen_stub(*args, **kwargs):
         raise AssertionError("automatic full generation must never be dispatched")
