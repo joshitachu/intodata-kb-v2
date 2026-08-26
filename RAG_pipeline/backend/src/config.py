@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     agent_runtime_v2_live_streaming_enabled: bool = False
     agent_runtime_v2_live_streaming_users: list[int] = []
     agent_runtime_v2_live_streaming_percent: int = Field(default=0, ge=0, le=100)
+    # Stream the model's answer prose while it is still being written, on every
+    # capability path rather than only the deterministically-cited documentation
+    # answer. The text is provisional: it is published `replayable=False` and the
+    # authoritative post-persistence replay overwrites it, so what the server
+    # stored always wins on screen. Default-on because it is the streaming
+    # behaviour users expect, and separately switchable because it does put
+    # pre-validation prose on screen -- an operator with a stricter disclosure
+    # posture can turn it off without losing the live progress projection.
+    agent_runtime_v2_draft_answer_streaming_enabled: bool = True
     agent_runtime_v2_model_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
     # Read tools include answer_from_documentation, which runs full retrieval
     # + answer generation in one call (not just retrieval) and can legitimately

@@ -281,4 +281,56 @@ describe("useStreamMessage", () => {
     expect(result.current.streamState.content).toBe("partial ");
     expect(result.current.streamState.deltaSource).toBe("live");
   });
+
+  it("drops a retracted draft instead of appending the real answer to it", async () => {
+    // The server showed provisional prose, then retracted it: the model was
+    // narrating before a tool call, or the validator rejected the draft.
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      sseResponse(
+        `event: assistant.delta\ndata: ${JSON.stringify(publicEvent(2, "assistant.delta", { content: "Let me look that up." }, false))}\n\n` +
+          `event: assistant.draft_reset\ndata: ${JSON.stringify(publicEvent(3, "assistant.draft_reset", { status: "discarded" }, false))}\n\n` +
+          `event: assistant.delta\ndata: ${JSON.stringify(publicEvent(4, "assistant.delta", { content: "The real answer." }, false))}\n\n` +
+          `event: done\ndata: ${JSON.stringify({ message_id: 9, latency_ms: 12, run_id: "run-fixture" })}\n\n`,
+      ),
+    );
+    const { result } = renderHook(() => useStreamMessage(4));
+
+    await act(async () => result.current.sendMessage({ query: "Where is it?" }));
+
+    expect(result.current.streamState.content).toBe("The real answer.");
+  });
+
+  it("never lets a retraction discard the persisted answer", async () => {
+    // Safety property, mirroring the live/authoritative rule: once the server has
+    // sent what it stored, a late retraction frame cannot blank the screen.
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      sseResponse(
+        `event: assistant.delta\ndata: ${JSON.stringify(publicEvent(2, "assistant.delta", { content: "persisted text" }))}\n\n` +
+          `event: assistant.draft_reset\ndata: ${JSON.stringify(publicEvent(3, "assistant.draft_reset", { status: "discarded" }, false))}\n\n` +
+          `event: done\ndata: ${JSON.stringify({ message_id: 9, latency_ms: 12, run_id: "run-fixture" })}\n\n`,
+      ),
+    );
+    const { result } = renderHook(() => useStreamMessage(4));
+
+    await act(async () => result.current.sendMessage({ query: "Where is it?" }));
+
+    expect(result.current.streamState.content).toBe("persisted text");
+    expect(result.current.streamState.deltaSource).toBe("authoritative");
+  });
+
+  it("keeps the status line off a retraction, which is not a phase", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      sseResponse(
+        `event: assistant.progress\ndata: ${JSON.stringify(publicEvent(2, "assistant.progress", { phase: "writing_answer", summary: "Writing the answer... 3s" }, false))}\n\n` +
+          `event: assistant.draft_reset\ndata: ${JSON.stringify(publicEvent(3, "assistant.draft_reset", { status: "discarded" }, false))}\n\n` +
+          `event: done\ndata: ${JSON.stringify({ message_id: 9, latency_ms: 12, run_id: "run-fixture" })}\n\n`,
+      ),
+    );
+    const { result } = renderHook(() => useStreamMessage(4));
+
+    await act(async () => result.current.sendMessage({ query: "Where is it?" }));
+
+    expect(result.current.streamState.progress).toBe("Writing the answer... 3s");
+    expect(result.current.streamState.progressDetail?.phase).toBe("writing_answer");
+  });
 });

@@ -788,11 +788,13 @@ async def execute_production_agent_chat_turn(
         0, int((time.perf_counter() - started) * 1_000)
     )
     if event_callback is not None:
-        # Answer text is published only here, after the grounding validator
-        # accepted it and after it was persisted. Live progress during generation
-        # is carried by `assistant.progress` instead, which never contains model
-        # prose -- a partially shown answer that validation then rejects would be
-        # a compliance regression, so draft prose is not streamed.
+        # The AUTHORITATIVE answer text: emitted only here, after the grounding
+        # validator accepted it and after it was persisted, and therefore
+        # `replayable=True`. Draft prose may already have been shown live during
+        # generation (provisional, `replayable=False`), which is why the client
+        # RESETS its buffer on the first authoritative delta and rebuilds from
+        # these chunks: if the validator rewrote, downgraded or replaced the
+        # draft, the screen converges on what was actually stored.
         for chunk in public_answer_chunks(result.output):
             await event_callback("assistant.delta", {"content": chunk})
         await event_callback(
@@ -1306,10 +1308,12 @@ async def _run_readonly_primary_turn(
         suppress_structural_citations=is_topology_surface(page_scope),
         event_callback=event_callback,
         heartbeat_callback=heartbeat_callback,
-        # Intentionally False on all three cohorts: this caller replays the answer
-        # only after it is validated and persisted. Live feedback comes from the
-        # `assistant.progress` events the runtime emits during generation.
+        # Intentionally False on all three cohorts: this caller owns the
+        # AUTHORITATIVE replay, emitted below only after the answer is validated
+        # and persisted. `stream_draft_answer` is the separate, provisional live
+        # projection, which that replay then overwrites.
         emit_answer_deltas=False,
+        stream_draft_answer=settings.agent_runtime_v2_draft_answer_streaming_enabled,
         budget_controller=budget_controller,
         trusted_answer_sink=runtime.trusted_answer_sink,
     )
@@ -1344,7 +1348,7 @@ async def _run_planning_primary_turn(
     context = CapabilityExecutionContext(user_id=user_id, conversation_id=conversation.id, project_scope=project_scope, permissions=permissions, access_token=access_token, current_message_id=message_id, conversation_state_version=state.version, conversation_turn_claim_id=claim.id, conversation_turn_claim_token=claim.lease_token, denied_capability_ids=_chat_denied_capability_ids(runtime.registry, page_scope))
     plan_runtime = build_planning_primary_runtime(model=build_readonly_primary_chat_model(settings), registry=runtime.registry, executor=runtime.executor, context=context, plan_context=(plan_context.model_projection() if plan_context else None), turn_context=_turn_prompt_context(project_scope, page_scope), budget_controller=budget_controller)
     try:
-        turn = await run_readonly_primary_turn(graph=plan_runtime.graph, ledger=plan_runtime.ledger, snapshot=plan_runtime.snapshot, user_message=query, conversation_seed=turn_input.conversation_history, state_version=turn_input.state_version or "", prior_response_fingerprints=set(turn_input.prior_response_fingerprints), max_corrections=settings.agent_runtime_v2_max_grounding_corrections, suppress_structural_citations=is_topology_surface(page_scope), event_callback=event_callback, heartbeat_callback=heartbeat_callback, emit_answer_deltas=False, budget_controller=budget_controller, trusted_answer_sink=runtime.trusted_answer_sink)
+        turn = await run_readonly_primary_turn(graph=plan_runtime.graph, ledger=plan_runtime.ledger, snapshot=plan_runtime.snapshot, user_message=query, conversation_seed=turn_input.conversation_history, state_version=turn_input.state_version or "", prior_response_fingerprints=set(turn_input.prior_response_fingerprints), max_corrections=settings.agent_runtime_v2_max_grounding_corrections, suppress_structural_citations=is_topology_surface(page_scope), event_callback=event_callback, heartbeat_callback=heartbeat_callback, emit_answer_deltas=False, stream_draft_answer=settings.agent_runtime_v2_draft_answer_streaming_enabled, budget_controller=budget_controller, trusted_answer_sink=runtime.trusted_answer_sink)
     except Exception:
         await db.rollback()
         await runtime.state_repository.fail_claim(
@@ -1510,6 +1514,7 @@ async def _run_effect_primary_turn(
             event_callback=event_callback,
             heartbeat_callback=heartbeat_callback,
             emit_answer_deltas=False,
+            stream_draft_answer=settings.agent_runtime_v2_draft_answer_streaming_enabled,
             budget_controller=budget_controller,
             trusted_answer_sink=runtime.trusted_answer_sink,
         )

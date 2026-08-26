@@ -1,11 +1,15 @@
 """Streaming the trusted RAG answer, and the guards that make it safe.
 
-The safety argument for streaming on this ONE path: `answer_from_documentation`
-produces a deterministically cited answer, so the turn loop adopts it verbatim and
-the grounding validator is bypassed. With no post-generation transform, the
-streamed text cannot diverge from the persisted text. Everywhere else the
-validator is load-bearing and may rewrite or replace the answer, so the outer
-agent model still never streams (`emit_answer_deltas` stays False).
+What is special about this path: `answer_from_documentation` produces a
+deterministically cited answer, so the turn loop adopts it verbatim and the
+grounding validator is bypassed. With no post-generation transform, the streamed
+text cannot diverge from the persisted text -- an equality this module asserts
+rather than assumes.
+
+The outer agent model streams too, but it does NOT get that guarantee: the
+validator may rewrite or replace its answer, so that text is provisional and is
+corrected by the authoritative replay. Those guards live in
+`test_draft_answer_streaming.py`; the two paths must not be conflated.
 """
 
 from __future__ import annotations

@@ -3,8 +3,14 @@
 Two guarantees are load-bearing here:
 
 1. The user gets movement during a long model decode, and
-2. not one character of the model's draft answer is published before the
-   grounding validator has accepted it.
+2. the `assistant.progress` event carries no answer prose -- ever. Its payload is
+   server-authored, and it stays that way even though draft prose now has its own
+   channel (`assistant.delta`, see `test_draft_answer_streaming.py`): progress is
+   what the client falls back to when there is no text yet, so it must not become
+   a second, unguarded way for model output to reach the screen.
+
+These turns pass no `heartbeat_callback` and leave `stream_draft_answer` off, so
+the answer here is delivered post-validation, in one piece.
 """
 
 from __future__ import annotations

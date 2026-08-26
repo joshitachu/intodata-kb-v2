@@ -39,11 +39,19 @@ _PUBLIC_EVENT_FIELDS: dict[str, frozenset[str]] = {
     "run.started": frozenset({"status", "cohort", "transport", "objective"}),
     "runtime.update": frozenset({"status", "phase", "summary"}),
     # Live, server-authored progress emitted *while* the model is generating.
-    # There is deliberately no `content` field: the answer text it is producing
-    # has not passed the grounding validator yet, so only the phase, a
-    # server-authored label and elapsed time may be published.
+    # There is deliberately no `content` field: this event carries only the phase,
+    # a server-authored label and elapsed time. Answer prose has its own event
+    # (`assistant.delta`) with its own provisional/authoritative discipline, and
+    # conflating the two would put unvalidated text behind a field whose whole
+    # contract is that it never contains any.
     "assistant.progress": frozenset({"status", "phase", "summary", "elapsed_ms"}),
     "assistant.delta": frozenset({"content"}),
+    # Retraction of provisional draft prose: the model narrated before calling a
+    # tool, or the grounding validator sent the draft back for correction. Carries
+    # no text -- it tells the client to drop what it is showing so the replacement
+    # is not appended to a draft that is not the answer. Never replayable, for the
+    # same reason the provisional deltas it retracts are not.
+    "assistant.draft_reset": frozenset({"status"}),
     "tool.proposed": frozenset({"tool_label", "status", "call_ref"}),
     "tool.running": frozenset({"tool_label", "status", "call_ref"}),
     "tool.awaiting_approval": frozenset({"tool_label", "status", "summary", "proposal_id"}),

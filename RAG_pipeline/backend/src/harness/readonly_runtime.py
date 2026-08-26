@@ -54,6 +54,7 @@ from src.harness.grounding import (
     GroundingOutcome,
     GroundingValidator,
     GroundingVerdict,
+    contains_internal_output,
 )
 from src.harness.manifest import ManifestScope
 from src.harness.model_usage import token_usage_from_messages
@@ -82,7 +83,7 @@ from src.harness.topology_capability import (
     TOPOLOGY_STRUCTURE_CAPABILITY,
     topology_targets,
 )
-from src.harness.trusted_answer import TrustedAnswerSink
+from src.harness.trusted_answer import ANSWER_DELTA_CHARS, TrustedAnswerSink
 from src.harness.turn_instrumentation import ModelLatencyMiddleware
 from src.schemas import DocumentSource
 from src.turn_progress import turn_progress_scope
@@ -532,6 +533,180 @@ class _LiveProgressReporter:
                 logger.debug("Progress heartbeat failed", exc_info=True)
 
 
+#: Hold-back window at the tail of the raw draft, in characters.
+#:
+#: A grounding fence arrives as ``` one token at a time, so the buffer's last few
+#: characters may be an incomplete fence opener. Nothing inside this window is
+#: ever eligible for emission, which is what stops a partial "``" from reaching
+#: the screen and then having to be retracted.
+_DRAFT_FENCE_HOLDBACK = 3
+
+
+class _DraftAnswerStreamer:
+    """Show the outer model's answer prose while it is still being written.
+
+    This is the general counterpart to :class:`AnswerDeltaSink`, which streams the
+    ONE capability whose answer needs no validation. Here the answer has NOT been
+    validated yet, so the text is explicitly provisional: every delta is published
+    ``replayable=False`` and the authoritative, post-persistence delta run resets
+    the client's buffer and rebuilds it. Whatever the server persisted always wins
+    on screen -- streaming changes only WHEN text appears.
+
+    Provisional is not the same as unfiltered. Raw model chunks cannot be forwarded
+    as they arrive, because three separate transforms sit between what the model
+    writes and what a user may read:
+
+    1. **The grounding block.** The model appends a fenced ``nexus-grounding``
+       JSON block carrying evidence ids. ``_parse_grounded_answer`` splits it off;
+       until then it is raw contract, so streaming stops at the first fence.
+    2. **The humanizer.** ``_humanize_visible_content`` relabels semantic tool
+       names and evidence keys, and on the topology surface deletes structural
+       references outright. Forwarding pre-humanized text would leak exactly the
+       implementation references that transform exists to remove.
+    3. **The leak gate.** ``contains_internal_output`` is the one grounding
+       failure that discards an answer outright rather than correcting it. Text
+       that trips it must never have been displayed, so it is screened here, on
+       the same rule the validator uses, before anything is published.
+
+    Emission is therefore bounded by a *safe boundary*: a position where applying
+    the humanizer to the prefix provably yields a prefix of applying it to the
+    whole text, so already-shown characters can never need retracting.
+
+    * Default surface: the last whitespace character. The humanizer's patterns
+      there (``\\bsemantic_name\\b`` and evidence keys) are single tokens and
+      cannot span whitespace.
+    * Topology surface (``suppress_structural``): the last newline. Suppression
+      matches multi-word spans like "(from the project topology)" and trims line
+      ends, so whitespace is no longer a safe cut -- a line boundary is.
+
+    A prefix-stability check backs that reasoning up at runtime rather than
+    trusting it: if a recomputation ever contradicts what was already shown, the
+    streamer halts for the turn and the authoritative replay delivers the answer.
+    """
+
+    __slots__ = (
+        "_emitted",
+        "_halted",
+        "_publish",
+        "_raw",
+        "_sealed",
+        "_suppress_structural",
+    )
+
+    def __init__(
+        self,
+        publish: Callable[[str], Awaitable[None]],
+        *,
+        suppress_structural: bool = False,
+    ) -> None:
+        self._publish = publish
+        self._suppress_structural = suppress_structural
+        self._raw = ""
+        self._emitted = ""
+        #: Set once a grounding fence is seen: prose is complete, the rest is contract.
+        self._sealed = False
+        #: Set on a leak or a prefix contradiction. Terminal for the turn.
+        self._halted = False
+
+    @property
+    def streamed(self) -> str:
+        """Exactly what has been shown, for assertions and for the reset decision."""
+
+        return self._emitted
+
+    async def feed(
+        self, text: str, envelopes: list[ToolEnvelope], *, flush: bool = False
+    ) -> None:
+        """Accumulate one model chunk and publish whatever became safe to show.
+
+        ``flush`` lowers the batch threshold to zero, for the end of a draft: the
+        validator gate and persistence that follow are real dead time, so the last
+        partial batch is worth showing rather than holding for a size it will
+        never reach.
+        """
+
+        if self._halted:
+            return
+        if text and not self._sealed:
+            self._raw += text
+        candidate = self._safe_prose(flush=flush)
+        if candidate is None:
+            return
+        visible = _humanize_visible_content(
+            candidate, envelopes, suppress_structural=self._suppress_structural
+        )
+        if not visible.startswith(self._emitted):
+            # The reasoning above says this cannot happen. If it does, the honest
+            # move is to stop rather than to contradict text already on screen.
+            logger.warning(
+                "Draft answer stream halted: humanized prefix diverged at %d chars",
+                len(self._emitted),
+            )
+            self._halted = True
+            return
+        delta = visible[len(self._emitted) :]
+        if not delta or (not flush and len(delta) < ANSWER_DELTA_CHARS):
+            return
+        if contains_internal_output(visible):
+            # The validator would discard this answer outright. Stop before the
+            # leak is displayed; the turn still completes and replays normally.
+            logger.warning("Draft answer stream halted: internal output detected")
+            self._halted = True
+            return
+        self._emitted = visible
+        try:
+            await self._publish(delta)
+        except Exception:
+            # Display is cosmetic. A publish failure must not fail the turn, but
+            # it does mean the screen no longer matches `_emitted`, so stop.
+            logger.debug("Draft answer delta was not published", exc_info=True)
+            self._halted = True
+
+    def _safe_prose(self, *, flush: bool) -> str | None:
+        """Return the prefix of the raw draft that is safe to humanize, if any."""
+
+        fence = self._raw.find("```")
+        if fence >= 0:
+            # Prose ends at the fence. A fenced block inside the prose seals the
+            # stream early: the rest of the answer then arrives with the
+            # authoritative replay, which is correct but not live. That is the
+            # conservative direction, and the alternative -- guessing which fence
+            # is the grounding contract mid-stream -- is not safe.
+            self._sealed = True
+            return self._raw[:fence]
+        body = self._raw if flush else self._raw[:-_DRAFT_FENCE_HOLDBACK]
+        if not body:
+            return None
+        if flush:
+            return body
+        boundary = (
+            body.rfind("\n")
+            if self._suppress_structural
+            else max(body.rfind(char) for char in " \t\n")
+        )
+        if boundary <= 0:
+            return None
+        return body[: boundary + 1]
+
+    async def reset(self, *, notify: Callable[[], Awaitable[None]]) -> None:
+        """Discard a draft that will not become the answer.
+
+        Called when the model turns out to be calling a tool after narrating, and
+        when the grounding validator sends a draft back for correction. Both mean
+        the text on screen is not the answer, so the client is told to drop it
+        rather than have the next draft appended to it. ``_halted`` is cleared:
+        a discarded draft is not a reason to stop streaming the replacement.
+        """
+
+        had_text = bool(self._emitted)
+        self._raw = ""
+        self._emitted = ""
+        self._sealed = False
+        self._halted = False
+        if had_text:
+            await notify()
+
+
 def grounding_failure_answer() -> GroundedAnswer:
     """Return the one permitted non-budget response for invalid model grounding."""
 
@@ -747,6 +922,7 @@ async def run_readonly_primary_turn(
     budget_controller: LayeredBudgetController | None = None,
     trusted_answer_sink: TrustedAnswerSink | None = None,
     suppress_structural_citations: bool = False,
+    stream_draft_answer: bool = False,
 ) -> ReadOnlyTurnResult:
     """Run the read-only graph with a bounded grounding-correction loop.
 
@@ -754,6 +930,10 @@ async def run_readonly_primary_turn(
     canvas; it reaches `_humanize_visible_content` and drops structural references
     from the prose the user reads. It never affects grounding validation, which
     reads the structured citation block instead.
+
+    ``stream_draft_answer`` shows the model's answer prose while it is still being
+    written, as provisional ``replayable=False`` deltas that the authoritative
+    post-persistence replay overwrites. See :class:`_DraftAnswerStreamer`.
     """
 
     validator = GroundingValidator()
@@ -767,6 +947,24 @@ async def run_readonly_primary_turn(
         if event_callback is not None
         else None
     )
+    draft: _DraftAnswerStreamer | None = None
+    draft_reset_callback: Callable[[], Awaitable[None]] | None = None
+    if stream_draft_answer and heartbeat_callback is not None:
+        # Provisional prose goes out on the heartbeat channel, exactly like the
+        # trusted answer's live deltas: that channel writes `replayable=False` on
+        # an independent session, which is both the "never replayed" property this
+        # text requires and the only safe way to publish from inside a turn whose
+        # own session may be mid-query.
+        async def publish_draft(text: str) -> None:
+            await heartbeat_callback("assistant.delta", {"content": text})
+
+        async def notify_draft_reset() -> None:
+            await heartbeat_callback("assistant.draft_reset", {"status": "discarded"})
+
+        draft = _DraftAnswerStreamer(
+            publish_draft, suppress_structural=suppress_structural_citations
+        )
+        draft_reset_callback = notify_draft_reset
     if progress is None:
         return await _run_readonly_attempts(
             graph=graph,
@@ -782,6 +980,9 @@ async def run_readonly_primary_turn(
             budget_controller=budget_controller,
             trusted_answer_sink=trusted_answer_sink,
             progress=None,
+            suppress_structural_citations=suppress_structural_citations,
+            draft=draft,
+            draft_reset_callback=draft_reset_callback,
         )
     # The ticker and the phase sink share one lifetime: nested work can report a
     # phase, and the ticker keeps that phase's clock visibly moving even when the
@@ -802,6 +1003,9 @@ async def run_readonly_primary_turn(
                 budget_controller=budget_controller,
                 trusted_answer_sink=trusted_answer_sink,
                 progress=progress,
+                suppress_structural_citations=suppress_structural_citations,
+                draft=draft,
+                draft_reset_callback=draft_reset_callback,
             )
 
 
@@ -821,6 +1025,8 @@ async def _run_readonly_attempts(
     trusted_answer_sink: TrustedAnswerSink | None,
     progress: _LiveProgressReporter | None,
     suppress_structural_citations: bool = False,
+    draft: _DraftAnswerStreamer | None = None,
+    draft_reset_callback: Callable[[], Awaitable[None]] | None = None,
 ) -> ReadOnlyTurnResult:
     """The bounded attempt loop, split out so the caller owns progress lifetime."""
 
@@ -841,6 +1047,8 @@ async def _run_readonly_attempts(
                 event_callback=event_callback,
                 trusted_answer_sink=trusted_answer_sink,
                 progress=progress,
+                draft=draft,
+                draft_reset_callback=draft_reset_callback,
             )
         except AgentBudgetStop as exc:
             budget_stop = exc.reason
@@ -907,6 +1115,11 @@ async def _run_readonly_attempts(
         if outcome.verdict is GroundingVerdict.UNSAFE or attempt >= max_corrections:
             break
         correction_rounds += 1
+        if draft is not None and draft_reset_callback is not None:
+            # The draft on screen was just rejected. Retract it before the rewrite
+            # streams, or the client would append the corrected answer to the one
+            # the validator refused.
+            await draft.reset(notify=draft_reset_callback)
         # SYSTEM, not user. As a user turn this is indistinguishable from the
         # person actually saying "that answer was not accepted", so the model
         # answered the reprimand it thought it had received: every corrected
@@ -1205,6 +1418,8 @@ async def _invoke_graph(
     event_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
     trusted_answer_sink: TrustedAnswerSink | None = None,
     progress: _LiveProgressReporter | None = None,
+    draft: _DraftAnswerStreamer | None = None,
+    draft_reset_callback: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     if trusted_answer_sink is not None and trusted_answer_sink.answer is not None:
         return {"messages": list(input_value.get("messages", []))}
@@ -1213,6 +1428,10 @@ async def _invoke_graph(
     seen_messages: list[BaseMessage] = []
     finalized_messages: list[BaseMessage] = []
     proposed_call_refs: set[str] = set()
+    #: Evidence titles the draft humanizer needs, accumulated as tool results
+    #: arrive. Re-deriving this from `seen_messages` on every model chunk would
+    #: re-parse every tool payload hundreds of times over one answer.
+    draft_envelopes: list[ToolEnvelope] = []
     if progress is None:
         progress = _LiveProgressReporter(event_callback)
     await progress.note_phase("thinking", force=True)
@@ -1231,6 +1450,13 @@ async def _invoke_graph(
         produced_messages = finalized_messages or seen_messages
         return {"messages": [*prior_messages, *produced_messages]}
 
+    async def discard_draft() -> None:
+        """Drop provisional prose that turned out not to be the answer."""
+
+        if draft is None or draft_reset_callback is None:
+            return
+        await draft.reset(notify=draft_reset_callback)
+
     async def emit_proposals(message: AIMessage) -> None:
         fresh: list[tuple[str, str, dict[str, Any]]] = []
         for call in message.tool_calls:
@@ -1242,6 +1468,10 @@ async def _invoke_graph(
             fresh.append((name, call_ref, dict(call.get("args") or {})))
         if not fresh:
             return
+        # Prose that preceded a tool call was narration, not the answer: the model
+        # is still gathering evidence and will write its answer afterwards. Retract
+        # it rather than let the real answer be appended to it.
+        await discard_draft()
         # One phase for the whole batch, decided before the first proposal goes
         # out: the calls in it run together, so naming them one at a time would
         # leave the status line on whichever happened to be last.
@@ -1269,15 +1499,20 @@ async def _invoke_graph(
                 seen_messages.append(message)
             if isinstance(message, AIMessageChunk):
                 # Tool-call chunks can arrive before their JSON arguments are
-                # complete. The finalized model update below is authoritative, so
-                # the chunk itself is never published -- it is only used as a
-                # liveness signal for the throttled, server-authored progress
-                # event. This is the one thing that moves during a long decode.
+                # complete, so a chunk's *arguments* are never published -- the
+                # finalized model update below is authoritative there. A chunk's
+                # answer prose is different: `_DraftAnswerStreamer` publishes it
+                # provisionally (see its docstring for what that costs and what
+                # guards it), and the throttled server-authored progress event
+                # still carries liveness when there is no prose yet.
                 await progress.note_model_chunk(message)
+                if draft is not None and not message.tool_call_chunks:
+                    await draft.feed(_safe_text(message.content), draft_envelopes)
                 continue
             if isinstance(message, AIMessage) and message.tool_calls:
                 await emit_proposals(message)
             elif isinstance(message, ToolMessage):
+                draft_envelopes.extend(_collect_envelopes([message]))
                 envelope = await _emit_tool_event(message, event_callback)
                 if (
                     trusted_answer_sink is not None
@@ -1323,6 +1558,11 @@ async def _invoke_graph(
                 )
             if trusted_tool_completed:
                 return completed_state()
+    if draft is not None:
+        # The draft is complete. Validation and persistence still have to run, and
+        # that is visible dead time, so show the last partial batch now instead of
+        # holding it for a batch size it will never reach.
+        await draft.feed("", draft_envelopes, flush=True)
     return completed_state()
 
 

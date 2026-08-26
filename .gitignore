@@ -120,6 +120,10 @@ deploy/backups/
 # runtime, not source. opencode_cache holds a multi-MB provider model catalog.
 knowledge_base/mcp-server/data/opencode_cache/
 knowledge_base/mcp-server/data/pack_architect_sessions/
+# living_docs holds per-run amendment candidates, their journals and lock files —
+# 636 files for one project. Same class as the two above, with an extra reason:
+# the change-sets inside describe scanned client documents.
+knowledge_base/mcp-server/data/living_docs/
 
 # Cloned pack working copies. These are independent git checkouts; committing
 # them would land broken gitlinks instead of files. The pack *sources* under

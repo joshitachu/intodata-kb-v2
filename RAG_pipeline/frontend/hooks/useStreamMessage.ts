@@ -31,6 +31,10 @@ const MAX_AGENT_EVENTS = 1000;
 const EPHEMERAL_EVENT_TYPES: ReadonlySet<string> = new Set([
   "assistant.delta",
   "assistant.progress",
+  // Retracts provisional prose. Its effect is applied to `content` immediately;
+  // the event itself describes a transition, not a fact about the finished turn,
+  // so it is worth nothing to a host replaying `agentEvents`.
+  "assistant.draft_reset",
 ]);
 
 export interface StreamState {
@@ -214,6 +218,7 @@ export function useStreamMessage(conversationId: number | null) {
         const dispatchEvent = (eventType: string, data: string) => {
           if (
             eventType === "assistant.delta" ||
+            eventType === "assistant.draft_reset" ||
             eventType === "assistant.progress" ||
             eventType === "run.started" ||
             eventType === "runtime.update" ||
@@ -237,40 +242,57 @@ export function useStreamMessage(conversationId: number | null) {
                 !EPHEMERAL_EVENT_TYPES.has(eventType) &&
                 !EPHEMERAL_EVENT_TYPES.has(event.type);
               const isDelta = eventType === "assistant.delta";
-              setStreamState((prev) => ({
-                ...prev,
-                runId: event.run_id,
-                lastSequence: lastSequenceRef.current,
-                agentEvents:
-                  retainEvent && (prev.agentEvents?.length ?? 0) < MAX_AGENT_EVENTS
-                    ? [...(prev.agentEvents ?? []), event]
-                    : prev.agentEvents,
-                deltaSource: isDelta
-                  ? event.replayable
-                    ? "authoritative"
-                    : "live"
-                  : prev.deltaSource,
-                content: !isDelta
-                  ? prev.content
-                  : event.replayable && prev.deltaSource !== "authoritative"
-                    ? String(payload.content ?? "")
-                    : prev.content + String(payload.content ?? ""),
-                progress:
-                  eventType === "assistant.delta"
-                    ? prev.progress
-                    : String(payload.summary ?? payload.status ?? eventType),
-                // A heartbeat with nothing usable in it keeps the last known
-                // phase rather than blanking the waiting state.
-                progressDetail:
-                  eventType === "assistant.progress"
-                    ? parseAgentProgress(payload) ?? prev.progressDetail ?? null
-                    : prev.progressDetail,
-                isStreaming: ![
-                  "run.completed",
-                  "run.failed",
-                  "run.interrupted",
-                ].includes(eventType),
-              }));
+              const isReset = eventType === "assistant.draft_reset";
+              setStreamState((prev) => {
+                // The server retracting a draft it already showed: the model
+                // narrated before calling a tool, or the grounding validator
+                // rejected the draft. Only PROVISIONAL text is ever dropped --
+                // an authoritative buffer is what the server persisted, so it
+                // outranks a retraction, which by then can only be a
+                // late-arriving replay frame.
+                const dropsDraft = isReset && prev.deltaSource === "live";
+                return {
+                  ...prev,
+                  runId: event.run_id,
+                  lastSequence: lastSequenceRef.current,
+                  agentEvents:
+                    retainEvent && (prev.agentEvents?.length ?? 0) < MAX_AGENT_EVENTS
+                      ? [...(prev.agentEvents ?? []), event]
+                      : prev.agentEvents,
+                  deltaSource: isDelta
+                    ? event.replayable
+                      ? "authoritative"
+                      : "live"
+                    : dropsDraft
+                      ? null
+                      : prev.deltaSource,
+                  content: dropsDraft
+                    ? ""
+                    : !isDelta
+                      ? prev.content
+                      : event.replayable && prev.deltaSource !== "authoritative"
+                        ? String(payload.content ?? "")
+                        : prev.content + String(payload.content ?? ""),
+                  // Neither answer prose nor its retraction is a progress
+                  // statement; both would overwrite the status line with
+                  // something that is not a phase.
+                  progress:
+                    isDelta || isReset
+                      ? prev.progress
+                      : String(payload.summary ?? payload.status ?? eventType),
+                  // A heartbeat with nothing usable in it keeps the last known
+                  // phase rather than blanking the waiting state.
+                  progressDetail:
+                    eventType === "assistant.progress"
+                      ? parseAgentProgress(payload) ?? prev.progressDetail ?? null
+                      : prev.progressDetail,
+                  isStreaming: ![
+                    "run.completed",
+                    "run.failed",
+                    "run.interrupted",
+                  ].includes(eventType),
+                };
+              });
             } catch {
               // Ignore malformed or non-public events.
             }

@@ -45,6 +45,26 @@ _VISIBLE_IMPLEMENTATION_RE = re.compile(
 )
 
 
+def contains_internal_output(content: str) -> bool:
+    """True when ``content`` leaks internal ids, narration, or a raw payload.
+
+    Extracted from :meth:`GroundingValidator.validate` so the live draft streamer
+    applies the SAME rule the validator applies, on the same text, rather than a
+    second approximation of it. This is the one grounding failure that discards
+    the answer outright (``internal_output_detected`` is ``UNSAFE``, never
+    correctable), which is exactly why prose must be screened against it BEFORE
+    it is shown -- a leak the validator would have discarded must never have been
+    on screen in the first place.
+    """
+
+    stripped = content.strip()
+    return bool(
+        _INTERNAL_ID_RE.search(content)
+        or _INTERNAL_NARRATION_RE.search(content)
+        or (stripped and _RAW_PAYLOAD_RE.match(stripped))
+    )
+
+
 class AnswerStatus(StrEnum):
     """The honest state of a read-only answer against observed evidence."""
 
@@ -277,12 +297,7 @@ class GroundingValidator:
 
         # 1. Internal-shaped output is a hard safety failure, not correctable by
         #    re-citing. Reuse the shared leak regexes.
-        stripped = answer.content.strip()
-        if _INTERNAL_ID_RE.search(answer.content) or _INTERNAL_NARRATION_RE.search(
-            answer.content
-        ) or (
-            stripped and _RAW_PAYLOAD_RE.match(stripped)
-        ):
+        if contains_internal_output(answer.content):
             return GroundingOutcome(
                 verdict=GroundingVerdict.UNSAFE,
                 reason_code="internal_output_detected",
@@ -423,6 +438,7 @@ __all__ = [
     "GroundingOutcome",
     "GroundingValidator",
     "GroundingVerdict",
+    "contains_internal_output",
     "evidence_ref_key",
     "required_disclosure_for",
 ]
