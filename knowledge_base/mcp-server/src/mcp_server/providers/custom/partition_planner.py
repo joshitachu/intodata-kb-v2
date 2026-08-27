@@ -50,10 +50,18 @@ from typing import Any
 
 from mcp_server.config import config
 from mcp_server.providers.custom.models import FactsManifest, UnitFact
+from mcp_server.utils.source_origin import (
+    REPO_MARKER as _REPO_MARKER,
+    ZIP_MARKER as _ZIP_MARKER,
+    subproject_key as _origin_subproject_key,
+)
 
-# Marker the composite-ZIP scanner embeds in every source_root segment it derives
-# from an inner uploaded archive.
-ZIP_MARKER = ".__intodoc_zip__"
+# Origin markers live in one place (``utils.source_origin``) because four
+# subsystems read them: this planner, lineage display, non-code exclusion, and
+# the multi-repo clone path. ``ZIP_MARKER`` stays re-exported for callers and
+# tests that import it from here.
+ZIP_MARKER = _ZIP_MARKER
+REPO_MARKER = _REPO_MARKER
 
 # Partition name for composite units whose source_root has no zip stem.
 SHARED_PARTITION = "__shared__"
@@ -154,17 +162,23 @@ def clean_system_keys(values: Iterable[str]) -> list[str]:
 
 def subproject_key(source_root: str) -> str | None:
     """Return the sub-project name for a source_root, or ``None`` if it carries no
-    composite-zip marker.
+    origin marker.
 
-    The sub-project is the stem of the path segment ending in
-    :data:`ZIP_MARKER`. A nested ``.../X.__intodoc_zip__/REFERENCES`` folds into
-    ``X`` because the marker segment is matched anywhere in the path.
+    The sub-project is the stem of the first path segment carrying an origin
+    marker -- an inner uploaded archive (``X.__intodoc_zip__``) or a cloned
+    member repository (``X.__intodoc_repo__``). A nested
+    ``.../X.__intodoc_zip__/REFERENCES`` folds into ``X`` because the marker
+    segment is matched anywhere in the path.
+
+    Matching is delegated to ``utils.source_origin`` so the disambiguated
+    collision form (``X.__intodoc_zip__-<digest>``, written when two inner
+    archives share a name) resolves to ``X`` instead of falling through to
+    :data:`SHARED_PARTITION`.
     """
-    normalized = (source_root or "").replace("\\", "/")
-    for segment in normalized.split("/"):
-        if segment.endswith(ZIP_MARKER):
-            return segment[: -len(ZIP_MARKER)] or SHARED_PARTITION
-    return None
+    stem = _origin_subproject_key(source_root)
+    if stem is None:
+        return None
+    return stem or SHARED_PARTITION
 
 
 # Planning ratio for Phase 1 investigation tasks: whole jobs bin-pack into

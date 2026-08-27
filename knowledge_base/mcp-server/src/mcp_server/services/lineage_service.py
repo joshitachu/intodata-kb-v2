@@ -81,6 +81,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Literal
 
 from mcp_server.providers.custom.source_context import redact_inline_credentials
+from mcp_server.utils.source_origin import ZIP_MARKER, strip_origin_marker
 from mcp_server.schemas import (
     LineageConfidenceTotals,
     LineageFieldEdge,
@@ -122,7 +123,9 @@ TARGET_TABLE_CAP = 40
 #: and keeps the response's `jobs` list readable.
 MAX_JOBS_PER_REQUEST = 20
 
-_ZIP_MARKER_SUFFIX = ".__intodoc_zip__"
+#: Kept for callers that import it; the marker set itself now lives in
+#: ``utils.source_origin`` so zip and repo origins strip identically.
+_ZIP_MARKER_SUFFIX = ZIP_MARKER
 
 
 class LineageQueryError(Exception):
@@ -300,13 +303,17 @@ def _split_group_path(group_path: str) -> list[str]:
 def _strip_zip_marker(segment: str) -> str:
     """`VQ_RHM2SF.__intodoc_zip__` -> `VQ_RHM2SF`; other segments unchanged.
 
-    Composite-upload scans name the per-zip directory after the zip with an
-    `.__intodoc_zip__` marker appended. Operators refer to the zip, not the
-    marker, so the marker must not defeat an otherwise exact segment match.
+    Composite scans name each sub-project directory after its origin -- the
+    inner zip (`.__intodoc_zip__`) or the cloned member repo
+    (`.__intodoc_repo__`) -- with the marker appended. Operators refer to the
+    zip or repo, not the marker, so the marker must not defeat an otherwise
+    exact segment match.
+
+    Delegated to `utils.source_origin` so the disambiguated collision form
+    (`X.__intodoc_zip__-<digest>`) reduces to `X` too; the old bare-suffix
+    match left those segments unstripped and therefore unmatchable.
     """
-    if segment.endswith(_ZIP_MARKER_SUFFIX):
-        return segment[: -len(_ZIP_MARKER_SUFFIX)]
-    return segment
+    return strip_origin_marker(segment)
 
 
 def _build_group_index(job_groups: dict[str, Any]) -> _GroupIndex:

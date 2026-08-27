@@ -1,5 +1,19 @@
 # IntoData KB -- Progress Log
 
+## Session: 2026-08-26 -- Deployment runbook re-synced with the stack it deploys; three real deploy defects fixed on the way
+
+### Fix/Docs: EP-001 runbook drift audit, plus the deploy-script and Compose gaps it exposed
+
+- **Files changed**: `deploy/RUNBOOK.md` (+291/-27 region, sections 13/15/16 new or rewritten), `deploy/deploy-client.sh` (+53/-6), `docker-compose.yml` (+13/-4), `.env.production.template` (+6/-2).
+- **Problem**: asked whether the runbook was current. Last content edit was 2026-07-06 (`fe04449`); ~20 commits have touched `deploy/` and `docker-compose.yml` since, so the audit was the task and the fixes fell out of it.
+- **Root cause of the blocker**: `docker-compose.yml` declares `SOURCE_CREDENTIALS_ENCRYPTION_KEY` fail-fast (`:?`), but `deploy-client.sh` never wrote it and the runbook never mentioned it. A clean deploy following the runbook aborts at `docker compose up -d` with `Set SOURCE_CREDENTIALS_ENCRYPTION_KEY (Fernet key) in .env`. Only `.env.production.template` carried the key, and `deploy-client.sh` does not read that template -- it generates its own env file.
+- **Change (deploy-client.sh)**: extracted the Fernet generator (`openssl rand -base64 32 | tr '+/' '-_'`) already used for `MCP_TOKEN_ENCRYPTION_KEY` into `fernet_key()`, and now generates `SOURCE_CREDENTIALS_ENCRYPTION_KEY` + `MC_API_KEY`, plus `MC_PORT=$(( 9100 + PORT_OFFSET ))` so two stacks on one host do not collide on mission-control. Added an `ensure_env_var` backfill pass that runs on every invocation, so an env file written by an older revision of the script gains the missing keys instead of needing a hand edit -- existing values are never rewritten.
+- **Second defect fixed (silent, pre-existing)**: the generated env file set `TRUSTED_PROXIES` **twice** -- `127.0.0.1,172.16.0.0/12` with a comment explaining that the Compose bridge range must be trusted, then plain `127.0.0.1` forty lines later under "Network hardening". A later duplicate wins in an env file, so the bridge range was never trusted and every per-IP rate limit collapsed into one bucket keyed on the frontend container -- exactly the failure the first line exists to prevent. Removed the duplicate; runbook now includes `grep -c '^TRUSTED_PROXIES=' "$ENV_FILE"` (must print 1).
+- **Third defect fixed (Compose passthrough)**: five backend settings existed in `src/config.py` but were absent from the `backend` service's `environment` block, so setting them in the env file did nothing -- `RUNTIME_TOOL_LOOP_MAX_ITERATIONS`, `RUNTIME_TOOL_MAX_PARALLEL_CALLS`, `RUNTIME_LLM_FALLBACK_ENABLED` (the EP-005 slice 4 opt-in was unreachable in a deployed stack), `TALEND_TMC_REQUEST_TIMEOUT`, `TALEND_TMC_COMPONENT_METRIC_RUN_LIMIT`. All five added; `TALEND_TMC_RUNS_PER_EXECUTABLE_LIMIT` moved out of the API-key cluster so the three capture ceilings sit together.
+- **Runbook content**: header now states eight Compose services (seven in the health boundary + `mission-control`, 127.0.0.1-only, not a gate); step 6 documents the generated secret set and the fail-fast key; step 8 replaces `systemctl restart mcp-server@<client>.service` with `docker compose up -d mcp-server` and states that `deploy/mcp-server@.service` is the retired host-virtualenv path the script never installs; step 11 expects eight containers and probes `MC_PORT`. Section 13 rewritten from "Enable Talend TMC Runtime" into 13a-13d: register the source self-service (UI Settings -> Sources, `POST /api/v1/runtime/sources` + `/discover`), the one-source-per-project constraint (migration 091) and read grants (095) as the way to share a mirror, capture ceilings as a table, then chat exposure as a separate gate with a `RUNTIME_PROVIDER_KEY` value table, then the legacy env + mounted-token adapter, then key rotation. New section 15 (doc-generation provider: the full supported value set, hosted-model defaults with no key shipped, local `ollama/<model>` alternative) and 16 (agent runtime v2 flags -- leave off; `CanaryStagePolicy` validates the stage against the rollout settings at startup).
+- **Why this approach**: documenting a manual `openssl`/`sed` step for the encryption key would have left the script broken for the next client. Fixing generation + backfill makes the runbook describe what the script already guarantees, which is the only version that stays true.
+- **Verification**: `bash -n` clean. Script exercised end-to-end in a temp dir (`--env-dir`/`--repo-root`/`--nginx-*` overrides, offset 10): generated env has one `TRUSTED_PROXIES` line with the bridge range, no duplicate keys at all, `MC_PORT=9110`, `MCP_PORT=8012`; re-run is a no-op ("leaving secrets in place"); a simulated old env file with the three keys stripped got all three backfilled. Generated key validated as a real Fernet key (`Fernet(k)` constructs; 44 chars, 32 decoded bytes). `docker compose config --quiet` passes and all six new passthroughs resolve in the rendered config. **Not verified**: no deploy was run against a VPS, and no container was started from the edited Compose file.
+
 ## Session: 2026-08-26 -- Answer prose streams on every tool path, not only the documentation answer
 
 ### Change: provisional draft streaming for the outer agent model, corrected by the authoritative replay
@@ -3831,3 +3845,167 @@ Then open http://localhost:3000
 - **Change**: added activity/busiest/failure/slowest-p95 summaries; stacked labelled failures inside non-failed volume; introduced an explicit adaptive log presentation at a 100x duration spread while retaining raw values in tooltips and tables; added bucket-aware UTC axis labels and a duration-empty state.
 - **Why this approach**: small multiples remain honest about unlike units, while summaries answer the operational questions before users interpret marks. A disclosed log presentation preserves both normal and extreme observations; clipping or deleting outliers would hide exactly the evidence the dashboard must surface.
 - **Verification**: focused `RuntimeLogsPage` suite **32 passed**; `npx tsc --noEmit --incremental false` passed; `git diff --check` passed. Authenticated live-browser checks passed for all four windows (`24h`, `7d`, `30d`, `90d`). The root Compose `frontend` image built successfully, `intodata-kb-v2-frontend-1` was force-recreated without restarting dependencies, and the replacement container reports healthy. The deployed port-3000 view renders the new summary/log-scale UI with no browser console errors. ESLint could not run because this checkout has ESLint 10 but no `eslint.config.*`.
+
+## Session: 2026-08-27 -- Multi-repo picker in /settings/sources (UNCOMMITTED)
+
+Backend for this feature is logged in `knowledge_base/.claude/PROGRESS_LOG.md`
+(same date). This entry covers the RAG frontend only.
+
+**Problem**: both connect panels picked exactly one repository. `selectedRepo`
+was a single string rendered as a `<select>` (`AzureDevOpsConnectPanel.tsx:97`,
+`GithubAppConnectPanel.tsx:74`), so a ten-repo project could not be created.
+
+### Files changed
+
+- **NEW** `app/settings/sources/repoSelection.ts` -- provider-neutral
+  normalisation. Holds the `repo_identity` rules, which must match the server
+  exactly: GitHub `full_name` verbatim; Azure DevOps `org/project/repo` (the org
+  comes from the connection, not the repo).
+- **NEW** `app/settings/sources/RepoMultiSelect.tsx` -- shared checkbox picker:
+  search, per-group select-all, group-all toggles, selection summary.
+- `AzureDevOpsConnectPanel.tsx`, `GithubAppConnectPanel.tsx` -- wired to the
+  shared picker; local `slugify`/`canonicalRepoUrl`/`repoLabel`/`repoNameFromUrl`
+  deleted in favour of the shared module so the two panels cannot drift.
+- `lib/mcpClient.ts` -- `createMultiRepoProject` + member/sync types.
+- `types/index.ts` -- `CreateMultiRepoProjectSchema`.
+- **NEW** `app/api/source/multi-repo/projects/route.ts` -- BFF proxy to
+  `/mcp/multi-repo/projects`. `maxDuration = 800` because it clones N repos.
+- **NEW** tests: `repoSelection.test.ts` (15), `GithubAppConnectPanel.test.tsx`
+  (5); `AzureDevOpsConnectPanel.test.tsx` rewritten for checkboxes (10).
+
+### Design decisions
+
+- **One repo still uses `/add-repo`.** That path sets `repo_url`, which is what
+  `webhook.py:296` matches a push against. Routing a single repo through the
+  multi-repo path would silently cost auto-update.
+- **Unavailable repos stay listed with a reason** ("already connected",
+  "disabled in Azure DevOps", "no clone URL"). Filtering them out reads as a
+  permissions bug.
+- **Partial clone failures are surfaced**, not swallowed: the project exists
+  with the members that cloned.
+
+### Bugs found and fixed while building
+
+1. **Stale auto-filled project name.** Suggesting a name only while the field was
+   empty meant picking one repo filled it, and every repo added after that left
+   the project named after a single member. Now tracked with `nameEdited`, and an
+   ambiguous selection clears the field instead of keeping a stale name.
+2. **Member order disagreed with the screen.** `selectedRepos` followed the
+   provider's listing order while the picker displays sorted groups. Added
+   `orderedSelection` so the request matches what the operator saw.
+3. **jsdom label double-toggle risk.** The checkbox was wrapped in its `<label>`;
+   switched to explicit `htmlFor`/`id`, which is also better a11y.
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- `npx vitest run` -> **940 passed / 5 failed**. The 5 are the pre-existing ones
+  already recorded in `.claude/context.md` (four `TopologyPageCopilot`
+  canvas-mock failures + the known `SimpleConnectorPanel` provider-id
+  expectation). Baseline before this session was 913 passed / same 5.
+- Not verified in a browser; no live GitHub or Azure DevOps call was made.
+
+## Session: 2026-08-27 -- Multi-repo membership panel (UI polish) (UNCOMMITTED)
+
+Follow-on to the multi-repo picker entry above, same date.
+
+**Problem**: a multi-repo project's members were invisible and unmanageable.
+`page.tsx:1298` renders the repo line as `{source.repo_url && ...}` and a
+multi-repo project has `repo_url = NULL` by definition, so a ten-repo project
+showed a blank where a single-repo project shows its URL. The backend routes for
+listing / adding / removing / syncing members existed but nothing called them.
+
+### Files changed
+
+- **NEW** `app/settings/sources/MultiRepoMembersPanel.tsx` -- per-member
+  sub-project name, repo identity, branch, short SHA and last-ingested time;
+  per-member Sync, Sync all, and Remove behind a confirm step.
+- `app/settings/sources/page.tsx` -- renders the panel in the expanded card when
+  `source_type === "git"` and `repo_url` is null. New `onMembersChanged` prop on
+  `SourceRow` (the row has no query-client in scope, so it follows the existing
+  callback-prop pattern rather than reaching for `qc`).
+- `lib/mcpClient.ts` -- `listMultiRepoMembers`, `addMultiRepoMembers`,
+  `removeMultiRepoMember`, `syncMultiRepoProject`.
+- **NEW** BFF routes: `.../[projectId]/members/route.ts` (GET, POST),
+  `.../[projectId]/members/[sourceId]/route.ts` (DELETE),
+  `.../[projectId]/sync/route.ts` (POST).
+- **NEW** `tests/components/MultiRepoMembersPanel.test.tsx` (10 tests).
+
+### Bug caught in review before it shipped
+
+The sync route's `repo_identity` guard was written as `/[ -]/`, which is a
+space-to-hyphen CHARACTER RANGE (0x20-0x2D), not a control-character check. It
+would have rejected every identity containing a space or hyphen -- e.g.
+`acme/My Project/repo` and `acme/Talend/pplus-ais`, both routine in Azure DevOps.
+Replaced with an explicit code-point check for `< 0x20` and `0x7f`.
+
+### Design decisions
+
+- **Sync reports only what moved or failed.** Every sibling is `skipped` by
+  design when one repo is targeted, so listing them would bury the real result.
+- **The panel states that push-triggered updates are not wired yet.** Without
+  that line the Sync button reads as redundant with a webhook that does not
+  actually fire for these projects.
+- **Removing a member leaves its clone on disk** (server behaviour): it may hold
+  uncommitted state, and the next scan ignores it once the row is gone.
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- `npx vitest run` -> **950 passed / 5 failed**; the 5 are the pre-existing ones
+  recorded in `.claude/context.md`. 940 -> 950 passing this change.
+- Not verified in a browser; no live provider call was made.
+
+## Session: 2026-08-27 -- Fix ORM-breaking schema drift + a guard for the class (UNCOMMITTED)
+
+**Reported**: the backend was throwing on every read of a project's runtime read
+grants:
+
+    sqlalchemy.exc.ProgrammingError: column
+    runtime_source_read_grants.updated_at does not exist
+
+**Root cause**: `Base` (`src/db/base.py`) contributes `created_at` AND
+`updated_at` to every mapped class. `RuntimeSourceReadGrantRow`
+(`src/db/models/runtime_data.py:230`) declared `created_at` explicitly and
+inherited `updated_at`, but migration 095's `create_table` listed only
+`created_at`. The mapper emits the declared column list on every SELECT, so the
+table was unreadable through the ORM from the moment it was created.
+
+**Generalised rather than patched.** An audit of all 81 mapped tables against the
+live database found a second instance: `wizard_events`, same omission, not yet
+read through the ORM. And this is the THIRD occurrence of the class -- 093
+backfilled `runtime_static_topology_snapshots` / `runtime_job_scan_maps`, 094
+backfilled `instance_settings`.
+
+### Files changed
+
+- **NEW** `alembic/versions/096_base_timestamp_drift.py` -- adds the missing
+  `updated_at` to both tables, idempotently (skips a column already present).
+- **NEW** `src/db/schema_drift.py` -- compares every mapped table's declared
+  columns against the real database and exits non-zero on drift. Run it after
+  `alembic upgrade head`:
+  `docker compose exec backend python -m src.db.schema_drift`.
+  It lives under `src/` on purpose: the backend image copies only `src/`,
+  `alembic/` and `alembic.ini`, so a checker in `scripts/` cannot run in the
+  container where it is needed (found by trying it).
+- **NEW** `tests/test_db/test_model_schema_drift.py` -- metadata-only guard that
+  every mapped class declares both Base timestamps, plus a pinned exclusion for
+  the association tables (`user_roles`, `role_permissions`) which correctly have
+  none.
+
+**Why the test cannot compare against the migrated schema**: migration 005 calls
+PostgreSQL's `setval()`, so the chain does not replay on SQLite (verified). A test
+that only ever skips reads as coverage while proving nothing, so it was dropped
+in favour of the runnable script.
+
+### Verification
+
+- Migration applied to the live database: `alembic_version` =
+  `096_base_timestamp_drift`.
+- `python -m src.db.schema_drift` -> "OK: 81 mapped tables match the database".
+- Re-ran the exact failing query shape (select grant JOIN source WHERE
+  project_id='talend') against the live DB: succeeds, 0 rows.
+- `pytest tests/ --ignore=tests/test_scripts` -> 2650 passed / 3 failed; all 3
+  reproduce on the stashed tree (`test_project_ownership_api` x2,
+  `test_agentic_retrieval_capabilities` x1).
+- Backend rebuilt and restarted; no `UndefinedColumn` in the logs since.

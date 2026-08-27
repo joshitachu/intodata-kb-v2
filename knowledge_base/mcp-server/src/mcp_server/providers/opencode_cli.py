@@ -799,18 +799,43 @@ class OpenCodeCliProvider(DocGenerationProvider):
         )
         started = time.monotonic()
         resolved, allowlist = self._preflight()
-        execution = await self._execute_step(
-            resolved=resolved,
-            ctx=ctx,
-            phase="produce",
-            step=step,
-            contracts=[contract],
-            allowlist=allowlist,
-            session_id=None,
-            ledger=OpenCodeAttemptLedger(workspace),
-            log_cb=log_cb,
-            prompt_override=prompt,
+        execution_task = asyncio.create_task(
+            self._execute_step(
+                resolved=resolved,
+                ctx=ctx,
+                phase="produce",
+                step=step,
+                contracts=[contract],
+                allowlist=allowlist,
+                session_id=None,
+                ledger=OpenCodeAttemptLedger(workspace),
+                log_cb=log_cb,
+                prompt_override=prompt,
+                timeout_seconds=config.opencode_reingestion_timeout_seconds,
+            )
         )
+        progress_interval = max(1, config.opencode_reingestion_progress_interval_seconds)
+        try:
+            while True:
+                try:
+                    execution = await asyncio.wait_for(
+                        asyncio.shield(execution_task), timeout=progress_interval
+                    )
+                    break
+                except TimeoutError:
+                    elapsed = int(time.monotonic() - started)
+                    await log_cb(
+                        project_id,
+                        (
+                            "OpenCode reingestion still running "
+                            f"(elapsed={elapsed}s; awaiting model or artifact response)"
+                        ),
+                        "info",
+                    )
+        finally:
+            if not execution_task.done():
+                execution_task.cancel()
+                await asyncio.gather(execution_task, return_exceptions=True)
         events_path = audit_dir / "opencode_events.json"
         events_path.write_text(json.dumps(execution.events, indent=2), encoding="utf-8")
         self._write_usage_receipts(
@@ -1704,6 +1729,7 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
         exploration_artifacts: tuple[str, ...] | None = None,
         prompt_override: str | None = None,
         require_outputs: bool = True,
+        timeout_seconds: int | None = None,
     ) -> _PhaseExecution:
         step_started = time.monotonic()
         ledger_target = f"step:{step}"
@@ -1868,7 +1894,7 @@ print(f"validated {len(report.evidence)} evidence item(s) for {spec['task_id']}"
         try:
             await asyncio.wait_for(
                 proc.wait(),
-                timeout=max(1, config.opencode_timeout_seconds),
+                timeout=max(1, timeout_seconds or config.opencode_timeout_seconds),
             )
         except (TimeoutError, asyncio.CancelledError):
             proc.terminate()

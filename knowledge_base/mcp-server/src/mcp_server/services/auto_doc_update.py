@@ -420,6 +420,11 @@ class AutoDocAgentRuntime:
             )
         except Exception as exc:
             logger.exception("OpenCode reingestion failed for %s", ctx.project_id)
+            await self.log_mgr.emit(
+                ctx.project_id,
+                "Reingestion held during setup; active docs and RAG are unchanged",
+                "warning",
+            )
             return self._held(
                 summary,
                 f"OpenCode candidate creation or baseline import failed: {exc}",
@@ -464,6 +469,16 @@ class AutoDocAgentRuntime:
             )
         )
         if outcome.action != "active":
+            await self.log_mgr.emit(
+                ctx.project_id,
+                (
+                    "Reingestion held: "
+                    f"candidate={outcome.candidate_id}; "
+                    f"reason={outcome.reason_code or 'candidate_patch_held'}; "
+                    "active docs and RAG are unchanged"
+                ),
+                "warning",
+            )
             return self._held(
                 {**summary, **patch_summary, "candidate_id": outcome.candidate_id},
                 "OpenCode candidate patch held; active docs and RAG revision are unchanged",
@@ -487,6 +502,17 @@ class AutoDocAgentRuntime:
                 if publication else {}
             ),
         }
+        await self.log_mgr.emit(
+            ctx.project_id,
+            (
+                "Reingestion active: "
+                f"candidate={outcome.candidate_id}; "
+                f"patched_docs={len(outcome.patched_docs)}; "
+                f"rag_revision={outcome.knowledge_revision_id}; "
+                f"reused_artifacts={publication.reused_content_count if publication else 0}"
+            ),
+            "info",
+        )
         return DiffPatchResult(
             action="true_patch",
             summary=self._finalize_summary(

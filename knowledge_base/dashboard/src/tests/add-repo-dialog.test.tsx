@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import AddRepoDialog from "../components/AddRepoDialog";
 
 const addRepoMutate = vi.hoisted(() => vi.fn());
+// Mutable so a test can install a colliding project id.
+const existingProjects = vi.hoisted(() => [] as { id: string }[]);
 
 vi.mock("../hooks/useDiscovery", () => ({
   usePlatforms: () => ({ data: { platforms: [{ id: "talend", label: "Talend" }] } }),
@@ -11,6 +13,8 @@ vi.mock("../hooks/useDiscovery", () => ({
 vi.mock("../hooks/useProjects", () => ({
   useAddRepo: () => ({ mutate: addRepoMutate, isPending: false, isError: false, error: null }),
   useUploadZip: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
+  // The dialog reads the project list to block reuse of an existing project id.
+  useProjects: () => ({ data: { projects: existingProjects, total: existingProjects.length } }),
 }));
 
 vi.mock("../api/client", () => ({

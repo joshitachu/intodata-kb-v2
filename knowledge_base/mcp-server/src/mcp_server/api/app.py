@@ -385,7 +385,7 @@ app.add_middleware(
 )
 
 # Import and register routes
-from mcp_server.api.routes import azure_devops, connectors, discovery, estimate as estimate_routes, generate_runs, health, instance_settings, logs, ops_control, plugins, projects, runtime_sources, webhook  # noqa: E402
+from mcp_server.api.routes import azure_devops, connectors, discovery, estimate as estimate_routes, generate_runs, health, instance_settings, logs, ops_control, plugins, projects, repo_sources as repo_sources_routes, runtime_sources, webhook  # noqa: E402
 
 app.include_router(health.router)  # /health stays open
 app.include_router(ops_control.router)  # Mission Control triggers — own Bearer auth
@@ -428,6 +428,13 @@ app.include_router(
 )
 app.include_router(
     azure_devops.router,
+    prefix="/mcp",
+    dependencies=[Depends(require_auth)],
+)
+# Multi-repo project membership. Same auth model as add-repo: JWT cookie plus a
+# per-request ownership check on the credential reference the caller names.
+app.include_router(
+    repo_sources_routes.router,
     prefix="/mcp",
     dependencies=[Depends(require_auth)],
 )

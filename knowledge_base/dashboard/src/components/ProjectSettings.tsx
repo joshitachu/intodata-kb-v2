@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { parseApiError } from "../lib/errors";
 import { usePlatforms, useModels } from "../hooks/useDiscovery";
 import {
@@ -15,6 +16,7 @@ import {
 import type { Project } from "../types";
 import { deriveGitSummary } from "../lib/gitSummary";
 import ProjectMetaGrid from "./ProjectMetaGrid";
+import MultiRepoMembersPanel from "./MultiRepoMembersPanel";
 import ModelSelectionPanel from "./ModelSelectionPanel";
 import InstructionPackPanel from "./InstructionPackPanel";
 import ProjectUsagePanel from "./ProjectUsagePanel";
@@ -27,6 +29,7 @@ interface Props {
 }
 
 export default function ProjectSettings({ project, onDeleted }: Props) {
+  const qc = useQueryClient();
   const updateProject = useUpdateProject();
   const deleteProject = useDeleteProject();
   const repairLatestGitUpdate = useRepairLatestGitUpdate();
@@ -153,6 +156,17 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
           registerWebhook={registerWebhook}
           updateGithubToken={updateGithubToken}
         />
+
+        {/* ProjectMetaGrid shows a Repo URL row only when repo_url is set, and a
+            multi-repo project has none by definition -- so without this its
+            member repositories are invisible. Renders nothing for a single-repo
+            project. */}
+        {project.source_type === "git" && !project.repo_url && (
+          <MultiRepoMembersPanel
+            projectId={project.id}
+            onChanged={() => qc.invalidateQueries({ queryKey: ["projects"] })}
+          />
+        )}
 
         <hr className="border-white/[0.05]" />
 

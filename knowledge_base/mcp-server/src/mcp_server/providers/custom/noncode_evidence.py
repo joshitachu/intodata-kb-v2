@@ -50,6 +50,11 @@ from mcp_server.providers.custom.target_evidence import (
     HIGH_SIGNAL_PARAM_PATTERN,
     param_map,
 )
+from mcp_server.utils.source_origin import (
+    ZIP_MARKER,
+    archive_marker_in_segment,
+    marker_in_segment,
+)
 
 logger = logging.getLogger("mcp_server.providers.custom.noncode_evidence")
 
@@ -631,7 +636,7 @@ class NonCodeExtractionResult:
 
 # ── code-tree exclusion derived from the scan inventory ──────────────────────
 
-_ZIP_MARKER = ".__intodoc_zip__"
+_ZIP_MARKER = ZIP_MARKER
 
 
 def derive_code_exclusions(
@@ -643,12 +648,17 @@ def derive_code_exclusions(
 
     - Every scanned file's ``relative_path`` is an exact exclusion -- the
       scanner already parsed it as code.
-    - For files that live under a composite-ZIP extraction directory
-      (``X.__intodoc_zip__``), the whole extraction subtree is excluded, and so
-      is the raw ``X.zip`` that produced it -- otherwise the zip-recursion
-      safety net would re-ingest already-scanned code. This generalises: the
-      exclusion is derived from what the scanner consumed, never a hardcoded
-      folder name.
+    - For files under a sub-project origin directory -- an inner archive
+      (``X.__intodoc_zip__``) or a cloned member repo
+      (``X.__intodoc_repo__``) -- the whole subtree is excluded.
+    - Only for an *archive* origin is the raw ``X.zip`` that produced the
+      subtree excluded as well, otherwise the zip-recursion safety net would
+      re-ingest already-scanned code. A cloned repo has no archive sibling, so
+      emitting an ``X.zip`` prefix for one would exclude an unrelated real
+      file that happened to sit beside the clone.
+
+    This generalises: the exclusion is derived from what the scanner consumed,
+    never a hardcoded folder name.
     """
     exact: set[str] = set()
     prefixes: set[str] = set()
@@ -659,14 +669,17 @@ def derive_code_exclusions(
         exact.add(rel)
         parts = rel.split("/")
         for index, part in enumerate(parts):
-            if _ZIP_MARKER in part:
-                subtree = "/".join(parts[: index + 1])
-                prefixes.add(subtree)
+            if marker_in_segment(part) is None:
+                continue
+            subtree = "/".join(parts[: index + 1])
+            prefixes.add(subtree)
+            archive_marker = archive_marker_in_segment(part)
+            if archive_marker is not None:
                 # marker segment `X.__intodoc_zip__[...]` -> raw `X.zip`.
-                stem = part.split(_ZIP_MARKER, 1)[0]
+                stem = part.split(archive_marker, 1)[0]
                 raw_zip = "/".join(parts[:index] + [f"{stem}.zip"])
                 prefixes.add(raw_zip)
-                break
+            break
     return frozenset(exact), tuple(sorted(prefixes))
 
 

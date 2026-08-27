@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import {
   addGithubSource,
+  createMultiRepoProject,
   getGithubAppInstallUrl,
   listGithubAppInstallations,
   listGithubAppRepos,
@@ -16,6 +17,16 @@ import {
   type GithubAppRepo,
   type SourceProject,
 } from "@/lib/mcpClient";
+import { RepoMultiSelect } from "./RepoMultiSelect";
+import {
+  branchForMember,
+  canonicalRepoKey,
+  collidesWithExistingProject,
+  orderedSelection,
+  slugifyProjectId,
+  suggestedProjectName,
+  toPickableGithubRepos,
+} from "./repoSelection";
 
 interface PlatformOption {
   id: string;
@@ -29,27 +40,8 @@ interface Props {
   onConnected: (project: SourceProject, platform: string) => void | Promise<void>;
 }
 
-function slugify(input: string): string {
-  return input
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 100);
-}
-
-function canonicalRepoUrl(url: string | null | undefined): string {
-  return (url ?? "")
-    .trim()
-    .replace(/\/+$/g, "")
-    .replace(/\.git$/i, "")
-    .toLowerCase();
-}
-
-function repoNameFromUrl(url: string): string {
-  const clean = url.replace(/\/+$/g, "").replace(/\.git$/i, "");
-  return clean.split("/").pop() || clean;
-}
+// Slug and repo-key normalisation live in ./repoSelection so this panel and the
+// Azure DevOps panel cannot drift apart on identity rules.
 
 function installationSettingsUrl(installationId: number): string {
   return `https://github.com/settings/installations/${installationId}`;
@@ -71,8 +63,16 @@ export function GithubAppConnectPanel({
   const [installationId, setInstallationId] = useState<number | null>(null);
   const [repos, setRepos] = useState<GithubAppRepo[]>([]);
   const [accountLogin, setAccountLogin] = useState<string | null>(null);
-  const [selectedRepo, setSelectedRepo] = useState<string>("");
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  // Per-repo branch pin, keyed by repo key. Absent or blank means "follow the
+  // provider's default branch", which then tracks upstream changes to it.
+  const [branchOverrides, setBranchOverrides] = useState<Record<string, string>>({});
   const [projectName, setProjectName] = useState("");
+  // Whether the operator typed the name themselves. Re-suggesting on every
+  // selection change would fight their typing; suggesting only while the field
+  // is EMPTY is worse -- picking one repo fills it, and every repo added after
+  // that leaves the project named after a single member.
+  const [nameEdited, setNameEdited] = useState(false);
   const [platform, setPlatform] = useState(defaultPlatform);
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [installations, setInstallations] = useState<GithubAppInstallation[] | null>(null);
@@ -82,10 +82,17 @@ export function GithubAppConnectPanel({
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const connectedRepoKeys = useMemo(
-    () => new Set(existingProjects.map((project) => canonicalRepoUrl(project.repo_url))),
+    () => new Set(existingProjects.map((project) => canonicalRepoKey(project.repo_url))),
     [existingProjects],
   );
-  const selectedRepoConnected = connectedRepoKeys.has(canonicalRepoUrl(selectedRepo));
+  const pickableRepos = useMemo(
+    () => toPickableGithubRepos(repos, connectedRepoKeys),
+    [repos, connectedRepoKeys],
+  );
+  const selectedRepos = useMemo(
+    () => orderedSelection(pickableRepos, selectedKeys),
+    [pickableRepos, selectedKeys],
+  );
   const primaryInstallation = installations?.[0];
   const hasInstallations = Boolean(installations?.length);
   const installationStatusUnavailable = installations == null && installationError != null;
@@ -175,20 +182,30 @@ export function GithubAppConnectPanel({
     void loadInstallations();
   }, [loadInstallations]);
 
-  function selectRepo(repoUrl: string) {
-    setSelectedRepo(repoUrl);
-    if (!projectName.trim()) {
-      setProjectName(slugify(repoNameFromUrl(repoUrl)));
-    }
+  function changeSelection(next: Set<string>) {
+    setSelectedKeys(next);
     setError(null);
+    // Seed the project name only while the user has not typed one. With several
+    // repos selected the suggestion is their shared owner when they have one and
+    // blank otherwise -- never the first repo's name, which would label a
+    // ten-repo project after one of its members.
+    if (!nameEdited) {
+      const selected = pickableRepos.filter((repo) => next.has(repo.key));
+      const suggestion = suggestedProjectName(selected);
+      // An empty suggestion clears the field on purpose: a stale name from an
+      // earlier, smaller selection would silently label the whole project.
+      setProjectName(suggestion ? slugifyProjectId(suggestion) : "");
+    }
   }
 
   function useInstallation(installation: GithubAppInstallation) {
     setInstallationId(installation.installation_id);
     setAccountLogin(installation.account_login);
     setRepos([]);
-    setSelectedRepo("");
+    setSelectedKeys(new Set());
+    setBranchOverrides({});
     setProjectName("");
+    setNameEdited(false);
     setError(null);
   }
 
@@ -204,37 +221,103 @@ export function GithubAppConnectPanel({
     }
   }
 
+  function resetPicker() {
+    clearInstallParam();
+    setInstallationId(null);
+    setRepos([]);
+    setSelectedKeys(new Set());
+    setBranchOverrides({});
+    setProjectName("");
+    setNameEdited(false);
+  }
+
   async function finishConnect() {
-    if (installationId == null || !selectedRepo) {
-      setError("Pick a repository to connect.");
+    if (installationId == null || selectedRepos.length === 0) {
+      setError("Pick at least one repository to connect.");
       return;
     }
-    if (selectedRepoConnected) {
-      setError("This repository is already connected to Nexus.");
-      return;
-    }
-    const name = projectName.trim() || selectedRepo.split("/").pop() || selectedRepo;
-    const projectId = slugify(name);
+    const projectId = slugifyProjectId(
+      projectName.trim() || suggestedProjectName(selectedRepos),
+    );
     if (!projectId) {
-      setError("Enter a valid project name.");
+      setError(
+        selectedRepos.length > 1
+          ? "Name the project that will hold these repositories."
+          : "Enter a valid project name.",
+      );
+      return;
+    }
+    // Reusing an existing project id is the destructive collision: the server's
+    // add_project UPDATES a project whose id already exists, repointing its
+    // local_path, repo_url and platform. Reusing a REPOSITORY is fine and
+    // deliberately allowed; reusing an id silently hijacks another project.
+    if (collidesWithExistingProject(projectId, existingProjects.map((p) => p.id))) {
+      setError(
+        `A project called "${projectId}" already exists. Pick another name — ` +
+          "reusing it would repoint the existing project at this source.",
+      );
       return;
     }
     setConnecting(true);
     setError(null);
     try {
-      const project = await addGithubSource({
-        repoUrl: selectedRepo,
+      if (selectedRepos.length === 1) {
+        // One repo stays on the single-repo path deliberately: it sets
+        // `repo_url`, which is what the existing push-webhook match keys on.
+        // Routing it through the multi-repo path would silently cost auto-update.
+        const only = selectedRepos[0];
+        // Forward the pin: /mcp/add-repo now takes a branch, and dropping it
+        // here would silently clone the default while the UI showed a pin.
+        const onlyBranch = branchForMember(only, branchOverrides);
+        const project = await addGithubSource({
+          repoUrl: only.cloneUrl,
+          projectId,
+          platform,
+          branch: onlyBranch,
+          displayName: projectName.trim() || only.name,
+          installationId,
+        });
+        resetPicker();
+        await onConnected(project, platform);
+        return;
+      }
+
+      const result = await createMultiRepoProject({
         projectId,
+        displayName: projectName.trim() || projectId,
         platform,
-        displayName: name,
+        provider: "github",
         installationId,
+        members: selectedRepos.map((repo) => ({
+          repoIdentity: repo.identity,
+          repoName: repo.name,
+          cloneUrl: repo.cloneUrl,
+          branch: branchForMember(repo, branchOverrides),
+        })),
       });
-      clearInstallParam();
-      setInstallationId(null);
-      setRepos([]);
-      setSelectedRepo("");
-      setProjectName("");
-      await onConnected(project, platform);
+      const failed = result.sync.filter((outcome) => outcome.action === "failed");
+      resetPicker();
+      // Report a partial success rather than swallowing it: the project exists
+      // with the members that cloned, and the rest can be retried per repo.
+      if (failed.length > 0) {
+        setError(
+          `Created ${projectId} with ${result.members.length} repositories, but ` +
+            `${failed.length} could not be cloned: ` +
+            failed.map((outcome) => outcome.subproject_name).join(", "),
+        );
+      }
+      // Built explicitly rather than cast: the multi-repo endpoint returns
+      // members, not a project row. `repo_url` is null by definition — no single
+      // URL describes N members — and the parent refetches the real row anyway.
+      const created: SourceProject = {
+        id: result.project_id,
+        display_name: projectName.trim() || projectId,
+        repo_url: null,
+        platform,
+        source_type: "git",
+        status: "registered",
+      };
+      await onConnected(created, platform);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -261,103 +344,80 @@ export function GithubAppConnectPanel({
           </div>
         </CardHeader>
         <CardBody className="space-y-3 px-1">
-          {loadingRepos ? (
-            <p className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" /> Loading repositories&hellip;
-            </p>
-          ) : (
-            <>
-              <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/30 p-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-sm font-medium">Repository access</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    Showing repositories granted to this GitHub App installation.
-                  </p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => window.open(installationSettingsUrl(installationId), "_blank", "noopener,noreferrer")}
-                  >
-                    <ExternalLink className="h-3.5 w-3.5" /> Manage access
-                  </Button>
-                  <Button variant="ghost" size="sm" isLoading={loadingRepos} onClick={loadRepos}>
-                    <RotateCw className="h-3.5 w-3.5" /> Refresh
-                  </Button>
-                </div>
-              </div>
-              <select
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                value={selectedRepo}
-                onChange={(e) => selectRepo(e.target.value)}
+          <RepoMultiSelect
+            repos={pickableRepos}
+            selected={selectedKeys}
+            onSelectedChange={changeSelection}
+            branchOverrides={branchOverrides}
+            onBranchChange={(repoKey, branch) =>
+              setBranchOverrides((current) => ({ ...current, [repoKey]: branch }))
+            }
+            loading={loadingRepos}
+            onRefresh={loadRepos}
+            scopeHint="Showing repositories granted to this GitHub App installation."
+            emptyHint="This installation is connected, but GitHub did not return any repositories. Add repositories to the installation in GitHub, then refresh."
+            actions={
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={() =>
+                  window.open(
+                    installationSettingsUrl(installationId),
+                    "_blank",
+                    "noopener,noreferrer",
+                  )
+                }
               >
-                <option value="">Select a repository&hellip;</option>
-                {repos.map((r) => {
-                  const repoUrl = r.clone_url ?? "";
-                  const connected = connectedRepoKeys.has(canonicalRepoUrl(repoUrl));
-                  return (
-                    <option
-                      key={r.full_name ?? repoUrl}
-                      value={repoUrl}
-                      disabled={!repoUrl || connected}
-                    >
-                      {r.full_name ?? repoUrl}
-                      {r.private ? " (private)" : ""}
-                      {connected ? " - already connected" : ""}
-                    </option>
-                  );
-                })}
+                <ExternalLink className="h-3.5 w-3.5" /> Manage access
+              </Button>
+            }
+          />
+          {!loadingRepos && (
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Input
+                type="text"
+                aria-label="Project name"
+                placeholder={
+                  selectedRepos.length > 1 ? "Name for all selected repos" : "Project name / ID"
+                }
+                value={projectName}
+                onChange={(e) => {
+                  setNameEdited(true);
+                  setProjectName(e.target.value);
+                }}
+              />
+              <select
+                aria-label="Platform"
+                className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+                value={platform}
+                onChange={(e) => setPlatform(e.target.value)}
+              >
+                {platforms.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
               </select>
-              {repos.length === 0 && (
-                <p className="text-xs text-muted-foreground">
-                  This installation is connected, but GitHub did not return any repositories.
-                  Add repositories to the installation in GitHub, then refresh.
-                </p>
-              )}
-              <div className="grid gap-2 sm:grid-cols-2">
-                <Input
-                  type="text"
-                  placeholder="Project name / ID"
-                  value={projectName}
-                  onChange={(e) => setProjectName(e.target.value)}
-                />
-                <select
-                  className="h-10 rounded-md border border-input bg-background px-3 text-sm"
-                  value={platform}
-                  onChange={(e) => setPlatform(e.target.value)}
-                >
-                  {platforms.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </>
+            </div>
           )}
           {error && <p className="text-xs text-destructive">{error}</p>}
           <div className="flex justify-between">
             <div className="flex gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  clearInstallParam();
-                  setInstallationId(null);
-                }}
-              >
+              <Button variant="ghost" size="sm" onClick={resetPicker}>
                 Cancel
               </Button>
             </div>
             <Button
               size="sm"
               isLoading={connecting}
-              disabled={!selectedRepo || selectedRepoConnected}
+              disabled={selectedRepos.length === 0}
               onClick={finishConnect}
             >
-              <Github className="h-3.5 w-3.5" /> Connect &amp; scan
+              <Github className="h-3.5 w-3.5" />{" "}
+              {selectedRepos.length > 1
+                ? `Connect ${selectedRepos.length} repositories`
+                : "Connect & scan"}
             </Button>
           </div>
         </CardBody>
@@ -407,7 +467,7 @@ export function GithubAppConnectPanel({
               onClick={() => primaryInstallation && useInstallation(primaryInstallation)}
               disabled={!primaryInstallation}
             >
-              <Github className="h-4 w-4" /> Choose repository
+              <Github className="h-4 w-4" /> Choose repositories
             </Button>
           ) : installationStatusUnavailable ? (
             <Button size="md" variant="secondary" isLoading={loadingInstallations} onClick={loadInstallations}>

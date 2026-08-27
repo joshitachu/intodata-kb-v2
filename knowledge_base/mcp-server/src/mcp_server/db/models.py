@@ -99,6 +99,71 @@ class Project(Base):
     doc_rag_hashes: Mapped[list[ProjectDocRagHash]] = relationship(
         back_populates="project", passive_deletes=True
     )
+    repo_sources: Mapped[list[ProjectRepoSource]] = relationship(
+        back_populates="project", passive_deletes=True
+    )
+
+
+class ProjectRepoSource(Base):
+    """One member repository of a multi-repo project.
+
+    A single-repo project keeps using ``Project.repo_url`` /
+    ``Project.last_ingested_commit_sha``; those columns cannot express N repos
+    and are left untouched. When a project has rows here, these are the truth.
+
+    Two identities matter and are deliberately separate:
+
+    * ``repo_identity`` -- the provider's stable name for the repo
+      (``owner/name`` on GitHub, ``org/project/repo`` on Azure DevOps). Indexed
+      because it is the join key when a push event arrives and must resolve to
+      exactly one repo's work.
+    * ``subproject_name`` -- the origin-marker stem used for the clone directory
+      and therefore the partition name, doc output subdirectory, and fingerprint
+      key. Unique per project because two members resolving to one partition
+      would silently merge their documentation.
+
+    ``last_ingested_commit_sha`` is the per-repo incremental state: a push whose
+    SHA already matches is a no-op, and only a repo whose SHA moved is pulled.
+    """
+
+    __tablename__ = "project_repo_sources"
+    __table_args__ = (
+        UniqueConstraint("project_id", "subproject_name", name="uq_repo_source_subproject"),
+        UniqueConstraint("project_id", "repo_identity", name="uq_repo_source_identity"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(100), ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)  # github | azure_devops
+    repo_identity: Mapped[str] = mapped_column(String(500), index=True, nullable=False)
+    repo_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    clone_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    # The ref actually ingested. NULL means "whatever the clone resolved to",
+    # which is how every pre-multi-repo project behaved.
+    branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    subproject_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    local_path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    # Credential references, mirroring Project.connection_kind semantics. Never
+    # a secret: the PAT lives once in azure_devops_connections, and App tokens
+    # are minted on demand from the installation id.
+    github_installation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    azure_devops_connection_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    github_webhook_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_ingested_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    last_ingested_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="repo_sources")
 
 
 class GithubAppInstallation(Base):

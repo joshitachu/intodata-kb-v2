@@ -3,6 +3,14 @@
 Session log for the intodoc platform. Every session should add an entry documenting
 what was done, what changed, and lessons learned.
 
+## Session: 2026-08-26 -- Deployment runbook re-synced (MCP-relevant parts)
+
+- No `knowledge_base/` code changed. Logged here because two runbook corrections concern the MCP service directly. Files changed: `deploy/RUNBOOK.md`, `deploy/deploy-client.sh`, `docker-compose.yml`, `.env.production.template` (full detail in `RAG_pipeline/.claude/PROGRESS_LOG.md`).
+- **MCP env changes need `docker compose up -d mcp-server`.** Step 8 of the runbook told operators to `systemctl restart mcp-server@<client>.service` after setting `MCP_PHASE2/3_MAX_TOKENS`. That unit (`deploy/mcp-server@.service`) is the retired host-virtualenv path (`$REPO_ROOT/venv/bin/python`), is never installed by `deploy-client.sh`, and contradicts the runbook's own statement that no host virtualenv is required -- so the documented step silently did nothing. Also note `restart` alone is not enough for an env change; it reuses the existing container environment.
+- **New runbook section 15 documents doc-generation provider config**, which was previously undocumented for deployment: `MCP_DOC_GENERATION_PROVIDER` (`custom` | `<provider>/<model>` | `claude-cli` | `opencode-cli`), the hosted-model defaults (`anthropic/claude-sonnet-4-6` for analysis/write, `google/gemini-2.5-flash` for investigation, `openai/gpt-5.4` fallback, `repo_agent` deep-dive) and the fact that **no API key ships with the stack** -- a default deployment starts clean, passes health checks, then fails at the first generation run. Includes the local-only `ollama/<model>` alternative and the client-consent point about source code leaving the VPS. An unrecognised provider value raises at generation time, not at startup.
+- Also recorded: packs are read from `$REPO_ROOT/knowledge_base/packs` (mounted at `/app/workspace/packs`, created by `deploy-client.sh`), `plugin.yaml` is the only creatable pack format, and `MCP_PACK_AUTHOR_MODEL` defaults to `kimi/kimi-k2.5` (needs `KIMI_API_KEY`).
+- Verification: docs and script only; `docker compose config` passes. Nothing run against a VPS.
+
 ## Session: 2026-07-19 -- Local stack migration and restart completed
 
 - Nexus migration 067 was repaired, backed up, validated on a restored database copy, and applied through migration 069 locally.
@@ -2899,3 +2907,260 @@ Check: `wc -l output/localESBCHECK/docs_staging/_analysis/*.md`
 - **Problem**: scan dir `alitalend` holds the AssetCheck estate, whose 10 units match set-for-set the runtime jobs filed under `reverse_engineer_VW`; runtime `alitalend` holds a different 28-job workspace with no scan on disk. A doc run for that project attaches ~10%-correct evidence.
 - **Change**: none -- deciding the correct binding is an operator call. The build makes it visible: `orphan_runtime_jobs` is reported and a `scope_mismatch` flag is raised from the runtime-side orphan ratio, stated as an observation and never as an accusation (a match-ratio rule would flag healthy werkorder at 1.4% and MISS alitalend at 10%).
 - **Verification**: exact name matching resolves 100% where the binding is correct. Do NOT add a normaliser -- `AssetCheck_GetLocation` and `AssetCheck_GetLocations` are both real, separately-scheduled jobs.
+
+## Session: 2026-08-27 -- Multi-repo projects + per-repo incremental regeneration (UNCOMMITTED)
+
+**Goal**: extend the single-repo GitHub / Azure DevOps paths to N repos under one
+project, with re-ingestion incremental at the repo level (a push to repo-b
+regenerates repo-b only).
+
+**Key finding that shaped the design**: the expensive machinery already existed.
+`services/partition_orchestrator.py` already runs one independent scoped
+generation per sub-project into `output/{project_id}/{subproject}/docs` plus a
+deterministic (zero-LLM) cross-project topology layer. Sub-project identity was
+the only ZIP-specific part: `partition_planner.subproject_key` matched the
+`.__intodoc_zip__` marker written by `_extract_zip_bundle`. Multi-repo therefore
+needed a repo-origin marker, not a new pipeline.
+
+### Files changed
+
+- **NEW** `src/mcp_server/utils/source_origin.py` -- single home for origin
+  markers (`.__intodoc_zip__`, `.__intodoc_repo__`), stem extraction, and
+  `subproject_key`. `ARCHIVE_MARKERS` is separate from `ORIGIN_MARKERS` because
+  only a zip has a raw archive sibling to exclude.
+- `src/mcp_server/providers/custom/partition_planner.py` -- `subproject_key`
+  delegates to the shared helper; `ZIP_MARKER`/`REPO_MARKER` re-exported.
+- `src/mcp_server/services/lineage_service.py` -- `_strip_zip_marker` delegates.
+- `src/mcp_server/providers/custom/noncode_evidence.py` --
+  `derive_code_exclusions` excludes any origin subtree, but emits the raw
+  `X.zip` prefix only for archive origins.
+- **NEW** `src/mcp_server/providers/custom/partition_fingerprint.py` --
+  per-partition scan digests.
+- `src/mcp_server/services/partition_orchestrator.py` -- skip decision now reads
+  the per-partition digest (`partition_fingerprint` in `partition_state.json`);
+  whole-scan digest retained for diagnostics only.
+- `src/mcp_server/db/models.py` -- **NEW** `ProjectRepoSource`.
+- **NEW** `alembic/versions/031_add_project_repo_sources.py`.
+- **NEW** `src/mcp_server/services/repo_sources.py` -- `RepoSourceRepository`
+  (Repository pattern) + `MultiRepoSyncService`.
+- **NEW** `src/mcp_server/api/routes/repo_sources.py` -- 5 endpoints under
+  `/mcp/multi-repo/...`; registered in `api/app.py`.
+- `src/mcp_server/schemas.py` -- multi-repo request/response models.
+- **NEW** tests: `tests/test_providers/test_partition_fingerprint.py` (15),
+  `tests/test_services/test_repo_sources.py` (15); 2 added to
+  `tests/test_services/test_partition_orchestrator.py`.
+
+### Problem -> root cause -> fix
+
+1. **"Every run reprocesses everything"** (the stated core requirement).
+   *Root cause*: `partition_orchestrator` computed ONE
+   `compute_scan_fingerprint(scan_output_dir)` and compared every partition
+   against it, so any change anywhere mismatched all of them.
+   *Fix*: `compute_partition_fingerprints` hashes, per partition, only that
+   partition's job artifacts -- located via the scanner's authoritative
+   `manifest.job_files` index -- plus its `source_root`-scoped contexts.
+   `scan/manifest.json` is deliberately EXCLUDED (it holds the project-wide call
+   graph, so including it would re-couple every partition); `scan/landscape.json`
+   too (derived from the job artifacts, so already covered).
+
+2. **In-file edits would have been missed.** `UnitFact` carries no content hash,
+   so a fingerprint built from the facts manifest alone would not move when a
+   tMap expression changed -> stale docs published. *Fix*: hash the job JSON
+   BYTES. Covered by
+   `test_in_file_edit_is_detected_even_though_unit_facts_are_identical`.
+
+3. **Collision-suffixed markers were mis-attributed** (pre-existing bug, found
+   while generalizing). `_extract_zip_bundle` writes
+   `X.__intodoc_zip__-<digest>` when two inner zips share a name, but
+   `partition_planner.subproject_key` and `lineage_service._strip_zip_marker`
+   both matched with `endswith(MARKER)`, which that form fails -- so those units
+   fell into the `__shared__` partition and lineage showed the raw directory
+   name. `noncode_evidence` used `in`/`startswith` and was unaffected.
+   *Fix*: containment matching in the shared helper, documented as a constraint.
+
+4. **A push to a member repo is silently ignored.** `_find_project_by_clone_url`
+   (`api/routes/webhook.py:296`) skips projects with no `repo_url`, and a
+   multi-repo project has `repo_url = NULL`. Not fixed -- see Known gaps.
+
+### Known gaps (NOT implemented)
+
+- **Webhook -> member routing.** `AutoDocUpdateService` does
+  `fetch_remote(ctx.local_path)` and `git diff before..after` at
+  `ctx.local_path`, which for a multi-repo project is the container directory
+  with no `.git`. Needs `ctx.local_path` to become the member clone path. This
+  is a CLAUDE.md critical area (MCP API routes) and requires `/inspect`.
+  Until then, `POST /mcp/multi-repo/projects/{id}/sync?repo_identity=...` is the
+  manual equivalent and is tested.
+- **Dashboard multi-select UI.** Backend only. Both repo listings are already
+  org-wide (`utils/azure_devops_api.list_repositories` spans all ADO projects;
+  `GET /mcp/github/app/installations/{id}/repos`).
+- **Shared routines cannot be repo-scoped.** intodoc's `Routine` model has no
+  `source_root`, so a changed shared routine invalidates every partition
+  (`UNATTRIBUTABLE_ARTIFACTS`). Over-invalidation is the safe direction; fixing
+  it means adding provenance in the scanner.
+- **`/inspect` not run.**
+
+### Verification
+
+- `pytest tests/ -q` -> **2177 passed / 12 failed**. All 12 reproduce
+  identically on the stashed tree (`git stash push -u` baseline): missing
+  `intodoc` module in the mcp-server venv, plus reference-pack and
+  model-catalogue fixtures. Baseline before this session was 2162 passed / same
+  12 failed.
+- Migration 031 exercised directly against SQLite in both orders: `create_all`
+  then `upgrade` (idempotent no-op, run twice), and cold `upgrade` on a bare
+  `projects` table, then `downgrade`. First attempt FAILED with
+  `NotImplementedError: No support for ALTER of constraints in SQLite`; unique
+  constraints were moved inline into `create_table` as a result.
+- `MultiRepoSyncService` tests drive real `git` against local `file://` origins:
+  clone, no-op re-sync, `only=` filter leaving a sibling's working tree at old
+  content, per-repo SHA recording, one failing member not stopping the others,
+  and `--branch` pinning.
+
+## Session: 2026-08-27 -- Multi-repo picker + Azure DevOps tab in the dashboard (UNCOMMITTED)
+
+Follow-on to the multi-repo backend entry above. Brings the dashboard's Add
+Repository dialog to the same UI as the RAG frontend's `/settings/sources`.
+
+### Files changed
+
+- **NEW** `dashboard/src/lib/repoSelection.ts` -- copy of the RAG frontend's
+  module, with a header stating the two MUST stay identical. The dashboard and
+  the RAG frontend are separate packages with no shared workspace, and the
+  `repo_identity` rules must match the server on both surfaces; a divergence
+  would send an identity no push event can resolve.
+- **NEW** `dashboard/src/components/RepoMultiSelect.tsx` -- same picker,
+  dashboard dark styling.
+- `dashboard/src/components/AddRepoDialog.tsx` -- rewritten. Was 3 tabs
+  (URL/Path, ZIP, GitHub App) with a single-select `<select>`; now 4 tabs with
+  **Azure DevOps** added, and both connection tabs share the multi-select.
+- `dashboard/src/api/client.ts` -- Azure DevOps connection methods (list,
+  connect, test, delete, repos) + `createMultiRepoProject`.
+- `dashboard/src/types.ts` -- `AzureDevOpsConnection`, `AzureDevOpsRepo`,
+  `MultiRepoMember`, `MultiRepoSyncOutcome`, `MultiRepoProject`.
+- **NEW** `dashboard/src/tests/add-repo-multi-select.test.tsx` (9 tests).
+
+### Bugs found and fixed while building
+
+1. **`api.addRepo` dropped the Azure DevOps connection.** Its parameter type had
+   no `azure_devops_connection_id`, though `/mcp/add-repo` accepts one. Caught by
+   `tsc`. Left as-is, a single-repo Azure DevOps add from the dashboard would
+   have fallen back to an unauthenticated clone and failed as "Authentication
+   failed" -- a credential error for a missing field.
+2. **Refresh was a no-op.** The GitHub repo list loaded in an effect keyed on
+   `appInstallationId`; Refresh re-set the same value, which does not re-run the
+   effect. Extracted `loadAppRepos` and call it directly.
+
+### Verification
+
+- `npx tsc -b --noEmit` clean.
+- `npx vitest run` -> **100 passed / 0 failed** (8 files). The pre-existing
+  `add-repo-dialog.test.tsx` suite still passes unchanged, so the URL/Path and
+  ZIP tabs behave exactly as before.
+- Not verified in a browser; no live GitHub or Azure DevOps call was made.
+
+## Session: 2026-08-27 -- Multi-repo membership panel in the dashboard (UI polish) (UNCOMMITTED)
+
+Follow-on to the dashboard picker entry above, same date.
+
+**Problem**: `ProjectMetaGrid.tsx:47` renders the Repo URL row only when
+`project.repo_url` is set, and a multi-repo project has none, so its members were
+invisible in Project Settings.
+
+### Files changed
+
+- **NEW** `dashboard/src/components/MultiRepoMembersPanel.tsx` -- mirrors the RAG
+  frontend panel (per-member SHA + last-ingested time, per-member Sync, Sync all,
+  Remove behind a confirm step), dashboard dark styling.
+- `dashboard/src/components/ProjectSettings.tsx` -- renders it below
+  `ProjectMetaGrid` when `source_type === "git"` and `repo_url` is null.
+  Invalidates `["projects"]` on change via `useQueryClient`, matching how the
+  project hooks already invalidate (there is no `onRefresh` prop to thread).
+- `dashboard/src/api/client.ts` -- `listMultiRepoMembers`,
+  `removeMultiRepoMember`, `syncMultiRepoProject`.
+- **NEW** `dashboard/src/tests/multi-repo-members-panel.test.tsx` (10 tests).
+
+### Verification
+
+- `npx tsc -b --noEmit` clean.
+- `npx vitest run` -> **110 passed / 0 failed** (9 files). 100 -> 110 passing.
+- Not verified in a browser; no live provider call was made.
+
+### Known UI gap (deliberately not fixed)
+
+The pickers mark a repository "already connected" from `project.repo_url` only,
+so a repo that is already a MEMBER of a multi-repo project is not flagged. This
+is not a defect: the server's unique constraint is per project, and
+`find_by_identity` returns a list precisely because one repo may belong to
+several projects. Flagging it would need either an N+1 member fetch in the
+picker or member clone URLs added to the project-list response.
+
+## Session: 2026-08-27 -- Branch pinning + "already connected" was wrong to block (UNCOMMITTED)
+
+Two operator-reported problems with the multi-repo picker, plus a hazard found
+while fixing them.
+
+### 1. "already connected" blocked re-adding a repository -- wrong
+
+`Talend8` was disabled in the picker because it already belonged to a project,
+so it could not also join a wider domain project. That block was inherited from
+the pre-multi-repo `<select>` and is wrong now: the server's uniqueness is
+per project (`uq_repo_source_identity` is `(project_id, repo_identity)`), and
+`RepoSourceRepository.find_by_identity` returns a LIST precisely because one repo
+may belong to several projects.
+
+`PickableRepo` now separates the two ideas:
+
+- `unavailableReason` -- a hard block, checkbox disabled. Only "no clone URL"
+  and "disabled in Azure DevOps".
+- `note` -- informational, still selectable. "already in a project" moved here.
+
+### 2. Branch selection was missing from the UI
+
+The backend had carried `branch` since the first multi-repo commit
+(`ProjectRepoSource.branch`, `--branch --single-branch` on clone, ff-only against
+`refs/remotes/origin/<branch>`), but no UI ever set it. Added a per-repo branch
+field, shown only once a repo is selected so a ten-repo list stays scannable.
+
+**Empty means unset, not "the current default".** `branchForMember` returns
+`undefined` for a blank field, so the clone keeps following whatever the
+provider's default becomes; typing a name freezes it. The placeholder shows the
+default branch so the operator can see what they would get.
+
+**`/mcp/add-repo` gained `branch`.** Without it, pinning a branch and selecting
+exactly ONE repo would have silently cloned the default -- the single-repo path
+is kept deliberately (it sets `repo_url`, which the push webhook matches on), so
+it had to learn the same option. `schemas.AddRepoRequest.branch` +
+`--branch --single-branch` in the clone call.
+
+### 3. Hazard found: reusing a project id silently hijacks a project
+
+`ProjectRegistry.add_project` UPDATES a project whose id already exists,
+repointing `local_path`, `repo_url`, `platform` and `source_type`. Nothing
+warned. Reusing a REPOSITORY is legitimate; reusing an ID is destructive, and the
+picker was guarding the wrong one. Both surfaces now block an existing id with
+an explicit message (`collidesWithExistingProject`).
+
+### Files changed
+
+- `mcp-server`: `schemas.py` (`AddRepoRequest.branch`),
+  `api/routes/projects.py` (clone honours `--branch`).
+- RAG frontend: `repoSelection.ts` (`note`, `branchForMember`,
+  `collidesWithExistingProject`), `RepoMultiSelect.tsx` (note styling + branch
+  field), both connect panels, `lib/mcpClient.ts`, `types/index.ts`,
+  `app/api/source/github/route.ts`.
+- Dashboard: `lib/repoSelection.ts` (re-synced), `RepoMultiSelect.tsx`,
+  `AddRepoDialog.tsx` (branch state, branch on both paths, collision guard via
+  `useProjects`), `api/client.ts`.
+- Tests updated from "blocks" to "notes but allows"; new tests for branch
+  pinning (multi and single path), branch field visibility, and id collision.
+
+### Verification
+
+- mcp-server `pytest`: 2178 passed / 12 failed (all 12 pre-existing).
+- RAG frontend: `tsc` clean, 955 passed / 5 failed (the 5 pre-existing).
+- Dashboard: `tsc -b` clean, **114 passed / 0 failed**.
+- Rebuilt and redeployed `mcp-server`, `dashboard`, `frontend`; all 8 services
+  healthy. Live OpenAPI confirms `branch` on both `AddRepoRequest` and
+  `MultiRepoMemberRequest`. No errors in any container log.
+- Still not exercised end to end against a live provider.

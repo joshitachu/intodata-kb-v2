@@ -37,6 +37,7 @@ from typing import Any, TYPE_CHECKING
 
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
+from mcp_server.providers.custom.partition_fingerprint import compute_partition_fingerprints
 from mcp_server.providers.custom.partition_planner import (
     PartitionPlan,
     build_cross_project_index,
@@ -182,7 +183,13 @@ async def run_partitioned_generation(
             level="warning",
         )
 
+    # Whole-scan digest: still the identity of the upload-level connective
+    # layer, which by definition depends on every sub-project.
     fingerprint = _scan_fingerprint(scan_output_dir)
+    # Per-sub-project digests: what decides whether an individual partition may
+    # be skipped. A push to one repo moves only that repo's digest, so only that
+    # repo pays for regeneration.
+    partition_fingerprints = _partition_fingerprints(scan_output_dir, plan, facts)
     partition_state = _read_partition_state(project_id)
 
     outcomes: list[PartitionRunOutcome] = []
@@ -192,8 +199,9 @@ async def run_partitioned_generation(
         outcome = PartitionRunOutcome(partition=part.name, subdir=subdir)
         outcomes.append(outcome)
         part_output = output_root / subdir
+        part_fingerprint = partition_fingerprints.get(part.name, "")
 
-        if _partition_completed(partition_state, part.name, fingerprint, part_output) and resume:
+        if _partition_completed(partition_state, part.name, part_fingerprint, part_output) and resume:
             outcome.skipped = True
             outcome.success = True
             outcome.doc_count = _count_public_docs(part_output / "docs")
@@ -277,6 +285,11 @@ async def run_partitioned_generation(
                 run_verdict="published_with_rag_error" if rag_errors else "published",
             )
             partition_state[part.name] = {
+                # The skip decision reads this one.
+                "partition_fingerprint": part_fingerprint,
+                # Whole-scan digest kept for diagnostics only: it answers "which
+                # scan was this partition last published from", which the
+                # per-partition digest deliberately cannot.
                 "scan_fingerprint": fingerprint,
                 "doc_count": doc_count,
                 "run_id": child_run_id,
@@ -396,6 +409,25 @@ def _scan_fingerprint(scan_output_dir: Path) -> str:
         return ""
 
 
+def _partition_fingerprints(
+    scan_output_dir: Path, plan: PartitionPlan, facts: FactsManifest
+) -> dict[str, str]:
+    """Per-partition scan digests, or all-empty when they cannot be computed.
+
+    All-empty degrades to "regenerate every partition" -- the pre-incremental
+    behaviour -- rather than skipping on a digest we do not trust.
+    """
+    try:
+        return compute_partition_fingerprints(scan_output_dir, plan, facts)
+    except Exception as exc:  # noqa: BLE001 - never block generation on a skip optimization
+        logger.warning(
+            "Per-partition fingerprints unavailable (%s); every sub-project will regenerate",
+            exc,
+            exc_info=True,
+        )
+        return {}
+
+
 def _partition_state_path(project_id: str) -> Path:
     return upload_topology_dir(project_id) / PARTITION_STATE_FILENAME
 
@@ -416,12 +448,21 @@ def _partition_completed(
     fingerprint: str,
     part_output: Path,
 ) -> bool:
-    """A partition is up to date when its recorded fingerprint matches the
-    current scan AND its published docs still exist on disk."""
+    """A partition is up to date when its recorded PER-PARTITION fingerprint
+    matches the current scan AND its published docs still exist on disk.
+
+    *fingerprint* is this partition's own digest, not the whole-scan digest, so
+    a sibling sub-project changing does not invalidate this one.
+
+    An empty *fingerprint* never skips: the fingerprinter returns "" when it
+    cannot determine a partition's inputs with confidence, and a regeneration is
+    cheaper than a stale publish. State written before per-partition digests
+    existed carries no ``partition_fingerprint`` key and so regenerates once.
+    """
     if not fingerprint:
         return False
     entry = state.get(partition_name)
-    if not isinstance(entry, dict) or entry.get("scan_fingerprint") != fingerprint:
+    if not isinstance(entry, dict) or entry.get("partition_fingerprint") != fingerprint:
         return False
     return _count_public_docs(part_output / "docs") > 0
 

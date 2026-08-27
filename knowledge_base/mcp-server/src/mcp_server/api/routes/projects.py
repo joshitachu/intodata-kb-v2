@@ -466,8 +466,15 @@ async def add_repo(req: AddRepoRequest, request: Request):
                 clone_url = authenticated_url_plaintext(repo_url or url, req.github_token)
             else:
                 clone_url = repo_url or url
+            # A pinned branch is passed as an option, never interpolated: the
+            # value comes from the client. --single-branch keeps the clone to the
+            # requested ref so a later ff-only pull cannot drift onto another.
+            _clone_args = ["clone"]
+            if req.branch:
+                _clone_args += ["--branch", req.branch, "--single-branch"]
+            _clone_args += ["--", clone_url, str(clone_dir)]
             _clone_proc = await asyncio.create_subprocess_exec(
-                "git", "clone", "--", clone_url, str(clone_dir),
+                "git", *_clone_args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.DEVNULL,

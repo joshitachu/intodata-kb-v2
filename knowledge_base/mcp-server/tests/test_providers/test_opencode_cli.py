@@ -81,6 +81,38 @@ def test_attempt_ledger_allows_exactly_one_nexus_dispatch(tmp_path):
     OpenCodeAttemptLedger(tmp_path).dispatch("step:produce_topology")
 
 
+def test_bounded_reingestion_contract_emits_liveness_updates(monkeypatch, tmp_path):
+    provider = OpenCodeCliProvider(model_route="opencode/test")
+    monkeypatch.setattr(provider, "_preflight", lambda: ("/usr/bin/opencode", {}))
+    monkeypatch.setattr(config, "opencode_reingestion_progress_interval_seconds", 1)
+    monkeypatch.setattr(config, "opencode_reingestion_timeout_seconds", 10)
+    received: list[tuple[str, str]] = []
+
+    async def fake_execute_step(**kwargs):
+        assert kwargs["timeout_seconds"] == 10
+        await asyncio.sleep(1.01)
+        return _PhaseExecution(session_id="ses_liveness", events=[])
+
+    async def log_cb(_project_id: str, message: str, level: str):
+        received.append((message, level))
+
+    monkeypatch.setattr(provider, "_execute_step", fake_execute_step)
+    contract = OpenCodeTaskContract(
+        "produce", "reingestion:test", "_reingestion/task.json", (),
+        "_reingestion/patch_report.json", prompt="patch docs",
+    )
+
+    result = asyncio.run(
+        provider.run_bounded_contract(
+            project_id="poly", workspace=tmp_path / "workspace", contract=contract,
+            log_cb=log_cb, step="reingestion_patch", prompt="patch docs",
+        )
+    )
+
+    assert result.success is True
+    assert any("still running" in message for message, _level in received)
+
+
 def test_attempt_ledger_scopes_dispatch_ceiling_to_generation_run(tmp_path):
     first = OpenCodeAttemptLedger(tmp_path, run_id=41)
     first.dispatch("step:analyze")

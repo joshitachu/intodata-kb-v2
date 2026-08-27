@@ -59,6 +59,9 @@ export interface GithubSourceArgs {
   projectId: string;
   platform: string;
   displayName?: string;
+  // Branch to clone. Omit to follow the remote's default branch, which then
+  // keeps tracking upstream changes to that default.
+  branch?: string;
   // PAT connection (fallback). Omit for GitHub App connections.
   githubToken?: string;
   // GitHub App connection (preferred). Set after installing the App.
@@ -329,6 +332,7 @@ export async function addGithubSource(args: GithubSourceArgs): Promise<SourcePro
       project_id: args.projectId,
       platform: args.platform,
       display_name: args.displayName,
+      branch: args.branch,
       github_token: args.githubToken,
       installation_id: args.installationId,
       azure_devops_connection_id: args.azureDevOpsConnectionId,
@@ -350,6 +354,184 @@ export async function addAzureDevOpsSource(
   },
 ): Promise<SourceProject> {
   return addGithubSource(args);
+}
+
+export interface MultiRepoMemberInput {
+  repoIdentity: string;
+  repoName: string;
+  cloneUrl: string;
+  branch?: string;
+}
+
+export interface MultiRepoMember {
+  id: string;
+  provider: string;
+  repo_identity: string;
+  repo_name: string;
+  clone_url: string;
+  branch: string | null;
+  subproject_name: string;
+  local_path: string;
+  last_ingested_commit_sha: string | null;
+  last_ingested_at: string | null;
+  enabled: boolean;
+}
+
+export interface MultiRepoSyncOutcome {
+  subproject_name: string;
+  repo_identity: string;
+  action: string;
+  head_sha: string | null;
+  previous_sha: string | null;
+  changed: boolean;
+  error: string | null;
+}
+
+export interface MultiRepoProject {
+  project_id: string;
+  members: MultiRepoMember[];
+  sync: MultiRepoSyncOutcome[];
+}
+
+/**
+ * Register one project spanning several repositories.
+ *
+ * Each member becomes its own sub-project: its own documentation set and its own
+ * generation budget, plus a shared cross-repo topology layer. The response
+ * includes a per-member clone outcome, so a project that came up with one failed
+ * member is reported rather than silently short.
+ */
+export async function createMultiRepoProject(args: {
+  projectId: string;
+  displayName?: string;
+  platform: string;
+  provider: "github" | "azure_devops";
+  members: MultiRepoMemberInput[];
+  installationId?: number;
+  azureDevOpsConnectionId?: string;
+}): Promise<MultiRepoProject> {
+  const res = await fetch("/api/source/multi-repo/projects", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      project_id: args.projectId,
+      display_name: args.displayName,
+      platform: args.platform,
+      provider: args.provider,
+      members: args.members.map((member) => ({
+        repo_identity: member.repoIdentity,
+        repo_name: member.repoName,
+        clone_url: member.cloneUrl,
+        branch: member.branch,
+      })),
+      installation_id: args.installationId,
+      azure_devops_connection_id: args.azureDevOpsConnectionId,
+    }),
+  });
+  if (!res.ok) {
+    throw new McpRequestError(
+      `/api/source/multi-repo/projects failed (${res.status}): ${await res.text()}`,
+      res.status,
+    );
+  }
+  return res.json();
+}
+
+/** Member repositories of a multi-repo project. Empty for a single-repo project. */
+export async function listMultiRepoMembers(projectId: string): Promise<MultiRepoProject> {
+  const res = await fetch(
+    `/api/source/multi-repo/projects/${encodeURIComponent(projectId)}/members`,
+    { credentials: "include" },
+  );
+  if (!res.ok) {
+    throw new McpRequestError(
+      `Listing members of ${projectId} failed (${res.status}): ${await res.text()}`,
+      res.status,
+    );
+  }
+  return res.json();
+}
+
+/** Add repositories to an existing multi-repo project. Existing ones are ignored. */
+export async function addMultiRepoMembers(args: {
+  projectId: string;
+  platform: string;
+  provider: "github" | "azure_devops";
+  members: MultiRepoMemberInput[];
+  installationId?: number;
+  azureDevOpsConnectionId?: string;
+}): Promise<MultiRepoProject> {
+  const res = await fetch(
+    `/api/source/multi-repo/projects/${encodeURIComponent(args.projectId)}/members`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        project_id: args.projectId,
+        platform: args.platform,
+        provider: args.provider,
+        members: args.members.map((member) => ({
+          repo_identity: member.repoIdentity,
+          repo_name: member.repoName,
+          clone_url: member.cloneUrl,
+          branch: member.branch,
+        })),
+        installation_id: args.installationId,
+        azure_devops_connection_id: args.azureDevOpsConnectionId,
+      }),
+    },
+  );
+  if (!res.ok) {
+    throw new McpRequestError(
+      `Adding members to ${args.projectId} failed (${res.status}): ${await res.text()}`,
+      res.status,
+    );
+  }
+  return res.json();
+}
+
+export async function removeMultiRepoMember(
+  projectId: string,
+  sourceId: string,
+): Promise<void> {
+  const res = await fetch(
+    `/api/source/multi-repo/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(sourceId)}`,
+    { method: "DELETE", credentials: "include" },
+  );
+  if (!res.ok) {
+    throw new McpRequestError(
+      `Removing the member failed (${res.status}): ${await res.text()}`,
+      res.status,
+    );
+  }
+}
+
+/**
+ * Fast-forward member clones.
+ *
+ * `repoIdentity` limits the sync to one repository -- the incremental path, and
+ * the manual equivalent of the push webhook until that is wired.
+ */
+export async function syncMultiRepoProject(
+  projectId: string,
+  repoIdentity?: string,
+): Promise<MultiRepoProject> {
+  const query = repoIdentity
+    ? `?repo_identity=${encodeURIComponent(repoIdentity)}`
+    : "";
+  const res = await fetch(
+    `/api/source/multi-repo/projects/${encodeURIComponent(projectId)}/sync${query}`,
+    { method: "POST", credentials: "include" },
+  );
+  if (!res.ok) {
+    throw new McpRequestError(
+      `Syncing ${projectId} failed (${res.status}): ${await res.text()}`,
+      res.status,
+    );
+  }
+  return res.json();
 }
 
 // Start a GitHub App install: returns the URL to redirect the browser to.

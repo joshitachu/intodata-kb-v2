@@ -45,6 +45,11 @@ class MCPServerConfig(BaseSettings):
     # retry behavior remains owned by the configured OpenCode provider.
     opencode_auto_approve: bool = True
     opencode_timeout_seconds: int = 1800
+    # A reingestion patch is a single, small contract. It gets a shorter hard
+    # ceiling than a full documentation run and emits liveness updates while a
+    # provider is reasoning without streaming events.
+    opencode_reingestion_timeout_seconds: int = 900
+    opencode_reingestion_progress_interval_seconds: int = 60
     # Gather and Analyze contracts are packed into adaptive, fresh-session
     # batches under this estimated input-token target. The provider clamps
     # non-positive values at use time. MCP_OPENCODE_BATCH_TARGET_INPUT_TOKENS.

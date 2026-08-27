@@ -136,7 +136,11 @@ export const api = {
       InstanceSettingsResponseSchema
     ),
 
-  addRepo: (data: { url: string; project_id: string; platform?: string; display_name?: string; github_token?: string; installation_id?: number }) =>
+  // Every credential reference /mcp/add-repo accepts must be present here.
+  // Omitting one does not fail loudly: the server falls back to an
+  // unauthenticated clone, which a private repo rejects as "Authentication
+  // failed" — a credential error for what is really a missing field.
+  addRepo: (data: { url: string; project_id: string; platform?: string; display_name?: string; branch?: string; github_token?: string; installation_id?: number; azure_devops_connection_id?: string }) =>
     request<import("../types").Project>("/mcp/add-repo", {
       method: "POST",
       body: JSON.stringify(data),
@@ -155,6 +159,85 @@ export const api = {
       account_login: string | null;
       repositories: { full_name: string | null; clone_url: string | null; private: boolean | null; default_branch: string | null }[];
     }>(`/mcp/github/app/installations/${installationId}/repos`),
+
+  // --- Azure DevOps organization connections -------------------------------
+  // Azure DevOps has no GitHub-App equivalent, so a PAT is the only credential.
+  // It is held once per organization, encrypted, and never returned here.
+  listAzureDevOpsConnections: () =>
+    request<{ connections: import("../types").AzureDevOpsConnection[] }>(
+      "/mcp/azure-devops/connections",
+    ),
+
+  connectAzureDevOps: (organization_url: string, pat: string) =>
+    request<import("../types").AzureDevOpsConnection>("/mcp/azure-devops/connections", {
+      method: "POST",
+      body: JSON.stringify({ organization_url, pat }),
+    }),
+
+  testAzureDevOpsConnection: (connectionId: string) =>
+    request<import("../types").AzureDevOpsConnection>(
+      `/mcp/azure-devops/connections/${encodeURIComponent(connectionId)}/test`,
+      { method: "POST" },
+    ),
+
+  deleteAzureDevOpsConnection: (connectionId: string) =>
+    request<void>(`/mcp/azure-devops/connections/${encodeURIComponent(connectionId)}`, {
+      method: "DELETE",
+    }),
+
+  // Every repository the PAT can read, across all Azure DevOps projects.
+  listAzureDevOpsRepos: (connectionId: string) =>
+    request<{
+      connection_id: string;
+      organization_name: string;
+      repositories: import("../types").AzureDevOpsRepo[];
+    }>(`/mcp/azure-devops/connections/${encodeURIComponent(connectionId)}/repos`),
+
+  // --- Multi-repo projects --------------------------------------------------
+  // One project spanning N repositories: each member becomes its own
+  // sub-project with its own documentation set and its own generation budget,
+  // plus a shared cross-repo topology layer.
+  createMultiRepoProject: (data: {
+    project_id: string;
+    display_name?: string;
+    platform: string;
+    provider: "github" | "azure_devops";
+    members: {
+      repo_identity: string;
+      repo_name: string;
+      clone_url: string;
+      branch?: string;
+    }[];
+    installation_id?: number;
+    azure_devops_connection_id?: string;
+  }) =>
+    request<import("../types").MultiRepoProject>("/mcp/multi-repo/projects", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  // Members of a multi-repo project. Empty for a single-repo project.
+  listMultiRepoMembers: (projectId: string) =>
+    request<import("../types").MultiRepoProject>(
+      `/mcp/multi-repo/projects/${encodeURIComponent(projectId)}/members`,
+    ),
+
+  removeMultiRepoMember: (projectId: string, sourceId: string) =>
+    request<{ status: string; message?: string }>(
+      `/mcp/multi-repo/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(sourceId)}`,
+      { method: "DELETE" },
+    ),
+
+  // Fast-forward member clones. `repoIdentity` limits it to one repository --
+  // the incremental path, and the manual equivalent of the push webhook until
+  // that is wired for multi-repo projects.
+  syncMultiRepoProject: (projectId: string, repoIdentity?: string) =>
+    request<import("../types").MultiRepoProject>(
+      `/mcp/multi-repo/projects/${encodeURIComponent(projectId)}/sync${
+        repoIdentity ? `?repo_identity=${encodeURIComponent(repoIdentity)}` : ""
+      }`,
+      { method: "POST" },
+    ),
 
   updateGithubToken: (projectId: string, github_token: string) =>
     request<import("../types").Project>(`/mcp/projects/${projectId}/github-token`, {

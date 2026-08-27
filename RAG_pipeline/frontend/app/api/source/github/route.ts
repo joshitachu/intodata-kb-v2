@@ -19,6 +19,7 @@ export async function POST(request: NextRequest) {
         project_id: body.project_id,
         platform: body.platform,
         display_name: body.display_name || undefined,
+        branch: body.branch || undefined,
         github_token: body.github_token || undefined,
         installation_id: body.installation_id || undefined,
         azure_devops_connection_id: body.azure_devops_connection_id || undefined,

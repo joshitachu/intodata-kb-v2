@@ -45,6 +45,7 @@ import { Input } from "@/components/ui/input";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { AzureDevOpsConnectPanel } from "./AzureDevOpsConnectPanel";
 import { GithubAppConnectPanel } from "./GithubAppConnectPanel";
+import { MultiRepoMembersPanel } from "./MultiRepoMembersPanel";
 import { ProjectConnectorBindings } from "./ProjectConnectorBindings";
 import { SimpleConnectorPanel } from "./SimpleConnectorPanel";
 import { ProjectLiveSource, useProjectLiveSources } from "./liveSources";
@@ -932,6 +933,8 @@ export default function SourcesSettingsPage() {
                     logsOpen: !(rows[activeAddPlatform]?.logsOpen ?? false),
                   })
                 }
+                // The add-new row has no registered project, so no membership.
+                onMembersChanged={() => undefined}
               />
             </div>
           )}
@@ -1081,6 +1084,10 @@ export default function SourcesSettingsPage() {
                     logsOpen: !(rows[source.id]?.logsOpen ?? false),
                   })
                 }
+                onMembersChanged={() => {
+                  qc.invalidateQueries({ queryKey: ["source-projects"] });
+                  qc.invalidateQueries({ queryKey: ["docs-projects"] });
+                }}
               />
             ))}
           </div>
@@ -1161,6 +1168,8 @@ interface SourceRowProps {
   onCheckWebhook: () => Promise<unknown>;
   onDeleteProject: () => Promise<unknown>;
   onToggleLogs: () => void;
+  /** Membership of a multi-repo project changed; refetch the project list. */
+  onMembersChanged: () => void;
 }
 
 function SourceRow({
@@ -1189,6 +1198,7 @@ function SourceRow({
   onCheckWebhook,
   onDeleteProject,
   onToggleLogs,
+  onMembersChanged,
 }: SourceRowProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -1297,6 +1307,12 @@ function SourceRow({
         expanded ? <CardBody className="space-y-5 border-t border-border bg-muted/[0.12] px-1 py-5">
           {source.repo_url && (
             <p className="truncate text-xs text-muted-foreground">{source.repo_url}</p>
+          )}
+          {/* A multi-repo project has no single repo_url, so without this the
+              line above renders nothing and its member repositories are
+              invisible. The panel renders nothing for a single-repo project. */}
+          {source.source_type === "git" && !source.repo_url && (
+            <MultiRepoMembersPanel projectId={source.id} onChanged={onMembersChanged} />
           )}
           <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
             <Meta

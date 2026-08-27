@@ -327,6 +327,10 @@ async def test_resume_skips_up_to_date_partition(orchestration_env, monkeypatch)
     facts = _composite_facts("proj")
     plan = pp.plan_partitions(facts)
     output_root = tmp_path / "output" / "proj"
+    # The skip decision reads the PER-PARTITION digest, not the whole-scan one.
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "a-1", "Beta": "b-1"}
+    )
     monkeypatch.setattr(po, "_scan_fingerprint", lambda p: "fp-1")
 
     # First full run.
@@ -336,9 +340,11 @@ async def test_resume_skips_up_to_date_partition(orchestration_env, monkeypatch)
     )
     assert len(coordinator.calls) == 2
     state = json.loads(po._partition_state_path("proj").read_text())
+    assert state["Alpha"]["partition_fingerprint"] == "a-1"
+    # Whole-scan digest is retained for diagnostics only.
     assert state["Alpha"]["scan_fingerprint"] == "fp-1"
 
-    # Second run with the same fingerprint: nothing re-runs.
+    # Second run with the same digests: nothing re-runs.
     coordinator2 = _FakeCoordinator(output_root)
     outcomes = await po.run_partitioned_generation(
         "proj", 2, _FakeLogMgr(), coordinator2, plan=plan, facts=facts, resume=True,
@@ -346,13 +352,75 @@ async def test_resume_skips_up_to_date_partition(orchestration_env, monkeypatch)
     assert coordinator2.calls == []
     assert all(o.skipped for o in outcomes)
 
-    # Scan changed: everything re-runs.
-    monkeypatch.setattr(po, "_scan_fingerprint", lambda p: "fp-2")
+    # Both digests moved: everything re-runs.
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "a-2", "Beta": "b-2"}
+    )
     coordinator3 = _FakeCoordinator(output_root)
     await po.run_partitioned_generation(
         "proj", 3, _FakeLogMgr(), coordinator3, plan=plan, facts=facts, resume=True,
     )
     assert len(coordinator3.calls) == 2
+
+
+async def test_only_the_changed_partition_reruns(orchestration_env, monkeypatch):
+    """One repo changing must cost one repo's generation, not the project's.
+
+    This is what a single whole-scan fingerprint could not express: it moved on
+    any change anywhere, so every sub-project regenerated.
+    """
+    tmp_path = orchestration_env
+    facts = _composite_facts("proj")
+    plan = pp.plan_partitions(facts)
+    output_root = tmp_path / "output" / "proj"
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "a-1", "Beta": "b-1"}
+    )
+
+    await po.run_partitioned_generation(
+        "proj", 1, _FakeLogMgr(), _FakeCoordinator(output_root),
+        plan=plan, facts=facts, resume=True,
+    )
+
+    # Only Beta's digest moves -- a push to Beta's repo.
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "a-1", "Beta": "b-2"}
+    )
+    coordinator = _FakeCoordinator(output_root)
+    outcomes = await po.run_partitioned_generation(
+        "proj", 2, _FakeLogMgr(), coordinator, plan=plan, facts=facts, resume=True,
+    )
+
+    assert [c["partition"] for c in coordinator.calls] == ["Beta"]
+    by_name = {o.partition: o for o in outcomes}
+    assert by_name["Alpha"].skipped is True
+    assert by_name["Alpha"].success is True
+    assert by_name["Beta"].skipped is False
+
+
+async def test_indeterminate_partition_digest_never_skips(orchestration_env, monkeypatch):
+    """An empty digest means the inputs are not trusted -- regenerate rather
+    than leave possibly-stale docs published."""
+    tmp_path = orchestration_env
+    facts = _composite_facts("proj")
+    plan = pp.plan_partitions(facts)
+    output_root = tmp_path / "output" / "proj"
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "a-1", "Beta": "b-1"}
+    )
+    await po.run_partitioned_generation(
+        "proj", 1, _FakeLogMgr(), _FakeCoordinator(output_root),
+        plan=plan, facts=facts, resume=True,
+    )
+
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "", "Beta": "b-1"}
+    )
+    coordinator = _FakeCoordinator(output_root)
+    await po.run_partitioned_generation(
+        "proj", 2, _FakeLogMgr(), coordinator, plan=plan, facts=facts, resume=True,
+    )
+    assert [c["partition"] for c in coordinator.calls] == ["Alpha"]
 
 
 @pytest.mark.skipif(

@@ -560,6 +560,13 @@ class AddRepoRequest(BaseModel):
     )
     platform: str = Field(default="talend", description="Integration platform (talend|workato|lobster|generic)")
     display_name: str | None = None
+    # Ref to check out. None follows the remote's default branch, which then
+    # tracks upstream changes to that default. Pinning matters when the
+    # interesting code is not on the default branch -- e.g. a Talend project
+    # still on an older release branch.
+    branch: str | None = Field(
+        None, max_length=255, description="Branch to clone; default branch when omitted"
+    )
     github_token: str | None = Field(None, description="GitHub PAT (fallback connection for private repos and webhook auto-registration)")
     installation_id: int | None = Field(
         None,
@@ -1884,3 +1891,71 @@ class LineageJobResponse(BaseModel):
     returned: int
     total_edges: int
     has_more: bool
+
+
+# --------------------------------------------------------------------------- #
+# Multi-repo projects
+#
+# A project may be backed by N member repositories instead of one. Each member
+# becomes an origin-marked clone directory, which the partition planner turns
+# into its own scoped generation -- one doc set per repo -- plus the shared
+# cross-repo topology layer. See services/repo_sources.py.
+# --------------------------------------------------------------------------- #
+
+
+class MultiRepoMemberRequest(BaseModel):
+    """One repository the caller selected in the picker."""
+
+    # Provider-stable identity: "owner/name" (GitHub) or "org/project/repo"
+    # (Azure DevOps). This is the webhook join key, so it must be the
+    # provider's own name for the repo, not a display label.
+    repo_identity: str = Field(..., min_length=1, max_length=500)
+    repo_name: str = Field(..., min_length=1, max_length=255)
+    clone_url: str = Field(..., min_length=1, max_length=500)
+    # None means "whatever the clone resolves to" -- the pre-multi-repo
+    # behaviour. Naming a branch pins the member to it.
+    branch: str | None = Field(default=None, max_length=255)
+
+
+class MultiRepoCreateRequest(BaseModel):
+    project_id: str = Field(..., min_length=1, max_length=100)
+    display_name: str | None = Field(default=None, max_length=255)
+    platform: str = Field(default="talend", max_length=50)
+    provider: str = Field(..., min_length=1, max_length=32)  # github | azure_devops
+    members: list[MultiRepoMemberRequest] = Field(..., min_length=1, max_length=100)
+    # Credential references, exactly one of which applies. Both are supplied by
+    # the client and are ownership-checked before use.
+    installation_id: int | None = None
+    azure_devops_connection_id: str | None = None
+
+
+class MultiRepoMemberResponse(BaseModel):
+    id: str
+    provider: str
+    repo_identity: str
+    repo_name: str
+    clone_url: str
+    branch: str | None = None
+    # The partition name: this member's doc set lands in
+    # output/{project_id}/{subproject_name}/docs.
+    subproject_name: str
+    local_path: str
+    last_ingested_commit_sha: str | None = None
+    last_ingested_at: datetime.datetime | None = None
+    enabled: bool = True
+
+
+class MultiRepoSyncOutcomeResponse(BaseModel):
+    subproject_name: str
+    repo_identity: str
+    action: str  # cloned | pulled | unchanged | skipped | failed
+    head_sha: str | None = None
+    previous_sha: str | None = None
+    changed: bool = False
+    error: str | None = None
+
+
+class MultiRepoProjectResponse(BaseModel):
+    project_id: str
+    members: list[MultiRepoMemberResponse] = Field(default_factory=list)
+    sync: list[MultiRepoSyncOutcomeResponse] = Field(default_factory=list)

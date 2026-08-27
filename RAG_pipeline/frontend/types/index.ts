@@ -463,6 +463,8 @@ export const AddGithubSourceSchema = z.object({
   project_id: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$/),
   platform: z.string().min(1),
   display_name: z.string().trim().min(1).max(160).optional(),
+  // Branch to clone. Omitted follows the remote's default branch.
+  branch: z.string().trim().min(1).max(255).optional(),
   // PAT connection (fallback). Omitted for GitHub App connections.
   github_token: z.string().min(1).optional(),
   // GitHub App connection (preferred). Set after installing the App.
@@ -472,6 +474,36 @@ export const AddGithubSourceSchema = z.object({
 });
 
 export type AddGithubSource = z.infer<typeof AddGithubSourceSchema>;
+
+// --- Multi-repo projects ---
+//
+// One project whose source tree is N cloned repositories. Each member becomes
+// its own sub-project: its own documentation set and its own generation budget,
+// plus a shared cross-repo topology layer.
+
+export const MultiRepoMemberSchema = z.object({
+  // The provider's stable name for the repo ("owner/name" on GitHub,
+  // "org/project/repo" on Azure DevOps). This is the key a push event resolves
+  // against, so it is not a display label and is not URL-shaped.
+  repo_identity: z.string().trim().min(1).max(500),
+  repo_name: z.string().trim().min(1).max(255),
+  clone_url: z.string().url().max(500),
+  // Omitted means "whatever the clone resolves to" — i.e. the default branch,
+  // which then keeps following upstream changes to the default.
+  branch: z.string().trim().min(1).max(255).optional(),
+});
+
+export const CreateMultiRepoProjectSchema = z.object({
+  project_id: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$/),
+  display_name: z.string().trim().min(1).max(255).optional(),
+  platform: z.string().min(1),
+  provider: z.enum(["github", "azure_devops"]),
+  members: z.array(MultiRepoMemberSchema).min(1).max(100),
+  installation_id: z.number().int().positive().optional(),
+  azure_devops_connection_id: z.string().min(1).max(36).optional(),
+});
+
+export type CreateMultiRepoProject = z.infer<typeof CreateMultiRepoProjectSchema>;
 
 export const UpdateGithubTokenSchema = z.object({
   github_token: z.string().min(1),

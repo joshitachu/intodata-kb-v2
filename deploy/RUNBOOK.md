@@ -2,12 +2,17 @@
 
 This runbook is the canonical EP-001 deployment path for a clean Ubuntu VPS or staging host. It uses the current deployment architecture:
 
-- Docker Compose for the seven application services: `postgres`, `qdrant`, `hindsight`, `backend`, `frontend`, `mcp-server`, `dashboard`
+- Docker Compose for the seven application services in the health boundary: `postgres`, `qdrant`, `hindsight`, `backend`, `frontend`, `mcp-server`, `dashboard`
+- Plus `mission-control`, an eighth service that `docker compose up -d` also starts. It is the operator-side heartbeat aggregator, binds `127.0.0.1` only, and is deliberately outside the health boundary — it is not a per-client application service.
 - Host-level Ollama exposed to containers through `host.docker.internal:11434`
 - nginx + certbot for HTTPS
 - UFW and app-level allowlists for approved CIDRs
 
 Older Caddy assets remain in the repo for legacy/reference use, but nginx/certbot is the canonical EP-001 path.
+
+Optional subsystems are configured in the later sections and are all off by
+default: live runtime sources (13), GitHub App repo connection (14), external
+doc-generation providers (15), and the agent runtime v2 rollout flags (16).
 
 ## 1. Set Deployment Variables
 
@@ -160,6 +165,18 @@ sudo deploy/deploy-client.sh \
 
 The script generates `/etc/intodata-kb/envs/<client>.env`, renders nginx config from `deploy/nginx/nexus-client.conf.template`, and starts the Docker Compose stack.
 
+Secrets generated on first run (never commit or reuse these across clients):
+`JWT_SECRET_KEY` / `MCP_JWT_SECRET_KEY` (must match), `POSTGRES_PASSWORD`,
+`ADMIN_DEFAULT_PASSWORD`, `MCP_INGEST_API_KEY`, `MCP_TOKEN_ENCRYPTION_KEY`,
+`SOURCE_CREDENTIALS_ENCRYPTION_KEY`, `MC_API_KEY`.
+
+`SOURCE_CREDENTIALS_ENCRYPTION_KEY` is mandatory. Compose declares it fail-fast,
+so `up -d` aborts with `Set SOURCE_CREDENTIALS_ENCRYPTION_KEY (Fernet key) in
+.env` if it is absent. It is required even when no runtime source is configured,
+because runtime source credentials are stored encrypted at rest. Re-running
+`deploy-client.sh` against an env file written by an older revision backfills
+this key (and `MC_PORT` / `MC_API_KEY`) without touching existing secrets.
+
 If DNS is not ready, add `--no-certbot` to suppress the certbot instruction and
 return to Step 9 after DNS resolves.
 
@@ -171,10 +188,20 @@ sudo sed -i "s|^MCP_ALLOWED_IPS=.*|MCP_ALLOWED_IPS=${APPROVED_CIDRS}|" "$ENV_FIL
 sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" up -d
 ```
 
-If the env file existed before this runbook was updated, confirm these MCP values exist and add them if missing:
+If the env file existed before this runbook was updated, confirm these values exist and add them if missing:
 
 ```bash
-sudo grep -E '^(REPO_ROOT|PUBLIC_APP_URL|MCP_PUBLIC_URL|MCP_DATABASE_URL|MCP_RAG_BASE_URL|MCP_PROJECT_ROOT|MCP_INTODOC_COMMAND|MCP_PORT|SMTP_HOST|SMTP_PORT)=' "$ENV_FILE"
+sudo grep -E '^(REPO_ROOT|PUBLIC_APP_URL|MCP_PUBLIC_URL|MCP_DATABASE_URL|MCP_RAG_BASE_URL|MCP_PROJECT_ROOT|MCP_INTODOC_COMMAND|MCP_PORT|SOURCE_CREDENTIALS_ENCRYPTION_KEY|MC_PORT|MC_API_KEY|TRUSTED_PROXIES|SMTP_HOST|SMTP_PORT)=' "$ENV_FILE"
+```
+
+`TRUSTED_PROXIES` must include the Compose bridge range
+(`127.0.0.1,172.16.0.0/12`) and must appear exactly once — nginx and the
+frontend container both sit in front of FastAPI, and a later duplicate line wins
+in an env file, which silently collapses every per-IP rate limit into a single
+bucket keyed on the frontend container:
+
+```bash
+sudo grep -c '^TRUSTED_PROXIES=' "$ENV_FILE"   # must print 1
 ```
 
 After the stack is up, verify the `wizard_events` table has the `updated_at` column.
@@ -223,14 +250,25 @@ curl -fsS "http://127.0.0.1:${MCP_PORT:-8002}/health"
 sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" logs --tail=100 mcp-server
 ```
 
-If using an external LLM provider (Deepseek, OpenAI, etc.) for doc generation, the default
+If using an external LLM provider for doc generation (see section 15), the default
 token limits are too low for large projects. Set these in the env file after MCP is running:
 
 ```bash
 grep -q '^MCP_PHASE2_MAX_TOKENS' "$ENV_FILE" || echo "MCP_PHASE2_MAX_TOKENS=32000" | sudo tee -a "$ENV_FILE"
 grep -q '^MCP_PHASE3_MAX_TOKENS' "$ENV_FILE" || echo "MCP_PHASE3_MAX_TOKENS=64000" | sudo tee -a "$ENV_FILE"
-sudo systemctl restart "mcp-server@${CLIENT_SLUG}.service"
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" up -d mcp-server
 ```
+
+MCP runs as a Compose service, so env changes need `up -d` (which recreates the
+container with the new environment), not `restart` and not `systemctl`. The
+`deploy/mcp-server@.service` unit is the retired host-virtualenv path
+(`$REPO_ROOT/venv/bin/python`); `deploy-client.sh` never installs it, and step 3
+of this runbook states no host virtualenv is required. Do not use it.
+
+Doc-generation packs are read from the host directory mounted at
+`/app/workspace/packs`, i.e. `$REPO_ROOT/knowledge_base/packs`. The script
+creates it. `plugin.yaml` is the only creatable pack format; the older governed
+pack stack was retired (migration `090_retire_governed_pack_stack`).
 
 Optional: enable central IntoData Ops telemetry after the central Ops API has a
 client record and API key. This reports metadata only and does not send uploaded
@@ -337,11 +375,18 @@ curl -fsS "https://${FQDN}/api/v1/auth/bootstrap-status"
 MCP_PORT="$(grep '^MCP_PORT=' "$ENV_FILE" | cut -d= -f2)"
 curl -fsS "http://127.0.0.1:${MCP_PORT:-8002}/health"
 curl -fsS http://127.0.0.1:11434/api/tags
+MC_PORT="$(grep '^MC_PORT=' "$ENV_FILE" | cut -d= -f2)"
+curl -fsS "http://127.0.0.1:${MC_PORT:-9100}/health"
 ```
 
 Expected:
 
-- Seven Docker services are running and healthy.
+- `docker compose ps` lists **eight** containers: the seven health-boundary
+  services plus `mission-control`. All seven boundary services must be healthy.
+- `mission-control` healthy is expected but not an acceptance gate — it is the
+  operator-side aggregator, reachable on `127.0.0.1:${MC_PORT}` only, and never
+  proxied by nginx. If it is not used for this client it may be left stopped
+  (`docker compose stop mission-control`); that does not affect the boundary.
 - MCP API returns `{"status":"ok","service":"intodoc-mcp-server"}` on the VPS-local port.
 - Backend health is `healthy`, or `degraded` only if a non-core dependency is intentionally unavailable.
 - Ollama returns model tags.
@@ -356,13 +401,111 @@ https://<client>.<base-domain>
 
 Create the first admin user if the bootstrap screen appears, then run [SMOKE-TEST.md](./SMOKE-TEST.md).
 
-## 13. Enable Talend TMC Runtime (Optional, EP-004)
+## 13. Enable Live Runtime (Optional, EP-004/EP-005)
 
-Skip this section unless the client requires live Talend TMC execution data in
-chat. The default stack runs with runtime disabled.
+Skip this section unless the client requires live execution data (currently
+Talend TMC) in chat. The default stack runs with runtime disabled.
 
-The Talend API token must never be placed in `.env`, the Compose `environment`
-block, logs, or the repo. It is read from a mounted file.
+Runtime has two independent halves. Configure both, in this order.
+
+### 13a. Register the runtime source (self-service, per project)
+
+This is the current path. Credentials are entered by an admin in the app, stored
+encrypted at rest, and never placed in `.env` or the Compose environment.
+
+- UI: **Settings → Sources** to register a connector and bind it to projects;
+  **Admin → Runtime** for sync state and captured data.
+- API: `POST /api/v1/runtime/sources` (create), `POST .../discover` (probe the
+  credentials and list visible TMC environments before saving),
+  `POST .../{id}/scopes`, `POST .../{id}/sync` (sync now),
+  `GET .../{id}/sync` (status), `POST .../{id}/credentials/rotate`.
+- For `talend_tmc` the required fields are `api_token` (secret) and `base_url`;
+  optional task/artifact filters, run-history days (1–90), and an environment
+  scope selection.
+
+Constraints and behaviour worth knowing before onboarding a client:
+
+- Encryption uses `SOURCE_CREDENTIALS_ENCRYPTION_KEY` (section 6). Without it the
+  backend cannot start, so this is already in place.
+- **One TMC source per project** (migration `091_one_tmc_source_per_project`).
+  To let several projects read one runtime mirror, use read grants
+  (`095_runtime_source_read_grants`) rather than registering the source again.
+- The scan project a source binds to must be the project whose runtime data it
+  is. Binding to the wrong `project_id` produces a silently wrong join between
+  runtime and scan data — verify the binding after onboarding.
+- Automatic polling is on by default (`RUNTIME_SYNC_SCHEDULER_ENABLED=true`,
+  `RUNTIME_SYNC_INTERVAL_SECONDS=60`). The scheduler is source-driven: it polls
+  every *enabled* registered source on that source's own interval with that
+  source's stored credentials, so the automatic path matches the manual
+  "Sync now" action and honours the per-source toggle. With no sources
+  registered it does nothing.
+
+Per-sync capture ceilings (defaults are deliberate — each is a bounded number of
+TMC round trips inside the backend's 1 GiB container). Raise only with a reason,
+and expect longer syncs:
+
+| Variable | Default | Bounds |
+|----------|---------|--------|
+| `TALEND_TMC_FAILED_LOG_RUN_LIMIT` | 10 | failed runs whose logs are downloaded per sync |
+| `TALEND_TMC_RUNS_PER_EXECUTABLE_LIMIT` | 250 | history runs ingested per executable per sync; decides how far back a task's history reaches |
+| `TALEND_TMC_COMPONENT_METRIC_RUN_LIMIT` | 25 | runs with component metrics downloaded per sync |
+
+Uncaptured failures are reported as capture-limited in the dashboard rather than
+presented as diagnosed.
+
+Optional: `RUNTIME_SEMANTIC_ENABLED=true` adds semantic recall over captured
+runtime logs (indexes into Qdrant, off by default).
+
+### 13b. Expose runtime to chat
+
+Registering a source fills the mirror; it does not expose runtime tools to the
+LLM. That is gated separately by `RUNTIME_PROVIDER_KEY` — empty means the tool
+loop returns `Live runtime disabled`.
+
+| `RUNTIME_PROVIDER_KEY` | Reads from | Use for |
+|------------------------|-----------|---------|
+| *(empty)* | — | runtime disabled (default) |
+| `stored` | the DB mirror filled by 13a | **production with registered sources** |
+| `mock` | fixtures | local validation |
+| `talend_tmc` | live TMC on every tool call, using the env vars below | direct/legacy adapter path |
+
+For the registered-source path:
+
+```bash
+sudo sed -i "s|^RUNTIME_PROVIDER_KEY=.*|RUNTIME_PROVIDER_KEY=stored|" "$ENV_FILE"
+sudo sed -i "s|^RUNTIME_PROVIDER_LABEL=.*|RUNTIME_PROVIDER_LABEL=Talend TMC|" "$ENV_FILE"
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" up -d backend
+```
+
+Reads are project-scoped from the authenticated request's RBAC allow-list, never
+from LLM-supplied tool arguments.
+
+**`RUNTIME_PROVIDER_KEY` does not gate the v2 harness.** It gates
+`execute_runtime_tool` (`src/runtime/client.py`), used by the legacy v1 agent
+loop, and it is what `GET /api/v1/runtime/status` and the UI status badge report.
+The v2 harness reads runtime evidence by instantiating `StoredRuntimeProvider`
+directly (`src/harness/evidence.py`) and never consults the key. So on a stack
+running v2 chat traffic (section 16), runtime answers can work correctly while
+the badge reads "Live runtime disabled". Set the key anyway for a client using
+runtime — it keeps status reporting honest — but do not diagnose runtime
+availability from that badge.
+
+Tool-loop bounds apply to every provider and rarely need changing:
+`RUNTIME_TOOL_LOOP_MAX_ITERATIONS` (4 LLM↔tool round trips per turn),
+`RUNTIME_TOOL_MAX_PARALLEL_CALLS` (5 calls per assistant turn; calls beyond the
+cap get a synthetic budget-exceeded result rather than being dropped),
+`RUNTIME_TOOL_TIMEOUT` (10s), `RUNTIME_TOOL_RESULT_MAX_CHARS` (12000).
+
+`RUNTIME_LLM_FALLBACK_ENABLED=true` (default false) lets an incident whose
+deterministic confidence is *low* escalate to a single bounded, redacted LLM
+call. High/medium incidents never escalate. Leave it off unless the client has
+accepted that runtime incident text is sent to the configured LLM.
+
+### 13c. Legacy direct adapter (`talend_tmc`) — env + mounted token
+
+Only for the direct-call path. The Talend API token must never be placed in
+`.env`, the Compose `environment` block, logs, or the repo; it is read from a
+mounted file.
 
 1. Create the token file on the host with restrictive permissions:
 
@@ -381,23 +524,25 @@ block, logs, or the repo. It is read from a mounted file.
        - /opt/intodata/secrets/talend_tmc_api_token:/run/secrets/talend_tmc_api_token:ro
    ```
 
-3. Set the runtime variables in `.env`:
+3. Set the runtime variables in the env file:
 
    ```bash
    RUNTIME_PROVIDER_KEY=talend_tmc
    RUNTIME_PROVIDER_LABEL=Talend TMC
-   RUNTIME_PROVIDER_HEALTH_URL=http://talend-tmc-runtime:9000/health
-   TALEND_TMC_BASE_URL=http://talend-tmc-runtime:9000
+   RUNTIME_PROVIDER_HEALTH_URL=https://<tmc-region-host>/health
+   TALEND_TMC_BASE_URL=https://<tmc-region-host>
    TALEND_TMC_API_TOKEN_FILE=/run/secrets/talend_tmc_api_token
    ```
 
-   `TALEND_TMC_BASE_URL` must point at the internal TMC runtime service on the
-   Compose network. Do not publish that service on a public host port.
+   `RUNTIME_PROVIDER_HEALTH_URL` is optional; without it status reports
+   `unavailable` even though tools work. If TMC is reached through an internal
+   service on the Compose network, use that service name and do not publish it
+   on a public host port.
 
-4. Restart the backend:
+4. Recreate the backend (env change needs `up -d`, not `restart`):
 
    ```bash
-   docker compose up -d backend
+   sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" up -d backend
    ```
 
 5. Confirm status and that the token never leaks (see SMOKE-TEST section 8):
@@ -407,7 +552,34 @@ block, logs, or the repo. It is read from a mounted file.
    docker compose logs backend | grep -i "$(sudo cat /opt/intodata/secrets/talend_tmc_api_token)" && echo "LEAK" || echo "no token in logs"
    ```
 
-To disable again, set `RUNTIME_PROVIDER_KEY=` (empty) and restart the backend.
+To disable runtime again, set `RUNTIME_PROVIDER_KEY=` (empty) and recreate the
+backend. Registered sources keep syncing; only the chat surface goes away. To
+stop syncing too, disable the sources in the UI or set
+`RUNTIME_SYNC_SCHEDULER_ENABLED=false`.
+
+### 13d. Rotating the credential encryption key
+
+Rotation is lazy: both keys are accepted during the window, and rows re-encrypt
+as each source is saved.
+
+```bash
+# 1. old primary becomes the previous key, new primary is generated
+OLD="$(grep '^SOURCE_CREDENTIALS_ENCRYPTION_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+NEW="$(openssl rand -base64 32 | tr '+/' '-_')"
+sudo sed -i "s|^SOURCE_CREDENTIALS_ENCRYPTION_KEY=.*|SOURCE_CREDENTIALS_ENCRYPTION_KEY=${NEW}|" "$ENV_FILE"
+grep -q '^SOURCE_CREDENTIALS_ENCRYPTION_KEY_PREVIOUS=' "$ENV_FILE" \
+  && sudo sed -i "s|^SOURCE_CREDENTIALS_ENCRYPTION_KEY_PREVIOUS=.*|SOURCE_CREDENTIALS_ENCRYPTION_KEY_PREVIOUS=${OLD}|" "$ENV_FILE" \
+  || echo "SOURCE_CREDENTIALS_ENCRYPTION_KEY_PREVIOUS=${OLD}" | sudo tee -a "$ENV_FILE"
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" up -d backend
+
+# 2. re-encrypt: POST /api/v1/runtime/sources/{id}/credentials/rotate per source,
+#    or re-save each source from Settings -> Sources
+# 3. once every source is re-encrypted, clear the previous key and recreate again
+```
+
+`SOURCE_CREDENTIALS_ENCRYPTION_KEY_ID` / `_PREVIOUS_ID` (defaults `primary` /
+`previous`) only label which key encrypted a row; leave them alone unless you
+are tracking key generations externally.
 
 ## 14. Enable GitHub App Repo Connection (Optional)
 
@@ -554,6 +726,97 @@ Notes:
   `alembic stamp 020_add_github_app_installations`.
 - To disable, unset the `MCP_GITHUB_APP_*` variables and `docker compose up -d mcp-server`;
   PAT-connected repos keep working.
+
+## 15. Configure The Doc-Generation Provider
+
+Doc generation runs in the `mcp-server` container. `MCP_DOC_GENERATION_PROVIDER`
+defaults to `custom` (the in-repo Python harness). Supported values:
+
+- `custom` — the harness, using `MCP_DOC_GENERATION_MODEL`
+- `openai/<model>`, `anthropic/<model>`, `google/<model>`, `deepseek/<model>`,
+  `route33/<model>`, `openrouter/<model>`, `ollama/<model>` — the harness with
+  that adapter
+- `claude-cli` — legacy Claude Code CLI subprocess fallback
+- `opencode-cli` — the OpenCode three-phase runtime, pinned in the image
+  (`MCP_OPENCODE_*` vars) and still selectable per generation run
+
+An unrecognised value raises at generation time, not at startup.
+
+The model defaults are **hosted** models, and no key ships with the stack:
+
+| Variable | Default |
+|----------|---------|
+| `MCP_DOC_GENERATION_MODEL` / `_WRITE_MODEL` | `anthropic/claude-sonnet-4-6` |
+| `MCP_DOC_GENERATION_INVESTIGATION_MODEL` | `google/gemini-2.5-flash` |
+| `MCP_DOC_GENERATION_FALLBACK_MODEL` | `openai/gpt-5.4` |
+| `MCP_DEEP_DIVE_ENGINE` / `_MODEL` | `repo_agent` / `anthropic/claude-sonnet-4-6` |
+| `MCP_DOC_GENERATION_API_KEY` | empty (falls back to `LLM_API_KEY`) |
+
+So a stack deployed with defaults and no key will start and pass health checks,
+then fail at the first doc-generation run. Decide per client:
+
+- **Hosted models**: set `MCP_DOC_GENERATION_API_KEY` (plus `..._BASE_URL` for a
+  gateway), or a provider-specific pair — `MCP_DOC_GENERATION_OPENROUTER_API_KEY`,
+  `..._DEEPSEEK_API_KEY`, `..._ROUTE33_API_KEY`, each with a matching
+  `..._BASE_URL`. Confirm the client accepts source code leaving the VPS before
+  enabling any hosted provider.
+- **Local only**: use `ollama/<model>` routes against `MCP_OLLAMA_BASE_URL`
+  (`http://host.docker.internal:11434`) and pull those models on the host as in
+  section 4. No key needed; expect materially lower doc quality.
+
+`MCP_MODEL_PRICING_JSON` supplies per-model pricing for cost reporting; leave
+empty to report tokens without cost. Pack authoring uses
+`MCP_PACK_AUTHOR_MODEL` (default `kimi/kimi-k2.5`, needs `KIMI_API_KEY`).
+
+Apply with `up -d` (env change, not `restart`):
+
+```bash
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" up -d mcp-server
+```
+
+Related MCP rollout flags, safe at their defaults:
+`MCP_LIVING_DOC_PATCHING_ENABLED=true` with
+`MCP_LIVING_DOC_ROLLOUT_STAGE=approval_only` (documents are amended in place,
+but only after approval) and `MCP_IMPACT_ROUTING_ENABLED=false`.
+
+## 16. Agent Runtime v2 Rollout Flags (Leave Off For A New Client)
+
+The chat agent runtime has a staged rollout surface (`AGENT_RUNTIME_V2_*`, ~25
+variables). Every one is disabled or zero by default, and a fresh client
+deployment should keep them that way — the defaults in `docker-compose.yml` are
+the supported production posture.
+
+Do not hand-edit these. `AGENT_RUNTIME_V2_CANARY_STAGE` (`off` by default) is
+validated against the rest at startup by `CanaryStagePolicy`, so a stage that
+disagrees with the percentage/allowlist settings fails the backend fast rather
+than silently widening exposure. The pattern is the same for each capability:
+`_ENABLED` (bool), `_USERS` (explicit user-id allowlist, JSON array), `_PERCENT`
+(stable per-user bucket, 0-100), covering read-only, planning, effects, and live
+streaming.
+
+The remaining variables are bounds rather than gates and only need changing with
+a measured reason: `_MODEL_TIMEOUT_SECONDS` (60),
+`_READ_TOOL_TIMEOUT_SECONDS` (90), `_WRITE_TOOL_TIMEOUT_SECONDS` (30),
+`_WORKFLOW_HANDOFF_TIMEOUT_SECONDS` (15), `_SOFT_DEADLINE_SECONDS` (180),
+`_HARD_DEADLINE_SECONDS` (300), `_MAX_MODEL_CALLS` (8),
+`_SYNTHESIS_RESERVE_CALLS` (2), `_PROVIDER_MAX_RETRIES` (1),
+`_DRAFT_ANSWER_STREAMING_ENABLED` (true).
+
+On any disagreement between `.env.production.template` and
+`docker-compose.yml`, the Compose file is authoritative — it is what a
+`deploy-client.sh` stack actually runs with. (`deploy-client.sh` writes its own
+env file and never reads the template.)
+
+To enable a canary later, change the stage and its matching rollout settings
+together, then recreate the backend:
+
+```bash
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" up -d backend
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" logs --tail=50 backend
+```
+
+A validation failure appears in the backend log at startup, before traffic is
+served.
 
 ## Gap Capture
 

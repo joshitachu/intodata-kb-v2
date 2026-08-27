@@ -596,3 +596,62 @@ export interface InstructionPackMetadata {
   supported: boolean;
   preambles: Array<{ key: string; bytes: number; chars: number }>;
 }
+
+// --- Azure DevOps organization connections -----------------------------------
+
+export interface AzureDevOpsConnection {
+  id: string;
+  organization_url: string;
+  organization_name: string;
+  account_name?: string | null;
+  last_verified_at?: string | null;
+}
+
+export interface AzureDevOpsRepo {
+  id: string;
+  name: string;
+  project: string;
+  clone_url?: string | null;
+  web_url?: string | null;
+  default_branch?: string | null;
+  is_disabled?: boolean;
+  size_bytes?: number;
+}
+
+// --- Multi-repo projects -----------------------------------------------------
+//
+// A project whose source tree is N cloned repositories. Each member becomes its
+// own sub-project: its own documentation set and its own generation budget,
+// plus a shared cross-repo topology layer.
+
+export interface MultiRepoMember {
+  id: string;
+  provider: string;
+  repo_identity: string;
+  repo_name: string;
+  clone_url: string;
+  branch: string | null;
+  /** The partition name: docs land in output/{project_id}/{subproject_name}/docs. */
+  subproject_name: string;
+  local_path: string;
+  last_ingested_commit_sha: string | null;
+  last_ingested_at: string | null;
+  enabled: boolean;
+}
+
+export interface MultiRepoSyncOutcome {
+  subproject_name: string;
+  repo_identity: string;
+  /** cloned | pulled | unchanged | skipped | failed */
+  action: string;
+  head_sha: string | null;
+  previous_sha: string | null;
+  changed: boolean;
+  error: string | null;
+}
+
+export interface MultiRepoProject {
+  project_id: string;
+  members: MultiRepoMember[];
+  sync: MultiRepoSyncOutcome[];
+}

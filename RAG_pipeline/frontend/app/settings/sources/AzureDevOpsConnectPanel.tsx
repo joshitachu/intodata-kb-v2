@@ -16,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   addAzureDevOpsSource,
   connectAzureDevOps,
+  createMultiRepoProject,
   deleteAzureDevOpsConnection,
   listAzureDevOpsConnections,
   listAzureDevOpsRepos,
@@ -25,6 +26,16 @@ import {
   type AzureDevOpsRepo,
   type SourceProject,
 } from "@/lib/mcpClient";
+import { RepoMultiSelect } from "./RepoMultiSelect";
+import {
+  branchForMember,
+  canonicalRepoKey,
+  collidesWithExistingProject,
+  orderedSelection,
+  slugifyProjectId,
+  suggestedProjectName,
+  toPickableAzureRepos,
+} from "./repoSelection";
 
 interface PlatformOption {
   id: string;
@@ -41,26 +52,8 @@ interface Props {
 const PAT_DOCS_URL =
   "https://learn.microsoft.com/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate";
 
-function slugify(input: string): string {
-  return input
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 100);
-}
-
-function canonicalRepoUrl(url: string | null | undefined): string {
-  return (url ?? "")
-    .trim()
-    .replace(/\/+$/g, "")
-    .replace(/\.git$/i, "")
-    .toLowerCase();
-}
-
-function repoLabel(repo: AzureDevOpsRepo): string {
-  return `${repo.project} / ${repo.name}`;
-}
+// Slug and repo-key normalisation live in ./repoSelection so this panel and the
+// GitHub panel cannot drift apart on identity rules.
 
 /**
  * Azure DevOps connect flow, deliberately shaped like the GitHub App panel:
@@ -94,8 +87,16 @@ export function AzureDevOpsConnectPanel({
   const [activeConnection, setActiveConnection] = useState<AzureDevOpsConnection | null>(null);
   const [repos, setRepos] = useState<AzureDevOpsRepo[]>([]);
   const [loadingRepos, setLoadingRepos] = useState(false);
-  const [selectedRepo, setSelectedRepo] = useState<string>("");
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  // Per-repo branch pin, keyed by repo key. Absent or blank means "follow the
+  // provider's default branch", which then tracks upstream changes to it.
+  const [branchOverrides, setBranchOverrides] = useState<Record<string, string>>({});
   const [projectName, setProjectName] = useState("");
+  // Whether the operator typed the name themselves. Re-suggesting on every
+  // selection change would fight their typing; suggesting only while the field
+  // is EMPTY is worse -- picking one repo fills it, and every repo added after
+  // that leaves the project named after a single member.
+  const [nameEdited, setNameEdited] = useState(false);
   const [platform, setPlatform] = useState(defaultPlatform);
   const [registering, setRegistering] = useState(false);
   const [busyConnectionId, setBusyConnectionId] = useState<string | null>(null);
@@ -103,10 +104,22 @@ export function AzureDevOpsConnectPanel({
   const [notice, setNotice] = useState<string | null>(null);
 
   const connectedRepoKeys = useMemo(
-    () => new Set(existingProjects.map((project) => canonicalRepoUrl(project.repo_url))),
+    () => new Set(existingProjects.map((project) => canonicalRepoKey(project.repo_url))),
     [existingProjects],
   );
-  const selectedRepoConnected = connectedRepoKeys.has(canonicalRepoUrl(selectedRepo));
+  const pickableRepos = useMemo(
+    () =>
+      toPickableAzureRepos(
+        repos,
+        activeConnection?.organization_name ?? "",
+        connectedRepoKeys,
+      ),
+    [repos, activeConnection, connectedRepoKeys],
+  );
+  const selectedRepos = useMemo(
+    () => orderedSelection(pickableRepos, selectedKeys),
+    [pickableRepos, selectedKeys],
+  );
   const hasConnections = Boolean(connections?.length);
   const connectionStatusUnavailable = connections == null && connectionError != null;
 
@@ -190,19 +203,29 @@ export function AzureDevOpsConnectPanel({
   function useConnection(connection: AzureDevOpsConnection) {
     setActiveConnection(connection);
     setRepos([]);
-    setSelectedRepo("");
+    setSelectedKeys(new Set());
+    setBranchOverrides({});
     setProjectName("");
+    setNameEdited(false);
     setError(null);
     setNotice(null);
   }
 
-  function selectRepo(cloneUrl: string) {
-    setSelectedRepo(cloneUrl);
-    const repo = repos.find((item) => item.clone_url === cloneUrl);
-    if (repo && !projectName.trim()) {
-      setProjectName(slugify(repo.name));
-    }
+  function changeSelection(next: Set<string>) {
+    setSelectedKeys(next);
     setError(null);
+    // Seed the project name only while the user has not typed one. With several
+    // repos selected there is no single obvious name, so the suggestion is the
+    // shared Azure DevOps project when they all share one and blank otherwise --
+    // never the first repo's name, which would label a ten-repo project after
+    // one of its members.
+    if (!nameEdited) {
+      const selected = pickableRepos.filter((repo) => next.has(repo.key));
+      const suggestion = suggestedProjectName(selected);
+      // An empty suggestion clears the field on purpose: a stale name from an
+      // earlier, smaller selection would silently label the whole project.
+      setProjectName(suggestion ? slugifyProjectId(suggestion) : "");
+    }
   }
 
   async function verifyConnection(connection: AzureDevOpsConnection) {
@@ -243,41 +266,106 @@ export function AzureDevOpsConnectPanel({
   }
 
   async function finishConnect() {
-    if (!activeConnection || !selectedRepo) {
-      setError("Pick a repository to connect.");
+    if (!activeConnection || selectedRepos.length === 0) {
+      setError("Pick at least one repository to connect.");
       return;
     }
-    if (selectedRepoConnected) {
-      setError("This repository is already connected to Nexus.");
-      return;
-    }
-    const repo = repos.find((item) => item.clone_url === selectedRepo);
-    const name = projectName.trim() || repo?.name || selectedRepo;
-    const projectId = slugify(name);
+    const projectId = slugifyProjectId(
+      projectName.trim() || suggestedProjectName(selectedRepos),
+    );
     if (!projectId) {
-      setError("Enter a valid project name.");
+      setError(
+        selectedRepos.length > 1
+          ? "Name the project that will hold these repositories."
+          : "Enter a valid project name.",
+      );
+      return;
+    }
+    // Reusing an existing project id is the destructive collision: the server's
+    // add_project UPDATES a project whose id already exists, repointing its
+    // local_path, repo_url and platform. Reusing a REPOSITORY is fine and
+    // deliberately allowed; reusing an id silently hijacks another project.
+    if (collidesWithExistingProject(projectId, existingProjects.map((p) => p.id))) {
+      setError(
+        `A project called "${projectId}" already exists. Pick another name — ` +
+          "reusing it would repoint the existing project at this source.",
+      );
       return;
     }
     setRegistering(true);
     setError(null);
     try {
-      const project = await addAzureDevOpsSource({
-        repoUrl: selectedRepo,
+      if (selectedRepos.length === 1) {
+        // One repo stays on the single-repo path deliberately: it sets
+        // `repo_url`, which is what the existing push-webhook match keys on.
+        // Routing it through the multi-repo path would silently cost auto-update.
+        const only = selectedRepos[0];
+        // Forward the pin: /mcp/add-repo now takes a branch, and dropping it
+        // here would silently clone the default while the UI showed a pin.
+        const onlyBranch = branchForMember(only, branchOverrides);
+        const project = await addAzureDevOpsSource({
+          repoUrl: only.cloneUrl,
+          projectId,
+          platform,
+          branch: onlyBranch,
+          displayName: `${only.group} / ${only.name}`,
+          azureDevOpsConnectionId: activeConnection.id,
+        });
+        resetPicker();
+        await onConnected(project, platform);
+        return;
+      }
+
+      const result = await createMultiRepoProject({
         projectId,
+        displayName: projectName.trim() || projectId,
         platform,
-        displayName: repo ? repoLabel(repo) : name,
+        provider: "azure_devops",
         azureDevOpsConnectionId: activeConnection.id,
+        members: selectedRepos.map((repo) => ({
+          repoIdentity: repo.identity,
+          repoName: repo.name,
+          cloneUrl: repo.cloneUrl,
+          branch: branchForMember(repo, branchOverrides),
+        })),
       });
-      setActiveConnection(null);
-      setRepos([]);
-      setSelectedRepo("");
-      setProjectName("");
-      await onConnected(project, platform);
+      const failed = result.sync.filter((outcome) => outcome.action === "failed");
+      resetPicker();
+      // Report a partial success rather than swallowing it: the project exists
+      // with the members that cloned, and the rest can be retried per repo.
+      if (failed.length > 0) {
+        setNotice(
+          `Created ${projectId} with ${result.members.length} repositories. ` +
+            `${failed.length} could not be cloned: ` +
+            failed.map((outcome) => outcome.subproject_name).join(", "),
+        );
+      }
+      // Built explicitly rather than cast: the multi-repo endpoint returns
+      // members, not a project row. `repo_url` is null by definition — no single
+      // URL describes N members — and the parent refetches the real row anyway.
+      const created: SourceProject = {
+        id: result.project_id,
+        display_name: projectName.trim() || projectId,
+        repo_url: null,
+        platform,
+        source_type: "git",
+        status: "registered",
+      };
+      await onConnected(created, platform);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setRegistering(false);
     }
+  }
+
+  function resetPicker() {
+    setActiveConnection(null);
+    setRepos([]);
+    setSelectedKeys(new Set());
+    setBranchOverrides({});
+    setProjectName("");
+    setNameEdited(false);
   }
 
   // Repo-picker mode.
@@ -292,99 +380,70 @@ export function AzureDevOpsConnectPanel({
             <div>
               <h2 className="text-base font-semibold">Finish connecting</h2>
               <p className="mt-0.5 text-sm text-muted-foreground">
-                Connected to {activeConnection.organization_name}. Choose a repository to
-                scan &mdash; the token stays on the server.
+                Connected to {activeConnection.organization_name}. Choose one or more
+                repositories &mdash; the token stays on the server.
               </p>
             </div>
           </div>
         </CardHeader>
         <CardBody className="space-y-3 px-1">
-          {loadingRepos ? (
-            <p className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" /> Loading repositories&hellip;
-            </p>
-          ) : (
-            <>
-              <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/30 p-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-sm font-medium">Repository access</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    Showing every repository this token can read, across all Azure DevOps
-                    projects.
-                  </p>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  isLoading={loadingRepos}
-                  onClick={() => loadRepos(activeConnection)}
-                >
-                  <RotateCw className="h-3.5 w-3.5" /> Refresh
-                </Button>
-              </div>
+          <RepoMultiSelect
+            repos={pickableRepos}
+            selected={selectedKeys}
+            onSelectedChange={changeSelection}
+            branchOverrides={branchOverrides}
+            onBranchChange={(repoKey, branch) =>
+              setBranchOverrides((current) => ({ ...current, [repoKey]: branch }))
+            }
+            loading={loadingRepos}
+            onRefresh={() => loadRepos(activeConnection)}
+            scopeHint="Showing every repository this token can read, across all Azure DevOps projects."
+            emptyHint="The connection works, but Azure DevOps returned no repositories. Check that the token has Code (Read) scope for this organization, then refresh."
+          />
+          {!loadingRepos && (
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Input
+                type="text"
+                aria-label="Project name"
+                placeholder={
+                  selectedRepos.length > 1 ? "Name for all selected repos" : "Project name / ID"
+                }
+                value={projectName}
+                onChange={(e) => {
+                  setNameEdited(true);
+                  setProjectName(e.target.value);
+                }}
+              />
               <select
-                aria-label="Repository"
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                value={selectedRepo}
-                onChange={(e) => selectRepo(e.target.value)}
+                aria-label="Platform"
+                className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+                value={platform}
+                onChange={(e) => setPlatform(e.target.value)}
               >
-                <option value="">Select a repository&hellip;</option>
-                {repos.map((repo) => {
-                  const cloneUrl = repo.clone_url ?? "";
-                  const connected = connectedRepoKeys.has(canonicalRepoUrl(cloneUrl));
-                  return (
-                    <option
-                      key={repo.id || cloneUrl}
-                      value={cloneUrl}
-                      disabled={!cloneUrl || connected || repo.is_disabled}
-                    >
-                      {repoLabel(repo)}
-                      {repo.is_disabled ? " - disabled" : ""}
-                      {connected ? " - already connected" : ""}
-                    </option>
-                  );
-                })}
+                {platforms.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
               </select>
-              {repos.length === 0 && (
-                <p className="text-xs text-muted-foreground">
-                  The connection works, but Azure DevOps returned no repositories. Check
-                  that the token has Code (Read) scope for this organization, then refresh.
-                </p>
-              )}
-              <div className="grid gap-2 sm:grid-cols-2">
-                <Input
-                  type="text"
-                  placeholder="Project name / ID"
-                  value={projectName}
-                  onChange={(e) => setProjectName(e.target.value)}
-                />
-                <select
-                  aria-label="Platform"
-                  className="h-10 rounded-md border border-input bg-background px-3 text-sm"
-                  value={platform}
-                  onChange={(e) => setPlatform(e.target.value)}
-                >
-                  {platforms.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </>
+            </div>
           )}
           {error && <p className="text-xs text-destructive">{error}</p>}
+          {notice && <p className="text-xs text-amber-700">{notice}</p>}
           <div className="flex justify-between">
-            <Button variant="ghost" size="sm" onClick={() => setActiveConnection(null)}>
+            <Button variant="ghost" size="sm" onClick={resetPicker}>
               Cancel
             </Button>
             <Button
               size="sm"
               isLoading={registering}
-              disabled={!selectedRepo || selectedRepoConnected}
+              disabled={selectedRepos.length === 0}
               onClick={finishConnect}
             >
-              <GitBranch className="h-3.5 w-3.5" /> Connect &amp; scan
+              <GitBranch className="h-3.5 w-3.5" />{" "}
+              {selectedRepos.length > 1
+                ? `Connect ${selectedRepos.length} repositories`
+                : "Connect & scan"}
             </Button>
           </div>
         </CardBody>
@@ -542,7 +601,7 @@ export function AzureDevOpsConnectPanel({
                     variant="secondary"
                     onClick={() => useConnection(connection)}
                   >
-                    Choose repository
+                    Choose repositories
                   </Button>
                   <Button
                     type="button"
