@@ -237,6 +237,23 @@ async def _reconcile_orphaned_runs() -> None:
                 )
 
 
+# Tables this service reads and writes but does NOT own. They live in the same
+# database, and the RAG backend's alembic chain is the migration of record for
+# them, so creating one here races that chain and loses either way:
+#
+#   * win the race and the backend's ``op.create_table`` aborts on
+#     DuplicateTableError, taking its whole startup transaction with it;
+#   * win the race and the table is built from THIS service's metadata, which
+#     has already drifted -- RAG revision 094 adds ``instance_settings``
+#     ``created_at``, a column ``mcp_server.db.models`` does not declare.
+#
+# docker-compose starts ``backend`` before ``mcp-server``, so these tables
+# always exist by the time this runs. Read/write access is unaffected; only
+# creation is ceded. Same principle as ``projects``/``scan_runs``, which this
+# service owns and the backend no longer creates.
+_RAG_OWNED_TABLES = frozenset({"instance_settings"})
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown."""
@@ -250,7 +267,9 @@ async def lifespan(app: FastAPI):
             )
         )
         tables_to_create = [
-            t for t in Base.metadata.sorted_tables if t.name not in existing
+            t
+            for t in Base.metadata.sorted_tables
+            if t.name not in existing and t.name not in _RAG_OWNED_TABLES
         ]
         if tables_to_create:
             await conn.run_sync(
