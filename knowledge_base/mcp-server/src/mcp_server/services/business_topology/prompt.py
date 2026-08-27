@@ -31,6 +31,7 @@ def business_topology_prompt(
 def flow_extraction_prompt(
     *,
     subproject: str,
+    documents: list[str] | None = None,
     plugin_pack_dir: Path | None = None,
 ) -> str:
     """Render the Stage A flow-extraction contract.
@@ -40,10 +41,20 @@ def flow_extraction_prompt(
     :mod:`mcp_server.services.business_topology.assembly`. The template carries
     no ``SCHEMA`` slot on purpose -- injecting the full published JSON schema is
     what pulled the model back into emitting bookkeeping it cannot get right.
+
+    ``documents`` is the run's ACTUAL published document set, discovered rather
+    than assumed: a pack replaces the catalog wholesale, so naming standard
+    filenames in the prompt would point the model at files that do not exist.
     """
 
+    names = documents or []
+    listing = (
+        "\n".join(f"   - `{name}`" for name in names)
+        if names
+        else "   (none were published; rely on the scanner evidence below)"
+    )
     return get_renderer().render(
         "phase37_flow_extraction.md",
-        {"SUBPROJECT": subproject},
+        {"SUBPROJECT": subproject, "DOCUMENTS": listing},
         pack_dir=plugin_pack_dir,
     )

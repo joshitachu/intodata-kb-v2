@@ -207,7 +207,11 @@ class MCPServerConfig(BaseSettings):
     doc_generation_investigation_model: str | None = (
         "google/gemini-2.5-flash"  # MCP_DOC_GENERATION_INVESTIGATION_MODEL
     )
-    # Fallback model on provider failure (rate-limit, network, auth). No fallback if not set.
+    # Number of same-provider retries after the initial API request and before
+    # switching to the configured fallback model.
+    doc_generation_api_retries: int = 3  # MCP_DOC_GENERATION_API_RETRIES
+    # Default fallback model after same-provider retries are exhausted
+    # (rate-limit, network, auth). No fallback if not set.
     doc_generation_fallback_model: str | None = None  # MCP_DOC_GENERATION_FALLBACK_MODEL
     doc_generation_enterprise_mode_default: bool = True
     doc_generation_quality_threshold: float = 4.0

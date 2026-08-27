@@ -36,15 +36,67 @@ from mcp_server.services.business_topology.evidence import (
 #: scanner type set in :mod:`validation` on purpose.
 DOC_EVIDENCE_TYPE = "documentation_derived"
 
-#: Documents worth extracting flows from, in priority order. Data flows first --
-#: it is where the directional business narrative actually lives.
-DOC_EVIDENCE_FILENAMES = (
-    "03_DATA_FLOWS_AND_LINEAGE.md",
-    "01_ARCHITECTURE_MAP.md",
-    "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md",
-    "05_RUNTIME_CONFIG_AND_EXTERNALS.md",
-    "02_COMPONENT_INVENTORY.md",
+#: Topic keywords used to RANK discovered documents, highest first. Ranking, not
+#: filtering: the document set is whatever the run published. A pack replaces the
+#: catalog wholesale (`docs:` in `plugin.yaml`), so a fixed filename list would
+#: silently disable this whole lane for every pack that renames its documents --
+#: and for any future change to `doc_catalog.yaml`. Keywords are matched against
+#: the filename, so they degrade to "unranked but included" rather than "absent".
+_DOC_PRIORITY_KEYWORDS = (
+    ("DATA_FLOW", 0),
+    ("LINEAGE", 0),
+    ("INTEGRATION", 1),
+    ("ARCHITECTURE", 2),
+    ("LANDSCAPE", 2),
+    ("TOPOLOGY", 2),
+    ("BUSINESS_RULE", 3),
+    ("TRANSFORMATION", 3),
+    ("INTERFACE", 3),
+    ("RUNTIME", 4),
+    ("EXTERNAL", 4),
+    ("COMPONENT", 5),
+    ("INVENTORY", 5),
 )
+
+#: Never treated as evidence: internal artifacts and the per-unit dossiers, which
+#: are numerous and describe one job rather than a business flow.
+_DOC_EXCLUDE_PREFIXES = ("_", ".")
+
+#: How many documents to admit. Bounded because they are pushed into the model
+#: context; the ranking above decides which ones survive the cut.
+DEFAULT_DOC_EVIDENCE_LIMIT = 6
+
+
+def discover_doc_filenames(
+    docs_dir: Path,
+    *,
+    limit: int = DEFAULT_DOC_EVIDENCE_LIMIT,
+) -> tuple[str, ...]:
+    """Return this run's published documents, best flow-evidence first.
+
+    Discovery rather than a fixed list: the caller must work for standard runs,
+    pack runs with a renamed document set, and any future catalog change,
+    without configuration.
+    """
+
+    if not docs_dir.is_dir():
+        return ()
+    candidates: list[tuple[int, str]] = []
+    for path in sorted(docs_dir.glob("*.md")):
+        if path.name.startswith(_DOC_EXCLUDE_PREFIXES):
+            continue
+        upper = path.name.upper()
+        rank = next(
+            (
+                rank
+                for keyword, rank in _DOC_PRIORITY_KEYWORDS
+                if keyword in upper
+            ),
+            len(_DOC_PRIORITY_KEYWORDS),
+        )
+        candidates.append((rank, path.name))
+    candidates.sort()
+    return tuple(name for _, name in candidates[:limit])
 
 #: Heading level that delimits a citable section. H2 is the granularity the
 #: curated extraction cited ("'Maximo-to-AssetCheck Flows (REST/File Ingestion)'").
@@ -72,7 +124,7 @@ def _section_titles(text: str) -> list[str]:
 def collect_doc_evidence(
     docs_dir: Path,
     *,
-    filenames: tuple[str, ...] = DOC_EVIDENCE_FILENAMES,
+    filenames: tuple[str, ...] | None = None,
 ) -> dict[str, dict[str, object]]:
     """Return ``{evidence_id: record}`` for every citable section on disk.
 
@@ -85,6 +137,8 @@ def collect_doc_evidence(
     records: dict[str, dict[str, object]] = {}
     if not docs_dir.is_dir():
         return records
+    if filenames is None:
+        filenames = discover_doc_filenames(docs_dir)
     for filename in filenames:
         path = docs_dir / filename
         if not path.is_file():
@@ -117,7 +171,7 @@ def register_doc_evidence(
     bundle: BusinessTopologyEvidenceBundle,
     docs_dir: Path,
     *,
-    filenames: tuple[str, ...] = DOC_EVIDENCE_FILENAMES,
+    filenames: tuple[str, ...] | None = None,
 ) -> tuple[BusinessTopologyEvidenceBundle, dict[str, dict[str, object]]]:
     """Return a bundle copy that also knows the documentation tier.
 
@@ -162,25 +216,34 @@ def resolve_doc_citation(
     if not text:
         return []
     lowered = text.casefold()
-    documents: set[str] = set()
+
+    named_documents = {
+        str(record.get("document") or "")
+        for record in doc_records.values()
+        if str(record.get("document") or "")
+        and str(record.get("document") or "").casefold() in lowered
+    }
+
     section_hits: list[tuple[int, str]] = []
     for evidence_id, record in doc_records.items():
         document = str(record.get("document") or "")
         section = str(record.get("section") or "")
-        if document and document.casefold() in lowered:
-            documents.add(document)
-            if not section:
-                continue
-        elif not section:
+        if not section:
             continue
-        if section and section.casefold() in lowered:
+        # A section is only a candidate when its OWN document is named in the
+        # citation. Without this scoping, a short heading such as "Systems" in
+        # 01_ARCHITECTURE_MAP.md would attach that document's evidence to a
+        # citation that only ever mentioned 03_DATA_FLOWS_AND_LINEAGE.md.
+        if named_documents and document not in named_documents:
+            continue
+        if section.casefold() in lowered:
             # Longest heading wins: "Work Order Flow" must not shadow
             # "Work Order Flow - Error Handling" when both are present.
             section_hits.append((len(section), evidence_id))
     if section_hits:
         section_hits.sort(reverse=True)
         return [evidence_id for _, evidence_id in section_hits[:3]]
-    return [doc_evidence_id(document, "") for document in sorted(documents)]
+    return [doc_evidence_id(document, "") for document in sorted(named_documents)]
 
 
 def build_design_artifact_index(
@@ -236,3 +299,30 @@ def resolve_designs(
             seen.add(artifact_id)
             resolved.append(artifact_id)
     return resolved, unresolved
+
+
+def primary_document_id(doc_records: dict[str, dict[str, object]]) -> str | None:
+    """Return the whole-document evidence id of the best-ranked document.
+
+    Used as the fallback citation for a claim whose own citation did not
+    resolve. Derived from what is actually registered -- naming a specific
+    document here would reintroduce the fixed-catalog assumption.
+    """
+
+    ranked: list[tuple[int, str, str]] = []
+    for evidence_id, record in doc_records.items():
+        if str(record.get("section") or ""):
+            continue
+        document = str(record.get("document") or "")
+        if not document:
+            continue
+        upper = document.upper()
+        rank = next(
+            (rank for keyword, rank in _DOC_PRIORITY_KEYWORDS if keyword in upper),
+            len(_DOC_PRIORITY_KEYWORDS),
+        )
+        ranked.append((rank, document, evidence_id))
+    if not ranked:
+        return None
+    ranked.sort()
+    return ranked[0][2]

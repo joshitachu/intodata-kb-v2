@@ -4909,10 +4909,14 @@ async def test_incomplete_phase3_suppresses_identical_force_conclude(tmp_path, m
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_primary_call_logged_before_fallback_overwrites_result(tmp_path):
+async def test_primary_retries_three_times_before_default_fallback(tmp_path, monkeypatch):
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "doc_generation_api_retries", 3)
     staging = tmp_path / "docs_staging"
     staging.mkdir()
     facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    attempts: list[str] = []
 
     class _FailingProvider:
         model_name = "fake/primary"
@@ -4920,9 +4924,12 @@ async def test_primary_call_logged_before_fallback_overwrites_result(tmp_path):
         supports_tools = False
 
         async def complete(self, prompt, context_files=None, options=None):
+            for _ in range(options.retries + 1):
+                attempts.append("primary")
             return ModelResult(
                 success=False,
                 model_name=self.model_name,
+                retries=options.retries,
                 raw_error="429 Too Many Requests",
                 metadata={"estimated_input_tokens": 5, "context_bytes": 0},
             )
@@ -4933,6 +4940,7 @@ async def test_primary_call_logged_before_fallback_overwrites_result(tmp_path):
         supports_tools = False
 
         async def complete(self, prompt, context_files=None, options=None):
+            attempts.append("fallback")
             return ModelResult(
                 success=True,
                 text="## Unit A\n\nFallback output.",
@@ -4957,8 +4965,10 @@ async def test_primary_call_logged_before_fallback_overwrites_result(tmp_path):
     )
     state = HarnessRunState(project_id="proj", facts_manifest=facts)
 
+    logs: list[str] = []
+
     async def log_cb(pid, msg, level="info"):
-        pass
+        logs.append(msg)
 
     harness = CustomHarnessProvider(_FailingProvider(), fallback_provider=_FallbackProvider())
     await harness._call_model_with_logging(
@@ -4978,6 +4988,12 @@ async def test_primary_call_logged_before_fallback_overwrites_result(tmp_path):
     assert not state.calls[0].result.success
     assert state.calls[1].result.model_name == "fake/fallback"
     assert state.calls[1].result.success
+    assert attempts == ["primary", "primary", "primary", "primary", "fallback"]
+    assert any(
+        "primary failed after 3 retries (rate_limit); switching to default fallback"
+        in message
+        for message in logs
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -5158,7 +5174,48 @@ async def test_openai_official_provider_maps_incomplete_status_to_failure(tmp_pa
 
 
 # ---------------------------------------------------------------------------
-# P6.2 — OpenAIOfficialProvider does not retry on auth errors (401/403)
+# P6.2 — OpenAIOfficialProvider retries transient API errors three times
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_openai_official_provider_retries_transient_api_error_three_times(
+    monkeypatch,
+):
+    import mcp_server.providers.custom.providers as provider_module
+    from mcp_server.providers.custom.providers import OpenAIOfficialProvider
+
+    call_count = 0
+
+    class _FakeResponses:
+        async def create(self, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            exc = Exception("429 Too Many Requests")
+            exc.status_code = 429  # type: ignore[attr-defined]
+            raise exc
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    async def _no_sleep(_delay):
+        return None
+
+    provider = OpenAIOfficialProvider("fake/gpt-4", api_key="test")
+    monkeypatch.setattr(provider, "_client", lambda timeout_s: _FakeClient())
+    monkeypatch.setattr(provider_module.asyncio, "sleep", _no_sleep)
+
+    result = await provider.complete(
+        "Write docs",
+        options=ModelOptions(retries=3),
+    )
+
+    assert not result.success
+    assert result.retries == 3
+    assert call_count == 4  # initial request plus three retries
+
+
+# ---------------------------------------------------------------------------
+# P6.3 — OpenAIOfficialProvider does not retry on auth errors (401/403)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio

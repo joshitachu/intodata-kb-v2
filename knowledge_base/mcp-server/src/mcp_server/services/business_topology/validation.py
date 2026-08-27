@@ -193,12 +193,40 @@ def _duplicate_ids(topology: BusinessTopology) -> list[str]:
     return sorted({item for item in ids if ids.count(item) > 1})
 
 
+#: The secret shapes that fail a topology closed. Compiled once and shared with
+#: :func:`redact_secretlike` so the scrubber and the check cannot drift -- a
+#: scrubber that misses what the check catches turns a redaction bug into a
+#: whole-lane failure.
+_CREDENTIAL_URL_RE = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/:]+:[^\s/@]+@", re.I)
+_BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{12,}", re.I)
+_PRIVATE_KEY_RE = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")
+
+
+def redact_secretlike(text: str) -> str:
+    """Replace secret-like spans in free text with ``[REDACTED]``.
+
+    Used where prose is copied into the published topology. Generated documents
+    are already credential-filtered, but a single leaked connection string in a
+    description would otherwise fail the whole overlay (secret findings are
+    correctly non-prunable) and silently downgrade the run to the deterministic
+    skeleton. Redacting at the copy boundary keeps the failure proportionate
+    without weakening the check.
+    """
+
+    if not text:
+        return text
+    scrubbed = _CREDENTIAL_URL_RE.sub("[REDACTED]@", text)
+    scrubbed = _BEARER_RE.sub("Bearer [REDACTED]", scrubbed)
+    scrubbed = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", scrubbed)
+    return scrubbed
+
+
 def _sensitive_findings(value: Any, path: str = "$") -> list[str]:
     findings: list[str] = []
     sensitive_key = re.compile(r"(?:password|passwd|secret|api[_-]?key|access[_-]?token|private[_-]?key)$", re.I)
-    credential_url = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/:]+:[^\s/@]+@", re.I)
-    bearer = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{12,}", re.I)
-    private_key = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")
+    credential_url = _CREDENTIAL_URL_RE
+    bearer = _BEARER_RE
+    private_key = _PRIVATE_KEY_RE
     if isinstance(value, dict):
         for key, item in value.items():
             child = f"{path}.{key}"

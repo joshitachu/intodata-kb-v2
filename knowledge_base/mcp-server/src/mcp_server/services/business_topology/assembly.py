@@ -32,6 +32,7 @@ import re
 
 from mcp_server.services.business_topology.doc_evidence import (
     build_design_artifact_index,
+    primary_document_id,
     resolve_designs,
     resolve_doc_citation,
 )
@@ -63,6 +64,7 @@ from mcp_server.services.business_topology.models import (
 from mcp_server.services.business_topology.validation import (
     _directional_artifact_ids,
     _scanner_artifact_identity_map,
+    redact_secretlike,
 )
 
 GENERATED_BY = "doc_grounded_flow_extraction"
@@ -74,6 +76,19 @@ _SYSTEM_KIND_BY_EXTRACTION = {
     "file": "data_system",
     "queue": "external_service",
 }
+
+#: The kinds `BusinessSystem.kind` accepts. The scanner landscape uses a wider
+#: vocabulary, so its value is only adopted when it is one of these.
+_PUBLISHED_SYSTEM_KINDS = frozenset(
+    {
+        "software_system",
+        "data_system",
+        "external_service",
+        "organization",
+        "person_role",
+        "unresolved",
+    }
+)
 
 _CONFIDENCE_VALUE = {"certain": 0.9, "high": 0.8, "medium": 0.62, "low": 0.42}
 
@@ -225,6 +240,7 @@ class _EdgeIndex:
                 self._by_pair.setdefault((source, destination), []).append(evidence_id)
         self._identity_map = _scanner_artifact_identity_map(bundle)
         self._bundle = bundle
+        self._endpoint_artifacts: dict[str, set[str]] = {}
 
     def lookup(
         self, source_identity: str | None, destination_identity: str | None
@@ -244,11 +260,59 @@ class _EdgeIndex:
             return sorted(candidates)[0], set()
         return None, set()
 
+    def artifacts_touching(self, identity_id: str | None) -> set[str]:
+        """Artifacts on any scanner edge that has ``identity_id`` as an endpoint.
+
+        The scanner and the documentation model the landscape at different
+        altitudes: verified on the real werkorder scan, the landscape carries
+        `Erp_to_the_Max -> Maximo` and `Erp_to_the_Max -> 4PS` (integration
+        application to external system) while the documentation describes
+        `Maximo -> 4PS` (the business flow the application implements). No
+        system-to-system edge exists for the model to match, so an exact
+        direction lookup finds nothing and EVERY flow would be published as a
+        bare assertion at capped confidence -- a whole landscape rendered as
+        guesswork when the scanner in fact proves both endpoints are touched by
+        the very designs the flow names.
+        """
+
+        if not identity_id:
+            return set()
+        cached = self._endpoint_artifacts.get(identity_id)
+        if cached is not None:
+            return cached
+        edge_ids = [
+            evidence_id
+            for (source, destination), ids in self._by_pair.items()
+            if identity_id in (source, destination)
+            for evidence_id in ids
+        ]
+        artifacts = (
+            _directional_artifact_ids(set(edge_ids), self._bundle) if edge_ids else set()
+        )
+        self._endpoint_artifacts[identity_id] = artifacts
+        return artifacts
+
 
 def _status_for(
-    confidence_word: str, *, scanner_backed: bool, identity_backed: bool = True
+    confidence_word: str,
+    *,
+    scanner_backed: bool,
+    identity_backed: bool = True,
+    endpoint_corroborated: bool = False,
 ) -> tuple[str, float]:
     """Map a confidence WORD onto ``(ClaimStatus, numeric confidence)``.
+
+    Three grounding tiers, strongest first:
+
+    * ``scanner_backed`` -- a scanner edge establishes this exact direction.
+      May reach ``observed``.
+    * ``endpoint_corroborated`` -- no system-to-system edge exists, but the
+      scanner proves the flow's own implementing designs touch BOTH endpoint
+      systems. Direction remains documentation-asserted, so never ``observed``,
+      but the confidence is not capped: this is a well-established flow, not a
+      bare assertion, and treating the two alike renders the whole landscape as
+      guesswork (the real werkorder shape -- see ``artifacts_touching``).
+    * documentation only -- capped at ``_DOC_TIER_MAX_CONFIDENCE``.
 
     ``confirmed`` is never emitted: the validator reserves it for an approved
     business declaration, and no such evidence exists in a generation run.
@@ -261,7 +325,9 @@ def _status_for(
         return "proposed", min(value, _DOC_TIER_MAX_CONFIDENCE)
     if not scanner_backed:
         status = "proposed" if confidence_word == "low" else "inferred"
-        return status, min(value, _DOC_TIER_MAX_CONFIDENCE)
+        return status, value if endpoint_corroborated else min(
+            value, _DOC_TIER_MAX_CONFIDENCE
+        )
     if confidence_word in {"certain", "high"}:
         return "observed", value
     if confidence_word == "low":
@@ -305,6 +371,7 @@ def assemble_topology(
     unresolved_designs: set[str] = set()
 
     def ensure_system(name: str, *, kind_hint: str, role: str, confidence: str) -> str:
+        role = redact_secretlike(role)
         canonical, identity_id, scanner_kind = resolver.resolve(name)
         system_id = f"sys-{_slug(canonical)}"
         existing = systems.get(system_id)
@@ -316,10 +383,13 @@ def assemble_topology(
         if identity_id is not None:
             status, value = _status_for(confidence, scanner_backed=True)
             evidence_ids = [identity_id]
+            # The scanner's own kind wins when it is one the published contract
+            # accepts; its vocabulary is wider than ours (`rest_api`, `database`),
+            # so anything else falls back to the extraction's business-level hint.
             kind = (
-                _SYSTEM_KIND_BY_EXTRACTION.get(kind_hint, "software_system")
-                if scanner_kind not in _SYSTEM_KIND_BY_EXTRACTION.values()
-                else scanner_kind
+                scanner_kind
+                if scanner_kind in _PUBLISHED_SYSTEM_KINDS
+                else _SYSTEM_KIND_BY_EXTRACTION.get(kind_hint, "software_system")
             )
         else:
             # Named only by the documentation. `unresolved` is the honest kind
@@ -421,14 +491,36 @@ def assemble_topology(
                 f"flow '{flow.name or index}' had no citable evidence and was dropped"
             )
             continue
+        # No system-to-system edge? The scanner can still corroborate BOTH
+        # endpoints through the flow's own implementing designs. Note that the
+        # corroborating edges are deliberately NOT cited on the stream: a
+        # `landscape-edge` id in `evidence_ids` would make the validator treat
+        # the direction as scanner-established and then reject it for not
+        # connecting these two systems.
+        endpoint_corroborated = False
         if not scanner_backed:
-            notes.append(
-                f"flow '{flow.name or index}' direction is asserted by documentation "
-                "only (no scanner edge); published as documentation-derived"
+            resolved_set = set(artifact_ids)
+            endpoint_corroborated = bool(
+                resolved_set & edges.artifacts_touching(source_identity)
+                and resolved_set & edges.artifacts_touching(destination_identity)
             )
+            if endpoint_corroborated:
+                notes.append(
+                    f"flow '{flow.name or index}' has no system-to-system scanner edge, "
+                    "but its implementing designs are scanner-proven at both endpoints"
+                )
+            else:
+                notes.append(
+                    f"flow '{flow.name or index}' direction is asserted by documentation "
+                    "only (no scanner edge); published as documentation-derived"
+                )
 
         object_id = ensure_object(flow.business_object, doc_ids or evidence_ids)
-        status, confidence = _status_for(flow.confidence, scanner_backed=scanner_backed)
+        status, confidence = _status_for(
+            flow.confidence,
+            scanner_backed=scanner_backed,
+            endpoint_corroborated=endpoint_corroborated,
+        )
 
         base_id = (
             f"ds-{_slug(solution_name)}-{_slug(source_system.name)}--"
@@ -441,8 +533,11 @@ def assemble_topology(
             suffix += 1
         used_stream_ids.add(stream_id)
 
-        summary = (flow.carries or "").strip()
-        mechanism = (flow.mechanism or "").strip()
+        # Prose from the documents is scrubbed at the copy boundary: a leaked
+        # connection string here is a non-prunable secret finding that would
+        # fail the whole overlay.
+        summary = redact_secretlike((flow.carries or "").strip())
+        mechanism = redact_secretlike((flow.mechanism or "").strip())
         if mechanism:
             summary = (
                 f"{summary} (mechanism: {mechanism})" if summary else f"Mechanism: {mechanism}"
@@ -493,7 +588,7 @@ def assemble_topology(
                     DeliverySegment(
                         id=f"segment:{stream_id}:{step_index}",
                         name=step.name or f"Delivery step {step_index}",
-                        description=step.description,
+                        description=redact_secretlike(step.description),
                         status=status,
                         confidence=confidence,
                         evidence_ids=evidence_ids,
@@ -502,8 +597,8 @@ def assemble_topology(
                         destination_ref=destination_ref,
                         mechanism=step.mechanism or "unknown",
                         protocol=protocol,
-                        resource=step.resource,
-                        component=step.component,
+                        resource=redact_secretlike(step.resource),
+                        component=redact_secretlike(step.component),
                         artifact_ids=step_artifacts,
                         mode=mode,
                     )
@@ -535,7 +630,7 @@ def assemble_topology(
                 BusinessTransformation(
                     id=f"transform:{stream_id}:{transform_index}",
                     name=transform.name or f"{flow.business_object or 'Data'} transformation",
-                    description=transform.description,
+                    description=redact_secretlike(transform.description),
                     status=status,
                     confidence=confidence,
                     evidence_ids=evidence_ids,
@@ -544,8 +639,8 @@ def assemble_topology(
                     artifact_ids=transform_artifacts,
                     mappings=[
                         TransformationMapping(
-                            source=mapping.source,
-                            target=mapping.target,
+                            source=redact_secretlike(mapping.source),
+                            target=redact_secretlike(mapping.target),
                             mapping_type=mapping.mapping_type,
                         )
                         for mapping in transform.mappings
@@ -609,20 +704,149 @@ def assemble_topology(
             cited_evidence=0,
             coverage_ratio=0.0,
             technical_relationships=len(streams),
+            # "Grounded" counts BOTH scanner tiers: a direct directional edge and
+            # an endpoint-corroborated flow are both scanner-backed claims about
+            # real designs. Counting only `observed` reported 0 of 43 on the real
+            # werkorder scan, where no system-to-system edges exist at all.
             grounded_technical_relationships=sum(
-                1 for stream in streams if stream.status == "observed"
+                1
+                for stream in streams
+                if stream.status == "observed"
+                or stream.confidence > _DOC_TIER_MAX_CONFIDENCE
             ),
             notes=[
                 "Assembled deterministically from a business-level flow extraction "
                 "over this run's generated documentation and the scanner landscape. "
                 "Streams marked 'observed' are backed by a scanner directional edge; "
-                "'inferred' streams are asserted by documentation and wired to real "
-                "scanner artifacts.",
+                "'inferred' streams above 0.6 confidence have scanner-proven "
+                "implementing designs at both endpoints; the rest are asserted by "
+                "documentation and wired to real scanner artifacts.",
                 *notes[:20],
             ],
         ),
     )
     return topology, notes
+
+
+def merge_scanner_floor(
+    assembled: BusinessTopology,
+    deterministic: BusinessTopology,
+) -> list[str]:
+    """Add scanner edges the extraction missed, without duplicating nodes.
+
+    The two builders mint different system ids -- ``sys-{slug}`` here versus
+    ``sys-{slug}-{identity hash}`` in :mod:`deterministic` -- so a naive union
+    publishes the same system twice, which is precisely the "wrong shape"
+    outcome this rebuild exists to fix. Systems are therefore folded on their
+    scanner IDENTITY evidence id, which both builders cite.
+
+    Without this floor, coverage would depend entirely on extraction recall: a
+    run whose documents describe 6 of 18 real edges would publish a landscape
+    missing 12 flows the scanner already proved. With it, the business layer and
+    the scanner's edge coverage are additive rather than a choice.
+
+    Mutates ``assembled``. Returns notes describing what was added.
+    """
+
+    notes: list[str] = []
+    identity_to_assembled: dict[str, str] = {}
+    for system in assembled.systems:
+        if system.kind == "unresolved":
+            continue
+        for evidence_id in system.evidence_ids:
+            identity_to_assembled.setdefault(evidence_id, system.id)
+
+    existing_pairs = {
+        (stream.source_system_id, stream.destination_system_id)
+        for stream in assembled.data_streams
+    }
+    assembled_system_ids = {system.id for system in assembled.systems}
+    solution_ids = {item.id for item in assembled.integration_solutions}
+
+    # Fold deterministic systems onto assembled ones, or adopt them outright.
+    remap: dict[str, str] = {}
+    adopted_systems: list[BusinessSystem] = []
+    for system in deterministic.systems:
+        target = next(
+            (
+                identity_to_assembled[evidence_id]
+                for evidence_id in system.evidence_ids
+                if evidence_id in identity_to_assembled
+            ),
+            None,
+        )
+        if target is not None:
+            remap[system.id] = target
+            continue
+        if system.id not in assembled_system_ids:
+            adopted_systems.append(system)
+            assembled_system_ids.add(system.id)
+        remap[system.id] = system.id
+
+    added_streams: list[BusinessDataStream] = []
+    needed_systems: set[str] = set()
+    needed_solutions: set[str] = set()
+    for stream in deterministic.data_streams:
+        source_id = remap.get(stream.source_system_id)
+        destination_id = remap.get(stream.destination_system_id)
+        if source_id is None or destination_id is None or source_id == destination_id:
+            continue
+        if (source_id, destination_id) in existing_pairs:
+            # The extraction already describes this relationship, with business
+            # meaning the scanner edge does not have. Keep the richer one.
+            continue
+        existing_pairs.add((source_id, destination_id))
+        copy = stream.model_copy(deep=True)
+        copy.source_system_id = source_id
+        copy.destination_system_id = destination_id
+        # These reference deterministic-local claims that are not being adopted;
+        # a dangling ref would fail validation and cost the whole floor.
+        copy.business_object_ids = []
+        copy.control_ids = []
+        copy.risk_ids = []
+        copy.unknown_ids = []
+        copy.runtime_observation_ids = []
+        copy.conflict_ids = []
+        copy.delivery_path_id = None
+        copy.integration_solution_ids = [
+            ref for ref in copy.integration_solution_ids if ref
+        ]
+        needed_solutions.update(copy.integration_solution_ids)
+        needed_systems.update({source_id, destination_id})
+        added_streams.append(copy)
+
+    if not added_streams:
+        return notes
+
+    # Deep copies: these objects belong to the deterministic topology, which
+    # remains the phase's fallback candidate. Sharing them would let a later
+    # mutation of one published overlay alter the other.
+    assembled.systems.extend(
+        system.model_copy(deep=True)
+        for system in adopted_systems
+        if system.id in needed_systems
+    )
+    published_system_ids = {system.id for system in assembled.systems}
+    added_streams = [
+        stream
+        for stream in added_streams
+        if stream.source_system_id in published_system_ids
+        and stream.destination_system_id in published_system_ids
+    ]
+    if not added_streams:
+        return notes
+    for solution in deterministic.integration_solutions:
+        if solution.id in needed_solutions and solution.id not in solution_ids:
+            assembled.integration_solutions.append(solution.model_copy(deep=True))
+            solution_ids.add(solution.id)
+    assembled.data_streams.extend(added_streams)
+    assembled.coverage.technical_relationships = len(assembled.data_streams)
+    notes.append(
+        f"added {len(added_streams)} scanner-backed stream(s) the documentation "
+        "extraction did not describe, so scanner edge coverage is not lost"
+    )
+    assembled.coverage.notes.extend(notes)
+    return notes
 
 
 def _doc_ids_for(
@@ -631,12 +855,11 @@ def _doc_ids_for(
     resolved = resolve_doc_citation(citation, doc_records)
     if resolved:
         return resolved
-    # Fall back to the data-flows document, the source Stage A reads first. An
-    # empty list here would strip the only citation a doc-derived claim has.
-    from mcp_server.services.business_topology.doc_evidence import doc_evidence_id
-
-    fallback = doc_evidence_id("03_DATA_FLOWS_AND_LINEAGE.md", "")
-    return [fallback] if fallback in doc_records else []
+    # Fall back to the best-ranked registered document. An empty list would
+    # strip the only citation a documentation-derived claim has, and naming a
+    # specific filename here would break every pack that renames its documents.
+    fallback = primary_document_id(doc_records)
+    return [fallback] if fallback else []
 
 
 def _platform_label(bundle: BusinessTopologyEvidenceBundle) -> str:

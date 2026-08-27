@@ -5096,6 +5096,13 @@ Fallback plan example:
         calls_lock: asyncio.Lock | None = None,
         scoped_tools: ScopedEvidenceTools | None = None,
     ):
+        # One policy boundary owns provider failover semantics. Phase-specific
+        # callers historically supplied retries=0 or retries=1, which caused a
+        # transient API failure to reach the fallback before the expected three
+        # same-provider retries had been exhausted.
+        opts = opts.model_copy(
+            update={"retries": max(0, config.doc_generation_api_retries)}
+        )
         estimate_prompt = (
             f"{opts.system_prompt}\n\n{prompt}" if opts.system_prompt else prompt
         )
@@ -5142,6 +5149,7 @@ Fallback plan example:
             ctx.project_id,
             f"[custom] model call start: phase={phase} target={target} split_id={target} "
             f"est_input_tokens={estimated} context_files={len(context_files)} context_bytes={total_bytes} "
+            f"api_retries={opts.retries} "
             f"call_budget={reservation.call_index}/{budget} "
             f"input_budget={state.budget_consumed_input_tokens + state.pending_input_tokens}/"
             f"{input_budget_label} output_budget="
@@ -5224,7 +5232,8 @@ Fallback plan example:
             ):
                 await log_cb(
                     ctx.project_id,
-                    f"[custom] primary failed ({failure_kind.value}); retrying with fallback "
+                    f"[custom] primary failed after {opts.retries} retries "
+                    f"({failure_kind.value}); switching to default fallback "
                     f"{self._describe_provider(self.fallback_provider)}",
                     "warning",
                 )

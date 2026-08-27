@@ -67,12 +67,14 @@ class Phase37BusinessTopology(Phase):
     ) -> PhaseResult:
         from mcp_server.config import config
         from mcp_server.services.business_topology import (
-            DOC_EVIDENCE_FILENAMES,
             build_business_topology_evidence,
             build_deterministic_topology,
             build_topology_context_files,
             register_doc_evidence,
             validate_business_topology,
+        )
+        from mcp_server.services.business_topology.doc_evidence import (
+            discover_doc_filenames,
         )
 
         output_dir = ctx.staging_dir / "_topology"
@@ -99,7 +101,13 @@ class Phase37BusinessTopology(Phase):
             # taken from `03_DATA_FLOWS_AND_LINEAGE.md` can cite a resolvable id.
             # The scanner-only bundle is kept for the deterministic overlay's own
             # validation: its claims must not become citable via this tier.
-            doc_bundle, doc_records = register_doc_evidence(bundle, ctx.staging_dir)
+            # Whatever this run actually published, ranked -- not a fixed
+            # catalog list. A pack replaces the document set wholesale, and a
+            # hardcoded filename tuple would silently disable this lane for it.
+            doc_filenames = discover_doc_filenames(ctx.staging_dir)
+            doc_bundle, doc_records = register_doc_evidence(
+                bundle, ctx.staging_dir, filenames=doc_filenames
+            )
             if not doc_records:
                 await log_cb(
                     ctx.project_id,
@@ -119,7 +127,7 @@ class Phase37BusinessTopology(Phase):
                 ctx.staging_dir,
                 byte_cap=config.topology_context_evidence_bytes,
                 include_generated_docs=bool(doc_records),
-                doc_filenames=DOC_EVIDENCE_FILENAMES,
+                doc_filenames=doc_filenames,
             )
             synthesis_context = build_topology_context_files(
                 bundle,
@@ -155,23 +163,21 @@ class Phase37BusinessTopology(Phase):
                     log_cb,
                     bundle=doc_bundle,
                     doc_records=doc_records,
+                    deterministic=(
+                        deterministic_candidate if deterministic_streams else None
+                    ),
                     context_files=extraction_context,
                 )
                 if topology is not None:
                     lane = "flow_extraction"
                     active_bundle = doc_bundle
 
-            if topology is None or len(topology.data_streams) < max(
-                1, deterministic_streams
-            ):
-                if topology is not None:
-                    await log_cb(
-                        ctx.project_id,
-                        "[custom] Business topology: flow extraction produced "
-                        f"{len(topology.data_streams)} stream(s) against a deterministic "
-                        f"floor of {deterministic_streams}; trying single-shot synthesis",
-                        "warning",
-                    )
+            # Stream COUNT is not the quality signal -- the verified complaint
+            # about the old overlay was 18 unlabelled scanner edges. The
+            # extraction lane already absorbs the scanner floor
+            # (`merge_scanner_floor`), so the second model lane runs only when
+            # the first produced nothing publishable at all.
+            if topology is None:
                 fallback_topology, fallback_report = await self._run_synthesis_lane(
                     ctx,
                     state,
@@ -179,10 +185,7 @@ class Phase37BusinessTopology(Phase):
                     bundle=bundle,
                     context_files=synthesis_context,
                 )
-                if fallback_topology is not None and (
-                    topology is None
-                    or len(fallback_topology.data_streams) > len(topology.data_streams)
-                ):
+                if fallback_topology is not None:
                     topology, report = fallback_topology, fallback_report
                     lane = "single_shot_synthesis"
                     active_bundle = bundle
@@ -332,6 +335,7 @@ class Phase37BusinessTopology(Phase):
         *,
         bundle: "BusinessTopologyEvidenceBundle",
         doc_records: dict[str, dict[str, Any]],
+        deterministic: "BusinessTopology | None",
         context_files: list["Path"],
     ) -> tuple["BusinessTopology | None", "BusinessTopologyValidationReport | None", list[str]]:
         """Stage A + B: extract business-level flows, then assemble in Python."""
@@ -341,6 +345,7 @@ class Phase37BusinessTopology(Phase):
             parse_flow_extraction,
             prune_to_valid,
         )
+        from mcp_server.services.business_topology.assembly import merge_scanner_floor
         from mcp_server.services.business_topology.prompt import flow_extraction_prompt
 
         # `ctx.partition` is a Partition, not a name: a composite run scopes
@@ -349,6 +354,10 @@ class Phase37BusinessTopology(Phase):
         subproject = partition_name or ctx.project_id
         prompt = flow_extraction_prompt(
             subproject=subproject,
+            documents=sorted(
+                {str(record.get("document") or "") for record in doc_records.values()}
+                - {""}
+            ),
             plugin_pack_dir=self._helpers.plugin_pack_dir,
         )
 
@@ -405,6 +414,13 @@ class Phase37BusinessTopology(Phase):
             subproject=partition_name,
             model_name=result.model_name,
         )
+        if deterministic is not None:
+            floor_notes = merge_scanner_floor(topology, deterministic)
+            notes.extend(floor_notes)
+            if floor_notes:
+                await log_cb(ctx.project_id, f"[custom] Business topology: {floor_notes[0]}", "info")
+        # Pruning runs LAST, after the floor merge, so a defect introduced by
+        # either source costs only its own claim.
         topology, report, pruned = prune_to_valid(
             topology, bundle=bundle, project_id=ctx.project_id
         )

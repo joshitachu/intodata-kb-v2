@@ -19,8 +19,8 @@ from mcp_server.services.business_topology.deterministic import (
     build_deterministic_topology,
 )
 from mcp_server.services.business_topology.doc_evidence import (
-    DOC_EVIDENCE_FILENAMES,
     collect_doc_evidence,
+    discover_doc_filenames,
     register_doc_evidence,
 )
 from mcp_server.services.business_topology.flow_extraction import (
@@ -52,7 +52,7 @@ from mcp_server.services.business_topology.validation import (
 )
 
 __all__ = [
-    "DOC_EVIDENCE_FILENAMES",
+    "discover_doc_filenames",
     "FLOW_EXTRACTION_GENERATED_BY",
     "BusinessTopology",
     "BusinessTopologyEvidenceBundle",

@@ -15,6 +15,7 @@ from pathlib import Path
 from mcp_server.services.business_topology.assembly import assemble_topology
 from mcp_server.services.business_topology.doc_evidence import (
     build_design_artifact_index,
+    collect_doc_evidence,
     doc_evidence_id,
     register_doc_evidence,
     resolve_designs,
@@ -480,3 +481,244 @@ def test_pruning_refuses_to_hide_a_global_defect(tmp_path: Path) -> None:
     )
     assert not report.validated
     assert not dropped
+
+
+def test_scanner_floor_merges_without_duplicating_systems(tmp_path: Path) -> None:
+    """Extraction recall must not cost scanner edge coverage.
+
+    The two builders mint different system ids (`sys-maximo` vs
+    `sys-maximo-a1b2c3`), so the merge has to fold on scanner identity evidence
+    or it publishes the same system twice.
+    """
+
+    from mcp_server.services.business_topology.assembly import merge_scanner_floor
+    from mcp_server.services.business_topology.deterministic import (
+        build_deterministic_topology,
+    )
+
+    scanner_bundle, doc_bundle, doc_records = _bundle(tmp_path)
+    deterministic = build_deterministic_topology(scanner_bundle, project_id="demo")
+    assert deterministic.data_streams, "fixture must give the floor something to add"
+
+    # An extraction that describes ONLY the SharePoint flow, missing the
+    # scanner-proven Maximo -> AssetCheck edge entirely.
+    partial = json.loads(json.dumps(_EXTRACTION))
+    partial["flows"] = [partial["flows"][1]]
+    extraction, _ = parse_flow_extraction(json.dumps(partial), subproject="Assetcheck")
+    assert extraction is not None
+    topology, _ = assemble_topology(
+        extraction,
+        bundle=doc_bundle,
+        project_id="demo",
+        doc_records=doc_records,
+        subproject="Assetcheck",
+    )
+    before = len(topology.data_streams)
+
+    notes = merge_scanner_floor(topology, deterministic)
+    assert notes, "the missing scanner edge should have been added"
+    assert len(topology.data_streams) > before
+
+    # No duplicate systems: Maximo and AssetCheck appear once each.
+    names = [system.name.casefold() for system in topology.systems]
+    assert len(names) == len(set(names)), names
+    ids = [system.id for system in topology.systems]
+    assert len(ids) == len(set(ids))
+
+    report = validate_business_topology(topology, bundle=doc_bundle, project_id="demo")
+    assert report.validated, report.errors
+
+
+def test_scanner_floor_does_not_overwrite_a_richer_extracted_flow(
+    tmp_path: Path,
+) -> None:
+    from mcp_server.services.business_topology.assembly import merge_scanner_floor
+    from mcp_server.services.business_topology.deterministic import (
+        build_deterministic_topology,
+    )
+
+    scanner_bundle, doc_bundle, doc_records = _bundle(tmp_path)
+    deterministic = build_deterministic_topology(scanner_bundle, project_id="demo")
+    extraction, _ = parse_flow_extraction(
+        json.dumps(_EXTRACTION), subproject="Assetcheck"
+    )
+    assert extraction is not None
+    topology, _ = assemble_topology(
+        extraction,
+        bundle=doc_bundle,
+        project_id="demo",
+        doc_records=doc_records,
+        subproject="Assetcheck",
+    )
+    merge_scanner_floor(topology, deterministic)
+
+    # The extracted Maximo -> AssetCheck flow keeps its business object and
+    # delivery path; the bare scanner edge for the same pair is not added again.
+    maximo_streams = [
+        stream
+        for stream in topology.data_streams
+        if stream.source_system_id == "sys-maximo"
+        and stream.destination_system_id == "sys-assetcheck"
+    ]
+    assert len(maximo_streams) == 1
+    assert maximo_streams[0].business_object_ids
+    assert maximo_streams[0].delivery_path_id
+
+
+def test_doc_citation_does_not_borrow_sections_from_other_documents(
+    tmp_path: Path,
+) -> None:
+    """A short heading in another document must not attach its evidence.
+
+    `01_ARCHITECTURE_MAP.md` has a `## Systems` heading. A citation naming only
+    the data-flows document must never resolve to it.
+    """
+
+    _, _, doc_records = _bundle(tmp_path)
+    resolved = resolve_doc_citation(
+        "03_DATA_FLOWS_AND_LINEAGE.md - 'Systems that exchange work orders'",
+        doc_records,
+    )
+    architecture_sections = {
+        evidence_id
+        for evidence_id, record in doc_records.items()
+        if record.get("document") == "01_ARCHITECTURE_MAP.md" and record.get("section")
+    }
+    assert not (set(resolved) & architecture_sections)
+    assert resolved == [doc_evidence_id("03_DATA_FLOWS_AND_LINEAGE.md", "")]
+
+
+def test_secretlike_prose_is_redacted_instead_of_failing_the_overlay(
+    tmp_path: Path,
+) -> None:
+    """A leaked connection string must cost that phrase, not the topology.
+
+    Secret findings are correctly non-prunable, so an unredacted string would
+    fail the whole overlay and silently downgrade the run to the deterministic
+    skeleton.
+    """
+
+    _, doc_bundle, doc_records = _bundle(tmp_path)
+    payload = json.loads(json.dumps(_EXTRACTION))
+    payload["flows"][0]["carries"] = (
+        "Pulled from mssql://svc_user:Sup3rSecret@db.internal/maximo then served"
+    )
+    extraction, _ = parse_flow_extraction(json.dumps(payload), subproject="Assetcheck")
+    assert extraction is not None
+    topology, _ = assemble_topology(
+        extraction,
+        bundle=doc_bundle,
+        project_id="demo",
+        doc_records=doc_records,
+        subproject="Assetcheck",
+    )
+    stream = next(s for s in topology.data_streams if "workorder" in s.id)
+    assert "Sup3rSecret" not in stream.description
+    assert "Sup3rSecret" not in stream.business_summary
+    assert "[REDACTED]" in stream.description
+
+    report = validate_business_topology(topology, bundle=doc_bundle, project_id="demo")
+    assert report.validated, report.errors
+
+
+def test_endpoint_corroborated_flow_is_not_capped_like_a_bare_assertion(
+    tmp_path: Path,
+) -> None:
+    """The real werkorder shape: no system-to-system edge, but real endpoints.
+
+    The scanner landscape models `App -> System` edges while documentation
+    describes `System -> System` business flows, so an exact direction lookup
+    finds nothing. When the flow's OWN implementing designs are scanner-proven
+    at both endpoints, that is corroboration, and flattening it to the
+    documentation cap renders an established flow as guesswork.
+    """
+
+    _, doc_bundle, doc_records = _bundle(tmp_path)
+    payload = json.loads(json.dumps(_EXTRACTION))
+    # Reverse direction: no scanner edge exists for AssetCheck -> Maximo, but
+    # the named design sits on an edge touching both systems.
+    payload["flows"] = [
+        {
+            "name": "AssetCheck -> Maximo: status callback",
+            "source_system": "AssetCheck",
+            "target_system": "Maximo",
+            "business_object": "WorkOrderStatus",
+            "carries": "Completion status returned to Maximo",
+            "mechanism": "REST",
+            "implementing_designs": ["Maximo2AssetCheck_SendWorkOrder"],
+            "confidence": "high",
+            "evidence": (
+                "03_DATA_FLOWS_AND_LINEAGE.md - "
+                "'Maximo-to-AssetCheck Flows (REST/File Ingestion)'"
+            ),
+        }
+    ]
+    extraction, _ = parse_flow_extraction(json.dumps(payload), subproject="Assetcheck")
+    assert extraction is not None
+    topology, notes = assemble_topology(
+        extraction,
+        bundle=doc_bundle,
+        project_id="demo",
+        doc_records=doc_records,
+        subproject="Assetcheck",
+    )
+    stream = topology.data_streams[0]
+    assert stream.status == "inferred", "direction stays documentation-asserted"
+    assert stream.confidence > 0.6, "corroborated flow must not be capped"
+    assert any("scanner-proven at both endpoints" in note for note in notes)
+    assert topology.coverage.grounded_technical_relationships == 1
+
+    report = validate_business_topology(topology, bundle=doc_bundle, project_id="demo")
+    assert report.validated, report.errors
+
+
+def test_documents_are_discovered_not_assumed(tmp_path: Path) -> None:
+    """A pack renames the whole document set; the lane must still work.
+
+    A fixed catalog filename list would silently disable doc-grounded topology
+    for every pack that renames its documents.
+    """
+
+    from mcp_server.services.business_topology.doc_evidence import (
+        discover_doc_filenames,
+        primary_document_id,
+    )
+
+    docs = tmp_path / "packdocs"
+    docs.mkdir()
+    (docs / "SECURITY_POSTURE.md").write_text("# S\n\n## Controls\n\nx\n", encoding="utf-8")
+    (docs / "PII_DATA_FLOW_REPORT.md").write_text(
+        "# P\n\n## Vendor exchanges\n\nx\n", encoding="utf-8"
+    )
+    (docs / "_internal_notes.md").write_text("# skip me\n", encoding="utf-8")
+
+    names = discover_doc_filenames(docs)
+    # Ranked: the flow-bearing document leads; internal artifacts excluded.
+    assert names[0] == "PII_DATA_FLOW_REPORT.md"
+    assert "SECURITY_POSTURE.md" in names
+    assert not any(name.startswith("_") for name in names)
+
+    records = collect_doc_evidence(docs)
+    assert records
+    assert primary_document_id(records) == doc_evidence_id(
+        "PII_DATA_FLOW_REPORT.md", ""
+    )
+    # A citation into the renamed document resolves to its own section.
+    assert resolve_doc_citation(
+        "PII_DATA_FLOW_REPORT.md - 'Vendor exchanges'", records
+    ) == [doc_evidence_id("PII_DATA_FLOW_REPORT.md", "Vendor exchanges")]
+
+
+def test_prompt_lists_the_documents_that_actually_exist() -> None:
+    from mcp_server.services.business_topology.prompt import flow_extraction_prompt
+
+    prompt = flow_extraction_prompt(
+        subproject="PackRun", documents=["PII_DATA_FLOW_REPORT.md", "SECURITY_POSTURE.md"]
+    )
+    assert "PII_DATA_FLOW_REPORT.md" in prompt
+    assert "${" not in prompt
+    # No standard-catalog filename is asserted anywhere in the rendered prompt.
+    assert "03_DATA_FLOWS_AND_LINEAGE.md" not in prompt
+
+    empty = flow_extraction_prompt(subproject="PackRun", documents=[])
+    assert "none were published" in empty

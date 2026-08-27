@@ -494,6 +494,87 @@ This is the primary method for generating project documentation. Follow it exact
   enforces the single canonical `ESB_ROUTES` heading (via the shared `_has_section` check) only
   when `talend_esb_facts.json` reports `esb_detected` -- pure-DI projects never hard-fail on it.
 
+### Business Topology: two stages, and the documentation evidence tier (2026-08-27)
+
+- **Phase 3.7 asks the model for the ARCHITECTURE, never the bookkeeping.** The old
+  single-shot contract asked one call for semantics AND ids, `ClaimStatus` enums,
+  20-char `artifact:` hashes, identity cross-links and coverage, then rejected the
+  whole object when any of it was wrong. Verified werkorder run: 8 partitions, **0**
+  published an LLM topology -- 2 died on a prose preamble before the JSON while the
+  model reported "tool budget exhausted", 3 returned 0-byte output, and 3 produced
+  valid rich JSON that failed semantic validation. `ETTM_part2` had 14 systems / 8
+  streams / 8 delivery paths / 5 business objects and was replaced by a 4-system /
+  3-stream deterministic skeleton because every claim carried `status: observed`,
+  streams omitted the identity cross-link, and one solution had empty `artifact_ids`.
+- **Stage A** (`services/business_topology/flow_extraction.py`, prompt
+  `data/prompt_templates/phase37_flow_extraction.md`) extracts business-language
+  flows from this run's OWN finished Phase 3 documents: `{subproject, systems[{name,
+  role, kind, aliases}], flows[{name, source_system, target_system, business_object,
+  carries, mechanism, implementing_designs[], technical_path[], transformations[],
+  confidence: certain|high|medium|low, evidence}], excluded[]}`. Plain design names,
+  a confidence WORD, a human-style doc citation. Parsing is lenient per ITEM (a bad
+  flow is dropped with a recorded reason) and strict per FIELD.
+- **Stage B** (`assembly.py`) owns every field the model kept failing: ids, alias
+  folding, status/confidence, `artifact:` resolution, the directional edge lookup and
+  its identity cross-links, delivery segments + `step:` refs, coverage. It is a
+  generalisation of `output/werkorder/topology/build_evidence_topology.py` with that
+  script's two hardcoded tables REMOVED -- alias folding derives from the scanner
+  landscape rows plus extraction-declared aliases, and the solution name comes from
+  the partition.
+- **Documentation is a typed evidence tier, not an authority** (`doc_evidence.py`).
+  Doc sections register as `documentation_derived` evidence ids so a citation
+  resolves; the type is deliberately absent from `_SCANNER_EVIDENCE_TYPES`,
+  `_DIRECTIONAL_EVIDENCE_TYPES` and `_SYSTEM_IDENTITY_EVIDENCE_TYPES`, so it can
+  never promote a system or create an inter-system edge. A doc-asserted flow is
+  capped below `observed`, must still resolve real scanner `artifact_ids`, and its
+  missing-directional-evidence check is a WARNING for that tier only. The prompt's
+  old line "Do not read or cite Phase 3 generated documentation" was the reason the
+  pipeline could not reach the depth of the hand-curated file, which was itself
+  extracted from those documents while Phase 3.7 runs AFTER `Phase3Docs`.
+- **Documents are DISCOVERED, never assumed** (`discover_doc_filenames`,
+  `primary_document_id`, the `${DOCUMENTS}` prompt slot). A pack replaces the doc set
+  wholesale, so a fixed catalog filename list silently disables the whole lane for
+  every pack. Discovery ranks whatever the run published by filename keyword and
+  excludes `_`-prefixed internals. Verified on the `cdc_pack` project, whose docs are
+  named `END_TO_END_LINEAGE__Item__*.md`.
+- **Three grounding tiers** (`_status_for`): a scanner edge establishing the exact
+  direction may reach `observed`; **endpoint-corroborated** (no system-to-system edge,
+  but the flow's own implementing designs are scanner-proven at BOTH endpoints) stays
+  `inferred` with UNCAPPED confidence; documentation-only is capped at 0.6. The middle
+  tier exists because the scanner landscape models `App -> System` edges while
+  documentation describes `System -> System` business flows -- on werkorder there are
+  no system-to-system edges at all, so without it every flow reads as guesswork.
+- **Partial acceptance** (`pruning.py::prune_to_valid`): a claim-local validation
+  error drops that claim plus the references that would dangle, and the rest
+  publishes. Applies to the single-shot lane too. Global defects (schema version,
+  scan fingerprint, duplicate ids, secret findings) are NOT prunable and still fail
+  closed -- pruning keys on error messages that lead with a claim id.
+- **Prose is redacted at the copy boundary** (`validation.py::redact_secretlike`,
+  sharing the same compiled patterns as `_sensitive_findings`). Secret findings are
+  correctly non-prunable, so an unredacted connection string in a description would
+  fail the whole overlay and silently downgrade the run to the deterministic skeleton.
+- **Scanner floor is additive, not an alternative** (`merge_scanner_floor`): scanner
+  edges the extraction missed are appended, folded on scanner IDENTITY evidence
+  because the two builders mint different system ids (`sys-{slug}` vs
+  `sys-{slug}-{hash}`) and a naive union publishes each system twice. Coverage and
+  business meaning are additive rather than a choice.
+- **Lane order**: flow extraction (+ floor merge + prune) -> single-shot synthesis
+  (only if the first produced nothing publishable) -> deterministic overlay. Stream
+  COUNT is not the quality signal; the verified complaint about the old overlay was
+  18 unlabelled scanner edges.
+- **The composite org merge no longer flattens the business layer**
+  (`composite.py`). Streams key on (source, destination, **business object**) --
+  keying on the pair alone reduced werkorder's org view to 18 unlabelled edges where
+  the curated file has 72 named ones -- and business objects, delivery paths (segments
+  re-pointed onto org ids, `step:` refs rewritten) and transformations now travel to
+  the org level. A partition's stronger status survives instead of being flattened to
+  `inferred`, and the org solution carries its artifact ids so L1 drills down to code.
+- KNOWN LIMITS: Stage A recall is model-dependent and not yet exercised in a live run;
+  delivery-path richness depends on Stage A filling `technical_path`; the upstream
+  scanner landscape is thin (werkorder: 25 edges over 429 jobs, with `Log` / `Common` /
+  `Talend` appearing as "systems"), which is the deeper reason the deterministic
+  overlay always looked wrong and is a separate scanner-side follow-up.
+
 ### Composite-Upload Orchestration (partition runs)
 
 - **Partition planner** (`providers/custom/partition_planner.py`): a composite-ZIP scan
