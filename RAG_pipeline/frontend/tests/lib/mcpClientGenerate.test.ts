@@ -37,13 +37,31 @@ describe("generateDocs", () => {
 
   it("sends no fields beyond the pinned route (GenerateRequest forbids extras)", async () => {
     const fetchMock = mockFetch({});
-    await generateDocs("acme-talend", false);
+    await generateDocs("acme-talend", { resume: false });
 
     const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
     expect(Object.keys(body).sort()).toEqual(
       ["project_id", "resume", ...Object.keys(CUSTOMER_DOC_GENERATION_ROUTE)].sort(),
     );
     expect(body.resume).toBe(false);
+  });
+
+  it("forwards a chosen pack as a per-run override", async () => {
+    const fetchMock = mockFetch({});
+    await generateDocs("acme-talend", { pluginPackId: 7 });
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+    expect(body.plugin_pack_id).toBe(7);
+  });
+
+  it("omits plugin_pack_id when no pack was chosen, so the project default stands", async () => {
+    // Sending `null` would mean "override the project's pack with no pack at
+    // all", silently discarding a default the user never touched.
+    const fetchMock = mockFetch({});
+    await generateDocs("acme-talend", { pluginPackId: null });
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+    expect("plugin_pack_id" in body).toBe(false);
   });
 });
 

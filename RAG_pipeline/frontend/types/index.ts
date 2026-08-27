@@ -382,6 +382,10 @@ export type ConversationUpdateRequest = z.input<
 
 export const DocFileInfoSchema = z.object({
   name: z.string(),
+  // Sub-project this doc belongs to; null for a project generated as a single
+  // run. A partitioned project emits the same doc names in every sub-project,
+  // so `name` alone is not a unique key -- use docKey() below.
+  subproject: z.string().nullable().default(null),
   type: z.string(),
   size_bytes: z.number(),
   has_pdf: z.boolean(),
@@ -390,10 +394,18 @@ export const DocFileInfoSchema = z.object({
 
 export type DocFileInfo = z.infer<typeof DocFileInfoSchema>;
 
+/** Stable identity for a document within a project. */
+export function docKey(doc: Pick<DocFileInfo, "name" | "subproject">): string {
+  return doc.subproject ? `${doc.subproject}/${doc.name}` : doc.name;
+}
+
 export const DocListResponseSchema = z.object({
   project_id: z.string(),
   docs: z.array(DocFileInfoSchema),
   total: z.number(),
+  // Sub-projects present in `docs`, in display order. Empty for a flat project,
+  // which is the signal to hide the sub-project filter entirely.
+  subprojects: z.array(z.string()).default([]),
 });
 
 export type DocListResponse = z.infer<typeof DocListResponseSchema>;
@@ -447,6 +459,26 @@ export const SourceProjectSchema = z.object({
   git_update_summary: z.record(z.string(), z.unknown()).nullable().optional(),
   has_github_token: z.boolean().optional().default(false),
   webhook_status: z.string().nullable().optional(),
+  // Everything below is returned by /mcp/projects and consumed by the Sources
+  // UI. Zod strips keys it does not declare, so omitting one here does not make
+  // it "unused" -- it makes it permanently undefined in the browser. That is how
+  // `connection_kind` went missing and every Azure DevOps project was rendered
+  // with GitHub-only token and webhook controls.
+  connection_kind: z.string().nullable().optional(),
+  github_account_login: z.string().nullable().optional(),
+  azure_devops_connection_id: z.string().nullable().optional(),
+  /** Pack the project generates with by default; null means no pack. */
+  plugin_pack_id: z.number().nullable().optional(),
+  artifact_counts: z
+    .object({
+      total_artifacts: z.number().optional(),
+      job_count: z.number().optional(),
+      route_count: z.number().optional(),
+      joblet_count: z.number().optional(),
+      routelet_count: z.number().optional(),
+    })
+    .nullable()
+    .optional(),
 });
 
 export type SourceProject = z.infer<typeof SourceProjectSchema>;

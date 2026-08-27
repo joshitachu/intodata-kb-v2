@@ -8,7 +8,13 @@ from pathlib import Path
 
 import markdown
 
-from mcp_server.config import config
+from mcp_server.services.doc_layout import (
+    PUBLISHED,
+    doc_locations,
+    is_safe_path_segment,
+    project_output_root,
+    resolve_doc_location,
+)
 from mcp_server.services.doc_quality_scorer import is_published_doc_filename
 
 logger = logging.getLogger(__name__)
@@ -104,16 +110,28 @@ class PdfService:
         return pdf_path
 
     def convert_project(self, project_id: str) -> dict:
-        """Batch-convert all .md docs for a project. Returns summary dict."""
-        docs_dir = config.project_root / "output" / project_id / "docs"
-        if not docs_dir.is_dir():
-            return {"converted": 0, "failed": 0, "errors": [f"No docs dir: {docs_dir}"]}
+        """Batch-convert all .md docs for a project. Returns summary dict.
 
-        md_files = sorted(
+        Covers every documentation tree the project has: one for a flat
+        project, one per sub-project for a partitioned one. Each partition's
+        PDFs land beside its own docs (``convert_file`` writes to
+        ``md_path.parent.parent / "pdf"``), so identically named documents from
+        different sub-projects never overwrite each other.
+        """
+        locations = doc_locations(project_id)
+        if not locations:
+            return {
+                "converted": 0,
+                "failed": 0,
+                "errors": [f"No docs dir under {project_output_root(project_id)}"],
+            }
+
+        md_files = [
             path
-            for path in docs_dir.glob("*.md")
+            for location in locations
+            for path in sorted(location.docs_dir.glob("*.md"))
             if is_published_doc_filename(path.name)
-        )
+        ]
         if not md_files:
             return {"converted": 0, "failed": 0, "errors": ["No .md files found"]}
 
@@ -127,52 +145,79 @@ class PdfService:
                 converted += 1
             except Exception as e:
                 failed += 1
-                errors.append(f"{md_file.name}: {e}")
-                logger.error("Failed to convert %s: %s", md_file.name, e)
+                # Qualify with the sub-project: partitions share one set of
+                # document names, so a bare filename does not say which tree
+                # failed.
+                label = (
+                    md_file.name
+                    if len(locations) == 1
+                    else f"{md_file.parent.parent.name}/{md_file.name}"
+                )
+                errors.append(f"{label}: {e}")
+                logger.error("Failed to convert %s: %s", md_file, e)
 
         return {"converted": converted, "failed": failed, "errors": errors}
 
     def list_docs(self, project_id: str) -> list[dict]:
-        """List all docs with metadata for a project."""
-        docs_dir = config.project_root / "output" / project_id / "docs"
-        pdf_dir = config.project_root / "output" / project_id / "pdf"
+        """List all docs with metadata for a project.
 
-        if not docs_dir.is_dir():
-            return []
-
+        Each entry carries the ``subproject`` it came from (``None`` for a flat
+        project) because ``name`` alone is not unique within a partitioned
+        project.
+        """
         result: list[dict] = []
-        for md_file in sorted(docs_dir.glob("*.md")):
-            if not is_published_doc_filename(md_file.name):
-                continue
-            stat = md_file.stat()
-            pdf_exists = (pdf_dir / md_file.with_suffix(".pdf").name).exists() if pdf_dir.is_dir() else False
-            result.append({
-                "name": md_file.name,
-                "type": "md",
-                "size_bytes": stat.st_size,
-                "has_pdf": pdf_exists,
-                "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-            })
+        for location in doc_locations(project_id):
+            pdf_dir = location.pdf_dir
+            has_pdf_dir = pdf_dir.is_dir()
+            for md_file in sorted(location.docs_dir.glob("*.md")):
+                if not is_published_doc_filename(md_file.name):
+                    continue
+                stat = md_file.stat()
+                pdf_exists = (
+                    (pdf_dir / md_file.with_suffix(".pdf").name).exists()
+                    if has_pdf_dir
+                    else False
+                )
+                result.append({
+                    "name": md_file.name,
+                    "subproject": location.subproject,
+                    "type": "md",
+                    "size_bytes": stat.st_size,
+                    "has_pdf": pdf_exists,
+                    "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                })
 
         return result
 
-    def get_doc_path(self, project_id: str, filename: str) -> Path | None:
-        """Resolve filename to absolute path with path-traversal prevention."""
-        if ".." in filename or "/" in filename or "\\" in filename:
+    def get_doc_path(
+        self, project_id: str, filename: str, subproject: str | None = None
+    ) -> Path | None:
+        """Resolve ``(subproject, filename)`` to an absolute path.
+
+        Both segments are validated as single path components before use, and
+        the resolved path is confirmed to stay under the project's output root.
+        ``subproject`` must name a real documentation tree -- it is matched
+        against :func:`doc_layout.doc_locations`, not concatenated blindly.
+        """
+        if not is_safe_path_segment(filename):
+            return None
+
+        location = resolve_doc_location(project_id, subproject, source=PUBLISHED)
+        if location is None:
             return None
 
         if filename.endswith(".md"):
-            target = config.project_root / "output" / project_id / "docs" / filename
+            target = location.docs_dir / filename
         elif filename.endswith(".pdf"):
-            target = config.project_root / "output" / project_id / "pdf" / filename
+            target = location.pdf_dir / filename
         else:
             return None
 
         # Path traversal check
-        allowed_root = (config.project_root / "output" / project_id).resolve()
+        allowed_root = project_output_root(project_id).resolve()
         try:
             resolved = target.resolve()
-            if not str(resolved).startswith(str(allowed_root)):
+            if not resolved.is_relative_to(allowed_root):
                 return None
         except (OSError, ValueError):
             return None

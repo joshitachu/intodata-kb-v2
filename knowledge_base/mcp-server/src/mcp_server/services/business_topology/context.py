@@ -154,12 +154,21 @@ def build_topology_context_files(
     staging_dir: Path,
     *,
     byte_cap: int,
+    include_generated_docs: bool = False,
+    doc_filenames: tuple[str, ...] = (),
 ) -> list[Path]:
     """Return the ordered list of context files to PUSH to the topology model.
 
     ``byte_cap`` bounds the total pushed evidence. Critical files are always
     included even if the cap is exceeded (a passing topology is worth more than
     a byte budget); non-critical files are appended only while they fit.
+
+    ``include_generated_docs`` adds this run's finished Phase 3 documents FIRST.
+    Phase 3.7 runs after ``Phase3Docs`` with those documents on disk in
+    ``docs_staging/``, and they are the deepest evidence the run produces -- the
+    hand-curated werkorder topology was extracted from exactly these files while
+    the old prompt forbade reading them. They lead the context because Stage A's
+    job is to convert their flow narrative into data.
     """
 
     topo_root = bundle.root
@@ -170,14 +179,17 @@ def build_topology_context_files(
     technical_facts = _write_technical_facts(context_dir, bundle)
 
     # (path, critical). Order is priority order.
-    candidates: list[tuple[Path, bool]] = [
+    candidates: list[tuple[Path, bool]] = []
+    if include_generated_docs:
+        candidates.extend((staging_dir / name, True) for name in doc_filenames)
+    candidates.extend([
         (bundle.overview_path, True),                       # factual_evidence_index.json
         (evidence_dir / "systems.jsonl", True),
         (evidence_dir / "applications.jsonl", True),
         (evidence_dir / "edges.jsonl", True),
         (evidence_dir / "connections.jsonl", True),
         (evidence_dir / "relations.jsonl", True),
-    ]
+    ])
     if trimmed_artifacts is not None:
         candidates.append((trimmed_artifacts, True))
     candidates.append((technical_facts, True))

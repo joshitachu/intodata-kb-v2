@@ -143,7 +143,7 @@ describe("AzureDevOpsConnectPanel", () => {
     const etl = await screen.findByRole("checkbox", { name: /etl/ });
 
     fireEvent.click(etl);
-    fireEvent.click(screen.getByRole("button", { name: /Connect & scan/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Import repository/ }));
 
     await waitFor(() =>
       expect(addAzureDevOpsSource).toHaveBeenCalledWith({
@@ -173,7 +173,7 @@ describe("AzureDevOpsConnectPanel", () => {
     fireEvent.change(screen.getByLabelText("Project name"), {
       target: { value: "Pluralfarm" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /Connect 2 repositories/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Import 2 repositories/ }));
 
     await waitFor(() =>
       expect(createMultiRepoProject).toHaveBeenCalledWith({
@@ -228,7 +228,7 @@ describe("AzureDevOpsConnectPanel", () => {
     fireEvent.change(screen.getByLabelText("Project name"), {
       target: { value: "Pluralfarm" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /Connect 2 repositories/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Import 2 repositories/ }));
 
     await waitFor(() =>
       expect(screen.getByText(/could not be cloned: api/)).toBeInTheDocument(),
@@ -350,7 +350,7 @@ describe("AzureDevOpsConnectPanel", () => {
     fireEvent.change(screen.getByLabelText("Project name"), {
       target: { value: "Pluralfarm" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /Connect 2 repositories/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Import 2 repositories/ }));
 
     await waitFor(() =>
       expect(createMultiRepoProject).toHaveBeenCalledWith(
@@ -394,7 +394,7 @@ describe("AzureDevOpsConnectPanel", () => {
     fireEvent.change(screen.getByLabelText("Branch for etl"), {
       target: { value: "R2024-01" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /Connect & scan/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Import repository/ }));
 
     await waitFor(() =>
       expect(addAzureDevOpsSource).toHaveBeenCalledWith(
@@ -426,7 +426,7 @@ describe("AzureDevOpsConnectPanel", () => {
     fireEvent.change(screen.getByLabelText("Project name"), {
       target: { value: "Pluralfarm" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /Connect & scan/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Import repository/ }));
 
     await waitFor(() =>
       expect(screen.getByText(/already exists/)).toBeInTheDocument(),

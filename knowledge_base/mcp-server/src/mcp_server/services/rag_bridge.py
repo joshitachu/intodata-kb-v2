@@ -336,6 +336,7 @@ class RagBridge:
         filenames: set[str] | list[str] | None = None,
         extra_doc_names: set[str] | list[str] | None = None,
         force: bool = False,
+        filename_prefix: str | None = None,
     ) -> dict:
         """Push multiple docs to RAG.
 
@@ -344,6 +345,12 @@ class RagBridge:
         If `filenames` provided, only push docs whose filename is in that set.
         `extra_doc_names` lists non-numbered pack doc filenames to include alongside
         standard numbered enterprise docs (e.g. TABLE_INVENTORY.md).
+
+        `filename_prefix` names the sub-project a partitioned project's docs
+        belong to; every stored filename becomes `{prefix}/{name}`, matching what
+        the partition orchestrator writes. It is applied AFTER `filenames` /
+        `extra_doc_names` are matched, so those stay bare on-disk names. Leave it
+        None for a flat project.
 
         When MCP_INCREMENTAL_HASH_SKIP_ENABLED is True, docs whose SHA-256 matches
         the last successfully pushed hash are skipped.  Pass `force=True` to bypass
@@ -386,6 +393,13 @@ class RagBridge:
                 if not filename or not content:
                     result["errors"].append(f"Skipped empty doc: {filename}")
                     continue
+
+                # From here on, `filename` is the STORED name. The hash rows are
+                # keyed by it too, so the prefix must be applied before the skip
+                # check or a re-push of a sub-project would compare against a
+                # baseline that was never written under that key.
+                if filename_prefix:
+                    filename = f"{filename_prefix}/{filename}"
 
                 # Compute hash once; reused for both skip check and post-push upsert.
                 doc_hash = _sha256_hex(content) if hash_enabled else None

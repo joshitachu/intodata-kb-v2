@@ -6,23 +6,23 @@ import { DocsProjectSelector } from "@/components/DocsProjectSelector";
 import { DocList } from "@/components/DocList";
 import { DocPreview } from "@/components/DocPreview";
 import { MobileTopBar } from "@/components/mobile/MobileTopBar";
-import { useProjectDocs } from "@/hooks/useProjectDocs";
 import { useChatContext } from "@/contexts/ChatContext";
 import { useViewport } from "@/hooks/useViewport";
 import { cn } from "@/lib/utils";
+import type { DocFileInfo } from "@/types";
 
 export default function DocsPage() {
   const { selectedProject: projectId } = useChatContext();
-  const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
-  const { data } = useProjectDocs(projectId);
+  // The whole DocFileInfo, not a filename: a partitioned project repeats every
+  // document name across its sub-projects, so a name alone cannot identify
+  // which one to preview.
+  const [selectedDoc, setSelectedDoc] = useState<DocFileInfo | null>(null);
   const { isMobile } = useViewport();
 
   // Clear selected doc when project changes
   useEffect(() => {
     setSelectedDoc(null);
   }, [projectId]);
-
-  const selectedDocInfo = data?.docs.find((d) => d.name === selectedDoc);
 
   return (
     <div className="flex flex-col h-full" data-tour="project-docs-page">
@@ -64,8 +64,9 @@ export default function DocsPage() {
             {selectedDoc ? (
               <DocPreview
                 projectId={projectId}
-                filename={selectedDoc}
-                hasPdf={selectedDocInfo?.has_pdf ?? false}
+                filename={selectedDoc.name}
+                subproject={selectedDoc.subproject}
+                hasPdf={selectedDoc.has_pdf}
                 onClose={() => setSelectedDoc(null)}
               />
             ) : (

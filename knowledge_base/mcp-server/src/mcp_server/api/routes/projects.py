@@ -2604,6 +2604,34 @@ async def _run_generate_background(
     await log_mgr.emit_done(project_id)
 
 
+async def _sync_internal_layers_for_locations(
+    project_id: str, locations: list, log_mgr
+) -> dict:
+    """Replace a project's internal RAG layers across all its doc trees.
+
+    Dispatches on layout because the two cases need different routines: a flat
+    project uses ``RagBridge.sync_internal_layers`` unchanged, while a
+    partitioned one must delete the internal set ONCE and then push every
+    sub-project with a ``{subproject}/`` prefix -- calling the single-tree
+    version per partition would wipe each previous partition's layers.
+    """
+    from mcp_server.services.doc_layout import project_output_root
+    from mcp_server.services.partition_orchestrator import (
+        sync_internal_layers_for_subprojects,
+    )
+
+    bridge = RagBridge(log_manager=log_mgr)
+    if len(locations) == 1 and locations[0].subproject is None:
+        return await bridge.sync_internal_layers(project_id, locations[0].docs_dir)
+
+    return await sync_internal_layers_for_subprojects(
+        project_id,
+        project_output_root(project_id),
+        [(location.subproject, None) for location in locations],
+        log_mgr,
+    )
+
+
 @router.post("/push-to-rag", response_model=StatusResponse)
 async def push_to_rag(req: PushToRagRequest, request: Request):
     """Push generated .md files from output dir to RAG pipeline."""
@@ -2616,24 +2644,49 @@ async def push_to_rag(req: PushToRagRequest, request: Request):
         if not project:
             raise HTTPException(status_code=404, detail=f"Project not found: {req.project_id}")
 
-        docs_dir = config.project_root / "output" / req.project_id / "docs"
-        if not docs_dir.exists():
-            raise HTTPException(status_code=404, detail=f"No docs found at {docs_dir}")
-        # Include any non-numbered docs (plugin pack outputs like TABLE_INVENTORY.md)
-        pack_docs = {
-            f.name for f in docs_dir.glob("*.md")
-            if not f.name[0].isdigit() and not f.name.startswith("_")
-        }
+        from mcp_server.services.doc_layout import doc_locations, project_output_root
+
+        locations = doc_locations(req.project_id)
+        if not locations:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No docs found under {project_output_root(req.project_id)}",
+            )
+
         bridge = RagBridge(log_manager=log_mgr)
-        result = await bridge.push_docs(
-            project_id=req.project_id,
-            output_dir=str(docs_dir),
-            extra_doc_names=pack_docs or None,
-            # Manual push is the operator recovery path: force a full re-embed so
-            # any out-of-band vector-store drift is repaired regardless of hashes.
-            force=True,
+        result: dict = {"pushed": 0, "skipped": 0, "errors": []}
+        for location in locations:
+            # Include any non-numbered docs (plugin pack outputs like
+            # TABLE_INVENTORY.md), computed per tree -- packs may differ between
+            # sub-projects.
+            pack_docs = {
+                f.name for f in location.docs_dir.glob("*.md")
+                if not f.name[0].isdigit() and not f.name.startswith("_")
+            }
+            part = await bridge.push_docs(
+                project_id=req.project_id,
+                output_dir=str(location.docs_dir),
+                extra_doc_names=pack_docs or None,
+                # Sub-project docs are stored in RAG under a "{subproject}/"
+                # prefix by partition_orchestrator._push_partition_docs; a manual
+                # re-push must use the same names or it creates a duplicate,
+                # unprefixed copy of every document instead of repairing one.
+                filename_prefix=location.subproject,
+                # Manual push is the operator recovery path: force a full re-embed
+                # so any out-of-band vector-store drift is repaired regardless of
+                # hashes.
+                force=True,
+            )
+            result["pushed"] += part["pushed"]
+            result["skipped"] += part["skipped"]
+            result["errors"].extend(
+                f"{location.subproject}/{e}" if location.subproject else e
+                for e in part["errors"]
+            )
+
+        internal_sync = await _sync_internal_layers_for_locations(
+            req.project_id, locations, log_mgr
         )
-        internal_sync = await bridge.sync_internal_layers(req.project_id, docs_dir)
         total_errors = len(result["errors"]) + len(internal_sync["errors"])
 
         if (result["pushed"] > 0 or internal_sync["pushed"] > 0) and total_errors == 0:
@@ -2957,21 +3010,35 @@ async def get_doc_content(
     filename: str,
     request: Request,
     source: str = Query("published", pattern="^(published|staging)$"),
+    subproject: str | None = Query(
+        None,
+        description=(
+            "Sub-project the document belongs to. Required for a partitioned "
+            "project; omit it for a flat project."
+        ),
+    ),
 ):
     """Return raw markdown content for inline preview."""
+    from mcp_server.services.doc_layout import is_safe_path_segment, resolve_doc_location
+
     await require_project_access(request, project_id)
     if not filename.endswith(".md"):
         raise HTTPException(status_code=400, detail="Only .md files can be previewed")
-    if "/" in filename or "\\" in filename or ".." in filename:
+    if not is_safe_path_segment(filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    docs_dir = config.project_root / "output" / project_id / ("docs_staging" if source == "staging" else "docs")
-    file_path = docs_dir / filename
+    location = resolve_doc_location(project_id, subproject, source=source)
+    if location is None:
+        label = f"{subproject}/{filename}" if subproject else filename
+        raise HTTPException(status_code=404, detail=f"File not found: {label}")
+
+    file_path = location.docs_dir / filename
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail=f"File not found: {filename}")
+        label = f"{subproject}/{filename}" if subproject else filename
+        raise HTTPException(status_code=404, detail=f"File not found: {label}")
 
     content = file_path.read_text(encoding="utf-8", errors="replace")
-    return {"filename": filename, "content": content}
+    return {"filename": filename, "subproject": location.subproject, "content": content}
 
 
 @router.post(
@@ -3461,17 +3528,18 @@ async def list_project_docs(
         svc = PdfService()
         docs = svc.list_docs(project_id)
     else:
+        from mcp_server.services.doc_layout import STAGING, doc_locations
         from mcp_server.services.doc_quality_scorer import is_published_doc_filename
 
-        docs_dir = config.project_root / "output" / project_id / "docs_staging"
         docs = []
-        if docs_dir.is_dir():
-            for md_file in sorted(docs_dir.glob("*.md")):
+        for location in doc_locations(project_id, source=STAGING):
+            for md_file in sorted(location.docs_dir.glob("*.md")):
                 if not is_published_doc_filename(md_file.name):
                     continue
                 stat = md_file.stat()
                 docs.append({
                     "name": md_file.name,
+                    "subproject": location.subproject,
                     "type": "md",
                     "size_bytes": stat.st_size,
                     "has_pdf": False,
@@ -3480,15 +3548,34 @@ async def list_project_docs(
                         tz=datetime.timezone.utc,
                     ).isoformat(),
                 })
+
+    # Preserve first-seen order (the listing order of doc_locations) rather than
+    # re-sorting: partitions are already returned in stable display order.
+    subprojects = list(
+        dict.fromkeys(d["subproject"] for d in docs if d.get("subproject"))
+    )
     return DocListResponse(
         project_id=project_id,
         docs=[DocFileInfo(**d) for d in docs],
         total=len(docs),
+        subprojects=subprojects,
     )
 
 
 @router.get("/projects/{project_id}/docs/{filename}")
-async def download_doc(project_id: str, filename: str, request: Request):
+async def download_doc(
+    project_id: str,
+    filename: str,
+    request: Request,
+    subproject: str | None = Query(
+        None,
+        description=(
+            "Sub-project the document belongs to. Required for a partitioned "
+            "project, where every sub-project emits the same document names; "
+            "omit it for a flat project."
+        ),
+    ),
+):
     """Download a specific doc file (md or pdf)."""
     await require_project_access(request, project_id)
     # Validate extension
@@ -3504,9 +3591,10 @@ async def download_doc(project_id: str, filename: str, request: Request):
     from mcp_server.services.pdf_service import PdfService
 
     svc = PdfService()
-    path = svc.get_doc_path(project_id, filename)
+    path = svc.get_doc_path(project_id, filename, subproject=subproject)
     if not path:
-        raise HTTPException(status_code=404, detail=f"File not found: {filename}")
+        label = f"{subproject}/{filename}" if subproject else filename
+        raise HTTPException(status_code=404, detail=f"File not found: {label}")
 
     if filename.endswith(".md"):
         # Markdown documents are small enough to return atomically.  Serving them via
@@ -3756,6 +3844,23 @@ def _derive_job_summary(
     return heuristic_summary(job_name, direction, external_systems, component_types)
 
 
+def _project_doc_dirs(project_id: str) -> list[Path]:
+    """Every documentation directory to search for a project, published first.
+
+    Readers that look a job up in the generated docs must cover all of them: a
+    partitioned project keeps one tree per sub-project, so a single
+    ``output/{pid}/docs`` lookup finds nothing at all. Falls back to the staging
+    trees when nothing is published yet, preserving the previous
+    ``docs`` -> ``docs_staging`` behaviour.
+    """
+    from mcp_server.services.doc_layout import PUBLISHED, STAGING, doc_locations
+
+    locations = doc_locations(project_id, source=PUBLISHED) or doc_locations(
+        project_id, source=STAGING
+    )
+    return [location.docs_dir for location in locations]
+
+
 # Matches a "**Purpose**: ..." line and captures content up to the next blank
 # line or the next bold field (e.g. "**Component Count**:").
 _PURPOSE_LINE_RE = re.compile(
@@ -3775,15 +3880,21 @@ def _extract_job_purpose_from_inventory(
     Substring-grepping paragraphs misses this because the Purpose line
     does not repeat the job name. We must parse the heading boundary.
     """
-    docs_dir = config.project_root / "output" / project_id / "docs"
-    if not docs_dir.exists():
-        docs_dir = config.project_root / "output" / project_id / "docs_staging"
-    inventory_path = docs_dir / "02_COMPONENT_INVENTORY.md"
-    if not inventory_path.exists():
-        return None
-    try:
-        content = inventory_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    # A partitioned project has one inventory per sub-project and the job lives
+    # in exactly one of them; scan them in display order and take the first hit.
+    content = ""
+    for docs_dir in _project_doc_dirs(project_id):
+        inventory_path = docs_dir / "02_COMPONENT_INVENTORY.md"
+        if not inventory_path.exists():
+            continue
+        try:
+            candidate = inventory_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if re.search(rf"^#{{2,4}}\s*{re.escape(job_name)}\s*$", candidate, re.MULTILINE):
+            content = candidate
+            break
+    if not content:
         return None
 
     # Find the job's heading at any depth (####, ###, ##) and capture the
@@ -3817,10 +3928,8 @@ def _extract_job_doc_sections(
     Replaces the previous ``## ``-only split which dragged in the entire
     inventory section for any job click.
     """
-    docs_dir = config.project_root / "output" / project_id / "docs"
-    if not docs_dir.exists():
-        docs_dir = config.project_root / "output" / project_id / "docs_staging"
-    if not docs_dir.exists():
+    docs_dirs = _project_doc_dirs(project_id)
+    if not docs_dirs:
         return []
 
     name_re = re.escape(job_name)
@@ -3832,7 +3941,9 @@ def _extract_job_doc_sections(
     any_heading_re = re.compile(r"^#{1,6}\s", re.MULTILINE)
 
     sections: list[JobDocSection] = []
-    for md_path in sorted(docs_dir.glob("*.md")):
+    for md_path in [
+        path for docs_dir in docs_dirs for path in sorted(docs_dir.glob("*.md"))
+    ]:
         try:
             content = md_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -3905,9 +4016,13 @@ async def get_project_graph(project_id: str, request: Request):
                     database=c.get("database", ""),
                 ))
 
-    # Check if docs exist for this project
-    docs_dir = config.project_root / "output" / project_id / "docs"
-    has_docs = docs_dir.exists() and any(docs_dir.glob("*.md"))
+    # Check if docs exist for this project (any tree: flat or per sub-project)
+    from mcp_server.services.doc_layout import doc_locations
+
+    has_docs = any(
+        any(location.docs_dir.glob("*.md"))
+        for location in doc_locations(project_id)
+    )
 
     # Read external systems from manifest (populated by scanner)
     job_external_systems: dict[str, list[str]] = manifest.get("job_external_systems", {})

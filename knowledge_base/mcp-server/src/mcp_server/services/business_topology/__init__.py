@@ -5,6 +5,10 @@ those facts for a bounded language-model task and validates the separate
 business-facing result.
 """
 
+from mcp_server.services.business_topology.assembly import (
+    GENERATED_BY as FLOW_EXTRACTION_GENERATED_BY,
+    assemble_topology,
+)
 from mcp_server.services.business_topology.composite import (
     build_composite_org_topology,
 )
@@ -14,6 +18,16 @@ from mcp_server.services.business_topology.context import (
 from mcp_server.services.business_topology.deterministic import (
     build_deterministic_topology,
 )
+from mcp_server.services.business_topology.doc_evidence import (
+    DOC_EVIDENCE_FILENAMES,
+    collect_doc_evidence,
+    register_doc_evidence,
+)
+from mcp_server.services.business_topology.flow_extraction import (
+    FlowExtraction,
+    parse_flow_extraction,
+)
+from mcp_server.services.business_topology.pruning import prune_to_valid
 from mcp_server.services.business_topology.evidence import (
     BusinessTopologyEvidenceBundle,
     artifact_evidence_id,
@@ -38,10 +52,18 @@ from mcp_server.services.business_topology.validation import (
 )
 
 __all__ = [
+    "DOC_EVIDENCE_FILENAMES",
+    "FLOW_EXTRACTION_GENERATED_BY",
     "BusinessTopology",
     "BusinessTopologyEvidenceBundle",
     "BusinessTopologyValidationReport",
+    "FlowExtraction",
     "artifact_evidence_id",
+    "assemble_topology",
+    "collect_doc_evidence",
+    "parse_flow_extraction",
+    "prune_to_valid",
+    "register_doc_evidence",
     "build_business_topology_evidence",
     "build_composite_evidence_catalog",
     "build_composite_org_topology",

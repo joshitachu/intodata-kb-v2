@@ -1296,6 +1296,11 @@ class DeleteProjectResponse(BaseModel):
 
 class DocFileInfo(BaseModel):
     name: str
+    # Sub-project this document belongs to, or None for a flat project. A
+    # partitioned project emits the same document names in every partition, so
+    # ``name`` alone does not identify a document -- readers must key on
+    # ``(subproject, name)`` and pass ``subproject`` back on download/preview.
+    subproject: str | None = None
     type: str
     size_bytes: int
     has_pdf: bool = False
@@ -1306,6 +1311,10 @@ class DocListResponse(BaseModel):
     project_id: str
     docs: list[DocFileInfo]
     total: int
+    # Sub-projects present in ``docs``, in display order. Empty for a flat
+    # project, which is what lets a client hide the sub-project filter entirely
+    # rather than showing a one-entry control.
+    subprojects: list[str] = []
 
 
 class EvidenceDocUpdateResponse(BaseModel):

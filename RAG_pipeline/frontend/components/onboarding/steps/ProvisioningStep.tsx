@@ -16,25 +16,20 @@ import { useOnboardingConfig } from "@/hooks/useOnboarding";
 import { useOnboardingContext } from "@/contexts/OnboardingContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody } from "@/components/ui/card";
-import {
-  generateDocsWhenScanned,
-  scanProject,
-  subscribeToLogs,
-  uploadZip,
-  type LogEvent,
-} from "@/lib/mcpClient";
+import { addGithubSource, uploadZip } from "@/lib/mcpClient";
+import type { GitImportDraft } from "@/contexts/OnboardingContext";
 
 type Phase = "pending" | "processing" | "completed" | "failed" | "skipped";
 
-type ZipStageId =
-  | "queued"
-  | "uploading"
-  | "scanning"
-  | "generating"
-  | "background"
-  | "pushing"
-  | "complete"
-  | "failed";
+/**
+ * Onboarding imports and stops.
+ *
+ * The wizard used to upload, scan and then dispatch a documentation run, which
+ * spent hours of model time on a choice the user was never shown -- including
+ * which pack to write with. Scanning and generating are now explicit actions on
+ * the project's row in Settings > Sources.
+ */
+type ZipStageId = "queued" | "uploading" | "complete" | "failed";
 
 interface ZipState {
   platformId: string;
@@ -43,7 +38,6 @@ interface ZipState {
   stage: ZipStageId;
   progress: number;
   error: string | null;
-  logs: string[];
 }
 
 interface Props {
@@ -63,23 +57,15 @@ const SKIP_STAGES = [
 ] as const;
 
 const ZIP_STAGE_LABELS: Record<ZipStageId, string> = {
-  queued: "Queued",
+  queued: "Waiting",
   uploading: "Uploading",
-  scanning: "Scanning",
-  generating: "Generating docs",
-  background: "Generating in background",
-  pushing: "Pushing to knowledge base",
-  complete: "Complete",
+  complete: "Imported, ready to scan",
   failed: "Failed",
 };
 
 const ZIP_STAGE_PROGRESS: Record<ZipStageId, number> = {
   queued: 0,
   uploading: 0,
-  scanning: 35,
-  generating: 75,
-  background: 100,
-  pushing: 90,
   complete: 100,
   failed: 100,
 };
@@ -92,37 +78,6 @@ function slugify(input: string): string {
     .slice(0, 80) || "project";
 }
 
-/**
- * Classify an MCP log event into the next stage for a given ZIP.
- * Returns `null` when the event doesn't change the stage.
- */
-function stageFromEvent(ev: LogEvent): ZipStageId | null {
-  const text = `${ev.type ?? ""} ${ev.data ?? ""} ${ev.message ?? ""}`.toLowerCase();
-  if (ev.type === "error" || ev.level === "error") return "failed";
-  if (ev.type === "scan_complete" || text.includes("scan complete") || text.includes("scan completed")) return "generating";
-  if (ev.level === "done" || ev.type === "done") return "complete";
-  if (ev.type === "generate_complete" || text.includes("generate complete") || text.includes("generation complete")) return "pushing";
-  if (ev.type === "push_complete" || text.includes("push complete") || text.includes("pushed to rag")) return "complete";
-  return null;
-}
-
-function progressFromEvent(ev: LogEvent, stage: ZipStageId): number {
-  const text = `${ev.type ?? ""} ${ev.data ?? ""} ${ev.message ?? ""}`.toLowerCase();
-  if (ev.level === "done") return 100;
-  if (text.includes("pre-processing")) return 45;
-  if (text.includes("pre-processed")) return 55;
-  if (text.includes("resolved doc generation routing")) return 65;
-  if (text.includes("rag") || text.includes("push")) return 90;
-  return ZIP_STAGE_PROGRESS[stage];
-}
-
-function formatLogLine(ev: LogEvent): string {
-  const level = ev.level ?? "info";
-  const message = ev.message ?? ev.data ?? "";
-  const type = ev.type ? `${ev.type}: ` : "";
-  return `[${level}] ${type}${message}`;
-}
-
 export function ProvisioningStep({
   initialStatus,
   workspaceName,
@@ -130,7 +85,7 @@ export function ProvisioningStep({
   selectedToolIds,
   onDone,
 }: Props) {
-  const { zipFiles } = useOnboardingContext();
+  const { zipFiles, gitImport } = useOnboardingContext();
   const hasZips = Object.keys(zipFiles).length > 0;
 
   if (hasZips) {
@@ -138,6 +93,19 @@ export function ProvisioningStep({
       <RealProcessing
         workspaceName={workspaceName}
         zipFiles={zipFiles}
+        onDone={onDone}
+      />
+    );
+  }
+
+  // A queued Git import is real work. It used to fall through to SkipProcessing,
+  // whose stages are cosmetic timers, so the wizard showed "Configuring
+  // knowledge base" and reported success without registering anything.
+  if (gitImport) {
+    return (
+      <GitImportProcessing
+        workspaceName={workspaceName}
+        draft={gitImport}
         onDone={onDone}
       />
     );
@@ -154,7 +122,127 @@ export function ProvisioningStep({
   );
 }
 
-// --- real SSE-driven flow --------------------------------------------------
+// --- real Git import ------------------------------------------------------
+
+/** Derive a project id and display name from the repository address. */
+function projectIdentityFromRepoUrl(repoUrl: string, workspaceSlug: string): {
+  projectId: string;
+  displayName: string;
+} {
+  // Tolerates a trailing slash, a `.git` suffix and Azure DevOps `_git/<name>`.
+  const trimmed = repoUrl.trim().replace(/\/+$/, "").replace(/\.git$/i, "");
+  const name = trimmed.split("/").filter(Boolean).pop() ?? "";
+  return {
+    projectId: slugify(name || workspaceSlug),
+    displayName: name || workspaceSlug,
+  };
+}
+
+function GitImportProcessing({
+  workspaceName,
+  draft,
+  onDone,
+}: {
+  workspaceName: string | null | undefined;
+  draft: GitImportDraft;
+  onDone: () => void;
+}) {
+  const workspaceSlug = slugify(workspaceName || "workspace");
+  const [state, setState] = useState<"importing" | "done" | "failed">("importing");
+  const [error, setError] = useState<string | null>(null);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const startedRef = useRef(false);
+
+  useEffect(() => {
+    // Strict Mode mounts effects twice in development; a second POST would try to
+    // register the same project again.
+    if (startedRef.current) return;
+    startedRef.current = true;
+
+    const identity = projectIdentityFromRepoUrl(draft.repoUrl, workspaceSlug);
+    setProjectId(identity.projectId);
+    addGithubSource({
+      repoUrl: draft.repoUrl,
+      projectId: identity.projectId,
+      platform: draft.platformId,
+      displayName: identity.displayName,
+      githubToken: draft.token,
+      installationId: draft.installationId,
+    })
+      .then(() => setState("done"))
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : String(err));
+        setState("failed");
+      });
+  }, [draft, workspaceSlug]);
+
+  return (
+    <div className="w-full max-w-xl mx-auto px-6">
+      <div className="flex flex-col items-center text-center mb-8">
+        <div className="relative mb-6">
+          {state === "importing" && (
+            <span className="absolute inset-0 rounded-full bg-primary/15 blur-2xl scale-110 animate-pulse" aria-hidden />
+          )}
+          <div
+            className={cn(
+              "relative flex h-16 w-16 items-center justify-center rounded-2xl shadow-elevation-md",
+              state === "failed"
+                ? "bg-destructive/10 text-destructive"
+                : "bg-primary text-primary-foreground",
+            )}
+          >
+            {state === "failed" ? (
+              <AlertCircle className="h-8 w-8" aria-hidden />
+            ) : (
+              <Server className="h-8 w-8" aria-hidden />
+            )}
+          </div>
+        </div>
+        <h2 className="text-2xl font-semibold tracking-tight text-foreground mb-2">
+          {state === "importing"
+            ? "Importing your repository"
+            : state === "done"
+              ? "Repository imported"
+              : "We could not import that repository"}
+        </h2>
+        <p className="text-sm text-muted-foreground max-w-md">
+          {state === "importing"
+            ? "Fetching a copy of the code. This usually takes well under a minute."
+            : state === "done"
+              ? `Saved as "${projectId}". Nothing has been scanned yet — open Settings > Sources and choose "Scan now" when you are ready.`
+              : (error ??
+                "Check the address and, for a private repository, the access token. You can also add it later from Settings > Sources.")}
+        </p>
+      </div>
+
+      <Card className="mb-8">
+        <CardBody className="space-y-3">
+          <div className="flex items-center gap-3">
+            <StageIcon stage={state === "importing" ? "uploading" : state === "done" ? "complete" : "failed"} />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold text-foreground">{draft.repoUrl}</p>
+              <p className="text-xs text-muted-foreground">
+                {state === "importing"
+                  ? "Cloning"
+                  : state === "done"
+                    ? "Imported, ready to scan"
+                    : "Failed"}
+              </p>
+            </div>
+          </div>
+        </CardBody>
+      </Card>
+
+      {state !== "importing" && (
+        <div className="flex justify-center">
+          <Button onClick={onDone}>Continue</Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- real ZIP import ------------------------------------------------------
 
 function RealProcessing({
   workspaceName,
@@ -176,17 +264,17 @@ function RealProcessing({
       stage: "queued" as ZipStageId,
       progress: 0,
       error: null,
-      logs: [],
     })),
   );
   const [currentIdx, setCurrentIdx] = useState(0);
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const activeIdxRef = useRef(currentIdx);
   activeIdxRef.current = currentIdx;
   const doneRef = useRef(false);
 
-  // Process the current ZIP when it enters the "queued" slot
+  // Upload the current ZIP when it enters the "queued" slot. Sequential on
+  // purpose: several concurrent multi-hundred-megabyte uploads from a browser
+  // is not kinder to anyone.
   useEffect(() => {
     if (currentIdx >= items.length) {
       if (!doneRef.current) {
@@ -200,125 +288,41 @@ function RealProcessing({
     const item = items[idx];
     if (!item || item.stage !== "queued") return;
 
-    let unsubscribe: (() => void) | null = null;
+    let cancelled = false;
 
     async function run() {
       try {
-        // 1. Upload
         updateItem(idx, { stage: "uploading", progress: 0 });
+        // `upload-zip` unpacks and registers the project. It does not scan, and
+        // nothing here asks it to: the scan is the user's call, from
+        // Settings > Sources.
         await uploadZip({
           file: item.file,
           projectId: item.projectId,
           platform: item.platformId,
-          onProgress: (pct) => updateItem(idx, { progress: pct }),
+          onProgress: (pct) => {
+            if (!cancelled) updateItem(idx, { progress: pct });
+          },
         });
-
-        // 2. Subscribe to logs, trigger scan, then trigger generation once scan completes.
-        // Onboarding advances after generation is accepted; the long generation/RAG work
-        // continues in the MCP server background.
-        await new Promise<void>((resolve, reject) => {
-          let generateTriggered = false;
-          let settled = false;
-          unsubscribe = subscribeToLogs(
-            item.projectId,
-            (ev) => {
-              appendLog(idx, ev);
-              const next = stageFromEvent(ev);
-              if (!next) {
-                updateItem(idx, {
-                  progress: progressFromEvent(ev, generateTriggered ? "generating" : "scanning"),
-                });
-                return;
-              }
-              if (next === "generating" && !generateTriggered) {
-                generateTriggered = true;
-                updateItem(idx, {
-                  stage: "generating",
-                  progress: progressFromEvent(ev, "generating"),
-                });
-                // Same guard as the Sources pipeline: the log marker is a hint,
-                // the project row is the authority on scan_result.json existing.
-                generateDocsWhenScanned(item.projectId)
-                  .then(() => {
-                    if (settled) return;
-                    settled = true;
-                    appendLog(
-                      idx,
-                      {
-                        level: "info",
-                        message:
-                          "Documentation generation started. You can continue while it runs in the background.",
-                        raw: null,
-                      },
-                    );
-                    updateItem(idx, {
-                      stage: "background",
-                      progress: ZIP_STAGE_PROGRESS.background,
-                    });
-                    resolve();
-                  })
-                  .catch((err) => {
-                    if (settled) return;
-                    settled = true;
-                    updateItem(idx, {
-                      stage: "failed",
-                      progress: ZIP_STAGE_PROGRESS.failed,
-                      error: err instanceof Error ? err.message : String(err),
-                    });
-                    reject(err);
-                  });
-              } else if (next === "pushing") {
-                updateItem(idx, { stage: "pushing", progress: progressFromEvent(ev, "pushing") });
-              } else if (next === "complete") {
-                if (settled) return;
-                settled = true;
-                updateItem(idx, { stage: "complete", progress: 100 });
-                resolve();
-              } else if (next === "failed") {
-                if (settled) return;
-                settled = true;
-                updateItem(idx, {
-                  stage: "failed",
-                  progress: ZIP_STAGE_PROGRESS.failed,
-                  error: ev.message ?? ev.data ?? "Pipeline reported an error",
-                });
-                reject(new Error(ev.message ?? ev.data ?? "Pipeline error"));
-              }
-            },
-            () => {
-              // SSE errors are expected on server restart — we only log, not fail
-            },
-          );
-
-          // upload-zip only unpacks + registers — scan must be triggered explicitly
-          updateItem(idx, { stage: "scanning", progress: ZIP_STAGE_PROGRESS.scanning });
-          scanProject(item.projectId).catch((err) => {
-            if (settled) return;
-            settled = true;
-            updateItem(idx, {
-              stage: "failed",
-              progress: ZIP_STAGE_PROGRESS.failed,
-              error: err instanceof Error ? err.message : String(err),
-            });
-            reject(err);
-          });
-        });
-
-        setCurrentIdx((i) => i + 1);
+        if (cancelled) return;
+        updateItem(idx, { stage: "complete", progress: 100 });
       } catch (err) {
+        if (cancelled) return;
         updateItem(idx, {
           stage: "failed",
+          progress: ZIP_STAGE_PROGRESS.failed,
           error: err instanceof Error ? err.message : String(err),
         });
       } finally {
-        if (unsubscribe) unsubscribe();
+        // Advance either way: one bad archive must not strand the rest.
+        if (!cancelled) setCurrentIdx((i) => i + 1);
       }
     }
 
     run();
 
     return () => {
-      if (unsubscribe) unsubscribe();
+      cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentIdx]);
@@ -331,25 +335,13 @@ function RealProcessing({
     });
   }
 
-  function appendLog(idx: number, ev: LogEvent) {
-    setItems((prev) => {
-      const next = [...prev];
-      const cur = next[idx];
-      if (!cur) return prev;
-      const line = formatLogLine(ev);
-      next[idx] = { ...cur, logs: [...cur.logs.slice(-199), line] };
-      return next;
-    });
-  }
-
   function retry(idx: number) {
-    updateItem(idx, { stage: "queued", progress: 0, error: null, logs: [] });
+    updateItem(idx, { stage: "queued", progress: 0, error: null });
     if (idx < activeIdxRef.current) setCurrentIdx(idx);
   }
 
-  const allReadyToContinue = items.every(
-    (i) => i.stage === "background" || i.stage === "complete" || i.stage === "failed",
-  );
+  const allSettled = items.every((i) => i.stage === "complete" || i.stage === "failed");
+  const importedCount = items.filter((i) => i.stage === "complete").length;
 
   return (
     <div className="w-full max-w-2xl mx-auto px-6">
@@ -361,11 +353,12 @@ function RealProcessing({
           </div>
         </div>
         <h2 className="text-2xl font-semibold tracking-tight text-foreground mb-2">
-          Processing your sources
+          {allSettled ? "Your sources are imported" : "Importing your sources"}
         </h2>
         <p className="text-sm text-muted-foreground max-w-md">
-          Each ZIP uploads and scans here. Documentation generation starts in
-          the background so you can continue without waiting for the full run.
+          {allSettled
+            ? "Nothing has been scanned yet. Open Settings > Sources and choose “Scan now” on a source when you are ready — then you pick what documentation to write."
+            : "Each archive is uploaded and unpacked here. Scanning happens later, when you ask for it."}
         </p>
       </div>
 
@@ -381,7 +374,7 @@ function RealProcessing({
                   </p>
                   <p className="text-xs text-muted-foreground">
                     {ZIP_STAGE_LABELS[item.stage]}
-                    {item.stage === "uploading" && ` — ${item.progress}%`}
+                    {item.stage === "uploading" && ` — ${Math.round(item.progress)}%`}
                   </p>
                 </div>
                 {item.stage === "failed" && (
@@ -403,43 +396,20 @@ function RealProcessing({
                 </div>
               )}
 
-              {item.stage === "background" && (
-                <p className="text-xs text-muted-foreground">
-                  Generation is running in the background. You can check progress later in Settings &gt; Sources.
-                </p>
-              )}
-
-              {item.error && (
-                <p className="text-xs text-destructive">{item.error}</p>
-              )}
-
-              <button
-                type="button"
-                onClick={() =>
-                  setExpanded((e) => ({ ...e, [item.platformId]: !e[item.platformId] }))
-                }
-                className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-              >
-                {expanded[item.platformId] ? (
-                  <ChevronDown className="h-3.5 w-3.5" />
-                ) : (
-                  <ChevronRight className="h-3.5 w-3.5" />
-                )}
-                {item.logs.length} log line{item.logs.length === 1 ? "" : "s"}
-              </button>
-
-              {expanded[item.platformId] && (
-                <pre className="max-h-48 overflow-auto rounded bg-muted/40 p-2 text-[11px] leading-snug text-muted-foreground">
-                  {item.logs.join("\n") || "Waiting for log output…"}
-                </pre>
-              )}
+              {item.error && <p className="text-xs text-destructive">{item.error}</p>}
             </CardBody>
           </Card>
         ))}
       </div>
 
-      {allReadyToContinue && (
-        <div className="flex justify-center">
+      {allSettled && (
+        <div className="flex flex-col items-center gap-2">
+          {importedCount === 0 && (
+            <p className="text-sm text-destructive">
+              None of the archives could be imported. You can try again from
+              Settings &gt; Sources.
+            </p>
+          )}
           <Button onClick={onDone}>Continue</Button>
         </div>
       )}
@@ -448,7 +418,7 @@ function RealProcessing({
 }
 
 function StageIcon({ stage }: { stage: ZipStageId }) {
-  if (stage === "complete" || stage === "background") {
+  if (stage === "complete") {
     return (
       <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
         <Check className="h-3.5 w-3.5" strokeWidth={3} aria-hidden />

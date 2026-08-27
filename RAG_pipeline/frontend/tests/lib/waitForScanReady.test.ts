@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { generateDocsWhenScanned, waitForScanReady } from "@/lib/mcpClient";
+import {
+  generateDocsWhenScanned,
+  waitForGenerateSettled,
+  waitForScanReady,
+} from "@/lib/mcpClient";
 
 /**
  * Doc generation must never be dispatched before the scan has produced a usable
@@ -52,6 +56,7 @@ function statuses(...values: Array<Record<string, unknown>>) {
 
 const READY = { project_id: "p", status: "ready" };
 const SCANNING = { project_id: "p", status: "scanning" };
+const GENERATING = { project_id: "p", status: "generating" };
 
 describe("waitForScanReady", () => {
   it("returns immediately when the scan is already ready", async () => {
@@ -121,5 +126,45 @@ describe("generateDocsWhenScanned", () => {
     expect(
       fetchMock.mock.calls.some(([url]) => String(url).includes("/api/source/generate")),
     ).toBe(false);
+  });
+});
+
+/**
+ * The documentation run's completion signal.
+ *
+ * Scanning and generating are separate user actions, so the UI needs to know when
+ * each one has actually finished. It reads the project row for the same reason
+ * `waitForScanReady` does: the log markers it used to watch ("generation
+ * complete", "pushed to rag") are text, arrive out of order, and can belong to an
+ * earlier run.
+ */
+describe("waitForGenerateSettled", () => {
+  it("waits out the generating state, then reports the settled row", async () => {
+    const fetchMock = statuses(GENERATING, GENERATING, READY);
+
+    await expect(waitForGenerateSettled("p", { pollMs: 1 })).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("surfaces a failed documentation run instead of reporting success", async () => {
+    statuses({ project_id: "p", status: "error", error_message: "pack denied" });
+    await expect(waitForGenerateSettled("p", { pollMs: 1 })).rejects.toThrow("pack denied");
+  });
+
+  it("returns at once when nothing is generating", async () => {
+    // POST /mcp/generate commits status='generating' before it answers, so a
+    // non-generating row here means the run is already over, not about to start.
+    const fetchMock = statuses(READY);
+    await expect(waitForGenerateSettled("p")).resolves.toMatchObject({ status: "ready" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("times out rather than polling forever", async () => {
+    statuses(GENERATING);
+    await expect(
+      waitForGenerateSettled("p", { pollMs: 1, timeoutMs: 5 }),
+    ).rejects.toThrow(/Timed out .* waiting for the documentation run/);
   });
 });

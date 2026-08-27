@@ -8,6 +8,9 @@ export async function GET(
 ) {
   const { projectId, filename } = await params;
   const cookieHeader = request.headers.get("cookie") || "";
+  // A partitioned project stores the same doc names under several
+  // sub-projects, so the filename alone does not identify a file there.
+  const subproject = request.nextUrl.searchParams.get("subproject");
 
   // Validate extension
   if (!filename.endsWith(".md") && !filename.endsWith(".pdf")) {
@@ -17,9 +20,13 @@ export async function GET(
     );
   }
 
+  const query = subproject
+    ? `?subproject=${encodeURIComponent(subproject)}`
+    : "";
+
   try {
     const res = await fetch(
-      `${KB_API_URL}/mcp/projects/${projectId}/docs/${filename}`,
+      `${KB_API_URL}/mcp/projects/${projectId}/docs/${encodeURIComponent(filename)}${query}`,
       { headers: { Cookie: cookieHeader } },
     );
 

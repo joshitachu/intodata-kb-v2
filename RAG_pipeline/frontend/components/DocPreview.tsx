@@ -7,6 +7,8 @@ import { MarkdownContent } from "@/components/MarkdownContent";
 interface DocPreviewProps {
   projectId: string;
   filename: string;
+  /** Sub-project the doc belongs to; null for a flat project. */
+  subproject: string | null;
   hasPdf: boolean;
   onClose: () => void;
 }
@@ -14,6 +16,7 @@ interface DocPreviewProps {
 export function DocPreview({
   projectId,
   filename,
+  subproject,
   hasPdf,
   onClose,
 }: DocPreviewProps) {
@@ -21,13 +24,24 @@ export function DocPreview({
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Every sub-project of a partitioned project holds the same doc names, so the
+  // sub-project has to travel with the request or the backend cannot tell which
+  // file is meant.
+  const query = subproject
+    ? `?subproject=${encodeURIComponent(subproject)}`
+    : "";
+  const href = `/api/docs/${projectId}/${encodeURIComponent(filename)}${query}`;
+  const pdfHref = `/api/docs/${projectId}/${encodeURIComponent(
+    filename.replace(/\.md$/, ".pdf"),
+  )}${query}`;
+
   useEffect(() => {
     let cancelled = false;
     setIsLoading(true);
     setError(null);
     setContent(null);
 
-    fetch(`/api/docs/${projectId}/${filename}`)
+    fetch(href)
       .then(async (res) => {
         if (!res.ok) {
           throw new Error(`Failed to load: ${res.statusText}`);
@@ -50,18 +64,21 @@ export function DocPreview({
     return () => {
       cancelled = true;
     };
-  }, [projectId, filename]);
-
-  const pdfFilename = filename.replace(/\.md$/, ".pdf");
+  }, [href]);
 
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b bg-card">
-        <h3 className="text-sm font-medium truncate">{filename}</h3>
+        <h3 className="text-sm font-medium truncate">
+          {subproject && (
+            <span className="text-muted-foreground">{subproject} / </span>
+          )}
+          {filename}
+        </h3>
         <div className="flex items-center gap-2 shrink-0">
           <a
-            href={`/api/docs/${projectId}/${filename}`}
+            href={href}
             download
             className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border hover:bg-muted transition-colors"
           >
@@ -70,7 +87,7 @@ export function DocPreview({
           </a>
           {hasPdf && (
             <a
-              href={`/api/docs/${projectId}/${pdfFilename}`}
+              href={pdfHref}
               download
               className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
             >

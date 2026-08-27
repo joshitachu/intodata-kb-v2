@@ -30,16 +30,18 @@ const REPOS = [
 
 function renderPanel(overrides: Partial<Parameters<typeof GithubAppConnectPanel>[0]> = {}) {
   const onConnected = vi.fn();
+  const onUseTokenInstead = vi.fn();
   render(
     <GithubAppConnectPanel
       platforms={[{ id: "talend", label: "Talend" }]}
       defaultPlatform="talend"
       existingProjects={[]}
       onConnected={onConnected}
+      onUseTokenInstead={onUseTokenInstead}
       {...overrides}
     />,
   );
-  return { onConnected };
+  return { onConnected, onUseTokenInstead };
 }
 
 async function openPicker() {
@@ -84,7 +86,7 @@ describe("GithubAppConnectPanel", () => {
     await openPicker();
 
     fireEvent.click(screen.getByRole("checkbox", { name: /etl/ }));
-    fireEvent.click(screen.getByRole("button", { name: /Connect & scan/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Import repository/ }));
 
     await waitFor(() =>
       expect(addGithubSource).toHaveBeenCalledWith({
@@ -105,7 +107,7 @@ describe("GithubAppConnectPanel", () => {
 
     fireEvent.click(screen.getByRole("checkbox", { name: /etl/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: /api/ }));
-    fireEvent.click(screen.getByRole("button", { name: /Connect 2 repositories/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Import 2 repositories/ }));
 
     await waitFor(() =>
       expect(createMultiRepoProject).toHaveBeenCalledWith({
@@ -155,7 +157,7 @@ describe("GithubAppConnectPanel", () => {
 
     fireEvent.click(screen.getByRole("checkbox", { name: /etl/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: /api/ }));
-    fireEvent.click(screen.getByRole("button", { name: /Connect 2 repositories/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Import 2 repositories/ }));
 
     await waitFor(() =>
       expect(screen.getByText(/could not be cloned: api/)).toBeInTheDocument(),

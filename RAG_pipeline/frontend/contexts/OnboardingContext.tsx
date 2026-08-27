@@ -28,6 +28,23 @@ interface OnboardingContextValue {
   zipFiles: Record<string, File>;
   setZipFile: (platformId: string, file: File | null) => void;
   clearZipFiles: () => void;
+  /**
+   * Wizard-local Git import, for the same reason as `zipFiles`: the access token
+   * is a secret and must never be written to the onboarding DB row, which is
+   * read back in plain JSON. Only the URL is persisted there; the credential
+   * stays in memory for the one provisioning step that needs it.
+   */
+  gitImport: GitImportDraft | null;
+  setGitImport: (draft: GitImportDraft | null) => void;
+}
+
+export interface GitImportDraft {
+  repoUrl: string;
+  platformId: string;
+  /** PAT for a private repo. Omitted when an App installation covers it. */
+  token?: string;
+  /** GitHub App installation to clone through, when one is connected. */
+  installationId?: number;
 }
 
 const OnboardingContext = createContext<OnboardingContextValue>({
@@ -42,6 +59,8 @@ const OnboardingContext = createContext<OnboardingContextValue>({
   zipFiles: {},
   setZipFile: () => {},
   clearZipFiles: () => {},
+  gitImport: null,
+  setGitImport: () => {},
 });
 
 export function OnboardingProvider({ children }: { children: ReactNode }) {
@@ -49,6 +68,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   const { data: companyData } = useCompanyStatus();
   const [tourActive, setTourActive] = useState(false);
   const [zipFiles, setZipFiles] = useState<Record<string, File>>({});
+  const [gitImport, setGitImport] = useState<GitImportDraft | null>(null);
 
   const setZipFile = useCallback((platformId: string, file: File | null) => {
     setZipFiles((prev) => {
@@ -75,6 +95,8 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
         zipFiles,
         setZipFile,
         clearZipFiles,
+        gitImport,
+        setGitImport,
       }}
     >
       {children}

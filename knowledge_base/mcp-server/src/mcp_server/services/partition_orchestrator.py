@@ -333,8 +333,11 @@ async def run_partitioned_generation(
     if succeeded and not cancelled:
         _write_composite_org_topology(project_id, fingerprint)
         await _push_upload_level_artifacts(project_id, log_mgr)
-        await _sync_internal_layers_multi(
-            project_id, run_id, output_root, [o for o in outcomes if o.success], log_mgr
+        await sync_internal_layers_for_subprojects(
+            project_id,
+            output_root,
+            [(o.subdir, o.run_id or run_id) for o in outcomes if o.success],
+            log_mgr,
         )
 
     # Aggregate + finalize the orchestration run and the project status.
@@ -645,75 +648,86 @@ async def _push_upload_level_artifacts(project_id: str, log_mgr) -> None:
         )
 
 
-async def _sync_internal_layers_multi(
+async def sync_internal_layers_for_subprojects(
     project_id: str,
-    run_id: int,
     output_root: Path,
-    succeeded: list[PartitionRunOutcome],
+    trees: list[tuple[str, int | None]],
     log_mgr,
-) -> None:
+) -> dict:
     """Internal-layer sync across sub-project docs trees.
+
+    ``trees`` is ``(output subdirectory, run id)`` per sub-project. Taking the
+    subdirectory rather than a run outcome lets the operator re-push path
+    (``POST /mcp/push-to-rag``) reuse this exact routine; that path has no run
+    outcomes, only directories on disk, and rebuilding the prefix rule there
+    would put two copies of it in the codebase.
 
     ``RagBridge.sync_internal_layers`` deletes the project's internal set
     wholesale before re-pushing one docs tree; calling it once per partition
     would wipe each previous partition's layers. This variant deletes once and
-    pushes every succeeded sub-project's internal artifacts with a
-    ``{subproject}/`` filename prefix, then replaces the merged entity aliases.
+    pushes every sub-project's internal artifacts with a ``{subproject}/``
+    filename prefix, then replaces the merged entity aliases.
+
+    Returns ``{pushed, aliases, errors}`` -- the same shape as
+    ``RagBridge.sync_internal_layers`` so callers can treat the two
+    interchangeably.
     """
+    result: dict = {"pushed": 0, "aliases": 0, "errors": []}
     bridge = RagBridge(log_manager=log_mgr)
     try:
         await bridge.delete_internal_documents(project_id)
     except Exception as exc:  # noqa: BLE001
-        await log_mgr.emit(
-            project_id,
+        message = (
             f"Internal-layer delete failed -- skipping internal sync to avoid "
-            f"mixing stale and new layers: {exc}",
-            level="error",
+            f"mixing stale and new layers: {exc}"
         )
-        return
+        result["errors"].append(message)
+        await log_mgr.emit(project_id, message, level="error")
+        return result
 
-    pushed = 0
-    errors: list[str] = []
+    errors: list[str] = result["errors"]
     merged_aliases: list[dict] = []
-    for outcome in succeeded:
-        docs_dir = output_root / outcome.subdir / "docs"
+    for subdir, tree_run_id in trees:
+        docs_dir = output_root / subdir / "docs"
         try:
             artifacts = collect_internal_artifacts(
-                docs_dir, project_id=project_id, run_id=outcome.run_id or run_id
+                docs_dir, project_id=project_id, run_id=tree_run_id
             )
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"{outcome.partition}: collect failed ({exc})")
+            errors.append(f"{subdir}: collect failed ({exc})")
             continue
         for artifact in artifacts:
             metadata = dict(artifact.get("metadata") or {})
-            metadata["subproject"] = outcome.partition
+            metadata["subproject"] = subdir
             try:
                 await bridge.push_markdown(
                     project_id=project_id,
-                    filename=f"{outcome.subdir}/{artifact['filename']}",
+                    filename=f"{subdir}/{artifact['filename']}",
                     content=artifact["content"],
                     metadata=metadata,
                 )
-                pushed += 1
+                result["pushed"] += 1
             except Exception as exc:  # noqa: BLE001
-                errors.append(f"{outcome.partition}/{artifact['filename']}: {exc}")
+                errors.append(f"{subdir}/{artifact['filename']}: {exc}")
         try:
             merged_aliases.extend(build_entity_aliases(docs_dir))
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"{outcome.partition}: alias build failed ({exc})")
+            errors.append(f"{subdir}: alias build failed ({exc})")
 
     if merged_aliases:
         try:
-            await bridge.post_entity_aliases(project_id, merged_aliases)
+            alias_result = await bridge.post_entity_aliases(project_id, merged_aliases)
+            result["aliases"] = alias_result.get("inserted", len(merged_aliases))
         except Exception as exc:  # noqa: BLE001
             errors.append(f"entity aliases: {exc}")
 
     await log_mgr.emit(
         project_id,
-        f"Internal RAG sync (composite): {pushed} docs, {len(merged_aliases)} aliases, "
-        f"{len(errors)} errors",
+        f"Internal RAG sync (composite): {result['pushed']} docs, "
+        f"{len(merged_aliases)} aliases, {len(errors)} errors",
         level="error" if errors else "info",
     )
+    return result
 
 
 def _aggregate_totals(results: list[dict[str, Any]]) -> dict[str, Any]:

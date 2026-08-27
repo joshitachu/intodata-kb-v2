@@ -1,4 +1,28 @@
-"""Additive, non-blocking business topology synthesis after documentation."""
+"""Additive, non-blocking business topology synthesis after documentation.
+
+Two stages, in order of preference:
+
+**Stage A + B (primary)** -- the model extracts the architecture from this run's
+own finished Phase 3 documents in business language (:mod:`flow_extraction`),
+and Python assembles the published overlay from it (:mod:`assembly`). This is a
+generalisation of the pipeline that produced the hand-curated werkorder
+topology.
+
+**Single-shot synthesis (fallback)** -- the previous contract, where the model
+emits the published JSON itself. Retained because a pack may override its
+template and because a partition whose documents came out thin can still have a
+scanner-groundable overlay.
+
+**Deterministic overlay (floor)** -- evidence-only, no LLM. Published when both
+model lanes fail, so `available` can still be true with real cited edges.
+
+Verified motivation: on the last werkorder run all 8 partitions published the
+deterministic floor (0 business objects, 0 delivery paths), and the one partition
+whose model output was rich -- 14 systems / 8 streams / 8 delivery paths / 5
+business objects -- was rejected for three bookkeeping defects and replaced with
+a 4-system / 3-stream skeleton. Whatever validation rejects, this phase now
+prunes per claim rather than discarding wholesale.
+"""
 
 from __future__ import annotations
 
@@ -8,9 +32,18 @@ from typing import TYPE_CHECKING, Any
 from mcp_server.providers.custom.pipeline.phase import Phase, PhaseEstimate, PhaseResult
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from mcp_server.providers.base import DocGenContext, LogCallback
     from mcp_server.providers.custom.models import ExecutionPlan, HarnessRunState
     from mcp_server.providers.custom.pipeline.helpers import HarnessHelpersImpl
+    from mcp_server.services.business_topology import BusinessTopology
+    from mcp_server.services.business_topology.evidence import (
+        BusinessTopologyEvidenceBundle,
+    )
+    from mcp_server.services.business_topology.validation import (
+        BusinessTopologyValidationReport,
+    )
 
 
 class Phase37BusinessTopology(Phase):
@@ -33,26 +66,14 @@ class Phase37BusinessTopology(Phase):
         log_cb: "LogCallback",
     ) -> PhaseResult:
         from mcp_server.config import config
-        from mcp_server.providers.custom.agent_runtime import (
-            AgentTaskContract,
-            AgentTaskRuntime,
-            ScopedEvidenceTools,
-            default_input_budget,
-            default_tool_budget,
-        )
-        from mcp_server.providers.custom.models import ModelOptions, ModelResult
-        from mcp_server.providers.custom.transient_artifacts import (
-            transient_dir,
-            transient_write,
-        )
         from mcp_server.services.business_topology import (
+            DOC_EVIDENCE_FILENAMES,
             build_business_topology_evidence,
             build_deterministic_topology,
             build_topology_context_files,
-            parse_validate_repair_business_topology,
+            register_doc_evidence,
             validate_business_topology,
         )
-        from mcp_server.services.business_topology.prompt import business_topology_prompt
 
         output_dir = ctx.staging_dir / "_topology"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -74,228 +95,122 @@ class Phase37BusinessTopology(Phase):
                     state.facts_manifest.unit_names() if ctx.partition is not None else None
                 ),
             )
-            # PUSH the high-signal scanner evidence directly into the model
-            # context instead of relying on budget-limited agentic tool pulls
-            # (the verified ETTM_part1 starvation). Tools are disabled for this
-            # phase in _tool_policy, so these files reach the model via
-            # provider.complete(context_files=...).
-            topology_context_files = build_topology_context_files(
+            # The generated documents become a typed evidence tier so a flow
+            # taken from `03_DATA_FLOWS_AND_LINEAGE.md` can cite a resolvable id.
+            # The scanner-only bundle is kept for the deterministic overlay's own
+            # validation: its claims must not become citable via this tier.
+            doc_bundle, doc_records = register_doc_evidence(bundle, ctx.staging_dir)
+            if not doc_records:
+                await log_cb(
+                    ctx.project_id,
+                    "[custom] Business topology: no generated documents found to extract "
+                    "flows from; falling back to single-shot synthesis",
+                    "warning",
+                )
+
+            # PUSH the high-signal evidence directly into the model context
+            # instead of relying on budget-limited agentic tool pulls (the
+            # verified ETTM_part1 starvation, where the model reported "without
+            # the ability to read evidence files (tool budget exhausted)").
+            # Tools are disabled for this phase in _tool_policy, so these files
+            # reach the model via provider.complete(context_files=...).
+            extraction_context = build_topology_context_files(
+                doc_bundle,
+                ctx.staging_dir,
+                byte_cap=config.topology_context_evidence_bytes,
+                include_generated_docs=bool(doc_records),
+                doc_filenames=DOC_EVIDENCE_FILENAMES,
+            )
+            synthesis_context = build_topology_context_files(
                 bundle,
                 ctx.staging_dir,
                 byte_cap=config.topology_context_evidence_bytes,
             )
-            prompt = business_topology_prompt(
-                project_id=ctx.project_id,
-                scan_fingerprint=bundle.scan_fingerprint,
-                plugin_pack_dir=self._helpers.plugin_pack_dir,
-            )
-            # Built once, used two ways: (a) as the floor the LLM output must
-            # beat -- a schema-valid but EMPTY topology (verified pre-fix
-            # ETTM_part1 shape: the model refused to fabricate and emitted no
-            # claims) must not be published when scanner edges ground real
-            # streams; (b) as the published fallback when the LLM leg fails.
+
+            # Built once, used two ways: (a) the floor the model lanes must beat
+            # -- a schema-valid but EMPTY topology must not be published when
+            # scanner edges ground real streams; (b) the published fallback.
             deterministic_candidate = build_deterministic_topology(
                 bundle, project_id=ctx.project_id
             )
             deterministic_report = validate_business_topology(
                 deterministic_candidate, bundle=bundle, project_id=ctx.project_id
             )
-            deterministic_has_streams = (
-                deterministic_report.validated
-                and bool(deterministic_candidate.data_streams)
+            deterministic_streams = (
+                len(deterministic_candidate.data_streams)
+                if deterministic_report.validated
+                else 0
             )
-            provider = self._helpers.write_provider
-            options = ModelOptions(
-                max_tokens=config.phase3_max_tokens,
-                temperature=0.0,
-                retries=1,
-                timeout_s=300.0,
-                json_mode=True,
-                provider_options=self._helpers.provider_options(
-                    provider, phase="business_topology"
-                ),
-            )
-            contract = AgentTaskContract(
-                phase="business_topology",
-                # Fingerprint-scoped target prevents a resume from accepting an
-                # otherwise-valid overlay produced for an older scan.
-                target_id=f"business_topology_{bundle.scan_fingerprint[:16]}",
-                allowed_units=[unit.name for unit in state.facts_manifest.units],
-                allowed_groups=list(state.facts_manifest.groups),
-                allowed_categories=[],
-                starter_context_files=[
-                    path.relative_to(ctx.staging_dir).as_posix()
-                    for path in topology_context_files
-                    if path.exists()
-                ],
-                tool_budget=default_tool_budget(),
-                input_budget=default_input_budget(),
-                expected_artifact="business topology JSON",
-                max_attempts=config.agent_max_task_attempts,
-            )
-            runtime = AgentTaskRuntime(ctx.staging_dir, state.facts_manifest)
-            cached = runtime.accepted_output(contract) if ctx.resume_state is not None else None
-            if cached is not None:
-                result = ModelResult(success=True, text=cached, model_name=provider.model_name)
-                await log_cb(
-                    ctx.project_id,
-                    "[custom] RESUME: business topology task already accepted",
-                    "info",
+
+            lane = "deterministic"
+            topology: BusinessTopology | None = None
+            report: BusinessTopologyValidationReport | None = None
+            active_bundle = bundle
+            notes: list[str] = []
+
+            if doc_records:
+                topology, report, notes = await self._run_extraction_lane(
+                    ctx,
+                    state,
+                    log_cb,
+                    bundle=doc_bundle,
+                    doc_records=doc_records,
+                    context_files=extraction_context,
                 )
-            else:
-                harness_provider = self._helpers._p  # type: ignore[attr-defined]
+                if topology is not None:
+                    lane = "flow_extraction"
+                    active_bundle = doc_bundle
 
-                async def _dispatch(
-                    task: AgentTaskContract,
-                    tools: ScopedEvidenceTools,
-                ) -> ModelResult:
-                    # Tools are disabled for this phase, so the harness never
-                    # applies _with_agent_contract to the prompt and the
-                    # runtime's validation_gaps would otherwise be silently
-                    # dropped: the verified werkorder retries were byte-
-                    # identical blind re-rolls that diverged (ESB_part1 went
-                    # from 3 validation errors to 36). Feed the gaps back as a
-                    # transient TAIL context file (same cache-friendly pattern
-                    # as the harness claim-repair dispatch) so attempt 2 fixes
-                    # the reported errors instead of resampling from scratch.
-                    effective_context = topology_context_files
-                    if task.attempt > 1:
-                        gaps = "\n".join(
-                            f"- {gap}" for gap in task.validation_gaps
-                        ) or "- Previous JSON failed validation."
-                        repair_tail = transient_dir(
-                            ctx.staging_dir, "claim_repair", "business_topology"
-                        ) / f"{task.target_id}__attempt_{task.attempt}.md"
-                        transient_write(
-                            repair_tail,
-                            "REPAIR INSTRUCTION: Return a complete corrected "
-                            "replacement JSON object. Fix only these validation "
-                            f"gaps:\n{gaps}\n\n"
-                            "Do not widen scope while repairing: drop any claim "
-                            "you cannot ground in the attached evidence instead "
-                            "of inventing IDs, and keep every already-valid "
-                            "claim unchanged.",
-                        )
-                        effective_context = [*topology_context_files, repair_tail]
-                    return await harness_provider._complete_core_generation(
-                        ctx,
-                        state,
-                        provider=provider,
-                        phase="business_topology",
-                        target=task.target_id,
-                        prompt=prompt,
-                        context_files=effective_context,
-                        opts=options,
-                        log_cb=log_cb,
-                        task_contract=task,
-                        scoped_tools=tools,
-                    )
-
-                def _runtime_validation(text: str) -> dict[str, Any]:
-                    # Repair-aware acceptance: a raw output that fails only on
-                    # the verified mechanical grounding shapes (missing
-                    # artifact_id citations, fabricated `artifact:` prefixes,
-                    # ungrounded sibling-partition solutions) is accepted after
-                    # deterministic repair instead of burning the single LLM
-                    # retry. When repair cannot help, the RAW errors flow into
-                    # validation_gaps for the retry.
-                    parsed, validation, repair_notes = (
-                        parse_validate_repair_business_topology(
-                            text,
-                            bundle=bundle,
-                            project_id=ctx.project_id,
-                        )
-                    )
-                    payload = {
-                        "ok": validation.validated,
-                        **validation.model_dump(),
-                    }
-                    if (
-                        validation.validated
-                        and parsed is not None
-                        and not parsed.data_streams
-                        and deterministic_has_streams
-                    ):
-                        # Schema-valid but empty while scanner edges ground
-                        # real streams: give the retry a chance to emit them.
-                        payload["ok"] = False
-                        payload["errors"] = [
-                            *validation.errors,
-                            "topology contains no data streams although scanner "
-                            "directional edges in the attached evidence ground at "
-                            "least one stream; emit the grounded streams",
-                        ]
-                    if repair_notes:
-                        payload["repair_notes"] = repair_notes
-                    return payload
-
-                task_result = await runtime.run(
-                    contract,
-                    _dispatch,
-                    _runtime_validation,
-                )
-                result = task_result.result
-
-            topology, report, repair_notes = parse_validate_repair_business_topology(
-                result.text,
-                bundle=bundle,
-                project_id=ctx.project_id,
-            )
-            if topology is not None and repair_notes:
-                await log_cb(
-                    ctx.project_id,
-                    "[custom] Business topology: accepted after deterministic repair "
-                    f"({len(repair_notes)} corrections, e.g. {repair_notes[0]})",
-                    "warning",
-                )
-            used_deterministic_fallback = False
-            llm_failed = not result.success or topology is None or not report.validated
-            llm_empty_but_valid = (
-                not llm_failed
-                and topology is not None
-                and not topology.data_streams
-                and deterministic_has_streams
-            )
-            if llm_failed or llm_empty_but_valid:
-                # The agent runtime already retried the LLM up to max_attempts.
-                # Rather than dropping topology entirely (or publishing a
-                # schema-valid but empty overlay when scanner edges ground real
-                # streams), use the evidence-only deterministic overlay so
-                # `available` can still be true with real cited edges.
-                fallback = deterministic_candidate
-                fallback_report = deterministic_report
-                if fallback_report.validated and fallback.data_streams:
-                    if llm_empty_but_valid:
-                        llm_errors = [
-                            "LLM topology validated but contained no data streams"
-                        ]
-                    else:
-                        llm_errors = list(report.errors)
-                        if not result.success:
-                            llm_errors.insert(0, result.raw_error or "model call failed")
+            if topology is None or len(topology.data_streams) < max(
+                1, deterministic_streams
+            ):
+                if topology is not None:
                     await log_cb(
                         ctx.project_id,
-                        "[custom] Business topology: LLM synthesis did not validate ("
-                        + "; ".join(llm_errors[:2])
-                        + "); using deterministic evidence-only fallback "
-                        + f"({len(fallback.systems)} systems, {len(fallback.data_streams)} streams)",
+                        "[custom] Business topology: flow extraction produced "
+                        f"{len(topology.data_streams)} stream(s) against a deterministic "
+                        f"floor of {deterministic_streams}; trying single-shot synthesis",
                         "warning",
                     )
-                    topology, report = fallback, fallback_report
-                    repair_notes = []
-                    used_deterministic_fallback = True
-                elif llm_empty_but_valid:
-                    # Unreachable in practice (deterministic_has_streams implies
-                    # a validated stream-bearing fallback), but never turn a
-                    # valid LLM overlay into `available=false` here.
-                    pass
+                fallback_topology, fallback_report = await self._run_synthesis_lane(
+                    ctx,
+                    state,
+                    log_cb,
+                    bundle=bundle,
+                    context_files=synthesis_context,
+                )
+                if fallback_topology is not None and (
+                    topology is None
+                    or len(fallback_topology.data_streams) > len(topology.data_streams)
+                ):
+                    topology, report = fallback_topology, fallback_report
+                    lane = "single_shot_synthesis"
+                    active_bundle = bundle
+                    notes = []
+
+            if topology is None or not topology.data_streams:
+                if deterministic_streams:
+                    await log_cb(
+                        ctx.project_id,
+                        "[custom] Business topology: model lanes did not produce a "
+                        "publishable overlay; using deterministic evidence-only fallback "
+                        f"({len(deterministic_candidate.systems)} systems, "
+                        f"{deterministic_streams} streams)",
+                        "warning",
+                    )
+                    topology = deterministic_candidate
+                    report = deterministic_report
+                    lane = "deterministic"
+                    active_bundle = bundle
+                    notes = []
                 else:
-                    errors = list(report.errors)
-                    if not result.success:
-                        errors.insert(0, result.raw_error or "model call failed")
-                    report.validated = False
-                    report.errors = errors
-                    validation_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+                    errors = list(report.errors) if report is not None else [
+                        "no publishable business topology was produced"
+                    ]
+                    validation_path.write_text(
+                        json.dumps({"validated": False, "errors": errors}, indent=2),
+                        encoding="utf-8",
+                    )
                     topology_path.unlink(missing_ok=True)
                     _write_state(
                         state_path,
@@ -304,7 +219,9 @@ class Phase37BusinessTopology(Phase):
                         scan_fingerprint=bundle.scan_fingerprint,
                         errors=errors,
                     )
-                    state.warnings.append("Business topology synthesis was not published; documentation is unaffected")
+                    state.warnings.append(
+                        "Business topology synthesis was not published; documentation is unaffected"
+                    )
                     await log_cb(
                         ctx.project_id,
                         "[custom] Business topology validation failed (non-blocking): "
@@ -317,22 +234,13 @@ class Phase37BusinessTopology(Phase):
                         metadata={"available": False, "validated": False, "errors": errors[:5]},
                     )
 
-            if not used_deterministic_fallback:
-                topology.metadata.model_name = result.model_name
-            # Re-run validation against the exact persisted payload after adding
-            # runtime provenance, so validation_report.json describes what is served.
+            # Re-validate against the exact persisted payload, so
+            # validation_report.json describes what is served.
             report = validate_business_topology(
-                topology,
-                bundle=bundle,
-                project_id=ctx.project_id,
+                topology, bundle=active_bundle, project_id=ctx.project_id
             )
-            if repair_notes and report.validated:
-                report.warnings = [
-                    "accepted after deterministic repair "
-                    f"({len(repair_notes)} corrections)",
-                    *[f"repaired: {note}" for note in repair_notes[:20]],
-                    *report.warnings,
-                ]
+            if notes:
+                report.warnings = [*[f"assembly: {note}" for note in notes[:10]], *report.warnings]
             validation_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
             if not report.validated:
                 topology_path.unlink(missing_ok=True)
@@ -358,12 +266,14 @@ class Phase37BusinessTopology(Phase):
                 scan_fingerprint=bundle.scan_fingerprint,
                 errors=[],
                 warnings=report.warnings,
+                lane=lane,
             )
             await log_cb(
                 ctx.project_id,
-                f"[custom] Business topology complete: {len(topology.systems)} systems, "
-                f"{len(topology.data_streams)} data streams"
-                + (" (deterministic fallback)" if used_deterministic_fallback else ""),
+                f"[custom] Business topology complete via {lane}: "
+                f"{len(topology.systems)} systems, {len(topology.data_streams)} data streams, "
+                f"{len(topology.business_objects)} business objects, "
+                f"{len(topology.delivery_paths)} delivery paths",
                 "info",
             )
             return PhaseResult(
@@ -372,15 +282,17 @@ class Phase37BusinessTopology(Phase):
                 metadata={
                     "available": True,
                     "validated": True,
+                    "lane": lane,
                     "systems": len(topology.systems),
                     "data_streams": len(topology.data_streams),
-                    "deterministic_fallback": used_deterministic_fallback,
-                    "repaired": bool(repair_notes) and not used_deterministic_fallback,
+                    "business_objects": len(topology.business_objects),
+                    "delivery_paths": len(topology.delivery_paths),
+                    "deterministic_fallback": lane == "deterministic",
                 },
             )
         except Exception as exc:  # noqa: BLE001 - this phase is explicitly non-blocking
             fingerprint = bundle.scan_fingerprint if bundle is not None else ""
-            report = {
+            report_payload = {
                 "validated": False,
                 "scan_fingerprint": fingerprint,
                 "project_id": ctx.project_id,
@@ -391,7 +303,7 @@ class Phase37BusinessTopology(Phase):
                 "artifact_count": len(bundle.artifact_ids) if bundle is not None else 0,
                 "cited_artifact_count": 0,
             }
-            validation_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+            validation_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
             topology_path.unlink(missing_ok=True)
             _write_state(
                 state_path,
@@ -412,6 +324,302 @@ class Phase37BusinessTopology(Phase):
                 metadata={"available": False, "validated": False, "error": str(exc)},
             )
 
+    async def _run_extraction_lane(
+        self,
+        ctx: "DocGenContext",
+        state: "HarnessRunState",
+        log_cb: "LogCallback",
+        *,
+        bundle: "BusinessTopologyEvidenceBundle",
+        doc_records: dict[str, dict[str, Any]],
+        context_files: list["Path"],
+    ) -> tuple["BusinessTopology | None", "BusinessTopologyValidationReport | None", list[str]]:
+        """Stage A + B: extract business-level flows, then assemble in Python."""
+
+        from mcp_server.services.business_topology import (
+            assemble_topology,
+            parse_flow_extraction,
+            prune_to_valid,
+        )
+        from mcp_server.services.business_topology.prompt import flow_extraction_prompt
+
+        # `ctx.partition` is a Partition, not a name: a composite run scopes
+        # this phase to one sub-project and the solution node is named after it.
+        partition_name = ctx.partition.name if ctx.partition is not None else ""
+        subproject = partition_name or ctx.project_id
+        prompt = flow_extraction_prompt(
+            subproject=subproject,
+            plugin_pack_dir=self._helpers.plugin_pack_dir,
+        )
+
+        def _validate(text: str) -> dict[str, Any]:
+            extraction, dropped = parse_flow_extraction(text, subproject=subproject)
+            if extraction is None:
+                return {"ok": False, "errors": dropped}
+            if not extraction.flows:
+                # An extraction with systems but no flows describes no
+                # architecture; the retry is worth one call.
+                return {
+                    "ok": False,
+                    "errors": [
+                        "flow extraction contained no usable flows",
+                        *dropped[:5],
+                    ],
+                }
+            return {"ok": True, "errors": [], "warnings": dropped[:10]}
+
+        result = await self._dispatch_task(
+            ctx,
+            state,
+            log_cb,
+            target_id=f"flow_extraction_{bundle.scan_fingerprint[:16]}",
+            prompt=prompt,
+            context_files=context_files,
+            validate=_validate,
+        )
+        if result is None or not result.success:
+            await log_cb(
+                ctx.project_id,
+                "[custom] Business topology: flow extraction did not produce a usable "
+                "result; falling back",
+                "warning",
+            )
+            return None, None, []
+
+        extraction, dropped = parse_flow_extraction(result.text, subproject=subproject)
+        if extraction is None or not extraction.flows:
+            return None, None, []
+        if dropped:
+            await log_cb(
+                ctx.project_id,
+                f"[custom] Business topology: flow extraction dropped {len(dropped)} "
+                f"unusable item(s) (e.g. {dropped[0]})",
+                "warning",
+            )
+
+        topology, notes = assemble_topology(
+            extraction,
+            bundle=bundle,
+            project_id=ctx.project_id,
+            doc_records=doc_records,
+            subproject=partition_name,
+            model_name=result.model_name,
+        )
+        topology, report, pruned = prune_to_valid(
+            topology, bundle=bundle, project_id=ctx.project_id
+        )
+        if pruned:
+            await log_cb(
+                ctx.project_id,
+                f"[custom] Business topology: pruned {len(pruned)} claim(s) that failed "
+                f"provenance validation (e.g. {pruned[0]}); publishing the remainder",
+                "warning",
+            )
+        if not report.validated:
+            await log_cb(
+                ctx.project_id,
+                "[custom] Business topology: assembled overlay did not validate ("
+                + "; ".join(report.errors[:2])
+                + ")",
+                "warning",
+            )
+            return None, report, notes + [*dropped]
+        return topology, report, notes + [*dropped]
+
+    async def _run_synthesis_lane(
+        self,
+        ctx: "DocGenContext",
+        state: "HarnessRunState",
+        log_cb: "LogCallback",
+        *,
+        bundle: "BusinessTopologyEvidenceBundle",
+        context_files: list["Path"],
+    ) -> tuple["BusinessTopology | None", "BusinessTopologyValidationReport | None"]:
+        """The previous single-shot contract, kept as the second model lane."""
+
+        from mcp_server.services.business_topology import (
+            parse_validate_repair_business_topology,
+        )
+        from mcp_server.services.business_topology.prompt import business_topology_prompt
+        from mcp_server.services.business_topology.pruning import prune_to_valid
+
+        prompt = business_topology_prompt(
+            project_id=ctx.project_id,
+            scan_fingerprint=bundle.scan_fingerprint,
+            plugin_pack_dir=self._helpers.plugin_pack_dir,
+        )
+
+        def _validate(text: str) -> dict[str, Any]:
+            parsed, validation, repair_notes = parse_validate_repair_business_topology(
+                text, bundle=bundle, project_id=ctx.project_id
+            )
+            payload: dict[str, Any] = {
+                "ok": validation.validated,
+                **validation.model_dump(),
+            }
+            if parsed is not None and not parsed.data_streams:
+                payload["ok"] = False
+                payload["errors"] = [
+                    *validation.errors,
+                    "topology contains no data streams; emit the grounded streams",
+                ]
+            if repair_notes:
+                payload["repair_notes"] = repair_notes
+            return payload
+
+        result = await self._dispatch_task(
+            ctx,
+            state,
+            log_cb,
+            target_id=f"business_topology_{bundle.scan_fingerprint[:16]}",
+            prompt=prompt,
+            context_files=context_files,
+            validate=_validate,
+        )
+        if result is None or not result.success:
+            return None, None
+
+        topology, report, repair_notes = parse_validate_repair_business_topology(
+            result.text, bundle=bundle, project_id=ctx.project_id
+        )
+        if topology is None:
+            return None, report
+        if not report.validated:
+            # Partial acceptance: a claim-local defect costs that claim, not the
+            # whole architecture (the verified ETTM_part2 loss).
+            topology, report, pruned = prune_to_valid(
+                topology, bundle=bundle, project_id=ctx.project_id
+            )
+            if pruned:
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] Business topology: pruned {len(pruned)} invalid claim(s) "
+                    f"from single-shot synthesis (e.g. {pruned[0]})",
+                    "warning",
+                )
+        if repair_notes and report.validated:
+            await log_cb(
+                ctx.project_id,
+                "[custom] Business topology: accepted after deterministic repair "
+                f"({len(repair_notes)} corrections, e.g. {repair_notes[0]})",
+                "warning",
+            )
+        return (topology if report.validated else None), report
+
+    async def _dispatch_task(
+        self,
+        ctx: "DocGenContext",
+        state: "HarnessRunState",
+        log_cb: "LogCallback",
+        *,
+        target_id: str,
+        prompt: str,
+        context_files: list["Path"],
+        validate,
+    ):
+        """Run one persisted agent task with retry-with-feedback.
+
+        Shared by both model lanes so they cannot diverge on the pieces that
+        were verified to matter: a fingerprint-scoped target id (a resume must
+        not accept an overlay produced for an older scan), and validation-gap
+        feedback delivered as a TAIL context file. Tools are disabled for this
+        phase, so the harness never applies ``_with_agent_contract`` and the
+        runtime's ``validation_gaps`` would otherwise be dropped -- the verified
+        werkorder retries were byte-identical blind re-rolls that diverged
+        (ESB_part1 went from 3 validation errors to 36).
+        """
+
+        from mcp_server.config import config
+        from mcp_server.providers.custom.agent_runtime import (
+            AgentTaskContract,
+            AgentTaskRuntime,
+            ScopedEvidenceTools,
+            default_input_budget,
+            default_tool_budget,
+        )
+        from mcp_server.providers.custom.models import ModelOptions, ModelResult
+        from mcp_server.providers.custom.transient_artifacts import (
+            transient_dir,
+            transient_write,
+        )
+
+        provider = self._helpers.write_provider
+        options = ModelOptions(
+            max_tokens=config.phase3_max_tokens,
+            temperature=0.0,
+            retries=1,
+            timeout_s=300.0,
+            json_mode=True,
+            provider_options=self._helpers.provider_options(
+                provider, phase="business_topology"
+            ),
+        )
+        contract = AgentTaskContract(
+            phase="business_topology",
+            target_id=target_id,
+            allowed_units=[unit.name for unit in state.facts_manifest.units],
+            allowed_groups=list(state.facts_manifest.groups),
+            allowed_categories=[],
+            starter_context_files=[
+                path.relative_to(ctx.staging_dir).as_posix()
+                for path in context_files
+                if path.exists() and path.is_relative_to(ctx.staging_dir)
+            ],
+            tool_budget=default_tool_budget(),
+            input_budget=default_input_budget(),
+            expected_artifact="business topology JSON",
+            max_attempts=config.agent_max_task_attempts,
+        )
+        runtime = AgentTaskRuntime(ctx.staging_dir, state.facts_manifest)
+        cached = runtime.accepted_output(contract) if ctx.resume_state is not None else None
+        if cached is not None:
+            await log_cb(
+                ctx.project_id,
+                f"[custom] RESUME: topology task {target_id} already accepted",
+                "info",
+            )
+            return ModelResult(success=True, text=cached, model_name=provider.model_name)
+
+        harness_provider = self._helpers._p  # type: ignore[attr-defined]
+
+        async def _dispatch(
+            task: AgentTaskContract,
+            tools: ScopedEvidenceTools,
+        ) -> ModelResult:
+            effective_context = context_files
+            if task.attempt > 1:
+                gaps = "\n".join(f"- {gap}" for gap in task.validation_gaps) or (
+                    "- Previous output failed validation."
+                )
+                repair_tail = transient_dir(
+                    ctx.staging_dir, "claim_repair", "business_topology"
+                ) / f"{task.target_id}__attempt_{task.attempt}.md"
+                transient_write(
+                    repair_tail,
+                    "REPAIR INSTRUCTION: Return a complete corrected replacement "
+                    f"JSON object. Fix only these gaps:\n{gaps}\n\n"
+                    "Do not widen scope while repairing: drop any claim you cannot "
+                    "ground in the attached evidence instead of inventing names, and "
+                    "keep every already-valid claim unchanged.",
+                )
+                effective_context = [*context_files, repair_tail]
+            return await harness_provider._complete_core_generation(
+                ctx,
+                state,
+                provider=provider,
+                phase="business_topology",
+                target=task.target_id,
+                prompt=prompt,
+                context_files=effective_context,
+                opts=options,
+                log_cb=log_cb,
+                task_contract=task,
+                scoped_tools=tools,
+            )
+
+        task_result = await runtime.run(contract, _dispatch, validate)
+        return task_result.result
+
     async def resume(
         self,
         ctx: "DocGenContext",
@@ -424,8 +632,11 @@ class Phase37BusinessTopology(Phase):
         return PhaseEstimate(
             phase_name=self.name,
             calls_min=1,
-            calls_max=2,
-            notes="One additive JSON synthesis task; validation retries remain non-blocking",
+            calls_max=4,
+            notes=(
+                "Flow extraction plus assembly (1-2 calls); single-shot synthesis is "
+                "attempted only when extraction underperforms the deterministic floor"
+            ),
         )
 
 
@@ -437,6 +648,7 @@ def _write_state(
     scan_fingerprint: str,
     errors: list[str],
     warnings: list[str] | None = None,
+    lane: str = "",
 ) -> None:
     payload: dict[str, Any] = {
         "available": available,
@@ -445,4 +657,6 @@ def _write_state(
         "errors": errors,
         "warnings": warnings or [],
     }
+    if lane:
+        payload["lane"] = lane
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

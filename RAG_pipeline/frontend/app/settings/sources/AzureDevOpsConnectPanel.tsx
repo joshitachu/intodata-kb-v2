@@ -442,8 +442,8 @@ export function AzureDevOpsConnectPanel({
             >
               <GitBranch className="h-3.5 w-3.5" />{" "}
               {selectedRepos.length > 1
-                ? `Connect ${selectedRepos.length} repositories`
-                : "Connect & scan"}
+                ? `Import ${selectedRepos.length} repositories`
+                : "Import repository"}
             </Button>
           </div>
         </CardBody>

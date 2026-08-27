@@ -263,3 +263,208 @@ def test_merges_partitions_into_validated_org_topology(tmp_path: Path) -> None:
     # Coverage is the honest sum of contributing partitions (AppA_part2 + AppB).
     assert topology.coverage.total_evidence == 200
     assert 0.0 <= topology.coverage.coverage_ratio <= 1.0
+
+
+def _rich_partition_topology() -> dict:
+    """A partition topology carrying the business layer the org view must keep.
+
+    Two flows between the SAME pair of systems, distinguished only by business
+    object -- the shape that de-duplicating on (source, destination) alone
+    silently collapsed into one unlabelled edge.
+    """
+
+    topology = _partition_topology(
+        systems=[
+            {
+                "id": "sys-maximo",
+                "name": "Maximo",
+                "description": "EAM",
+                "status": "observed",
+                "confidence": 0.8,
+                "evidence_ids": ["landscape-system:aaa"],
+                "kind": "software_system",
+                "aliases": [],
+                "purpose": "",
+                "owner": "",
+            },
+            {
+                "id": "sys-4ps",
+                "name": "4PS",
+                "description": "ERP",
+                "status": "observed",
+                "confidence": 0.8,
+                "evidence_ids": ["landscape-system:bbb"],
+                "kind": "software_system",
+                "aliases": [],
+                "purpose": "",
+                "owner": "",
+            },
+        ],
+        streams=[],
+    )
+    workorder = _stream("sys-maximo", "sys-4ps", "landscape-edge:1", ["artifact:1"])
+    workorder.update(
+        {
+            "id": "ds-local-workorder",
+            "name": "Maximo -> 4PS: Work Order",
+            "status": "observed",
+            "confidence": 0.8,
+            "business_object_ids": ["bo-local-wo"],
+            "protocols": ["REST", "JMS"],
+            "delivery_path_id": "path-local-workorder",
+        }
+    )
+    invoice = _stream("sys-maximo", "sys-4ps", "landscape-edge:2", ["artifact:2"])
+    invoice.update(
+        {
+            "id": "ds-local-invoice",
+            "name": "Maximo -> 4PS: Invoice",
+            "business_object_ids": ["bo-local-inv"],
+            "protocols": ["REST"],
+        }
+    )
+    topology["data_streams"] = [workorder, invoice]
+    topology["business_objects"] = [
+        {
+            "id": "bo-local-wo",
+            "name": "WorkOrder",
+            "description": "",
+            "status": "inferred",
+            "confidence": 0.7,
+            "evidence_ids": ["doc:aaa"],
+            "aliases": ["Work order"],
+        },
+        {
+            "id": "bo-local-inv",
+            "name": "Invoice",
+            "description": "",
+            "status": "inferred",
+            "confidence": 0.7,
+            "evidence_ids": ["doc:bbb"],
+            "aliases": [],
+        },
+    ]
+    topology["delivery_paths"] = [
+        {
+            "id": "path-local-workorder",
+            "name": "Maximo to 4PS WorkOrder delivery",
+            "description": "REST + JMS",
+            "status": "observed",
+            "confidence": 0.8,
+            "evidence_ids": ["landscape-edge:1"],
+            "stream_id": "ds-local-workorder",
+            "segments": [
+                {
+                    "id": "segment:ds-local-workorder:1",
+                    "name": "Receive webhook",
+                    "description": "",
+                    "status": "observed",
+                    "confidence": 0.8,
+                    "evidence_ids": ["landscape-edge:1"],
+                    "sequence": 1,
+                    "source_ref": "sys-maximo",
+                    "destination_ref": "step:ds-local-workorder:1",
+                    "mechanism": "REST webhook",
+                    "protocol": "REST",
+                    "resource": "WorkOrder XML",
+                    "component": "maximoRestService",
+                    "artifact_ids": ["artifact:1"],
+                    "mode": "event_driven",
+                },
+                {
+                    "id": "segment:ds-local-workorder:2",
+                    "name": "Write service order",
+                    "description": "",
+                    "status": "observed",
+                    "confidence": 0.8,
+                    "evidence_ids": ["landscape-edge:1"],
+                    "sequence": 2,
+                    "source_ref": "step:ds-local-workorder:1",
+                    "destination_ref": "sys-4ps",
+                    "mechanism": "REST API",
+                    "protocol": "REST",
+                    "resource": "serviceOrders",
+                    "component": "maximoFourpsWorkOrder",
+                    "artifact_ids": ["artifact:1"],
+                    "mode": "direct",
+                },
+            ],
+        }
+    ]
+    topology["transformations"] = [
+        {
+            "id": "transform:ds-local-workorder:1",
+            "name": "WorkOrder status mapping",
+            "description": "",
+            "status": "observed",
+            "confidence": 0.8,
+            "evidence_ids": ["landscape-edge:1"],
+            "stream_ids": ["ds-local-workorder"],
+            "integration_solution_ids": [],
+            "artifact_ids": ["artifact:1"],
+            "mappings": [
+                {
+                    "source": "STATUS=VOORBEREID",
+                    "target": "In Process",
+                    "mapping_type": "value",
+                }
+            ],
+        }
+    ]
+    return topology
+
+
+def test_org_merge_carries_the_business_layer(tmp_path: Path) -> None:
+    _scaffold_composite(tmp_path)
+    _write_partition(tmp_path, "acme", "AppA_part2", _rich_partition_topology())
+
+    topology = build_composite_org_topology("acme", project_root=tmp_path)
+    assert topology is not None
+
+    # Two business flows between the same pair of systems survive as two.
+    maximo_to_4ps = [
+        stream
+        for stream in topology.data_streams
+        if stream.source_system_id == "sys-maximo"
+        and stream.destination_system_id == "sys-4ps"
+    ]
+    assert len(maximo_to_4ps) == 2
+    assert {stream.name for stream in maximo_to_4ps} == {
+        "Maximo -> 4PS: Work Order",
+        "Maximo -> 4PS: Invoice",
+    }
+
+    assert {item.name for item in topology.business_objects} == {"WorkOrder", "Invoice"}
+    assert topology.transformations
+    assert topology.transformations[0].mappings[0].target == "In Process"
+
+    # The scanner-backed flow keeps its stronger status instead of being
+    # flattened to `inferred`.
+    workorder = next(s for s in maximo_to_4ps if "Work Order" in s.name)
+    assert workorder.status == "observed"
+    assert workorder.protocols == ["REST", "JMS"]
+
+    # The delivery path is re-pointed onto org ids and stays a connected chain
+    # anchored to the stream's endpoints.
+    assert len(topology.delivery_paths) == 1
+    path = topology.delivery_paths[0]
+    assert path.stream_id == workorder.id
+    assert workorder.delivery_path_id == path.id
+    assert [segment.sequence for segment in path.segments] == [1, 2]
+    assert path.segments[0].source_ref == "sys-maximo"
+    assert path.segments[-1].destination_ref == "sys-4ps"
+    assert path.segments[0].destination_ref == path.segments[1].source_ref
+    assert path.segments[0].destination_ref.startswith(f"step:{workorder.id}:")
+
+    # The org solution is no longer artifact-less, so L1 drills down to code.
+    solution = next(item for item in topology.integration_solutions if item.name == "AppA")
+    assert solution.artifact_ids
+
+
+def test_org_merge_validates_against_the_published_contract(tmp_path: Path) -> None:
+    _scaffold_composite(tmp_path)
+    _write_partition(tmp_path, "acme", "AppA_part2", _rich_partition_topology())
+    topology = build_composite_org_topology("acme", project_root=tmp_path)
+    assert topology is not None
+    # Round-trips through the served contract (the frontend Zod shape).
+    assert BusinessTopology.model_validate(topology.model_dump(mode="json"))

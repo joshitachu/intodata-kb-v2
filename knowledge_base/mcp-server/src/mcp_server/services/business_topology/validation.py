@@ -34,6 +34,18 @@ _SCANNER_EVIDENCE_TYPES = frozenset(
     }
 )
 
+#: Evidence extracted from this run's own generated documentation. Deliberately
+#: absent from every scanner set above: it makes a citation RESOLVABLE without
+#: making it authoritative, so it can neither promote a system nor create an
+#: inter-system edge. A stream whose direction rests on this tier alone is
+#: capped below ``observed`` (see ``_DOC_DERIVED_MAX_STATUS``).
+_DOC_DERIVED_EVIDENCE_TYPES = frozenset({"documentation_derived"})
+
+#: Statuses a documentation-only claim may not reach. ``observed`` means a
+#: directly stated technical fact and ``confirmed`` an approved business
+#: declaration; generated prose is neither.
+_DOC_DERIVED_FORBIDDEN_STATUSES = frozenset({"observed", "confirmed"})
+
 _CANONICAL_PROTOCOLS = {
     "rest": "REST",
     "http": "REST",
@@ -438,14 +450,35 @@ def validate_business_topology(
         if not set(solution.artifact_ids).intersection(solution.evidence_ids):
             errors.append(f"{solution.id} does not cite one of its scanner artifact_ids")
 
+    doc_derived_stream_ids: set[str] = set()
     for stream in topology.data_streams:
         directional_ids = {
             item
             for item in stream.evidence_ids
             if bundle.evidence_types.get(item) in _DIRECTIONAL_EVIDENCE_TYPES
         }
+        doc_derived_ids = _evidence_of_type(
+            stream.evidence_ids, bundle, _DOC_DERIVED_EVIDENCE_TYPES
+        )
         if not directional_ids:
-            errors.append(f"{stream.id} has no directional scanner evidence")
+            # The documentation tier may assert a direction the scanner never
+            # inferred -- the verified reason the curated werkorder topology is
+            # richer than any scanner-only merge. It is accepted as a WARNING
+            # only when the flow is still wired to real scanner artifacts and
+            # stays below `observed`; otherwise it remains a hard error.
+            if doc_derived_ids and stream.artifact_ids:
+                doc_derived_stream_ids.add(stream.id)
+                warnings.append(
+                    f"{stream.id} direction is asserted by generated documentation "
+                    "only; no scanner directional edge establishes it"
+                )
+                if stream.status in _DOC_DERIVED_FORBIDDEN_STATUSES:
+                    errors.append(
+                        f"{stream.id} is documentation-derived and may not claim "
+                        f"status {stream.status}"
+                    )
+            else:
+                errors.append(f"{stream.id} has no directional scanner evidence")
         if not stream.artifact_ids:
             errors.append(f"{stream.id} has no scanner artifact_ids for technical traceability")
         elif directional_ids:
@@ -521,7 +554,20 @@ def validate_business_topology(
                 _DIRECTIONAL_EVIDENCE_TYPES,
             )
             if not directional_ids:
-                errors.append(f"{segment.id} has no directional scanner evidence")
+                # Inherit the owning stream's tier: a documentation-derived
+                # stream cannot have scanner-backed segments, and rejecting them
+                # would discard the ordered delivery detail that makes the
+                # overlay useful while keeping the stream itself.
+                if path.stream_id in doc_derived_stream_ids and _evidence_of_type(
+                    segment.evidence_ids, bundle, _DOC_DERIVED_EVIDENCE_TYPES
+                ):
+                    if segment.status in _DOC_DERIVED_FORBIDDEN_STATUSES:
+                        errors.append(
+                            f"{segment.id} is documentation-derived and may not claim "
+                            f"status {segment.status}"
+                        )
+                else:
+                    errors.append(f"{segment.id} has no directional scanner evidence")
             stream = next((item for item in topology.data_streams if item.id == path.stream_id), None)
             if stream is not None and directional_ids:
                 direction_artifacts = _directional_artifact_ids(directional_ids, bundle)

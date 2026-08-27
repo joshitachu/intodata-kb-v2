@@ -35,6 +35,8 @@ import {
   subscribeToLogs,
   updateGithubToken,
   uploadZip,
+  waitForGenerateSettled,
+  waitForScanReady,
   type LogEvent,
   type SourceProject,
 } from "@/lib/mcpClient";
@@ -49,7 +51,13 @@ import { MultiRepoMembersPanel } from "./MultiRepoMembersPanel";
 import { ProjectConnectorBindings } from "./ProjectConnectorBindings";
 import { SimpleConnectorPanel } from "./SimpleConnectorPanel";
 import { ProjectLiveSource, useProjectLiveSources } from "./liveSources";
+import { applyGenerateChoice, GeneratePackDialog } from "./GeneratePackDialog";
 
+/**
+ * An operation this tab is watching -- not the project's state, which is
+ * `Lifecycle` below. A successful import returns the row to `pending`, because
+ * "imported" is a fact about the project, not an operation in flight.
+ */
 type RowStage =
   | "pending"
   | "uploading"
@@ -83,11 +91,11 @@ interface GithubState {
 const STAGE_LABELS: Record<RowStage, string> = {
   pending: "Pending",
   uploading: "Uploading",
-  scanning: "Scanning",
-  generating: "Generating docs",
-  pushing: "Pushing to knowledge base",
-  complete: "Complete",
-  failed: "Failed",
+  scanning: "Reading the code",
+  generating: "Writing documentation",
+  pushing: "Adding to the knowledge base",
+  complete: "Finished",
+  failed: "Something went wrong",
 };
 
 const STAGE_PROGRESS: Record<RowStage, number> = {
@@ -98,6 +106,85 @@ const STAGE_PROGRESS: Record<RowStage, number> = {
   pushing: 90,
   complete: 100,
   failed: 100,
+};
+
+/**
+ * Where a project has got to, in the order a user walks it:
+ * import -> scan -> generate -> add to the knowledge base.
+ *
+ * Derived from the project row rather than from `RowStage`, which only describes
+ * an operation this browser tab happens to be watching. A user who imports on
+ * one machine and scans on another must still see the right next step.
+ */
+type Lifecycle =
+  | "imported"
+  | "scanning"
+  | "scanned"
+  | "generating"
+  | "generated"
+  | "published"
+  | "failed";
+
+function lifecycleOf(source: SourceProject): Lifecycle {
+  if (source.status === "error") return "failed";
+  if (source.status === "scanning") return "scanning";
+  if (source.status === "generating") return "generating";
+  if (source.last_rag_push_at) return "published";
+  if ((source.doc_count ?? 0) > 0 || source.last_generate_at) return "generated";
+  if (source.last_scan_at) return "scanned";
+  return "imported";
+}
+
+/** One sentence, no jargon, describing the state the user is looking at. */
+function lifecycleSummary(source: SourceProject, lifecycle: Lifecycle): string {
+  const units = source.job_count ?? 0;
+  const docs = source.doc_count ?? 0;
+  switch (lifecycle) {
+    case "failed":
+      return "Something went wrong. See the details below.";
+    case "scanning":
+      return "Reading the code. This can take a few minutes.";
+    case "generating":
+      return "Writing the documentation. This can take a while.";
+    case "scanned":
+      return `Scanned. Found ${units} ${unitLabel(source.platform, units)}, no documentation yet.`;
+    case "generated":
+      return `${docs} ${docs === 1 ? "document" : "documents"} written, not in the knowledge base yet.`;
+    case "published":
+      return `${docs} ${docs === 1 ? "document" : "documents"}, searchable in chat.`;
+    case "imported":
+    default:
+      return "Imported. Nothing has been scanned yet.";
+  }
+}
+
+/** Column text for the collapsed row: short enough to sit next to a date. */
+const LIFECYCLE_SHORT_LABELS: Record<Lifecycle, string> = {
+  imported: "Not scanned yet",
+  scanning: "Reading the code",
+  scanned: "Scanned, no docs",
+  generating: "Writing docs",
+  generated: "Docs ready",
+  published: "In the knowledge base",
+  failed: "Needs attention",
+};
+
+/**
+ * The single action a project is waiting for, by state.
+ *
+ * One button, named after the thing it does. The row used to present Scan &
+ * generate, Generate docs, Push to RAG, Check webhook, Register webhook, Delete
+ * webhook and Delete source as one flat row of equals, with no indication which
+ * one you were supposed to press.
+ */
+const NEXT_STEP: Record<Lifecycle, { action: "scan" | "generate" | "push"; label: string } | null> = {
+  imported: { action: "scan", label: "Scan now" },
+  scanning: null,
+  scanned: { action: "generate", label: "Generate documentation" },
+  generating: null,
+  generated: { action: "push", label: "Add to the knowledge base" },
+  published: null,
+  failed: { action: "scan", label: "Try scanning again" },
 };
 
 const ACTIVE_PIPELINES_STORAGE_KEY = "intodata.sourcePipelines.v1";
@@ -145,34 +232,14 @@ function unitLabel(platform: string, count: number): string {
   return count === 1 ? "unit" : "units";
 }
 
-function stageFromEvent(ev: LogEvent): RowStage | null {
-  const text = `${ev.type ?? ""} ${ev.data ?? ""} ${ev.message ?? ""}`.toLowerCase();
-  if (ev.type === "error" || ev.level === "error") return "failed";
-  if (
-    ev.type === "scan_complete" ||
-    text.includes("scan complete") ||
-    text.includes("scan completed")
-  )
-    return "generating";
-  if (
-    ev.level === "done" ||
-    ev.type === "done"
-  )
-    return "complete";
-  if (
-    ev.type === "generate_complete" ||
-    ev.type === "push_complete" ||
-    text.includes("generation complete") ||
-    text.includes("generate complete") ||
-    text.includes("push complete") ||
-    text.includes("pushed to rag") ||
-    text.includes("pushing") ||
-    text.includes("rag push")
-  )
-    return "pushing";
-  return null;
-}
-
+/**
+ * Log text drives the progress bar only.
+ *
+ * There used to be a sibling `stageFromEvent` that read the same strings to
+ * decide what happened next -- "scan complete" in the log dispatched the
+ * documentation run. That is gone: stage transitions now come from the project
+ * row, and this function cannot start or finish anything.
+ */
 function progressFromEvent(ev: LogEvent, stage: RowStage): number {
   const text = `${ev.type ?? ""} ${ev.data ?? ""} ${ev.message ?? ""}`.toLowerCase();
   if (ev.level === "done") return 100;
@@ -235,10 +302,18 @@ function removePersistedPipeline(projectId: string) {
   writePersistedPipelines(pipelines);
 }
 
-function stageFromProject(source: SourceProject): RowStage | null {
+/**
+ * The operation the server says is in flight, if any.
+ *
+ * Deliberately narrower than "what state is this project in": only a genuinely
+ * running operation may be reattached to, and `failed` is not one -- it is a
+ * resting state that the caller reports rather than watches.
+ */
+function busyStageFromProject(
+  source: SourceProject,
+): Extract<RowStage, "scanning" | "generating"> | null {
   if (source.status === "scanning") return "scanning";
   if (source.status === "generating") return "generating";
-  if (source.status === "error") return "failed";
   return null;
 }
 
@@ -306,6 +381,26 @@ export default function SourcesSettingsPage() {
   const [modes, setModes] = useState<Record<string, SourceMode>>({});
   const [githubForms, setGithubForms] = useState<Record<string, GithubState>>({});
   const activePipelineRefs = useRef<Set<string>>(new Set());
+  // An import no longer visibly "does" anything, so say what happened and what
+  // the next step is. Without this the button appears to have failed.
+  const [justImported, setJustImported] = useState(false);
+  const manualFormRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Open the repository-URL + token form, for deployments with no GitHub App.
+   *
+   * Scrolls it into view: the form lives further down the page than the GitHub
+   * card that sends people here, so opening it silently looked like nothing had
+   * happened.
+   */
+  const openManualTokenForm = useCallback(() => {
+    setManualAddOpen(true);
+    setModes((prev) => ({ ...prev, [activeAddPlatform]: "github" }));
+    // After the panel has been committed to the DOM by the state changes above.
+    requestAnimationFrame(() => {
+      manualFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }, [activeAddPlatform]);
 
   function patchRow(platformId: string, patch: Partial<RowState>) {
     setRows((prev) => ({
@@ -362,138 +457,119 @@ export default function SourcesSettingsPage() {
     }));
   }
 
-  const monitorProjectPipeline = useCallback(async (
+  /**
+   * Run one long MCP operation, mirroring its logs onto the row.
+   *
+   * SSE drives the progress bar and the log tail only. Completion and failure
+   * come from `settle`, which reads the project row: log text has proven
+   * unreliable as a control signal, because a marker can arrive from an earlier
+   * run or ahead of the artefact it announces. Nothing here starts a second
+   * operation -- scanning and generating are separate decisions the user makes.
+   */
+  const runOperation = useCallback(async (
     platformId: string,
     projectId: string,
-    options: { startScan?: boolean; startGenerate?: boolean; initialStage?: RowStage } = {},
+    stage: Extract<RowStage, "scanning" | "generating" | "pushing">,
+    trigger: () => Promise<unknown>,
+    settle: () => Promise<unknown>,
   ) => {
     if (activePipelineRefs.current.has(projectId)) return;
     activePipelineRefs.current.add(projectId);
-    upsertPersistedPipeline({
-      projectId,
-      platformId,
-      stage: options.initialStage ?? (options.startGenerate ? "generating" : "scanning"),
-      updatedAt: Date.now(),
-    });
+    upsertPersistedPipeline({ projectId, platformId, stage, updatedAt: Date.now() });
 
     const sub: { stop?: () => void } = {};
     try {
+      patchRow(platformId, {
+        stage,
+        progress: STAGE_PROGRESS[stage],
+        error: null,
+        logs: [],
+        logsOpen: true,
+      });
       fetchSourceLogHistory(projectId)
         .then((history) => appendLogHistory(platformId, history.lines))
         .catch(() => {
-          // Log history is best-effort; live SSE/project status remains authoritative.
+          // Log history is best-effort; the project row stays authoritative.
         });
+      sub.stop = subscribeToLogs(
+        projectId,
+        (ev) => {
+          pushLog(platformId, ev);
+          patchRow(platformId, { progress: progressFromEvent(ev, stage) });
+        },
+        () => {
+          // SSE drops on server restart. `settle` polls the row regardless, so a
+          // lost stream costs live logs, never the outcome.
+        },
+      );
 
-      await new Promise<void>((resolve, reject) => {
-        let generateTriggered = options.initialStage === "generating" || options.startGenerate === true;
-        let settled = false;
-        sub.stop = subscribeToLogs(
-          projectId,
-          (ev) => {
-            pushLog(platformId, ev);
-            const next = stageFromEvent(ev);
-            if (!next) {
-              const currentStage = generateTriggered ? "generating" : "scanning";
-              patchRow(platformId, { progress: progressFromEvent(ev, currentStage) });
-              return;
-            }
-            if (next === "generating" && !generateTriggered) {
-              generateTriggered = true;
-              upsertPersistedPipeline({
-                projectId,
-                platformId,
-                stage: "generating",
-                updatedAt: Date.now(),
-              });
-              patchRow(platformId, {
-                stage: "generating",
-                progress: progressFromEvent(ev, "generating"),
-              });
-              // The log marker only says "the scanner thinks it is done". It can
-              // arrive from an earlier run or before scan_result.json lands, so the
-              // dispatch itself waits on the project row before generating.
-              generateDocsWhenScanned(projectId).catch((err) => {
-                if (settled) return;
-                settled = true;
-                removePersistedPipeline(projectId);
-                patchRow(platformId, {
-                  stage: "failed",
-                  progress: STAGE_PROGRESS.failed,
-                  error: err instanceof Error ? err.message : String(err),
-                });
-                reject(err);
-              });
-            } else if (next === "pushing") {
-              upsertPersistedPipeline({
-                projectId,
-                platformId,
-                stage: "pushing",
-                updatedAt: Date.now(),
-              });
-              patchRow(platformId, {
-                stage: "pushing",
-                progress: progressFromEvent(ev, "pushing"),
-              });
-            } else if (next === "complete") {
-              if (settled) return;
-              settled = true;
-              removePersistedPipeline(projectId);
-              patchRow(platformId, { stage: "complete", progress: STAGE_PROGRESS.complete });
-              resolve();
-            } else if (next === "failed") {
-              if (settled) return;
-              settled = true;
-              removePersistedPipeline(projectId);
-              patchRow(platformId, {
-                stage: "failed",
-                progress: STAGE_PROGRESS.failed,
-                error: ev.message ?? ev.data ?? "Pipeline reported an error",
-              });
-              reject(new Error(ev.message ?? ev.data ?? "Pipeline error"));
-            } else {
-              patchRow(platformId, { progress: progressFromEvent(ev, next) });
-            }
-          },
-          () => {
-            // SSE errors are expected on server restart; don't fail the pipeline.
-          },
-        );
+      await trigger();
+      await settle();
 
-        patchRow(platformId, {
-          stage: options.initialStage ?? (options.startGenerate ? "generating" : "scanning"),
-          progress: STAGE_PROGRESS[options.initialStage ?? (options.startGenerate ? "generating" : "scanning")],
-          error: null,
-          logs: [],
-          logsOpen: true,
-        });
-        const starter = options.startGenerate
-          ? generateDocsWhenScanned(projectId)
-          : options.startScan === false
-            ? Promise.resolve()
-            : scanProject(projectId);
-        starter.catch((err) => {
-          if (settled) return;
-          settled = true;
-          removePersistedPipeline(projectId);
-          patchRow(platformId, {
-            stage: "failed",
-            progress: STAGE_PROGRESS.failed,
-            error: err instanceof Error ? err.message : String(err),
-          });
-          reject(err);
-        });
+      removePersistedPipeline(projectId);
+      patchRow(platformId, { stage: "complete", progress: STAGE_PROGRESS.complete });
+    } catch (err) {
+      removePersistedPipeline(projectId);
+      patchRow(platformId, {
+        stage: "failed",
+        progress: STAGE_PROGRESS.failed,
+        error: err instanceof Error ? err.message : String(err),
       });
-
-      qc.invalidateQueries({ queryKey: ["source-projects"] });
-      qc.invalidateQueries({ queryKey: ["docs-projects"] });
     } finally {
       sub.stop?.();
       activePipelineRefs.current.delete(projectId);
+      qc.invalidateQueries({ queryKey: ["source-projects"] });
+      qc.invalidateQueries({ queryKey: ["docs-projects"] });
     }
   }, [qc]);
 
-  async function runProjectPipeline(platformId: string, projectId: string) {
-    await monitorProjectPipeline(platformId, projectId, { startScan: true, initialStage: "scanning" });
+  const runScan = useCallback(
+    (platformId: string, projectId: string) =>
+      runOperation(
+        platformId,
+        projectId,
+        "scanning",
+        () => scanProject(projectId),
+        () => waitForScanReady(projectId),
+      ),
+    [runOperation],
+  );
+
+  /** `packId` of null means "no pack": write the standard documentation set. */
+  const runGenerate = useCallback(
+    (platformId: string, projectId: string, packId: number | null) =>
+      runOperation(
+        platformId,
+        projectId,
+        "generating",
+        () => generateDocsWhenScanned(projectId, { pluginPackId: packId }),
+        () => waitForGenerateSettled(projectId),
+      ),
+    [runOperation],
+  );
+
+  /**
+   * Importing registers the source and stops there.
+   *
+   * It used to chain straight into a scan and then a documentation run, so one
+   * click spent hours of model time and the pack was never chosen -- the first
+   * generation always used whatever default the project happened to hold.
+   *
+   * The row resets to its empty state rather than showing a finished progress
+   * bar: the bar would replace the form and leave no way to add a second source
+   * without reloading. Confirmation is the banner at the top of the section,
+   * which also names the next step.
+   */
+  function markImported(platformId: string) {
+    patchRow(platformId, {
+      file: null,
+      stage: "pending",
+      progress: 0,
+      error: null,
+      logs: [],
+      logsOpen: false,
+    });
+    setJustImported(true);
   }
 
   async function runUpload(platformId: string, file: File) {
@@ -511,9 +587,13 @@ export default function SourcesSettingsPage() {
         file,
         projectId,
         platform: platformId,
-        onProgress: (pct) => patchRow(platformId, { progress: Math.round(pct * 0.2) }),
+        // The upload is the whole operation now, so its percentage is the bar.
+        // It used to be squeezed into the first 20% to leave room for the scan
+        // and documentation run that followed automatically.
+        onProgress: (pct) => patchRow(platformId, { progress: Math.round(pct) }),
       });
-      await runProjectPipeline(platformId, projectId);
+      markImported(platformId);
+      qc.invalidateQueries({ queryKey: ["source-projects"] });
     } catch (err) {
       patchRow(platformId, {
         stage: "failed",
@@ -533,19 +613,12 @@ export default function SourcesSettingsPage() {
     const projectId = slugify(projectName || displayName || `${workspaceSlug}-${platformId}`);
 
     if (!repoUrl || !token) {
-      patchGithub(platformId, { error: "Repository URL and token are required." });
+      patchGithub(platformId, { error: "Enter the repository address and an access token." });
       return;
     }
 
     try {
       patchGithub(platformId, { busy: true, error: null });
-      patchRow(platformId, {
-        stage: "uploading",
-        progress: 10,
-        error: null,
-        logs: [],
-        logsOpen: true,
-      });
       await addGithubSource({
         repoUrl,
         projectId,
@@ -554,112 +627,14 @@ export default function SourcesSettingsPage() {
         githubToken: token,
       });
       patchGithub(platformId, { token: "" });
+      markImported(platformId);
       qc.invalidateQueries({ queryKey: ["source-projects"] });
-      await runProjectPipeline(platformId, projectId);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       patchGithub(platformId, { error: message });
       patchRow(platformId, { stage: "failed", progress: STAGE_PROGRESS.failed, error: message });
     } finally {
       patchGithub(platformId, { busy: false });
-    }
-  }
-
-  async function runExistingScan(platformId: string, projectId: string) {
-    try {
-      await runProjectPipeline(platformId, projectId);
-    } catch (err) {
-      patchRow(platformId, {
-        stage: "failed",
-        progress: STAGE_PROGRESS.failed,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  async function runExistingGenerate(platformId: string, projectId: string) {
-    const sub: { stop?: () => void } = {};
-    try {
-      upsertPersistedPipeline({
-        projectId,
-        platformId,
-        stage: "generating",
-        updatedAt: Date.now(),
-      });
-      await new Promise<void>((resolve, reject) => {
-        let settled = false;
-        sub.stop = subscribeToLogs(
-          projectId,
-          (ev) => {
-            pushLog(platformId, ev);
-            const next = stageFromEvent(ev);
-            if (!next) {
-              patchRow(platformId, {
-                stage: "generating",
-                progress: Math.max(55, progressFromEvent(ev, "generating")),
-              });
-            } else if (next === "failed") {
-              if (settled) return;
-              settled = true;
-              removePersistedPipeline(projectId);
-              patchRow(platformId, {
-                stage: "failed",
-                progress: STAGE_PROGRESS.failed,
-                error: ev.message ?? ev.data ?? "Generation failed",
-              });
-              reject(new Error(ev.message ?? ev.data ?? "Generation failed"));
-            } else if (next === "pushing") {
-              patchRow(platformId, {
-                stage: "pushing",
-                progress: progressFromEvent(ev, "pushing"),
-              });
-            } else if (next === "complete") {
-              if (settled) return;
-              settled = true;
-              removePersistedPipeline(projectId);
-              patchRow(platformId, { stage: "complete", progress: STAGE_PROGRESS.complete });
-              resolve();
-            } else if (next === "generating") {
-              patchRow(platformId, {
-                stage: "generating",
-                progress: Math.max(55, progressFromEvent(ev, "generating")),
-              });
-            }
-          },
-          () => {
-            // Keep waiting for explicit completion/failure events.
-          },
-        );
-
-        patchRow(platformId, {
-          stage: "generating",
-          progress: STAGE_PROGRESS.generating,
-          error: null,
-          logs: [],
-          logsOpen: true,
-        });
-        generateDocsWhenScanned(projectId).catch((err) => {
-          if (settled) return;
-          settled = true;
-          removePersistedPipeline(projectId);
-          patchRow(platformId, {
-            stage: "failed",
-            progress: STAGE_PROGRESS.failed,
-            error: err instanceof Error ? err.message : String(err),
-          });
-          reject(err);
-        });
-      });
-      qc.invalidateQueries({ queryKey: ["source-projects"] });
-      qc.invalidateQueries({ queryKey: ["docs-projects"] });
-    } catch (err) {
-      patchRow(platformId, {
-        stage: "failed",
-        progress: STAGE_PROGRESS.failed,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      sub.stop?.();
     }
   }
 
@@ -705,94 +680,49 @@ export default function SourcesSettingsPage() {
     const now = Date.now();
 
     for (const source of projects) {
-      const saved = persisted[source.id];
-      const liveStage = stageFromProject(source);
-      const lastScanAt = source.last_scan_at ? new Date(source.last_scan_at).getTime() : 0;
-      const lastGenerateAt = source.last_generate_at
-        ? new Date(source.last_generate_at).getTime()
-        : 0;
-      const scanNeedsGeneration =
-        source.status === "ready" &&
-        saved &&
-        (saved.stage === "scanning" || saved.stage === "generating") &&
-        lastScanAt > 0 &&
-        lastScanAt >= lastGenerateAt;
-
       if (source.status === "error") {
-        if (saved) removePersistedPipeline(source.id);
+        removePersistedPipeline(source.id);
         patchRow(source.id, {
           stage: "failed",
           progress: STAGE_PROGRESS.failed,
-          error: source.error_message ?? "Source workflow failed",
+          error: source.error_message ?? "The last run for this source failed",
           logsOpen: true,
         });
         fetchSourceLogHistory(source.id)
           .then((history) => appendLogHistory(source.id, history.lines))
-          .catch(() => {});
+          .catch(() => {
+            // Best-effort: the row already shows the failure and its message.
+          });
         continue;
       }
 
-      if (scanNeedsGeneration) {
-        nextPersisted[source.id] = {
-          projectId: source.id,
-          platformId: source.id,
-          stage: "generating",
-          updatedAt: now,
-        };
-        patchRow(source.id, {
-          stage: "generating",
-          progress: STAGE_PROGRESS.generating,
-          error: null,
-          logsOpen: true,
-        });
-        void monitorProjectPipeline(source.id, source.id, {
-          startGenerate: true,
-          initialStage: "generating",
-        });
-        continue;
-      }
+      // Reattach only to work the SERVER says is still running, so a reload -- or
+      // a run started from another machine -- still shows live progress.
+      //
+      // A finished scan is deliberately left alone. This recovery path used to
+      // treat "scan newer than last generate" as an instruction and dispatch a
+      // documentation run on load, which is how a reopened tab could start hours
+      // of work nobody asked for.
+      const liveStage = busyStageFromProject(source);
+      if (!liveStage) continue;
 
-      const recoveredStage = liveStage ?? saved?.stage ?? null;
-      if (!recoveredStage) continue;
-
-      if (source.status === "ready" && saved) {
-        removePersistedPipeline(source.id);
-        patchRow(source.id, {
-          stage: "complete",
-          progress: STAGE_PROGRESS.complete,
-          error: null,
-          logsOpen: true,
-        });
-        fetchSourceLogHistory(source.id)
-          .then((history) => appendLogHistory(source.id, history.lines))
-          .catch(() => {});
-        continue;
-      }
-
-      if (saved || recoveredStage === "generating") {
-        nextPersisted[source.id] = {
-          projectId: source.id,
-          platformId: source.id,
-          stage: recoveredStage,
-          updatedAt: now,
-        };
-      }
-      patchRow(source.id, {
-        stage: recoveredStage,
-        progress: Math.max(STAGE_PROGRESS[recoveredStage], recoveredStage === "generating" ? 55 : 0),
-        error: null,
-        logsOpen: true,
-      });
-      if (saved || recoveredStage === "generating") {
-        void monitorProjectPipeline(source.id, source.id, {
-          startScan: false,
-          initialStage: recoveredStage,
-        });
-      } else {
-        fetchSourceLogHistory(source.id)
-          .then((history) => appendLogHistory(source.id, history.lines))
-          .catch(() => {});
-      }
+      nextPersisted[source.id] = {
+        projectId: source.id,
+        platformId: source.id,
+        stage: liveStage,
+        updatedAt: now,
+      };
+      void runOperation(
+        source.id,
+        source.id,
+        liveStage,
+        // Nothing to trigger: the operation is already in flight server-side.
+        async () => undefined,
+        () =>
+          liveStage === "generating"
+            ? waitForGenerateSettled(source.id)
+            : waitForScanReady(source.id),
+      );
     }
 
     const validIds = new Set(projects.map((project) => project.id));
@@ -803,7 +733,14 @@ export default function SourcesSettingsPage() {
       }
     }
     writePersistedPipelines(nextPersisted);
-  }, [monitorProjectPipeline, projects, sourceProjects]);
+  }, [projects, runOperation, sourceProjects]);
+
+  // Every hook must run before the loading early-return below. This one used to
+  // sit after it, so React saw a different hook count on the loading render than
+  // on the loaded one -- the classic "rendered more hooks than during the
+  // previous render" crash, and it silently depended on both branches happening
+  // to be reached in a particular order.
+  const { byProject: liveSourcesByProject } = useProjectLiveSources();
 
   if (statusLoading || projectsLoading) {
     return (
@@ -815,10 +752,9 @@ export default function SourcesSettingsPage() {
     );
   }
 
-  const attentionCount = projects.filter((project) => project.status === "error").length;
+  const needsAttention = projects.filter((project) => project.status === "error");
   const totalDocs = projects.reduce((sum, project) => sum + (project.doc_count ?? 0), 0);
   const totalUnits = projects.reduce((sum, project) => sum + (project.job_count ?? 0), 0);
-  const { byProject: liveSourcesByProject } = useProjectLiveSources();
   const projectsWithLiveData = projects.filter((project) => (liveSourcesByProject.get(project.id)?.length ?? 0) > 0).length;
 
   return (
@@ -831,31 +767,72 @@ export default function SourcesSettingsPage() {
           </p>
         </div>
         <div className="flex shrink-0 items-baseline gap-5">
-          <span className="text-sm text-muted-foreground">
-            {attentionCount > 0 ? `${attentionCount} need attention` : `${projects.length} sources`}
-          </span>
+          {/* "1 need attention" named nothing, so the one thing it was telling you
+              to look at was the one thing it would not say. */}
+          {needsAttention.length > 0 ? (
+            <span className="text-sm text-destructive">
+              {needsAttention.length === 1
+                ? `${needsAttention[0].display_name || needsAttention[0].id} needs attention`
+                : `${needsAttention.length} sources need attention: ` +
+                  needsAttention
+                    .slice(0, 3)
+                    .map((project) => project.display_name || project.id)
+                    .join(", ") +
+                  (needsAttention.length > 3 ? `, and ${needsAttention.length - 3} more` : "")}
+            </span>
+          ) : (
+            <span className="text-sm text-muted-foreground">
+              {projects.length} {projects.length === 1 ? "source" : "sources"}
+            </span>
+          )}
         </div>
       </header>
 
       <section aria-labelledby="add-source-heading">
         <h2 id="add-source-heading" className="sr-only">Add source</h2>
+
+        {justImported && (
+          <div className="mb-5 flex items-start gap-3 rounded-lg border border-emerald-200 bg-emerald-50/70 p-4">
+            <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" aria-hidden />
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-emerald-900">Imported</p>
+              <p className="mt-0.5 text-sm text-emerald-800">
+                Your source is in the list below. Choose{" "}
+                <span className="font-semibold">Scan now</span> on it when you are
+                ready &mdash; nothing runs until you do.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setJustImported(false)}
+              aria-label="Dismiss"
+              className="ml-auto shrink-0 rounded-md p-1 text-emerald-800 hover:bg-emerald-100"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
+        {/* Importing registers the project and stops. Scanning and generating are
+            separate, explicit steps on the project's own row below. */}
         <GithubAppConnectPanel
           platforms={platformOptions.map((id) => ({ id, label: platformLabel(id) }))}
           defaultPlatform={activeAddPlatform}
           existingProjects={projects}
-          onConnected={async (project) => {
+          onConnected={() => {
             qc.invalidateQueries({ queryKey: ["source-projects"] });
-            await runProjectPipeline(project.id, project.id);
+            setJustImported(true);
           }}
+          onUseTokenInstead={openManualTokenForm}
         />
 
         <AzureDevOpsConnectPanel
           platforms={platformOptions.map((id) => ({ id, label: platformLabel(id) }))}
           defaultPlatform={activeAddPlatform}
           existingProjects={projects}
-          onConnected={async (project) => {
+          onConnected={() => {
             qc.invalidateQueries({ queryKey: ["source-projects"] });
-            await runProjectPipeline(project.id, project.id);
+            setJustImported(true);
           }}
         />
 
@@ -866,10 +843,11 @@ export default function SourcesSettingsPage() {
                 <FileArchive className="h-5 w-5" />
               </span>
               <div>
-                <h3 className="text-base font-semibold">ZIP or manual Git URL</h3>
+                <h3 className="text-base font-semibold">ZIP file or repository address</h3>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Upload an archive, or paste a GitHub / Azure DevOps repository URL with
-                  a personal access token.
+                  Upload an archive, or paste a GitHub / Azure DevOps repository
+                  address together with an access token. Use this when there is no
+                  GitHub App on this server.
                 </p>
               </div>
             </div>
@@ -884,7 +862,7 @@ export default function SourcesSettingsPage() {
           </div>
 
           {manualAddOpen && (
-            <div className="space-y-4 border-t border-border px-1 py-5">
+            <div ref={manualFormRef} className="space-y-4 border-t border-border px-1 py-5">
               <label className="flex items-center gap-2 text-sm text-muted-foreground">
                 Platform
                 <select
@@ -1019,7 +997,9 @@ export default function SourcesSettingsPage() {
           <div className="border-y border-border">
             <div className="hidden grid-cols-[minmax(0,1fr)_auto_auto] gap-5 border-b border-border px-1 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground sm:grid">
               <span>Project source</span>
-              <span className="min-w-28 text-right">Evidence</span>
+              {/* Labelled "Evidence" while showing pipeline state; the live-data
+                  chips it named are in the first column. */}
+              <span className="min-w-28 text-right">Status</span>
               <span className="min-w-28 text-right">Updated</span>
             </div>
             {filteredProjects.map((source) => (
@@ -1045,10 +1025,10 @@ export default function SourcesSettingsPage() {
                 }
                 onUpload={(file) => runUpload(source.platform, file)}
                 onScanExisting={async () => {
-                  await runExistingScan(source.id, source.id);
+                  await runScan(source.id, source.id);
                 }}
-                onGenerateExisting={async () => {
-                  await runExistingGenerate(source.id, source.id);
+                onGenerateExisting={async (packId) => {
+                  await runGenerate(source.id, source.id, packId);
                 }}
                 onPushToRag={async () => {
                   await runExistingPush(source.id, source.id);
@@ -1159,7 +1139,8 @@ interface SourceRowProps {
   onClear: () => void;
   onUpload: (file: File) => void;
   onScanExisting: () => void;
-  onGenerateExisting: () => void;
+  /** `packId` null means "no pack": write the standard documentation set. */
+  onGenerateExisting: (packId: number | null) => void;
   onPushToRag: () => Promise<unknown>;
   onResetStatus: () => Promise<unknown>;
   onUpdateToken: (token: string) => Promise<unknown>;
@@ -1207,6 +1188,10 @@ function SourceRow({
   const [tokenDraft, setTokenDraft] = useState("");
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [expanded, setExpanded] = useState(!source);
+  const [packDialogOpen, setPackDialogOpen] = useState(false);
+  // Everything that is not the one obvious next step. Collapsed by default so a
+  // row shows a single action instead of the eight it used to.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const stage: RowStage = row?.stage ?? "pending";
   const active = stage !== "pending" && stage !== "complete" && stage !== "failed";
@@ -1215,15 +1200,12 @@ function SourceRow({
   // Azure DevOps projects resolve their credential from an organization connection,
   // so the per-project GitHub token and webhook controls do not apply to them.
   const isAzureDevOpsSource = source?.connection_kind === "azure_devops";
-  const sourceStatus = source?.status === "error"
-    ? "Needs attention"
-    : sourceBusy
-      ? STAGE_LABELS[stage === "pending" ? "scanning" : stage]
-      : source?.last_rag_push_at
-        ? `${source.doc_count ?? 0} docs · in RAG`
-        : source?.doc_count
-          ? `${source.doc_count} docs`
-          : "Scanned, no docs";
+  // Defaults to "imported" for the add-new row, which has no project yet and
+  // never reads it.
+  const lifecycle: Lifecycle = source ? lifecycleOf(source) : "imported";
+  const nextStep = NEXT_STEP[lifecycle];
+  const busyLifecycle = lifecycle === "scanning" || lifecycle === "generating";
+  const sourceStatus = source ? LIFECYCLE_SHORT_LABELS[lifecycle] : STAGE_LABELS[stage];
 
   async function runAction(name: string, action: () => Promise<unknown>) {
     try {
@@ -1414,120 +1396,189 @@ function SourceRow({
               })()}
             </div>
           )}
-          <div className="flex flex-wrap gap-2">
-            <Button
-              size="sm"
-              variant="secondary"
-              isLoading={actionBusy === "scan"}
-              onClick={() => runAction("scan", async () => onScanExisting())}
-            >
-              <RotateCw className="h-3.5 w-3.5" /> Scan & generate
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              isLoading={actionBusy === "generate"}
-              onClick={() => runAction("generate", async () => onGenerateExisting())}
-            >
-              Generate docs
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              isLoading={actionBusy === "push"}
-              onClick={() => runAction("push", onPushToRag)}
-            >
-              Push to RAG
-            </Button>
-            {sourceBusy && (
-              <Button
-                size="sm"
-                variant="ghost"
-                isLoading={actionBusy === "reset"}
-                onClick={() => runAction("reset", onResetStatus)}
-              >
-                Reset status
-              </Button>
-            )}
-            {source.source_type === "git" && !isAzureDevOpsSource && (
-              <>
+          {/* One obvious next step. The row used to offer "Scan & generate",
+              "Generate docs", "Push to RAG", three webhook buttons and "Delete
+              source" as a flat row of equals, with nothing to say which of them
+              you were meant to press. */}
+          <div className="rounded-md border border-border bg-background p-3">
+            <p className="text-sm text-foreground">{lifecycleSummary(source, lifecycle)}</p>
+            <div className="mt-2.5 flex flex-wrap items-center gap-2">
+              {busyLifecycle ? (
+                <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                  Working on it. You can leave this page and come back.
+                </span>
+              ) : nextStep ? (
+                <Button
+                  size="sm"
+                  isLoading={actionBusy === nextStep.action}
+                  onClick={() => {
+                    if (nextStep.action === "scan") {
+                      runAction("scan", async () => onScanExisting());
+                    } else if (nextStep.action === "generate") {
+                      // Asks which pack to use before starting.
+                      setPackDialogOpen(true);
+                    } else {
+                      runAction("push", onPushToRag);
+                    }
+                  }}
+                >
+                  {nextStep.action === "scan" && <RotateCw className="h-3.5 w-3.5" />}
+                  {nextStep.label}
+                </Button>
+              ) : null}
+
+              {/* Redo actions, so a user is never left with only the forward step
+                  after changing a pack, a branch or the code itself. */}
+              {(lifecycle === "scanned" ||
+                lifecycle === "generated" ||
+                lifecycle === "published") && (
                 <Button
                   size="sm"
                   variant="secondary"
-                  isLoading={actionBusy === "check"}
-                  onClick={() => runAction("check", onCheckWebhook)}
+                  isLoading={actionBusy === "rescan"}
+                  onClick={() => runAction("rescan", async () => onScanExisting())}
                 >
-                  Check webhook
+                  Scan again
                 </Button>
+              )}
+              {(lifecycle === "generated" || lifecycle === "published") && (
                 <Button
                   size="sm"
                   variant="secondary"
-                  isLoading={actionBusy === "register"}
-                  onClick={() => runAction("register", onRegisterWebhook)}
+                  isLoading={actionBusy === "generate"}
+                  onClick={() => setPackDialogOpen(true)}
                 >
-                  Register webhook
+                  Generate again
                 </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  isLoading={actionBusy === "delete"}
-                  onClick={() => runAction("delete", onDeleteWebhook)}
-                >
-                  Delete webhook
-                </Button>
-              </>
-            )}
-            <Button
-              size="sm"
-              variant="ghost"
-              isLoading={actionBusy === "deleteProject"}
-              onClick={() => setConfirmDeleteOpen(true)}
-            >
-              <Trash2 className="h-3.5 w-3.5" /> Delete source
-            </Button>
-            <ConfirmDialog
-              open={confirmDeleteOpen}
-              title="Delete source"
-              message={`Delete source '${source.id}'? This removes its scan data and generated docs.`}
-              confirmLabel="Delete"
-              confirmVariant="danger"
-              onConfirm={() => {
-                setConfirmDeleteOpen(false);
-                runAction("deleteProject", onDeleteProject);
-              }}
-              onCancel={() => setConfirmDeleteOpen(false)}
-            />
-          </div>
-          {source.source_type === "git" && isAzureDevOpsSource && (
-            <p className="text-xs text-muted-foreground">
-              Credentials come from the Azure DevOps organization connection above.
-              Rotate the token there and every project from that organization picks it up.
-            </p>
-          )}
-          {source.source_type === "git" && !isAzureDevOpsSource && (
-            <div className="flex gap-2">
-              <Input
-                type="password"
-                value={tokenDraft}
-                placeholder="Update GitHub token"
-                onChange={(e) => setTokenDraft(e.target.value)}
-              />
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={!tokenDraft.trim()}
-                isLoading={actionBusy === "token"}
-                onClick={() =>
-                  runAction("token", async () => {
-                    await onUpdateToken(tokenDraft.trim());
-                    setTokenDraft("");
-                  })
-                }
-              >
-                Save token
-              </Button>
+              )}
             </div>
-          )}
+          </div>
+
+          <div>
+            <button
+              type="button"
+              onClick={() => setAdvancedOpen((current) => !current)}
+              aria-expanded={advancedOpen}
+              className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              {advancedOpen ? (
+                <ChevronDown className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5" />
+              )}
+              Advanced settings
+            </button>
+
+            {advancedOpen && (
+              <div className="mt-3 space-y-3 rounded-md border border-dashed border-border p-3">
+                <div className="flex flex-wrap gap-2">
+                  {sourceBusy && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      isLoading={actionBusy === "reset"}
+                      onClick={() => runAction("reset", onResetStatus)}
+                    >
+                      Reset status
+                    </Button>
+                  )}
+                  {source.source_type === "git" && !isAzureDevOpsSource && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        isLoading={actionBusy === "check"}
+                        onClick={() => runAction("check", onCheckWebhook)}
+                      >
+                        Check webhook
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        isLoading={actionBusy === "register"}
+                        onClick={() => runAction("register", onRegisterWebhook)}
+                      >
+                        Register webhook
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        isLoading={actionBusy === "delete"}
+                        onClick={() => runAction("delete", onDeleteWebhook)}
+                      >
+                        Delete webhook
+                      </Button>
+                    </>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    isLoading={actionBusy === "deleteProject"}
+                    onClick={() => setConfirmDeleteOpen(true)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" /> Delete source
+                  </Button>
+                </div>
+
+                {source.source_type === "git" && isAzureDevOpsSource && (
+                  <p className="text-xs text-muted-foreground">
+                    Credentials come from the Azure DevOps organization connection above.
+                    Rotate the token there and every project from that organization picks it up.
+                  </p>
+                )}
+                {source.source_type === "git" && !isAzureDevOpsSource && (
+                  <div className="flex gap-2">
+                    <Input
+                      type="password"
+                      value={tokenDraft}
+                      placeholder="Replace the access token"
+                      onChange={(e) => setTokenDraft(e.target.value)}
+                    />
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={!tokenDraft.trim()}
+                      isLoading={actionBusy === "token"}
+                      onClick={() =>
+                        runAction("token", async () => {
+                          await onUpdateToken(tokenDraft.trim());
+                          setTokenDraft("");
+                        })
+                      }
+                    >
+                      Save token
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <ConfirmDialog
+            open={confirmDeleteOpen}
+            title="Delete source"
+            message={`Delete source '${source.id}'? This removes its scan data and generated docs.`}
+            confirmLabel="Delete"
+            confirmVariant="danger"
+            onConfirm={() => {
+              setConfirmDeleteOpen(false);
+              runAction("deleteProject", onDeleteProject);
+            }}
+            onCancel={() => setConfirmDeleteOpen(false)}
+          />
+
+          <GeneratePackDialog
+            open={packDialogOpen}
+            projectLabel={source.display_name || source.id}
+            currentPackId={source.plugin_pack_id ?? null}
+            onCancel={() => setPackDialogOpen(false)}
+            onConfirm={async (choice) => {
+              setPackDialogOpen(false);
+              const packId = await applyGenerateChoice(source.id, choice);
+              await runAction("generate", async () => onGenerateExisting(packId));
+            }}
+          />
           <ProjectConnectorBindings projectId={source.id} />
           {(row?.error || actionError) && (
             <p className="text-xs text-destructive">{row?.error ?? actionError}</p>
@@ -1620,7 +1671,7 @@ function SourceRow({
                     disabled={!github?.repoUrl.trim() || !github?.token.trim()}
                     onClick={onGithubConnect}
                   >
-                    <Github className="h-3.5 w-3.5" /> Connect & scan
+                    <Github className="h-3.5 w-3.5" /> Import repository
                   </Button>
                 </div>
               </>
@@ -1724,7 +1775,7 @@ function SourceRow({
                       <RotateCw className="h-3.5 w-3.5 mr-1" /> Retry upload
                     </>
                   ) : (
-                    "Upload & scan"
+                    "Import ZIP"
                   )}
                 </Button>
               </div>

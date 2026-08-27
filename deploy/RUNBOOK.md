@@ -659,8 +659,16 @@ reachable callback URL — it does NOT work against `localhost`/`127.0.0.1`
 
 6. End-to-end check: log into the app, Settings → Sources → **Connect with GitHub App**
    → install on an org → GitHub redirects back to the callback → pick a repo →
-   **Connect & scan**. The project appears under "Existing sources" with
-   `connection_kind=app` and no stored token.
+   **Import repository**. The project appears under "Connected sources" with
+   `connection_kind=app` and no stored token, reading "Not scanned yet".
+
+   Importing deliberately stops there. Expand the project and use **Scan now**,
+   then **Generate documentation** (which asks which pack to use). Nothing runs
+   unless asked, so this check costs a clone rather than a full documentation run.
+
+   If the `MCP_GITHUB_APP_*` variables are left unset, the GitHub card says so and
+   offers **Import with an access token** instead. That fallback is a supported
+   path, not a degraded one.
 
 ### GitHub App troubleshooting
 
@@ -688,7 +696,7 @@ gate is failing before Nexus receives a callback. Check the GitHub App settings:
   Nexus **Settings → Sources → Connect with GitHub App**. Reconfiguring the App from
   GitHub's own settings page does not reliably redirect back to Nexus.
 
-If the App installs and Nexus shows the repo picker, but **Connect & scan** fails
+If the App installs and Nexus shows the repo picker, but **Import repository** fails
 with `Git clone failed — check the URL and credentials`, the clone gate is failing.
 Check these in order:
 

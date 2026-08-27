@@ -101,6 +101,8 @@ export interface SourceProject {
   github_account_login?: string | null;
   azure_devops_connection_id?: string | null;
   webhook_status?: string | null;
+  /** Pack this project generates with by default. Null means no pack. */
+  plugin_pack_id?: number | null;
 }
 
 /**
@@ -240,6 +242,39 @@ export async function waitForScanReady(
 }
 
 /**
+ * Block until a documentation run has finished, or throw.
+ *
+ * Same reasoning as `waitForScanReady`, applied to the other long operation.
+ * `POST /mcp/generate` commits `status='generating'` before it answers, so this
+ * cannot observe a stale pre-run status and return immediately. The row is the
+ * authority; log markers only drive the progress bar.
+ */
+export async function waitForGenerateSettled(
+  projectId: string,
+  options: { timeoutMs?: number; pollMs?: number; signal?: AbortSignal } = {},
+): Promise<ScanStatus> {
+  const timeoutMs = options.timeoutMs ?? 4 * 60 * 60 * 1000;
+  const pollMs = options.pollMs ?? 5000;
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const status = await getScanStatus(projectId);
+
+    if (status.status === "error") {
+      throw new Error(status.error_message || `Documentation generation failed for ${projectId}`);
+    }
+    if (status.status !== "generating") return status;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `Timed out after ${Math.round(timeoutMs / 3600000)} h waiting for the documentation run of ${projectId} to finish`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+}
+
+/**
  * Kick off doc generation once the scan has produced a usable result.
  *
  * Always gated: every caller in the app wants "generate the docs for this
@@ -254,6 +289,11 @@ export async function generateDocsWhenScanned(
     signal?: AbortSignal;
     pollMs?: number;
     timeoutMs?: number;
+    /**
+     * Pack to generate with, overriding the project default for this run only.
+     * Omit to use the project's saved pack.
+     */
+    pluginPackId?: number | null;
   } = {},
 ): Promise<void> {
   if (options.waitForScan !== false) {
@@ -263,7 +303,10 @@ export async function generateDocsWhenScanned(
       timeoutMs: options.timeoutMs,
     });
   }
-  await generateDocs(projectId, options.resume ?? true);
+  await generateDocs(projectId, {
+    resume: options.resume ?? true,
+    pluginPackId: options.pluginPackId,
+  });
 }
 
 /**
@@ -272,14 +315,22 @@ export async function generateDocsWhenScanned(
  * Prefer `generateDocsWhenScanned`: calling this before the scanner has written
  * `scan_result.json` fails the run and records it as a failed generate.
  */
-export async function generateDocs(projectId: string, resume = true): Promise<void> {
+export async function generateDocs(
+  projectId: string,
+  options: { resume?: boolean; pluginPackId?: number | null } = {},
+): Promise<void> {
   const res = await fetch("/api/source/generate", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       project_id: projectId,
-      resume,
+      resume: options.resume ?? true,
+      // Omitted, not null: /mcp/generate reads `plugin_pack_id: null` as "this
+      // run overrides the project default with no pack at all", so sending null
+      // when the caller simply did not choose would silently drop the project's
+      // own pack.
+      ...(options.pluginPackId != null ? { plugin_pack_id: options.pluginPackId } : {}),
       ...CUSTOMER_DOC_GENERATION_ROUTE,
     }),
   });
@@ -539,7 +590,12 @@ export async function getGithubAppInstallUrl(projectId?: string): Promise<string
   const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
   const res = await fetch(`/api/source/github/connect${qs}`, { credentials: "include" });
   if (!res.ok) {
-    throw new Error(`/api/source/github/connect failed (${res.status}): ${await res.text()}`);
+    // Carries the status so callers can tell "the App is not set up on this
+    // deployment" (503) from a genuine failure, and offer the token path.
+    throw new McpRequestError(
+      `/api/source/github/connect failed (${res.status}): ${await res.text()}`,
+      res.status,
+    );
   }
   const data = await res.json();
   return data.install_url as string;

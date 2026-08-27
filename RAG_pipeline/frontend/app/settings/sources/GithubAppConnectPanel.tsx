@@ -38,6 +38,15 @@ interface Props {
   defaultPlatform: string;
   existingProjects: SourceProject[];
   onConnected: (project: SourceProject, platform: string) => void | Promise<void>;
+  /**
+   * Open the manual repository-URL + token form.
+   *
+   * The App is the preferred path, but it is config-gated per deployment: a
+   * server without `MCP_GITHUB_APP_*` answers the install request with 503. On a
+   * self-managed install that is the normal state, not a fault, so the panel
+   * offers the token path rather than leaving a dead button.
+   */
+  onUseTokenInstead: () => void;
 }
 
 // Slug and repo-key normalisation live in ./repoSelection so this panel and the
@@ -59,6 +68,7 @@ export function GithubAppConnectPanel({
   defaultPlatform,
   existingProjects,
   onConnected,
+  onUseTokenInstead,
 }: Props) {
   const [installationId, setInstallationId] = useState<number | null>(null);
   const [repos, setRepos] = useState<GithubAppRepo[]>([]);
@@ -81,6 +91,8 @@ export function GithubAppConnectPanel({
   const [connecting, setConnecting] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The App is not set up on this server (503). Not an error to retry.
+  const [appUnavailable, setAppUnavailable] = useState(false);
   const connectedRepoKeys = useMemo(
     () => new Set(existingProjects.map((project) => canonicalRepoKey(project.repo_url))),
     [existingProjects],
@@ -216,7 +228,13 @@ export function GithubAppConnectPanel({
       const url = await getGithubAppInstallUrl();
       window.location.href = url;
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (err instanceof McpRequestError && err.status === 503) {
+        // A deployment without GitHub App credentials. Say so plainly and point
+        // at the path that does work here, instead of showing a raw 503 body.
+        setAppUnavailable(true);
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+      }
       setStarting(false);
     }
   }
@@ -335,10 +353,11 @@ export function GithubAppConnectPanel({
               <Github className="h-4 w-4" aria-hidden />
             </span>
             <div>
-              <h2 className="text-base font-semibold">Finish connecting</h2>
+              <h2 className="text-base font-semibold">Choose what to import</h2>
               <p className="mt-0.5 text-sm text-muted-foreground">
-                GitHub App installed{accountLogin ? ` on ${accountLogin}` : ""}. Choose a
-                repository to connect &mdash; no token is stored.
+                GitHub App installed{accountLogin ? ` on ${accountLogin}` : ""}. Pick the
+                repositories to import &mdash; no token is stored. Nothing is scanned
+                until you ask for it.
               </p>
             </div>
           </div>
@@ -416,8 +435,8 @@ export function GithubAppConnectPanel({
             >
               <Github className="h-3.5 w-3.5" />{" "}
               {selectedRepos.length > 1
-                ? `Connect ${selectedRepos.length} repositories`
-                : "Connect & scan"}
+                ? `Import ${selectedRepos.length} repositories`
+                : "Import repository"}
             </Button>
           </div>
         </CardBody>
@@ -484,6 +503,22 @@ export function GithubAppConnectPanel({
           )}
         </div>
 
+        {/* Discoverable before the user hits a 503: some deployments only ever
+            have the token path, and burying it in the ZIP card made it look like
+            the App was the only way in. */}
+        {!hasInstallations && !appUnavailable && !loadingInstallations && (
+          <p className="text-xs text-muted-foreground">
+            No GitHub App?{" "}
+            <button
+              type="button"
+              onClick={onUseTokenInstead}
+              className="font-semibold text-foreground underline decoration-[#fe9543] decoration-2 underline-offset-2 hover:text-[#d96f23]"
+            >
+              Import with an access token instead
+            </button>
+          </p>
+        )}
+
         {hasInstallations && installations && (
           <div className="rounded-md border border-emerald-200 bg-emerald-50/70 p-3">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -492,10 +527,15 @@ export function GithubAppConnectPanel({
                   Connected account: {primaryInstallation?.account_login ?? "GitHub installation"}
                 </p>
                 <p className="mt-0.5 text-xs text-emerald-800">
-                  Use this connection to pick a repository, clone it, and start scanning.
+                  Use this connection to import a repository. You choose when to scan it.
                 </p>
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Only rendered when a second installation exists, so the label
+                    never appears next to a single unexplained account button. */}
+                {installations.length > 1 && (
+                  <span className="text-xs text-emerald-800">Or import from:</span>
+                )}
                 {installations.slice(1).map((installation) => (
                   <Button
                     key={installation.installation_id}
@@ -504,7 +544,7 @@ export function GithubAppConnectPanel({
                     variant="secondary"
                     onClick={() => useInstallation(installation)}
                   >
-                    Use {installation.account_login ?? `installation ${installation.installation_id}`}
+                    {installation.account_login ?? `Installation ${installation.installation_id}`}
                   </Button>
                 ))}
                 <Button
@@ -533,6 +573,24 @@ export function GithubAppConnectPanel({
                   </Button>
                 )}
               </div>
+            </div>
+          </div>
+        )}
+
+        {appUnavailable && (
+          <div className="rounded-md border border-amber-200 bg-amber-50/70 p-3">
+            <p className="text-sm font-medium text-amber-900">
+              The GitHub App is not set up on this server
+            </p>
+            <p className="mt-0.5 text-xs text-amber-800">
+              Nothing is wrong with your account. This installation has no GitHub
+              App configured, so you can import a repository with an access token
+              instead &mdash; or ask your administrator to configure the App.
+            </p>
+            <div className="mt-2">
+              <Button type="button" size="sm" variant="secondary" onClick={onUseTokenInstead}>
+                Import with an access token
+              </Button>
             </div>
           </div>
         )}

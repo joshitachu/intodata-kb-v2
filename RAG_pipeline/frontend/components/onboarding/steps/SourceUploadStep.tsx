@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { FolderGit2, Github, FileArchive, UploadCloud, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSaveSource } from "@/hooks/useOnboarding";
 import { useOnboardingConfig } from "@/hooks/useOnboarding";
 import { useOnboardingContext } from "@/contexts/OnboardingContext";
+import { listGithubAppInstallations, type GithubAppInstallation } from "@/lib/mcpClient";
 import type { SourceType } from "@/types/onboarding";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -47,14 +48,33 @@ export function SourceUploadStep({
   selectedPlatformIds,
   overrideSave,
 }: Props) {
-  const { zipFiles, setZipFile } = useOnboardingContext();
+  const { zipFiles, setZipFile, setGitImport } = useOnboardingContext();
   const { data: config } = useOnboardingConfig();
   const [mode, setMode] = useState<"github" | "zip">(
     initialType === "zip" ? "zip" : selectedPlatformIds.length > 0 ? "zip" : "github",
   );
   const [githubUrl, setGithubUrl] = useState(initialUrl ?? "");
+  const [githubToken, setGithubToken] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  // An App installation clones without a token, so the token field only appears
+  // when there is no installation to borrow.
+  const [installation, setInstallation] = useState<GithubAppInstallation | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    listGithubAppInstallations()
+      .then((found) => {
+        if (!cancelled) setInstallation(found[0] ?? null);
+      })
+      .catch(() => {
+        // No App, or the check failed: fall back to the token field, which is
+        // the working path on a deployment without GitHub App credentials.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const defaultSave = useSaveSource();
   const save = overrideSave ?? defaultSave;
@@ -81,6 +101,18 @@ export function SourceUploadStep({
         return;
       }
       trackWizardEvent("wizard_source_method", 4, { method: "github" });
+      // Hand the credential to the provisioning step in memory. Only the URL is
+      // persisted; a token in the onboarding row would be readable plain text.
+      //
+      // This step used to record the URL and nothing else, and provisioning then
+      // ran a set of cosmetic timers -- no project was registered, nothing was
+      // cloned, and the wizard reported success either way.
+      setGitImport({
+        repoUrl: githubUrl.trim(),
+        platformId: zipTargets[0],
+        token: githubToken.trim() || undefined,
+        installationId: installation?.installation_id,
+      });
       await save.mutateAsync({
         source_type: "github",
         source_url: githubUrl.trim(),
@@ -92,6 +124,9 @@ export function SourceUploadStep({
         count: Object.keys(zipFiles).length,
         declared: zipTargets.length,
       });
+      // Switching tabs after filling in a URL must not leave a stale import
+      // queued for provisioning.
+      setGitImport(null);
       // Record a summary of filenames in the DB so the status row reflects
       // the user's selection. Actual ZIP bytes ride in memory (zipFiles
       // context) to the ProcessingStep.
@@ -109,6 +144,7 @@ export function SourceUploadStep({
 
   async function handleSkip() {
     trackWizardEvent("wizard_source_method", 4, { method: "skip" });
+    setGitImport(null);
     await save.mutateAsync({
       source_type: null,
       source_url: null,
@@ -191,13 +227,38 @@ export function SourceUploadStep({
 
           <div className="mt-5 space-y-3">
             {mode === "github" ? (
-              <Input
-                type="url"
-                placeholder="https://github.com/org/repo"
-                value={githubUrl}
-                onChange={(e) => setGithubUrl(e.target.value)}
-                hasError={Boolean(error)}
-              />
+              <>
+                <Input
+                  type="url"
+                  placeholder="https://github.com/org/repo"
+                  value={githubUrl}
+                  onChange={(e) => setGithubUrl(e.target.value)}
+                  hasError={Boolean(error)}
+                />
+                {installation ? (
+                  <p className="text-xs text-muted-foreground">
+                    Using your GitHub App connection
+                    {installation.account_login ? ` (${installation.account_login})` : ""},
+                    so no access token is needed.
+                  </p>
+                ) : (
+                  <>
+                    <Input
+                      type="password"
+                      placeholder="Access token (only for a private repository)"
+                      value={githubToken}
+                      onChange={(e) => setGithubToken(e.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Leave the token empty for a public repository.
+                    </p>
+                  </>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  We import the repository now. You choose when to scan it and
+                  when to write documentation, from Settings &rarr; Sources.
+                </p>
+              </>
             ) : (
               zipTargets.map((platformId) => {
                 const file = zipFiles[platformId];
