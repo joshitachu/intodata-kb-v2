@@ -159,7 +159,10 @@ class RuntimeSourceRow(Base):
     label: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    sync_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    # 30 minutes. Backstop only -- the repository passes an explicit value; kept
+    # in step with RuntimeSourceCreate so a source created any other way is not
+    # silently put back on a core-pinning cadence.
+    sync_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=1800)
     auto_disable_threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     disabled_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
     is_demo: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

@@ -4009,3 +4009,63 @@ in favour of the runnable script.
   reproduce on the stashed tree (`test_project_ownership_api` x2,
   `test_agentic_retrieval_capabilities` x1).
 - Backend rebuilt and restarted; no `UndefinedColumn` in the logs since.
+
+## Session: 2026-08-27 -- TMC polling was pinning a CPU core; interval 60s -> 30 min (UNCOMMITTED)
+
+**Reported**: "the app feels slow, UI and data".
+
+### Measured cause
+
+The backend held **83-100% of a CPU core and 1.74 GiB / 2 GiB continuously with
+no user traffic** (23 request log lines in two minutes). Three enabled TMC
+runtime sources were each set to `sync_interval_seconds = 60`, and a TMC cycle
+fans out one windowed run-history fetch PER EXECUTABLE (a whole tenant is ~240).
+
+The decisive evidence was sync lag: sources on a 60-second interval were
+**169s, 175s and 481s behind**. Cycles never completed before the next was due,
+so the scheduler was permanently catching up and the process never idled. An
+`INSERT INTO runtime_log_events` was active mid-diagnosis; that table is
+**868 MB / 424,655 rows**.
+
+### Change
+
+- Live rows: `UPDATE runtime_sources SET sync_interval_seconds = 1800` (3 rows).
+- Defaults raised 60 -> 1800 in all three places a source can be created, so a
+  new source is not silently put back on a core-pinning cadence:
+  `src/runtime/models.py` (`RuntimeSourceCreate`),
+  `src/runtime/store/repository.py` (`create_source`),
+  `src/db/models/runtime_data.py` (column default).
+- `settings.runtime_sync_interval_seconds` (60) left alone: it is the scheduler
+  TICK -- how often it wakes to ask which sources are due (`_is_due` gates on the
+  per-source value). Waking each minute to do nothing is cheap.
+- No migration: the column has no server_default, only a Python-side one.
+
+### Result
+
+CPU **84% -> 0.20%**, memory **89% -> 41%** once the in-flight cycle drained
+(observed at 11:34:48). `pytest tests/test_runtime` -> 734 passed.
+
+### Correction to the earlier diagnosis, and what is NOT proven
+
+I had inferred that CPU contention explained the slow UI, citing backend
+`/health` p50 27ms against mcp-server's 3ms. **That comparison was invalid**:
+backend `/health` deliberately checks PostgreSQL, Qdrant, Ollama AND Hindsight
+(`src/api/routes/health.py:16-21`), so ~27ms is the cost of four dependency
+probes, not contention. Measured after the fix: p50 **33.6ms** -- unchanged.
+Only the tail improved (max 74ms -> 43.5ms), i.e. more consistent.
+
+So: the runaway sync was real and is fixed, but it is NOT established that it was
+the cause of the perceived UI slowness. Remaining candidates, none yet measured:
+
+- per-endpoint query cost on the real data routes (needs an authenticated
+  session to time; `/api/v1/runtime/job-health?limit=500` is one to check first);
+- request waterfalls on page load (the sources page fires ~8 calls);
+- `runtime_log_events` at 868 MB with `shared_buffers` at 128 MB and Postgres
+  capped at 1.0 CPU / 512 MB -- cache hit ratio is 97.2%, so not yet a suspect.
+
+### Still recommended (not done)
+
+1. Narrow each source's environment scope: 32 tasks for PROD vs 238 for a whole
+   tenant is ~7x less work per cycle, and compounds with the longer interval.
+2. Retention on `runtime_log_events` -- 868 MB from 90-day full capture.
+3. Move polling out of the API process so ingest can never contend with requests.

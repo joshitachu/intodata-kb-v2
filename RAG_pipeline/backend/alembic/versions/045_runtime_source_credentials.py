@@ -41,6 +41,12 @@ def upgrade() -> None:
         "(12, 'runtime_sources:write', 'Manage runtime source configuration and credentials') "
         "ON CONFLICT DO NOTHING"
     )
+    # Explicit ids bypass the sequence — resync so a later id-less insert does
+    # not collide on permissions_pkey.
+    op.execute(
+        "SELECT setval(pg_get_serial_sequence('permissions', 'id'), "
+        "COALESCE((SELECT MAX(id) FROM permissions), 0) + 1, false)"
+    )
     op.execute(
         "INSERT INTO role_permissions (role_id, permission_id) VALUES "
         "(1, 11), (1, 12) ON CONFLICT DO NOTHING"

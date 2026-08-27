@@ -1026,7 +1026,10 @@ class RuntimeStoreRepository:
         source_type: str,
         label: str,
         physical_identity: str | None = None,
-        sync_interval_seconds: int = 60,
+        # 30 minutes, matching RuntimeSourceCreate. A short interval pins a CPU
+        # core: one cycle fans out a run-history fetch per executable and does
+        # not finish before the next is due.
+        sync_interval_seconds: int = 1800,
     ) -> RuntimeSourceRead:
         if source_type == "tmc":
             existing_tmc = await self.find_source_id_by_project_and_type(project_id, source_type)

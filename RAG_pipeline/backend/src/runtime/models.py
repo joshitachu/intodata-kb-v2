@@ -125,7 +125,12 @@ class RuntimeSourceCreate(BaseModel):
     provider_key: str
     label: str
     credentials: dict[str, Any] = Field(default_factory=dict)
-    sync_interval_seconds: int = Field(default=60, ge=30)
+    # A TMC sync cycle fans out one windowed run-history fetch PER EXECUTABLE
+    # (a whole tenant is ~240), so a short interval never completes before the
+    # next one is due: three live sources on 60s ran 169-481s behind and pinned
+    # a CPU core permanently, which starved the API sharing that event loop.
+    # 30 minutes is well inside how often TMC run history actually changes.
+    sync_interval_seconds: int = Field(default=1800, ge=30)
 
 
 class RuntimeSourceUpdate(BaseModel):

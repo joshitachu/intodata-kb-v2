@@ -55,6 +55,13 @@ def upgrade() -> None:
         "'Create/register new projects (owned by the creator)') "
         "ON CONFLICT DO NOTHING"
     )
+    # Inserting an explicit id does not advance the sequence, so a later
+    # migration that omits the id would draw a value that already exists and
+    # fail on permissions_pkey. Resync before that can happen.
+    op.execute(
+        "SELECT setval(pg_get_serial_sequence('permissions', 'id'), "
+        "COALESCE((SELECT MAX(id) FROM permissions), 0) + 1, false)"
+    )
 
     # 3. Retire the `manager` role.
     #    a) migrate manager users to admin (dedup via ON CONFLICT)

@@ -15,6 +15,15 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Migrations 044/045 seeded permissions with explicit ids, which leaves the
+    # sequence behind MAX(id). This insert omits the id, so without a resync it
+    # draws an id that already exists and dies on permissions_pkey — the
+    # ON CONFLICT clause only guards codename. Databases that already ran
+    # 044/045 before those migrations gained their own resync land here.
+    op.execute(
+        "SELECT setval(pg_get_serial_sequence('permissions', 'id'), "
+        "COALESCE((SELECT MAX(id) FROM permissions), 0) + 1, false)"
+    )
     op.execute(
         "INSERT INTO permissions (codename, description) VALUES "
         "('manage_packs', 'Create, modify, validate, save, and abandon private Packs') "
