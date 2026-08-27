@@ -113,7 +113,17 @@ def _apply_column_migrations(sync_conn: Any) -> None:
         logger.info("[startup] added generate_runs.%s", column_name)
     if dialect == "postgresql":
         # SQLite ignores VARCHAR lengths; only Postgres needs the widening.
+        # Guarded on the live column set for the same reason every ADD COLUMN
+        # above is: another service may have created the table from a stale
+        # definition, and an unguarded ALTER against a missing column aborts
+        # startup instead of degrading.
         for table in ("generate_runs", "scan_runs"):
+            try:
+                table_columns = {c["name"] for c in inspector.get_columns(table)}
+            except Exception:  # table absent (fresh DB handled by create_all)
+                continue
+            if "triggered_by" not in table_columns:
+                continue
             sync_conn.execute(
                 sa_text(
                     f"ALTER TABLE {table} ALTER COLUMN triggered_by TYPE VARCHAR(40)"
@@ -129,8 +139,12 @@ def _apply_column_migrations(sync_conn: Any) -> None:
             sa_text("ALTER TABLE projects ADD COLUMN azure_devops_connection_id VARCHAR(36)")
         )
         logger.info("[startup] added projects.azure_devops_connection_id")
-    if dialect == "postgresql":
+    if dialect == "postgresql" and "connection_kind" in project_columns:
         # "azure_devops" does not fit the original VARCHAR(10) connection_kind.
+        # Guarded: RAG revision 003 used to create `projects` from a stale copy
+        # of this model that had no connection_kind at all, and the unguarded
+        # ALTER killed every clean deployment. That duplicate DDL is gone, but
+        # the guard stays so a shape mismatch degrades instead of aborting.
         sync_conn.execute(
             sa_text("ALTER TABLE projects ALTER COLUMN connection_kind TYPE VARCHAR(32)")
         )
