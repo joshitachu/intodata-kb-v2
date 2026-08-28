@@ -5060,6 +5060,47 @@ Fallback plan example:
         )
 
     @staticmethod
+    def _record_context_trim_flag(
+        ctx: DocGenContext,
+        phase: str,
+        target: str,
+        trimmed_bytes: int,
+        trimmed_sources: list[str],
+    ) -> None:
+        """Append a context-trim event to _assessment/context_trim_flags.json.
+
+        Mirrors ``_record_slice_cap_flag``. The call sites at the single/section
+        plan boundary landed without this method, so every document whose
+        evidence had to be trimmed to fit the context ceiling died on
+        AttributeError and published as a GENERATION GAP stub -- the largest
+        documents systematically, since they are the ones that get trimmed.
+        Recording the flag is diagnostic only and must never be able to fail a
+        document, so a write error is swallowed the same way a malformed
+        existing file is.
+        """
+        path = ctx.staging_dir / "_assessment" / "context_trim_flags.json"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                entries = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(entries, list):
+                    entries = []
+            except (OSError, json.JSONDecodeError):
+                entries = []
+            entries.append({
+                "phase": phase,
+                "target": target,
+                "trimmed_bytes": trimmed_bytes,
+                "trimmed_sources": list(trimmed_sources or []),
+                "at": time.time(),
+            })
+            path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+        except OSError:
+            logger.warning(
+                "[custom] could not record context-trim flag for %s/%s", phase, target
+            )
+
+    @staticmethod
     def _record_slice_cap_flag(
         ctx: DocGenContext, phase: str, target: str, dropped: int, allowed: int
     ) -> None:
