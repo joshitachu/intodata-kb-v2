@@ -5,6 +5,10 @@
  * side. Customer deployments do not expose /mcp/* or /logs/* publicly.
  */
 
+import type { AddSourceResponse, GenerationPlan } from "@/types";
+
+export type { AddSourceResponse, GenerationPlan, GenerationPlanPartition } from "@/types";
+
 /** Error carrying the upstream HTTP status so callers can branch on it. */
 export class McpRequestError extends Error {
   readonly status: number;
@@ -585,6 +589,93 @@ export async function syncMultiRepoProject(
   return res.json();
 }
 
+/**
+ * What the next documentation run would actually do, without doing it.
+ *
+ * Read-only. The dialog uses it to show the generate/reuse split before the
+ * operator commits, so a six-sub-project project that only needs one
+ * regenerated does not read as six sub-projects' worth of model cost. The
+ * server derives this from the same skip predicate the run itself uses; the
+ * numbers here are not an estimate made in the browser.
+ */
+export async function getGenerationPlan(projectId: string): Promise<GenerationPlan> {
+  const res = await fetch(
+    `/api/source/projects/${encodeURIComponent(projectId)}/generation-plan`,
+    { credentials: "include" },
+  );
+  if (!res.ok) {
+    throw new McpRequestError(
+      `Reading the generation plan for ${projectId} failed (${res.status}): ${await res.text()}`,
+      res.status,
+    );
+  }
+  return res.json();
+}
+
+export interface AddZipSubProjectArgs {
+  projectId: string;
+  file: File;
+  onProgress?: (pct: number) => void;
+  signal?: AbortSignal;
+}
+
+/**
+ * Add a ZIP sub-project to a project that already has one.
+ *
+ * Additive, unlike `uploadZip`, which owns the project's whole tree: the docs
+ * already generated for the existing sub-projects survive, and the next run only
+ * pays for what changed. XMLHttpRequest for the same reason as `uploadZip` --
+ * fetch does not report upload progress in browsers, and these are large files.
+ */
+export function addZipSubProject({
+  projectId,
+  file,
+  onProgress,
+  signal,
+}: AddZipSubProjectArgs): Promise<AddSourceResponse> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const form = new FormData();
+    form.append("file", file);
+
+    xhr.open("POST", `/api/source/projects/${encodeURIComponent(projectId)}/sources`);
+    xhr.withCredentials = true;
+
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+    }
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText) as AddSourceResponse);
+        } catch {
+          reject(new Error("Invalid response while adding the sub-project"));
+        }
+      } else {
+        reject(
+          new McpRequestError(
+            `Adding the sub-project failed (${xhr.status}): ${xhr.responseText}`,
+            xhr.status,
+          ),
+        );
+      }
+    };
+    xhr.onerror = () => reject(new Error("Network error while adding the sub-project"));
+    xhr.onabort = () => reject(new DOMException("Aborted", "AbortError"));
+
+    if (signal) {
+      signal.addEventListener("abort", () => xhr.abort(), { once: true });
+    }
+
+    xhr.send(form);
+  });
+}
+
 // Start a GitHub App install: returns the URL to redirect the browser to.
 export async function getGithubAppInstallUrl(projectId?: string): Promise<string> {
   const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
@@ -604,6 +695,8 @@ export async function getGithubAppInstallUrl(projectId?: string): Promise<string
 export interface GithubAppInstallation {
   installation_id: number;
   account_login: string | null;
+  account_type: "User" | "Organization" | null;
+  settings_url: string | null;
 }
 
 export async function listGithubAppInstallations(): Promise<GithubAppInstallation[]> {
@@ -628,7 +721,12 @@ export interface GithubAppRepo {
 // List repositories an installation can access (for the repo-picker).
 export async function listGithubAppRepos(
   installationId: number,
-): Promise<{ account_login: string | null; repositories: GithubAppRepo[] }> {
+): Promise<{
+  account_login: string | null;
+  account_type: "User" | "Organization" | null;
+  settings_url: string | null;
+  repositories: GithubAppRepo[];
+}> {
   const res = await fetch(`/api/source/github/installations/${installationId}/repos`, {
     credentials: "include",
   });
@@ -641,7 +739,12 @@ export async function listGithubAppRepos(
     );
   }
   const data = await res.json();
-  return { account_login: data.account_login ?? null, repositories: data.repositories ?? [] };
+  return {
+    account_login: data.account_login ?? null,
+    account_type: data.account_type ?? null,
+    settings_url: data.settings_url ?? null,
+    repositories: data.repositories ?? [],
+  };
 }
 
 // --- Azure DevOps ------------------------------------------------------------

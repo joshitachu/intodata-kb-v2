@@ -159,11 +159,19 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
 
         {/* ProjectMetaGrid shows a Repo URL row only when repo_url is set, and a
             multi-repo project has none by definition -- so without this its
-            member repositories are invisible. Renders nothing for a single-repo
-            project. */}
-        {project.source_type === "git" && !project.repo_url && (
+            member repositories are invisible.
+
+            Rendered for SINGLE-source projects too, git and ZIP alike. The old
+            condition (`git` with no `repo_url`) showed the panel to multi-repo
+            projects only, and the panel itself returned null on an empty member
+            list -- so the one surface that can add a sub-project was hidden from
+            exactly the projects that have none. A one-repo or one-ZIP project
+            could never become a two-sub-project one. */}
+        {(project.source_type === "git" || project.source_type === "zip") && (
           <MultiRepoMembersPanel
             projectId={project.id}
+            sourceType={project.source_type}
+            platform={project.platform}
             onChanged={() => qc.invalidateQueries({ queryKey: ["projects"] })}
           />
         )}

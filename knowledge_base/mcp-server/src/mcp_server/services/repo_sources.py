@@ -21,6 +21,14 @@ Patterns:
 - **Service** (:class:`MultiRepoSyncService`) -- clone/pull orchestration, with
   credential resolution delegated to the existing per-provider helpers.
 
+Naming and layout inspection (:func:`sanitize_subproject_name`,
+:func:`allocate_subproject_name`, :func:`origin_marked_source_dirs`,
+:func:`is_flat_source_tree`, :func:`source_names_on_disk`) are shared with the
+additive ZIP-source path, which faces the same questions -- what is this
+sub-project called, and is this tree partitioned yet -- without any git
+involvement. They live here because a second copy of the naming rule is how two
+sub-projects end up sharing one output directory.
+
 Incremental by construction: :meth:`MultiRepoSyncService.sync` accepts an
 ``only`` filter, so a push event pulls exactly the repo it names and leaves the
 siblings' working trees untouched. Whether a repo's *documentation* is
@@ -31,6 +39,7 @@ fingerprints (``providers/custom/partition_fingerprint``).
 from __future__ import annotations
 
 import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -48,7 +57,12 @@ from mcp_server.services.git_remote_service import (
     strip_url_credentials,
 )
 from mcp_server.utils.error_sanitizer import sanitize_git_error
-from mcp_server.utils.source_origin import REPO_MARKER, marker_dir_name
+from mcp_server.utils.source_origin import (
+    REPO_MARKER,
+    marker_dir_name,
+    marker_in_segment,
+    origin_stem,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +118,62 @@ def project_repos_root(project_id: str) -> Path:
 def member_clone_path(project_id: str, subproject_name: str) -> Path:
     """Where a member repo is cloned, carrying its origin marker."""
     return project_repos_root(project_id) / marker_dir_name(subproject_name, REPO_MARKER)
+
+
+def origin_marked_source_dirs(root: Path) -> list[Path]:
+    """Every sub-project boundary directory under *root*, outermost first.
+
+    The layout question every additive-source path has to answer is "is this
+    tree already partitioned?", and the answer is not always at the top level:
+    ``_extract_zip_bundle`` writes a ``.__intodoc_zip__`` directory beside the
+    nested archive it expanded, at whatever depth that archive sat. Testing only
+    ``root.iterdir()`` would therefore read a composite ZIP upload as flat and
+    wrap an already-partitioned tree in a second marker, which
+    ``subproject_key`` resolves to the OUTER marker -- silently collapsing every
+    inner sub-project into one.
+
+    Directory names only (no file reads), and marked directories are never
+    descended into: a marker nested inside a marker belongs to the outer
+    sub-project, exactly as ``subproject_key`` resolves it.
+    """
+    found: list[Path] = []
+    if not root.exists():
+        return found
+    for current, dirnames, _files in os.walk(root):
+        keep: list[str] = []
+        for name in sorted(dirnames):
+            if marker_in_segment(name):
+                found.append(Path(current) / name)
+            else:
+                keep.append(name)
+        dirnames[:] = keep
+    return found
+
+
+def is_flat_source_tree(root: Path) -> bool:
+    """True when *root* holds content but no sub-project boundary at all.
+
+    A flat tree is the pre-composite shape (one ZIP extracted straight into
+    ``{repos_dir}/{project_id}/``, or a single clone) and is the only shape that
+    needs migrating before a second source can be added. An empty or absent root
+    is NOT flat: there is nothing to migrate.
+    """
+    if not root.exists() or not any(root.iterdir()):
+        return False
+    return not origin_marked_source_dirs(root)
+
+
+def source_names_on_disk(root: Path) -> set[str]:
+    """Sub-project names already claimed by directories under *root*.
+
+    Read from disk rather than from ``project_repo_sources`` because ZIP
+    projects have no membership rows -- their sub-projects exist only as marker
+    directories. Callers union this with
+    :meth:`RepoSourceRepository.taken_subproject_names` so one allocation cannot
+    collide with either origin.
+    """
+    names = {origin_stem(path.name) for path in origin_marked_source_dirs(root)}
+    return {name for name in names if name}
 
 
 @dataclass

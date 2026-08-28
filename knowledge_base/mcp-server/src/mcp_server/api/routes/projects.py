@@ -38,6 +38,7 @@ from mcp_server.db.session import async_session_factory
 from mcp_server.db.models import GenerateRun, PluginPack, Project
 from mcp_server.schemas import (
     AddRepoRequest,
+    AddSourceResponse,
     AssessmentGenerateResponse,
     ComponentGraphResponse,
     DeepDiveProject,
@@ -65,6 +66,9 @@ from mcp_server.schemas import (
     GenerateRunListResponse,
     GenerateRunResponse,
     GenerateSummariesResponse,
+    GenerationPlanGlobalInvalidation,
+    GenerationPlanPartition,
+    GenerationPlanResponse,
     GraphConnectionInfo,
     JobDetailResponse,
     JobDocSection,
@@ -150,6 +154,14 @@ from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.project_paths import repair_project_repo_path
 from mcp_server.services.rag_bridge import RagBridge
 from mcp_server.services.rag_support_package import replace_analysis_cache_from_rag_support
+from mcp_server.services.repo_sources import (
+    RepoSourceRepository,
+    allocate_subproject_name,
+    is_flat_source_tree,
+    project_repos_root,
+    source_names_on_disk,
+)
+from mcp_server.utils.source_origin import REPO_MARKER, marker_dir_name
 from mcp_server.services.living_docs.zip_revisions import ZipRevisionService
 from mcp_server.services.living_docs.zip_patch_lifecycle import LiveZipPatchCoordinator
 from mcp_server.services.living_docs.chat_patching import ChatPatchService
@@ -833,6 +845,232 @@ async def replace_zip_source(
         sha256=candidate.archive_sha256,
         status=submission.status,
         reason_code=submission.reason_code,
+    )
+
+
+@router.get("/projects/{project_id}/generation-plan", response_model=GenerationPlanResponse)
+async def get_generation_plan(project_id: str, request: Request):
+    """Dry run: which sub-projects the next generation would pay for.
+
+    Read-only, and deliberately derived from the SAME helpers the run path uses
+    (``partition_orchestrator.build_generation_plan`` ->
+    ``decide_partition_actions``). A second copy of the skip rule here would let
+    this preview drift from what generation actually does, at which point the
+    dialog is worse than no dialog.
+
+    Degrades instead of failing: a missing or corrupt scan answers HTTP 200 with
+    ``scan_available: false`` (the operator's next step is a scan, not a bug
+    report), and any unexpected error answers the same way rather than blocking
+    the dialog -- generation must never be gated on its own preview.
+    """
+    await require_project_access(request, project_id)
+    async with async_session_factory() as db:
+        if await ProjectRegistry(db).get_project(project_id) is None:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+
+    from mcp_server.services.partition_orchestrator import build_generation_plan
+
+    try:
+        plan = build_generation_plan(project_id)
+    except Exception:  # noqa: BLE001 - a preview must never break the dialog
+        logger.warning("Generation plan unavailable for %s", project_id, exc_info=True)
+        return GenerationPlanResponse(
+            project_id=project_id,
+            scan_available=False,
+            composite=False,
+            partition_count=0,
+            will_generate=1,
+            will_reuse=0,
+        )
+
+    invalidation = (
+        GenerationPlanGlobalInvalidation(
+            reason=plan.global_invalidation.reason,
+            detail=plan.global_invalidation.detail,
+        )
+        if plan.global_invalidation is not None
+        else None
+    )
+    return GenerationPlanResponse(
+        project_id=project_id,
+        scan_available=plan.scan_available,
+        composite=plan.composite,
+        partition_count=plan.partition_count,
+        will_generate=plan.will_generate,
+        will_reuse=plan.will_reuse,
+        global_invalidation=invalidation,
+        partitions=[
+            GenerationPlanPartition(
+                name=decision.name,
+                subdir=decision.subdir,
+                action=decision.action,
+                reason=decision.reason,
+                unit_count=decision.unit_count,
+                doc_count=decision.doc_count,
+                last_generated_at=decision.last_generated_at,
+            )
+            for decision in plan.decisions
+        ],
+        notes=list(plan.notes),
+    )
+
+
+def _migrate_flat_source_tree(root: Path, subproject_name: str) -> None:
+    """Move a flat source tree into its own sub-project marker directory.
+
+    ``{repos_dir}/{pid}/<tree>`` becomes
+    ``{repos_dir}/{pid}/{name}.__intodoc_repo__/<tree>``, which is what turns an
+    unmarked single-root project into a partitionable one: the scanner reports a
+    marked ``source_root``, ``subproject_key`` resolves it, and the partition
+    planner gives that tree its own scoped run.
+
+    Two renames, no copy, so it is atomic in the only sense that matters here --
+    on failure the tree is exactly where it started. The intermediate holder
+    directory exists because the destination is INSIDE the directory being
+    moved; renaming a directory into itself is not possible, so the tree is
+    parked as a sibling first and the sibling then takes the original name.
+    """
+    holder = Path(tempfile.mkdtemp(prefix=f".{root.name}-migrate-", dir=root.parent))
+    inner = holder / marker_dir_name(subproject_name, REPO_MARKER)
+    try:
+        root.replace(inner)
+    except OSError:
+        shutil.rmtree(holder, ignore_errors=True)
+        raise
+    try:
+        holder.replace(root)
+    except OSError:
+        try:
+            inner.replace(root)
+        except OSError:
+            # Both renames failed: the tree is intact but parked. Name the path
+            # so an operator can finish the move by hand.
+            logger.error(
+                "Flat source migration left %s parked at %s -- move it back manually",
+                root,
+                inner,
+            )
+            raise
+        shutil.rmtree(holder, ignore_errors=True)
+        raise
+
+
+@router.post("/projects/{project_id}/sources", response_model=AddSourceResponse)
+async def add_project_source(
+    project_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+):
+    """Add a ZIP source to an existing ZIP project as a new sub-project.
+
+    The additive counterpart of ``POST /mcp/upload-zip``, which is deliberately
+    the CREATE path and still 409s when a source tree already exists. Here the
+    existing tree is the precondition, not the conflict.
+
+    Reuses the upload lane verbatim -- ``_stream_upload_to_temp_file`` (bounded
+    memory, size limit) and ``_extract_zip_bundle`` (entry/expansion budgets,
+    zip-slip and symlink rejection, nested-archive markers). A second extractor
+    is how one of two paths ends up missing a hardening fix.
+
+    The new source is invisible to documentation until the project is rescanned;
+    the project is therefore put back to ``registered``, which is the status both
+    UIs read as "next step: Scan".
+    """
+    await require_project_management(request, project_id)
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$", project_id) or len(project_id) > 100:
+        raise HTTPException(400, "Invalid project_id: alphanumeric, hyphens, underscores only")
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="File must be a .zip")
+
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            declared_size = int(content_length)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid upload content length") from exc
+        if declared_size > config.max_upload_zip_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Upload too large (max {config.max_upload_zip_bytes // 1024 // 1024} MB)",
+            )
+
+    # Fast-fail before accepting any archive bytes.
+    async with async_session_factory() as db:
+        project = await ProjectRegistry(db).get_project(project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        if project.source_type != "zip":
+            raise HTTPException(
+                status_code=400,
+                detail="Project does not use a ZIP source. Git projects add "
+                "sub-projects through the multi-repo members endpoint.",
+            )
+
+    zip_path, _checksum, _size_bytes = await _stream_upload_to_temp_file(
+        file, config.uploads_dir, max_bytes=config.max_upload_zip_bytes
+    )
+    extract_dir = Path(tempfile.mkdtemp(prefix=f".{project_id}-source-", dir=config.repos_dir))
+    try:
+        _extract_zip_bundle(zip_path, extract_dir)
+    except zipfile.BadZipFile as exc:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail="Invalid ZIP file") from exc
+    except Exception:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        raise
+    finally:
+        zip_path.unlink(missing_ok=True)
+
+    root = project_repos_root(project_id)
+    async with async_session_factory() as db:
+        taken = await RepoSourceRepository(db).taken_subproject_names(project_id)
+    taken |= source_names_on_disk(root)
+
+    migrated = False
+    existing_name: str | None = None
+    try:
+        if is_flat_source_tree(root):
+            # The pre-existing tree has to become a sub-project of its own
+            # before a sibling can exist beside it; otherwise the scan reports
+            # one marked and one unmarked root and the old tree's units all land
+            # in the catch-all __shared__ partition.
+            existing_name = allocate_subproject_name(project_id, taken)
+            _migrate_flat_source_tree(root, existing_name)
+            taken.add(existing_name)
+            migrated = True
+
+        root.mkdir(parents=True, exist_ok=True)
+        new_name = allocate_subproject_name(Path(file.filename).stem, taken)
+        target = root / marker_dir_name(new_name, REPO_MARKER)
+        extract_dir.replace(target)
+    except HTTPException:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        raise
+    except Exception as exc:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        logger.exception("Additive ZIP source failed for %s", project_id)
+        raise HTTPException(
+            status_code=500, detail=f"Could not add the source: {exc}"
+        ) from exc
+
+    if migrated and existing_name:
+        # Recorded now because this is the only moment the owner of the
+        # already-published flat documentation is known for certain; the
+        # orchestrator reads it to adopt those docs instead of regenerating them.
+        from mcp_server.services.partition_orchestrator import record_flat_source_migration
+
+        record_flat_source_migration(project_id, existing_name)
+
+    async with async_session_factory() as db:
+        await ProjectRegistry(db).update_status(project_id, "registered")
+        await db.commit()
+
+    return AddSourceResponse(
+        project_id=project_id,
+        subproject=new_name,
+        migrated_existing_source=migrated,
+        requires_rescan=True,
+        status="added",
     )
 
 
@@ -1811,6 +2049,16 @@ async def github_app_installations(request: Request):
                             if item.get("account_login") is not None
                             else None
                         ),
+                        account_type=(
+                            str(item["account_type"])
+                            if item.get("account_type") in {"User", "Organization"}
+                            else None
+                        ),
+                        settings_url=(
+                            str(item["settings_url"])
+                            if item.get("settings_url") is not None
+                            else None
+                        ),
                     )
                     for item in live
                 ),
@@ -1823,7 +2071,7 @@ async def github_app_installations(request: Request):
 async def github_app_installation_repos(installation_id: int, request: Request):
     """List repositories an installation can access (for the connect repo-picker)."""
     from mcp_server.utils.github_app import (
-        get_installation_account_login,
+        get_installation_account_details,
         github_app_configured,
         installation_exists,
         list_installation_repositories,
@@ -1841,7 +2089,7 @@ async def github_app_installation_repos(installation_id: int, request: Request):
 
     try:
         repos = await list_installation_repositories(int(installation_id))
-        account_login = await get_installation_account_login(int(installation_id))
+        account = await get_installation_account_details(int(installation_id))
     except Exception as exc:
         logger.warning("Failed to list installation repos for %s: %s", installation_id, exc)
         # An uninstalled App fails here exactly like a transient GitHub outage.
@@ -1868,7 +2116,9 @@ async def github_app_installation_repos(installation_id: int, request: Request):
         raise HTTPException(status_code=502, detail="Could not list repositories for this installation")
     return GithubAppReposResponse(
         installation_id=int(installation_id),
-        account_login=account_login,
+        account_login=account["account_login"],
+        account_type=account["account_type"],
+        settings_url=account["settings_url"],
         repositories=[GithubAppRepoItem(**r) for r in repos],
     )
 

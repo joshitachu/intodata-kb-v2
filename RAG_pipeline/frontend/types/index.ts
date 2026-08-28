@@ -537,6 +537,72 @@ export const CreateMultiRepoProjectSchema = z.object({
 
 export type CreateMultiRepoProject = z.infer<typeof CreateMultiRepoProjectSchema>;
 
+// --- Generation plan (dry run before a documentation run) ---
+//
+// A project whose sub-projects are unchanged reuses their published docs, so a
+// six-sub-project project can cost one sub-project's worth of model time. The
+// operator cannot see that from the generate button, so the dialog asks the
+// server what it would actually do before committing to the run.
+//
+// Every field here is read by the dialog. Zod strips what it does not declare,
+// so an omission is not a documentation gap -- it is a value that is
+// permanently `undefined` in the browser with no error to say so.
+
+export const GenerationPlanPartitionSchema = z.object({
+  name: z.string(),
+  subdir: z.string(),
+  action: z.enum(["generate", "reuse"]),
+  // Deliberately a free string, not an enum. The server owns this vocabulary
+  // ("new", "changed", "unchanged", "no_published_docs",
+  // "fingerprint_unavailable", "shared_artifact_changed",
+  // "flat_layout_adoption") and may extend it; an enum would reject the whole
+  // plan on an unrecognised reason and hide the generate/reuse split, which is
+  // the part that matters. Unknown reasons are rendered verbatim instead.
+  reason: z.string(),
+  unit_count: z.number().optional().default(0),
+  doc_count: z.number().optional().default(0),
+  last_generated_at: z.string().nullable().optional(),
+});
+
+export type GenerationPlanPartition = z.infer<typeof GenerationPlanPartitionSchema>;
+
+export const GenerationPlanGlobalInvalidationSchema = z.object({
+  reason: z.string(),
+  /** Operator-facing sentence explaining why nothing can be reused. */
+  detail: z.string(),
+});
+
+export const GenerationPlanSchema = z.object({
+  project_id: z.string(),
+  /** False when no scan exists yet; the preview is hidden. */
+  scan_available: z.boolean(),
+  /** False for a single-run project, which has no sub-projects to split. */
+  composite: z.boolean(),
+  partition_count: z.number(),
+  will_generate: z.number(),
+  will_reuse: z.number(),
+  global_invalidation: GenerationPlanGlobalInvalidationSchema.nullable().optional(),
+  partitions: z.array(GenerationPlanPartitionSchema).optional().default([]),
+  /** Caveats about what a reused sub-project does and does not carry forward. */
+  notes: z.array(z.string()).optional().default([]),
+});
+
+export type GenerationPlan = z.infer<typeof GenerationPlanSchema>;
+
+// --- Additive ZIP sub-project ---
+
+export const AddSourceResponseSchema = z.object({
+  project_id: z.string(),
+  /** Partition name the new tree was extracted under. */
+  subproject: z.string(),
+  /** True when the project's original flat tree was moved under its own name. */
+  migrated_existing_source: z.boolean().optional().default(false),
+  requires_rescan: z.boolean().optional().default(true),
+  status: z.string(),
+});
+
+export type AddSourceResponse = z.infer<typeof AddSourceResponseSchema>;
+
 export const UpdateGithubTokenSchema = z.object({
   github_token: z.string().min(1),
 });
@@ -1017,6 +1083,7 @@ export type CreateDocumentationPackRequest = z.infer<typeof CreateDocumentationP
 // --- Runtime logs API (EP-005 slice 2 contract; schemas in ./runtime) ---
 export {
   RuntimeExecutionStateSchema,
+  RuntimeExecutableKindSchema,
   RuntimeLogSeveritySchema,
   RuntimeExecutionSchema,
   RuntimeFailureSchema,
@@ -1037,6 +1104,8 @@ export {
   RuntimeOverviewResponseSchema,
   RuntimeJobSchema,
   RuntimeJobRunSchema,
+  RuntimeDeploymentSchema,
+  RuntimeDeploymentListResponseSchema,
   RuntimeJobHealthSchema,
   RuntimeEngineHealthSchema,
   RuntimeJobListResponseSchema,
@@ -1093,6 +1162,7 @@ export {
 } from "./runtime";
 export type {
   RuntimeExecutionState,
+  RuntimeExecutableKind,
   RuntimeLogSeverity,
   RuntimeExecution,
   RuntimeFailure,
@@ -1122,6 +1192,8 @@ export type {
   RuntimeDependencyListResponse,
   RuntimeDependencySummaryResponse,
   RuntimeJobRun,
+  RuntimeDeployment,
+  RuntimeDeploymentListResponse,
   RuntimeJobHealth,
   RuntimeEngineHealth,
   RuntimeJobListResponse,

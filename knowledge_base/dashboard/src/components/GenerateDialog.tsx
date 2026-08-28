@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useAssignPluginPack, useGenerate, usePluginPacks } from "../hooks/useProjects";
 import { useModels } from "../hooks/useDiscovery";
@@ -16,9 +16,12 @@ import {
   formatSyncedAt,
   type GenerationEngine,
 } from "../lib/connectors";
+import { api } from "../api/client";
 import type {
   ConnectorInstance,
   ConnectorProvider,
+  GenerationPlan,
+  GenerationPlanPartition,
   Project,
   ProjectConnectorBinding,
 } from "../types";
@@ -34,6 +37,19 @@ interface Props {
 // Same two values as the engine the live-data panel reasons about; kept as one
 // type so a third engine cannot be added on one side only.
 type GenerationMethod = GenerationEngine;
+
+/**
+ * The generation plan is advisory. It NEVER gates the run.
+ *
+ * A four-state machine rather than `plan | null` because "not read yet",
+ * "unreadable" and "read, nothing to preview" have to look different: collapsing
+ * them would either hide a real failure or imply a cheap run that was never
+ * confirmed.
+ */
+type PlanState =
+  | { status: "loading" }
+  | { status: "ready"; plan: GenerationPlan }
+  | { status: "failed"; message: string };
 
 export default function GenerateDialog({
   project,
@@ -57,6 +73,9 @@ export default function GenerateDialog({
   const [runInvestigationModel, setRunInvestigationModel] = useState("");
   const [runAnalysisModel, setRunAnalysisModel] = useState("");
   const [runWriteModel, setRunWriteModel] = useState("");
+  const [planState, setPlanState] = useState<PlanState>({ status: "loading" });
+  // Bumped by Retry. Re-requesting on the same key would not re-run the effect.
+  const [planReload, setPlanReload] = useState(0);
 
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -73,6 +92,32 @@ export default function GenerateDialog({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, project.id]);
+
+  // Read when the dialog opens, so the split is on screen before anyone commits
+  // to the run. The whole call is inside the try: a client that does not have
+  // this endpoint yet throws synchronously, and an unhandled throw here would
+  // take the dialog down over a preview.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setPlanState({ status: "loading" });
+    void (async () => {
+      try {
+        const plan = await api.getGenerationPlan(project.id);
+        if (!cancelled) setPlanState({ status: "ready", plan });
+      } catch (err) {
+        if (!cancelled) {
+          setPlanState({
+            status: "failed",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, project.id, planReload]);
 
   useModalDialog({ open, onClose, containerRef });
 
@@ -145,6 +190,16 @@ export default function GenerateDialog({
   const selectablePluginPacks = (pluginPacksQuery.data ?? []).filter(
     (pack) => pack.usable || pack.id === pluginPackId,
   );
+
+  // A plan is previewable only for a composite project that has been scanned.
+  // A single-run project has no sub-projects to compare and an unscanned one has
+  // nothing to compare against; in both cases the dialog behaves as it did
+  // before this preview existed.
+  const plan = planState.status === "ready" ? planState.plan : null;
+  const previewablePlan = plan && plan.composite && plan.scan_available ? plan : null;
+  // The server's own count, not the length of the list: it owns the skip
+  // decision, and its arithmetic is what the run will actually charge for.
+  const subprojectsToGenerate = previewablePlan?.will_generate ?? null;
 
   if (!open) return null;
 
@@ -229,6 +284,15 @@ export default function GenerateDialog({
         </div>
 
         <div className="flex-1 overflow-y-auto px-7 py-5 space-y-6">
+          {/* First in the body on purpose: what this run will cost is the
+              decision being made here, and every control below it is a detail
+              of a run the operator has not yet agreed to pay for. */}
+          <GenerationPlanSection
+            state={planState}
+            plan={previewablePlan}
+            onRetry={() => setPlanReload((n) => n + 1)}
+          />
+
           <section className="space-y-3 rounded border border-white/[0.08] bg-black/10 p-4">
             <h4 className="font-mono uppercase tracking-wider text-xs text-accent-primary/80">
               Plugin pack
@@ -499,13 +563,190 @@ export default function GenerateDialog({
             }
           >
             {submitPending
-                ? "Starting..."
-                : "Generate"}
+              ? "Starting..."
+              : subprojectsToGenerate == null
+                ? "Generate"
+                : subprojectsToGenerate === 0
+                  ? "Generate (nothing to regenerate)"
+                  : `Generate ${subprojectsToGenerate} sub-project${subprojectsToGenerate === 1 ? "" : "s"}`}
           </button>
         </div>
       </div>
     </div>,
     document.body,
+  );
+}
+
+function formatGeneratedAt(value: string | null): string {
+  if (!value) return "never generated";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "never generated" : date.toLocaleString();
+}
+
+/**
+ * What the next run will regenerate, what it will reuse, and why.
+ *
+ * The point of this block is cost honesty: a composite project generates one
+ * scoped run per sub-project, and the orchestrator skips any sub-project whose
+ * scan fingerprint is unchanged and whose docs are published. Without the
+ * preview, "Generate" on a six-sub-project project is a button whose price is
+ * somewhere between one sub-project and six, and the operator cannot tell which
+ * until the bill arrives.
+ *
+ * Three rules it must not break:
+ *   - it NEVER blocks the run. An unreadable plan is an inline notice, not a
+ *     disabled button: the plan is a description of what the orchestrator will
+ *     do, and the orchestrator does not need it to run.
+ *   - it renders only what the server returned. No local cost model, no
+ *     estimated token counts, no "approximately" -- the skip decision lives in
+ *     one place and this is a read of it.
+ *   - it states the reason CODE per sub-project. This is the operator console,
+ *     and `no_published_docs` vs `changed` is the difference between a bug and
+ *     an expected charge.
+ */
+function GenerationPlanSection({
+  state,
+  plan,
+  onRetry,
+}: {
+  state: PlanState;
+  /** The plan when it is previewable at all; null hides the block. */
+  plan: GenerationPlan | null;
+  onRetry: () => void;
+}) {
+  if (state.status === "loading") {
+    return (
+      <p className="text-sm text-slate-500">
+        Checking which sub-projects need to regenerate…
+      </p>
+    );
+  }
+
+  if (state.status === "failed") {
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded border border-amber-400/30 bg-amber-400/5 p-3">
+        <p className="text-sm text-amber-400">
+          The generation plan could not be read, so this dialog cannot say which
+          sub-projects will regenerate. Generating still works — the run decides for
+          itself.
+        </p>
+        <button type="button" className="btn-ghost" onClick={onRetry}>
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  // Read, but nothing to preview: a single-run project, or one with no scan yet.
+  if (!plan) return null;
+
+  // An action this build has not been taught counts as generate. Over-stating
+  // cost is recoverable; a surprise full-price run is not.
+  const willReuse = plan.partitions.filter((p) => p.action === "reuse");
+  const willGenerate = plan.partitions.filter((p) => p.action !== "reuse");
+
+  return (
+    <section className="space-y-3 rounded border border-white/[0.08] bg-black/10 p-4">
+      <div>
+        <h4 className="font-mono uppercase tracking-wider text-xs text-accent-primary/80">
+          Generation plan
+        </h4>
+        <p className="mt-1 text-sm text-slate-200">
+          <span className="text-base font-semibold text-accent-primary">
+            {plan.will_generate} of {plan.partition_count}
+          </span>{" "}
+          sub-project{plan.partition_count === 1 ? "" : "s"} will regenerate
+          {plan.will_reuse > 0 && (
+            <>
+              {" · "}
+              {plan.will_reuse} reused at no model cost
+            </>
+          )}
+        </p>
+      </div>
+
+      {plan.global_invalidation && (
+        <div className="rounded border border-amber-400/30 bg-amber-400/5 p-3">
+          <p className="text-sm text-amber-400">{plan.global_invalidation.detail}</p>
+          <p className="mt-1 font-mono text-xs text-slate-500">
+            {plan.global_invalidation.reason}
+          </p>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <PartitionList
+          title={`Will generate (${plan.will_generate})`}
+          partitions={willGenerate}
+          emptyLabel="Nothing needs regenerating."
+          render={(partition) => (
+            <>
+              {partition.unit_count} unit{partition.unit_count === 1 ? "" : "s"}
+              {" · "}
+              <span className="font-mono">{partition.reason}</span>
+            </>
+          )}
+        />
+        <PartitionList
+          title={`Will be reused (${plan.will_reuse})`}
+          partitions={willReuse}
+          emptyLabel="Nothing can be reused."
+          render={(partition) => (
+            <>
+              {partition.doc_count} doc{partition.doc_count === 1 ? "" : "s"}
+              {" · "}
+              {formatGeneratedAt(partition.last_generated_at)}
+              {" · "}
+              <span className="font-mono">{partition.reason}</span>
+            </>
+          )}
+        />
+      </div>
+
+      {plan.notes.length > 0 && (
+        <ul className="space-y-1">
+          {/* Keyed by position: the notes are server prose, and two identical
+              strings must both render rather than collide on a key. */}
+          {plan.notes.map((note, index) => (
+            <li key={`${index}-${note}`} className="text-xs text-slate-500">
+              {note}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function PartitionList({
+  title,
+  partitions,
+  emptyLabel,
+  render,
+}: {
+  title: string;
+  partitions: GenerationPlanPartition[];
+  emptyLabel: string;
+  render: (partition: GenerationPlanPartition) => ReactNode;
+}) {
+  return (
+    <div>
+      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+        {title}
+      </p>
+      {partitions.length === 0 ? (
+        <p className="mt-1 text-xs text-slate-500">{emptyLabel}</p>
+      ) : (
+        <ul className="mt-1 space-y-1">
+          {partitions.map((partition) => (
+            <li key={partition.name} className="min-w-0">
+              <p className="truncate text-sm text-slate-300">{partition.name}</p>
+              <p className="truncate text-xs text-slate-500">{render(partition)}</p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

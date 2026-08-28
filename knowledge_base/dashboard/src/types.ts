@@ -655,3 +655,63 @@ export interface MultiRepoProject {
   members: MultiRepoMember[];
   sync: MultiRepoSyncOutcome[];
 }
+
+// --- GitHub App installations -------------------------------------------------
+
+export interface GithubAppInstallation {
+  installation_id: number;
+  account_login: string | null;
+  account_type?: string | null;
+  settings_url?: string | null;
+}
+
+// --- Incremental generation ---------------------------------------------------
+//
+// A composite project generates one scoped run per sub-project and skips any
+// sub-project whose scan fingerprint is unchanged and whose docs are published.
+// The plan below is a read-only dry run of that decision, so the operator sees
+// "1 of 6 will regenerate" BEFORE committing to the run.
+
+export interface GenerationPlanGlobalInvalidation {
+  /** e.g. `shared_routine_changed`. Free-form: new codes may appear. */
+  reason: string;
+  /** Operator-readable explanation of why nothing can be reused. */
+  detail: string;
+}
+
+export interface GenerationPlanPartition {
+  name: string;
+  subdir: string;
+  /** generate | reuse */
+  action: string;
+  /**
+   * new | changed | unchanged | no_published_docs | fingerprint_unavailable |
+   * shared_artifact_changed | flat_layout_adoption
+   */
+  reason: string;
+  unit_count: number;
+  doc_count: number;
+  last_generated_at: string | null;
+}
+
+export interface GenerationPlan {
+  project_id: string;
+  scan_available: boolean;
+  composite: boolean;
+  partition_count: number;
+  will_generate: number;
+  will_reuse: number;
+  global_invalidation: GenerationPlanGlobalInvalidation | null;
+  partitions: GenerationPlanPartition[];
+  notes: string[];
+}
+
+export interface AddSourceResult {
+  project_id: string;
+  /** Name of the new sub-project; its docs land in {project_id}/{subproject}/docs. */
+  subproject: string;
+  /** Whether the project's original flat source tree had to be moved first. */
+  migrated_existing_source: boolean;
+  requires_rescan: boolean;
+  status: string;
+}

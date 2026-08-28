@@ -5,9 +5,25 @@ import MultiRepoMembersPanel from "../components/MultiRepoMembersPanel";
 const listMultiRepoMembers = vi.hoisted(() => vi.fn());
 const removeMultiRepoMember = vi.hoisted(() => vi.fn());
 const syncMultiRepoProject = vi.hoisted(() => vi.fn());
+const addMultiRepoMembers = vi.hoisted(() => vi.fn());
+const addProjectZipSource = vi.hoisted(() => vi.fn());
+const listGithubAppInstallations = vi.hoisted(() => vi.fn());
+const listGithubAppRepos = vi.hoisted(() => vi.fn());
+const listAzureDevOpsConnections = vi.hoisted(() => vi.fn());
+const listAzureDevOpsRepos = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/client", () => ({
-  api: { listMultiRepoMembers, removeMultiRepoMember, syncMultiRepoProject },
+  api: {
+    listMultiRepoMembers,
+    removeMultiRepoMember,
+    syncMultiRepoProject,
+    addMultiRepoMembers,
+    addProjectZipSource,
+    listGithubAppInstallations,
+    listGithubAppRepos,
+    listAzureDevOpsConnections,
+    listAzureDevOpsRepos,
+  },
 }));
 
 const MEMBER_A = {
@@ -48,6 +64,8 @@ describe("MultiRepoMembersPanel (dashboard)", () => {
       sync: [],
     });
     removeMultiRepoMember.mockResolvedValue({ status: "ok" });
+    listGithubAppInstallations.mockResolvedValue({ installations: [] });
+    listAzureDevOpsConnections.mockResolvedValue({ connections: [] });
   });
 
   it("lists members with per-repo ingest state", async () => {
@@ -62,10 +80,19 @@ describe("MultiRepoMembersPanel (dashboard)", () => {
     expect(screen.getByText(/not ingested/)).toBeInTheDocument();
   });
 
-  it("renders nothing for a single-repo project", async () => {
+  it("renders for a single-source project so it can gain a sub-project", async () => {
+    // It used to return null on an empty member list, which hid the only
+    // surface that can add a sub-project from exactly the projects that have
+    // none: a one-repo project could never become a two-sub-project one.
     listMultiRepoMembers.mockResolvedValue({ project_id: "solo", members: [], sync: [] });
-    const { container } = render(<MultiRepoMembersPanel projectId="solo" />);
-    await waitFor(() => expect(container).toBeEmptyDOMElement());
+    render(<MultiRepoMembersPanel projectId="solo" />);
+
+    expect(
+      await screen.findByRole("button", { name: "+ Add sub-project" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("No member repositories")).toBeInTheDocument();
+    // Nothing to sync, so no button offering it.
+    expect(screen.queryByRole("button", { name: "Sync all" })).not.toBeInTheDocument();
   });
 
   it("syncs one repository by identity so siblings are untouched", async () => {
@@ -182,6 +209,181 @@ describe("MultiRepoMembersPanel (dashboard)", () => {
     render(<MultiRepoMembersPanel projectId="pf" />);
 
     await waitFor(() => expect(screen.getByText("members unavailable")).toBeInTheDocument());
+  });
+
+  it("adds a git sub-project through the repo picker", async () => {
+    listGithubAppInstallations.mockResolvedValue({
+      installations: [{ installation_id: 42, account_login: "acme" }],
+    });
+    listGithubAppRepos.mockResolvedValue({
+      installation_id: 42,
+      account_login: "acme",
+      repositories: [
+        {
+          full_name: "acme/pplus_archive",
+          clone_url: "https://github.com/acme/pplus_archive.git",
+          private: true,
+          default_branch: "main",
+        },
+      ],
+    });
+    const MEMBER_C = {
+      ...MEMBER_A,
+      id: "33333333-3333-3333-3333-333333333333",
+      repo_identity: "acme/pplus_archive",
+      repo_name: "pplus_archive",
+      subproject_name: "pplus_archive",
+    };
+    // The refetch after a successful add sees the new member.
+    listMultiRepoMembers
+      .mockResolvedValueOnce({ project_id: "pf", members: [MEMBER_A, MEMBER_B], sync: [] })
+      .mockResolvedValue({
+        project_id: "pf",
+        members: [MEMBER_A, MEMBER_B, MEMBER_C],
+        sync: [],
+      });
+    addMultiRepoMembers.mockResolvedValue({
+      project_id: "pf",
+      members: [MEMBER_A, MEMBER_B, MEMBER_C],
+      sync: [
+        {
+          subproject_name: "pplus_archive",
+          repo_identity: "acme/pplus_archive",
+          action: "cloned",
+          head_sha: "cafe1234",
+          previous_sha: null,
+          changed: true,
+          error: null,
+        },
+      ],
+    });
+    const onChanged = vi.fn();
+
+    render(
+      <MultiRepoMembersPanel projectId="pf" sourceType="git" platform="talend" onChanged={onChanged} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "+ Add sub-project" }));
+
+    // The credential is CHOSEN here: there is no post-install redirect to read
+    // an installation id from when adding to a project that already exists.
+    fireEvent.click(await screen.findByRole("button", { name: /GitHub App · acme/ }));
+    fireEvent.click(await screen.findByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: "Add sub-project" }));
+
+    await waitFor(() =>
+      expect(addMultiRepoMembers).toHaveBeenCalledWith("pf", {
+        platform: "talend",
+        provider: "github",
+        installation_id: 42,
+        azure_devops_connection_id: undefined,
+        members: [
+          {
+            repo_identity: "acme/pplus_archive",
+            repo_name: "pplus_archive",
+            clone_url: "https://github.com/acme/pplus_archive.git",
+            branch: undefined,
+          },
+        ],
+      }),
+    );
+
+    // Freshly cloned is NOT scanned: the clone has a commit sha, so the row
+    // would otherwise read as ingested while no scan has read a byte of it.
+    await waitFor(() =>
+      expect(screen.getByText(/Added, not scanned:/)).toBeInTheDocument(),
+    );
+    // Once in the banner, once as the member row the refetch brought back, and
+    // that row is flagged rather than reading as ingested off its clone sha.
+    expect(screen.getAllByText("pplus_archive")).toHaveLength(2);
+    expect(screen.getByText(/· not scanned/)).toBeInTheDocument();
+    expect(listMultiRepoMembers).toHaveBeenCalledTimes(2);
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("adds a ZIP sub-project and reports a migrated source tree", async () => {
+    listMultiRepoMembers.mockResolvedValue({
+      project_id: "werkorder",
+      members: [],
+      sync: [],
+    });
+    addProjectZipSource.mockResolvedValue({
+      project_id: "werkorder",
+      subproject: "werkorder_archive",
+      migrated_existing_source: true,
+      requires_rescan: true,
+      status: "added",
+    });
+
+    render(<MultiRepoMembersPanel projectId="werkorder" sourceType="zip" />);
+    fireEvent.click(await screen.findByRole("button", { name: "+ Add sub-project" }));
+
+    const file = new File(["zip bytes"], "archive.zip", { type: "application/zip" });
+    fireEvent.change(screen.getByLabelText("Sub-project ZIP file"), {
+      target: { files: [file] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add sub-project" }));
+
+    await waitFor(() =>
+      expect(addProjectZipSource).toHaveBeenCalledWith("werkorder", file),
+    );
+    expect(await screen.findByText("werkorder_archive")).toBeInTheDocument();
+    expect(screen.getByText(/Added, not scanned:/)).toBeInTheDocument();
+    // Where the existing tree's docs now live changed, so it is said out loud.
+    expect(
+      screen.getByText(/original source was moved into its own sub-project directory/),
+    ).toBeInTheDocument();
+  });
+
+  it("does not demand a scan the server says is unnecessary", async () => {
+    listMultiRepoMembers.mockResolvedValue({ project_id: "werkorder", members: [], sync: [] });
+    addProjectZipSource.mockResolvedValue({
+      project_id: "werkorder",
+      subproject: "werkorder_archive",
+      migrated_existing_source: false,
+      requires_rescan: false,
+      status: "added",
+    });
+
+    render(<MultiRepoMembersPanel projectId="werkorder" sourceType="zip" />);
+    fireEvent.click(await screen.findByRole("button", { name: "+ Add sub-project" }));
+    fireEvent.change(screen.getByLabelText("Sub-project ZIP file"), {
+      target: { files: [new File(["z"], "archive.zip")] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add sub-project" }));
+
+    await waitFor(() => expect(screen.getByText("Added:")).toBeInTheDocument());
+    expect(screen.queryByText(/not scanned/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Run Scan/)).not.toBeInTheDocument();
+  });
+
+  it("surfaces a failed add without claiming the sub-project exists", async () => {
+    listGithubAppInstallations.mockResolvedValue({
+      installations: [{ installation_id: 42, account_login: "acme" }],
+    });
+    listGithubAppRepos.mockResolvedValue({
+      installation_id: 42,
+      account_login: "acme",
+      repositories: [
+        {
+          full_name: "acme/pplus_archive",
+          clone_url: "https://github.com/acme/pplus_archive.git",
+          private: true,
+          default_branch: "main",
+        },
+      ],
+    });
+    addMultiRepoMembers.mockRejectedValue(new Error("403: no access to that repository"));
+
+    render(<MultiRepoMembersPanel projectId="pf" sourceType="git" />);
+    fireEvent.click(await screen.findByRole("button", { name: "+ Add sub-project" }));
+    fireEvent.click(await screen.findByRole("button", { name: /GitHub App · acme/ }));
+    fireEvent.click(await screen.findByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: "Add sub-project" }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/403: no access to that repository/)).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Added, not scanned:/)).not.toBeInTheDocument();
   });
 
   it("says push-triggered updates are not wired yet", async () => {

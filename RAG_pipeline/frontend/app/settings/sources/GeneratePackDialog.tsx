@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AlertCircle, FileText, Loader2 } from "lucide-react";
+import { AlertCircle, AlertTriangle, FileText, Info, Loader2, RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { listPacks, packSubtitle, selectProjectPack, type Pack } from "@/lib/packs";
+import { getGenerationPlan, type GenerationPlan } from "@/lib/mcpClient";
 
 /**
  * Pack choice for one documentation run.
@@ -27,6 +28,8 @@ export interface GenerateChoice {
 
 interface Props {
   open: boolean;
+  /** Project the run is for. Used to ask the server what this run would cost. */
+  projectId: string;
   projectLabel: string;
   /** The project's currently saved pack, preselected. */
   currentPackId: number | null;
@@ -36,6 +39,7 @@ interface Props {
 
 export function GeneratePackDialog({
   open,
+  projectId,
   projectLabel,
   currentPackId,
   onCancel,
@@ -46,6 +50,9 @@ export function GeneratePackDialog({
   const [selected, setSelected] = useState<number | null>(currentPackId);
   const [remember, setRemember] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [plan, setPlan] = useState<GenerationPlan | null>(null);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [planLoading, setPlanLoading] = useState(false);
 
   // Reset on each open so a cancelled dialog does not reopen holding the
   // abandoned selection.
@@ -70,6 +77,32 @@ export function GeneratePackDialog({
     };
   }, [currentPackId, open]);
 
+  // The plan is a separate request from the pack list on purpose: it is advisory
+  // and must never gate the run. If it fails, the dialog is still the dialog it
+  // was before this preview existed, with a line saying the estimate is missing.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setPlan(null);
+    setPlanError(null);
+    setPlanLoading(true);
+    getGenerationPlan(projectId)
+      .then((result) => {
+        if (!cancelled) setPlan(result);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setPlanError(err instanceof Error ? err.message : String(err));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setPlanLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, projectId]);
+
   async function confirm() {
     setSubmitting(true);
     try {
@@ -84,6 +117,11 @@ export function GeneratePackDialog({
   // A pack the project points at but which no longer generates would otherwise
   // vanish from the list while still being the preselected value.
   const selectedIsBlocked = blocked.some((pack) => pack.id === selected);
+  // A single-run project has no sub-projects to split, and a project without a
+  // scan has nothing to plan from. In both cases the preview would be noise, so
+  // the dialog stays exactly as it was.
+  const preview =
+    plan != null && plan.composite && plan.scan_available ? plan : null;
 
   return (
     <Modal
@@ -100,13 +138,36 @@ export function GeneratePackDialog({
           <Button
             onClick={confirm}
             isLoading={submitting}
+            // Never gated on the plan: the plan is advisory, and a project that
+            // cannot be planned still has to be generatable.
             disabled={packs == null || selectedIsBlocked}
           >
-            <FileText className="h-3.5 w-3.5" /> Start generating
+            <FileText className="h-3.5 w-3.5" />{" "}
+            {preview ? generateButtonLabel(preview.will_generate) : "Start generating"}
           </Button>
         </>
       }
     >
+      {preview && <GenerationPlanPreview plan={preview} />}
+
+      {/* Non-blocking on purpose. The operator loses the cost estimate, not the
+          ability to generate. */}
+      {planError && (
+        <p className="mb-4 flex items-start gap-2 rounded-md border border-border bg-muted/30 p-2.5 text-xs text-muted-foreground">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>
+            Could not work out which sub-projects this run would regenerate, so
+            the cost preview is not shown. Generating still works. ({planError})
+          </span>
+        </p>
+      )}
+      {planLoading && !plan && !planError && (
+        <p className="mb-4 flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> Working out
+          what this run would regenerate&hellip;
+        </p>
+      )}
+
       {packs == null && !loadError ? (
         <p className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" /> Loading the available
@@ -191,6 +252,162 @@ export function GeneratePackDialog({
         </label>
       )}
     </Modal>
+  );
+}
+
+/**
+ * Primary button label, named after the size of the run.
+ *
+ * `Start generating` on a six-sub-project project reads the same whether it
+ * costs one sub-project or six, which is exactly the thing the operator needs to
+ * know before pressing it. Zero keeps the neutral label: "Generate 0
+ * sub-projects" describes a button that does nothing, and the run still rebuilds
+ * the shared cross-project views, so the count belongs in the preview text
+ * rather than on the button.
+ */
+function generateButtonLabel(willGenerate: number): string {
+  if (willGenerate <= 0) return "Start generating";
+  return `Generate ${willGenerate} ${willGenerate === 1 ? "sub-project" : "sub-projects"}`;
+}
+
+/** Server vocabulary -> one short operator-facing phrase. */
+const REASON_LABELS: Record<string, string> = {
+  new: "new sub-project",
+  changed: "code changed",
+  unchanged: "unchanged",
+  no_published_docs: "no published documents",
+  fingerprint_unavailable: "no recorded fingerprint",
+  shared_artifact_changed: "shared artifact changed",
+  flat_layout_adoption: "adopting the existing layout",
+};
+
+function reasonLabel(reason: string): string {
+  // Unknown reasons are shown verbatim rather than hidden: the server owns this
+  // vocabulary and may extend it, and a blank is worse than a raw token.
+  return REASON_LABELS[reason] ?? reason.replace(/_/g, " ");
+}
+
+function formatGeneratedAt(value: string | null | undefined): string {
+  if (!value) return "never generated";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "never generated";
+  return `generated ${date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  })}`;
+}
+
+/**
+ * What this run would actually do, per sub-project.
+ *
+ * The split is the headline because it is the money question: a project with six
+ * sub-projects where one changed pays for one, and nothing in the old dialog
+ * said so. Reused sub-projects are listed by name rather than counted, so the
+ * operator can check that the one they changed is on the generate side -- a
+ * count alone cannot be verified against what they know they touched.
+ *
+ * No figure here is computed in the browser. Everything rendered comes from the
+ * server's own dry run of the skip predicate the real run uses.
+ */
+function GenerationPlanPreview({ plan }: { plan: GenerationPlan }) {
+  const generating = plan.partitions.filter((part) => part.action === "generate");
+  const reusing = plan.partitions.filter((part) => part.action === "reuse");
+
+  return (
+    <div className="mb-4 rounded-lg border border-border bg-muted/30 p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-sm font-semibold text-foreground">
+          {plan.will_generate} of {plan.partition_count}{" "}
+          {plan.partition_count === 1 ? "sub-project" : "sub-projects"} will be
+          regenerated
+        </p>
+        <p className="text-xs text-muted-foreground">
+          {plan.will_reuse} reused, so this run does not pay for{" "}
+          {plan.will_reuse === 1 ? "it" : "them"}
+        </p>
+      </div>
+
+      {/* Two columns so generate and reuse are read as one comparison rather
+          than two lists that happen to be adjacent. */}
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <div>
+          <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-foreground">
+            <FileText className="h-3.5 w-3.5" aria-hidden /> Will generate (
+            {plan.will_generate})
+          </p>
+          {generating.length === 0 ? (
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              No sub-project needs regenerating. Only the shared cross-project
+              views are rebuilt.
+            </p>
+          ) : (
+            <ul className="mt-1.5 max-h-40 space-y-1 overflow-y-auto">
+              {generating.map((part) => (
+                <li key={part.name} className="text-xs">
+                  <span className="block truncate font-medium text-foreground">
+                    {part.name}
+                  </span>
+                  <span className="text-muted-foreground">
+                    {part.unit_count} {part.unit_count === 1 ? "unit" : "units"} ·{" "}
+                    {reasonLabel(part.reason)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div>
+          <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            <RotateCcw className="h-3.5 w-3.5" aria-hidden /> Will be reused (
+            {plan.will_reuse})
+          </p>
+          {reusing.length === 0 ? (
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Nothing is reused in this run.
+            </p>
+          ) : (
+            <ul className="mt-1.5 max-h-40 space-y-1 overflow-y-auto">
+              {reusing.map((part) => (
+                <li key={part.name} className="text-xs">
+                  <span className="block truncate font-medium text-foreground">
+                    {part.name}
+                  </span>
+                  <span className="text-muted-foreground">
+                    {part.doc_count} {part.doc_count === 1 ? "document" : "documents"} ·{" "}
+                    {formatGeneratedAt(part.last_generated_at)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+
+      {/* The stated reason every sub-project regenerates anyway. Without it the
+          preview would show six-of-six and look like a bug. */}
+      {plan.global_invalidation && (
+        <p className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/[0.08] p-2.5 text-xs text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>{plan.global_invalidation.detail}</span>
+        </p>
+      )}
+
+      {plan.notes.length > 0 && (
+        <ul className="mt-3 space-y-1">
+          {plan.notes.map((note) => (
+            <li
+              key={note}
+              className="flex items-start gap-1.5 text-xs text-muted-foreground"
+            >
+              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+              <span>{note}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

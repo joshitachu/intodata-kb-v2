@@ -616,6 +616,76 @@ export const RuntimeSourceSyncResponseSchema = z.object({
   records_ingested: z.number().optional().default(0),
 });
 
+// --- Sub-projects: incremental generation ------------------------------------
+//
+// A project that has already been generated can gain a sub-project, and the next
+// run should pay model cost only for what is new or changed. These two contracts
+// are what make that visible before the operator commits.
+//
+// Every field the endpoints document is declared here deliberately. An
+// undeclared field is not a parse error in zod -- it is silently STRIPPED, so
+// the browser reads `undefined` forever with no error, no warning, and nothing
+// to debug from.
+
+/** Why every sub-project must regenerate, when something forces that. */
+export const GenerationPlanGlobalInvalidationSchema = z.object({
+  // Plain strings, never enums. This block exists to EXPLAIN a full-cost run;
+  // a reason code this build has not been taught yet must still render its
+  // detail text rather than reject the plan and leave the operator with no
+  // explanation for the bill.
+  reason: z.string(),
+  detail: z.string(),
+});
+
+export const GenerationPlanPartitionSchema = z.object({
+  name: z.string(),
+  subdir: z.string(),
+  // `action` is "generate" | "reuse" and `reason` is one of seven documented
+  // codes. Both are plain strings for the reason documented on
+  // `connection_kind` above: this object is validated as an ARRAY, so ONE
+  // sub-project carrying an action or reason this build has not been taught
+  // would reject the whole plan and hide the generate/reuse split for every
+  // sub-project. An unfamiliar action is counted as "generate" by the renderer
+  // -- over-stating cost is recoverable, under-stating it is not.
+  action: z.string(),
+  reason: z.string(),
+  unit_count: z.number().optional().default(0),
+  doc_count: z.number().optional().default(0),
+  last_generated_at: z.string().nullable().optional().default(null),
+});
+
+/** Read-only dry run of the next generation: what regenerates, what is reused. */
+export const GenerationPlanResponseSchema = z.object({
+  project_id: z.string(),
+  // Both gates for showing the preview at all. A single-run project has no
+  // sub-projects to compare, and a project with no scan has nothing to compare
+  // against; in either case the dialog keeps its previous behaviour.
+  scan_available: z.boolean(),
+  composite: z.boolean(),
+  partition_count: z.number().optional().default(0),
+  // The counts, not the list lengths, drive the headline and the button label:
+  // the server owns the skip decision and its arithmetic is the honest one.
+  will_generate: z.number().optional().default(0),
+  will_reuse: z.number().optional().default(0),
+  global_invalidation: GenerationPlanGlobalInvalidationSchema.nullable()
+    .optional()
+    .default(null),
+  partitions: z.array(GenerationPlanPartitionSchema).optional().default([]),
+  notes: z.array(z.string()).optional().default([]),
+});
+
+/** Result of adding a ZIP source to an existing ZIP project. */
+export const AddSourceResponseSchema = z.object({
+  project_id: z.string(),
+  subproject: z.string(),
+  // The server may have had to move the project's original flat source tree
+  // into a named sub-project directory first. The operator is told, because it
+  // changes where that tree's documentation will be published.
+  migrated_existing_source: z.boolean().optional().default(false),
+  requires_rescan: z.boolean().optional().default(true),
+  status: z.string().optional().default("added"),
+});
+
 export const ConnectorTestResultSchema = z.object({
   status: z.string(),
   message: z.string().nullable().optional().default(null),

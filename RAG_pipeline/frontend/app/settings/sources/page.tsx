@@ -758,7 +758,7 @@ export default function SourcesSettingsPage() {
   const projectsWithLiveData = projects.filter((project) => (liveSourcesByProject.get(project.id)?.length ?? 0) > 0).length;
 
   return (
-    <div className="mx-auto w-full max-w-3xl space-y-10 px-6 py-12">
+    <div className="mx-auto w-full max-w-3xl space-y-10 px-6 py-12" data-tour="sources-page">
       <header className="flex flex-col gap-4 sm:flex-row sm:items-baseline sm:justify-between">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">Sources</h1>
@@ -837,7 +837,10 @@ export default function SourcesSettingsPage() {
         />
 
         <div className="border-b border-border">
-          <div className="flex flex-col gap-4 px-1 py-5 sm:flex-row sm:items-center sm:justify-between">
+          <div
+            data-tour="sources-add"
+            className="flex flex-col gap-4 px-1 py-5 sm:flex-row sm:items-center sm:justify-between"
+          >
             <div className="flex min-w-0 items-center gap-3">
               <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
                 <FileArchive className="h-5 w-5" />
@@ -922,7 +925,10 @@ export default function SourcesSettingsPage() {
       <SimpleConnectorPanel />
 
       <section className="space-y-5" aria-labelledby="existing-sources-heading">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+        <div
+          data-tour="sources-summary"
+          className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"
+        >
           <div>
             <h2 id="existing-sources-heading" className="text-base font-semibold">Connected sources</h2>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -948,7 +954,7 @@ export default function SourcesSettingsPage() {
           </p>
         </div>
 
-        <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+        <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto]" data-tour="sources-filters">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -1259,7 +1265,7 @@ function SourceRow({
                 <LiveSourceChips sources={liveSources ?? []} />
               </span>
             </span>
-            <span className={cn(
+            <span data-tour="sources-lifecycle" className={cn(
               "hidden min-w-28 text-right text-sm sm:block",
               source.status === "error" ? "text-destructive" : "text-muted-foreground",
             )}>
@@ -1291,11 +1297,19 @@ function SourceRow({
             <p className="truncate text-xs text-muted-foreground">{source.repo_url}</p>
           )}
           {/* A multi-repo project has no single repo_url, so without this the
-              line above renders nothing and its member repositories are
-              invisible. The panel renders nothing for a single-repo project. */}
-          {source.source_type === "git" && !source.repo_url && (
-            <MultiRepoMembersPanel projectId={source.id} onChanged={onMembersChanged} />
-          )}
+              line above renders nothing and its sub-projects are invisible.
+              Rendered for single-source projects too, git or ZIP: the panel is
+              also where a project gains its second sub-project, and gating it on
+              "already has members" made that unreachable. */}
+          <MultiRepoMembersPanel
+            projectId={source.id}
+            platform={source.platform}
+            sourceType={source.source_type}
+            connectionKind={source.connection_kind}
+            azureDevOpsConnectionId={source.azure_devops_connection_id}
+            githubAccountLogin={source.github_account_login}
+            onChanged={onMembersChanged}
+          />
           <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
             <Meta
               label={unitLabel(source.platform, source.job_count ?? 0)}
@@ -1570,6 +1584,7 @@ function SourceRow({
 
           <GeneratePackDialog
             open={packDialogOpen}
+            projectId={source.id}
             projectLabel={source.display_name || source.id}
             currentPackId={source.plugin_pack_id ?? null}
             onCancel={() => setPackDialogOpen(false)}

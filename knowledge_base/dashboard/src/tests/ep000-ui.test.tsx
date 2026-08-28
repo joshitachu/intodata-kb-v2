@@ -41,6 +41,8 @@ vi.mock("../api/client", () => ({
     putProjectConnectorBinding: vi.fn(),
     deleteProjectConnectorBinding: vi.fn(),
     getRunConnectorEvidence: vi.fn(),
+    getGenerationPlan: vi.fn(),
+    listMultiRepoMembers: vi.fn(),
   },
 }));
 
@@ -255,6 +257,24 @@ beforeEach(() => {
   vi.mocked(api.listProjectAvailableConnectors).mockResolvedValue({ connectors: [] });
   vi.mocked(api.listConnectorSources).mockResolvedValue({ connector_instance_id: "none", sources: [], total: 0 });
   vi.mocked(api.listPluginPacks).mockResolvedValue([]);
+  // A single-run project: the Generate dialog's plan preview stays hidden and
+  // the dialog behaves exactly as it did before that preview existed.
+  vi.mocked(api.getGenerationPlan).mockResolvedValue({
+    project_id: "p1",
+    scan_available: true,
+    composite: false,
+    partition_count: 0,
+    will_generate: 1,
+    will_reuse: 0,
+    global_invalidation: null,
+    partitions: [],
+    notes: [],
+  });
+  vi.mocked(api.listMultiRepoMembers).mockResolvedValue({
+    project_id: "p1",
+    members: [],
+    sync: [],
+  });
 });
 
 describe("EP-000 dashboard panels", () => {
@@ -579,7 +599,9 @@ describe("EP-000 dashboard panels", () => {
 
     expect(screen.getByText("Northwind Scheduler")).toBeInTheDocument();
     expect(screen.getByText("Runtime sync - mirrored on a schedule")).toBeInTheDocument();
-    expect(screen.getByText("Mirroring 1 source")).toBeInTheDocument();
+    // Awaited: the mirrored lane's status is a query of its own, so it can
+    // still be "Checking…" when the catalogue rows have already rendered.
+    expect(await screen.findByText("Mirroring 1 source")).toBeInTheDocument();
 
     // No name of a shipped provider anywhere in the panel: the copy describes
     // whatever the catalogue served, not what this build happens to bundle.

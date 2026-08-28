@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -165,10 +166,15 @@ async def _fake_session_factory():
 class _FakeBridge:
     pushed: list[dict] = []
     internal_deleted: list[str] = []
+    deleted_docs: list[tuple[str, str]] = []
     aliases: list[tuple] = []
 
     def __init__(self, log_manager=None):
         pass
+
+    async def delete_document(self, project_id, filename):
+        _FakeBridge.deleted_docs.append((project_id, filename))
+        return {}
 
     async def push_docs(self, project_id, docs=None, **kwargs):
         for doc in docs or []:
@@ -229,6 +235,7 @@ def orchestration_env(monkeypatch, tmp_path):
     _FakeRegistry.calls = []
     _FakeBridge.pushed = []
     _FakeBridge.internal_deleted = []
+    _FakeBridge.deleted_docs = []
     _FakeBridge.aliases = []
     monkeypatch.setattr(config, "project_root", tmp_path)
     monkeypatch.setattr(config, "intodoc_output_dir", tmp_path / "intodoc-output")
@@ -421,6 +428,474 @@ async def test_indeterminate_partition_digest_never_skips(orchestration_env, mon
         "proj", 2, _FakeLogMgr(), coordinator, plan=plan, facts=facts, resume=True,
     )
     assert [c["partition"] for c in coordinator.calls] == ["Alpha"]
+
+
+# --------------------------------------------------------------------------- #
+# decide_partition_actions -- the ONE skip rule
+# --------------------------------------------------------------------------- #
+
+
+def _mixed_facts(project_id: str = "proj") -> FactsManifest:
+    """One marked sub-project plus an unmarked (pre-composite) source root.
+
+    This is the shape a Git project takes when a second repo is added beside a
+    single-repo clone: the old tree stays unmarked and lands in __shared__.
+    """
+    units = [
+        _unit("a1", "Flows", f"B/Alpha{ZIP}/ALPHA"),
+        _unit("s1", "Legacy", "B/LEGACY"),
+    ]
+    groups: dict[str, int] = {}
+    for u in units:
+        groups[u.group] = groups.get(u.group, 0) + 1
+    return FactsManifest(
+        project_id=project_id, platform="talend", canonical_unit_label="Talend jobs",
+        unit_count=len(units), groups=groups, units=units,
+    )
+
+
+def _write_flat_docs(tmp_path: Path, project_id: str, count: int = 2) -> Path:
+    docs = tmp_path / "output" / project_id / "docs"
+    docs.mkdir(parents=True, exist_ok=True)
+    for index in range(count):
+        (docs / f"0{index}_FLAT_DOC.md").write_text(f"# flat {index}\n", encoding="utf-8")
+    (docs / "_internal.md").write_text("internal\n", encoding="utf-8")
+    return docs
+
+
+def test_reason_constants_match_the_api_contract():
+    """The plan endpoint pins these values in a Literal; drift is a 500."""
+    from mcp_server.schemas import GenerationPlanPartition
+
+    field = GenerationPlanPartition.model_fields["reason"]
+    literal_values = set(field.annotation.__args__)
+    assert literal_values == set(po.PARTITION_REASONS)
+
+
+def test_decisions_report_new_partitions(orchestration_env, monkeypatch):
+    facts = _composite_facts("proj")
+    plan = pp.plan_partitions(facts)
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "a-1", "Beta": "b-1"}
+    )
+    decisions = po.decide_partition_actions("proj", plan, facts)
+
+    assert decisions.composite is True
+    assert decisions.scan_available is True
+    assert decisions.will_generate == 2 and decisions.will_reuse == 0
+    assert [(d.name, d.action, d.reason) for d in decisions.decisions] == [
+        ("Alpha", po.ACTION_GENERATE, po.REASON_NEW),
+        ("Beta", po.ACTION_GENERATE, po.REASON_NEW),
+    ]
+    assert po.NOTE_CROSS_PROJECT_REFS in decisions.notes
+
+
+def test_decisions_report_fingerprint_unavailable(orchestration_env, monkeypatch):
+    facts = _composite_facts("proj")
+    plan = pp.plan_partitions(facts)
+    monkeypatch.setattr(po, "_partition_fingerprints", lambda d, p, f: {})
+    decisions = po.decide_partition_actions("proj", plan, facts)
+
+    assert {d.reason for d in decisions.decisions} == {po.REASON_FINGERPRINT_UNAVAILABLE}
+    assert po.NOTE_FINGERPRINT_UNAVAILABLE in decisions.notes
+
+
+async def test_plan_endpoint_helper_agrees_with_the_run_path(orchestration_env, monkeypatch):
+    """The dialog must predict exactly what the run then does.
+
+    A second copy of the skip rule would be free to drift; this pins that the
+    prediction and the behaviour come from the same function.
+    """
+    tmp_path = orchestration_env
+    facts = _composite_facts("proj")
+    plan = pp.plan_partitions(facts)
+    output_root = tmp_path / "output" / "proj"
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "a-1", "Beta": "b-1"}
+    )
+    await po.run_partitioned_generation(
+        "proj", 1, _FakeLogMgr(), _FakeCoordinator(output_root),
+        plan=plan, facts=facts, resume=True,
+    )
+
+    # Only Beta's inputs move.
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "a-1", "Beta": "b-2"}
+    )
+    predicted = po.decide_partition_actions("proj", plan, facts)
+    assert {d.name: d.action for d in predicted.decisions} == {
+        "Alpha": po.ACTION_REUSE, "Beta": po.ACTION_GENERATE,
+    }
+    assert predicted.will_generate == 1 and predicted.will_reuse == 1
+    reused = predicted.decision_for("Alpha")
+    assert reused.doc_count == 2 and reused.last_generated_at is not None
+
+    coordinator = _FakeCoordinator(output_root)
+    outcomes = await po.run_partitioned_generation(
+        "proj", 2, _FakeLogMgr(), coordinator, plan=plan, facts=facts, resume=True,
+    )
+    actual = {o.partition: ("reuse" if o.skipped else "generate") for o in outcomes}
+    assert actual == {d.name: d.action for d in predicted.decisions}
+    assert [c["partition"] for c in coordinator.calls] == ["Beta"]
+
+
+async def test_decisions_report_missing_published_docs(orchestration_env, monkeypatch):
+    tmp_path = orchestration_env
+    facts = _composite_facts("proj")
+    plan = pp.plan_partitions(facts)
+    output_root = tmp_path / "output" / "proj"
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "a-1", "Beta": "b-1"}
+    )
+    await po.run_partitioned_generation(
+        "proj", 1, _FakeLogMgr(), _FakeCoordinator(output_root),
+        plan=plan, facts=facts, resume=True,
+    )
+    shutil.rmtree(output_root / "Alpha" / "docs")
+
+    decisions = po.decide_partition_actions("proj", plan, facts)
+    by_name = {d.name: d for d in decisions.decisions}
+    assert by_name["Alpha"].action == po.ACTION_GENERATE
+    assert by_name["Alpha"].reason == po.REASON_NO_PUBLISHED_DOCS
+    assert by_name["Beta"].action == po.ACTION_REUSE
+
+
+async def test_forced_rebuild_generates_everything_but_still_reports_unchanged(
+    orchestration_env, monkeypatch
+):
+    tmp_path = orchestration_env
+    facts = _composite_facts("proj")
+    plan = pp.plan_partitions(facts)
+    output_root = tmp_path / "output" / "proj"
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "a-1", "Beta": "b-1"}
+    )
+    await po.run_partitioned_generation(
+        "proj", 1, _FakeLogMgr(), _FakeCoordinator(output_root),
+        plan=plan, facts=facts, resume=True,
+    )
+
+    decisions = po.decide_partition_actions("proj", plan, facts, resume=False)
+    assert decisions.will_generate == 2
+    assert {d.reason for d in decisions.decisions} == {po.REASON_UNCHANGED}
+
+
+# --------------------------------------------------------------------------- #
+# Shared (unattributable) artifacts -> project-wide invalidation
+# --------------------------------------------------------------------------- #
+
+
+async def test_shared_routine_change_is_named_as_a_global_invalidation(
+    orchestration_env, monkeypatch
+):
+    tmp_path = orchestration_env
+    facts = _composite_facts("proj")
+    plan = pp.plan_partitions(facts)
+    output_root = tmp_path / "output" / "proj"
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "a-1", "Beta": "b-1"}
+    )
+    monkeypatch.setattr(po, "_shared_artifact_digest", lambda d: "routines-1")
+    await po.run_partitioned_generation(
+        "proj", 1, _FakeLogMgr(), _FakeCoordinator(output_root),
+        plan=plan, facts=facts, resume=True,
+    )
+    state = json.loads(po._partition_state_path("proj").read_text())
+    assert state[po.STATE_META_KEY]["shared_artifact_digest"] == "routines-1"
+
+    # A routine edit moves the shared digest, and with it every per-partition
+    # digest (the shared digest is mixed into all of them).
+    monkeypatch.setattr(po, "_shared_artifact_digest", lambda d: "routines-2")
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "a-2", "Beta": "b-2"}
+    )
+    decisions = po.decide_partition_actions("proj", plan, facts)
+
+    assert decisions.global_invalidation is not None
+    assert decisions.global_invalidation.reason == po.GLOBAL_SHARED_ROUTINE_CHANGED
+    assert "routine" in decisions.global_invalidation.detail.lower()
+    assert {d.reason for d in decisions.decisions} == {po.REASON_SHARED_ARTIFACT_CHANGED}
+
+
+def test_no_recorded_baseline_makes_no_global_claim(orchestration_env, monkeypatch):
+    """Without a previous digest there is no evidence, so no accusation."""
+    facts = _composite_facts("proj")
+    plan = pp.plan_partitions(facts)
+    monkeypatch.setattr(po, "_shared_artifact_digest", lambda d: "routines-9")
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "a-1", "Beta": "b-1"}
+    )
+    decisions = po.decide_partition_actions("proj", plan, facts)
+    assert decisions.global_invalidation is None
+    assert {d.reason for d in decisions.decisions} == {po.REASON_NEW}
+
+
+def test_baseline_is_recorded_even_when_nothing_publishes(orchestration_env, monkeypatch):
+    po.record_shared_artifact_baseline("proj", "routines-1")
+    state = json.loads(po._partition_state_path("proj").read_text())
+    assert state[po.STATE_META_KEY]["shared_artifact_digest"] == "routines-1"
+    # An existing baseline is never silently replaced: it is the comparison point.
+    po.record_shared_artifact_baseline("proj", "routines-2")
+    state = json.loads(po._partition_state_path("proj").read_text())
+    assert state[po.STATE_META_KEY]["shared_artifact_digest"] == "routines-1"
+
+
+def test_reserved_meta_key_is_never_read_as_a_partition(orchestration_env):
+    state = {po.STATE_META_KEY: {"partition_fingerprint": "a-1"}}
+    assert po._partition_entry(state, po.STATE_META_KEY) is None
+    assert po._partition_completed(state, po.STATE_META_KEY, "a-1", Path("/nope")) is False
+
+
+# --------------------------------------------------------------------------- #
+# Flat -> composite docs adoption
+# --------------------------------------------------------------------------- #
+
+
+async def test_flat_docs_are_adopted_instead_of_regenerated(orchestration_env, monkeypatch):
+    """Adding a second sub-project must not re-buy the first one's documents."""
+    tmp_path = orchestration_env
+    facts = _composite_facts("proj")
+    plan = pp.plan_partitions(facts)
+    output_root = tmp_path / "output" / "proj"
+    flat_docs = _write_flat_docs(tmp_path, "proj")
+    # The additive-source endpoint records which sub-project inherited the tree.
+    po.record_flat_source_migration("proj", "Alpha")
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "a-1", "Beta": "b-1"}
+    )
+
+    predicted = po.decide_partition_actions("proj", plan, facts)
+    alpha = predicted.decision_for("Alpha")
+    assert (alpha.action, alpha.reason) == (po.ACTION_REUSE, po.REASON_FLAT_LAYOUT_ADOPTION)
+    assert alpha.doc_count == 2
+
+    coordinator = _FakeCoordinator(output_root)
+    outcomes = await po.run_partitioned_generation(
+        "proj", 1, _FakeLogMgr(), coordinator, plan=plan, facts=facts, resume=True,
+    )
+
+    # Only the NEW sub-project ran.
+    assert [c["partition"] for c in coordinator.calls] == ["Beta"]
+    by_name = {o.partition: o for o in outcomes}
+    assert by_name["Alpha"].skipped is True and by_name["Alpha"].doc_count == 2
+
+    # Docs moved, not copied, and the internal artifact travelled with them.
+    assert not flat_docs.exists()
+    assert (output_root / "Alpha" / "docs" / "00_FLAT_DOC.md").exists()
+    assert (output_root / "Alpha" / "docs" / "_internal.md").exists()
+
+    # State entry exists, carries the fresh fingerprint and its provenance.
+    state = json.loads(po._partition_state_path("proj").read_text())
+    assert state["Alpha"]["partition_fingerprint"] == "a-1"
+    assert state["Alpha"]["adopted_from"] == "flat"
+    assert state["Alpha"]["doc_count"] == 2
+
+    # RAG has one copy per document, under the sub-project prefix.
+    assert ("proj", "00_FLAT_DOC.md") in _FakeBridge.deleted_docs
+    assert ("proj", "01_FLAT_DOC.md") in _FakeBridge.deleted_docs
+    pushed = {d["filename"] for d in _FakeBridge.pushed}
+    assert "Alpha/00_FLAT_DOC.md" in pushed
+    assert "00_FLAT_DOC.md" not in pushed
+
+    # And the adoption is durable: a second run skips both sub-projects.
+    coordinator2 = _FakeCoordinator(output_root)
+    await po.run_partitioned_generation(
+        "proj", 2, _FakeLogMgr(), coordinator2, plan=plan, facts=facts, resume=True,
+    )
+    assert coordinator2.calls == []
+
+
+async def test_unmarked_source_root_is_the_adoption_owner_without_a_hint(
+    orchestration_env, monkeypatch
+):
+    """A Git project's pre-existing clone stays unmarked, so it is __shared__."""
+    tmp_path = orchestration_env
+    facts = _mixed_facts("proj")
+    plan = pp.plan_partitions(facts)
+    assert pp.SHARED_PARTITION in plan.names()
+    output_root = tmp_path / "output" / "proj"
+    _write_flat_docs(tmp_path, "proj")
+    monkeypatch.setattr(
+        po,
+        "_partition_fingerprints",
+        lambda d, p, f: {"Alpha": "a-1", pp.SHARED_PARTITION: "s-1"},
+    )
+
+    coordinator = _FakeCoordinator(output_root)
+    await po.run_partitioned_generation(
+        "proj", 1, _FakeLogMgr(), coordinator, plan=plan, facts=facts, resume=True,
+    )
+
+    assert [c["partition"] for c in coordinator.calls] == ["Alpha"]
+    subdir = pp.partition_output_subdir(pp.SHARED_PARTITION)
+    assert (output_root / subdir / "docs" / "00_FLAT_DOC.md").exists()
+
+
+def test_adoption_is_skipped_when_the_owner_is_ambiguous(orchestration_env, monkeypatch):
+    """No hint and no unmarked root: nothing may be adopted."""
+    tmp_path = orchestration_env
+    facts = _composite_facts("proj")
+    plan = pp.plan_partitions(facts)
+    _write_flat_docs(tmp_path, "proj")
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "a-1", "Beta": "b-1"}
+    )
+    decisions = po.decide_partition_actions("proj", plan, facts)
+    assert {d.reason for d in decisions.decisions} == {po.REASON_NEW}
+    assert (tmp_path / "output" / "proj" / "docs").exists()
+
+
+def test_adoption_is_skipped_when_the_hint_names_a_missing_partition(
+    orchestration_env, monkeypatch
+):
+    """A size-split (or renamed) sub-project cannot claim one flat doc set."""
+    tmp_path = orchestration_env
+    facts = _composite_facts("proj")
+    plan = pp.plan_partitions(facts)
+    _write_flat_docs(tmp_path, "proj")
+    po.record_flat_source_migration("proj", "Alpha_part1")
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "a-1", "Beta": "b-1"}
+    )
+    decisions = po.decide_partition_actions("proj", plan, facts)
+    assert {d.reason for d in decisions.decisions} == {po.REASON_NEW}
+
+
+def test_adoption_never_overwrites_published_sub_project_docs(orchestration_env, monkeypatch):
+    tmp_path = orchestration_env
+    facts = _composite_facts("proj")
+    plan = pp.plan_partitions(facts)
+    _write_flat_docs(tmp_path, "proj")
+    po.record_flat_source_migration("proj", "Alpha")
+    published = tmp_path / "output" / "proj" / "Alpha" / "docs"
+    published.mkdir(parents=True)
+    (published / "00_REAL.md").write_text("# real\n", encoding="utf-8")
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "a-1", "Beta": "b-1"}
+    )
+
+    decisions = po.decide_partition_actions("proj", plan, facts)
+    alpha = decisions.decision_for("Alpha")
+    # Something is already published there, so adoption is off the table and
+    # the sub-project is treated as never-recorded: regenerate, do not clobber.
+    assert alpha.action == po.ACTION_GENERATE
+    assert alpha.reason == po.REASON_NEW
+    assert (published / "00_REAL.md").exists()
+    assert (tmp_path / "output" / "proj" / "docs").exists()
+
+
+async def test_failed_adoption_regenerates_instead_of_losing_docs(
+    orchestration_env, monkeypatch
+):
+    tmp_path = orchestration_env
+    facts = _composite_facts("proj")
+    plan = pp.plan_partitions(facts)
+    output_root = tmp_path / "output" / "proj"
+    flat_docs = _write_flat_docs(tmp_path, "proj")
+    po.record_flat_source_migration("proj", "Alpha")
+    monkeypatch.setattr(
+        po, "_partition_fingerprints", lambda d, p, f: {"Alpha": "a-1", "Beta": "b-1"}
+    )
+
+    def _boom(self, target):
+        raise OSError("cross-device link")
+
+    monkeypatch.setattr(Path, "replace", _boom)
+    decisions = po.decide_partition_actions("proj", plan, facts)
+    decisions = await po._adopt_flat_layout(
+        "proj", plan, facts, decisions=decisions, log_mgr=_FakeLogMgr()
+    )
+    monkeypatch.undo()
+
+    alpha = decisions.decision_for("Alpha")
+    assert alpha.action == po.ACTION_GENERATE
+    assert flat_docs.exists()
+    assert not (output_root / "Alpha" / "docs").exists()
+
+
+# --------------------------------------------------------------------------- #
+# build_generation_plan -- the read-only entry point behind the API
+# --------------------------------------------------------------------------- #
+
+
+def _write_scan(tmp_path: Path, project_id: str, units: list[tuple[str, str, str]]) -> None:
+    scan_dir = tmp_path / "intodoc-output" / project_id
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    (scan_dir / "scan_result.json").write_text(
+        json.dumps({
+            "platform": "talend",
+            "jobs": [
+                {
+                    "name": name,
+                    "job_id": name,
+                    "path": f"process/{name}.item",
+                    "group": group,
+                    "source_root": source_root,
+                    "components": [],
+                }
+                for name, group, source_root in units
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+
+def test_build_generation_plan_reports_a_missing_scan(orchestration_env):
+    plan = po.build_generation_plan("never-scanned")
+    assert plan.scan_available is False
+    assert plan.composite is False
+    assert plan.decisions == []
+    assert plan.will_generate == 1 and plan.will_reuse == 0
+
+
+def test_build_generation_plan_reports_a_corrupt_scan(orchestration_env):
+    tmp_path = orchestration_env
+    scan_dir = tmp_path / "intodoc-output" / "broken"
+    scan_dir.mkdir(parents=True)
+    (scan_dir / "scan_result.json").write_text("{not json", encoding="utf-8")
+    plan = po.build_generation_plan("broken")
+    assert plan.scan_available is False
+
+
+def test_build_generation_plan_reports_a_single_sub_project(orchestration_env):
+    tmp_path = orchestration_env
+    _write_scan(tmp_path, "solo", [("u1", "G", "bundle/ROOT")])
+    plan = po.build_generation_plan("solo")
+    assert plan.scan_available is True
+    assert plan.composite is False
+    assert plan.partition_count == 1
+    assert plan.will_generate == 1 and plan.will_reuse == 0
+    assert plan.decisions == []
+
+
+def test_build_generation_plan_composite(orchestration_env):
+    tmp_path = orchestration_env
+    _write_scan(
+        tmp_path,
+        "multi",
+        [("a1", "Flows", f"B/Alpha{ZIP}/A"), ("b1", "Flows", f"B/Beta{ZIP}/B")],
+    )
+    plan = po.build_generation_plan("multi")
+    assert plan.composite is True
+    assert [d.name for d in plan.decisions] == ["Alpha", "Beta"]
+    # No manifest.job_files in this scan, so digests are indeterminate: the
+    # honest answer is "regenerate", never "reuse on a digest we do not trust".
+    assert {d.reason for d in plan.decisions} == {po.REASON_FINGERPRINT_UNAVAILABLE}
+
+
+def test_build_generation_plan_respects_the_orchestration_flag(orchestration_env, monkeypatch):
+    tmp_path = orchestration_env
+    _write_scan(
+        tmp_path,
+        "multi2",
+        [("a1", "Flows", f"B/Alpha{ZIP}/A"), ("b1", "Flows", f"B/Beta{ZIP}/B")],
+    )
+    monkeypatch.setattr(config, "docgen_partition_orchestration", False)
+    plan = po.build_generation_plan("multi2")
+    # Orchestration off means the next run is a single legacy run, so reporting
+    # a per-sub-project preview would describe a path that will not be taken.
+    assert plan.composite is False
+    assert plan.decisions == []
 
 
 @pytest.mark.skipif(

@@ -76,6 +76,44 @@ This is the primary method for generating project documentation. Follow it exact
 - **Phase 2.8 BASELINE floor**: `BASELINE_BUNDLE_SECTIONS = {GROUP_SUMMARY_SECTION}`. Every doc pack includes `GROUP_SUMMARY` plus its own `phase2_sections` from `doc_catalog.yaml` (standard runs) or `evidence_profiles` (plugin/pack runs). Five previously shared sections (`COMPONENTS`, `EXECUTION_FLOW`, `CROSS_GROUP_REFS`, `RISK_FLAGS`, `UNCLASSIFIED`) were removed from the floor.
 - **Phase 3 targeted dispatch (non-plugin runs)**: For tool-capable providers (non-plugin mode), `_complete_core_generation` injects the targeted doc pack (`_doc_pack_*.md`, capped at 100 KB) into `opts.system_prompt` instead of sending an empty context (hint-only). Plugin-mode Phase 3 disables tools entirely (`_tool_policy` line 727) so this path is unreachable for plugin runs. Phase 2 calls are unaffected (no `_doc_pack_` files in their context).
 - **Phase 3 static context** (`_phase3_context_files`): `_doc_pack_manifest.json` is excluded — it is a build-artifact index, not evidence. `entity_index.csv` and `usage_index.csv` are excluded from `_engineering_fact_context` for all Phase 3 doc names; they remain on disk for tool access.
+- **Fact-map view registry** (`providers/custom/phase3_context.py`, `FACT_MAP_VIEWS`): a
+  GROUP-LEVEL Phase 3 document never receives a raw derived fact map above
+  `phase3_shared_context_file_bytes`. `_engineering_fact_context` calls
+  `build_fact_map_view` BEFORE a path enters `context_files`, so the reduction is
+  semantic and upstream of the planner instead of a byte prefix chosen by
+  `phase3_slices._plan_single_call` (verified: `00_AGENT_BRIEF` received an arbitrary
+  61,560-byte prefix of a 1,758,306-byte `dependency_map.md` and a 356-byte prefix of a
+  428,565-byte `known_risks.md`). Every view is deterministic Python (no LLM), byte-stable,
+  capped by `phase3_fact_view_bytes` (12,000, clamped below the SHARED threshold), and
+  states in its own text that it is a reduction and which artifact is the evidence of
+  record. `compact_change_impact_matrix` is now one registry entry rendered by the generic
+  grouped-table builder; its bytes are PINNED by
+  `tests/test_providers/test_phase3_context.py` because 08_CHANGE_PLAYBOOK's prompt prefix
+  is cached on them.
+  * **No double coverage.** `engineering_facts.md` already carries the complete `calls_job`
+    edge list, the external-system rollup, the degree rankings and the complete per-type
+    census, so the `dependency_map` view repeats none of it — it contributes verbatim
+    example rows per `dependency_type` (round-robin so `uses_routine`'s 6,869 rows cannot
+    crowd out 35 other relations) and explicitly defers `calls_job` to the aggregate.
+  * **Routing is EXPLICIT per document** (`_DOC_FACT_MAPS`). The old catch-all `else`
+    handed every unlisted document — every pack-invented name — the three heaviest maps.
+    An unrouted GROUP doc now gets `engineering_facts.md` + `sql_usage.md` only; an
+    unrouted UNIT-SCOPED doc keeps the historical set, because `filter_fact_table` already
+    bounds those to `phase3_filtered_map_bytes` with unit-relevant rows. Per-unit
+    expansions route on their base name (`10_UNIT_REFERENCE__{group}__{unit}`).
+  * **Phase 2 is deliberately NOT view-reduced.** `phase2_context` already bounds the same
+    maps per task (`SCOPED_PROJECT_ARTIFACTS` + `max_scoped_artifact_bytes`); a
+    project-wide sample there would replace unit-relevant rows with worse evidence.
+  * `sql_usage.md` / `api_surface.md` are NOT dead: they are produced on generic and
+    lobster scans (`sql_usage.write_sql_usage_artifacts`; `extractors/generic.py` +
+    `extractors/lobster.py` `add_api_surface`) and simply absent on Talend, where no
+    extractor emits them. They stay in the name lists; absence is logged at debug.
+  * FIXED with this: `_bounded_values` sorted a set on `casefold` alone, so casefold-equal
+    values (werkorder really has `VISE2AssetCheck` and `Vise2AssetCheck`) kept SET
+    ITERATION order and the change-impact view was NOT byte-stable across processes —
+    measured, four runs of identical input gave three different 47,760-byte views, i.e. a
+    silent prompt-cache miss on every 08 call. `_markdown_table_rows` is also now
+    section-aware, so a grouped map's repeated per-section headers no longer parse as rows.
 - **Phase 3 evidence lane** (`providers/custom/target_evidence.py`): unit-scoped docs (per-job expansion via `_per_job_doc_units`) get a deterministic `_analysis/_evidence_{doc}.md` bundle built straight from the intodoc scan cache — component inventory with high-signal params, ALL code bodies / tMap expressions / SQL verbatim (top-level `code` preferred, `params[].CODE` fallback), context variables per environment with provenance tags (`job-embedded` vs `shared group '{name}'` vs Default) and DIVERGES flags, callers/callees. The bundle is FIRST in the doc writer's context; the Phase 2 doc pack is interpretation, not the fact source. Size knob `MCP_PHASE3_TARGET_EVIDENCE_BYTES` (default 120000): derived niceties (wiring, param detail) trim first, verbatim evidence is never silently cut. For these docs, large derived fact maps (`dependency_map.md` etc.) are delivered as unit-filtered copies (boundary-aware so `X_GetLocation` never matches `X_GetLocations`), capped by `MCP_PHASE3_FILTERED_MAP_BYTES` (default 24000). Group-level docs keep the previous flow.
 - **Fabrication validators** (`providers/custom/fabrication_validators.py`), run pre-acceptance in the agent-task validation ladder (errors land in `validation_gaps` and drive the repair attempt; publish gates stay advisory): (1) component-echo — `tXxx_N` references in output must exist in the evidence given to that agent (target bundle for Phase 3, task evidence file + investigation context for Phase 2 tasks); (2) no-unavailability — claims that code/tMap/SQL/context evidence is "unavailable"/"not captured"/etc. fail validation when the bundle demonstrably contains that category (runtime facts like throughput stay legitimately unavailable). Both were built from verified run-50 failures (invented `tSetGlobalVar_3`; "code unavailable" with the code in context).
 - **Job-scoped component-echo for bin-packed Phase 2 tasks** (`job_scoped_component_reference_errors`, wired via `_merge_component_ref_errors(..., job_refs=...)`): verified failure (reversEngineer_ALI run 51) — a bin-packed task covering several sibling jobs in one call can misattribute a component real for one job to a different job in the same batch (`tMSSqlOutput_1`, real only for `AssetCheck_GetLocation`, attributed to sibling `AssetCheck_GetWorkOrder`, which actually uses `tDBOutput_1`); checking the whole task output against the *combined* evidence of every job in the batch lets that pass, since the name is real somewhere in the batch. For any task with `len(task.units) > 1`, `evidence_tasks.job_section_texts()` recovers each unit's own `## Job:` evidence text from the task file, and output is split on the model's own `#### <job>` sub-headings (verified reliable in production without a prompt change) into per-job-attributed spans, each checked against only that job's own evidence; content under a heading that names no known unit (cross-job table/business-rule summaries, e.g. `#### Table: LogInfo` listing which jobs write to it) is unattributed and falls back to the combined task-wide check, so genuine cross-job synthesis is not wrongly rejected — that specific fallback case still relies on the task-wide check alone and is a known open gap, not a false-negative in this mechanism. Single-job tasks are unaffected (no job-scoping overhead). The no-unavailability check is Phase-3-only; it was never wired into Phase 2, so it has no equivalent scoping bug to fix there.
@@ -589,9 +627,27 @@ This is the primary method for generating project documentation. Follow it exact
   `output/{project_id}/{subproject}/` (own docs_staging, generation lock, call budget,
   atomic swap, child GenerateRun `composite:{name}`, RAG push with `{subproject}/`-prefixed
   filenames). Failure isolation: a failed sub-project preserves its staging for resume and
-  never rolls back siblings; `topology/partition_state.json` (scan-fingerprint keyed) skips
-  up-to-date partitions on resume. Internal RAG layers sync once (single wholesale delete,
+  never rolls back siblings. Internal RAG layers sync once (single wholesale delete,
   then per-sub prefixed pushes) — never call `sync_internal_layers` per partition.
+- **One skip rule, two callers** (`decide_partition_actions`): the run path and the
+  read-only preview MUST both go through it. `topology/partition_state.json` is keyed by
+  PER-PARTITION fingerprint (`providers/custom/partition_fingerprint.py`), so a sibling's
+  change no longer invalidates everyone, and carries a reserved `__meta__`
+  (`shared_artifact_digest`, `flat_source_subproject`). A duplicated predicate is a defect:
+  the dialog below would drift from what the run actually does and mis-state model spend.
+- **Adding a sub-project after generation**: `GET /mcp/projects/{id}/generation-plan` is the
+  read-only dry run (`build_generation_plan`, never raises, never writes) that both UIs
+  render before an operator approves spend; `POST /mcp/projects/{id}/sources` adds an
+  additive ZIP source, migrating a flat source tree into `{name}.__intodoc_repo__/` first.
+  `_adopt_flat_layout` handles the flat→composite docs transition: a project generated flat
+  to `output/{pid}/docs` has neither a state entry nor docs under its own subdir, so without
+  adoption its FIRST composite run regenerates everything and the incremental path delivers
+  nothing. Adoption moves the tree, writes the state entry (`adopted_from: "flat"`), and
+  re-keys that tree's RAG filenames to the `{subproject}/` prefix.
+- **`routines.json` over-invalidation**: it is in `UNATTRIBUTABLE_ARTIFACTS`, mixed into
+  EVERY partition digest, so one shared Talend routine edit regenerates all N sub-projects.
+  Surfaced honestly as `global_invalidation` in the plan. Real fix is `source_root` on
+  `Routine` in the scanner; until then the over-invalidation is the safe direction.
 - **Scoping seam**: `DocGenContext.partition` filters the facts manifest (harness), and a
   per-partition **unit allowlist** (canonical job ids — unique per zip even for shared
   REFERENCES display names) threads through `scanner_service.get_chunk_definitions` /

@@ -608,12 +608,16 @@ class GithubAppRepoItem(BaseModel):
 class GithubAppReposResponse(BaseModel):
     installation_id: int
     account_login: str | None = None
+    account_type: Literal["User", "Organization"] | None = None
+    settings_url: str | None = None
     repositories: list[GithubAppRepoItem] = Field(default_factory=list)
 
 
 class GithubAppInstallationItem(BaseModel):
     installation_id: int
     account_login: str | None = None
+    account_type: Literal["User", "Organization"] | None = None
+    settings_url: str | None = None
 
 
 class GithubAppInstallationsResponse(BaseModel):
@@ -1968,3 +1972,79 @@ class MultiRepoProjectResponse(BaseModel):
     project_id: str
     members: list[MultiRepoMemberResponse] = Field(default_factory=list)
     sync: list[MultiRepoSyncOutcomeResponse] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- #
+# Incremental sub-project generation
+# --------------------------------------------------------------------------- #
+
+
+class GenerationPlanGlobalInvalidation(BaseModel):
+    """Something outside any one sub-project forces a full regeneration."""
+
+    reason: Literal["shared_routine_changed"]
+    detail: str
+
+
+class GenerationPlanPartition(BaseModel):
+    """What the next generation run will do with one sub-project.
+
+    ``reason`` is pinned to a closed set on purpose: both UI surfaces map it to
+    explanatory copy, and an unlisted value would render as a raw identifier to
+    an operator who is approving model spend. The producer's constants
+    (``services.partition_orchestrator.PARTITION_REASONS``) are asserted equal
+    to this literal set by the test suite.
+    """
+
+    name: str
+    # Output subdirectory (output/{project_id}/{subdir}/docs) and RAG filename
+    # prefix. Differs from `name` only when the partition name needs sanitizing.
+    subdir: str
+    action: Literal["generate", "reuse"]
+    reason: Literal[
+        "new",
+        "changed",
+        "unchanged",
+        "no_published_docs",
+        "fingerprint_unavailable",
+        "shared_artifact_changed",
+        "flat_layout_adoption",
+    ]
+    unit_count: int = 0
+    doc_count: int = 0
+    # ISO-8601 UTC, or null when nothing was ever published for this sub-project.
+    last_generated_at: str | None = None
+
+
+class GenerationPlanResponse(BaseModel):
+    """Read-only dry run of the next documentation generation.
+
+    ``composite=False`` (a single-sub-project project) or
+    ``scan_available=False`` (nothing scanned yet) both mean "no preview to
+    show": ``partitions`` is empty and ``will_generate`` is 1, the single
+    unconditional run today's dialog already describes.
+    """
+
+    project_id: str
+    scan_available: bool
+    composite: bool
+    partition_count: int
+    will_generate: int
+    will_reuse: int
+    global_invalidation: GenerationPlanGlobalInvalidation | None = None
+    partitions: list[GenerationPlanPartition] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class AddSourceResponse(BaseModel):
+    """An additive ZIP source accepted for an existing project."""
+
+    project_id: str
+    # The sub-project name the new source tree was given.
+    subproject: str
+    # True when the project's pre-existing flat source tree had to be moved into
+    # its own marker directory to make room for a second sub-project.
+    migrated_existing_source: bool
+    # Always true: a new source is invisible to documentation until it is scanned.
+    requires_rescan: bool = True
+    status: Literal["added"] = "added"

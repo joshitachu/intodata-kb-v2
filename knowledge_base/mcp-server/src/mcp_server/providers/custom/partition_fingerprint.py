@@ -102,6 +102,22 @@ def _unattributable_digest(scan_dir: Path) -> str:
     return digest.hexdigest()
 
 
+def unattributable_digest(scan_output_dir: Path) -> str:
+    """Public digest of the scan's provenance-free artifacts (shared routines).
+
+    The same value :func:`compute_partition_fingerprints` mixes into EVERY
+    partition, exposed on its own because a caller that reports on the plan has
+    to explain *why* every sub-project is dirty. Without this, a shared-routine
+    edit is indistinguishable from "all six repos changed at once": the
+    per-partition digests all moved and nothing says they moved for one reason.
+
+    Takes the scan OUTPUT dir (``intodoc-output/{project_id}``), matching
+    :func:`compute_partition_fingerprints`, rather than the ``scan/`` subdir the
+    private helper works on -- callers should not have to know that layout.
+    """
+    return _unattributable_digest(Path(scan_output_dir) / "scan")
+
+
 def _contexts_by_partition(scan_dir: Path) -> dict[str, list[Any]]:
     """Group ``scan/contexts.json`` entries by the partition they belong to.
 

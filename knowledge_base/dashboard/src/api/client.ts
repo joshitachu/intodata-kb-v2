@@ -1,6 +1,7 @@
 import { type ZodType } from "zod";
 import { getLoginUrl } from "../hooks/useAuth";
 import {
+  AddSourceResponseSchema,
   AssignPluginPackResponseSchema,
   ConnectorCatalogResponseSchema,
   ConnectorEvidenceSummarySchema,
@@ -13,6 +14,7 @@ import {
   DocContentSchema,
   DocListResponseSchema,
   GenerateAssessmentResponseSchema,
+  GenerationPlanResponseSchema,
   InstanceSettingsResponseSchema,
   GenerateRunListResponseSchema,
   InstructionPackMetadataSchema,
@@ -152,6 +154,15 @@ export const api = {
       `/mcp/github/app/connect${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`,
     ),
 
+  // Every GitHub App installation this user may use. The repo-picker needs an
+  // installation id before it can list anything, and an operator adding a
+  // sub-project to an existing project has no post-install redirect to read one
+  // from -- so it is asked for here rather than reconstructed from the URL.
+  listGithubAppInstallations: () =>
+    request<{ installations: import("../types").GithubAppInstallation[] }>(
+      "/mcp/github/app/installations",
+    ),
+
   // List repos an installation can access (for the repo-picker).
   listGithubAppRepos: (installationId: number) =>
     request<{
@@ -221,6 +232,53 @@ export const api = {
     request<import("../types").MultiRepoProject>(
       `/mcp/multi-repo/projects/${encodeURIComponent(projectId)}/members`,
     ),
+
+  // Add repositories to an existing multi-repo project. Members already present
+  // are ignored rather than rejected, and only the new ones are cloned, so
+  // re-submitting the picker's whole selection is safe. Same request shape as
+  // creation on purpose -- the credential reference travels with the members.
+  addMultiRepoMembers: (
+    projectId: string,
+    data: {
+      platform: string;
+      provider: "github" | "azure_devops";
+      members: {
+        repo_identity: string;
+        repo_name: string;
+        clone_url: string;
+        branch?: string;
+      }[];
+      installation_id?: number;
+      azure_devops_connection_id?: string;
+    },
+  ) =>
+    request<import("../types").MultiRepoProject>(
+      `/mcp/multi-repo/projects/${encodeURIComponent(projectId)}/members`,
+      {
+        method: "POST",
+        // `project_id` is in the path, but the request model still requires it
+        // in the body; sending only the path form fails validation.
+        body: JSON.stringify({ project_id: projectId, ...data }),
+      },
+    ),
+
+  /**
+   * Add one more ZIP source to an existing ZIP project.
+   *
+   * Additive, unlike `replace-zip`: the project's existing source trees are
+   * left in place and the archive becomes a new sub-project. The server may
+   * first migrate a flat single-source tree into a named sub-project directory,
+   * which it reports back so the UI can say so.
+   */
+  addProjectZipSource: (projectId: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<import("../types").AddSourceResult>(
+      `/mcp/projects/${encodeURIComponent(projectId)}/sources`,
+      { method: "POST", body: form },
+      AddSourceResponseSchema,
+    );
+  },
 
   removeMultiRepoMember: (projectId: string, sourceId: string) =>
     request<{ status: string; message?: string }>(
@@ -730,6 +788,21 @@ export const api = {
       `/mcp/generate-runs/${runId}/connector-evidence`,
       {},
       ConnectorEvidenceSummarySchema,
+    ),
+
+  /**
+   * Dry run of the next generation: which sub-projects regenerate, which are
+   * reused, and why.
+   *
+   * Read-only and derived from the same helpers the orchestrator's own skip
+   * predicate uses, so the dialog cannot drift into promising a cheap run the
+   * orchestrator then charges full price for.
+   */
+  getGenerationPlan: (projectId: string) =>
+    request<import("../types").GenerationPlan>(
+      `/mcp/projects/${encodeURIComponent(projectId)}/generation-plan`,
+      {},
+      GenerationPlanResponseSchema,
     ),
 
   /**

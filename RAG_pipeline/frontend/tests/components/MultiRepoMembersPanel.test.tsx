@@ -17,6 +17,21 @@ vi.mock("@/lib/mcpClient", async () => {
   };
 });
 
+// The add affordance has its own test file; here it must not reach the network.
+vi.mock("@/app/settings/sources/AddSubProjectPanel", () => ({
+  AddSubProjectPanel: () => <div data-testid="add-sub-project" />,
+}));
+
+/** The panel now needs the parent project's shape to pick an add path. */
+function panelProps(over: Record<string, unknown> = {}) {
+  return {
+    projectId: "pf",
+    platform: "talend",
+    sourceType: "git",
+    ...over,
+  } as const;
+}
+
 function member(over: Partial<Record<string, unknown>> = {}) {
   return {
     id: "11111111-1111-1111-1111-111111111111",
@@ -60,28 +75,50 @@ describe("MultiRepoMembersPanel", () => {
   });
 
   it("lists members with their per-repo ingest state", async () => {
-    render(<MultiRepoMembersPanel projectId="pf" />);
+    render(<MultiRepoMembersPanel {...panelProps()} />);
 
-    await waitFor(() => expect(screen.getByText("2 member repositories")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("2 sub-projects")).toBeInTheDocument());
     expect(screen.getByText("pplus_ais")).toBeInTheDocument();
     // The SHA is abbreviated, and a never-ingested member says so rather than
     // showing a blank.
     expect(screen.getByText(/abcdef1/)).toBeInTheDocument();
-    expect(screen.getByText(/not ingested/)).toBeInTheDocument();
+    expect(screen.getByText(/not scanned yet/)).toBeInTheDocument();
   });
 
-  it("renders nothing for a single-repo project", async () => {
+  /**
+   * The panel used to return null here. That is what made a single-source
+   * project a dead end: there was nowhere to add a second sub-project, so the
+   * only route was deleting the project and re-importing everything.
+   */
+  it("still renders for a single-source project, to host the add affordance", async () => {
     vi.mocked(listMultiRepoMembers).mockResolvedValue({
       project_id: "solo",
       members: [],
       sync: [],
     });
-    const { container } = render(<MultiRepoMembersPanel projectId="solo" />);
-    await waitFor(() => expect(container).toBeEmptyDOMElement());
+    render(<MultiRepoMembersPanel {...panelProps({ projectId: "solo" })} />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("One source, not split into sub-projects"),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: /Add sub-project/ })).toBeInTheDocument();
+    // Nothing to sync when there are no members yet.
+    expect(screen.queryByRole("button", { name: /Sync all/ })).not.toBeInTheDocument();
+  });
+
+  it("opens the add form on demand", async () => {
+    render(<MultiRepoMembersPanel {...panelProps()} />);
+    await waitFor(() => expect(screen.getByText("pplus_ais")).toBeInTheDocument());
+
+    expect(screen.queryByTestId("add-sub-project")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Add sub-project/ }));
+    expect(screen.getByTestId("add-sub-project")).toBeInTheDocument();
   });
 
   it("syncs one repository, naming it so siblings are untouched", async () => {
-    render(<MultiRepoMembersPanel projectId="pf" />);
+    render(<MultiRepoMembersPanel {...panelProps()} />);
     await waitFor(() => expect(screen.getByText("pplus_ais")).toBeInTheDocument());
 
     fireEvent.click(screen.getAllByRole("button", { name: /^Sync$/ })[0]);
@@ -92,7 +129,7 @@ describe("MultiRepoMembersPanel", () => {
   });
 
   it("syncs every member when Sync all is used", async () => {
-    render(<MultiRepoMembersPanel projectId="pf" />);
+    render(<MultiRepoMembersPanel {...panelProps()} />);
     await waitFor(() => expect(screen.getByText("pplus_ais")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: /Sync all/ }));
@@ -126,7 +163,7 @@ describe("MultiRepoMembersPanel", () => {
         },
       ],
     });
-    render(<MultiRepoMembersPanel projectId="pf" />);
+    render(<MultiRepoMembersPanel {...panelProps()} />);
     await waitFor(() => expect(screen.getByText("pplus_ais")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: /Sync all/ }));
@@ -154,7 +191,7 @@ describe("MultiRepoMembersPanel", () => {
         },
       ],
     });
-    render(<MultiRepoMembersPanel projectId="pf" />);
+    render(<MultiRepoMembersPanel {...panelProps()} />);
     await waitFor(() => expect(screen.getByText("pplus_ais")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: /Sync all/ }));
@@ -168,7 +205,7 @@ describe("MultiRepoMembersPanel", () => {
 
   it("confirms before removing a member", async () => {
     const onChanged = vi.fn();
-    render(<MultiRepoMembersPanel projectId="pf" onChanged={onChanged} />);
+    render(<MultiRepoMembersPanel {...panelProps()} onChanged={onChanged} />);
     await waitFor(() => expect(screen.getByText("pplus_ais")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: "Remove pplus_ais" }));
@@ -187,7 +224,7 @@ describe("MultiRepoMembersPanel", () => {
   });
 
   it("abandons a removal when Keep is chosen", async () => {
-    render(<MultiRepoMembersPanel projectId="pf" />);
+    render(<MultiRepoMembersPanel {...panelProps()} />);
     await waitFor(() => expect(screen.getByText("pplus_ais")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: "Remove pplus_ais" }));
@@ -199,14 +236,14 @@ describe("MultiRepoMembersPanel", () => {
 
   it("shows a load failure instead of an empty panel", async () => {
     vi.mocked(listMultiRepoMembers).mockRejectedValue(new Error("members unavailable"));
-    render(<MultiRepoMembersPanel projectId="pf" />);
+    render(<MultiRepoMembersPanel {...panelProps()} />);
 
     await waitFor(() => expect(screen.getByText("members unavailable")).toBeInTheDocument());
   });
 
   it("says push-triggered updates are not wired yet", async () => {
     // Honesty over polish: without this the Sync button looks redundant.
-    render(<MultiRepoMembersPanel projectId="pf" />);
+    render(<MultiRepoMembersPanel {...panelProps()} />);
     await waitFor(() =>
       expect(
         screen.getByText(/Push-triggered updates are not wired for multi-repo projects yet/),
