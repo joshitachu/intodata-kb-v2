@@ -691,12 +691,14 @@ def _table(
     no boundary to split on -- it degrades to blind line-splitting and the
     file is dropped whole.
 
-    DO NOT enable ``group_by`` for ``change_impact_matrix`` without first
-    hardening ``phase3_context._markdown_table_rows``: it takes the FIRST pipe
-    line as the header and every pipe line after the separator as data, so the
-    repeated per-section headers would parse as four bogus rows. That function
-    is only reached via ``compact_change_impact_matrix``, which only ever runs
-    on ``change_impact_matrix.md`` -- which is why the grouping is opt-in.
+    ``phase3_context._markdown_table_rows`` used to take the FIRST pipe line of
+    a whole file as the header and every later pipe line as data, so enabling
+    ``group_by`` for a map that function reads would have turned the repeated
+    per-section headers into bogus rows. It is now section-aware (each ``##``
+    block is parsed against its own header), so grouping is safe for any map.
+    Grouping is still opt-in per artifact: only ``change_impact_matrix``'s view
+    has its bytes pinned by an acceptance test, and turning grouping on for it
+    would change those bytes.
     """
     all_columns = columns + ["evidence"]
     header = "|" + "|".join(all_columns) + "|"

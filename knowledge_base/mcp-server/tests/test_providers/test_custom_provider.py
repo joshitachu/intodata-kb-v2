@@ -6377,6 +6377,214 @@ def test_engineering_fact_context_excludes_csv_indexes(tmp_path):
     assert "architecture_map.md" in names_01
 
 
+# --- Fact-map view registry: what a group-level document is allowed to receive ---
+
+
+_FACT_MAP_NAMES = (
+    "engineering_facts.md",
+    "sql_usage.md",
+    "dependency_map.md",
+    "known_risks.md",
+    "config_runtime_map.md",
+    "architecture_map.md",
+    "data_flow_map.md",
+    "change_impact_matrix.md",
+    "test_coverage_map.md",
+    "api_surface.md",
+)
+
+
+def _staging_with_oversized_maps(tmp_path):
+    """Stage every fact map far above the SHARED-context threshold."""
+    from mcp_server.config import config as _config
+
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    rows = max(4_000, _config.phase3_shared_context_file_bytes)
+    for name in _FACT_MAP_NAMES:
+        if name == "engineering_facts.md":
+            # The aggregate is bounded by its own writer and must pass through.
+            (staging / name).write_text("# Engineering Facts\n\nsmall\n", encoding="utf-8")
+            continue
+        columns = {
+            "sql_usage.md": None,
+            "dependency_map.md": ["source", "target", "dependency_type", "confidence"],
+            "known_risks.md": [
+                "severity", "affected_entity", "risk_type", "name", "remediation", "confidence",
+            ],
+            "config_runtime_map.md": ["config_type", "key", "name", "value_hint", "confidence"],
+            "architecture_map.md": ["name", "layer", "component", "boundary", "confidence"],
+            "data_flow_map.md": ["source", "target", "transformation", "schema_hint", "confidence"],
+            "change_impact_matrix.md": [
+                "changed_entity", "impacted_entity", "check", "confidence",
+            ],
+            "test_coverage_map.md": [
+                "test_file", "covered_entity", "gap", "suggested_scenario", "confidence",
+            ],
+            "api_surface.md": ["method", "route", "handler", "name", "confidence"],
+        }[name]
+        if columns is None:
+            body = ["# SQL Usage", "", f"Records: {rows}  Tables: 9  Sources: 3", ""]
+            for index in range(rows):
+                body.extend([
+                    f"## SQL-{index:06X} - unit_{index % 9}",
+                    f"Source: src/unit_{index % 9}.item  Group: g  Connection: UNKNOWN  Status: PARSED",
+                    "",
+                    "| Table | Aliases |",
+                    "|-------|---------|",
+                    f"| table_{index % 9} | t |",
+                    "",
+                ])
+            (staging / name).write_text("\n".join(body) + "\n", encoding="utf-8")
+            continue
+        header = "|" + "|".join(columns + ["evidence"]) + "|"
+        body = [f"# {name}", "", header, "|" + "|".join("---" for _ in columns + ["evidence"]) + "|"]
+        for index in range(rows):
+            cells = [f"{column}_{index % 25}" for column in columns[:-1]]
+            body.append("|" + "|".join(cells + ["0.8", f"jobs/unit_{index % 25}.item"]) + "|")
+        (staging / name).write_text("\n".join(body) + "\n", encoding="utf-8")
+    return staging
+
+
+def _ctx_for(staging, tmp_path):
+    return DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="generic",
+        analysis_guide_file="",
+    )
+
+
+def test_no_raw_fact_map_over_the_shared_threshold_reaches_a_group_document(tmp_path):
+    """The hard invariant: a group-level doc never receives a raw oversized map.
+
+    Before the view registry, `00_AGENT_BRIEF` was handed the raw maps and
+    `phase3_slices._plan_single_call` cut them to fit -- a verified production
+    run gave it a 61,560-byte BYTE PREFIX of a 1,758,306-byte dependency map
+    and a 356-byte prefix of a 428,565-byte risk register.
+    """
+    from mcp_server.config import config as _config
+
+    staging = _staging_with_oversized_maps(tmp_path)
+    ctx = _ctx_for(staging, tmp_path)
+
+    for doc_name in [
+        "00_AGENT_BRIEF",
+        "01_ARCHITECTURE_MAP",
+        "02_COMPONENT_INVENTORY",
+        "03_DATA_FLOWS_AND_LINEAGE",
+        "04_BUSINESS_RULES_AND_TRANSFORMATIONS",
+        "05_RUNTIME_CONFIG_AND_EXTERNALS",
+        "06_OPERATIONS_TESTING_AND_DEBUGGING",
+        "07_QUALITY_SECURITY_RISK_SCORECARD",
+        "08_CHANGE_PLAYBOOK",
+        "10_UNIT_REFERENCE",
+        "PACK_INVENTED_DOCUMENT",
+    ]:
+        for path in CustomHarnessProvider._engineering_fact_context(ctx, doc_name):
+            if path.parent == staging:  # a raw artifact, not a view
+                assert path.stat().st_size <= _config.phase3_shared_context_file_bytes, (
+                    f"{doc_name} received raw {path.name} at {path.stat().st_size} bytes"
+                )
+
+
+def test_unrouted_group_document_does_not_inherit_the_heavy_maps(tmp_path):
+    """The removed catch-all `else` handed every unknown doc the big three."""
+    staging = _staging_with_oversized_maps(tmp_path)
+    ctx = _ctx_for(staging, tmp_path)
+
+    names = {p.name for p in CustomHarnessProvider._engineering_fact_context(ctx, "MY_PACK_DOC")}
+
+    assert names == {"engineering_facts.md", "sql_usage.compact.md"}
+    for heavy in ("dependency_map", "known_risks", "config_runtime_map"):
+        assert not any(heavy in name for name in names)
+
+
+def test_unrouted_unit_document_keeps_its_filtered_maps(tmp_path):
+    """The narrow default is a GROUP-level rule.
+
+    A unit-scoped document never receives a project-wide table: it gets a
+    unit-filtered copy already bounded by `phase3_filtered_map_bytes`. Applying
+    the narrow default there would take cheap, in-scope evidence away from every
+    pack's per-unit dossier.
+    """
+    staging = _staging_with_oversized_maps(tmp_path)
+    ctx = _ctx_for(staging, tmp_path)
+
+    names = [
+        p.name
+        for p in CustomHarnessProvider._engineering_fact_context(
+            ctx, "MY_PACK_DOC__GroupA__source_3", unit_name="source_3"
+        )
+    ]
+
+    assert any(name.startswith("_filtered_source_3_dependency_map") for name in names)
+    assert any(name.startswith("_filtered_source_3_known_risks") for name in names)
+
+
+def test_per_unit_document_routes_through_its_base_name(tmp_path):
+    """`10_UNIT_REFERENCE__group__unit` must route like `10_UNIT_REFERENCE`."""
+    staging = _staging_with_oversized_maps(tmp_path)
+    ctx = _ctx_for(staging, tmp_path)
+
+    base = CustomHarnessProvider._engineering_fact_context(ctx, "10_UNIT_REFERENCE")
+    expanded = CustomHarnessProvider._engineering_fact_context(
+        ctx, "10_UNIT_REFERENCE__GroupA__unit_1"
+    )
+
+    assert [p.name for p in expanded] == [p.name for p in base]
+
+
+def test_executive_summary_still_receives_no_fact_maps(tmp_path):
+    """09 early-returns before the fact-map block; the registry must not reach it."""
+    from mcp_server.providers.custom.providers import OpenAICompatibleProvider
+
+    staging = _staging_with_oversized_maps(tmp_path)
+    ctx = _ctx_for(staging, tmp_path)
+    provider = CustomHarnessProvider(
+        OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1")
+    )
+    provider._required_docs = ["00_AGENT_BRIEF", "09_EXECUTIVE_SUMMARY"]
+
+    names = {p.name for p in provider._phase3_context_files(ctx, "09_EXECUTIVE_SUMMARY")}
+
+    assert not (names & set(_FACT_MAP_NAMES))
+    assert not any(name.endswith(".compact.md") for name in names)
+    assert "09_EXECUTIVE_SUMMARY" not in CustomHarnessProvider._DOC_FACT_MAPS
+
+
+def test_unit_scoped_context_still_receives_filtered_raw_maps(tmp_path):
+    """Unit docs keep the unit-filtered copies; views are group-level only."""
+    staging = _staging_with_oversized_maps(tmp_path)
+    ctx = _ctx_for(staging, tmp_path)
+
+    paths = CustomHarnessProvider._engineering_fact_context(
+        ctx, "10_UNIT_REFERENCE", unit_name="source_3"
+    )
+
+    names = [p.name for p in paths]
+    assert any(name.startswith("_filtered_source_3_dependency_map") for name in names)
+    assert not any(name.endswith(".compact.md") for name in names)
+
+
+def test_phase2_fact_context_is_not_view_reduced(tmp_path):
+    """Phase 2 bounds these per task in `phase2_context`; do not pre-reduce."""
+    staging = _staging_with_oversized_maps(tmp_path)
+    ctx = _ctx_for(staging, tmp_path)
+
+    names = {p.name for p in CustomHarnessProvider._engineering_fact_context(ctx)}
+
+    assert "dependency_map.md" in names
+    assert not any(name.endswith(".compact.md") for name in names)
+
+
 # --- Observability: cache-hit parsing + always-on per-phase token ledger ---
 
 

@@ -161,7 +161,7 @@ from mcp_server.providers.custom.evidence_tasks import (
     plan_evidence_tasks,
 )
 from mcp_server.providers.custom.phase2_context import build_phase2_context_packet
-from mcp_server.providers.custom.phase3_context import compact_change_impact_matrix
+from mcp_server.providers.custom.phase3_context import build_fact_map_view
 from mcp_server.providers.custom.phase3_slices import (
     Phase3PlanInputs,
     Phase3TaskPlan,
@@ -7626,61 +7626,172 @@ Allowed docs:
         "data_flow_map.md",
     })
 
+    # Phase 2 analysis: lightweight markdown only -- large JSON indexes blow the
+    # context window. These are NOT view-reduced: `phase2_context` already
+    # bounds every one of them per task (`SCOPED_PROJECT_ARTIFACTS` +
+    # `max_scoped_artifact_bytes`), and a unit-relevant scoped copy beats a
+    # project-wide sample for an analysis task that owns specific units.
+    _PHASE2_FACT_MAPS = (
+        "engineering_facts.md",
+        "sql_usage.md",
+        "dependency_map.md",
+        "known_risks.md",
+        "config_runtime_map.md",
+    )
+
+    # EXPLICIT per-document fact-map routing. There is deliberately no
+    # catch-all: an unlisted document (every pack-invented name) used to
+    # silently inherit the three heaviest maps -- dependency_map, known_risks
+    # and config_runtime_map -- and then spend its budget on whatever byte
+    # prefix of them the context planner could afford.
+    _DOC_FACT_MAPS: dict[str, tuple[str, ...]] = {
+        "00_AGENT_BRIEF": (
+            "engineering_facts.md",
+            "sql_usage.md",
+            "dependency_map.md",
+            "known_risks.md",
+            "config_runtime_map.md",
+        ),
+        "01_ARCHITECTURE_MAP": (
+            "engineering_facts.md",
+            "sql_usage.md",
+            "architecture_map.md",
+            "dependency_map.md",
+        ),
+        "02_COMPONENT_INVENTORY": (
+            "engineering_facts.md",
+            "sql_usage.md",
+            "architecture_map.md",
+            "dependency_map.md",
+        ),
+        "03_DATA_FLOWS_AND_LINEAGE": ("engineering_facts.md", "data_flow_map.md"),
+        "04_BUSINESS_RULES_AND_TRANSFORMATIONS": (
+            "engineering_facts.md",
+            "sql_usage.md",
+            "dependency_map.md",
+            "known_risks.md",
+            "config_runtime_map.md",
+        ),
+        "05_RUNTIME_CONFIG_AND_EXTERNALS": (
+            "engineering_facts.md",
+            "sql_usage.md",
+            "api_surface.md",
+            "config_runtime_map.md",
+        ),
+        "06_OPERATIONS_TESTING_AND_DEBUGGING": (
+            "engineering_facts.md",
+            "sql_usage.md",
+            "test_coverage_map.md",
+            "known_risks.md",
+        ),
+        "07_QUALITY_SECURITY_RISK_SCORECARD": (
+            "engineering_facts.md",
+            "sql_usage.md",
+            "dependency_map.md",
+            "known_risks.md",
+            "config_runtime_map.md",
+        ),
+        "08_CHANGE_PLAYBOOK": (
+            "engineering_facts.md",
+            "sql_usage.md",
+            "change_impact_matrix.md",
+        ),
+        # 09_EXECUTIVE_SUMMARY never reaches here -- `_phase3_context_files`
+        # early-returns for it with the sibling documents and no fact maps.
+        "10_UNIT_REFERENCE": (
+            "engineering_facts.md",
+            "sql_usage.md",
+            "dependency_map.md",
+            "known_risks.md",
+            "config_runtime_map.md",
+        ),
+    }
+
+    # An unrouted GROUP-LEVEL document -- a pack's own document name -- gets the
+    # aggregate and the SQL register only. `engineering_facts.md` is itself a
+    # complete deterministic aggregate that names every sibling map as evidence
+    # of record, so an unrouted writer is pointed at the maps rather than handed
+    # an arbitrary slab of them.
+    _DEFAULT_DOC_FACT_MAPS = ("engineering_facts.md", "sql_usage.md")
+
+    # An unrouted UNIT-SCOPED document keeps the historical set. The defect the
+    # narrow default fixes is a group document spending its budget on a byte
+    # prefix of a project-wide table; a unit doc never receives that table --
+    # `filter_fact_table` hands it a unit-filtered copy already bounded by
+    # `phase3_filtered_map_bytes`, whose rows are all about that one unit.
+    # Narrowing here would take real, cheap, in-scope evidence away from every
+    # pack's per-unit dossier.
+    _DEFAULT_UNIT_FACT_MAPS = (
+        "engineering_facts.md",
+        "sql_usage.md",
+        "dependency_map.md",
+        "known_risks.md",
+        "config_runtime_map.md",
+    )
+
     @staticmethod
     def _engineering_fact_context(
         ctx: DocGenContext,
         doc_name: str | None = None,
         unit_name: str | None = None,
     ) -> list[Path]:
+        cls = CustomHarnessProvider
         if doc_name is None:
-            # Phase 2 analysis: lightweight markdown only — large JSON indexes blow the context window
-            names = ["engineering_facts.md", "sql_usage.md", "dependency_map.md", "known_risks.md", "config_runtime_map.md"]
+            names = list(cls._PHASE2_FACT_MAPS)
         else:
-            names = ["engineering_facts.md", "sql_usage.md"]
-            if doc_name in {"01_ARCHITECTURE_MAP", "02_COMPONENT_INVENTORY"}:
-                names.extend(["architecture_map.md", "dependency_map.md"])
-            elif doc_name == "03_DATA_FLOWS_AND_LINEAGE":
-                names = ["engineering_facts.md", "data_flow_map.md"]
-            elif doc_name == "08_CHANGE_PLAYBOOK":
-                names.extend(["change_impact_matrix.md"])
-            elif doc_name == "05_RUNTIME_CONFIG_AND_EXTERNALS":
-                names.extend(["api_surface.md", "config_runtime_map.md"])
-            elif doc_name == "06_OPERATIONS_TESTING_AND_DEBUGGING":
-                names.extend(["test_coverage_map.md", "known_risks.md"])
-            else:
-                names.extend(["dependency_map.md", "known_risks.md", "config_runtime_map.md"])
+            # Per-unit expansions are `{base}__{group}__{unit}` (see
+            # `_expand_catalog_per_unit_docs`), so the base name is what routes.
+            routed = cls._DOC_FACT_MAPS.get(doc_name) or cls._DOC_FACT_MAPS.get(
+                doc_name.split("__", 1)[0]
+            )
+            if routed is None:
+                routed = (
+                    cls._DEFAULT_UNIT_FACT_MAPS
+                    if unit_name is not None
+                    else cls._DEFAULT_DOC_FACT_MAPS
+                )
+            names = list(routed)
         # Composite partition runs stage this small deterministic file; it only
         # exists when a cross-project index was available, so non-partitioned
         # runs are byte-identical.
         names.append("cross_project_refs.md")
-        paths = [ctx.staging_dir / name for name in names if (ctx.staging_dir / name).exists()]
-        if doc_name == "08_CHANGE_PLAYBOOK" and unit_name is None:
-            paths = [
-                compact_change_impact_matrix(
-                    path,
-                    ctx.staging_dir / "_analysis" / "_phase3_views",
-                    max_bytes=config.phase3_change_impact_view_bytes,
-                )
-                if path.name == "change_impact_matrix.md"
-                else path
-                for path in paths
-            ]
-        if unit_name is None:
-            return paths
-        filtered_paths: list[Path] = []
-        for path in paths:
-            if path.name in CustomHarnessProvider._UNIT_FILTERED_FACT_MAPS:
-                filtered = filter_fact_table(
-                    path,
-                    unit_name,
-                    ctx.staging_dir / "_analysis",
-                    config.phase3_filtered_map_bytes,
-                )
-                if filtered is not None:
-                    filtered_paths.append(filtered)
+        paths: list[Path] = []
+        for name in names:
+            path = ctx.staging_dir / name
+            if path.exists():
+                paths.append(path)
             else:
-                filtered_paths.append(path)
-        return filtered_paths
+                # Not every platform produces every map (`sql_usage.md` and
+                # `api_surface.md` exist on generic/lobster scans and not on
+                # Talend ones). Absence is normal; silence about it is not.
+                logger.debug(
+                    "phase3 fact map not staged for %s: %s", doc_name or "phase2", name
+                )
+        if unit_name is not None:
+            # Unit-scoped lane, unchanged: a per-unit filtered copy of the RAW
+            # map beats a project-wide view, because the rows that matter to one
+            # unit are exactly the rows a project-wide sample drops.
+            filtered_paths: list[Path] = []
+            for path in paths:
+                if path.name in cls._UNIT_FILTERED_FACT_MAPS:
+                    filtered = filter_fact_table(
+                        path,
+                        unit_name,
+                        ctx.staging_dir / "_analysis",
+                        config.phase3_filtered_map_bytes,
+                    )
+                    if filtered is not None:
+                        filtered_paths.append(filtered)
+                else:
+                    filtered_paths.append(path)
+            return filtered_paths
+        if doc_name is None:
+            return paths
+        # GROUP-LEVEL DOCUMENT. Every oversized map is replaced by its
+        # registered semantic view BEFORE the path enters `context_files`, so
+        # `phase3_slices` never has to choose a byte prefix of a 1.75 MB table.
+        view_dir = ctx.staging_dir / "_analysis" / "_phase3_views"
+        return [build_fact_map_view(path, view_dir) for path in paths]
 
     async def _log_call_metrics(
         self,

@@ -416,7 +416,19 @@ class MCPServerConfig(BaseSettings):
     noncode_min_distinctive_overlap: int = 2  # MCP_NONCODE_MIN_DISTINCTIVE_OVERLAP
     # Narrative docs receive a grouped view of an oversized project-wide impact
     # matrix. The complete deterministic matrix remains stored as evidence.
+    # Kept at its historical value: 08_CHANGE_PLAYBOOK's prompt prefix is cached
+    # on these exact bytes and an acceptance test pins them.
     phase3_change_impact_view_bytes: int = 48_000  # MCP_PHASE3_CHANGE_IMPACT_VIEW_BYTES
+    # Cap for every OTHER derived fact-map view (`phase3_context.FACT_MAP_VIEWS`:
+    # dependency_map, known_risks, config_runtime_map, data_flow_map, ...).
+    # Group-level Phase 3 documents receive these views instead of the raw maps,
+    # so no raw map reaches a document at all. Must stay strictly below
+    # `phase3_shared_context_file_bytes` -- same reason as the runtime rollup
+    # above: one byte over and `plan_phase3_slices` reclassifies a view from
+    # SHARED to splittable EVIDENCE, so slice 1 and slice 3 of one document
+    # would see different halves of the same reduction. Clamped in the validator
+    # below with headroom for the grouped views' trailing omission note.
+    phase3_fact_view_bytes: int = 12_000  # MCP_PHASE3_FACT_VIEW_BYTES
     # Supporting-evidence preparation caps (non-code artifacts: mappings, PDFs,
     # notes). These are LOUD: every file skipped by a cap is logged with its
     # relative path and size (never a silent drop). Raising max_file_bytes lets
@@ -660,8 +672,8 @@ class MCPServerConfig(BaseSettings):
     manual_full_rebuild_trigger: str = "manual_full_rebuild"  # MCP_MANUAL_FULL_REBUILD_TRIGGER
 
     @model_validator(mode="after")
-    def _clamp_runtime_profile_bytes(self) -> "MCPServerConfig":
-        """Keep the runtime rollup strictly under the SHARED-context threshold.
+    def _clamp_phase3_shared_context_bytes(self) -> "MCPServerConfig":
+        """Keep every always-attached artifact under the SHARED-context threshold.
 
         `plan_phase3_slices` classifies a Phase 3 context file as SHARED purely
         by size against `phase3_shared_context_file_bytes`. One byte over and
@@ -686,6 +698,22 @@ class MCPServerConfig(BaseSettings):
                 ceiling,
             )
             self.phase3_runtime_profile_bytes = ceiling
+        # Same rule, same reason, for the derived fact-map views. The extra
+        # headroom covers the trailing omission note a grouped view appends
+        # after its byte-fit check (verified: a 12,000-byte cap produced a
+        # 12,068-byte view), so a view can never cross the SHARED threshold.
+        view_ceiling = max(1, self.phase3_shared_context_file_bytes - 1_024)
+        if self.phase3_fact_view_bytes > view_ceiling:
+            logger.warning(
+                "phase3_fact_view_bytes (%d) must stay below "
+                "phase3_shared_context_file_bytes (%d) with headroom or a fact "
+                "view is bin-packed as evidence instead of shared context; "
+                "clamping to %d",
+                self.phase3_fact_view_bytes,
+                self.phase3_shared_context_file_bytes,
+                view_ceiling,
+            )
+            self.phase3_fact_view_bytes = view_ceiling
         return self
 
     @property
