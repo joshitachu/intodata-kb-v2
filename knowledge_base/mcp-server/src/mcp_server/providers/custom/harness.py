@@ -485,6 +485,49 @@ def _mark_line_sql_used(line: str) -> str:
     return updated
 
 
+class FatalProviderError(RuntimeError):
+    """A provider failure that will repeat identically for every remaining call.
+
+    Credential and billing failures (HTTP 401/402, invalid API key, insufficient
+    balance) are *account state*, not document content. Salvage-first publishing
+    is correct for a content failure on one document; applied to a credit
+    failure it publishes the whole remaining document set as ~800-byte stubs and
+    reports the run as successful. Verified locally: a mid-run DeepSeek
+    ``402 Payment Required ... Insufficient Balance`` produced a "complete"
+    10-document set totalling 8,095 bytes that shipped as real documentation.
+
+    Raised instead of salvaging. The Phase 3 batch runner catches
+    ``BaseException`` around each document, so it re-raises this type
+    explicitly -- see ``_run_batches``.
+    """
+
+
+# Evidence patterns that mean "the account cannot make the next call either".
+# Matched against the provider's ``raw_error`` text ONLY, never the full
+# metadata dump: metadata carries token counts, conversation traces and tool
+# ledgers, so a bare ``\b402\b`` over that blob would fatally abort a healthy
+# run on an ``input_tokens: 402``.
+#
+# 403 / "forbidden" / "permission denied" are deliberately EXCLUDED. Those are
+# also raised by scoped resource and tool denials, which are local to one call
+# and must not kill a healthy run; they keep the old salvage-and-continue
+# disposition.
+_FATAL_PROVIDER_EVIDENCE = re.compile(
+    r"\b(?:401|402)\b"
+    r"|payment\s+required"
+    r"|insufficient\s+(?:balance|funds|credits?|quota)"
+    r"|(?:credit|account)\s+balance"
+    r"|billing"
+    r"|(?:invalid|incorrect|missing|no)[\s_-]+api[\s_-]?key"
+    r"|invalid[\s_-]authentication"
+    r"|auth(?:entication)?\s+failed"
+    r"|\bunauthorized\b"
+    r"|(?:api\s?key|token|credential)s?\s+(?:has\s+)?expired"
+    r"|expired[^.\n]{0,24}(?:api\s?key|token|credential)",
+    re.IGNORECASE,
+)
+
+
 class FailureKind(str, Enum):
     CONTEXT_TOO_LARGE = "context_too_large"
     EMPTY_OUTPUT = "empty_output"
@@ -1155,9 +1198,15 @@ Fallback plan example:
         def has_status(*codes: int) -> bool:
             return any(re.search(rf"\b{code}\b", evidence) for code in codes)
 
-        if has_status(401, 403) or re.search(
+        # 402 belongs here with 401/403: a payment-required response is a
+        # credential/billing failure, not a content failure. Before this it was
+        # reachable only through the "payment required|billing" phrase, which a
+        # provider returning `402 Payment Required :: {"message":"Insufficient
+        # Balance"}` does not necessarily satisfy in the phrasing used.
+        if has_status(401, 402, 403) or re.search(
             r"\b(unauthorized|forbidden|invalid api key|auth(?:entication)? failed|permission denied|"
-            r"insufficient permissions|payment required|billing)\b",
+            r"insufficient permissions|payment required|insufficient balance|insufficient funds|"
+            r"insufficient credits?|billing)\b",
             evidence,
         ):
             return FailureKind.AUTH_ERROR
@@ -1203,6 +1252,37 @@ Fallback plan example:
             return FailureKind.INCOMPLETE
 
         return FailureKind.UNKNOWN
+
+    @classmethod
+    def _is_fatal_provider_failure(cls, result: ModelResult) -> bool:
+        """True when this failure will repeat identically for every later call.
+
+        Narrower than ``FailureKind.AUTH_ERROR`` on purpose, in two ways:
+
+        * only ``raw_error`` (the provider's own error text) is inspected --
+          ``_classify_failure`` searches the JSON-dumped metadata too, which
+          holds token counts and conversation traces where a bare status-code
+          word-match is a coin flip. Wrong there costs a retry strategy; wrong
+          here kills the run;
+        * a bare 403 / "forbidden" / "permission denied" is NOT fatal. That
+          shape is also produced by scoped resource and tool denials, which are
+          local to one call. Those keep the salvage-and-continue disposition.
+        """
+        if result.success:
+            return False
+        if cls._classify_failure(result) is not FailureKind.AUTH_ERROR:
+            return False
+        return bool(_FATAL_PROVIDER_EVIDENCE.search(result.raw_error or ""))
+
+    @staticmethod
+    def _is_fatal_provider_error_text(text: str) -> bool:
+        """``_is_fatal_provider_failure`` for failures that arrive as exceptions.
+
+        Phase 2 group failures reach containment as ``BaseException`` objects
+        whose message embeds the provider error, so the same credit/credential
+        abort has to be reachable from a string.
+        """
+        return bool(_FATAL_PROVIDER_EVIDENCE.search(text or ""))
 
     @staticmethod
     def _failure_result(provider: ModelProvider, phase: str, target: str, message: str, kind: FailureKind) -> ModelResult:
@@ -2140,6 +2220,22 @@ Fallback plan example:
         failed = [(g, r) for g, r in results if isinstance(r, BaseException)]
         if not failed:
             return
+        # Same rule as Phase 3: a credential/billing failure is account state,
+        # so containing it as a PARTIAL group means every later group and every
+        # document fails identically and the run still reports success.
+        for group, exc in failed:
+            if self._is_fatal_provider_error_text(str(exc)):
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] Phase 2 group {group} failed with a provider "
+                    f"credential/billing error: {exc}; ABORTING the run rather "
+                    "than containing it as PARTIAL -- fix the provider account "
+                    "and resume.",
+                    "error",
+                )
+                raise FatalProviderError(
+                    f"provider credential/billing failure in Phase 2 group {group}: {exc}"
+                )
         for group, exc in failed:
             await log_cb(
                 ctx.project_id,
@@ -4221,6 +4317,23 @@ Fallback plan example:
                     lambda text, doc=doc_name: self._validate_phase3_doc(text, doc, state),
                 )
                 result = task_result.result
+            if not result.success and self._is_fatal_provider_failure(result):
+                # Credit/credential failure: every remaining document would
+                # fail identically and be stubbed. Abort instead -- a stubbed
+                # "complete" document set is a worse artifact than no set.
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] Phase 3 doc {doc_name} failed with a provider "
+                    f"credential/billing error: {result.raw_error}; ABORTING the "
+                    "run -- every remaining document would fail identically and "
+                    "be published as a stub. Fix the provider account and "
+                    "resume; already-accepted documents stay in staging.",
+                    "error",
+                )
+                raise FatalProviderError(
+                    f"provider credential/billing failure while writing {doc_name}: "
+                    f"{result.raw_error}"
+                )
             if not result.success:
                 self._salvage_failed_doc(ctx, state, doc_name, result)
                 await log_cb(
@@ -4257,6 +4370,12 @@ Fallback plan example:
                 )
                 for doc_name, res in zip(batch, batch_results):
                     if isinstance(res, BaseException):
+                        # `return_exceptions=True` turns every raise inside the
+                        # batch into a value, so an abort MUST be re-raised here
+                        # explicitly or it is silently downgraded to a stub --
+                        # exactly the failure mode this guard exists to stop.
+                        if isinstance(res, FatalProviderError):
+                            raise res
                         # Unexpected exception (not a provider failure): same
                         # salvage path -- stub + record + continue.
                         await log_cb(
@@ -4300,11 +4419,10 @@ Fallback plan example:
             await _run_batches([executive_summary_doc])
 
         if state.failed_docs:
-            report_path = ctx.staging_dir / "_assessment" / "failed_docs.json"
-            report_path.parent.mkdir(parents=True, exist_ok=True)
-            report_path.write_text(
-                json.dumps(state.failed_docs, indent=2), encoding="utf-8"
-            )
+            # Already written incrementally by `_salvage_failed_doc`; rewritten
+            # here so the final artifact is complete even if a caller appended
+            # to `state.failed_docs` without going through salvage.
+            self._write_failed_docs_report(ctx, state)
             await log_cb(
                 ctx.project_id,
                 f"[custom] Phase 3 salvage summary: {len(state.failed_docs)} of "
@@ -4335,7 +4453,17 @@ Fallback plan example:
         ``state.failed_docs`` (persisted to ``_assessment/failed_docs.json``)
         and both leave the agent task in a non-accepted status so a resume run
         retries exactly these documents.
+
+        A provider credential/billing failure is NOT salvageable and raises
+        ``FatalProviderError`` instead of writing a stub: it is account state,
+        so every later document would land here too and the run would publish a
+        full set of stubs under a success banner.
         """
+        if self._is_fatal_provider_failure(result):
+            raise FatalProviderError(
+                f"provider credential/billing failure while writing {doc_name}: "
+                f"{result.raw_error}"
+            )
         reason = result.raw_error or "doc generation failed"
         incomplete = str((result.metadata or {}).get("incomplete_reason") or "")
         text = (result.text or "").strip()
@@ -4371,6 +4499,86 @@ Fallback plan example:
             "reason": reason[:500],
             "incomplete_reason": incomplete or None,
         })
+        # Persist immediately, not only in the end-of-phase summary: the
+        # executive summary is dispatched BEFORE that summary write and has to
+        # know which of its context documents are stubs.
+        self._write_failed_docs_report(ctx, state)
+
+    def _write_failed_docs_report(self, ctx: DocGenContext, state: HarnessRunState) -> None:
+        """Publish the salvage ledger as artifacts, after every disposition.
+
+        Two files, one source of truth (``state.failed_docs``):
+
+        * ``_assessment/failed_docs.json`` -- the machine record (unchanged
+          shape), now written incrementally rather than once at end of phase;
+        * ``_analysis/_generation_gaps.md`` -- the same facts as a Phase 3
+          context file, so a document that synthesizes from its siblings states
+          the gap instead of writing confidently over half-empty inputs.
+        """
+        if not state.failed_docs:
+            return
+        report_path = ctx.staging_dir / "_assessment" / "failed_docs.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(state.failed_docs, indent=2), encoding="utf-8")
+
+        stubs = [r for r in state.failed_docs if r.get("disposition") == "stub"]
+        truncated = [r for r in state.failed_docs if r.get("disposition") != "stub"]
+        lines = [
+            "# Generation Gaps (authoritative)",
+            "",
+            "The documents listed here did NOT generate normally in this run. "
+            "This file is deterministic Nexus bookkeeping, not model output.",
+            "",
+            "MANDATORY for any document that summarizes or synthesizes across "
+            "the document set: state this coverage gap explicitly, name the "
+            "missing documents, and do not present the summary as complete "
+            "coverage of the estate. Never infer that a subject is absent, "
+            "healthy or simple because its document is missing here.",
+            "",
+        ]
+        if stubs:
+            lines.append("## Not generated (published as stubs; no content)")
+            lines.append("")
+            lines.append("These documents were NOT supplied to you as context.")
+            lines.append("")
+            for record in stubs:
+                lines.append(f"- `{record['doc']}` -- {str(record.get('reason') or '')[:200]}")
+            lines.append("")
+        if truncated:
+            lines.append("## Generated but incomplete (truncated, content usable)")
+            lines.append("")
+            for record in truncated:
+                lines.append(
+                    f"- `{record['doc']}` ({record.get('disposition')}) -- "
+                    f"{str(record.get('reason') or '')[:200]}"
+                )
+            lines.append("")
+        gaps_path = ctx.staging_dir / "_analysis" / "_generation_gaps.md"
+        gaps_path.parent.mkdir(parents=True, exist_ok=True)
+        gaps_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+    @staticmethod
+    def _stubbed_doc_names(ctx: DocGenContext) -> set[str]:
+        """Documents published as content-free stubs in this run.
+
+        Read from ``_assessment/failed_docs.json`` rather than run state so
+        every consumer -- both engines, and any later phase -- resolves the same
+        answer from the artifact of record.
+        """
+        report_path = ctx.staging_dir / "_assessment" / "failed_docs.json"
+        if not report_path.is_file():
+            return set()
+        try:
+            records = json.loads(report_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return set()
+        if not isinstance(records, list):
+            return set()
+        return {
+            str(r.get("doc"))
+            for r in records
+            if isinstance(r, dict) and r.get("disposition") == "stub" and r.get("doc")
+        }
 
     def _build_unit_docs_digest(self, ctx: DocGenContext, unit_docs: list[str]) -> Path | None:
         """Deterministic bounded digest of finished unit docs for summary docs.
@@ -4393,7 +4601,14 @@ Fallback plan example:
         ]
         used = sum(len(p.encode("utf-8")) + 1 for p in parts)
         truncated = 0
+        # A stubbed unit doc has no Overview and no fact ledger -- digesting it
+        # would put a GENERATION GAP banner in front of every summary writer as
+        # if it were that unit's evidence. The gap is reported once, by
+        # `_analysis/_generation_gaps.md`.
+        stubbed = self._stubbed_doc_names(ctx)
         for doc_name in unit_docs:
+            if doc_name in stubbed:
+                continue
             doc_path = ctx.staging_dir / f"{doc_name}.md"
             if not doc_path.exists():
                 continue
@@ -7168,9 +7383,22 @@ Allowed docs:
             runtime_profile = ctx.staging_dir / RUNTIME_PROFILE_MD
             if self._runtime_rollup_relevant(doc_name) and runtime_profile.exists():
                 files.append(runtime_profile)
-            # Add all other completed docs as context (but not the summary itself)
+            # The gap ledger comes BEFORE the sibling documents: a summary
+            # written over a partial set has to know the set is partial.
+            # Verified failure: a run in which five of the summary's context
+            # documents were ~800-byte stubs produced a confident ~5,200-word
+            # executive summary containing zero occurrences of "stub" or
+            # "GENERATION GAP" -- the reader had no way to see the hole.
+            gaps = ctx.staging_dir / "_analysis" / "_generation_gaps.md"
+            if gaps.exists():
+                files.append(gaps)
+            # Add all other completed docs as context (but not the summary
+            # itself, and not documents that are stubs). A stub carries no
+            # evidence -- only a GENERATION GAP banner -- so feeding it in buys
+            # nothing and invites the writer to treat the subject as covered.
+            stubbed = self._stubbed_doc_names(ctx)
             for other in sorted(self._required_docs):
-                if other == "09_EXECUTIVE_SUMMARY":
+                if other == "09_EXECUTIVE_SUMMARY" or other in stubbed:
                     continue
                 doc_path = ctx.staging_dir / f"{other}.md"
                 if doc_path.exists():
@@ -7201,6 +7429,13 @@ Allowed docs:
             unit_digest = ctx.staging_dir / "_analysis" / "_unit_docs_digest.md"
             if unit_digest.exists():
                 files.append(unit_digest)
+            # Same reason as the executive summary: a group/summary doc that
+            # synthesizes from the unit-doc digest must be told which units did
+            # not produce one. Unit-scoped docs are excluded -- they describe a
+            # single unit and never generalize over the set.
+            gaps = ctx.staging_dir / "_analysis" / "_generation_gaps.md"
+            if gaps.exists():
+                files.append(gaps)
         # Whole-partition cross-cutting facts (deterministic census; small, so
         # it stays SHARED across any slicing) -- every doc writer sees the same
         # scanner-derived counts.

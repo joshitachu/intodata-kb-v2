@@ -631,3 +631,308 @@ def test_claims_density_floor_requires_verbatim_citation(tmp_path):
     kept, kept_notes = apply_claim_floors(grounded, evidence)
     assert kept.claims[0].kind == "fact"
     assert kept_notes == []
+
+
+# --------------------------------------------------------------------------- #
+# WI-5 -- provider credential/billing failures are FATAL, not stub-and-continue
+#
+# Verified production failure: a mid-run DeepSeek `402 Payment Required ...
+# Insufficient Balance` stubbed every remaining document and the run reported
+# success -- a "complete" 10-document set totalling 8,095 bytes.
+# --------------------------------------------------------------------------- #
+
+_DEEPSEEK_402 = (
+    "HTTPStatusError: 402 Payment Required for POST "
+    "https://api.deepseek.com/chat/completions :: "
+    '{"error":{"message":"Insufficient Balance","type":"unknown_error"}}'
+)
+# A scoped denial: local to one call, must NOT kill a healthy run.
+_SCOPED_403 = (
+    "HTTPStatusError: 403 Forbidden for POST https://tools.internal/read_artifact "
+    ':: {"error":"permission denied: artifact outside task scope"}'
+)
+
+
+def test_classify_402_and_payment_phrases_are_auth_errors():
+    from mcp_server.providers.custom.harness import FailureKind
+
+    provider = _provider()
+    for text in (
+        _DEEPSEEK_402,
+        "Insufficient Balance",  # phrase only, no status code
+        "Your account has a billing problem",
+        "401 Unauthorized",
+        _SCOPED_403,
+    ):
+        assert provider._classify_failure(
+            ModelResult(success=False, raw_error=text)
+        ) is FailureKind.AUTH_ERROR, text
+
+
+def test_fatal_provider_failure_excludes_scoped_denials_and_metadata_noise():
+    provider = _provider()
+
+    # Credit/credential failures abort.
+    for text in (
+        _DEEPSEEK_402,
+        "402 Payment Required",
+        "Insufficient Balance",
+        "AuthenticationError: 401 invalid api key",
+        "Error code: 401 - Unauthorized",
+    ):
+        assert provider._is_fatal_provider_failure(
+            ModelResult(success=False, raw_error=text)
+        ), text
+
+    # A scoped 403 / permission denial is a per-call problem: salvage, do not abort.
+    for text in (
+        _SCOPED_403,
+        "403 Forbidden",
+        "permission denied: fact table not allowed",
+        "insufficient permissions for tool read_artifact",
+    ):
+        assert not provider._is_fatal_provider_failure(
+            ModelResult(success=False, raw_error=text)
+        ), text
+
+    # Ordinary failures never abort -- including one whose METADATA happens to
+    # contain the number 402. `_classify_failure` searches the metadata dump,
+    # which carries token counts and conversation traces; the fatal predicate
+    # deliberately does not.
+    assert not provider._is_fatal_provider_failure(
+        ModelResult(
+            success=False,
+            raw_error="empty provider response",
+            metadata={"input_tokens": 402, "turns": 401, "trace": "402 rows"},
+        )
+    )
+    assert not provider._is_fatal_provider_failure(
+        ModelResult(success=True, text="fine", raw_error=None)
+    )
+
+
+def test_salvage_refuses_to_stub_a_credential_failure(tmp_path):
+    from mcp_server.providers.custom.harness import FatalProviderError
+
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    provider = _provider()
+    state = HarnessRunState(project_id="proj", facts_manifest=_facts(["Alpha"]))
+    ctx = _ctx(staging, ["A"])
+
+    with pytest.raises(FatalProviderError):
+        provider._salvage_failed_doc(
+            ctx, state, "03_DATA_FLOWS_AND_LINEAGE",
+            ModelResult(success=False, raw_error=_DEEPSEEK_402),
+        )
+    # No stub artifact, no salvage record.
+    assert not (staging / "03_DATA_FLOWS_AND_LINEAGE.md").exists()
+    assert state.failed_docs == []
+
+
+class _StubTaskRuntime:
+    """Stands in for AgentTaskRuntime: returns a scripted ModelResult per doc.
+
+    The abort under test has to survive `_run_batches`, whose
+    `asyncio.gather(..., return_exceptions=True)` + `isinstance(res,
+    BaseException)` handler turns any raise into a stub. Scripting the result
+    is enough to exercise that; the provider call path is covered elsewhere.
+    """
+
+    script: dict[str, ModelResult] = {}
+
+    def __init__(self, staging_dir, facts):  # noqa: D107 - test double
+        self.staging_dir = staging_dir
+
+    def accepted_output(self, contract):
+        return None
+
+    async def run(self, contract, dispatch, validate):
+        result = self.script[contract.target_id]
+        return MagicMock(result=result)
+
+
+def _phase3_provider(docs: list[str], script: dict[str, ModelResult]):
+    provider = _provider()
+    provider._required_docs = list(docs)
+    provider._per_job_doc_units = {}
+    _StubTaskRuntime.script = script
+    return provider
+
+
+async def _run_phase3(provider, ctx, state, monkeypatch):
+    from mcp_server.providers.custom import harness as harness_module
+
+    monkeypatch.setattr(harness_module, "AgentTaskRuntime", _StubTaskRuntime)
+    monkeypatch.setattr(provider, "_phase3_context_files", lambda ctx_, doc: [])
+    # Serial dispatch so "no stub is published AFTER the failure" is a
+    # deterministic statement about ordering.
+    state.adaptive_serial_generation = True
+    await provider._phase3_docs(ctx, state, _noop_log)
+
+
+_GOOD_DOC = (
+    "# 01 Architecture Map\n\n## Topology\n\n"
+    + "The estate is a hub and spoke around the ESB. " * 20
+)
+
+
+@pytest.mark.asyncio
+async def test_payment_failure_aborts_phase3_and_publishes_no_stubs(tmp_path, monkeypatch):
+    from mcp_server.providers.custom.harness import FatalProviderError
+
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    docs = ["01_ARCHITECTURE_MAP", "03_DATA_FLOWS_AND_LINEAGE", "05_OPERATIONS_AND_DEPLOYMENT"]
+    provider = _phase3_provider(docs, {
+        "01_ARCHITECTURE_MAP": ModelResult(success=True, text=_GOOD_DOC),
+        "03_DATA_FLOWS_AND_LINEAGE": ModelResult(success=False, raw_error=_DEEPSEEK_402),
+        "05_OPERATIONS_AND_DEPLOYMENT": ModelResult(success=True, text=_GOOD_DOC),
+    })
+    state = HarnessRunState(project_id="proj", facts_manifest=_facts(["Alpha"]))
+    ctx = _ctx(staging, ["A"])
+
+    with pytest.raises(FatalProviderError) as excinfo:
+        await _run_phase3(provider, ctx, state, monkeypatch)
+    assert "03_DATA_FLOWS_AND_LINEAGE" in str(excinfo.value)
+
+    # The document that failed is not published, and the run stopped: the doc
+    # queued after it was never written.
+    assert (staging / "01_ARCHITECTURE_MAP.md").exists()  # accepted before the failure
+    assert not (staging / "03_DATA_FLOWS_AND_LINEAGE.md").exists()
+    assert not (staging / "05_OPERATIONS_AND_DEPLOYMENT.md").exists()
+    assert state.failed_docs == []
+    assert not (staging / "_assessment" / "failed_docs.json").exists()
+    for path in staging.glob("*.md"):
+        assert "GENERATION GAP" not in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_scoped_403_denial_still_salvages_and_run_continues(tmp_path, monkeypatch):
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    docs = ["01_ARCHITECTURE_MAP", "03_DATA_FLOWS_AND_LINEAGE", "05_OPERATIONS_AND_DEPLOYMENT"]
+    provider = _phase3_provider(docs, {
+        "01_ARCHITECTURE_MAP": ModelResult(success=True, text=_GOOD_DOC),
+        "03_DATA_FLOWS_AND_LINEAGE": ModelResult(success=False, raw_error=_SCOPED_403),
+        "05_OPERATIONS_AND_DEPLOYMENT": ModelResult(success=True, text=_GOOD_DOC),
+    })
+    state = HarnessRunState(project_id="proj", facts_manifest=_facts(["Alpha"]))
+    ctx = _ctx(staging, ["A"])
+
+    await _run_phase3(provider, ctx, state, monkeypatch)
+
+    assert (staging / "05_OPERATIONS_AND_DEPLOYMENT.md").exists()  # run continued
+    stub = (staging / "03_DATA_FLOWS_AND_LINEAGE.md").read_text(encoding="utf-8")
+    assert "GENERATION GAP" in stub
+    assert [r["doc"] for r in state.failed_docs] == ["03_DATA_FLOWS_AND_LINEAGE"]
+    assert (staging / "_assessment" / "failed_docs.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_phase2_credential_failure_aborts_instead_of_partial(tmp_path):
+    from mcp_server.providers.custom.harness import FatalProviderError
+
+    staging = tmp_path / "docs_staging"
+    (staging / "_analysis").mkdir(parents=True)
+    provider = _provider()
+    state = HarnessRunState(project_id="proj", facts_manifest=_facts(["Alpha"]))
+    ctx = _ctx(staging, ["A"])
+
+    with pytest.raises(FatalProviderError):
+        await provider._contain_phase2_group_failures(
+            ctx, state, [("A", RuntimeError(f"Analysis failed for group A: {_DEEPSEEK_402}"))],
+            _noop_log,
+        )
+    assert not (staging / "_analysis" / "A.md").exists()
+    assert state.partial_groups == []
+
+
+# --------------------------------------------------------------------------- #
+# WI-5(c) -- documents are not written over stubbed inputs
+# --------------------------------------------------------------------------- #
+
+def _record_stub(provider, ctx, state, doc_name: str) -> None:
+    provider._salvage_failed_doc(
+        ctx, state, doc_name, ModelResult(success=False, raw_error="budget blocked"),
+    )
+
+
+def test_executive_summary_excludes_stubbed_docs_and_states_the_gap(tmp_path):
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    provider = _provider()
+    provider._required_docs = [
+        "01_ARCHITECTURE_MAP", "03_DATA_FLOWS_AND_LINEAGE", "09_EXECUTIVE_SUMMARY",
+    ]
+    state = HarnessRunState(project_id="proj", facts_manifest=_facts(["Alpha"]))
+    ctx = _ctx(staging, ["A"])
+
+    (staging / "01_ARCHITECTURE_MAP.md").write_text(_GOOD_DOC, encoding="utf-8")
+    _record_stub(provider, ctx, state, "03_DATA_FLOWS_AND_LINEAGE")
+
+    files = provider._phase3_context_files(ctx, "09_EXECUTIVE_SUMMARY")
+    names = [p.name for p in files]
+    assert "01_ARCHITECTURE_MAP.md" in names
+    # The stub itself is NOT context -- it carries no evidence, only a banner.
+    assert "03_DATA_FLOWS_AND_LINEAGE.md" not in names
+    # ...but the gap is stated explicitly, and stated BEFORE the sibling docs.
+    assert "_generation_gaps.md" in names
+    assert names.index("_generation_gaps.md") < names.index("01_ARCHITECTURE_MAP.md")
+    gaps = (staging / "_analysis" / "_generation_gaps.md").read_text(encoding="utf-8")
+    assert "03_DATA_FLOWS_AND_LINEAGE" in gaps
+    assert "budget blocked" in gaps
+    assert "state this coverage gap explicitly" in gaps
+
+
+def test_truncated_docs_stay_in_context_but_are_flagged(tmp_path):
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    provider = _provider()
+    provider._required_docs = ["04_BUSINESS_RULES_AND_TRANSFORMATIONS", "09_EXECUTIVE_SUMMARY"]
+    state = HarnessRunState(project_id="proj", facts_manifest=_facts(["Alpha"]))
+    ctx = _ctx(staging, ["A"])
+
+    provider._salvage_failed_doc(
+        ctx, state, "04_BUSINESS_RULES_AND_TRANSFORMATIONS",
+        ModelResult(
+            success=False,
+            text="# 04 Business Rules\n\n## Business Rules\n\nBR-A-001 " + "x" * 300,
+            raw_error="incomplete: provider stopped because max tokens were reached",
+            metadata={"incomplete_reason": "length"},
+        ),
+    )
+    names = [p.name for p in provider._phase3_context_files(ctx, "09_EXECUTIVE_SUMMARY")]
+    # Truncate-accepted content is real content: it stays context, and is
+    # reported as incomplete rather than dropped.
+    assert "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md" in names
+    gaps = (staging / "_analysis" / "_generation_gaps.md").read_text(encoding="utf-8")
+    assert "Generated but incomplete" in gaps
+    assert "04_BUSINESS_RULES_AND_TRANSFORMATIONS" in gaps
+
+
+def test_unit_docs_digest_skips_stubbed_unit_docs(tmp_path):
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    provider = _provider()
+    state = HarnessRunState(project_id="proj", facts_manifest=_facts(["Alpha", "Beta"]))
+    ctx = _ctx(staging, ["A"])
+    provider._per_job_doc_units = {
+        "10_UNIT_REFERENCE__Alpha": "Alpha",
+        "10_UNIT_REFERENCE__Beta": "Beta",
+    }
+    (staging / "10_UNIT_REFERENCE__Alpha.md").write_text(
+        "# Alpha\n\n## Overview\n\nAlpha moves rows.\n\n"
+        "## Protected Scanner Facts\n\n| fact | value |\n|---|---|\n| group | A |\n",
+        encoding="utf-8",
+    )
+    _record_stub(provider, ctx, state, "10_UNIT_REFERENCE__Beta")
+
+    digest = provider._build_unit_docs_digest(
+        ctx, ["10_UNIT_REFERENCE__Alpha", "10_UNIT_REFERENCE__Beta"]
+    )
+    assert digest is not None
+    text = digest.read_text(encoding="utf-8")
+    assert "Alpha moves rows." in text
+    assert "GENERATION GAP" not in text
+    assert "## Beta" not in text

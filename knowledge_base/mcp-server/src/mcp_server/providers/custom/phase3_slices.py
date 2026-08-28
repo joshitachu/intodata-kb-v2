@@ -331,6 +331,11 @@ _SKELETON_TITLES = frozenset({
 
 _SECTIONED_SKELETON_BUDGET_BYTES = 64_000
 
+# Floor for the adaptive trim segment size. A late, low-priority file reaching
+# the allocator with almost nothing left still gets segmented small enough that
+# a useful prefix can be kept instead of the whole file failing the fit test.
+_MIN_TRIM_SEGMENT_BYTES = 2_000
+
 
 def _norm_title(line: str) -> str:
     return re.sub(r"\s+", " ", line.lstrip("#").strip()).lower()
@@ -542,6 +547,34 @@ def plan_phase3_document(
     )
 
 
+def _partial_trim_note(name: str) -> str:
+    """Marker for a file that reached the context with only part of its bytes."""
+    return (
+        f"> NOTE: lower-priority sections of `{name}` were omitted to fit "
+        "this document's single-call context ceiling; the deterministic "
+        "artifacts of record retain the full content.\n\n"
+    )
+
+
+def _full_omission_note(name: str, size_bytes: int) -> str:
+    """Marker for a file that could not contribute a single segment.
+
+    A fully-dropped file used to be removed from the context list outright, so
+    the writer saw no trace of it while the prompt still instructed it to
+    prioritise that evidence -- indistinguishable from "this evidence does not
+    exist". The note keeps the file present, names it, states its size, and
+    points at the on-disk artifact of record.
+    """
+    return (
+        f"> NOTE: `{name}` ({size_bytes} bytes) was omitted IN FULL to fit this "
+        "document's single-call context ceiling; the deterministic artifact of "
+        "record retains the full content.\n>\n"
+        "> This evidence is absent from THIS CONTEXT only. Do not report its "
+        "subject matter as absent from the project, and do not treat its "
+        "absence here as a scanner or coverage limit.\n\n"
+    )
+
+
 def _plan_single_call(
     staging_dir: Path,
     *,
@@ -574,22 +607,46 @@ def _plan_single_call(
     budget = (hard_tokens - prompt_tokens - 1024) * 4
     if budget < 8_000:
         return None
+    # Every trimmed file carries an explanatory NOTE into the same context, so
+    # those bytes are reserved UP FRONT: adding a note can never push the packet
+    # past the ceiling. Whatever a file does not spend on its note is refunded
+    # to `remaining` right after it settles, in the same deterministic order, so
+    # the reservation costs later files nothing when earlier ones fit whole.
+    notes: dict[Path, tuple[str, str, int]] = {}
+    note_reserve = 0
+    for path in context_files:
+        partial = _partial_trim_note(path.name)
+        full = _full_omission_note(path.name, sizes.get(path, 0))
+        reserved = max(len(partial.encode("utf-8")), len(full.encode("utf-8")))
+        notes[path] = (partial, full, reserved)
+        note_reserve += reserved
+
     allocations: dict[Path, list[str]] = {}
+    dropped_by_path: dict[Path, int] = {}
     trimmed_sources: list[str] = []
     trimmed_bytes = 0
-    remaining = budget
+    remaining = max(0, budget - note_reserve)
     ordered_by_priority = sorted(
         context_files, key=lambda p: (_trim_priority(p.name), context_files.index(p))
     )
     max_segment = max(8_000, budget // 4)
     for path in ordered_by_priority:
+        partial_note, full_note, reserved = notes[path]
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
+            remaining += reserved  # no note will be written for an unreadable file
             continue
+        # The segment size ADAPTS to what is still affordable. A fixed
+        # `budget // 4` (~117 KB on a ~470 KB budget) is coarser than the budget
+        # left once the rank-0/1 files have filled, so every segment of a late
+        # rank-2 fact map failed `seg_bytes <= remaining` and the file was
+        # dropped 100% while ~98 KB of paid-for budget went unused (verified:
+        # dependency_map.md, 1,755,045 B, lost in full from three documents).
+        seg_cap = min(max_segment, max(_MIN_TRIM_SEGMENT_BYTES, remaining))
         kept: list[str] = []
         dropped_here = 0
-        for segment in segment_markdown(text, max_segment):
+        for segment in segment_markdown(text, seg_cap):
             seg_bytes = len(segment.encode("utf-8"))
             if seg_bytes <= remaining:
                 kept.append(segment)
@@ -598,35 +655,49 @@ def _plan_single_call(
                 dropped_here += seg_bytes
         allocations[path] = kept
         if dropped_here:
+            dropped_by_path[path] = dropped_here
             trimmed_sources.append(path.name)
             trimmed_bytes += dropped_here
+            spent = len(partial_note.encode("utf-8")) if kept else len(full_note.encode("utf-8"))
+        else:
+            spent = 0  # nothing cut -> the original file is used, no note
+        remaining += reserved - spent
 
     slice_dir = transient_dir(staging_dir, "context_slices", phase)
     files: list[Path] = []
+    fully_omitted: list[str] = []
     for path in context_files:
         kept = allocations.get(path)
         if kept is None:
             files.append(path)
             continue
+        partial_note, full_note, _reserved = notes[path]
         content = "".join(kept)
         if not content.strip():
+            if path not in dropped_by_path:
+                continue  # the file itself was empty; there is nothing to report
+            # FULL DROP. Removing the file from `files` here was the second
+            # defect: the document writer lost every trace that the evidence
+            # existed, so "did not fit" read exactly like "does not exist".
+            omitted = slice_dir / f"{_safe_name(target)}__omitted_{_safe_name(path.name)}"
+            transient_write(omitted, full_note)
+            files.append(omitted)
+            fully_omitted.append(path.name)
             continue
         if len(content.encode("utf-8")) >= sizes.get(path, 0) - 64:
             files.append(path)  # fully kept -- use the original (cache-stable)
             continue
         bounded = slice_dir / f"{_safe_name(target)}__bounded_{_safe_name(path.name)}"
-        note = (
-            f"> NOTE: lower-priority sections of `{path.name}` were omitted to fit "
-            "this document's single-call context ceiling; the deterministic "
-            "artifacts of record retain the full content.\n\n"
-        )
-        transient_write(bounded, note + content)
+        transient_write(bounded, partial_note + content)
         files.append(bounded)
     if not files:
         return None
     logger.info(
-        "[phase3-plan] %s: SINGLE call with bounded context (%d bytes trimmed from %s)",
+        "[phase3-plan] %s: SINGLE call with bounded context "
+        "(%d bytes trimmed from %s; %d byte(s) of %d budget unused; "
+        "fully omitted: %s)",
         target, trimmed_bytes, ", ".join(trimmed_sources) or "nothing",
+        remaining, budget, ", ".join(fully_omitted) or "nothing",
     )
     return Phase3TaskPlan(
         mode="single",
