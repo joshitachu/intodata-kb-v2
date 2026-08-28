@@ -52,8 +52,22 @@ interface Props {
 // Slug and repo-key normalisation live in ./repoSelection so this panel and the
 // Azure DevOps panel cannot drift apart on identity rules.
 
-function installationSettingsUrl(installationId: number): string {
-  return `https://github.com/settings/installations/${installationId}`;
+function installationOwnerLabel(accountType: GithubAppInstallation["account_type"]): string {
+  if (accountType === "Organization") return "Organization";
+  if (accountType === "User") return "Personal account";
+  return "GitHub owner";
+}
+
+function installationSettingsUrl(installation: GithubAppInstallation): string {
+  if (installation.account_type === "Organization" && installation.account_login) {
+    return `https://github.com/organizations/${encodeURIComponent(
+      installation.account_login,
+    )}/settings/installations/${installation.installation_id}`;
+  }
+  if (installation.settings_url?.startsWith("https://github.com/")) {
+    return installation.settings_url;
+  }
+  return `https://github.com/settings/installations/${installation.installation_id}`;
 }
 
 /**
@@ -73,6 +87,8 @@ export function GithubAppConnectPanel({
   const [installationId, setInstallationId] = useState<number | null>(null);
   const [repos, setRepos] = useState<GithubAppRepo[]>([]);
   const [accountLogin, setAccountLogin] = useState<string | null>(null);
+  const [accountType, setAccountType] = useState<GithubAppInstallation["account_type"]>(null);
+  const [settingsUrl, setSettingsUrl] = useState<string | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   // Per-repo branch pin, keyed by repo key. Absent or blank means "follow the
   // provider's default branch", which then tracks upstream changes to it.
@@ -105,9 +121,19 @@ export function GithubAppConnectPanel({
     () => orderedSelection(pickableRepos, selectedKeys),
     [pickableRepos, selectedKeys],
   );
-  const primaryInstallation = installations?.[0];
   const hasInstallations = Boolean(installations?.length);
   const installationStatusUnavailable = installations == null && installationError != null;
+  const activeInstallation = useMemo<GithubAppInstallation | null>(() => {
+    if (installationId == null) return null;
+    return (
+      installations?.find((item) => item.installation_id === installationId) ?? {
+        installation_id: installationId,
+        account_login: accountLogin,
+        account_type: accountType,
+        settings_url: settingsUrl,
+      }
+    );
+  }, [accountLogin, accountType, installationId, installations, settingsUrl]);
 
   // Detect the post-install redirect (?installation_id=...&connected=1).
   useEffect(() => {
@@ -160,6 +186,8 @@ export function GithubAppConnectPanel({
         if (cancelled) return;
         setRepos(data.repositories);
         setAccountLogin(data.account_login);
+        setAccountType(data.account_type);
+        setSettingsUrl(data.settings_url);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -170,6 +198,8 @@ export function GithubAppConnectPanel({
           setInstallationId(null);
           setRepos([]);
           setAccountLogin(null);
+          setAccountType(null);
+          setSettingsUrl(null);
           clearInstallParam();
           setError(
             "This GitHub App installation no longer exists on GitHub. Connect with the GitHub App again.",
@@ -213,6 +243,8 @@ export function GithubAppConnectPanel({
   function useInstallation(installation: GithubAppInstallation) {
     setInstallationId(installation.installation_id);
     setAccountLogin(installation.account_login);
+    setAccountType(installation.account_type);
+    setSettingsUrl(installation.settings_url);
     setRepos([]);
     setSelectedKeys(new Set());
     setBranchOverrides({});
@@ -243,6 +275,9 @@ export function GithubAppConnectPanel({
     clearInstallParam();
     setInstallationId(null);
     setRepos([]);
+    setAccountLogin(null);
+    setAccountType(null);
+    setSettingsUrl(null);
     setSelectedKeys(new Set());
     setBranchOverrides({});
     setProjectName("");
@@ -346,7 +381,7 @@ export function GithubAppConnectPanel({
   // Repo-picker mode (post-install).
   if (installationId != null) {
     return (
-      <Card className="rounded-none border-x-0 shadow-none">
+      <Card className="rounded-none border-x-0 shadow-none" data-tour="sources-github">
         <CardHeader className="px-1">
           <div className="flex items-center gap-3">
             <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -355,9 +390,10 @@ export function GithubAppConnectPanel({
             <div>
               <h2 className="text-base font-semibold">Choose what to import</h2>
               <p className="mt-0.5 text-sm text-muted-foreground">
-                GitHub App installed{accountLogin ? ` on ${accountLogin}` : ""}. Pick the
-                repositories to import &mdash; no token is stored. Nothing is scanned
-                until you ask for it.
+                Repositories from {accountLogin ?? `installation ${installationId}`}
+                {accountType ? ` (${installationOwnerLabel(accountType).toLowerCase()})` : ""}.
+                Pick what to import &mdash; no token is stored. Nothing is scanned until
+                you ask for it.
               </p>
             </div>
           </div>
@@ -375,14 +411,14 @@ export function GithubAppConnectPanel({
             onRefresh={loadRepos}
             scopeHint="Showing repositories granted to this GitHub App installation."
             emptyHint="This installation is connected, but GitHub did not return any repositories. Add repositories to the installation in GitHub, then refresh."
-            actions={
+            actions={activeInstallation ? (
               <Button
                 type="button"
                 size="sm"
                 variant="secondary"
                 onClick={() =>
                   window.open(
-                    installationSettingsUrl(installationId),
+                    installationSettingsUrl(activeInstallation),
                     "_blank",
                     "noopener,noreferrer",
                   )
@@ -390,7 +426,7 @@ export function GithubAppConnectPanel({
               >
                 <ExternalLink className="h-3.5 w-3.5" /> Manage access
               </Button>
-            }
+            ) : null}
           />
           {!loadingRepos && (
             <div className="grid gap-2 sm:grid-cols-2">
@@ -446,7 +482,7 @@ export function GithubAppConnectPanel({
 
   // Entry mode (pre-install).
   return (
-    <Card className="rounded-none border-x-0 shadow-none">
+    <Card className="rounded-none border-x-0 shadow-none" data-tour="sources-github">
       <CardBody className="space-y-3 px-1 py-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex min-w-0 gap-3">
@@ -474,21 +510,15 @@ export function GithubAppConnectPanel({
                 {installationStatusUnavailable
                   ? "Nexus could not verify the GitHub App connection right now. Retry without starting a second installation."
                   : hasInstallations
-                  ? "Nexus can use this installation to list granted repositories and clone them without storing a token."
+                  ? `Nexus can use ${installations?.length ?? 0} separate GitHub App ${
+                      installations?.length === 1 ? "installation" : "installations"
+                    } without storing a token.`
                   : "Install IntoData's GitHub App on your org, grant repositories, then return here to choose one."}
               </p>
             </div>
           </div>
 
-          {hasInstallations ? (
-            <Button
-              size="md"
-              onClick={() => primaryInstallation && useInstallation(primaryInstallation)}
-              disabled={!primaryInstallation}
-            >
-              <Github className="h-4 w-4" /> Choose repositories
-            </Button>
-          ) : installationStatusUnavailable ? (
+          {installationStatusUnavailable ? (
             <Button size="md" variant="secondary" isLoading={loadingInstallations} onClick={loadInstallations}>
               <RotateCw className="h-4 w-4" /> Retry status
             </Button>
@@ -496,11 +526,11 @@ export function GithubAppConnectPanel({
             <Button size="md" variant="secondary" isLoading disabled>
               Checking connection
             </Button>
-          ) : (
+          ) : !hasInstallations ? (
             <Button size="md" isLoading={starting || loadingInstallations} onClick={startInstall}>
               <Github className="h-4 w-4" /> Connect with GitHub App
             </Button>
-          )}
+          ) : null}
         </div>
 
         {/* Discoverable before the user hits a 503: some deployments only ever
@@ -521,58 +551,69 @@ export function GithubAppConnectPanel({
 
         {hasInstallations && installations && (
           <div className="rounded-md border border-emerald-200 bg-emerald-50/70 p-3">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <p className="text-sm font-medium text-emerald-900">
-                  Connected account: {primaryInstallation?.account_login ?? "GitHub installation"}
+                  GitHub installations ({installations.length})
                 </p>
                 <p className="mt-0.5 text-xs text-emerald-800">
-                  Use this connection to import a repository. You choose when to scan it.
+                  Each row is a separate personal account or organization installation.
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                {/* Only rendered when a second installation exists, so the label
-                    never appears next to a single unexplained account button. */}
-                {installations.length > 1 && (
-                  <span className="text-xs text-emerald-800">Or import from:</span>
-                )}
-                {installations.slice(1).map((installation) => (
-                  <Button
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                isLoading={starting || loadingInstallations}
+                onClick={startInstall}
+              >
+                <ExternalLink className="h-3.5 w-3.5" /> Add installation
+              </Button>
+            </div>
+            <div className="mt-3 divide-y divide-emerald-200 border-t border-emerald-200">
+              {installations.map((installation) => {
+                const owner =
+                  installation.account_login ?? `Installation ${installation.installation_id}`;
+                return (
+                  <div
                     key={installation.installation_id}
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => useInstallation(installation)}
+                    className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between"
                   >
-                    {installation.account_login ?? `Installation ${installation.installation_id}`}
-                  </Button>
-                ))}
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  isLoading={starting || loadingInstallations}
-                  onClick={startInstall}
-                >
-                  <ExternalLink className="h-3.5 w-3.5" /> Configure in GitHub
-                </Button>
-                {primaryInstallation && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() =>
-                      window.open(
-                        installationSettingsUrl(primaryInstallation.installation_id),
-                        "_blank",
-                        "noopener,noreferrer",
-                      )
-                    }
-                  >
-                    <ExternalLink className="h-3.5 w-3.5" /> Manage repository access
-                  </Button>
-                )}
-              </div>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-emerald-950">{owner}</p>
+                      <p className="text-xs text-emerald-800">
+                        {installationOwnerLabel(installation.account_type)}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        aria-label={`Choose repositories from ${owner}`}
+                        onClick={() => useInstallation(installation)}
+                      >
+                        <Github className="h-3.5 w-3.5" /> Choose repositories
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        aria-label={`Manage repository access for ${owner}`}
+                        onClick={() =>
+                          window.open(
+                            installationSettingsUrl(installation),
+                            "_blank",
+                            "noopener,noreferrer",
+                          )
+                        }
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" /> Manage access
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

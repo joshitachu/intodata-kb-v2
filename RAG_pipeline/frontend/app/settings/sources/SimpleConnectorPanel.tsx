@@ -189,7 +189,7 @@ export function SimpleConnectorPanel() {
   }
 
   return (
-    <section aria-labelledby="live-connections-heading">
+    <section aria-labelledby="live-connections-heading" data-tour="sources-live">
       <Card>
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           {/* items-start: without it the icon tile inherits `align-items: stretch`

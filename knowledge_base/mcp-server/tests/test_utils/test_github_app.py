@@ -158,6 +158,62 @@ async def test_list_installation_repositories_maps_fields():
     ]
 
 
+async def test_get_installation_account_details_preserves_github_settings_url():
+    fake = FakeClient(
+        get_payloads=[
+            {
+                "id": 42,
+                "account": {"login": "acme", "type": "Organization"},
+                "html_url": "https://github.com/organizations/acme/settings/installations/42",
+            }
+        ]
+    )
+
+    details = await github_app.get_installation_account_details(42, client=fake)
+
+    assert details == {
+        "account_login": "acme",
+        "account_type": "Organization",
+        "settings_url": "https://github.com/organizations/acme/settings/installations/42",
+    }
+
+
+async def test_list_app_installations_includes_owner_metadata():
+    fake = FakeClient(
+        get_payloads=[
+            [
+                {
+                    "id": 42,
+                    "account": {"login": "acme", "type": "Organization"},
+                    "html_url": "https://github.com/organizations/acme/settings/installations/42",
+                },
+                {
+                    "id": 43,
+                    "account": {"login": "jane", "type": "User"},
+                    "html_url": "https://github.com/settings/installations/43",
+                },
+            ]
+        ]
+    )
+
+    installations = await github_app.list_app_installations(client=fake)
+
+    assert installations == [
+        {
+            "installation_id": 42,
+            "account_login": "acme",
+            "account_type": "Organization",
+            "settings_url": "https://github.com/organizations/acme/settings/installations/42",
+        },
+        {
+            "installation_id": 43,
+            "account_login": "jane",
+            "account_type": "User",
+            "settings_url": "https://github.com/settings/installations/43",
+        },
+    ]
+
+
 def test_install_url_carries_state():
     url = github_app.install_url("signed-state-123")
     assert url.startswith("https://github.com/apps/my-test-app/installations/new?")

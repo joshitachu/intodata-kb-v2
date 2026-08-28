@@ -21,7 +21,19 @@ vi.mock("@/lib/mcpClient", async () => {
   };
 });
 
-const INSTALLATION = { installation_id: 4242, account_login: "acme" };
+const INSTALLATION = {
+  installation_id: 4242,
+  account_login: "acme",
+  account_type: "Organization" as const,
+  settings_url: "https://github.com/organizations/acme/settings/installations/4242",
+};
+
+const PERSONAL_INSTALLATION = {
+  installation_id: 4343,
+  account_login: "jane",
+  account_type: "User" as const,
+  settings_url: "https://github.com/settings/installations/4343",
+};
 
 const REPOS = [
   { full_name: "acme/etl", clone_url: "https://github.com/acme/etl.git", private: false, default_branch: "main" },
@@ -45,12 +57,12 @@ function renderPanel(overrides: Partial<Parameters<typeof GithubAppConnectPanel>
 }
 
 async function openPicker() {
-  // Not getByText(/Connected/): both the badge and "Connected account: acme"
-  // match it, so the query is ambiguous.
   await waitFor(() =>
-    expect(screen.getByRole("button", { name: /Choose repositories/ })).toBeInTheDocument(),
+    expect(
+      screen.getByRole("button", { name: "Choose repositories from acme" }),
+    ).toBeInTheDocument(),
   );
-  fireEvent.click(screen.getByRole("button", { name: /Choose repositories/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Choose repositories from acme" }));
   await screen.findByRole("checkbox", { name: /etl/ });
 }
 
@@ -62,6 +74,8 @@ describe("GithubAppConnectPanel", () => {
     vi.mocked(listGithubAppInstallations).mockResolvedValue([INSTALLATION]);
     vi.mocked(listGithubAppRepos).mockResolvedValue({
       account_login: "acme",
+      account_type: "Organization",
+      settings_url: "https://github.com/organizations/acme/settings/installations/4242",
       repositories: REPOS,
     });
     vi.mocked(getGithubAppInstallUrl).mockResolvedValue("https://github.com/apps/x/installations/new");
@@ -77,6 +91,39 @@ describe("GithubAppConnectPanel", () => {
       members: [],
       sync: [],
     });
+  });
+
+  it("shows separate personal and organization installations without implying a primary account", async () => {
+    vi.mocked(listGithubAppInstallations).mockResolvedValue([
+      INSTALLATION,
+      PERSONAL_INSTALLATION,
+    ]);
+    renderPanel();
+
+    expect(await screen.findByText("GitHub installations (2)")).toBeInTheDocument();
+    expect(screen.getByText("Organization")).toBeInTheDocument();
+    expect(screen.getByText("Personal account")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Choose repositories from jane" }),
+    );
+    await waitFor(() => expect(listGithubAppRepos).toHaveBeenCalledWith(4343));
+  });
+
+  it("opens the owner-specific GitHub settings page", async () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    renderPanel();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Manage repository access for acme" }),
+    );
+
+    expect(open).toHaveBeenCalledWith(
+      "https://github.com/organizations/acme/settings/installations/4242",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    open.mockRestore();
   });
 
   it("registers a single picked repository on the single-repo path", async () => {

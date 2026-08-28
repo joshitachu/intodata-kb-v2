@@ -371,7 +371,7 @@ export function AzureDevOpsConnectPanel({
   // Repo-picker mode.
   if (activeConnection) {
     return (
-      <Card className="rounded-none border-x-0 shadow-none">
+      <Card className="rounded-none border-x-0 shadow-none" data-tour="sources-azure">
         <CardHeader className="px-1">
           <div className="flex items-center gap-3">
             <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -453,7 +453,7 @@ export function AzureDevOpsConnectPanel({
 
   // Entry mode.
   return (
-    <Card className="rounded-none border-x-0 shadow-none">
+    <Card className="rounded-none border-x-0 shadow-none" data-tour="sources-azure">
       <CardBody className="space-y-3 px-1 py-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex min-w-0 gap-3">

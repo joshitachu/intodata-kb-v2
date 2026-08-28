@@ -203,16 +203,22 @@ async def test_installation_repos_lists(client, app_configured, monkeypatch):
         ]
 
     async def fake_account(installation_id):
-        return "acme"
+        return {
+            "account_login": "acme",
+            "account_type": "Organization",
+            "settings_url": "https://github.com/organizations/acme/settings/installations/321",
+        }
 
     monkeypatch.setattr(github_app, "list_installation_repositories", fake_repos)
-    monkeypatch.setattr(github_app, "get_installation_account_login", fake_account)
+    monkeypatch.setattr(github_app, "get_installation_account_details", fake_account)
 
     resp = await client.get("/mcp/github/app/installations/321/repos")
     assert resp.status_code == 200
     body = resp.json()
     assert body["installation_id"] == 321
     assert body["account_login"] == "acme"
+    assert body["account_type"] == "Organization"
+    assert body["settings_url"] == "https://github.com/organizations/acme/settings/installations/321"
     assert body["repositories"][0]["full_name"] == "acme/repo"
 
 

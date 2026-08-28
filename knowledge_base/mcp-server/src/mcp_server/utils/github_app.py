@@ -271,6 +271,47 @@ async def get_installation_account_login(
             await client.aclose()
 
 
+async def get_installation_account_details(
+    installation_id: int,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict[str, str | None]:
+    """Return display and settings metadata for one App installation.
+
+    GitHub uses different settings URLs for personal-account and organization
+    installations.  Returning GitHub's own ``html_url`` keeps clients from
+    constructing the personal-account URL for an organization and landing on a
+    misleading 404 page.
+    """
+    app_jwt = build_app_jwt()
+    owns_client = client is None
+    client = client or httpx.AsyncClient(timeout=15.0)
+    try:
+        resp = await client.get(
+            f"{_GITHUB_API}/app/installations/{installation_id}",
+            headers=_app_headers(app_jwt),
+        )
+        resp.raise_for_status()
+        item = resp.json()
+        account = item.get("account") or {}
+        account_type = account.get("type") or item.get("target_type")
+        if account_type not in {"User", "Organization"}:
+            account_type = None
+        settings_url = item.get("html_url")
+        if not isinstance(settings_url, str) or not settings_url.startswith(
+            "https://github.com/"
+        ):
+            settings_url = None
+        return {
+            "account_login": account.get("login"),
+            "account_type": account_type,
+            "settings_url": settings_url,
+        }
+    finally:
+        if owns_client:
+            await client.aclose()
+
+
 async def list_app_installations(
     *,
     client: httpx.AsyncClient | None = None,
@@ -298,10 +339,20 @@ async def list_app_installations(
             items = resp.json()
             for item in items:
                 account = item.get("account") or {}
+                account_type = account.get("type") or item.get("target_type")
+                if account_type not in {"User", "Organization"}:
+                    account_type = None
+                settings_url = item.get("html_url")
+                if not isinstance(settings_url, str) or not settings_url.startswith(
+                    "https://github.com/"
+                ):
+                    settings_url = None
                 installations.append(
                     {
                         "installation_id": int(item["id"]),
                         "account_login": account.get("login"),
+                        "account_type": account_type,
+                        "settings_url": settings_url,
                     }
                 )
             if len(items) < 100:
