@@ -96,6 +96,18 @@ class OnboardingService:
 
         elif step == "tour":
             row.tour_current_step = int(data.get("tour_step", 0))
+            variant = data.get("tour_variant")
+            if variant:
+                row.tour_variant = str(variant)[:32]
+            step_id = data.get("tour_step_id")
+            if step_id:
+                # Union, not append: a user can go back and forward through the
+                # tour, and reordering or re-visiting must not create duplicates
+                # that would make "how far did they get" unreadable.
+                seen = list(row.tour_seen_steps or [])
+                if step_id not in seen:
+                    seen.append(str(step_id))
+                    row.tour_seen_steps = seen
 
         await self.db.commit()
         await self.db.refresh(row)
@@ -113,21 +125,49 @@ class OnboardingService:
         await self.db.refresh(row)
         return row
 
-    async def complete_tour(self, user: User) -> UserOnboarding:
+    async def complete_tour(self, user: User, *, variant: str | None = None) -> UserOnboarding:
         row = await self.get_or_create(user)
         assert row is not None
         row.tour_completed = True
         row.tour_completed_at = datetime.datetime.now(datetime.timezone.utc)
+        # Record which walkthrough was finished. Without it a later promotion
+        # cannot tell an already-taught admin apart from someone who only ever
+        # saw the member tour.
+        if variant:
+            row.tour_variant = variant[:32]
         await self.db.commit()
         await self.db.refresh(row)
         return row
 
-    async def reset(self, user: User) -> None:
-        """Admin-only: wipe a user's onboarding state so the wizard shows again."""
-        row = await self.get_or_create(user, create=False)
-        if row is not None:
-            await self.db.delete(row)
-            await self.db.commit()
+    async def reset(self, user: User) -> UserOnboarding:
+        """Owner-only: put a user back to their first run.
+
+        Writes a fresh row with the flags cleared rather than deleting the
+        existing one. Deleting is what this used to do, and it achieved the
+        opposite: a *missing* row means "existing user, grandfathered" and is
+        reported as ``wizard_completed=True``, so a reset permanently marked the
+        user complete and the wizard could never appear again.
+
+        Creates the row when absent, so a grandfathered user can also be shown
+        the walkthrough for the first time.
+        """
+        row = await self.get_or_create(user)
+        assert row is not None
+
+        row.wizard_completed = False
+        row.wizard_completed_at = None
+        row.wizard_current_step = 0
+        row.tour_completed = False
+        row.tour_completed_at = None
+        row.tour_current_step = 0
+        # Clear which walkthrough was seen as well, otherwise the tour resumes
+        # mid-way through a run the user is supposed to be starting over.
+        row.tour_variant = None
+        row.tour_seen_steps = None
+
+        await self.db.commit()
+        await self.db.refresh(row)
+        return row
 
     async def mark_setup_failed(self, user_id: int, error: str) -> None:
         result = await self.db.execute(

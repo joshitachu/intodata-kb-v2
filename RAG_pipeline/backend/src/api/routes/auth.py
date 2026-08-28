@@ -31,8 +31,17 @@ from src.auth.totp import (
     verify_totp,
 )
 from src.config import settings
-from src.db.models import AccessRequest, EmailOTPCode, Notification, Role, User, UserInvite, UserOnboarding
-from src.rbac.permissions import get_user_permissions
+from src.db.models import (
+    AccessRequest,
+    EmailOTPCode,
+    Notification,
+    ProjectAssignment,
+    Role,
+    User,
+    UserInvite,
+    UserOnboarding,
+)
+from src.rbac.permissions import DEFAULT_MEMBER_ROLE, get_user_permissions
 from src.services.audit_service import AuditService
 from src.services.email_service import (
     EmailSendError,
@@ -606,12 +615,35 @@ async def accept_invite(
         email=invite.email,
         password_hash=hash_password(body.password) if body.password else None,
     )
-    default_role = (
-        await db.execute(select(Role).where(Role.name == "developer"))
-    ).scalar_one_or_none()
-    user.roles = [default_role] if default_role is not None else []
+
+    # Honour the authority the approving admin recorded on the invite. Falling
+    # back to "developer" is only correct for invites created before role was
+    # decided at approval time — a hardcoded role would otherwise silently
+    # discard a deliberate admin grant.
+    granted_role: Role | None = None
+    if invite.assigned_role_id is not None:
+        granted_role = (
+            await db.execute(select(Role).where(Role.id == invite.assigned_role_id))
+        ).scalar_one_or_none()
+    if granted_role is None:
+        granted_role = (
+            await db.execute(select(Role).where(Role.name == DEFAULT_MEMBER_ROLE))
+        ).scalar_one_or_none()
+    user.roles = [granted_role] if granted_role is not None else []
     db.add(user)
     await db.flush()
+
+    # Project scope the approver pre-selected. Applied here because the user row
+    # did not exist when access was approved.
+    for project_id in invite.assigned_project_ids or []:
+        db.add(
+            ProjectAssignment(
+                user_id=user.id,
+                project_id=project_id,
+                is_owner=False,
+                assigned_by=invite.created_by,
+            )
+        )
 
     db.add(UserOnboarding(user_id=user.id))
     invite.status = "accepted"

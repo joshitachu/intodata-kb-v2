@@ -74,6 +74,17 @@ class UserOnboarding(Base):
     tour_current_step: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0", nullable=False
     )
+    # Which persona's walkthrough was shown ("owner" | "admin" | "developer").
+    # A bare `tour_completed` cannot tell "finished the developer tour" apart
+    # from "finished the admin tour", so a later promotion could never re-offer
+    # the walkthrough that actually matches the new authority.
+    tour_variant: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Step *ids* the user has seen, not an index. A role-filtered tour has a
+    # different length per persona and steps can be hidden by a capability
+    # check, so an integer cursor cannot be resumed reliably.
+    tour_seen_steps: Mapped[list | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=True
+    )
 
     user: Mapped["User"] = relationship(foreign_keys=[user_id])
 

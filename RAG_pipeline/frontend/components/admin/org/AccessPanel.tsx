@@ -23,7 +23,12 @@ import {
   adminMutate,
   useAdminAccessRequests,
   useAdminRefresh,
+  type AdminAccessRequest,
 } from "@/hooks/useAdminDirectory";
+import {
+  ApproveAccessDialog,
+  type ApprovalDecision,
+} from "./ApproveAccessDialog";
 
 const STATUS_OPTIONS = [
   { value: "pending", label: "Pending" },
@@ -49,11 +54,14 @@ export function AccessPanel() {
   const [notice, setNotice] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [testEmail, setTestEmail] = useState("");
+  /** The request being approved; approval now needs a role decision first. */
+  const [approving, setApproving] = useState<AdminAccessRequest | null>(null);
 
   const requests = accessQuery.data?.requests ?? [];
   const invites = accessQuery.data?.invites ?? [];
 
-  async function act(key: string, url: string, body?: unknown) {
+  /** Returns true when the action succeeded, so callers can close their UI. */
+  async function act(key: string, url: string, body?: unknown): Promise<boolean> {
     setBusyKey(key);
     setError("");
     setNotice("");
@@ -66,8 +74,10 @@ export function AccessPanel() {
       const setupHint = data?.setup_url || data?.invite_link;
       setNotice(setupHint ? `${data?.message ?? "Done"}: ${setupHint}` : data?.message ?? "Done.");
       await refresh(["admin", "access-requests"], adminKeys.users);
+      return true;
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Action failed.");
+      return false;
     } finally {
       setBusyKey(null);
     }
@@ -78,8 +88,28 @@ export function AccessPanel() {
     void act("test-email", "/api/admin/email/test", { to: testEmail });
   }
 
+  async function handleApprove(decision: ApprovalDecision) {
+    const target = approving;
+    if (!target) return;
+    // Close on success only. A failed approval keeps the dialog open so the
+    // reviewer does not have to re-make the role decision.
+    const ok = await act(
+      `approve-${target.id}`,
+      `/api/admin/access-requests/${target.id}/approve`,
+      decision,
+    );
+    if (ok) setApproving(null);
+  }
+
   return (
     <div className="space-y-4">
+      <ApproveAccessDialog
+        request={approving}
+        isBusy={busyKey === `approve-${approving?.id}`}
+        onClose={() => setApproving(null)}
+        onApprove={(decision) => void handleApprove(decision)}
+      />
+
       <PanelHeader
         title="Access requests"
         description="Approve or reject company-local app access, and manage outstanding invitations."
@@ -119,6 +149,16 @@ export function AccessPanel() {
               </Cell>
               <Cell>
                 <Chip tone={STATUS_TONE[request.status] ?? "muted"}>{request.status}</Chip>
+                {/* Show what authority was granted. A reviewer needs to be able
+                    to spot an accidental admin grant while the invite is still
+                    pending, without opening anything. */}
+                {request.invite?.assigned_role_name && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    as <span className="font-medium capitalize text-foreground">
+                      {request.invite.assigned_role_name}
+                    </span>
+                  </p>
+                )}
                 {request.rejection_reason && (
                   <p className="mt-0.5 text-xs text-muted-foreground">{request.rejection_reason}</p>
                 )}
@@ -131,10 +171,10 @@ export function AccessPanel() {
                   <>
                     <InlineAction
                       tone="success"
-                      onClick={() => void act(`approve-${request.id}`, `/api/admin/access-requests/${request.id}/approve`)}
+                      onClick={() => setApproving(request)}
                       disabled={busyKey === `approve-${request.id}`}
                     >
-                      Approve
+                      Approve...
                     </InlineAction>
                     <InlineAction
                       tone="danger"
@@ -180,6 +220,11 @@ export function AccessPanel() {
               <li key={invite.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
                 <span className="min-w-0">
                   <span className="font-medium text-foreground">{invite.email}</span>
+                  {invite.assigned_role_name && (
+                    <span className="ml-2 text-xs capitalize text-muted-foreground">
+                      · {invite.assigned_role_name}
+                    </span>
+                  )}
                   <span className="ml-2 text-xs text-muted-foreground">
                     expires {new Date(invite.expires_at).toLocaleString()}
                   </span>

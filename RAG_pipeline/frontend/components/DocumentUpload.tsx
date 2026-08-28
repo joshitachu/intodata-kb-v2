@@ -123,7 +123,7 @@ export function DocumentUpload() {
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3" data-tour="documents-role">
         <div className="flex items-center gap-2">
           <label
             htmlFor="project-select"
@@ -189,6 +189,7 @@ export function DocumentUpload() {
       </div>
 
       <div
+        data-tour="documents-upload"
         onDrop={handleDrop}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}

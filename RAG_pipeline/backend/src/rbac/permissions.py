@@ -25,6 +25,11 @@ RUNTIME_SOURCES_READ = "runtime_sources:read"
 RUNTIME_SOURCES_WRITE = "runtime_sources:write"
 MANAGE_PACKS = "manage_packs"
 
+# Role granted to a new member when no explicit authority was recorded for
+# them. Invite acceptance and SSO first-login both need it, so it lives here
+# rather than being spelled out as a literal at each call site.
+DEFAULT_MEMBER_ROLE = "developer"
+
 ALL_PERMISSIONS = {
     MANAGE_USERS,
     MANAGE_ROLES,

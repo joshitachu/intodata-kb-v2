@@ -120,7 +120,14 @@ export function DataTable({
   isEmpty: boolean;
 }) {
   return (
-    <div className="overflow-x-auto rounded-xl border border-border bg-card shadow-elevation-sm">
+    <div
+      // Only one organization panel is mounted at a time, so this resolves to
+      // the table of whichever tab is open. The walkthrough scopes it by tab
+      // (`[data-tour="admin-access"] [data-tour="admin-org-table"]`) rather
+      // than spotlighting the whole panel.
+      data-tour="admin-org-table"
+      className="overflow-x-auto rounded-xl border border-border bg-card shadow-elevation-sm"
+    >
       <table className="w-full min-w-[42rem] text-sm">
         <thead>
           <tr className="border-b border-border bg-muted/40">

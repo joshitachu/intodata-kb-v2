@@ -1,0 +1,1908 @@
+<!--
+  Nexus product demo — animated 16:9 sequence, ~48 seconds, 10 scenes.
+
+  Self-contained: no build step, no dependencies, no network calls.
+  Serve it or open it directly. The auth middleware lets any path containing
+  a dot through, so http://localhost:3000/demo/nexus-demo.html needs no login.
+
+    ?clean=1    hide the controls (use this when screen-recording)
+    ?scene=N    hold a single scene, 1-10 (use this when re-shooting a beat)
+    Space       play / pause          R   replay
+
+  Copy, numbers, system names, the document list, the pack contents and the
+  chat exchanges all live in the CONFIG block in the <script> below. The
+  markup is only scaffolding — edit CONFIG, not the HTML.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Nexus — product demo</title>
+<style>
+/* ------------------------------------------------------------------ tokens */
+:root {
+  /* Official Intodata palette */
+  --navy:   #001e4d;
+  --orange: #fe9543;
+  --purple: #6370b0;
+  --green:  #a0e06f;
+  --light:  #ebebed;
+
+  /* UI greys, matched to the app's shadcn tokens */
+  --ink:     #0b1220;
+  --muted:   #64748b;
+  --faint:   #94a3b8;
+  --line:    #e2e8f0;
+  --surface: #ffffff;
+  --canvas:  #f8fafc;
+  --red:     #dc2626;
+
+  --font-head: 'Massilia Bold', 'Segoe UI Semibold', 'Segoe UI', -apple-system,
+               BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+  --font-body: 'Massilia Light', 'Segoe UI', -apple-system, BlinkMacSystemFont,
+               'Helvetica Neue', Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+  --e-sm: 0 1px 2px 0 hsl(224 20% 12% / .05), 0 1px 3px 0 hsl(224 20% 12% / .04);
+  --e-md: 0 2px 4px -1px hsl(224 20% 12% / .06), 0 4px 8px -2px hsl(224 20% 12% / .06);
+  --e-lg: 0 4px 6px -2px hsl(224 20% 12% / .05), 0 10px 20px -4px hsl(224 20% 12% / .08);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  height: 100%; background: #05080f; overflow: hidden;
+  font-family: var(--font-body); -webkit-font-smoothing: antialiased;
+}
+
+/* ------------------------------------------------------------------- stage */
+/* Column layout: the stage gets its own row and the controls get another, so
+   the control bar can never sit on top of a scene's caption. */
+#viewport { position: fixed; inset: 0; display: flex; flex-direction: column; }
+/* Explicit centring, not grid/flex `center`: those clamp an oversized child to
+   the start edge, which pushed the right side of the stage off screen. */
+#stagearea { flex: 1; min-height: 0; position: relative; overflow: hidden; }
+#stage {
+  position: absolute; left: 50%; top: 50%; margin: -450px 0 0 -800px;
+  width: 1600px; height: 900px;
+  background: var(--navy);          /* matches scene 1 — nothing pale to dip through */
+  overflow: hidden; transform-origin: center center;
+}
+
+/* Scenes stack in playback order, so the incoming scene always paints above
+   the outgoing one. It fades in on top; the one beneath is torn down only
+   once the new scene is fully opaque (see showScene). */
+.scene {
+  position: absolute; inset: 0;
+  opacity: 0; visibility: hidden;
+  transition: opacity .38s ease;
+}
+.scene.play, .scene.hold { opacity: 1; visibility: visible; }
+.scene--dark { background: var(--navy); color: var(--light); }
+.scene--soft { background: var(--canvas); color: var(--ink); }
+
+/* -------------------------------------------------------------- type ramp */
+.kicker {
+  font-family: var(--font-head); font-size: 12.5px; font-weight: 700;
+  letter-spacing: .16em; text-transform: uppercase; color: var(--orange);
+}
+.h1  { font-family: var(--font-head); font-weight: 700; font-size: 66px; line-height: 1.06; letter-spacing: -.02em; }
+.h2  { font-family: var(--font-head); font-weight: 700; font-size: 40px; line-height: 1.1;  letter-spacing: -.015em; color: var(--navy); }
+.h3  { font-family: var(--font-head); font-weight: 700; font-size: 23px; line-height: 1.2; }
+
+.pagehead { position: absolute; left: 64px; top: 60px; max-width: 1000px; }
+.pagehead .kicker { margin-bottom: 12px; }
+
+/* ------------------------------------------------------------ lower third */
+.lower { position: absolute; left: 64px; bottom: 40px; max-width: 900px; opacity: 0; }
+.lower .kicker { margin-bottom: 8px; }
+.lower .h3 { color: var(--navy); }
+/* the caption lands after its scene's main action has resolved */
+.scene.play .lower { animation: rise .55s cubic-bezier(.16,1,.3,1) both; }
+.scene.play#s2  .lower { animation-delay: 2.6s; }
+.scene.play#s3  .lower { animation-delay: 2.2s; }
+.scene.play#s4  .lower { animation-delay: 3.2s; }
+.scene.play#s5  .lower { animation-delay: 4.2s; }
+.scene.play#s6  .lower { animation-delay: 2.2s; }
+.scene.play#s6b .lower { animation-delay: 4.8s; }
+.scene.play#s7  .lower { animation-delay: 2.2s; }
+.scene.play#s8  .lower { animation-delay: 3.6s; }
+.scene.play#s9  .lower { animation-delay: 4.4s; }
+
+/* -------------------------------------------------------- app chrome mock */
+.app { position: absolute; inset: 0; display: flex; background: var(--surface); }
+.rail {
+  width: 56px; flex: none; border-right: 1px solid var(--line); background: var(--surface);
+  display: flex; flex-direction: column; align-items: center; padding: 12px 0; gap: 6px;
+}
+.rail .logo { display: block; line-height: 0; margin-bottom: 10px; }
+.rail .ico { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; color: var(--faint); }
+.rail .ico svg { width: 17px; height: 17px; }
+.rail .ico.on { background: var(--light); color: var(--navy); }
+
+.pane { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.pane-top {
+  height: 58px; flex: none; border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: 13px; padding: 0 26px;
+}
+.pane-top .t { font-family: var(--font-head); font-weight: 700; font-size: 20px; color: var(--navy); }
+.pane-top .sub2 { font-size: 13px; color: var(--muted); }
+.pane-top .spacer { flex: 1; }
+.pane-top .pill { padding: 5px 13px; border-radius: 999px; border: 1.5px solid var(--orange); font-size: 13.5px; color: var(--navy); }
+.pane-top .chipflat {
+  padding: 5px 12px; border-radius: 8px; background: var(--light); color: var(--navy);
+  font-family: var(--font-head); font-weight: 700; font-size: 11px; letter-spacing: .09em;
+}
+/* bottom padding leaves room for the lower-third caption */
+.pane-body { flex: 1; min-height: 0; padding: 18px 26px 112px; overflow: hidden; }
+
+/* generic card */
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--e-sm); }
+.btn-navy {
+  height: 46px; border-radius: 10px; background: var(--navy); color: var(--light);
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  font-family: var(--font-head); font-weight: 700; font-size: 15.5px; box-shadow: var(--e-md);
+}
+.btn-navy svg { width: 16px; height: 16px; }
+
+/* =================================================================== S1 */
+#s1 { display: grid; place-items: center; }
+#s1 .wrap { text-align: center; max-width: 1120px; }
+#s1 .h1 { color: var(--light); }
+#s1 .h1 .dim { color: rgba(235,235,237,.4); display: block; margin-top: 12px; }
+#s1 .rule { width: 0; height: 2px; margin: 40px auto 0; background: linear-gradient(90deg, var(--orange), rgba(254,149,67,0)); }
+.scene.play#s1 .l1   { animation: rise .7s cubic-bezier(.16,1,.3,1) .25s both; }
+.scene.play#s1 .l2   { animation: rise .7s cubic-bezier(.16,1,.3,1) 1.05s both; }
+.scene.play#s1 .rule { animation: grow 1.2s cubic-bezier(.16,1,.3,1) 1.75s both; }
+
+/* =================================================================== S2  connect GitHub */
+#s2 .grid2 { display: grid; grid-template-columns: 430px 1fr; gap: 26px; height: 100%; }
+#s2 .ghbtn {
+  display: flex; align-items: center; gap: 11px; padding: 15px 18px;
+  border-radius: 11px; background: var(--ink); color: #fff;
+  font-family: var(--font-head); font-weight: 700; font-size: 16px;
+  box-shadow: var(--e-md); opacity: 0;
+}
+#s2 .ghbtn svg { width: 21px; height: 21px; flex: none; }
+.scene.play#s2 .ghbtn { animation: rise .5s cubic-bezier(.16,1,.3,1) .2s both; }
+
+#s2 .field { margin-top: 22px; opacity: 0; }
+#s2 .field .lbl { font-size: 12.5px; color: var(--muted); margin-bottom: 7px; }
+#s2 .field .inp {
+  height: 42px; border: 1px solid var(--line); border-radius: 9px;
+  display: flex; align-items: center; padding: 0 13px; gap: 9px;
+  font-size: 15px; color: var(--ink); background: var(--surface);
+}
+#s2 .field .inp .caret { width: 2px; height: 18px; background: var(--orange); }
+#s2 .field .inp .chev { margin-left: auto; color: var(--faint); }
+.scene.play#s2 .f1 { animation: rise .5s cubic-bezier(.16,1,.3,1) .7s both; }
+.scene.play#s2 .f2 { animation: rise .5s cubic-bezier(.16,1,.3,1) .9s both; }
+
+#s2 .repos { padding: 6px; }
+#s2 .repohead {
+  display: flex; align-items: center; gap: 9px; padding: 11px 13px 12px;
+  font-size: 12.5px; color: var(--muted); border-bottom: 1px solid var(--line);
+}
+#s2 .repo {
+  display: flex; align-items: center; gap: 12px; padding: 11px 13px;
+  border-radius: 8px; opacity: 0;
+}
+#s2 .repo .box {
+  width: 18px; height: 18px; border-radius: 5px; border: 1.5px solid var(--line);
+  flex: none; display: grid; place-items: center; background: var(--surface);
+}
+#s2 .repo .box svg { width: 11px; height: 11px; color: #fff; opacity: 0; }
+#s2 .repo .nm { font-family: var(--mono); font-size: 14px; color: var(--ink); }
+#s2 .repo .tag {
+  margin-left: auto; font-size: 11px; padding: 2px 7px; border-radius: 5px;
+  background: var(--light); color: var(--muted); font-family: var(--font-head); font-weight: 700;
+}
+#s2 .repo.pick .box { background: var(--navy); border-color: var(--navy); }
+#s2 .repo.pick .box svg { opacity: 1; }
+.scene.play#s2 .repo { animation: rowIn .4s cubic-bezier(.16,1,.3,1) both; }
+.scene.play#s2 .repo.pick { animation: rowIn .4s cubic-bezier(.16,1,.3,1) both, tickBg .35s ease-out both; }
+
+#s2 .import { margin-top: 18px; opacity: 0; }
+.scene.play#s2 .import { animation: rise .5s cubic-bezier(.16,1,.3,1) 3.1s both; }
+
+/* =================================================================== S3  connectors */
+#s3 .field { position: relative; height: 470px; margin-top: 34px; }
+#s3 .dock {
+  position: absolute; left: 50%; top: 50%; width: 234px; height: 234px;
+  border-radius: 26px; background: var(--navy); box-shadow: var(--e-lg);
+  display: grid; place-content: center; justify-items: center; gap: 6px;
+  opacity: 0;
+}
+#s3 .dock .name { font-family: var(--font-head); font-weight: 700; font-size: 29px; color: var(--light); }
+#s3 .dock .meta { font-size: 12px; color: rgba(235,235,237,.5); }
+#s3 .dock .halo { position: absolute; inset: -20px; border-radius: 34px; border: 1.5px solid rgba(254,149,67,.3); opacity: 0; }
+.scene.play#s3 .dock { animation: dockPop .6s cubic-bezier(.16,1,.3,1) .2s both; }
+.scene.play#s3 .dock .halo { animation: halo 2.4s ease-out 1.4s infinite; }
+
+#s3 .chip {
+  position: absolute; display: flex; align-items: center; gap: 10px;
+  padding: 11px 16px; background: var(--surface); border: 1px solid var(--line);
+  border-radius: 11px; box-shadow: var(--e-md); font-size: 15.5px; color: var(--ink);
+  white-space: nowrap; opacity: 0;
+}
+#s3 .chip .dotmark { width: 8px; height: 8px; border-radius: 3px; flex: none; }
+#s3 .chip .tick {
+  width: 17px; height: 17px; border-radius: 50%; background: var(--green);
+  display: grid; place-items: center; transform: scale(0);
+}
+#s3 .chip .tick svg { width: 10px; height: 10px; }
+#s3 .chip .note { font-size: 11.5px; color: var(--faint); }
+.scene.play#s3 .chip { animation: flyIn .75s cubic-bezier(.16,1,.3,1) both; }
+.scene.play#s3 .chip .tick { animation: pop .3s cubic-bezier(.34,1.56,.64,1) both; }
+
+#s3 svg.threads { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+#s3 .thread { fill: none; stroke: var(--purple); stroke-width: 1.4; stroke-dasharray: 4 5; opacity: .45; stroke-dashoffset: 300; }
+.scene.play#s3 .thread { animation: dash 1s linear both; }
+
+/* =================================================================== S4  scan code */
+#s4 .split { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; height: 470px; margin-top: 30px; }
+
+#s4 .codebox {
+  background: var(--navy); border-radius: 13px; padding: 18px 20px;
+  overflow: hidden; box-shadow: var(--e-lg); position: relative; opacity: 0;
+}
+.scene.play#s4 .codebox { animation: rise .5s cubic-bezier(.16,1,.3,1) .15s both; }
+#s4 .codebox .fname {
+  font-family: var(--mono); font-size: 12px; color: rgba(235,235,237,.45);
+  padding-bottom: 12px; border-bottom: 1px solid rgba(235,235,237,.1); margin-bottom: 12px;
+}
+#s4 .code { font-family: var(--mono); font-size: 12.5px; line-height: 1.85; white-space: pre; }
+#s4 .code .cl { display: block; color: rgba(235,235,237,.42); opacity: 0; }
+#s4 .code .tg { color: var(--purple); }
+#s4 .code .at { color: #9fb4e8; }
+#s4 .code .st { color: var(--green); }
+#s4 .code .hl { background: rgba(254,149,67,.16); box-shadow: -6px 0 0 rgba(254,149,67,.16), 6px 0 0 rgba(254,149,67,.16); }
+.scene.play#s4 .code .cl { animation: logIn .3s ease-out both; }
+
+#s4 .facts { display: flex; flex-direction: column; gap: 9px; }
+#s4 .fact {
+  display: flex; align-items: center; gap: 12px; padding: 12px 15px;
+  background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--purple);
+  border-radius: 9px; box-shadow: var(--e-sm); opacity: 0;
+}
+#s4 .fact .k {
+  font-family: var(--font-head); font-weight: 700; font-size: 9.5px; letter-spacing: .11em;
+  color: var(--purple); width: 78px; flex: none;
+}
+#s4 .fact .v { font-family: var(--mono); font-size: 13px; color: var(--ink); }
+#s4 .fact.rt { border-left-color: var(--orange); }
+#s4 .fact.rt .k { color: var(--orange); }
+.scene.play#s4 .fact { animation: rowIn .45s cubic-bezier(.16,1,.3,1) both; }
+
+/* =================================================================== S5  packs */
+#s5 .wb { display: grid; grid-template-columns: 250px 1fr 300px; gap: 20px; height: 100%; }
+#s5 .col { display: flex; flex-direction: column; gap: 9px; }
+#s5 .coltitle {
+  font-family: var(--font-head); font-weight: 700; font-size: 11px; letter-spacing: .12em;
+  color: var(--faint); margin-bottom: 3px;
+}
+#s5 .packitem {
+  padding: 11px 13px; border-radius: 9px; border: 1px solid var(--line);
+  background: var(--surface); font-size: 14px; color: var(--ink); opacity: 0;
+}
+#s5 .packitem .d { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+#s5 .packitem.on { border-color: var(--navy); border-left: 3px solid var(--orange); box-shadow: var(--e-sm); }
+.scene.play#s5 .packitem { animation: rowIn .4s cubic-bezier(.16,1,.3,1) both; }
+
+#s5 .doccard { padding: 15px 17px; border-radius: 11px; border: 1px solid var(--line); background: var(--surface); box-shadow: var(--e-sm); opacity: 0; }
+#s5 .doccard .nm { font-family: var(--mono); font-size: 13.5px; color: var(--navy); }
+#s5 .doccard .secs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+#s5 .doccard .sec {
+  font-size: 11.5px; padding: 4px 9px; border-radius: 6px;
+  background: var(--canvas); border: 1px solid var(--line); color: var(--muted);
+}
+#s5 .doccard .sec.add { border-color: var(--green); background: rgba(160,224,111,.16); color: #3f6b16; opacity: 0; }
+.scene.play#s5 .doccard { animation: rise .45s cubic-bezier(.16,1,.3,1) both; }
+.scene.play#s5 .doccard .sec.add { animation: pop .35s cubic-bezier(.34,1.56,.64,1) both; }
+
+#s5 .instr { margin-top: 12px; opacity: 0; }
+#s5 .instr .lbl { font-size: 11.5px; color: var(--muted); margin-bottom: 6px; }
+#s5 .instr .ta {
+  border: 1px solid var(--line); border-radius: 9px; padding: 11px 13px;
+  font-size: 13.5px; line-height: 1.5; color: var(--ink); min-height: 74px; background: var(--surface);
+}
+#s5 .instr .ta .caret { display: inline-block; width: 2px; height: 15px; background: var(--orange); vertical-align: -2px; }
+.scene.play#s5 .instr { animation: rise .45s cubic-bezier(.16,1,.3,1) 1.5s both; }
+
+#s5 .side { display: flex; flex-direction: column; gap: 10px; }
+#s5 .status {
+  display: flex; align-items: center; gap: 9px; padding: 12px 14px; border-radius: 9px;
+  background: rgba(160,224,111,.14); border: 1px solid rgba(160,224,111,.5);
+  font-size: 13.5px; color: #3f6b16; font-family: var(--font-head); font-weight: 700; opacity: 0;
+}
+#s5 .status svg { width: 15px; height: 15px; flex: none; }
+#s5 .aibtn {
+  display: flex; align-items: center; gap: 9px; padding: 12px 14px; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--surface); font-size: 13.5px; color: var(--navy); opacity: 0;
+}
+#s5 .aibtn svg { width: 15px; height: 15px; color: var(--purple); }
+.scene.play#s5 .aibtn  { animation: rise .4s cubic-bezier(.16,1,.3,1) 2.6s both; }
+.scene.play#s5 .status { animation: rise .4s cubic-bezier(.16,1,.3,1) 3.4s both; }
+.scene.play#s5 .usebtn { animation: rise .45s cubic-bezier(.16,1,.3,1) 3.8s both; opacity: 0; }
+
+/* =================================================================== S6  docs */
+#s6 .rows { margin-top: 12px; }
+#s6 .row {
+  display: flex; align-items: center; gap: 13px; height: 41px;
+  border-bottom: 1px solid var(--line); opacity: 0;
+}
+#s6 .row .fi { width: 16px; height: 16px; color: var(--purple); flex: none; }
+#s6 .row .nm { font-family: var(--mono); font-size: 14.5px; color: var(--ink); }
+#s6 .row .sz { font-size: 13px; color: var(--muted); }
+#s6 .row .acts { margin-left: auto; display: flex; gap: 15px; color: var(--faint); }
+#s6 .row .acts svg { width: 15px; height: 15px; }
+#s6 .genbtn { opacity: 0; }
+.scene.play#s6 .genbtn { animation: rise .45s cubic-bezier(.16,1,.3,1) .15s both; }
+.scene.play#s6 .row { animation: rowIn .35s cubic-bezier(.16,1,.3,1) both; }
+#s6 .lower { background: var(--surface); padding-right: 24px; }
+
+/* =================================================================== S6b  inside a document */
+#s6b .docwrap { display: grid; grid-template-columns: 190px 1fr; gap: 26px; height: 100%; }
+
+#s6b .toc { display: flex; flex-direction: column; gap: 3px; padding-top: 4px; }
+#s6b .toc .ti {
+  font-size: 12.5px; padding: 6px 10px; border-radius: 7px; border-left: 2px solid transparent;
+  color: var(--faint); transition: all .35s ease;
+}
+#s6b .toc .ti.on { color: var(--navy); border-left-color: var(--orange); background: var(--canvas); font-family: var(--font-head); font-weight: 700; }
+
+/* Shorter than the document, so the scroll actually travels and the page is
+   full at every point of the journey. */
+#s6b .docpage {
+  position: relative; align-self: start; height: 560px;
+  overflow: hidden; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--surface); box-shadow: var(--e-sm); opacity: 0;
+}
+.scene.play#s6b .docpage { animation: rise .5s cubic-bezier(.16,1,.3,1) .15s both; }
+#s6b .docpage::after,                        /* soften both cut edges of the page */
+#s6b .docpage::before {
+  content: ""; position: absolute; left: 0; right: 0; height: 52px;
+  pointer-events: none; z-index: 2;
+}
+#s6b .docpage::after  { bottom: 0; background: linear-gradient(0deg,  #fff, rgba(255,255,255,0)); }
+#s6b .docpage::before { top: 0;    background: linear-gradient(180deg, #fff, rgba(255,255,255,0)); }
+/* generous bottom padding keeps the last table row clear of the bottom fade
+   once the scroll reaches the end */
+#s6b .docscroll { padding: 26px 32px 78px; will-change: transform; }
+.scene.play#s6b .docscroll { animation: scrollDoc 5.6s cubic-bezier(.4,0,.5,1) .8s both; }
+
+/* markdown-ish prose */
+#s6b .prose h1 { font-family: var(--font-head); font-weight: 700; font-size: 26px; color: var(--navy); }
+#s6b .prose h2 {
+  font-family: var(--font-head); font-weight: 700; font-size: 17px; color: var(--navy);
+  margin: 22px 0 10px; padding-bottom: 7px; border-bottom: 1px solid var(--line);
+}
+#s6b .prose h3 { font-family: var(--font-head); font-weight: 700; font-size: 14.5px; color: var(--ink); margin: 16px 0 8px; }
+#s6b .prose p  { font-size: 13px; line-height: 1.6; color: var(--ink); margin: 6px 0; }
+#s6b .prose p b { color: var(--navy); }
+#s6b .prose code {
+  font-family: var(--mono); font-size: 12px; background: var(--canvas);
+  border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; color: var(--purple);
+}
+#s6b .prose table { width: 100%; border-collapse: collapse; margin: 10px 0 4px; }
+#s6b .prose th {
+  font-family: var(--font-head); font-weight: 700; font-size: 10.5px; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--muted); text-align: left;
+  padding: 7px 9px; border-bottom: 1.5px solid var(--line); background: var(--canvas);
+}
+#s6b .prose td {
+  font-size: 11.5px; padding: 7px 9px; border-bottom: 1px solid var(--line);
+  color: var(--ink); vertical-align: top;
+}
+#s6b .prose td.m { font-family: var(--mono); font-size: 11px; }
+#s6b .prose .cf {
+  font-family: var(--font-head); font-weight: 700; font-size: 9.5px; letter-spacing: .06em;
+  padding: 2px 7px; border-radius: 5px; background: rgba(160,224,111,.24); color: #3f6b16;
+}
+#s6b .prose .cf.med { background: rgba(254,149,67,.2); color: #8a4a06; }
+#s6b .prose pre {
+  background: var(--navy); border-radius: 9px; padding: 15px 17px; margin: 10px 0 4px;
+  overflow: hidden;
+}
+#s6b .prose pre code {
+  display: block; background: none; border: none; padding: 0;
+  font-size: 11.5px; line-height: 1.75; color: rgba(235,235,237,.75); white-space: pre;
+}
+#s6b .prose pre .kw { color: var(--orange); }
+#s6b .prose pre .fn { color: #9fb4e8; }
+#s6b .prose pre .st { color: var(--green); }
+
+/* ======================================================== S7/S9 topology */
+.topocanvas { position: relative; width: 1400px; height: 470px; }
+.topocanvas .colhead {
+  position: absolute; top: 0; font-family: var(--font-head); font-weight: 700;
+  font-size: 11.5px; letter-spacing: .14em; color: var(--purple); opacity: 0;
+}
+.topocanvas .node {
+  position: absolute; width: 234px; background: var(--surface);
+  border: 1px solid var(--line); border-left: 3px solid var(--purple);
+  border-radius: 10px; padding: 10px 13px 11px; box-shadow: var(--e-sm); opacity: 0;
+}
+.topocanvas .node .k { font-family: var(--font-head); font-weight: 700; font-size: 9px; letter-spacing: .12em; color: var(--purple); }
+.topocanvas .node .n { font-family: var(--font-head); font-weight: 700; font-size: 14.5px; color: var(--navy); margin-top: 3px; }
+.topocanvas .node .d {
+  font-size: 11px; line-height: 1.35; color: var(--muted); margin-top: 4px;
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.topocanvas .node .b {
+  display: inline-block; margin-top: 6px; padding: 2px 7px; border-radius: 5px;
+  font-size: 9px; font-family: var(--font-head); font-weight: 700;
+  background: rgba(160,224,111,.22); color: #3f6b16;
+}
+.topocanvas .node .b.warn { background: rgba(254,149,67,.2); color: #8a4a06; }
+.topocanvas .node.core { background: var(--navy); border-color: var(--navy); border-left-color: var(--orange); box-shadow: var(--e-lg); }
+.topocanvas .node.core .k { color: var(--orange); }
+.topocanvas .node.core .n { color: var(--light); font-size: 15.5px; }
+.topocanvas .node.core .d { color: rgba(235,235,237,.6); }
+.topocanvas .node.core .b { background: rgba(160,224,111,.2); color: var(--green); }
+.topocanvas svg.wires { position: absolute; inset: 0; width: 1400px; height: 470px; overflow: visible; }
+.topocanvas .wire { fill: none; stroke: var(--purple); stroke-width: 1.4; stroke-dasharray: 900; stroke-dashoffset: 900; opacity: .5; }
+
+.scene.play .topocanvas .colhead { animation: fade .4s ease-out both; }
+.scene.play .topocanvas .node    { animation: nodeIn .45s cubic-bezier(.16,1,.3,1) both; }
+.scene.play .topocanvas .wire    { animation: draw .75s ease-out both; }
+
+#s7 .lower { background: linear-gradient(90deg, rgba(255,255,255,.97) 62%, rgba(255,255,255,0)); padding-right: 40px; }
+
+/* =================================================================== S8  drill down */
+#s8 .crumb { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+#s8 .crumb .c { color: var(--muted); opacity: 0; }
+#s8 .crumb .c.here { color: var(--navy); font-family: var(--font-head); font-weight: 700; }
+#s8 .crumb .sep { color: var(--faint); opacity: 0; }
+.scene.play#s8 .crumb .c, .scene.play#s8 .crumb .sep { animation: fade .35s ease-out both; }
+
+#s8 .split { display: grid; grid-template-columns: 1fr 320px; gap: 22px; height: 100%; }
+/* fixed size so the SVG coordinate system matches the node pixel positions —
+   a stretched viewBox pulls the lineage edges off the nodes */
+#s8 .chain { position: relative; width: 1000px; height: 420px; }
+#s8 .jn {
+  position: absolute; width: 168px; padding: 11px 13px; border-radius: 10px;
+  background: var(--surface); border: 1px solid var(--line); box-shadow: var(--e-sm); opacity: 0;
+}
+#s8 .jn .kk { font-family: var(--mono); font-size: 10px; color: var(--purple); }
+#s8 .jn .nn { font-family: var(--font-head); font-weight: 700; font-size: 14px; color: var(--navy); margin-top: 3px; }
+#s8 .jn .dd { font-size: 10.5px; color: var(--muted); margin-top: 3px; }
+#s8 .jn.fail { border-color: var(--orange); border-width: 1.5px; background: #fff8f1; }
+#s8 .jn.fail .nn { color: #8a4a06; }
+#s8 .jn.dimmed { opacity: .28 !important; }
+.scene.play#s8 .jn { animation: nodeIn .4s cubic-bezier(.16,1,.3,1) both; }
+
+#s8 svg.lin { position: absolute; left: 0; top: 0; width: 1000px; height: 420px; overflow: visible; }
+#s8 .lw { fill: none; stroke: var(--purple); stroke-width: 1.5; stroke-dasharray: 400; stroke-dashoffset: 400; opacity: .5; }
+#s8 .lw.hot { stroke: var(--orange); stroke-width: 2.2; opacity: .95; }
+.scene.play#s8 .lw { animation: draw .6s ease-out both; }
+
+#s8 .inspector {
+  border-left: 1px solid var(--line); padding-left: 20px;
+  display: flex; flex-direction: column; gap: 12px; opacity: 0;
+}
+.scene.play#s8 .inspector { animation: slideL .5s cubic-bezier(.16,1,.3,1) 2.5s both; }
+#s8 .inspector .ih { font-family: var(--font-head); font-weight: 700; font-size: 15px; color: var(--navy); }
+#s8 .inspector .kv { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+#s8 .inspector .kv span:first-child { color: var(--muted); }
+#s8 .inspector .kv span:last-child { font-family: var(--mono); color: var(--ink); }
+#s8 .inspector .fl { font-family: var(--mono); font-size: 11.5px; color: var(--ink); padding: 5px 0; opacity: 0; }
+#s8 .inspector .fl i { color: var(--orange); font-style: normal; }
+.scene.play#s8 .inspector .fl { animation: rowIn .35s ease-out both; }
+#s8 .inspector .rt {
+  margin-top: 10px; padding: 11px 13px; border-radius: 9px;
+  background: #fff8f1; border: 1px solid rgba(254,149,67,.5); font-size: 12.5px; color: #8a4a06;
+}
+
+/* =================================================================== S9  ask on page */
+#s9 .withrail { display: flex; height: 100%; gap: 0; }
+#s9 .left { flex: 1; min-width: 0; overflow: hidden; }
+#s9 .topocanvas { transform: scale(.74); transform-origin: top left; }
+#s9 .rail2 {
+  width: 344px; flex: none; border-left: 1px solid var(--line);
+  padding: 0 0 0 20px; display: flex; flex-direction: column; gap: 12px;
+}
+#s9 .rail2 .rh { display: flex; align-items: center; gap: 8px; font-family: var(--font-head); font-weight: 700; font-size: 15px; color: var(--navy); }
+#s9 .rail2 .rh svg { width: 15px; height: 15px; }
+#s9 .rail2 .scope {
+  align-self: flex-start; display: flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 999px; background: var(--light);
+  font-size: 11.5px; color: var(--navy); font-family: var(--font-head); font-weight: 700;
+}
+#s9 .rail2 .hint { font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+#s9 .rail2 .sug {
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px;
+  font-size: 12.5px; line-height: 1.4; color: var(--ink); background: var(--surface); opacity: 0;
+}
+.scene.play#s9 .rail2 .sug { animation: rowIn .35s ease-out both; }
+
+#s9 .qbubble {
+  align-self: flex-end; max-width: 300px; padding: 10px 13px; border-radius: 11px 11px 3px 11px;
+  background: var(--navy); color: var(--light); font-size: 13.5px; line-height: 1.45; opacity: 0;
+}
+#s9 .qbubble .caret { display: inline-block; width: 2px; height: 14px; background: var(--orange); vertical-align: -2px; }
+#s9 .abubble {
+  padding: 12px 14px; border-radius: 11px 11px 11px 3px; background: var(--canvas);
+  border: 1px solid var(--line); font-size: 13px; line-height: 1.55; color: var(--ink); opacity: 0;
+}
+#s9 .abubble .w { opacity: 0; }
+#s9 .targets { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 11px; }
+#s9 .targets .tg {
+  display: flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 7px;
+  background: var(--surface); border: 1px solid var(--purple); font-size: 11.5px;
+  color: var(--navy); font-family: var(--mono); opacity: 0;
+}
+#s9 .targets .tg .sq { width: 6px; height: 6px; border-radius: 2px; background: var(--orange); }
+.scene.play#s9 .targets .tg { animation: pop .35s cubic-bezier(.34,1.56,.64,1) both; }
+#s9 .composer2 {
+  margin-top: 14px; border: 1px solid var(--line); border-radius: 11px;
+  padding: 11px 13px; display: flex; align-items: center; gap: 10px;
+  font-size: 13px; color: var(--faint); background: var(--surface);
+}
+#s9 .composer2 .up { margin-left: auto; width: 26px; height: 26px; border-radius: 50%; background: var(--light); display: grid; place-items: center; color: var(--navy); }
+#s9 .composer2 .up svg { width: 12px; height: 12px; }
+
+/* nodes the answer points at get called out */
+#s9 .topocanvas .node.tgt { border-color: var(--orange); border-left-color: var(--orange); box-shadow: 0 0 0 3px rgba(254,149,67,.16), var(--e-md); }
+
+/* =================================================================== S10 */
+#s10 { display: grid; place-items: center; }
+#s10 .wrap { text-align: center; max-width: 1180px; }
+#s10 .kicker { margin-bottom: 22px; opacity: 0; }
+#s10 .h1 { color: var(--light); opacity: 0; }
+#s10 .h1 em { font-style: normal; color: var(--orange); }
+#s10 .logo { margin: 46px auto 0; opacity: 0; }
+#s10 .tag { margin-top: 16px; font-size: 17px; letter-spacing: .06em; color: rgba(235,235,237,.5); opacity: 0; }
+.scene.play#s10 .kicker { animation: fade .55s ease-out .15s both; }
+.scene.play#s10 .h1     { animation: rise .7s cubic-bezier(.16,1,.3,1) .4s both; }
+.scene.play#s10 .logo   { animation: rise .6s cubic-bezier(.16,1,.3,1) 1.2s both; }
+.scene.play#s10 .tag    { animation: fade .6s ease-out 1.55s both; }
+
+/* -------------------------------------------------------------- keyframes */
+@keyframes rise    { from { opacity: 0; transform: translateY(22px); } to { opacity: 1; transform: none; } }
+@keyframes slideL  { from { opacity: 0; transform: translateX(26px); } to { opacity: 1; transform: none; } }
+@keyframes fade    { from { opacity: 0; } to { opacity: 1; } }
+@keyframes grow    { from { width: 0; } to { width: var(--w, 100%); } }
+@keyframes pop     { from { opacity: 0; transform: scale(.72); } to { opacity: 1; transform: scale(1); } }
+@keyframes dash    { to { stroke-dashoffset: 0; } }
+@keyframes draw    { to { stroke-dashoffset: 0; } }
+@keyframes logIn   { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
+@keyframes rowIn   { from { opacity: 0; transform: translateX(-18px); } to { opacity: 1; transform: none; } }
+@keyframes nodeIn  { from { opacity: 0; transform: translateY(12px) scale(.96); } to { opacity: 1; transform: none; } }
+@keyframes halo    { 0% { opacity: .8; transform: scale(1); } 100% { opacity: 0; transform: scale(1.14); } }
+@keyframes tickBg  { from { background: rgba(254,149,67,.14); } to { background: transparent; } }
+@keyframes flyIn {
+  from { opacity: 0; transform: translate(var(--fx), var(--fy)) scale(.88); }
+  55%  { opacity: 1; }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes dockPop {
+  from { opacity: 0; transform: translate(-50%,-50%) scale(.86); }
+  to   { opacity: 1; transform: translate(-50%,-50%) scale(1); }
+}
+/* --scroll is set per-render from the document's actual overflow */
+@keyframes scrollDoc {
+  0%   { transform: translateY(0); }
+  18%  { transform: translateY(0); }
+  100% { transform: translateY(var(--scroll, -600px)); }
+}
+
+/* ----------------------------------------------------------------- cursor */
+/* Sits above every scene so the viewer can see what is being clicked. */
+#cursorlayer { position: absolute; inset: 0; pointer-events: none; z-index: 50; }
+
+#cursor {
+  position: absolute; left: 0; top: 0; width: 30px; height: 30px;
+  opacity: 0; transition: opacity .25s ease;
+  filter: drop-shadow(0 2px 5px rgba(0,30,77,.35));
+}
+#cursor.on { opacity: 1; }
+#cursor.press { transform-origin: 20% 10%; }
+#cursor svg { width: 100%; height: 100%; display: block; }
+
+/* expanding ring at the click point */
+.ripple {
+  position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px;
+  border-radius: 50%; border: 2.5px solid var(--orange);
+  animation: ripple .6s cubic-bezier(.2,.8,.3,1) forwards;
+}
+@keyframes ripple {
+  from { opacity: .95; transform: scale(.35); }
+  to   { opacity: 0;   transform: scale(3.4); }
+}
+
+/* the element being clicked gets a brief ring — box-shadow only, so it never
+   fights with the transform-based entrance animations */
+.clickflash {
+  box-shadow: 0 0 0 3px rgba(254,149,67,.55), 0 0 0 6px rgba(254,149,67,.16) !important;
+  transition: box-shadow .12s ease;
+}
+
+/* --------------------------------------------------------------- controls */
+#ui {
+  flex: none; padding: 13px 22px;
+  display: flex; align-items: center; gap: 16px;
+  background: #05080f; border-top: 1px solid rgba(235,235,237,.08);
+  transition: opacity .35s ease;
+}
+#ui.hide { opacity: .18; }
+body.clean #ui { display: none; }
+#ui button {
+  appearance: none; border: 1px solid rgba(235,235,237,.22);
+  background: rgba(235,235,237,.06); color: var(--light);
+  font-family: var(--font-head); font-weight: 700; font-size: 12px;
+  letter-spacing: .1em; text-transform: uppercase; padding: 8px 15px;
+  border-radius: 8px; cursor: pointer; transition: background .15s ease;
+}
+#ui button:hover { background: rgba(235,235,237,.15); }
+#track { flex: 1; height: 3px; border-radius: 2px; background: rgba(235,235,237,.16); overflow: hidden; }
+#fill { height: 100%; width: 0; background: var(--orange); }
+#clock { font-family: var(--mono); font-size: 12px; color: rgba(235,235,237,.55); font-variant-numeric: tabular-nums; min-width: 84px; text-align: right; }
+#label { font-family: var(--font-head); font-weight: 700; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: rgba(235,235,237,.4); min-width: 190px; }
+</style>
+</head>
+<body>
+
+<div id="viewport">
+ <div id="stagearea">
+  <div id="stage">
+
+    <!-- ============================================== S1  cold open -->
+    <section class="scene scene--dark" id="s1">
+      <div class="wrap">
+        <h1 class="h1">
+          <span class="l1" data-cfg="cold.line1"></span>
+          <span class="dim l2" data-cfg="cold.line2"></span>
+        </h1>
+        <div class="rule" style="--w:200px"></div>
+      </div>
+    </section>
+
+    <!-- ============================================== S2  connect GitHub -->
+    <section class="scene" id="s2">
+      <div class="app">
+        <nav class="rail"></nav>
+        <div class="pane">
+          <div class="pane-top">
+            <span class="t">Sources</span>
+            <span class="sub2" data-cfg="github.sub"></span>
+          </div>
+          <div class="pane-body">
+            <div class="grid2">
+              <div>
+                <div class="ghbtn">
+                  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.7.5.6 5.6.6 11.9c0 5 3.3 9.3 7.8 10.8.6.1.8-.2.8-.6v-2.2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.8 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.4 3.3 18.4 3.6 18.4 3.6c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.5-2.7 5.5-5.3 5.8.4.4.8 1.1.8 2.2v3.3c0 .4.2.7.8.6 4.6-1.5 7.8-5.8 7.8-10.8C23.4 5.6 18.3.5 12 .5z"/></svg>
+                  Connect with GitHub App
+                </div>
+                <div class="field f1">
+                  <div class="lbl">GitHub owner</div>
+                  <div class="inp"><span data-cfg="github.owner"></span>
+                    <span class="chev">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+                    </span>
+                  </div>
+                </div>
+                <div class="field f2">
+                  <div class="lbl">Project name / ID</div>
+                  <div class="inp"><span class="typedproj"></span><span class="caret"></span></div>
+                </div>
+              </div>
+              <div>
+                <div class="card repos">
+                  <div class="repohead" data-cfg="github.reposHint"></div>
+                  <div class="repolist"></div>
+                </div>
+                <div class="import btn-navy">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 21h16"/></svg>
+                  Import repository
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="lower">
+        <div class="kicker" data-cfg="github.lowKicker"></div>
+        <div class="h3" data-cfg="github.low"></div>
+      </div>
+    </section>
+
+    <!-- ============================================== S3  connectors -->
+    <section class="scene scene--soft" id="s3">
+      <div class="pagehead">
+        <div class="kicker" data-cfg="connect.kicker"></div>
+        <h2 class="h2" data-cfg="connect.head"></h2>
+      </div>
+      <div style="position:absolute;left:64px;right:64px;top:188px;">
+        <div class="field">
+          <svg class="threads" viewBox="0 0 1456 470" preserveAspectRatio="none"></svg>
+          <div class="dock">
+            <span class="halo"></span>
+            <span class="name" data-cfg="brand.product"></span>
+            <span class="meta" data-cfg="connect.dockMeta"></span>
+          </div>
+        </div>
+      </div>
+      <div class="lower">
+        <div class="kicker" data-cfg="connect.lowKicker"></div>
+        <div class="h3" data-cfg="connect.low"></div>
+      </div>
+    </section>
+
+    <!-- ============================================== S4  scan the code -->
+    <section class="scene scene--soft" id="s4">
+      <div class="pagehead">
+        <div class="kicker" data-cfg="scan.kicker"></div>
+        <h2 class="h2" data-cfg="scan.head"></h2>
+      </div>
+      <div style="position:absolute;left:64px;right:64px;top:180px;">
+        <div class="split">
+          <div class="codebox">
+            <div class="fname" data-cfg="scan.file"></div>
+            <div class="code"></div>
+          </div>
+          <div class="facts"></div>
+        </div>
+      </div>
+      <div class="lower">
+        <div class="kicker" data-cfg="scan.lowKicker"></div>
+        <div class="h3" data-cfg="scan.low"></div>
+      </div>
+    </section>
+
+    <!-- ============================================== S5  packs -->
+    <section class="scene" id="s5">
+      <div class="app">
+        <nav class="rail"></nav>
+        <div class="pane">
+          <div class="pane-top">
+            <span class="t">Pack Architect</span>
+            <span class="sub2" data-cfg="packs.sub"></span>
+            <span class="spacer"></span>
+            <span class="chipflat">AUTHORING</span>
+          </div>
+          <div class="pane-body">
+            <div class="wb">
+              <div class="col">
+                <div class="coltitle">MY PACKS</div>
+                <div class="packlist"></div>
+              </div>
+              <div class="col">
+                <div class="coltitle">DOCUMENTS IN THIS PACK</div>
+                <div class="doclist"></div>
+                <div class="instr">
+                  <div class="lbl">Instructions</div>
+                  <div class="ta"><span class="typedinstr"></span><span class="caret"></span></div>
+                </div>
+              </div>
+              <div class="side">
+                <div class="coltitle">&nbsp;</div>
+                <div class="aibtn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v4"/><path d="M12 17v4"/><path d="M3 12h4"/><path d="M17 12h4"/><path d="M7.5 7.5l2.5 2.5"/><path d="M14 14l2.5 2.5"/></svg>
+                  <span data-cfg="packs.aiLabel"></span>
+                </div>
+                <div class="status">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M20 6 9 17l-5-5"/></svg>
+                  <span data-cfg="packs.status"></span>
+                </div>
+                <div class="usebtn btn-navy">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 6 9 17l-5-5"/></svg>
+                  <span data-cfg="packs.useLabel"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="lower">
+        <div class="kicker" data-cfg="packs.lowKicker"></div>
+        <div class="h3" data-cfg="packs.low"></div>
+      </div>
+    </section>
+
+    <!-- ============================================== S6  docs -->
+    <section class="scene" id="s6">
+      <div class="app">
+        <nav class="rail"></nav>
+        <div class="pane">
+          <div class="pane-top">
+            <span class="t">Project Documentation</span>
+            <span class="pill" data-cfg="docsScene.pill"></span>
+          </div>
+          <div class="pane-body">
+            <div class="genbtn btn-navy">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+              Generate PDFs
+            </div>
+            <div class="rows"></div>
+          </div>
+        </div>
+      </div>
+      <div class="lower">
+        <div class="kicker" data-cfg="docsScene.lowKicker"></div>
+        <div class="h3" data-cfg="docsScene.low"></div>
+      </div>
+    </section>
+
+    <!-- ============================================== S6b  inside a document -->
+    <section class="scene" id="s6b">
+      <div class="app">
+        <nav class="rail"></nav>
+        <div class="pane">
+          <div class="pane-top">
+            <span class="t" data-cfg="docBody.file"></span>
+            <span class="sub2" data-cfg="docBody.meta"></span>
+            <span class="spacer"></span>
+            <span class="chipflat">PREVIEW</span>
+          </div>
+          <div class="pane-body">
+            <div class="docwrap">
+              <div class="toc"></div>
+              <div class="docpage">
+                <div class="docscroll"><div class="prose"></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="lower">
+        <div class="kicker" data-cfg="docBody.lowKicker"></div>
+        <div class="h3" data-cfg="docBody.low"></div>
+      </div>
+    </section>
+
+    <!-- ============================================== S7  topology -->
+    <section class="scene" id="s7">
+      <div class="app">
+        <nav class="rail"></nav>
+        <div class="pane">
+          <div class="pane-top">
+            <span class="t" data-cfg="topo.title"></span>
+            <span class="sub2" data-cfg="topo.sub"></span>
+            <span class="spacer"></span>
+            <span class="chipflat">LEVEL: LANDSCAPE</span>
+          </div>
+          <div class="pane-body"><div class="topocanvas"><svg class="wires" viewBox="0 0 1400 470"></svg></div></div>
+        </div>
+      </div>
+      <div class="lower">
+        <div class="kicker" data-cfg="topo.lowKicker"></div>
+        <div class="h3" data-cfg="topo.low"></div>
+      </div>
+    </section>
+
+    <!-- ============================================== S8  drill down -->
+    <section class="scene" id="s8">
+      <div class="app">
+        <nav class="rail"></nav>
+        <div class="pane">
+          <div class="pane-top">
+            <div class="crumb"></div>
+            <span class="spacer"></span>
+            <span class="chipflat">LEVEL: JOB</span>
+          </div>
+          <div class="pane-body">
+            <div class="split">
+              <div class="chain"><svg class="lin" viewBox="0 0 1000 420"></svg></div>
+              <div class="inspector">
+                <div class="ih" data-cfg="drill.inspectTitle"></div>
+                <div class="kvs"></div>
+                <div>
+                  <div class="coltitle" style="margin-bottom:6px" data-cfg="drill.lineageTitle"></div>
+                  <div class="fls"></div>
+                </div>
+                <div class="rt" data-cfg="drill.runtimeNote"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="lower">
+        <div class="kicker" data-cfg="drill.lowKicker"></div>
+        <div class="h3" data-cfg="drill.low"></div>
+      </div>
+    </section>
+
+    <!-- ============================================== S9  ask on the page -->
+    <section class="scene" id="s9">
+      <div class="app">
+        <nav class="rail"></nav>
+        <div class="pane">
+          <div class="pane-top">
+            <span class="t" data-cfg="topo.title"></span>
+            <span class="spacer"></span>
+            <span class="chipflat">LEVEL: LANDSCAPE</span>
+          </div>
+          <div class="pane-body">
+            <div class="withrail">
+              <div class="left"><div class="topocanvas"><svg class="wires" viewBox="0 0 1400 470"></svg></div></div>
+              <div class="rail2">
+                <div class="rh">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                  Assistant
+                </div>
+                <div class="scope">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 2v20M2 12h20"/></svg>
+                  <span data-cfg="ask.scope"></span>
+                </div>
+                <div class="hint" data-cfg="ask.hint"></div>
+                <div class="sugs"></div>
+                <div class="qbubble"><span class="typedq"></span><span class="caret"></span></div>
+                <div class="abubble">
+                  <div class="a"></div>
+                  <div class="targets"></div>
+                </div>
+                <div class="composer2">
+                  <span data-cfg="ask.placeholder"></span>
+                  <span class="up"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="lower">
+        <div class="kicker" data-cfg="ask.lowKicker"></div>
+        <div class="h3" data-cfg="ask.low"></div>
+      </div>
+    </section>
+
+    <!-- ============================================== S10  payoff -->
+    <section class="scene scene--dark" id="s10">
+      <div class="wrap">
+        <div class="kicker" data-cfg="payoff.kicker"></div>
+        <h1 class="h1" data-cfg-html="payoff.line"></h1>
+        <div class="logo logoslot" data-h="44" data-colour="#ebebed"></div>
+        <div class="tag" data-cfg="payoff.tag"></div>
+      </div>
+    </section>
+
+    <!-- pointer overlay, above every scene -->
+    <div id="cursorlayer">
+      <div id="cursor">
+        <svg viewBox="0 0 24 24">
+          <path d="M5 2.2 L5 19.8 L9.4 15.7 L12.2 21.8 L15.1 20.5 L12.3 14.6 L17.9 14.6 Z"
+                fill="#ffffff" stroke="#001e4d" stroke-width="1.5"
+                stroke-linejoin="round" stroke-linecap="round"/>
+        </svg>
+      </div>
+    </div>
+
+  </div>
+ </div>
+
+ <div id="ui">
+   <button id="toggle">Play</button>
+   <button id="replay">Replay</button>
+   <div id="track"><div id="fill"></div></div>
+   <div id="label"></div>
+   <div id="clock">0.0 / 0.0s</div>
+ </div>
+</div>
+
+<script>
+/* ====================================================================
+   CONFIG — everything worth editing lives here.
+   ==================================================================== */
+const CONFIG = {
+
+  /* The Intodata mark and wordmark are drawn inline (see MARK / LOCKUP below),
+     so there is no image file to go missing. */
+  brand: { product: "Nexus" },
+
+  /* ---- S1 cold open -------------------------------------------- */
+  cold: {
+    line1: "Your data platform runs the business.",
+    line2: "Nobody left can explain how.",
+  },
+
+  /* ---- S2 connect GitHub --------------------------------------- */
+  github: {
+    sub: "Connect code, scan facts, generate evidence",
+    owner: "your-organisation",
+    project: "core-platform",
+    reposHint: "Showing repositories granted to this GitHub App installation.",
+    lowKicker: "One click",
+    low: "Connect a GitHub App. No credentials passed around.",
+    repos: [
+      { name: "etl-talend-jobs",     tag: "TALEND", pick: true },
+      { name: "warehouse-sql",       tag: "SQL",    pick: true },
+      { name: "integration-routes",  tag: "TALEND", pick: true },
+      { name: "reporting-models",    tag: "DBT",    pick: false },
+      { name: "legacy-ssis-package", tag: "SSIS",   pick: false },
+    ],
+  },
+
+  /* ---- S3 connectors + runtime --------------------------------- */
+  connect: {
+    kicker: "Sources",
+    head: "Code and runtime, in one picture.",
+    dockMeta: "evidence graph",
+    lowKicker: "Static plus live",
+    low: "What the code says, checked against what actually ran.",
+    /* fx / fy = where the chip flies in FROM, relative to its resting spot */
+    sources: [
+      { label: "GitHub App",       note: "3 repos",       colour: "var(--purple)", x:  30, y:  20, fx: "-250px", fy: "-80px", d: .7 },
+      { label: "Azure DevOps",     note: "1 project",     colour: "var(--purple)", x:   0, y: 165, fx: "-290px", fy: "0",     d: .85 },
+      { label: "Talend exports",   note: "job XML",       colour: "var(--purple)", x:  20, y: 310, fx: "-270px", fy: "100px", d: 1.0 },
+      { label: "Runtime sources",  note: "encrypted",     colour: "var(--orange)", x:1130, y:  20, fx: "250px",  fy: "-80px", d: .78 },
+      { label: "Execution logs",   note: "30 days",       colour: "var(--orange)", x:1150, y: 165, fx: "290px",  fy: "0",     d: .93 },
+      { label: "Existing docs",    note: "PDF · Word",    colour: "var(--purple)", x:1140, y: 310, fx: "270px",  fy: "100px", d: 1.08 },
+    ],
+  },
+
+  /* ---- S4 scan the code ---------------------------------------- */
+  scan: {
+    kicker: "Scan",
+    head: "It reads the code, not the wiki.",
+    file: "etl-talend-jobs / LOAD_WORK_ORDERS_0.1.item",
+    lowKicker: "Evidence, not assumptions",
+    low: "Every fact links back to the line it came from.",
+    /* tg = tag, at = attribute, st = string, hl = highlighted line */
+    code: [
+      '<span class="tg">&lt;node</span> <span class="at">componentName</span>=<span class="st">"tOracleInput"</span>',
+      '      <span class="at">componentVersion</span>=<span class="st">"0.102"</span><span class="tg">&gt;</span>',
+      '  <span class="tg">&lt;elementParameter</span> <span class="at">name</span>=<span class="st">"QUERY"</span>',
+      '    <span class="at">value</span>=<span class="st">"SELECT wo.id, wo.asset_id,</span>',
+      '           <span class="st">wo.planned_start FROM WORK_ORDER wo"</span><span class="tg">/&gt;</span>',
+      '<span class="tg">&lt;/node&gt;</span>',
+      '',
+      '<span class="hl"><span class="tg">&lt;connection</span> <span class="at">connectorName</span>=<span class="st">"ROW"</span></span>',
+      '<span class="hl">  <span class="at">source</span>=<span class="st">"tOracleInput_1"</span> <span class="at">target</span>=<span class="st">"tMap_2"</span><span class="tg">/&gt;</span></span>',
+      '',
+      '<span class="tg">&lt;node</span> <span class="at">componentName</span>=<span class="st">"tMap"</span><span class="tg">&gt;</span>',
+      '  <span class="at">expression</span>=<span class="st">"row1.planned_start"</span>',
+      '  <span class="at">target</span>=<span class="st">"PLAN.START_TS"</span>',
+    ],
+    facts: [
+      { k: "COMPONENT",  v: "tOracleInput_1  ·  Oracle input" },
+      { k: "CONNECTION", v: "tOracleInput_1 → tMap_2  (ROW)" },
+      { k: "FIELD",      v: "WORK_ORDER.PLANNED_START" },
+      { k: "MAPS TO",    v: "→ PLAN.START_TS" },
+      { k: "RUNTIME", rt: true, v: "412 executions · 3 failures · 30d" },
+      { k: "OWNER", rt: true,   v: "resolved from commit history" },
+    ],
+  },
+
+  /* ---- S5 packs ------------------------------------------------ */
+  /* A pack is: name + documents[], each document = sections[] + instructions.
+     This is where a client decides what the generated docs should cover.   */
+  packs: {
+    sub: "Decide what the documentation covers",
+    aiLabel: "Refine with AI",
+    status: "Valid and ready to save",
+    useLabel: "Use for this project",
+    lowKicker: "Your output, your shape",
+    low: "Tell it what to focus on. It writes to your template, not ours.",
+    list: [
+      { name: "Migration assessment", desc: "12 documents · shared", on: false },
+      { name: "Audit & compliance",   desc: "8 documents · shared",  on: false },
+      { name: "Platform handover",    desc: "6 documents · draft",   on: true  },
+    ],
+    doc: {
+      name: "03_DATA_FLOWS_LINEAGE",
+      sections: ["Source systems", "Field-level lineage", "Transformation rules", "Load windows"],
+      /* these two arrive during the scene, showing the tweak happening */
+      added: ["Failure history", "Retirement impact"],
+    },
+    instruction: "Focus on cross-system dependencies. Flag anything with no runtime evidence.",
+  },
+
+  /* ---- S6 generated documentation ------------------------------ */
+  docsScene: {
+    pill: "core-platform (12 docs)",
+    lowKicker: "Output",
+    low: "Twelve documents. Nobody wrote a word of them.",
+    docs: [
+      ["00_EXECUTIVE_SUMMARY.md",      "22.4 KB"],
+      ["01_PROJECT_OVERVIEW.md",       "29.2 KB"],
+      ["02_ARCHITECTURE_INVENTORY.md", "32.6 KB"],
+      ["03_DATA_FLOWS_LINEAGE.md",     "41.6 KB"],
+      ["04_BUSINESS_LOGIC.md",         "30.6 KB"],
+      ["05_OPERATIONS_RISK.md",        "33.0 KB"],
+      ["06_ENVIRONMENT_EXTERNAL.md",   "35.1 KB"],
+      ["07_SECURITY_PERFORMANCE.md",   "31.8 KB"],
+      ["08_PATTERNS_STANDARDS.md",     "33.4 KB"],
+      ["09_RUNBOOK.md",                "25.6 KB"],
+      ["10_ONBOARDING_FAQ.md",         "29.4 KB"],
+      ["11_MIGRATION_ASSESSMENT.md",   "46.2 KB"],
+    ],
+  },
+
+  /* ---- S6b inside a document ----------------------------------- */
+  /* Mirrors the real shape of a generated 03_DATA_FLOWS_LINEAGE doc:
+     flow narrative → field inventory table → verbatim code → evidence
+     register with a confidence rating per claim. Names are anonymised. */
+  docBody: {
+    file: "03_DATA_FLOWS_LINEAGE.md",
+    meta: "41.6 KB · generated · 12 sections",
+    lowKicker: "Inside the document",
+    low: "Field-level detail, with a confidence rating on every claim.",
+    /* the left-hand section list; `at` = when it becomes the active section */
+    toc: [
+      { label: "Data Flow",        at: 0.9 },
+      { label: "Field inventory",  at: 2.0 },
+      { label: "Transformation",   at: 3.4 },
+      { label: "Evidence Register",at: 4.8 },
+    ],
+    html: `
+      <h1>03 Data Flows And Lineage</h1>
+
+      <h2>Data Flow</h2>
+      <h3>Flow 3: Work orders to Planning</h3>
+      <p><b>Source</b>: message from <code>topic-workorder-out</code> carrying a work-order payload.</p>
+      <p><b>Unit</b>: <code>transform_workorders_to_plan</code> (source artifact:
+         <code>etl-talend-jobs/LOAD_WORK_ORDERS_0.1.item</code>)</p>
+      <p><b>Sink</b>: <code>topic-planning-in</code>, consumed by <code>upsert_plan</code>.</p>
+
+      <h2>Field inventory: Work order to Plan</h2>
+      <table>
+        <tr><th>Source column</th><th>Output field</th><th>Transformation</th><th>Explanation</th></tr>
+        <tr><td class="m">WORK_ORDER.PLANNED_START</td><td class="m">plan.startTs</td><td class="m">to_utc(...)</td><td>Local time converted to UTC</td></tr>
+        <tr><td class="m">WORK_ORDER.ASSET_ID</td><td class="m">plan.assetRef</td><td class="m">or ""</td><td>Asset reference, empty fallback</td></tr>
+        <tr><td class="m">WORK_ORDER.STATUS</td><td class="m">plan.state</td><td class="m">_map_status(...)</td><td>Domain status mapped to planning enum</td></tr>
+        <tr><td class="m">(none)</td><td class="m">plan.sourceSystem</td><td class="m">Hardcoded "EAM"</td><td>Constant, no upstream source</td></tr>
+      </table>
+
+      <h2>Transformation</h2>
+      <p>Verbatim, from the scanned artifact — not paraphrased:</p>
+      <pre><code><span class="kw">def</span> <span class="fn">transform_workorder</span>(payload: dict) -> tuple:
+    wo = payload[<span class="st">"data"</span>][0][<span class="st">"attributes"</span>]
+    <span class="kw">return</span> {
+        <span class="st">"startTs"</span>:  to_utc(wo.get(<span class="st">"planned_start"</span>)),
+        <span class="st">"assetRef"</span>: wo.get(<span class="st">"asset_id"</span>) <span class="kw">or</span> <span class="st">""</span>,
+        <span class="st">"state"</span>:    _map_status(wo.get(<span class="st">"status"</span>)),
+    }, <span class="st">"plan"</span></code></pre>
+
+      <h2>Evidence Register</h2>
+      <table>
+        <tr><th>Topic</th><th>Evidence source</th><th>Source artifact</th><th>Confidence</th></tr>
+        <tr><td>Flow 3 transformation</td><td>code snippet</td><td class="m">etl-talend-jobs/LOAD_WORK_ORDERS_0.1.item</td><td><span class="cf">HIGH</span></td></tr>
+        <tr><td>Planning consumer</td><td>execution flow</td><td class="m">integration-routes/plan_consumer.py</td><td><span class="cf">HIGH</span></td></tr>
+        <tr><td>Retirement impact</td><td>scanner-limited</td><td class="m">no runtime evidence found</td><td><span class="cf med">MEDIUM</span></td></tr>
+      </table>
+    `,
+  },
+
+  /* ---- S7 / S9 topology ---------------------------------------- */
+  /* Generic system names on purpose. Do not ship a real client's landscape
+     in a video you show to other clients.                                */
+  topo: {
+    title: "Platform architecture",
+    sub: "Interactive company landscape",
+    lowKicker: "Topology",
+    low: "Every system, every integration, every dependency.",
+    columns: [
+      { label: "UPSTREAM / INPUTS",      x: 20 },
+      { label: "CORE",                   x: 400 },
+      { label: "DOWNSTREAM / EXECUTION", x: 760 },
+      { label: "SECONDARY",              x: 1120 },
+    ],
+    nodes: [
+      { id:"erp",   k:"UPSTREAM / INPUTS", n:"ERP",              t:"Finance and procurement master data; source of cost centres.",  x:20,  y:56,  at:.3 },
+      { id:"hr",    k:"UPSTREAM / INPUTS", n:"HR / Payroll",     t:"Employee records and leave registrations; feeds planning.",      x:20,  y:190, at:.4 },
+      { id:"plan",  k:"UPSTREAM / INPUTS", n:"Planning",         t:"Work-order planning; exchanges planned and cancelled orders.",    x:20,  y:324, at:.5 },
+      { id:"core",  k:"CORE",              n:"Asset Management", t:"Enterprise asset management; system of record for work orders.", x:400, y:186, core:true, at:.7 },
+      { id:"field", k:"DOWNSTREAM / EXECUTION", n:"Field App",   t:"Field inspection app; consumes location and work-order data.",   x:760, y:56,  at:1.0 },
+      { id:"sched", k:"DOWNSTREAM / EXECUTION", n:"Scheduling",  t:"Receives reconciliation data and returns execution windows.",    x:760, y:190, at:1.1 },
+      { id:"rep",   k:"DOWNSTREAM / EXECUTION", n:"Reporting",   t:"Operational reporting and BI extracts over work-order history.",x:760, y:324, at:1.2 },
+      { id:"dwh",   k:"SECONDARY CONSUMERS", n:"Data Warehouse", t:"Analytical store; joins work-order history against finance.",    x:1120,y:120, at:1.45 },
+      { id:"port",  k:"SECONDARY CONSUMERS", n:"Customer Portal",t:"External self-service surface; partial evidence only.", warn:true,x:1120,y:290, at:1.55 },
+    ],
+    wires: [
+      { p:"M254,96  C324,96  324,234 400,234", at:.75 },
+      { p:"M254,230 C324,230 324,234 400,234", at:.82 },
+      { p:"M254,364 C324,364 324,234 400,234", at:.89 },
+      { p:"M634,234 C700,234 700,96  760,96",  at:1.15 },
+      { p:"M634,234 C700,234 700,230 760,230", at:1.22 },
+      { p:"M634,234 C700,234 700,364 760,364", at:1.29 },
+      { p:"M994,96  C1058,96  1058,160 1120,160", at:1.5 },
+      { p:"M994,364 C1058,364 1058,160 1120,160", at:1.57 },
+      { p:"M994,230 C1058,230 1058,330 1120,330", at:1.64 },
+    ],
+  },
+
+  /* ---- S8 drill down ------------------------------------------- */
+  drill: {
+    crumbs: ["core-platform", "Integration", "LOAD_WORK_ORDERS"],
+    inspectTitle: "tMap_2",
+    lineageTitle: "FIELD LINEAGE",
+    runtimeNote: "3 failures in the last 30 days — all on this path.",
+    lowKicker: "All the way down",
+    low: "Landscape, integration, job, component, field.",
+    kvs: [
+      ["Type",       "tMap"],
+      ["Job",        "LOAD_WORK_ORDERS"],
+      ["Inputs",     "2"],
+      ["Outputs",    "1"],
+      ["Last run",   "04:12 · failed"],
+    ],
+    fields: [
+      "WORK_ORDER.PLANNED_START",
+      "  → <i>PLAN.START_TS</i>",
+      "WORK_ORDER.ASSET_ID",
+      "  → ASSET.EXTERNAL_REF",
+    ],
+    /* horizontal component chain. fail = the failing component;
+       offPath = dimmed when the failing path is isolated (a real toolbar
+       action: "Dim everything outside the failing path").             */
+    dimAt: 3.6,
+    chain: [
+      { kk:"tOracleInput_1", nn:"WORK_ORDER",  dd:"Oracle · 1.2M rows", x:0,   y:150, at:.5 },
+      { kk:"tMap_2",         nn:"tMap",        dd:"14 expressions",     x:210, y:150, at:.7, fail:true },
+      { kk:"tFilterRow_3",   nn:"tFilterRow",  dd:"status != CANCELLED",x:420, y:60,  at:.9 },
+      { kk:"tJoin_4",        nn:"tJoin",       dd:"asset lookup",       x:420, y:250, at:1.0, offPath:true },
+      { kk:"tPostgresOut_5", nn:"PLAN",        dd:"Postgres · upsert",  x:630, y:150, at:1.2 },
+    ],
+    wires: [
+      { p:"M168,182 C190,182 190,182 210,182", hot:true,  at:.85 },
+      { p:"M378,182 C400,182 400,92  420,92",  hot:true,  at:1.05 },
+      { p:"M378,182 C400,182 400,282 420,282", hot:false, at:1.12 },
+      { p:"M588,92  C610,92  610,182 630,182", hot:true,  at:1.3 },
+      { p:"M588,282 C610,282 610,182 630,182", hot:false, at:1.37 },
+    ],
+  },
+
+  /* ---- S9 ask on the page -------------------------------------- */
+  ask: {
+    scope: "Landscape",
+    hint: "Ask about what is on screen. Answers point back at it, so you can jump straight to the part being described.",
+    placeholder: "Ask about this diagram...",
+    suggestions: [
+      "Which systems feed the most data into this landscape?",
+      "Where are the busiest integration points?",
+    ],
+    question: "What breaks if we retire Planning?",
+    answer: "Three consumers depend on it. Scheduling reads work-order plans directly, the Field App reads its location data, and Reporting joins its output tables. Nine jobs reference it; four write back.",
+    targets: ["Scheduling", "Field App", "Reporting"],
+    /* topology node ids the answer calls out */
+    highlight: ["sched", "field", "rep"],
+    lowKicker: "Ask in place",
+    low: "Ask about what you see. The answer points back at it.",
+  },
+
+  /* ---- pointer choreography ------------------------------------ */
+  /* One track per scene. Each step: `at` = seconds into the scene when the
+     cursor STARTS moving, `sel` = what it moves to (centre of that element),
+     `click` = ripple + ring on arrival. Travel time is derived from distance,
+     so a click lands slightly after `at`. Scenes with no track (the brand
+     cards, the connector diagram, the code scan, the document scroll) simply
+     hide the cursor. Times are tuned to land just before the thing they
+     trigger — e.g. the S6 eye-icon click precedes the document preview. */
+  /* Deliberately sparse: only actions that CAUSE the next thing on screen get
+     a click. Selecting checkboxes, tabbing into fields and hovering things the
+     animation already explains are left out — a cursor that clicks everything
+     stops meaning anything. */
+  cursor: {
+    s2: [
+      { at: 0.25, sel: "#s2 .ghbtn",  click: true },   // starts the connection
+      { at: 3.0,  sel: "#s2 .import", click: true },   // commits the repos
+    ],
+    s5: [
+      { at: 2.5,  sel: "#s5 .doccard .sec.add", click: true },  // adds a section
+      { at: 3.95, sel: "#s5 .usebtn",           click: true },  // applies the pack
+    ],
+    s6: [
+      // opens the document — this is what scene 7 is showing
+      { at: 2.0,  sel: "#s6 .rows .row:nth-child(4) .acts", click: true },
+    ],
+    s7: [
+      { at: 2.45, sel: "#s7 .topocanvas .node.core", click: true },   // drills in
+    ],
+    s8: [
+      { at: 1.45, sel: "#s8 .jn.fail", click: true },   // opens the inspector
+    ],
+    s9: [
+      { at: 2.15, sel: "#s9 .composer2 .up",           click: true },  // sends
+      { at: 4.65, sel: "#s9 .targets .tg:first-child", click: true },  // jumps to a citation
+    ],
+  },
+
+  /* ---- S10 payoff ---------------------------------------------- */
+  payoff: {
+    kicker: "The outcome",
+    line: "From undocumented<br>to <em>understood</em>.",
+    tag: "Nexus",
+  },
+};
+
+/* ====================================================================
+   Timeline
+   ==================================================================== */
+const SCENES = [
+  { id: "s1",  label: "Cold open",         dur: 3200 },
+  { id: "s2",  label: "Connect GitHub",    dur: 4600, onPlay: typeProject },
+  { id: "s3",  label: "Connectors",        dur: 4200 },
+  { id: "s4",  label: "Scan the code",     dur: 5200 },
+  { id: "s5",  label: "Packs",             dur: 5600, onPlay: typeInstruction },
+  { id: "s6",  label: "Documentation",     dur: 3800 },
+  { id: "s6b", label: "Inside a document", dur: 6600, onPlay: runDoc },
+  { id: "s7",  label: "Topology",          dur: 4200 },
+  { id: "s8",  label: "Drill down",        dur: 5200, onPlay: runDrill },
+  { id: "s9",  label: "Ask on the page",   dur: 5800, onPlay: runAsk },
+  { id: "s10", label: "Payoff",            dur: 3400 },
+];
+/* Global pace. 1 = as authored, higher = slower. Scales scene durations, every
+   JS-scheduled beat, the cursor's travel, and — via the Web Animations API —
+   all the CSS keyframe delays and durations, so one number retimes the whole
+   piece coherently. Override per-viewing with ?pace=1.4 to audition a speed. */
+const PACE = (() => {
+  const q = parseFloat(new URLSearchParams(location.search).get("pace"));
+  return Number.isFinite(q) && q > 0.2 && q < 4 ? q : 1.2;
+})();
+
+const TOTAL = SCENES.reduce((a, s) => a + s.dur, 0) * PACE;
+
+/* -------------------------------------------------------------- helpers */
+const $  = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const el = (tag, cls, html) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (html != null) n.innerHTML = html;
+  return n;
+};
+const svgEl = (tag) => document.createElementNS("http://www.w3.org/2000/svg", tag);
+const dig = (p) => p.split(".").reduce((o, k) => (o == null ? o : o[k]), CONFIG);
+
+$$("[data-cfg]").forEach(n => { n.textContent = dig(n.dataset.cfg) ?? ""; });
+$$("[data-cfg-html]").forEach(n => { n.innerHTML = dig(n.dataset.cfgHtml) ?? ""; });
+
+/* --------------------------------------------------------- Intodata mark */
+/* Inlined rather than loaded from ../favicon.svg or ../intodata-logo-hero.png:
+   over file:// those relative requests can fail and you get a broken-image
+   box in the sidebar. Inline SVG always renders. */
+const MARK = (size, { plate = true, light = false } = {}) => `
+  <svg width="${size}" height="${size}" viewBox="0 0 100 100" aria-hidden="true">
+    ${plate ? `<rect width="100" height="100" rx="18" fill="${light ? "rgba(235,235,237,.08)" : "#001e4d"}"/>` : ""}
+    <path d="M30 70 Q50 20 70 70" fill="none" stroke="#fe9543" stroke-width="8" stroke-linecap="round"/>
+    <circle cx="62" cy="38" r="10" fill="#6370b0" opacity=".9"/>
+    <line x1="50" y1="30" x2="50" y2="55" stroke="#ebebed" stroke-width="4" stroke-linecap="round"/>
+    <line x1="40" y1="42.5" x2="60" y2="42.5" stroke="#ebebed" stroke-width="4" stroke-linecap="round"/>
+  </svg>`;
+
+/* Wordmark only — the glyph is a placeholder lifted from favicon.svg, not the
+   real Intodata mark, so it is kept out of the prominent brand moments. */
+const LOCKUP = (h, colour) => `
+  <span style="font-family:var(--font-head);font-weight:700;font-size:${Math.round(h * .86)}px;
+               letter-spacing:-.01em;color:${colour}">Intodata</span>`;
+
+$$(".logoslot").forEach(n => {
+  n.innerHTML = LOCKUP(+n.dataset.h || 40, n.dataset.colour || "var(--navy)");
+});
+
+/* ---------------------------------------------------------- rail (icons) */
+const ICONS = {
+  plus:    '<path d="M12 5v14"/><path d="M5 12h14"/>',
+  file:    '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',
+  book:    '<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>',
+  network: '<rect x="9" y="2" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="16" y="16" width="6" height="6" rx="1"/><path d="M12 8v4"/><path d="M5 16v-2h14v2"/>',
+  box:     '<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="M3 8l9 5 9-5"/>',
+  shield:  '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+};
+function buildRail(nav, active) {
+  nav.append(el("span", "logo", MARK(26)));
+  ["plus", "file", "book", "network", "box", "shield"].forEach(k => {
+    const b = el("span", "ico" + (k === active ? " on" : ""));
+    b.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">${ICONS[k]}</svg>`;
+    nav.append(b);
+  });
+}
+buildRail($("#s2 .rail"), "shield");
+buildRail($("#s5 .rail"), "box");
+buildRail($("#s6 .rail"), "book");
+buildRail($("#s6b .rail"), "book");
+buildRail($("#s7 .rail"), "network");
+buildRail($("#s8 .rail"), "network");
+buildRail($("#s9 .rail"), "network");
+
+/* ------------------------------------------------------------ build: S2 */
+(() => {
+  const list = $("#s2 .repolist");
+  const tick = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"><path d="M20 6 9 17l-5-5"/></svg>';
+  CONFIG.github.repos.forEach((r, i) => {
+    const row = el("div", "repo" + (r.pick ? " pick" : ""), `
+      <span class="box">${tick}</span>
+      <span class="nm">${r.name}</span>
+      <span class="tag">${r.tag}</span>`);
+    const base = 1.2 + i * 0.22;
+    row.style.animationDelay = r.pick ? `${base}s, ${base + .2}s` : `${base}s`;
+    list.append(row);
+  });
+})();
+
+/* ------------------------------------------------------------ build: S3 */
+(() => {
+  const field = $("#s3 .field"), svg = $("#s3 svg.threads");
+  const CX = 728, CY = 235;
+  CONFIG.connect.sources.forEach(s => {
+    const chip = el("div", "chip", `
+      <span class="dotmark" style="background:${s.colour}"></span>
+      <span>${s.label}</span>
+      <span class="note">${s.note}</span>`);
+    chip.style.left = s.x + "px";
+    chip.style.top = s.y + "px";
+    chip.style.setProperty("--fx", s.fx);
+    chip.style.setProperty("--fy", s.fy);
+    chip.style.animationDelay = s.d + "s";
+    const t = el("span", "tick",
+      '<svg viewBox="0 0 24 24" fill="none" stroke="#001e4d" stroke-width="3.4" stroke-linecap="round"><path d="M20 6 9 17l-5-5"/></svg>');
+    t.style.animationDelay = (s.d + .55) + "s";
+    chip.prepend(t);
+    field.append(chip);
+
+    const right = s.x > CX;
+    const x1 = right ? s.x + 10 : s.x + 175;
+    const y1 = s.y + 22;
+    const mx = (x1 + CX) / 2;
+    const p = svgEl("path");
+    p.setAttribute("d", `M${x1},${y1} C${mx},${y1} ${mx},${CY} ${CX + (right ? 119 : -119)},${CY}`);
+    p.setAttribute("class", "thread");
+    p.style.animationDelay = (s.d + .4) + "s";
+    svg.append(p);
+  });
+})();
+
+/* ------------------------------------------------------------ build: S4 */
+(() => {
+  const code = $("#s4 .code");
+  CONFIG.scan.code.forEach((line, i) => {
+    const l = el("span", "cl", line || "&nbsp;");
+    l.style.animationDelay = (.5 + i * .1) + "s";
+    code.append(l);
+  });
+  const facts = $("#s4 .facts");
+  CONFIG.scan.facts.forEach((f, i) => {
+    const n = el("div", "fact" + (f.rt ? " rt" : ""),
+      `<span class="k">${f.k}</span><span class="v">${f.v}</span>`);
+    n.style.animationDelay = (1.6 + i * .28) + "s";
+    facts.append(n);
+  });
+})();
+
+/* ------------------------------------------------------------ build: S5 */
+(() => {
+  const list = $("#s5 .packlist");
+  CONFIG.packs.list.forEach((p, i) => {
+    const n = el("div", "packitem" + (p.on ? " on" : ""),
+      `<div>${p.name}</div><div class="d">${p.desc}</div>`);
+    n.style.animationDelay = (.25 + i * .14) + "s";
+    list.append(n);
+  });
+
+  const d = CONFIG.packs.doc;
+  const card = el("div", "doccard", `<div class="nm">${d.name}</div>`);
+  card.style.animationDelay = ".8s";
+  const secs = el("div", "secs");
+  d.sections.forEach(s => secs.append(el("span", "sec", s)));
+  d.added.forEach((s, i) => {
+    const chip = el("span", "sec add", s);
+    chip.style.animationDelay = (3.0 + i * .3) + "s";
+    secs.append(chip);
+  });
+  card.append(secs);
+  $("#s5 .doclist").append(card);
+})();
+
+/* ------------------------------------------------------------ build: S6 */
+(() => {
+  const rows = $("#s6 .rows");
+  const eye = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const dl  = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M4 21h16"/></svg>';
+  const fi  = '<svg class="fi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>';
+  CONFIG.docsScene.docs.forEach(([name, size], i) => {
+    const row = el("div", "row",
+      `${fi}<span class="nm">${name}</span><span class="sz">${size}</span>
+       <span class="acts">${eye}${dl}</span>`);
+    row.style.animationDelay = (.6 + i * .11) + "s";
+    rows.append(row);
+  });
+})();
+
+/* ----------------------------------------------------------- build: S6b */
+(() => {
+  $("#s6b .prose").innerHTML = CONFIG.docBody.html;
+  const toc = $("#s6b .toc");
+  CONFIG.docBody.toc.forEach((t, i) => {
+    const n = el("div", "ti" + (i === 0 ? " on" : ""), t.label);
+    toc.append(n);
+  });
+})();
+
+/* The scroll distance depends on how tall the rendered document actually is,
+   which is only known after layout — so measure it rather than guessing. */
+function sizeDocScroll() {
+  const page = $("#s6b .docpage"), scroll = $("#s6b .docscroll");
+  if (!page || !scroll) return;
+  const over = scroll.scrollHeight - page.clientHeight;
+  scroll.style.setProperty("--scroll", (over > 0 ? -(over + 20) : 0) + "px");
+}
+
+/* ------------------------------------------------- build: topology (S7, S9) */
+function buildTopology(scope, opts = {}) {
+  const canvas = $(".topocanvas", scope);
+  const svg = $("svg.wires", canvas);
+  const shift = opts.shift || 0;   // extra delay, so S9 can settle faster
+
+  CONFIG.topo.columns.forEach((c, i) => {
+    const h = el("div", "colhead", c.label);
+    h.style.left = c.x + "px";
+    h.style.animationDelay = (.15 + i * .07 + shift) + "s";
+    canvas.append(h);
+  });
+  CONFIG.topo.wires.forEach(w => {
+    const p = svgEl("path");
+    p.setAttribute("d", w.p);
+    p.setAttribute("class", "wire");
+    p.style.animationDelay = (w.at + shift) + "s";
+    svg.append(p);
+  });
+  CONFIG.topo.nodes.forEach(n => {
+    const node = el("div", "node" + (n.core ? " core" : ""), `
+      <div class="k">${n.k}</div>
+      <div class="n">${n.n}</div>
+      <div class="d">${n.t}</div>
+      <div class="b${n.warn ? " warn" : ""}">${n.warn ? "Mixed evidence" : "Confirmed"}</div>`);
+    node.dataset.id = n.id;
+    node.style.left = n.x + "px";
+    node.style.top = n.y + "px";
+    node.style.animationDelay = (n.at + shift) + "s";
+    canvas.append(node);
+  });
+}
+buildTopology($("#s7"));
+buildTopology($("#s9"), { shift: -0.15 });
+
+/* ------------------------------------------------------------ build: S8 */
+(() => {
+  const crumb = $("#s8 .crumb");
+  CONFIG.drill.crumbs.forEach((c, i) => {
+    if (i) {
+      const s = el("span", "sep", "›");
+      s.style.animationDelay = (.2 + i * .22) + "s";
+      crumb.append(s);
+    }
+    const n = el("span", "c" + (i === CONFIG.drill.crumbs.length - 1 ? " here" : ""), c);
+    n.style.animationDelay = (.15 + i * .22) + "s";
+    crumb.append(n);
+  });
+
+  const chain = $("#s8 .chain"), svg = $("#s8 svg.lin");
+  CONFIG.drill.wires.forEach(w => {
+    const p = svgEl("path");
+    p.setAttribute("d", w.p);
+    p.setAttribute("class", "lw" + (w.hot ? " hot" : ""));
+    p.style.animationDelay = w.at + "s";
+    svg.append(p);
+  });
+  CONFIG.drill.chain.forEach(c => {
+    const n = el("div", "jn" + (c.fail ? " fail" : ""),
+      `<div class="kk">${c.kk}</div><div class="nn">${c.nn}</div><div class="dd">${c.dd}</div>`);
+    if (c.offPath) n.dataset.offPath = "1";
+    n.style.left = c.x + "px";
+    n.style.top = c.y + "px";
+    n.style.animationDelay = c.at + "s";
+    chain.append(n);
+  });
+
+  const kvs = $("#s8 .kvs");
+  CONFIG.drill.kvs.forEach(([k, v]) => kvs.append(el("div", "kv", `<span>${k}</span><span>${v}</span>`)));
+
+  const fls = $("#s8 .fls");
+  CONFIG.drill.fields.forEach((f, i) => {
+    const n = el("div", "fl", f);
+    n.style.animationDelay = (3.0 + i * .18) + "s";
+    fls.append(n);
+  });
+})();
+
+/* ------------------------------------------------------------ build: S9 */
+(() => {
+  const sugs = $("#s9 .sugs");
+  CONFIG.ask.suggestions.forEach((s, i) => {
+    const n = el("div", "sug", s);
+    n.style.animationDelay = (.4 + i * .16) + "s";
+    sugs.append(n);
+  });
+  const a = $("#s9 .abubble .a");
+  CONFIG.ask.answer.split(" ").forEach(w => a.append(el("span", "w", w + " ")));
+  const tg = $("#s9 .targets");
+  CONFIG.ask.targets.forEach((t, i) => {
+    const chip = el("div", "tg", `<span class="sq"></span><span>${t}</span>`);
+    chip.style.animationDelay = (4.7 + i * .18) + "s";
+    tg.append(chip);
+  });
+})();
+
+/* ------------------------------------- per-scene JS (typing, reveals) */
+let sceneTimers = [];
+/* every scheduled beat is expressed in authored time and stretched by PACE */
+const later = (fn, ms) => sceneTimers.push(setTimeout(fn, ms * PACE));
+function clearSceneTimers() { sceneTimers.forEach(clearTimeout); sceneTimers = []; }
+
+function typeInto(node, text, startAt, speed, caret) {
+  node.textContent = "";
+  if (caret) caret.style.visibility = "visible";
+  later(() => {
+    let i = 0;
+    const step = () => {
+      node.textContent = text.slice(0, ++i);
+      if (i < text.length) later(step, speed);
+      else if (caret) later(() => { caret.style.visibility = "hidden"; }, 400);
+    };
+    step();
+  }, startAt);
+}
+
+function typeProject() {
+  typeInto($("#s2 .typedproj"), CONFIG.github.project, 1000, 55, $("#s2 .f2 .caret"));
+}
+
+function typeInstruction() {
+  typeInto($("#s5 .typedinstr"), CONFIG.packs.instruction, 1900, 26, $("#s5 .instr .caret"));
+}
+
+/* Isolate the failing path once the inspector has opened. */
+function runDrill() {
+  later(() => {
+    $$('#s8 .jn[data-off-path="1"]').forEach(n => {
+      n.style.transition = "opacity .5s ease";
+      n.classList.add("dimmed");
+    });
+    $$("#s8 .lw:not(.hot)").forEach(p => {
+      p.style.transition = "opacity .5s ease";
+      p.style.opacity = ".14";
+    });
+  }, CONFIG.drill.dimAt * 1000);
+}
+
+function runDoc() {
+  sizeDocScroll();
+  const items = $$("#s6b .toc .ti");
+  CONFIG.docBody.toc.forEach((t, i) => {
+    later(() => {
+      items.forEach(n => n.classList.remove("on"));
+      if (items[i]) items[i].classList.add("on");
+    }, t.at * 1000);
+  });
+}
+
+function runAsk() {
+  typeInto($("#s9 .typedq"), CONFIG.ask.question, 900, 34, $("#s9 .qbubble .caret"));
+
+  // question bubble appears with the first keystroke
+  const qb = $("#s9 .qbubble");
+  qb.style.opacity = 0;
+  later(() => { qb.style.transition = "opacity .3s ease"; qb.style.opacity = 1; }, 880);
+
+  // answer card, then word-by-word reveal
+  const ab = $("#s9 .abubble");
+  ab.style.opacity = 0;
+  later(() => { ab.style.transition = "opacity .3s ease"; ab.style.opacity = 1; }, 2700);
+  $$("#s9 .abubble .a .w").forEach((w, i) => {
+    later(() => { w.style.transition = "opacity .24s ease"; w.style.opacity = 1; }, 2800 + i * 28);
+  });
+
+  // the nodes the answer names light up
+  CONFIG.ask.highlight.forEach((id, i) => {
+    later(() => {
+      const n = $(`#s9 .topocanvas .node[data-id="${id}"]`);
+      if (n) n.classList.add("tgt");
+    }, 4700 + i * 180);
+  });
+}
+
+/* Reset anything the per-scene JS mutated, so replays look identical. */
+function resetSceneState() {
+  $$("#s9 .topocanvas .node.tgt").forEach(n => n.classList.remove("tgt"));
+  $$("#s9 .abubble .a .w").forEach(w => { w.style.transition = "none"; w.style.opacity = 0; });
+  ["#s9 .qbubble", "#s9 .abubble"].forEach(s => {
+    const n = $(s); if (n) { n.style.transition = "none"; n.style.opacity = 0; }
+  });
+  ["#s2 .typedproj", "#s5 .typedinstr", "#s9 .typedq"].forEach(s => {
+    const n = $(s); if (n) n.textContent = "";
+  });
+  $$("#s6b .toc .ti").forEach((n, i) => n.classList.toggle("on", i === 0));
+  $$("#s8 .jn").forEach(n => { n.style.transition = "none"; n.classList.remove("dimmed"); });
+  $$("#s8 .lw").forEach(p => { p.style.transition = "none"; p.style.opacity = ""; });
+  $$(".clickflash").forEach(n => n.classList.remove("clickflash"));
+  $$("#cursorlayer .ripple").forEach(n => n.remove());
+}
+
+/* --------------------------------------------------------- cursor engine */
+const cursorEl = $("#cursor"), cursorLayer = $("#cursorlayer");
+const CURSOR_TIP = [6, 3];      // arrow tip offset inside the 30px box
+
+/* Element centre in stage coordinates. The stage is transform-scaled, so
+   client rects have to be divided back down by that scale. */
+function centreOf(sel) {
+  const node = $(sel);
+  if (!node) return null;
+  const s = $("#stage").getBoundingClientRect();
+  const scale = s.width / 1600;
+  if (!scale) return null;
+  const r = node.getBoundingClientRect();
+  return {
+    x: (r.left - s.left) / scale + r.width / scale / 2,
+    y: (r.top - s.top) / scale + r.height / scale / 2,
+  };
+}
+
+function placeCursor(pt, ms) {
+  cursorEl.style.transition = ms
+    ? `opacity .25s ease, transform ${ms}ms cubic-bezier(.35,0,.2,1)`
+    : "opacity .25s ease";
+  cursorEl.style.transform = `translate(${pt.x - CURSOR_TIP[0]}px, ${pt.y - CURSOR_TIP[1]}px)`;
+}
+
+function clickAt(pt, sel) {
+  const r = el("div", "ripple");
+  r.style.left = pt.x + "px";
+  r.style.top = pt.y + "px";
+  cursorLayer.append(r);
+  r.getAnimations().forEach(a => { a.playbackRate = 1 / PACE; });
+  setTimeout(() => r.remove(), 700 * PACE);
+
+  const node = $(sel);
+  if (node) {
+    node.classList.add("clickflash");
+    setTimeout(() => node.classList.remove("clickflash"), 320);
+  }
+}
+
+function runCursor(sceneId) {
+  const track = CONFIG.cursor[sceneId];
+  if (!track || !track.length) { cursorEl.classList.remove("on"); return; }
+
+  // start just off the first target so the first hop reads as a move
+  const first = centreOf(track[0].sel);
+  if (!first) { cursorEl.classList.remove("on"); return; }
+  placeCursor({ x: first.x - 150, y: first.y + 110 }, 0);
+  cursorEl.classList.add("on");
+
+  // Positions are measured at hop time, not up front: entrance animations use
+  // `both` fill, so before a scene plays its elements sit at their `from`
+  // offset and measuring early would aim the cursor a few pixels off.
+  let prev = { x: first.x - 150, y: first.y + 110 };
+  track.forEach(step => {
+    later(() => {
+      const to = centreOf(step.sel);
+      if (!to) return;
+      const dist = Math.hypot(to.x - prev.x, to.y - prev.y);
+      const travel = Math.min(620, Math.max(200, dist * 1.05));
+      prev = to;
+      placeCursor(to, travel * PACE);        // real wall-clock transition
+      if (step.click) later(() => clickAt(to, step.sel), travel + 40);
+    }, step.at * 1000);
+  });
+}
+
+/* ------------------------------------------------------------- playback */
+const stage = $("#stage");
+const ui = $("#ui"), fill = $("#fill"), clock = $("#clock"), label = $("#label");
+const btnToggle = $("#toggle"), btnReplay = $("#replay");
+
+let idx = -1, playing = false, elapsedBefore = 0, sceneStart = 0, nextTimer = 0;
+let prevNode = null, teardown = 0;
+
+function showScene(i) {
+  clearSceneTimers();
+  clearTimeout(teardown);
+  resetSceneState();
+
+  const sc = SCENES[i];
+  const node = document.getElementById(sc.id);
+  const outgoing = prevNode && prevNode !== node ? prevNode : null;
+
+  // Hold the outgoing scene at full opacity underneath while the new one
+  // fades in on top, then tear it down. Without this the stage background
+  // shows through the middle of every transition.
+  $$(".scene").forEach(s => {
+    if (s !== node && s !== outgoing) s.classList.remove("play", "hold");
+  });
+  if (outgoing) { outgoing.classList.remove("play"); outgoing.classList.add("hold"); }
+
+  void node.offsetWidth;                 // restart inner animations cleanly
+  node.classList.remove("hold");
+  node.classList.add("play");
+
+  // Stretch every CSS keyframe animation in this scene by PACE. Reading a
+  // computed style first forces the style recalc that creates them, so
+  // getAnimations() actually returns something.
+  if (PACE !== 1) {
+    getComputedStyle(node).opacity;
+    node.getAnimations({ subtree: true }).forEach(a => { a.playbackRate = 1 / PACE; });
+  }
+
+  if (outgoing) teardown = setTimeout(() => outgoing.classList.remove("hold"), 460 * PACE);
+
+  prevNode = node;
+  label.textContent = sc.label;
+  if (sc.onPlay) sc.onPlay();
+  runCursor(sc.id);
+}
+
+function playFrom(i) {
+  idx = i;
+  elapsedBefore = SCENES.slice(0, i).reduce((a, s) => a + s.dur, 0) * PACE;
+  sceneStart = performance.now();
+  showScene(i);
+  clearTimeout(nextTimer);
+  nextTimer = setTimeout(() => {
+    if (i + 1 < SCENES.length) playFrom(i + 1);
+    else halt(true);
+  }, SCENES[i].dur * PACE);
+}
+
+function tick() {
+  if (playing) {
+    const e = Math.min(TOTAL, elapsedBefore + (performance.now() - sceneStart));
+    fill.style.width = (e / TOTAL * 100) + "%";
+    clock.textContent = (e / 1000).toFixed(1) + " / " + (TOTAL / 1000).toFixed(1) + "s";
+  }
+  requestAnimationFrame(tick);
+}
+
+function start() {
+  playing = true;
+  btnToggle.textContent = "Pause";
+  playFrom(0);
+  later(() => ui.classList.add("hide"), 1200);
+}
+
+function halt(finished) {
+  playing = false;
+  clearTimeout(nextTimer);
+  clearSceneTimers();
+  btnToggle.textContent = finished ? "Play" : "Resume";
+  if (finished) {
+    fill.style.width = "100%";
+    clock.textContent = (TOTAL / 1000).toFixed(1) + " / " + (TOTAL / 1000).toFixed(1) + "s";
+  }
+  ui.classList.remove("hide");
+}
+
+btnReplay.onclick = () => { halt(true); prevNode = null; start(); };
+btnToggle.onclick = () => {
+  if (playing) halt(false);
+  else if (idx < 0 || idx >= SCENES.length - 1) { prevNode = null; start(); }
+  else { playing = true; btnToggle.textContent = "Pause"; playFrom(idx); }
+};
+
+document.addEventListener("keydown", e => {
+  if (e.code === "Space") { e.preventDefault(); btnToggle.click(); }
+  if (e.key === "r" || e.key === "R") btnReplay.click();
+});
+document.addEventListener("mousemove", () => {
+  ui.classList.remove("hide");
+  clearTimeout(window.__uiHide);
+  if (playing) window.__uiHide = setTimeout(() => ui.classList.add("hide"), 1600);
+});
+
+/* --------------------------------------------------------------- scaling */
+const stagearea = $("#stagearea");
+function fit() {
+  const w = stagearea.clientWidth, h = stagearea.clientHeight;
+  stage.style.transform = `scale(${Math.min(w / 1600, h / 900)})`;
+}
+addEventListener("resize", fit);
+fit();
+
+/* -------------------------------------------------------------- kick off */
+const params = new URLSearchParams(location.search);
+if (params.has("clean")) document.body.classList.add("clean");
+clock.textContent = "0.0 / " + (TOTAL / 1000).toFixed(1) + "s";
+label.textContent = SCENES[0].label;
+requestAnimationFrame(tick);
+
+const only = parseInt(params.get("scene"), 10);
+if (Number.isInteger(only) && only >= 1 && only <= SCENES.length) {
+  idx = only - 1;
+  showScene(idx);
+  label.textContent = SCENES[idx].label + " (held)";
+} else {
+  setTimeout(start, 500);
+}
+</script>
+</body>
+</html>

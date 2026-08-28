@@ -18,6 +18,7 @@ import {
   BarChart3,
   Brain,
   HelpCircle,
+  PlayCircle,
   Database,
   ScrollText,
   Radio,
@@ -28,6 +29,7 @@ import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/components/AuthProvider";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useChatContext } from "@/contexts/ChatContext";
+import { useOnboardingContext } from "@/contexts/OnboardingContext";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
 import type { ConversationResponse } from "@/types";
@@ -96,6 +98,7 @@ export function Sidebar() {
   const { hasAnyAdminPermission, hasPermission, isOwner } =
     usePermissions();
   const chat = useChatContext();
+  const { startTour } = useOnboardingContext();
 
   const [expanded, setExpanded] = useLocalExpand();
   const [deleteTarget, setDeleteTarget] = useState<ConversationResponse | null>(null);
@@ -184,6 +187,15 @@ export function Sidebar() {
         </nav>
 
         <div className="p-2 border-t flex flex-col items-center gap-1">
+          <button
+            type="button"
+            onClick={startTour}
+            className="p-1.5 text-muted-foreground hover:text-foreground"
+            title="Replay the walkthrough"
+            aria-label="Replay the walkthrough"
+          >
+            <PlayCircle className="h-3.5 w-3.5" />
+          </button>
           <a
             href="/guide"
             className="p-1.5 text-muted-foreground hover:text-foreground"
@@ -343,6 +355,17 @@ export function Sidebar() {
             >
               {user.username}
             </Link>
+            {/* Replaying the walkthrough had no entry point once it was
+                finished or skipped, which made it effectively single-use. */}
+            <button
+              type="button"
+              onClick={startTour}
+              className="p-1 text-muted-foreground hover:text-foreground"
+              title="Replay the walkthrough"
+              aria-label="Replay the walkthrough"
+            >
+              <PlayCircle className="h-3.5 w-3.5" />
+            </button>
             <a
               href="/guide"
               className="p-1 text-muted-foreground hover:text-foreground"

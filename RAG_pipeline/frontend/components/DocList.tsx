@@ -77,7 +77,7 @@ export function DocList({ projectId, selectedDoc, onSelectDoc }: DocListProps) {
   return (
     <div className="flex flex-col h-full">
       {/* Generate PDFs button */}
-      <div className="p-3 border-b">
+      <div className="p-3 border-b" data-tour="docs-doc-list">
         <button
           onClick={() => generatePdfs.mutate()}
           disabled={generatePdfs.isPending}

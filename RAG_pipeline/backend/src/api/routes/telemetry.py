@@ -34,6 +34,12 @@ ALLOWED_EVENT_TYPES: set[str] = {
     "wizard_completed",
     "tour_started",
     "tour_skipped",
+    # Walkthrough outcomes. "tour_skipped" only ever recorded a refusal at the
+    # launcher, so there was no way to tell a finished tour from one abandoned
+    # halfway, and no signal for a step that could not be shown at all.
+    "tour_completed",
+    "tour_dismissed",
+    "tour_step_unavailable",
 }
 
 

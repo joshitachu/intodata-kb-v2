@@ -13,7 +13,13 @@ export type WizardEventType =
   | "wizard_source_method"
   | "wizard_completed"
   | "tour_started"
-  | "tour_skipped";
+  | "tour_skipped"
+  // Walkthrough outcomes. Must stay in sync with ALLOWED_EVENT_TYPES in
+  // `backend/src/api/routes/telemetry.py` — an unlisted type is dropped
+  // server-side, silently.
+  | "tour_completed"
+  | "tour_dismissed"
+  | "tour_step_unavailable";
 
 export interface WizardEventPayload {
   [key: string]: string | number | boolean | null | undefined;

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.db.base import Base
@@ -63,6 +64,22 @@ class UserInvite(Base):
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     role_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     intended_use: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Authority decided by the approving admin, applied on acceptance. NULL
+    # means "fall back to the default member role", which is what every invite
+    # created before this column existed did implicitly.
+    assigned_role_id: Mapped[int | None] = mapped_column(
+        ForeignKey("roles.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    # Project ids to grant on acceptance. Held here because the user row does
+    # not exist yet when access is approved.
+    assigned_project_ids: Mapped[list | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=True
+    )
+    # Optional message from the approver, surfaced in the invitee's first-run
+    # welcome so onboarding can explain who granted access and why.
+    welcome_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -75,6 +92,9 @@ class UserInvite(Base):
 
     creator: Mapped["User | None"] = relationship(foreign_keys=[created_by])
     accepted_user: Mapped["User | None"] = relationship(foreign_keys=[accepted_user_id])
+    assigned_role: Mapped["Role | None"] = relationship(
+        foreign_keys=[assigned_role_id], lazy="selectin"
+    )
 
 
 class EmailOTPCode(Base):

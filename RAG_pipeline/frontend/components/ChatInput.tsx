@@ -339,7 +339,13 @@ export function ChatInput({
               picker, runtime status) inside the composer instead of pushing the
               send button past its right edge. */}
           <div className="flex items-end justify-between gap-2 px-3 pb-2">
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+            <div
+              // Walkthrough fallback: the project selector inside this cluster
+              // renders nothing when no projects exist, so the scope step
+              // anchors here instead of being skipped on a fresh deployment.
+              data-tour="chat-toolbar"
+              className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5"
+            >
               {toolbarContent}
               {!hideImagePicker && (
                 <button

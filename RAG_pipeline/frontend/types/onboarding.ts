@@ -18,6 +18,26 @@ export const SetupStatusSchema = z.enum([
 ]);
 export type SetupStatus = z.infer<typeof SetupStatusSchema>;
 
+/**
+ * Walkthrough persona, resolved by the backend from persisted authority.
+ *
+ * Deliberately mirrors `src/rbac/persona.py`. The browser must not re-derive it
+ * from roles or permissions: the old flow branched on `is_superadmin` in the
+ * guard and on nothing at all in the tour, which is how an Admin ended up
+ * seeing the read-only member welcome.
+ */
+export const PersonaSchema = z.enum(["owner", "admin", "project_owner", "developer"]);
+export type Persona = z.infer<typeof PersonaSchema>;
+
+/** How this member came to have access — powers a personal first-run welcome. */
+export const InviteContextSchema = z.object({
+  approved_by: z.string().nullable().optional(),
+  assigned_role: z.string().nullable().optional(),
+  assigned_project_ids: z.array(z.string()).default([]),
+  welcome_note: z.string().nullable().optional(),
+});
+export type InviteContext = z.infer<typeof InviteContextSchema>;
+
 export const OnboardingStatusSchema = z.object({
   wizard_completed: z.boolean(),
   wizard_current_step: z.number(),
@@ -26,6 +46,13 @@ export const OnboardingStatusSchema = z.object({
   setup_status: SetupStatusSchema,
   setup_error: z.string().nullable().optional(),
   workspace_name: z.string().nullable().optional(),
+  // Persona and tour state drive which walkthrough runs and where it resumes.
+  // Defaulted rather than required so a frontend deployed ahead of the backend
+  // degrades to the member walkthrough instead of failing status parsing.
+  persona: PersonaSchema.default("developer"),
+  tour_variant: z.string().nullable().optional(),
+  tour_seen_steps: z.array(z.string()).default([]),
+  invite_context: InviteContextSchema.nullable().optional(),
   // Config is data-driven — we don't whitelist at the frontend any more, the
   // backend tells us which ids are valid. Keep string arrays so new options
   // shipped via config don't require a client redeploy.

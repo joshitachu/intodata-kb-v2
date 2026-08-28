@@ -230,148 +230,75 @@
   font-size: 0.8125rem;
 }
 
-/* ── Product tour (driver.js) brand overrides ───────────────── */
+/* ── Walkthrough spotlight ──────────────────────────────────── */
 
-.driver-popover.intodata-tour {
-  background-color: hsl(var(--card));
-  color: hsl(var(--card-foreground));
-  border: 1px solid hsl(var(--border));
-  border-radius: 12px;
-  box-shadow: var(--elevation-lg);
-  padding: 20px 20px 16px;
-  max-width: 340px;
+/* The spotlight overlay and card animate their own geometry inline, because
+   only React knows the target box. What belongs in global CSS is the two
+   things inline styles cannot express: keyframes, and honouring a
+   reduced-motion preference. */
+
+/* The dim layer fades in once, when the tour starts. It then stays painted for
+   the whole walkthrough — including across route changes — so the page never
+   flashes back to full brightness between steps. */
+@keyframes tour-scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
-.driver-popover.intodata-tour .driver-popover-title {
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 1.35;
-  color: hsl(var(--foreground));
-  margin-bottom: 6px;
-  padding: 0;
+.tour-scrim {
+  animation: tour-scrim-in 260ms ease-out both;
 }
 
-.driver-popover.intodata-tour .driver-popover-description {
-  font-size: 13.5px;
-  line-height: 1.55;
-  color: hsl(var(--muted-foreground));
-  margin-bottom: 14px;
-  padding: 0;
+/* Replayed on every step change (the card's content is keyed by step id), so
+   the copy reads as replaced rather than silently rewritten under the cursor
+   while the card itself glides to its new position. */
+@keyframes tour-card-content-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-.driver-popover.intodata-tour .driver-popover-progress-text {
-  font-size: 11px;
-  color: hsl(var(--muted-foreground));
-  letter-spacing: 0.02em;
-  padding: 0;
+.tour-card-content {
+  animation: tour-card-content-in 220ms cubic-bezier(0.32, 0.72, 0, 1) both;
 }
 
-.driver-popover.intodata-tour .driver-popover-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding-top: 8px;
-  border-top: 1px solid hsl(var(--border) / 0.6);
-  margin-top: 4px;
+/* Indeterminate route/anchor progress. Transform-only so it stays on the
+   compositor while the page underneath is doing the actual work. */
+@keyframes tour-progress-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(400%); }
 }
 
-.driver-popover.intodata-tour .driver-popover-navigation-btns {
-  display: inline-flex;
-  gap: 6px;
-}
-
-.driver-popover.intodata-tour .driver-popover-prev-btn,
-.driver-popover.intodata-tour .driver-popover-next-btn {
-  font-family: inherit;
-  font-size: 12.5px;
-  font-weight: 500;
-  border-radius: 6px;
-  padding: 6px 12px;
-  border: 1px solid transparent;
-  cursor: pointer;
-  transition: background-color 150ms, color 150ms, border-color 150ms;
-  text-shadow: none;
-}
-
-.driver-popover.intodata-tour .driver-popover-prev-btn {
-  background: transparent;
-  color: hsl(var(--muted-foreground));
-  border-color: hsl(var(--border));
-}
-
-.driver-popover.intodata-tour .driver-popover-prev-btn:hover {
-  color: hsl(var(--foreground));
-  background: hsl(var(--muted) / 0.6);
-}
-
-.driver-popover.intodata-tour .driver-popover-next-btn {
-  background: hsl(var(--primary));
-  color: hsl(var(--primary-foreground));
-  box-shadow: var(--elevation-xs);
-}
-
-.driver-popover.intodata-tour .driver-popover-next-btn:hover {
-  background: hsl(var(--primary) / 0.92);
-}
-
-.driver-popover.intodata-tour .driver-popover-close-btn {
-  top: 10px;
-  right: 10px;
-  color: hsl(var(--muted-foreground));
-  transition: color 150ms;
-}
-
-.driver-popover.intodata-tour .driver-popover-close-btn:hover {
-  color: hsl(var(--foreground));
-}
-
-.driver-popover.intodata-tour .driver-popover-arrow-side-top.driver-popover-arrow,
-.driver-popover.intodata-tour .driver-popover-arrow-side-bottom.driver-popover-arrow,
-.driver-popover.intodata-tour .driver-popover-arrow-side-left.driver-popover-arrow,
-.driver-popover.intodata-tour .driver-popover-arrow-side-right.driver-popover-arrow {
-  border-color: hsl(var(--card));
-}
-
-/* Branded top accent bar on tour popovers */
-.driver-popover.intodata-tour::before {
-  content: "";
+.tour-progress-segment {
   position: absolute;
-  top: 0;
-  left: 18px;
-  right: 18px;
-  height: 3px;
-  border-radius: 0 0 3px 3px;
-  background: linear-gradient(90deg, hsl(var(--primary)), hsl(var(--primary) / 0.35));
+  inset-block: 0;
+  left: 0;
+  width: 28%;
+  border-radius: 9999px;
+  animation: tour-progress-slide 1.15s cubic-bezier(0.65, 0, 0.35, 1) infinite;
 }
 
-/* Progress text as a subtle pill */
-.driver-popover.intodata-tour .driver-popover-progress-text {
-  background: hsl(var(--muted));
-  padding: 3px 9px;
-  border-radius: 999px;
-  font-weight: 600;
-}
-
-/* Gentle entrance for the tour popover */
-@keyframes tour-pop {
-  from {
-    opacity: 0;
-    transform: translateY(6px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-.driver-popover.intodata-tour {
-  animation: tour-pop 0.26s cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
+/* A sliding cutout is exactly the kind of large-area movement this setting
+   exists to suppress. Every animated part of the walkthrough carries
+   `data-spotlight-animated`, so one rule covers the cutout, the ring, the card
+   and its content. The engine also reads the preference in JS and drops the
+   fade-out/fade-in choreography entirely: with transitions disabled that
+   sequence would degrade into the card blinking off and on. */
 @media (prefers-reduced-motion: reduce) {
-  .driver-popover.intodata-tour {
-    animation: none;
+  [data-spotlight-animated] {
+    transition: none !important;
+    animation: none !important;
+  }
+
+  .tour-scrim,
+  .tour-card-content {
+    animation: none !important;
+  }
+
+  /* No travelling segment; show a static bar so "waiting" is still legible. */
+  .tour-progress-segment {
+    animation: none !important;
+    width: 100%;
+    opacity: 0.55;
   }
 }
 

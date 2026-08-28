@@ -9,6 +9,7 @@ import { CommToolSelectStep } from "./steps/CommToolSelectStep";
 import { SourceUploadStep } from "./steps/SourceUploadStep";
 import { ProvisioningStep } from "./steps/ProvisioningStep";
 import { SetupCompleteStep } from "./steps/SetupCompleteStep";
+import { CapabilityStep } from "./steps/CapabilityStep";
 import {
   useCompleteCompanyOnboarding,
   useCompanyStatus,
@@ -21,6 +22,10 @@ import { useOnboardingContext } from "@/contexts/OnboardingContext";
 import { useAuthContext } from "@/components/AuthProvider";
 import { trackWizardEvent } from "@/lib/telemetry";
 
+// 8 steps. "Authority" was added after provisioning: the Owner finishing setup
+// was never told what their own role covers or what to delegate, so the
+// deployment-wide responsibilities went unexplained to the one person holding
+// them.
 const STEP_LABELS = [
   "Welcome",
   "Workspace",
@@ -28,6 +33,7 @@ const STEP_LABELS = [
   "Tools",
   "Source",
   "Setup",
+  "Authority",
   "Ready",
 ];
 
@@ -37,9 +43,11 @@ interface Props {
 
 export function AdminOnboardingWizard({ onDismiss }: Props) {
   const { user } = useAuthContext();
-  const { startTour } = useOnboardingContext();
+  const { startTour, status } = useOnboardingContext();
   const { data: companyStatus, refetch } = useCompanyStatus();
   const complete = useCompleteCompanyOnboarding();
+
+  const persona = status?.persona ?? "owner";
 
   // Company mutations injected into step components
   const saveWorkspace = useSaveCompanyWorkspace();
@@ -133,17 +141,24 @@ export function AdminOnboardingWizard({ onDismiss }: Props) {
           />
         )}
         {step === 6 && (
+          <CapabilityStep
+            persona={persona}
+            onBack={() => setStep(5)}
+            onNext={() => setStep(7)}
+          />
+        )}
+        {step === 7 && (
           <SetupCompleteStep
             workspaceName={companyStatus?.workspace_name}
             selectedPlatformIds={companyStatus?.selected_platforms ?? []}
             selectedToolIds={companyStatus?.selected_comm_tools ?? []}
             onStartTour={() => {
-              trackWizardEvent("tour_started", 6);
+              trackWizardEvent("tour_started", 7);
               onDismiss();
               startTour();
             }}
             onSkipTour={() => {
-              trackWizardEvent("tour_skipped", 6);
+              trackWizardEvent("tour_skipped", 7);
               onDismiss();
             }}
           />

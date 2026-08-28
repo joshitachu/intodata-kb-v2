@@ -2399,7 +2399,7 @@ function TopologyContent() {
       )}
 
       {/* Header */}
-      <div className="flex items-center gap-4 px-4 py-3 border-b">
+      <div className="flex items-center gap-4 px-4 py-3 border-b" data-tour="topology-header">
         <h1 className="hidden sm:block text-lg font-semibold">Project Topology</h1>
         <div className="relative inline-block">
           <select

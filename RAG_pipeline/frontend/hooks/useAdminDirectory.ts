@@ -43,6 +43,14 @@ export interface AdminInvite {
   status: string;
   expires_at: string;
   accepted_user_id: number | null;
+  /**
+   * Authority the approver chose, applied when the invite is accepted.
+   * Null means the invitee will arrive with the default member role.
+   */
+  assigned_role_id?: number | null;
+  assigned_role_name?: string | null;
+  assigned_project_ids?: string[];
+  welcome_note?: string | null;
 }
 
 export interface AdminAccessRequest {

@@ -29,7 +29,7 @@ export default function DocsPage() {
       {isMobile && <MobileTopBar title="Project Docs" backHref="/" />}
 
       {/* Page header */}
-      <div className="p-3 sm:p-4 border-b">
+      <div className="p-3 sm:p-4 border-b" data-tour="docs-header">
         <div className="flex items-center gap-2 mb-3">
           <BookOpen className="h-5 w-5 text-primary" />
           <h1 className="hidden sm:block text-lg font-semibold">Project Documentation</h1>

@@ -54,19 +54,30 @@ async function fetchSetupStatus(): Promise<SetupStatusResponse> {
   return SetupStatusResponseSchema.parse(await res.json());
 }
 
-async function postTourComplete(): Promise<OnboardingStatus> {
-  const res = await fetch("/api/onboarding/tour/complete", { method: "POST" });
+async function postTourComplete(variant?: string): Promise<OnboardingStatus> {
+  const res = await fetch("/api/onboarding/tour/complete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ variant: variant ?? null }),
+  });
   if (!res.ok) {
     throw new Error("Failed to complete tour");
   }
   return OnboardingStatusSchema.parse(await res.json());
 }
 
-async function putTourStep(tour_step: number): Promise<OnboardingStatus> {
+export interface TourStepProgress {
+  tour_step: number;
+  /** Stable step id — what actually makes the tour resumable per persona. */
+  step_id?: string;
+  variant?: string;
+}
+
+async function putTourStep(progress: TourStepProgress): Promise<OnboardingStatus> {
   const res = await fetch("/api/onboarding/tour/step", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tour_step }),
+    body: JSON.stringify(progress),
   });
   if (!res.ok) {
     throw new Error("Failed to update tour step");

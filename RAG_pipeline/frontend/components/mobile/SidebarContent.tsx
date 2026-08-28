@@ -16,6 +16,7 @@ import {
   BarChart3,
   Brain,
   HelpCircle,
+  PlayCircle,
   Database,
   ScrollText,
   User,
@@ -25,6 +26,7 @@ import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/components/AuthProvider";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useChatContext } from "@/contexts/ChatContext";
+import { useOnboardingContext } from "@/contexts/OnboardingContext";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
 import type { ConversationResponse } from "@/types";
@@ -77,6 +79,7 @@ export function SidebarContent({ onNavigate }: SidebarContentProps) {
   const { user, logout } = useAuthContext();
   const { hasAnyAdminPermission, hasPermission, isOwner } = usePermissions();
   const chat = useChatContext();
+  const { startTour } = useOnboardingContext();
 
   const [deleteTarget, setDeleteTarget] = useState<ConversationResponse | null>(null);
   const isAdminSection = pathname.startsWith("/admin") || pathname === "/settings/sources";
@@ -250,6 +253,19 @@ export function SidebarContent({ onNavigate }: SidebarContentProps) {
       </div>
 
       <div className="border-t px-2 py-2">
+        {/* Same entry point as the desktop sidebar, so the walkthrough is
+            replayable on mobile rather than being a one-time event there. */}
+        <button
+          type="button"
+          onClick={() => {
+            handleNav();
+            startTour();
+          }}
+          className="flex min-h-[44px] w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <PlayCircle className="h-4 w-4" />
+          Replay the walkthrough
+        </button>
         <a
           href="/guide"
           onClick={handleNav}

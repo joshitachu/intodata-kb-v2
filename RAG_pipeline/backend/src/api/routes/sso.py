@@ -34,6 +34,7 @@ from src.auth.security import create_access_token, create_refresh_token, hash_to
 from src.config import settings
 from src.db.models import RefreshToken, User
 from src.db.models.user import Role
+from src.rbac.permissions import DEFAULT_MEMBER_ROLE
 
 logger = logging.getLogger(__name__)
 
@@ -178,9 +179,10 @@ async def sso_callback(request: Request, db: DBSession):
             user.sso_provider = "oidc"
             user.sso_subject = sub
         else:
-            # Create a new user — assign developer role by default
+            # Create a new user with the default member role. SSO carries no
+            # invite, so there is no approver-chosen authority to honour here.
             developer_role = (
-                await db.execute(select(Role).where(Role.name == "developer"))
+                await db.execute(select(Role).where(Role.name == DEFAULT_MEMBER_ROLE))
             ).scalar_one_or_none()
             user = User(
                 username=username_base,

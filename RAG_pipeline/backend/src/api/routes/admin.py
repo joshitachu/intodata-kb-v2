@@ -22,7 +22,12 @@ from src.api.dependencies import (
     ProjectCreator,
     ProjectManager,
 )
-from src.rbac.permissions import can_manage_project, get_owned_project_ids
+from src.rbac.permissions import (
+    ASSIGN_PROJECTS,
+    can_manage_project,
+    get_owned_project_ids,
+    has_permission,
+)
 from src.api.routes.auth import limiter
 from src.auth.security import hash_password, hash_token
 from src.auth.service import AuthService
@@ -88,6 +93,18 @@ class UpdateRoleRequest(BaseModel):
     permission_ids: list[int] | None = None
 
 
+class ApproveAccessRequest(BaseModel):
+    """Authority granted at the moment access is approved.
+
+    Every field is optional so an existing caller that approves with no body
+    keeps working: role falls back to the default member role on acceptance.
+    """
+
+    role_id: int | None = None
+    project_ids: list[str] | None = None
+    welcome_note: str | None = Field(default=None, max_length=1000)
+
+
 class RejectAccessRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=1000)
 
@@ -130,6 +147,13 @@ def _invite_payload(invite: UserInvite | None) -> dict | None:
         "accepted_user_id": invite.accepted_user_id,
         "accepted_at": invite.accepted_at.isoformat() if invite.accepted_at else None,
         "created_at": invite.created_at.isoformat(),
+        # Authority the approver chose. Exposed so the Access panel can show
+        # what was granted without a second lookup, and so a reviewer can spot
+        # an accidental admin grant while the invite is still pending.
+        "assigned_role_id": invite.assigned_role_id,
+        "assigned_role_name": invite.assigned_role.name if invite.assigned_role else None,
+        "assigned_project_ids": list(invite.assigned_project_ids or []),
+        "welcome_note": invite.welcome_note,
     }
 
 
@@ -220,8 +244,20 @@ async def list_access_requests(
 
 @router.post("/access-requests/{request_id}/approve", summary="Approve an access request and send an invite")
 async def approve_access_request(
-    request: Request, request_id: int, admin: ManagerUser, db: DBSession
+    request: Request,
+    request_id: int,
+    admin: ManagerUser,
+    db: DBSession,
+    body: ApproveAccessRequest | None = None,
 ):
+    """Approve access and decide the member's authority in the same action.
+
+    Role is chosen here rather than after signup so first-run onboarding knows
+    the persona before it renders, and so an approver is never left with a new
+    member holding the wrong authority until someone remembers to fix it.
+    """
+    body = body or ApproveAccessRequest()
+
     row = (
         await db.execute(select(AccessRequest).where(AccessRequest.id == request_id))
     ).scalar_one_or_none()
@@ -236,6 +272,23 @@ async def approve_access_request(
     if existing_user is not None:
         raise HTTPException(status_code=409, detail="A user with this email already exists")
 
+    # Reuses the member-management guard, so Owner authority still cannot be
+    # handed out through an invitation.
+    assigned_role: Role | None = None
+    if body.role_id is not None:
+        assigned_role = (await _load_assignable_roles(db, [body.role_id]))[0]
+
+    # Only an admin who can already assign projects may pre-scope an invite;
+    # otherwise approving access would become a way around that permission.
+    project_ids = [pid.strip() for pid in (body.project_ids or []) if pid.strip()]
+    if project_ids and not (
+        admin.is_superadmin or has_permission(admin, ASSIGN_PROJECTS)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Assigning projects requires the assign_projects permission",
+        )
+
     token = _new_invite_token()
     invite = UserInvite(
         email=row.email,
@@ -244,7 +297,14 @@ async def approve_access_request(
         expires_at=datetime.now(timezone.utc) + timedelta(hours=48),
         created_by=admin.id,
         full_name=row.full_name,
+        assigned_role_id=assigned_role.id if assigned_role else None,
+        assigned_project_ids=project_ids or None,
+        welcome_note=(body.welcome_note or "").strip() or None,
     )
+    # Populate the relationship as well as the column. This object is new, so
+    # the selectin load that normally fills `assigned_role` never runs, and the
+    # response payload would report a null role name for a real grant.
+    invite.assigned_role = assigned_role
     db.add(invite)
     await db.flush()
 
@@ -259,10 +319,31 @@ async def approve_access_request(
     row.reviewed_at = datetime.now(timezone.utc)
     row.invite_id = invite.id
     row.invite = invite
+
+    # Record the authority granted, not just that access was approved. Handing
+    # out an admin role is the security-relevant part of this action and has to
+    # be attributable after the fact.
+    audit = AuditService(db)
+    await audit.log(
+        user_id=admin.id,
+        username=admin.username,
+        action="access_request_approved",
+        resource_type="user_invite",
+        resource_id=str(invite.id),
+        details={
+            "email": row.email,
+            "assigned_role": assigned_role.name if assigned_role else None,
+            "assigned_project_ids": project_ids,
+        },
+        ip_address=request.client.host if request.client else None,
+    )
+
     await db.commit()
 
     return {
-        "message": "Invite sent",
+        "message": (
+            f"Invite sent as {assigned_role.name}" if assigned_role else "Invite sent"
+        ),
         "request": _access_request_payload(row),
         "setup_url": setup_url if settings.app_env != "production" else None,
     }

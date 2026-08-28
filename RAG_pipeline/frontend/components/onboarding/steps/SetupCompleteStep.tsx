@@ -6,6 +6,10 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody } from "@/components/ui/card";
 import { useOnboardingConfig, useCompleteTour } from "@/hooks/useOnboarding";
+import { useOnboardingContext } from "@/contexts/OnboardingContext";
+import { usePermissions } from "@/hooks/usePermissions";
+import { tourFor } from "@/components/tour/tours";
+import { applicableSteps } from "@/components/tour/types";
 import { trackWizardEvent } from "@/lib/telemetry";
 
 interface Props {
@@ -25,6 +29,23 @@ export function SetupCompleteStep({
 }: Props) {
   const { data: config } = useOnboardingConfig();
   const completeTour = useCompleteTour();
+  const { status } = useOnboardingContext();
+
+  const persona = status?.persona ?? "developer";
+  const { hasPermission } = usePermissions();
+  const tour = useMemo(() => tourFor(persona), [persona]);
+  // Count the steps this user will actually be shown, not the full list. An
+  // "8 steps" promise that turns into 5 undermines the walkthrough on its
+  // first screen.
+  const stepCount = useMemo(
+    () =>
+      applicableSteps(tour.steps, {
+        hasPermission: (codename) =>
+          hasPermission(codename as Parameters<typeof hasPermission>[0]),
+      }).length,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tour, persona],
+  );
 
   useEffect(() => {
     trackWizardEvent("wizard_completed", 6);
@@ -46,8 +67,10 @@ export function SetupCompleteStep({
   }, [config, selectedToolIds]);
 
   function handleSkip() {
-    // Mark the tour as complete so we don't nag the user on next login.
-    completeTour.mutate();
+    // Mark the tour as complete so we don't nag the user on next login. The
+    // variant records *which* walkthrough was declined, so a later promotion
+    // can still offer the one that matches the new authority.
+    completeTour.mutate(persona);
     onSkipTour();
   }
 
@@ -69,8 +92,7 @@ export function SetupCompleteStep({
           {workspaceName ? `${workspaceName} is ready` : "Your workspace is ready"}
         </h1>
         <p className="text-base text-muted-foreground max-w-sm leading-relaxed">
-          Everything&rsquo;s provisioned and live. Here&rsquo;s a quick tour to
-          show you around — or jump straight in.
+          Everything is provisioned and live. {tour.pitch}
         </p>
       </div>
 
@@ -115,7 +137,7 @@ export function SetupCompleteStep({
           className="flex-1"
         >
           <PlayCircle className="h-4 w-4" />
-          Take the quick tour
+          {`Start the ${stepCount}-step walkthrough`}
           <ArrowRight className="h-4 w-4" />
         </Button>
         <Button

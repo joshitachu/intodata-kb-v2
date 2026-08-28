@@ -176,7 +176,13 @@ function OrganizationDashboard() {
         })}
       </div>
 
-      <section role="tabpanel" aria-label={tabs.find((tab) => tab.id === active)?.label}>
+      <section
+        role="tabpanel"
+        aria-label={tabs.find((tab) => tab.id === active)?.label}
+        // Anchors the walkthrough to the panel that is actually open, so an
+        // admin step spotlights the content rather than the tab strip.
+        data-tour={`admin-${active}`}
+      >
         {tabs.find((tab) => tab.id === active)?.render()}
       </section>
     </main>
