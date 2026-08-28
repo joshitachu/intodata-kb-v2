@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
+from unittest.mock import MagicMock
 
 import pytest
 
 from mcp_server.config import config
 from mcp_server.providers.base import DocGenContext
 from mcp_server.providers.custom.harness import CustomHarnessProvider
+from mcp_server.providers.custom.providers import _read_context
 from mcp_server.providers.custom.models import (
     FactsManifest,
     HarnessRunState,
@@ -151,6 +154,160 @@ def test_phase2_packet_preserves_required_source_and_reports_required_overage(tm
     manifest = json.loads(packet.manifest_path.read_text(encoding="utf-8"))
     assert manifest["over_budget_required_evidence"]
     assert any("scoped_known_risks.md" in path for path in packet.omitted)
+
+
+def test_phase2_packet_leads_with_the_run_shared_prefix(tmp_path):
+    """Two tasks of one run must share a byte-identical leading context prefix.
+
+    Prompt caching is PREFIX based: everything from the start of the request up
+    to the first differing byte is cacheable, and every provider adapter
+    concatenates the context files into ONE request body
+    (``providers._read_context``).  Measured before this ordering:
+    ``_context_packets/{task}/SCOPED_FACTS.json`` was index 1 and the assigned
+    task evidence index 2, so the packet diverged on its first byte and the
+    run-shared artifacts behind them could never be cached.
+    """
+
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+
+    # Run-shared artifacts: byte-identical for every task of the run.
+    engineering_facts = staging / "engineering_facts.md"
+    engineering_facts.write_text("# Engineering facts\n\nProject census.\n", encoding="utf-8")
+    cross_project = staging / "cross_project_refs.md"
+    cross_project.write_text("# Cross-project references\n\nsibling zips.\n", encoding="utf-8")
+    quick_scan = staging / "quick_scan.md"
+    quick_scan.write_text("# Quick scan\n\nproject overview.\n", encoding="utf-8")
+    shared_context = [engineering_facts, cross_project, quick_scan]
+
+    # Per-task evidence: unique to each call.
+    task_a = staging / "task_a.md"
+    task_a.write_text("# Assigned source\n\n## InboundJob\ncomponent: tJMSInput_1\n", encoding="utf-8")
+    task_b = staging / "task_b.md"
+    task_b.write_text("# Assigned source\n\n## SiblingJob\ncomponent: tFileInput_1\n", encoding="utf-8")
+
+    packets = [
+        build_phase2_context_packet(
+            staging_dir=staging,
+            facts=_facts(),
+            group="Integration",
+            task_id=task_id,
+            unit_names=units,
+            task_evidence=evidence,
+            shared_context=shared_context,
+            investigation_context=[],
+            scoped_evidence=None,
+            max_bytes=200_000,
+            max_scoped_artifact_bytes=8_000,
+        )
+        for task_id, units, evidence in (
+            ("integration_task_1", ["InboundJob"], task_a),
+            ("sibling_task_1", ["SiblingJob"], task_b),
+        )
+    ]
+
+    # The shared artifacts LEAD, in the deterministic (priority, name) order the
+    # packet already used for budgeting, and the per-task files TRAIL.
+    shared_head = [engineering_facts, quick_scan, cross_project]
+    expected_head_names = [path.name for path in shared_head]
+    for packet in packets:
+        names = [path.name for path in packet.files]
+        assert names[: len(expected_head_names)] == expected_head_names
+        assert "SCOPED_FACTS.json" in names
+        assert names.index("SCOPED_FACTS.json") >= len(expected_head_names)
+
+    # Build the two requests exactly the way the provider does and assert the
+    # common prefix covers the whole shared block, not merely a few bytes.
+    rendered = [_read_context(list(packet.files)) for packet in packets]
+    common = os.path.commonprefix(rendered)
+    shared_only = _read_context(shared_head)
+    assert len(shared_only) > 0
+    assert common.startswith(shared_only)
+    assert packets[0].shared_prefix_bytes == packets[1].shared_prefix_bytes
+    assert packets[0].shared_prefix_bytes == sum(
+        path.stat().st_size for path in shared_head
+    )
+
+    # The receipt records the order that is actually sent.
+    manifest = json.loads(packets[0].manifest_path.read_text(encoding="utf-8"))
+    assert [
+        entry["path"] for entry in manifest["files"][: len(expected_head_names)]
+    ] == expected_head_names
+    assert manifest["shared_prefix_bytes"] == packets[0].shared_prefix_bytes
+
+
+def test_phase3_group_docs_share_a_byte_stable_context_head(tmp_path):
+    """Group Phase 3 documents must share one byte-stable leading context head.
+
+    ``documentation_obligations.json`` (93 KB on the measured composite run) is
+    identical for every document, but the runtime rollup beside it is selected
+    per document (``_runtime_rollup_relevant``).  With the obligations behind
+    the rollup the cacheable head split into two classes -- documents that get
+    the rollup and documents that do not -- for no benefit.
+    """
+
+    staging = tmp_path / "docs_staging"
+    (staging / "_analysis").mkdir(parents=True)
+    (staging / "_assessment" / "prompt_packs").mkdir(parents=True)
+
+    (staging / "_analysis" / "_noncode_project_context.md").write_text(
+        "# Non-code project context\n\ndocumented sources.\n", encoding="utf-8"
+    )
+    (staging / "_analysis" / "_cross_cutting_facts.md").write_text(
+        "# Cross-cutting facts\n\ncensus.\n", encoding="utf-8"
+    )
+    (staging / "documentation_obligations.json").write_text(
+        json.dumps({"obligations": ["state absence explicitly"]}, indent=2),
+        encoding="utf-8",
+    )
+    (staging / "_analysis" / "_runtime_profile.md").write_text(
+        "# Runtime profile\n\nproject rollup.\n", encoding="utf-8"
+    )
+    for doc in ("03_DATA_FLOWS_AND_LINEAGE", "06_OPERATIONS_TESTING_AND_DEBUGGING"):
+        (staging / "_analysis" / f"_doc_pack_{doc}.md").write_text(
+            f"# Doc pack for {doc}\n", encoding="utf-8"
+        )
+
+    provider = CustomHarnessProvider(MagicMock())
+    provider._build_target_evidence = lambda ctx, doc_name: None
+    provider._ensure_noncode_plan = lambda ctx: None
+    provider._phase3_evidence_file = lambda ctx, doc_name: None
+    provider._engineering_fact_context = lambda ctx, doc_name, unit_name=None: []
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=[],
+        total_jobs=0,
+        total_groups=0,
+        effective_model="m",
+        write_model="m",
+        platform="talend",
+        analysis_guide_file="",
+    )
+
+    # One document that receives the runtime rollup, one that does not.
+    assert CustomHarnessProvider._runtime_rollup_relevant(
+        "06_OPERATIONS_TESTING_AND_DEBUGGING"
+    )
+    assert not CustomHarnessProvider._runtime_rollup_relevant("03_DATA_FLOWS_AND_LINEAGE")
+
+    files_by_doc = {
+        doc: provider._phase3_context_files(ctx, doc)
+        for doc in ("03_DATA_FLOWS_AND_LINEAGE", "06_OPERATIONS_TESTING_AND_DEBUGGING")
+    }
+    expected_head = [
+        staging / "_analysis" / "_noncode_project_context.md",
+        staging / "_analysis" / "_cross_cutting_facts.md",
+        staging / "documentation_obligations.json",
+    ]
+    for files in files_by_doc.values():
+        assert files[: len(expected_head)] == expected_head
+
+    rendered = [_read_context(files) for files in files_by_doc.values()]
+    common = os.path.commonprefix(rendered)
+    assert common.startswith(_read_context(expected_head))
 
 
 def test_phase2_prompt_lists_only_units_assigned_to_the_task():

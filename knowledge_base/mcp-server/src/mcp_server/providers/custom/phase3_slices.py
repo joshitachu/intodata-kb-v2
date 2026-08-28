@@ -336,6 +336,54 @@ _SECTIONED_SKELETON_BUDGET_BYTES = 64_000
 # a useful prefix can be kept instead of the whole file failing the fit test.
 _MIN_TRIM_SEGMENT_BYTES = 2_000
 
+# Artifacts that reach the allocator ALREADY BOUNDED -- a deterministic
+# reduction whose size was chosen UPSTREAM by the code that built it, not a raw
+# artifact of record the allocator is free to cut to whatever is left:
+#
+# * ``engineering_facts.md`` -- the deterministic aggregate, capped at 15,500
+#   bytes by its writer, carrying the COMPLETE ``calls_job`` edge list, the
+#   external-system rollup and the per-type census.
+# * ``*.compact.md`` -- the ``phase3_context.FACT_MAP_VIEWS`` registry views,
+#   each capped by ``config.phase3_fact_view_bytes`` (the change-impact view by
+#   ``phase3_change_impact_view_bytes``) and each stating in its own text that
+#   it is a reduction and which artifact is the evidence of record.
+# * ``cross_project_refs.md`` -- the small deterministic cross-partition census
+#   a composite run stages; it is bounded by ``build_fact_map_view``'s invariant
+#   cap (``phase3_shared_context_file_bytes``) and it only exists at all when a
+#   cross-project index was available, so protecting it costs nothing on a
+#   single-partition run and is the difference between "this document knows
+#   about its siblings" and "it does not" on a composite one.
+#
+# Re-trimming one of these is the defect. A 4 KB slice of a 10 KB summary is
+# worse than either the whole summary or an honest omission note: the summary
+# already dropped the detail on purpose, and cutting it again removes rows the
+# reduction chose to keep while the prompt still cites it as complete for its
+# subject. These files are therefore INDIVISIBLE here -- whole, or a marker.
+_BOUNDED_VIEW_SUFFIX = ".compact.md"
+_BOUNDED_AGGREGATE_NAMES = frozenset({
+    "engineering_facts.md",
+    "cross_project_refs.md",
+})
+
+# Protection must be BOUNDED or it becomes the new starvation. Protected
+# artifacts may reserve budget ahead of everything else, but collectively no
+# more than 1/`_PROTECTED_BUDGET_DIVISOR` of it, so the doc pack -- which is the
+# actual evidence, and which these files only summarise -- always keeps at least
+# three quarters of the budget. Measured against the live 00_AGENT_BRIEF shape
+# the whole protected set is ~40 KB of a ~447 KB budget (9%), and the widest
+# routing any document can receive (`harness._DOC_FACT_MAPS`: the 15.5 KB
+# aggregate + the 48 KB change-impact view + three 12 KB views + the 16 KB
+# cross-project census) is ~91 KB -- both comfortably inside a quarter, so the
+# cap only ever binds on a genuinely small budget, which is exactly when the
+# doc pack most needs the room.
+_PROTECTED_BUDGET_DIVISOR = 4
+
+
+def is_bounded_artifact(name: str) -> bool:
+    """True when ``name`` is an already-reduced, deterministically capped file."""
+    lowered = name.lower()
+    return lowered.endswith(_BOUNDED_VIEW_SUFFIX) or lowered in _BOUNDED_AGGREGATE_NAMES
+
 
 def _norm_title(line: str) -> str:
     return re.sub(r"\s+", " ", line.lstrip("#").strip()).lower()
@@ -360,6 +408,19 @@ def _trim_priority(name: str) -> int:
     # silence the lane exists to prevent, and it would leave the header's
     # counts describing rows the writer can no longer see.
     if "_runtime_profile" in lowered:
+        return 0
+    # Same reasoning, one class wider: an artifact that is ALREADY a bounded
+    # deterministic reduction is not raw evidence with slack in it. At the
+    # default rank 2 the registry views and the fact aggregate reached the
+    # allocator after the doc pack and the obligations file had filled, and were
+    # re-trimmed at section granularity -- verified live (Talend8_part2,
+    # 00_AGENT_BRIEF): the 15 KB `engineering_facts.md` arrived at 6,070 B, the
+    # 10 KB `dependency_map.compact.md` at 4,109 B, and the `known_risks` /
+    # `config_runtime_map` views were dropped in full, ~30 KB of reductions cut
+    # out of a ~470 KB budget. `_plan_single_call` additionally RESERVES a
+    # bounded share for them (see `_reserve_bounded_artifacts`); this rank is
+    # what orders them when the reservation cannot cover them all.
+    if is_bounded_artifact(name):
         return 0
     if "obligations" in lowered:
         return 1
@@ -621,6 +682,34 @@ def _sectioned_partial_trim_note(name: str, kept_bytes: int, size_bytes: int) ->
     )
 
 
+def _reserve_bounded_artifacts(
+    context_files: list[Path], sizes: dict[Path, int], ceiling: int
+) -> set[Path]:
+    """Pick the already-bounded artifacts that get the front of the queue.
+
+    FIRST-FIT in context order, against a ceiling that is a fixed share of the
+    byte budget. First-fit rather than "stop at the first one that will not
+    fit": on a tight budget the 48 KB change-impact view must not take the 4 KB
+    risk view's protection down with it. An artifact that does not fit the
+    remaining reservation simply loses its reservation and competes in the
+    ordinary priority allocation, where it is still rank 0 -- the fallback is
+    the previous behaviour, not a new failure mode.
+
+    Deterministic: context order and stat sizes only, no set iteration.
+    """
+    reserved: set[Path] = set()
+    used = 0
+    for path in context_files:
+        if not is_bounded_artifact(path.name):
+            continue
+        size = sizes.get(path, 0)
+        if size <= 0 or used + size > ceiling:
+            continue
+        reserved.add(path)
+        used += size
+    return reserved
+
+
 def _fit_segments(
     segments: list[_AttributedSegment],
     *,
@@ -713,8 +802,23 @@ def _plan_single_call(
     trimmed_sources: list[str] = []
     trimmed_bytes = 0
     remaining = max(0, budget - note_reserve)
+    # Already-bounded artifacts are allocated FIRST, up to a bounded share of
+    # the budget. Rank 0 alone is not enough: the doc pack is also rank 0 and
+    # comes earlier in context order, so it filled the budget before the
+    # reductions were reached. Sizing the reservation off `remaining` (budget
+    # net of the note reserve) is what makes the guarantee absolute -- the
+    # reserved set is at most a quarter of what is definitely available, is
+    # consumed before anything else, and therefore always fits WHOLE.
+    protected = _reserve_bounded_artifacts(
+        context_files, sizes, remaining // _PROTECTED_BUDGET_DIVISOR
+    )
     ordered_by_priority = sorted(
-        context_files, key=lambda p: (_trim_priority(p.name), context_files.index(p))
+        context_files,
+        key=lambda p: (
+            0 if p in protected else 1,
+            _trim_priority(p.name),
+            context_files.index(p),
+        ),
     )
     max_segment = max(8_000, budget // 4)
     for path in ordered_by_priority:
@@ -731,9 +835,16 @@ def _plan_single_call(
         # dropped 100% while ~98 KB of paid-for budget went unused (verified:
         # dependency_map.md, 1,755,045 B, lost in full from three documents).
         seg_cap = min(max_segment, max(_MIN_TRIM_SEGMENT_BYTES, remaining))
+        # An already-bounded artifact is INDIVISIBLE: one segment, so the fit
+        # test is whole-or-nothing and a file that cannot fit becomes an honest
+        # omission note instead of a slice of a summary. A reserved artifact
+        # always takes the first branch (its size was reserved out of
+        # `remaining` before anything else ran); an unreserved one gets the same
+        # all-or-nothing test with whatever is left.
+        pieces = [text] if is_bounded_artifact(path.name) else segment_markdown(text, seg_cap)
         kept: list[str] = []
         dropped_here = 0
-        for segment in segment_markdown(text, seg_cap):
+        for segment in pieces:
             seg_bytes = len(segment.encode("utf-8"))
             if seg_bytes <= remaining:
                 kept.append(segment)
@@ -782,9 +893,10 @@ def _plan_single_call(
     logger.info(
         "[phase3-plan] %s: SINGLE call with bounded context "
         "(%d bytes trimmed from %s; %d byte(s) of %d budget unused; "
-        "fully omitted: %s)",
+        "fully omitted: %s; kept whole by reservation: %s)",
         target, trimmed_bytes, ", ".join(trimmed_sources) or "nothing",
         remaining, budget, ", ".join(fully_omitted) or "nothing",
+        ", ".join(sorted(p.name for p in protected)) or "nothing",
     )
     return Phase3TaskPlan(
         mode="single",

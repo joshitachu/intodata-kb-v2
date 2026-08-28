@@ -5168,7 +5168,7 @@ async def test_openai_official_provider_maps_incomplete_status_to_failure(tmp_pa
         return []
 
     def _response_usage_stub(response):
-        return 10, 5
+        return 10, 5, 0  # input, output, cache-hit tokens
 
     monkeypatch.setattr(provider_module, "_response_output_text", _response_output_text_stub)
     monkeypatch.setattr(provider_module, "_response_output_items", _response_output_items_stub)
@@ -5252,7 +5252,7 @@ async def test_openai_official_provider_skips_retry_on_auth_error(tmp_path, monk
     provider = OpenAIOfficialProvider("fake/gpt-4", api_key="test")
     monkeypatch.setattr(provider, "_client", lambda timeout_s: _FakeClient())
     monkeypatch.setattr(provider_module, "_response_output_items", lambda r: [])
-    monkeypatch.setattr(provider_module, "_response_usage", lambda r: (0, 0))
+    monkeypatch.setattr(provider_module, "_response_usage", lambda r: (0, 0, 0))
 
     result = await provider.complete_with_tools("Write docs", staging, ModelOptions())
 

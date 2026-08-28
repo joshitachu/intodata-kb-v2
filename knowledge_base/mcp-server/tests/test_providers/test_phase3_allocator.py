@@ -36,6 +36,8 @@ from pathlib import Path
 from mcp_server.providers.custom.phase3_slices import (
     Phase3PlanInputs,
     Phase3TaskPlan,
+    _trim_priority,
+    is_bounded_artifact,
     plan_phase3_document,
 )
 
@@ -485,3 +487,250 @@ def test_sectioned_plan_is_byte_stable_for_identical_inputs(tmp_path):
         assert a_slice.instruction == b_slice.instruction
     assert first.trimmed_bytes == second.trimmed_bytes
     assert first.trimmed_sources == second.trimmed_sources
+
+
+# ---------------------------------------------------------------------------
+# Already-bounded artifacts: re-trimming a reduction.
+#
+# Verified failure (Talend8_part2, 00_AGENT_BRIEF, ~120K token ceiling). Two
+# upstream commits made the large fact maps arrive as small deterministic
+# reductions -- a ~15 KB `engineering_facts.md` carrying the COMPLETE calls_job
+# edge list, and `*.compact.md` registry views capped at 12 KB. Both worked, and
+# both were then cut AGAIN by this allocator, because at rank 2 they reached it
+# after the doc pack and the obligations file had filled the budget:
+#
+#     _doc_pack_00_AGENT_BRIEF.md                            334,339   75%
+#     documentation_obligations.json                          93,395   21%
+#     00_AGENT_BRIEF__bounded_engineering_facts.md             6,070  <- of 15 KB
+#     00_AGENT_BRIEF__bounded_dependency_map.compact.md        4,109  <- of 10 KB
+#     00_AGENT_BRIEF__omitted_known_risks.compact.md             361  <- 4 KB dropped
+#     00_AGENT_BRIEF__omitted_config_runtime_map.compact.md      369  <- 11 KB dropped
+#     TOTAL 445,925, est 119,088 tokens against a 120,000 ceiling
+#
+# All four together are ~40 KB against a ~447 KB budget. The artifact built
+# specifically so it would always arrive was truncated by 60%, and two views
+# that would fit in 15 KB were dropped outright -- and every one of them arrived
+# as a per-DOCUMENT copy, which is unique per document and so defeats the
+# provider prefix cache the original paths give for free across all ten calls.
+# ---------------------------------------------------------------------------
+
+# Sized to the live run above: prompt_tokens = 7_095 against a 120K ceiling puts
+# `budget = (hard - prompt_tokens - 1024) * 4` at the measured ~447 KB.
+_LIVE_PROMPT = "P" * 28_380
+_LIVE_HARD_TOKENS = 120_000
+_LIVE_BUDGET_BYTES = (_LIVE_HARD_TOKENS - (len(_LIVE_PROMPT) // 4) - 1024) * 4  # 447_524
+
+
+def _exact(path: Path, total_bytes: int, section_bytes: int = 1_200) -> Path:
+    """A markdown file of EXACTLY ``total_bytes``, cuttable on H2 boundaries.
+
+    Exact sizes matter here: the whole point is comparing what a file offered
+    against what arrived, and the reservation ceiling is a share of the budget.
+    """
+    line = "component detail row with enough text to be representative\n"
+    out: list[str] = []
+    size = 0
+    index = 0
+    while size < total_bytes:
+        head = f"## Section {index:03d}\n\n"
+        out.append(head)
+        size += len(head)
+        index += 1
+        section = 0
+        while section < section_bytes and size < total_bytes:
+            out.append(line)
+            size += len(line)
+            section += len(line)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(out)[:total_bytes], encoding="utf-8")
+    assert path.stat().st_size == total_bytes
+    return path
+
+
+def _live_shape(root: Path) -> list[Path]:
+    """The measured 00_AGENT_BRIEF context, in its measured order.
+
+    The doc pack is 343,000 rather than the reported 334,339 so the fixture
+    reproduces the PARTIAL cut of `engineering_facts.md` as well as the two
+    whole-file drops; at the reported size the aggregate happened to squeeze in.
+    """
+    return [
+        _exact(root / "_analysis" / "_doc_pack_00_AGENT_BRIEF.md", 343_000, 10_000),
+        _exact(root / "documentation_obligations.json", 93_395, 8_000),
+        _exact(root / "engineering_facts.md", 15_412),
+        _exact(root / "dependency_map.compact.md", 10_000, 1_000),
+        _exact(root / "known_risks.compact.md", 4_000, 800),
+        _exact(root / "config_runtime_map.compact.md", 11_000, 1_000),
+    ]
+
+
+def _run_brief(staging: Path, context_files: list[Path]) -> Phase3TaskPlan:
+    plan = plan_phase3_document(
+        staging,
+        phase="phase3",
+        target="00_AGENT_BRIEF",
+        prompt=_LIVE_PROMPT,
+        context_files=context_files,
+        hard_tokens=_LIVE_HARD_TOKENS,
+        soft_tokens=_SOFT_TOKENS,
+        shared_file_max_bytes=16_000,
+        inputs=Phase3PlanInputs(
+            doc_name="00_AGENT_BRIEF",
+            expected_output_tokens=12_000,
+            single_call_output_tokens=16_000,
+            required_sections=("Orientation", "Engineering Facts", "Risks"),
+            unit_scoped_sections=(),
+            units=(("Job_000", "G00"),),
+        ),
+    )
+    assert plan is not None
+    assert plan.mode == "single"
+    assert len(plan.slices) == 1
+    return plan
+
+
+def _assert_no_partial_reduction(plan: Phase3TaskPlan) -> None:
+    """A bounded artifact is whole or a marker -- never a slice of a summary."""
+    for arrived in plan.slices[0].files:
+        assert "__bounded_" not in arrived.name or not is_bounded_artifact(
+            arrived.name.split("__bounded_", 1)[1]
+        ), (
+            f"{arrived.name} is a partial cut of an already-bounded reduction; "
+            "a 4 KB slice of a 10 KB summary is worse than the whole thing or "
+            "an honest omission note"
+        )
+
+
+def test_bounded_artifacts_arrive_whole_and_by_their_original_path(tmp_path):
+    """The verified re-trim: the reductions must arrive complete, and cache-stable.
+
+    The original path is load-bearing. `engineering_facts.md` is byte-identical
+    across all ten document calls of a run, so the provider prefix cache holds;
+    `00_AGENT_BRIEF__bounded_engineering_facts.md` is unique per document and
+    cannot be cached by anything.
+    """
+    context_files = _live_shape(tmp_path / "src")
+    plan = _run_brief(tmp_path / "docs_staging", context_files)
+
+    arrived = plan.slices[0].files
+    for bounded in context_files[2:]:
+        assert bounded in arrived, (
+            f"{bounded.name} ({bounded.stat().st_size} B) did not arrive whole via "
+            f"its original path. files={[p.name for p in arrived]}"
+        )
+    _assert_no_partial_reduction(plan)
+    assert plan.trimmed_sources == ("documentation_obligations.json",)
+
+    # Still inside the ceiling the live run was overrunning.
+    used = _plan_bytes(plan)
+    assert used <= _LIVE_BUDGET_BYTES
+    assert (len(_LIVE_PROMPT) // 4) + used // 4 + 512 <= _LIVE_HARD_TOKENS
+
+
+def test_the_doc_pack_stays_the_dominant_context(tmp_path):
+    """Protection must not starve the evidence it only summarises.
+
+    The reductions are derived from the doc pack; buying them with the pack's
+    bytes would trade the fact source for its own summary.
+    """
+    context_files = _live_shape(tmp_path / "src")
+    plan = _run_brief(tmp_path / "docs_staging", context_files)
+
+    doc_pack = context_files[0]
+    assert doc_pack in plan.slices[0].files, "the doc pack was trimmed for a summary"
+    protected_bytes = sum(p.stat().st_size for p in context_files[2:])
+    assert protected_bytes <= _LIVE_BUDGET_BYTES // 4, (
+        "the protected set exceeded its quarter-budget reservation ceiling"
+    )
+    assert doc_pack.stat().st_size > _plan_bytes(plan) * 0.7, (
+        "the doc pack is no longer the dominant context"
+    )
+
+
+def test_protection_is_capped_and_degrades_predictably(tmp_path):
+    """More protected bytes than a quarter of the budget: defined, not accidental.
+
+    First-fit, in context order, against a ceiling of a quarter of the budget.
+    An artifact that does not fit the remaining reservation loses protection and
+    competes normally -- but it is still indivisible, so it arrives whole or as
+    a marker, never as a partial cut. First-fit rather than stop-at-first-miss
+    is what keeps the small view protected when a big one is skipped.
+    """
+    root = tmp_path / "src"
+    doc_pack = _exact(root / "_analysis" / "_doc_pack_00_AGENT_BRIEF.md", 343_000, 10_000)
+    big_a = _exact(root / "map_a.compact.md", 48_000, 4_000)
+    big_b = _exact(root / "map_b.compact.md", 48_000, 4_000)
+    big_c = _exact(root / "map_c.compact.md", 48_000, 4_000)
+    small_d = _exact(root / "map_d.compact.md", 4_000, 800)
+    context_files = [doc_pack, big_a, big_b, big_c, small_d]
+    assert sum(p.stat().st_size for p in context_files[1:]) > _LIVE_BUDGET_BYTES // 4
+
+    plan = _run_brief(tmp_path / "docs_staging", context_files)
+    arrived = plan.slices[0].files
+
+    for reserved in (big_a, big_b, small_d):
+        assert reserved in arrived, (
+            f"{reserved.name} lost its reservation. files={[p.name for p in arrived]}"
+        )
+    assert small_d in arrived, (
+        "the reservation stopped at the first artifact that did not fit instead "
+        "of skipping it; a 48 KB view must not take a 4 KB view down with it"
+    )
+    assert big_c not in arrived, "the reservation ceiling did not bind"
+    assert [p for p in arrived if "__omitted_map_c.compact.md" in p.name], (
+        f"the unprotected view vanished silently. files={[p.name for p in arrived]}"
+    )
+    _assert_no_partial_reduction(plan)
+
+    # The whole point of the cap: the evidence keeps its share.
+    kept_protected = sum(p.stat().st_size for p in (big_a, big_b, small_d))
+    assert kept_protected <= _LIVE_BUDGET_BYTES // 4
+    assert doc_pack in arrived, "the doc pack was starved by the reservation"
+    assert _plan_bytes(plan) <= _LIVE_BUDGET_BYTES
+
+
+def test_bounded_artifacts_increase_the_cache_stable_original_path_count(tmp_path):
+    """Measured cache-stability: the reductions stop being per-document copies."""
+    context_files = _live_shape(tmp_path / "src")
+    plan = _run_brief(tmp_path / "docs_staging", context_files)
+
+    originals = [p for p in plan.slices[0].files if p in set(context_files)]
+    # doc pack + the four bounded artifacts; only the obligations file is cut.
+    assert len(originals) == 5, [p.name for p in plan.slices[0].files]
+
+
+def test_protected_plan_is_byte_stable_for_identical_inputs(tmp_path):
+    """The reservation must not introduce set-iteration order into the packet."""
+    context_files = _live_shape(tmp_path / "src")
+
+    first = _run_brief(tmp_path / "staging_a", context_files)
+    second = _run_brief(tmp_path / "staging_b", context_files)
+
+    assert [p.name for p in first.slices[0].files] == [
+        p.name for p in second.slices[0].files
+    ]
+    for a, b in zip(first.slices[0].files, second.slices[0].files, strict=True):
+        assert a.read_bytes() == b.read_bytes(), f"{a.name} is not byte-stable"
+    assert first.trimmed_bytes == second.trimmed_bytes
+    assert first.trimmed_sources == second.trimmed_sources
+
+
+def test_bounded_artifact_recognition_and_rank():
+    """The recognised set, and the ranks that must not shift around it."""
+    assert is_bounded_artifact("engineering_facts.md")
+    assert is_bounded_artifact("cross_project_refs.md")
+    assert is_bounded_artifact("dependency_map.compact.md")
+    assert is_bounded_artifact("change_impact_matrix.compact.md")
+    assert not is_bounded_artifact("dependency_map.md")
+    assert not is_bounded_artifact("engineering_facts_manifest.json")
+    assert not is_bounded_artifact("_doc_pack_00_AGENT_BRIEF.md")
+
+    assert _trim_priority("engineering_facts.md") == 0
+    assert _trim_priority("known_risks.compact.md") == 0
+    # Unchanged neighbours: the doc pack, the runtime rollup whose filename
+    # deliberately avoids `_evidence_`, obligations, and non-code context.
+    assert _trim_priority("_doc_pack_00_AGENT_BRIEF.md") == 0
+    assert _trim_priority("_runtime_profile.md") == 0
+    assert _trim_priority("documentation_obligations.json") == 1
+    assert _trim_priority("dependency_map.md") == 2
+    assert _trim_priority("noncode_context.md") == 3

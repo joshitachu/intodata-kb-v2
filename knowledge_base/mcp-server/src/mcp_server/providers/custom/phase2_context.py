@@ -39,6 +39,9 @@ class Phase2ContextPacket:
     manifest_path: Path
     total_bytes: int
     omitted: tuple[str, ...]
+    # Leading bytes of ``files`` that are byte-identical for every task in the
+    # run (the cacheable request prefix contributed by this packet).
+    shared_prefix_bytes: int = 0
 
 
 def build_phase2_context_packet(
@@ -179,6 +182,37 @@ def build_phase2_context_packet(
         selected.append(path)
         used_bytes += size
 
+    # Provider prefix cache: every provider adapter concatenates the context
+    # files into ONE request body, so the cacheable prefix runs from the start
+    # of the request to the first byte that differs between calls.  Files that
+    # are byte-identical for every task in the run (shared project artifacts
+    # read straight from staging) therefore LEAD, and the per-task packet files
+    # (SCOPED_FACTS, the assigned task evidence, the scoped map copies and the
+    # investigation copies -- everything written under ``packet_root``) TRAIL.
+    # Same convention as the Phase 2 repair feedback and the Phase 3 slice
+    # instruction, which are TAIL files precisely so the head stays byte-stable.
+    #
+    # SELECTION order above is deliberately unchanged: source truth still gets
+    # first claim on the packet budget, so nothing new can be dropped.  Only the
+    # EMISSION order changes, and it stays deterministic because ``selected``
+    # was built from a total sort on (priority, name).
+    per_task_sources = {compact_facts, task_evidence}
+    ordered: list[Path] = [
+        path
+        for path in selected
+        if path.parent != packet_root and path not in per_task_sources
+    ]
+    ordered += [
+        path
+        for path in selected
+        if path.parent == packet_root or path in per_task_sources
+    ]
+    shared_prefix_bytes = sum(
+        path.stat().st_size
+        for path in ordered
+        if path.parent != packet_root and path not in per_task_sources
+    )
+
     manifest_path = packet_root / "PACKET_MANIFEST.json"
     manifest_path.write_text(
         json.dumps(
@@ -190,12 +224,16 @@ def build_phase2_context_packet(
                 "max_bytes": max_bytes,
                 "total_bytes": used_bytes,
                 "over_budget_required_evidence": used_bytes > max_bytes,
+                # Leading run-shared bytes: the portion of this packet that is
+                # byte-identical for every task of the run and therefore
+                # cacheable as a request prefix.
+                "shared_prefix_bytes": shared_prefix_bytes,
                 "files": [
                     {
                         "path": _relative(staging_dir, path),
                         "bytes": path.stat().st_size,
                     }
-                    for path in selected
+                    for path in ordered
                 ],
                 "omitted_out_of_scope_or_budget": sorted(set(omitted)),
                 "artifact_allowlist": sorted(artifact_names) if artifact_names is not None else None,
@@ -207,10 +245,11 @@ def build_phase2_context_packet(
         encoding="utf-8",
     )
     return Phase2ContextPacket(
-        files=tuple(selected),
+        files=tuple(ordered),
         manifest_path=manifest_path,
         total_bytes=used_bytes,
         omitted=tuple(sorted(set(omitted))),
+        shared_prefix_bytes=shared_prefix_bytes,
     )
 
 

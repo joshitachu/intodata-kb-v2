@@ -539,14 +539,22 @@ def _response_output_text(response: Any) -> str:
     return "".join(chunks)
 
 
-def _response_usage(response: Any) -> tuple[int, int]:
+def _response_usage(response: Any) -> tuple[int, int, int]:
+    """Input, output and cache-hit tokens from a Responses API result.
+
+    The third element used to be dropped on the floor, which made every
+    ``OpenAIOfficialProvider`` call report ``cache_read_tokens=0`` regardless of
+    what the API actually charged. That is a blind gauge, not a cache miss:
+    prefix caching is automatic on this route, so the zeros never proved
+    anything. Read it here so the manifest reflects reality.
+    """
     usage = getattr(response, "usage", None)
     if usage is None and isinstance(response, dict):
         usage = response.get("usage")
     data = _model_dump(usage)
     input_tokens = data.get("input_tokens") or data.get("prompt_tokens") or 0
     output_tokens = data.get("output_tokens") or data.get("completion_tokens") or 0
-    return int(input_tokens or 0), int(output_tokens or 0)
+    return int(input_tokens or 0), int(output_tokens or 0), _cache_hit_tokens(data)
 
 
 def _chat_completion_message_text(message: Any) -> str:
@@ -562,14 +570,19 @@ def _cache_hit_tokens(usage: dict[str, Any]) -> int:
 
     deepseek exposes ``prompt_cache_hit_tokens``; Anthropic
     ``cache_read_input_tokens``; OpenAI nests it under
-    ``prompt_tokens_details.cached_tokens``. Returns 0 when the provider does
-    not report caching (e.g. local Ollama) — which is the correct value there.
+    ``prompt_tokens_details.cached_tokens`` on the Chat Completions API and
+    under ``input_tokens_details.cached_tokens`` on the Responses API. Returns 0
+    when the provider does not report caching (e.g. local Ollama) — which is the
+    correct value there.
     """
     direct = usage.get("prompt_cache_hit_tokens") or usage.get("cache_read_input_tokens")
     if direct:
         return int(direct)
-    details = _as_dict(usage.get("prompt_tokens_details"))
-    return int(details.get("cached_tokens") or 0)
+    for key in ("prompt_tokens_details", "input_tokens_details"):
+        cached = _as_dict(usage.get(key)).get("cached_tokens")
+        if cached:
+            return int(cached)
+    return 0
 
 
 def _normalize_openai_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
@@ -648,13 +661,14 @@ class OpenAIOfficialProvider:
                 response = await self._client(opts.timeout_s).responses.create(**payload)
                 raw_text = _response_output_text(response)
                 text = raw_text
-                input_tokens, output_tokens = _response_usage(response)
+                input_tokens, output_tokens, cache_read = _response_usage(response)
                 result = ModelResult(
                     success=True,
                     text=text,
                     model_name=self.model_name,
                     input_tokens=input_tokens or estimated_tokens,
                     output_tokens=output_tokens or _estimate_tokens(text),
+                    cache_read_tokens=cache_read,
                     latency_ms=int((time.monotonic() - start) * 1000),
                     retries=attempt,
                     metadata=metadata,
@@ -688,7 +702,7 @@ class OpenAIOfficialProvider:
         if opts.json_mode:
             _log_json_mode_ignored(self.provider_name)
         start = time.monotonic()
-        total_in = total_out = 0
+        total_in = total_out = total_cache_hit = 0
         tool_call_count = 0
         tool_result_bytes = 0
         finish_reasons: list[str] = []
@@ -705,6 +719,16 @@ class OpenAIOfficialProvider:
                 "tools": STAGING_TOOLS_OPENAI_RESPONSES,
                 "max_output_tokens": opts.max_tokens,
             }
+            # ``instructions`` was missing here while ``complete`` set it, so the
+            # tool path silently dropped opts.system_prompt. That is not a
+            # cosmetic loss: the harness injects the targeted doc pack (up to
+            # 100 KB) into system_prompt precisely because complete_with_tools
+            # takes no context_files, and then clears context_files. On this
+            # provider the model therefore received neither. Instructions are
+            # NOT inherited through previous_response_id, so set it every turn —
+            # which also keeps the cacheable prefix byte-identical across turns.
+            if opts.system_prompt:
+                payload["instructions"] = opts.system_prompt
             if response_id:
                 payload["previous_response_id"] = response_id
             payload.update(opts.provider_options)
@@ -712,9 +736,10 @@ class OpenAIOfficialProvider:
             try:
                 response = await self._client(opts.timeout_s).responses.create(**payload)
                 response_id = str(getattr(response, "id", "") or "")
-                in_tokens, out_tokens = _response_usage(response)
+                in_tokens, out_tokens, cache_read = _response_usage(response)
                 total_in += in_tokens
                 total_out += out_tokens
+                total_cache_hit += cache_read
                 output_items = _response_output_items(response)
                 function_calls: list[dict[str, Any]] = []
                 for item in output_items:
@@ -755,6 +780,7 @@ class OpenAIOfficialProvider:
                         conversation_trace=conversation_trace,
                         tool_ledger=tool_ledger,
                         cap=opts.tool_input_token_cap,
+                        cache_read_tokens=total_cache_hit,
                     )
 
                 if not function_calls:
@@ -765,6 +791,7 @@ class OpenAIOfficialProvider:
                             model_name=self.model_name,
                             input_tokens=total_in or _estimate_tokens(prompt),
                             output_tokens=total_out,
+                            cache_read_tokens=total_cache_hit,
                             latency_ms=int((time.monotonic() - start) * 1000),
                             retries=turn,
                             raw_error="incomplete: provider stopped because max tokens were reached",
@@ -788,6 +815,7 @@ class OpenAIOfficialProvider:
                         model_name=self.model_name,
                         input_tokens=total_in or _estimate_tokens(prompt),
                         output_tokens=total_out or _estimate_tokens(text),
+                        cache_read_tokens=total_cache_hit,
                         latency_ms=int((time.monotonic() - start) * 1000),
                         retries=turn,
                         metadata={
@@ -852,6 +880,7 @@ class OpenAIOfficialProvider:
             model_name=self.model_name,
             input_tokens=total_in,
             output_tokens=total_out,
+            cache_read_tokens=total_cache_hit,
             latency_ms=int((time.monotonic() - start) * 1000),
             retries=max_turns,
             raw_error=last_error or "max_turns exceeded",

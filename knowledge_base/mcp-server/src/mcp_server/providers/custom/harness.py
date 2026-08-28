@@ -7442,8 +7442,24 @@ Allowed docs:
         cross_cutting = ctx.staging_dir / "_analysis" / "_cross_cutting_facts.md"
         if cross_cutting.exists():
             files.append(cross_cutting)
-        # Project-level runtime rollup, immediately after the cross-cutting
-        # facts and only for operational/risk/change/summary group documents.
+        # Provider prefix cache: the documentation obligations are the LAST
+        # unconditionally-shared artifact on this path -- byte-identical for
+        # every document of the run (93 KB on the measured composite run) --
+        # so they belong in the byte-stable head, ahead of the first
+        # per-document divergence. The runtime rollup below it is selected per
+        # document (`_runtime_rollup_relevant`), so leaving obligations after
+        # it split the cacheable head into two classes for no benefit. This is
+        # a pure reordering: obligations are still added only on the
+        # bounded/run-analysis path and are still absent from the pack path, so
+        # WHICH files are sent is unchanged.
+        pack_evidence_only = self._plugin_mode and self._phase_policy("analysis") == "skip"
+        if not pack_evidence_only:
+            obligations = ctx.staging_dir / "documentation_obligations.json"
+            if obligations.exists():
+                files.append(obligations)
+        # Project-level runtime rollup, after the cross-cutting facts and the
+        # obligations, and only for operational/risk/change/summary group
+        # documents.
         # Mapping, lineage, business-rule, inventory and architecture writers do
         # not receive it. Unit-scoped docs are excluded on purpose: the rollup's
         # failure-mode census names components
@@ -7458,7 +7474,7 @@ Allowed docs:
         # Pack path: analysis was skipped — Phase 3 writes from evidence bundle +
         # investigation output (when investigation: run).
         # bounded/run analysis falls through to the enterprise context path below.
-        if self._plugin_mode and self._phase_policy("analysis") == "skip":
+        if pack_evidence_only:
             facts = ctx.staging_dir / "facts_manifest.json"
             if facts.exists():
                 files.append(facts)
@@ -7491,10 +7507,8 @@ Allowed docs:
                 files.append(doc_prompt_file)
             return files
         # bounded / run analysis: fall through to enterprise context path below,
-        # which picks up _doc_pack_*.md from Phase 2 output.
-        obligations = ctx.staging_dir / "documentation_obligations.json"
-        if obligations.exists():
-            files.append(obligations)
+        # which picks up _doc_pack_*.md from Phase 2 output.  (The obligations
+        # are appended above, in the byte-stable head.)
         prompt_pack = pack_dir / f"_phase3_prompt_pack_{bundle}.md"
         if prompt_pack.exists():
             files.append(prompt_pack)
