@@ -238,9 +238,21 @@ class MCPServerConfig(BaseSettings):
     doc_generation_lock_stale_seconds: int = 7200
     # For Ollama or custom OpenAI-compatible endpoints: "http://localhost:11434"
     model_pricing_json: str = ""
-    # JSON object mapping model names to USD-per-million-token rates.
-    # Example:
-    # MCP_MODEL_PRICING_JSON='{"deepseek-v4-pro":{"input":0.28,"output":0.88}}'
+    # OPTIONAL OVERRIDE, not the source of truth. The shipped rate table lives
+    # in services/model_pricing.DEFAULT_MODEL_PRICING so a run's cost_usd
+    # resolves with no environment configuration -- an empty value here used to
+    # mean "no pricing at all", which is why every GenerateRun.cost_usd on the
+    # deployed instance was NULL.
+    #
+    # This JSON object is merged OVER the defaults PER MODEL, so correcting one
+    # rate does not require restating the rest. Keys may be the full
+    # provider-prefixed id or the bare model name. A null value REMOVES a
+    # built-in default (that model then reports unknown cost rather than a
+    # possibly-stale shipped rate). A model with no rate anywhere reports
+    # cost_usd = NULL and logs a warning; it is never priced at zero.
+    # Examples:
+    # MCP_MODEL_PRICING_JSON='{"deepseek-v4-flash":{"input":0.44,"output":1.32}}'
+    # MCP_MODEL_PRICING_JSON='{"claude-opus-4-7":null}'
 
     # Ollama (for AI job summaries)
     ollama_base_url: str = "http://localhost:11434"
@@ -525,6 +537,32 @@ class MCPServerConfig(BaseSettings):
     # the cumulative input ceiling is disabled by default because evidence-rich
     # multi-document runs legitimately reuse project facts across Phase 3. Set
     # MCP_DOCGEN_MAX_RUN_INPUT_TOKENS to a positive value to opt back into a cap.
+    #
+    # READ THIS BEFORE ENABLING IT. Input is the axis holding ~90% of a run's
+    # spend (~2M input vs ~208K output on production runs), and it is the only
+    # one of the three governors currently switched off -- calls (37/250) and
+    # output (~15% of ceiling) are governed but nowhere near their limits.
+    # The plumbing works: harness._run_input_token_budget early-returns 0 while
+    # this is 0, which makes the `input_budget > 0` check in
+    # _reserve_model_budget dead code; set it positive and reservations are
+    # blocked with "input token budget would be exceeded" (pinned by
+    # tests/test_services/test_run_cost_governance.py).
+    #
+    # The catch is the min() below it: the effective budget is
+    #   min(docgen_max_run_input_tokens, base + per_unit*units + per_doc*docs)
+    # so ANY positive value also activates the dynamic formula, and at the
+    # constants below that formula is calibrated well under observed spend.
+    # A 10-unit / 11-doc project gets 150K + 250K + 660K = 1.06M against ~2M
+    # actually consumed -- it needs ~48 units before the formula clears 2M, so
+    # enabling as-is would abort small and medium runs mid-Phase-3. Raise the
+    # base/per-doc terms first (e.g. base 500_000, per_doc 250_000, giving that
+    # same project ~3.5M) and treat MCP_DOCGEN_MAX_RUN_INPUT_TOKENS as a
+    # runaway ceiling rather than a work bound -- the same lesson recorded for
+    # docgen_max_run_output_tokens below, whose old 600K default starved
+    # legitimate multi-doc partitions. Suggested starting ceiling once the
+    # formula is re-calibrated: 6_000_000 (~3x observed). Size it from the
+    # totals in _assessment/phase_costs.json per project class, with >=2x
+    # headroom, and shadow it on real runs before enforcing.
     docgen_input_token_budget_base: int = 150_000  # MCP_DOCGEN_INPUT_TOKEN_BUDGET_BASE
     docgen_input_token_budget_per_unit: int = 25_000  # MCP_DOCGEN_INPUT_TOKEN_BUDGET_PER_UNIT
     docgen_input_token_budget_per_doc: int = 60_000  # MCP_DOCGEN_INPUT_TOKEN_BUDGET_PER_DOC

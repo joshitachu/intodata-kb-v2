@@ -3058,7 +3058,12 @@ async def test_phase4_cleanup_debug_flag_writes_index_and_calls(tmp_path, monkey
     provider = CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))
     await Phase4Cleanup(HarnessHelpersImpl(provider)).run(ctx, state, log_cb)
 
-    debug = staging / "_debug"
+    # The debug record is still written, but Phase 4 archives it OUT of staging
+    # (see Phase4Cleanup.DEBUG_ARCHIVE_DIRNAME): the atomic swap renames the
+    # whole staging tree into a client-visible docs/, and _debug/ holds verbatim
+    # prompts and model responses.
+    assert not (staging / "_debug").exists()
+    debug = staging.parent / "_debug"
     index = json.loads((debug / "index.json").read_text(encoding="utf-8"))
     assert index["warnings_count"] == 1
     assert index["project_id"] == "proj"
@@ -4659,7 +4664,13 @@ async def test_custom_harness_generates_valid_staging(tmp_path, monkeypatch):
     assert result.cost_usd is not None
     assert result.cost_usd > 0
     assert (staging / "facts_manifest.json").exists()
-    assert (staging / "_investigation" / "_summary.md").exists()
+    # _investigation/ is Phase 1 working evidence and has no post-swap consumer.
+    # Phase 4 prunes it: the staging tree is renamed wholesale onto the
+    # client-visible docs/, so only the directories in
+    # phase4_cleanup.PUBLISHED_STAGING_DIRS survive the run end to end.
+    assert not (staging / "_investigation").exists()
+    assert not (staging / "_model_inputs").exists()
+    assert not (staging / "_agent_tasks").exists()
     # index.json is debug-only (gated in Track A Slice 3)
     assert not (staging / "index.json").exists()
     # 09_EXECUTIVE_SUMMARY is enterprise-only; this test uses enterprise_mode=False

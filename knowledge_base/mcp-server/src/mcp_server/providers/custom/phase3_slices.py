@@ -424,7 +424,9 @@ def _resolve_group(stem: str, groups: list[str]) -> str | None:
     return best
 
 
-def _attribute_blocks(text: str, source: str, groups: list[str]) -> tuple[list[str], list[_AttributedSegment]]:
+def _attribute_blocks(
+    text: str, source: str, groups: list[str]
+) -> tuple[list[_AttributedSegment], list[_AttributedSegment]]:
     """Split one evidence file into skeleton parts + group-attributed blocks.
 
     Boundaries are the doc-pack structure: H2 sections, ``### Source
@@ -433,9 +435,13 @@ def _attribute_blocks(text: str, source: str, groups: list[str]) -> tuple[list[s
     group). Named skeleton sections are returned separately; every other
     block is attributed to a group when its heading resolves to one, else
     left unattributed. Content is preserved verbatim.
+
+    Skeleton parts carry their ``source`` too: the skeleton is truncated at
+    ``_SECTIONED_SKELETON_BUDGET_BYTES`` and the plan cannot tell whether a
+    file vanished entirely without knowing which file those bytes came from.
     """
     lines = text.splitlines(keepends=True)
-    skeleton_parts: list[str] = []
+    skeleton_parts: list[_AttributedSegment] = []
     segments: list[_AttributedSegment] = []
     current: list[str] = []
     current_group: str | None = None
@@ -449,7 +455,9 @@ def _attribute_blocks(text: str, source: str, groups: list[str]) -> tuple[list[s
         block = "".join(current)
         if block.strip():
             if current_is_skeleton:
-                skeleton_parts.append(block)
+                skeleton_parts.append(
+                    _AttributedSegment(source=source, group=None, text=block)
+                )
             else:
                 segments.append(_AttributedSegment(source=source, group=current_group, text=block))
         current = []
@@ -573,6 +581,85 @@ def _full_omission_note(name: str, size_bytes: int) -> str:
         "subject matter as absent from the project, and do not treat its "
         "absence here as a scanner or coverage limit.\n\n"
     )
+
+
+_OMISSION_FILE_HEADER = "# Evidence omitted from this context\n\n"
+
+
+def _sectioned_full_omission_note(name: str, size_bytes: int) -> str:
+    """Marker for a source that reached NO part of a section-partitioned plan.
+
+    Sibling of ``_full_omission_note`` for the sectioned path. "Absent from
+    this part" is normal there -- the plan distributes evidence deliberately --
+    but "absent from every part" is the same defect the single-call path had:
+    the writers see no trace of an artifact the prompt still tells them to
+    prioritise, so "did not fit" reads exactly like "does not exist".
+    """
+    return (
+        f"> NOTE: `{name}` ({size_bytes} bytes) was omitted IN FULL from EVERY part of "
+        "this document's section-partitioned context; the deterministic artifact of "
+        "record retains the full content.\n>\n"
+        "> This evidence is absent from THIS CONTEXT only. Do not report its subject "
+        "matter as absent from the project, and do not treat its absence here as a "
+        "scanner or coverage limit.\n\n"
+    )
+
+
+def _sectioned_partial_trim_note(name: str, kept_bytes: int, size_bytes: int) -> str:
+    """Marker for a source only partly carried by a section-partitioned plan.
+
+    Reports the WHOLE-PLAN split, not this part's share: a source spread over
+    several parts is fully present and gets no note at all.
+    """
+    return (
+        f"> NOTE: {kept_bytes} of {size_bytes} bytes of `{name}` were distributed over "
+        "the parts of this document; the remainder was omitted to fit the per-part "
+        "context ceiling, and the deterministic artifact of record retains the full "
+        "content.\n>\n"
+        "> Do not report the omitted subject matter as absent from the project, and do "
+        "not treat its absence here as a scanner or coverage limit.\n\n"
+    )
+
+
+def _fit_segments(
+    segments: list[_AttributedSegment],
+    *,
+    remaining: int,
+    max_segment_bytes: int,
+) -> tuple[list[tuple[str, str]], int, dict[str, int]]:
+    """First-fit pack of whole blocks, sub-segmenting only when one will not fit.
+
+    Returns ``(kept (source, text) pairs, remaining bytes, kept bytes by
+    source)``. A block that still fits is kept WHOLE and verbatim, so the
+    common case is byte-identical to the plain fit test it replaces.
+
+    A block that does NOT fit used to contribute nothing at all. The blocks
+    here are attribution boundaries with no size cap -- a heading-less
+    deterministic fact map is ONE block of the whole file -- so a single
+    oversized block dropped 100% of its source while the part's capacity went
+    unused (measured below). It is now re-split by ``segment_markdown`` at a
+    cap adapted to what is still affordable, exactly as ``_plan_single_call``
+    adapts its trim segment size, so a real verbatim prefix survives.
+    """
+    kept: list[tuple[str, str]] = []
+    kept_by_source: dict[str, int] = {}
+    for seg in segments:
+        size = seg.size_bytes
+        if size <= remaining:
+            kept.append((seg.source, seg.text))
+            remaining -= size
+            kept_by_source[seg.source] = kept_by_source.get(seg.source, 0) + size
+            continue
+        if remaining < _MIN_TRIM_SEGMENT_BYTES:
+            continue
+        cap = min(max_segment_bytes, max(_MIN_TRIM_SEGMENT_BYTES, remaining))
+        for piece in segment_markdown(seg.text, cap):
+            piece_bytes = len(piece.encode("utf-8"))
+            if piece_bytes <= remaining:
+                kept.append((seg.source, piece))
+                remaining -= piece_bytes
+                kept_by_source[seg.source] = kept_by_source.get(seg.source, 0) + piece_bytes
+    return kept, remaining, kept_by_source
 
 
 def _plan_single_call(
@@ -738,16 +825,30 @@ def _plan_sectioned(
             continue
         (shared if size <= shared_file_max_bytes else evidence_files).append(path)
 
-    skeleton_parts: list[str] = []
+    skeleton_parts: list[_AttributedSegment] = []
     attributed: list[_AttributedSegment] = []
+    # Whole-plan byte accounting per SOURCE FILE. A source absent from one part
+    # is normal (the plan partitions evidence deliberately); a source absent
+    # from EVERY part is the sectioned analogue of the single-call whole-file
+    # drop and must never be silent.
+    source_order: list[str] = []
+    file_sizes: dict[str, int] = {}
+    offered_by_source: dict[str, int] = {}
     for path in evidence_files:
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            continue
+            continue  # unreadable: it offered nothing, so there is nothing to report
         file_skeleton, file_segments = _attribute_blocks(text, path.name, groups_in_order)
         skeleton_parts.extend(file_skeleton)
         attributed.extend(file_segments)
+        if path.name not in offered_by_source:
+            source_order.append(path.name)
+            offered_by_source[path.name] = 0
+            file_sizes[path.name] = path.stat().st_size
+        offered_by_source[path.name] += sum(
+            seg.size_bytes for seg in (*file_skeleton, *file_segments)
+        )
 
     group_bytes: dict[str, int] = {g: 0 for g in groups_in_order}
     has_group_evidence = False
@@ -758,6 +859,8 @@ def _plan_sectioned(
     if not has_group_evidence:
         return None
 
+    kept_by_source: dict[str, int] = {name: 0 for name in source_order}
+
     slice_dir = transient_dir(staging_dir, "context_slices", phase)
     skeleton_path: Path | None = None
     skeleton_bytes = 0
@@ -765,17 +868,35 @@ def _plan_sectioned(
         skeleton_text_parts: list[str] = []
         used = 0
         for part in skeleton_parts:
-            part_bytes = len(part.encode("utf-8"))
+            part_bytes = part.size_bytes
             if used + part_bytes > _SECTIONED_SKELETON_BUDGET_BYTES and skeleton_text_parts:
                 break
-            skeleton_text_parts.append(part)
+            skeleton_text_parts.append(part.text)
+            kept_by_source[part.source] = kept_by_source.get(part.source, 0) + part_bytes
             used += part_bytes
         skeleton_path = slice_dir / f"{_safe_name(target)}__skeleton.md"
         transient_write(skeleton_path, "".join(skeleton_text_parts))
         skeleton_bytes = skeleton_path.stat().st_size
 
+    # Every source can end up needing an omission NOTE, and those notes ride in
+    # the shared prefix of EVERY part, so their bytes are reserved UP FRONT --
+    # adding a note can never push a part past the ceiling. The reservation is
+    # the worst case (the longer of the two note forms, with the largest numbers
+    # they can carry) and is not refunded: it is a few hundred bytes per
+    # evidence file against a ~400 KB per-part capacity, and a refund pass would
+    # make the capacity depend on the packing it is an input to.
+    note_reserve = len(_OMISSION_FILE_HEADER.encode("utf-8")) if source_order else 0
+    for name in source_order:
+        size = file_sizes[name]
+        note_reserve += max(
+            len(_sectioned_full_omission_note(name, size).encode("utf-8")),
+            len(_sectioned_partial_trim_note(name, size, size).encode("utf-8")),
+        )
+
     prompt_tokens = max(1, len(prompt) // 4)
-    shared_bytes = sum(p.stat().st_size for p in shared if p.exists()) + skeleton_bytes
+    shared_bytes = (
+        sum(p.stat().st_size for p in shared if p.exists()) + skeleton_bytes + note_reserve
+    )
     capacity_bytes = (hard_tokens - prompt_tokens - shared_bytes // 4 - 1024) * 4
     if capacity_bytes < 16_000:
         return None
@@ -817,70 +938,100 @@ def _plan_sectioned(
 
     total = len(bins)
     shared_with_skeleton = [*shared, *([skeleton_path] if skeleton_path else [])]
-    slices: list[Phase3Slice] = []
-    trimmed_bytes = 0
-    trimmed_sources: list[str] = []
+    part_paths: list[Path] = []
+    instructions: list[str] = []
+    # Trim segment cap for a block that will not fit whole; mirrors the
+    # single-call allocator's `max(8_000, budget // 4)` coarse cap, then
+    # adapted per block to what is still affordable inside `_fit_segments`.
+    max_segment_bytes = max(8_000, capacity_bytes // 4)
     for idx, bin_groups in enumerate(bins, start=1):
         bin_set = set(bin_groups)
         segments = [seg for seg in attributed if seg.group in bin_set]
         if idx == 1:
             # Unattributed evidence (non-code documented context, obligations
-            # JSON, unmatched blocks) supports the cross-cutting sections and
-            # rides with slice 1, byte-bounded with priority trimming.
-            leftover = capacity_bytes - sum(seg.size_bytes for seg in segments)
-            unattributed = [seg for seg in attributed if seg.group is None]
-            for seg in sorted(
-                unattributed,
-                key=lambda s: (_trim_priority(s.source), attributed.index(s)),
-            ):
-                if seg.size_bytes <= leftover:
-                    segments.append(seg)
-                    leftover -= seg.size_bytes
-                else:
-                    trimmed_bytes += seg.size_bytes
-                    if seg.source not in trimmed_sources:
-                        trimmed_sources.append(seg.source)
-        # A bin whose own group evidence exceeds capacity is trimmed at
-        # segment granularity (deterministic, recorded) rather than aborted.
-        sized: list[_AttributedSegment] = []
-        used = 0
-        for seg in segments:
-            if used + seg.size_bytes <= capacity_bytes:
-                sized.append(seg)
-                used += seg.size_bytes
-            else:
-                trimmed_bytes += seg.size_bytes
-                if seg.source not in trimmed_sources:
-                    trimmed_sources.append(seg.source)
-        sources = sorted({seg.source for seg in sized})
+            # JSON, deterministic fact maps, unmatched blocks) supports the
+            # cross-cutting sections and rides with slice 1, byte-bounded with
+            # priority trimming.
+            segments.extend(
+                sorted(
+                    (seg for seg in attributed if seg.group is None),
+                    key=lambda s: (_trim_priority(s.source), attributed.index(s)),
+                )
+            )
+        # A bin whose evidence exceeds capacity is trimmed at segment
+        # granularity (deterministic, recorded) rather than aborted. Blocks
+        # that fit are kept whole and verbatim.
+        sized, _remaining, bin_kept = _fit_segments(
+            segments, remaining=capacity_bytes, max_segment_bytes=max_segment_bytes
+        )
+        for name, kept in bin_kept.items():
+            kept_by_source[name] = kept_by_source.get(name, 0) + kept
+        sources = sorted({source for source, _text in sized})
         header = (
             f"# Evidence part {idx} of {total} for {target}\n\n"
             f"Assigned groups: {', '.join(bin_groups)}\n\n"
             "Verbatim evidence sections from: " + ", ".join(sources) + "\n\n---\n\n"
         )
         part_path = slice_dir / f"{_safe_name(target)}__part_{idx:02d}.md"
-        transient_write(part_path, header + "".join(seg.text for seg in sized))
+        transient_write(part_path, header + "".join(text for _source, text in sized))
+        part_paths.append(part_path)
         unit_lines = "\n".join(
             f"- {unit} (group {group})"
             for group in bin_groups
             for unit in units_by_group[group]
         )
-        instruction = _sectioned_instruction(
-            idx=idx,
-            total=total,
-            target=target,
-            unit_scoped=unit_scoped,
-            cross_cutting=cross_cutting,
-            unit_lines=unit_lines,
+        instructions.append(
+            _sectioned_instruction(
+                idx=idx,
+                total=total,
+                target=target,
+                unit_scoped=unit_scoped,
+                cross_cutting=cross_cutting,
+                unit_lines=unit_lines,
+            )
         )
-        slices.append(
-            Phase3Slice(files=[*shared_with_skeleton, part_path], instruction=instruction)
-        )
+
+    # WHOLE-PLAN omission accounting. Only now is it known what every part
+    # actually carries, so a source is judged against the plan, not a bin: a
+    # source spread over several parts is fully present and gets no note.
+    notes: list[str] = []
+    fully_omitted: list[str] = []
+    trimmed_bytes = 0
+    trimmed_sources: list[str] = []
+    for name in source_order:
+        offered = offered_by_source[name]
+        kept = min(kept_by_source.get(name, 0), offered)
+        dropped = offered - kept
+        if dropped <= 0:
+            continue
+        trimmed_bytes += dropped
+        trimmed_sources.append(name)
+        size = file_sizes[name]
+        if kept == 0:
+            fully_omitted.append(name)
+            notes.append(_sectioned_full_omission_note(name, size))
+        else:
+            notes.append(_sectioned_partial_trim_note(name, kept, size))
+    if notes:
+        # ONE shared file in every part's prefix, byte-stable and in evidence
+        # file order. Shared rather than part-1-only because any part's writer
+        # can otherwise assert an absence the artifact of record contradicts.
+        omissions_path = slice_dir / f"{_safe_name(target)}__omitted_evidence.md"
+        transient_write(omissions_path, _OMISSION_FILE_HEADER + "".join(notes))
+        shared_with_skeleton = [*shared_with_skeleton, omissions_path]
+
+    slices = [
+        Phase3Slice(files=[*shared_with_skeleton, part_path], instruction=instruction)
+        for part_path, instruction in zip(part_paths, instructions, strict=True)
+    ]
 
     logger.info(
         "[phase3-plan] %s: SECTION-PARTITIONED into %d part(s) "
-        "(expected_output=%d tokens, cap=%d, unit_scoped=%s)",
+        "(expected_output=%d tokens, cap=%d, unit_scoped=%s; "
+        "%d bytes trimmed from %s; fully omitted: %s)",
         target, total, inputs.expected_output_tokens, single_cap, ", ".join(unit_scoped),
+        trimmed_bytes, ", ".join(trimmed_sources) or "nothing",
+        ", ".join(fully_omitted) or "nothing",
     )
     return Phase3TaskPlan(
         mode="sections",
