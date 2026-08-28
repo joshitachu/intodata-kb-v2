@@ -115,8 +115,17 @@ async def build_runtime_insights_for_execution(
     exec_row = await _fetch_execution(session, project_id, execution_id)
     if exec_row is None:
         return InsightBuildResult(enriched_events=0, had_incident=False)
+    if exec_row.executable_kind != "job":
+        # Route/Data Service exports are shared OSGi Runtime evidence. Building
+        # a per-executable incident from them would assign sibling log lines to
+        # whichever deployment happened to own the requested time window.
+        return InsightBuildResult(enriched_events=0, had_incident=False)
 
-    log_rows = await fetch_execution_log_rows(session, project_id, execution_id)
+    log_rows = [
+        row
+        for row in await fetch_execution_log_rows(session, project_id, execution_id)
+        if row.attribution_safe
+    ]
     if known_components is None:
         known_components = await fetch_known_components(session, project_id)
 

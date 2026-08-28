@@ -129,6 +129,26 @@ def _tenant_handler(seen: list[httpx.Request]):
             else:
                 items = _TASKS_BY_ENVIRONMENT.get(environment_id, [])
             return httpx.Response(200, json=_envelope(items))
+        if path.startswith("/orchestration/executables/tasks/"):
+            task_id = path.rsplit("/", 1)[-1]
+            task = next(
+                (
+                    item
+                    for page in _TASKS_BY_ENVIRONMENT.values()
+                    for item in page
+                    if item["executable"] == task_id
+                ),
+                None,
+            )
+            if task is not None:
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": task_id,
+                        "artifact": {"id": task["artifactId"]},
+                        "parameters": {},
+                    },
+                )
         if path == "/orchestration/executables/plans":
             if environment_id is None:
                 items = [item for page in _PLANS_BY_ENVIRONMENT.values() for item in page]

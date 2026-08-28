@@ -36,10 +36,13 @@ import {
   RuntimeDependencySummaryResponse,
   RuntimeDependencySummaryResponseSchema,
   RuntimeExecutionState,
+  RuntimeExecutableKind,
   RuntimeJobHealthResponse,
   RuntimeJobHealthResponseSchema,
   RuntimeJobListResponse,
   RuntimeJobListResponseSchema,
+  RuntimeDeploymentListResponse,
+  RuntimeDeploymentListResponseSchema,
   RuntimeJobRunListResponse,
   RuntimeJobRunListResponseSchema,
   RuntimeLogSeverity,
@@ -111,6 +114,12 @@ export interface JobFilters extends InventoryFilters {
   workspaceId?: string;
   engineId?: string;
   status?: string;
+  executableKind?: RuntimeExecutableKind;
+}
+
+export interface DeploymentFilters extends InventoryFilters {
+  executableKind?: Exclude<RuntimeExecutableKind, "job">;
+  state?: RuntimeExecutionState;
 }
 
 export interface ArtifactFilters extends InventoryFilters {
@@ -428,6 +437,7 @@ async function fetchJobs(filters: JobFilters): Promise<RuntimeJobListResponse> {
     workspace_id: filters.workspaceId,
     engine_id: filters.engineId,
     status: filters.status,
+    executable_kind: filters.executableKind,
     limit: filters.limit,
     offset: filters.offset,
   });
@@ -442,6 +452,30 @@ export function useRuntimeJobs(filters: JobFilters = {}) {
   return useQuery({
     queryKey: ["runtime", "jobs", filters],
     queryFn: () => fetchJobs(filters),
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchDeployments(
+  filters: DeploymentFilters,
+): Promise<RuntimeDeploymentListResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    executable_kind: filters.executableKind,
+    state: filters.state,
+    limit: filters.limit,
+    offset: filters.offset,
+  });
+  const res = await fetch(`/api/runtime/deployments${query}`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch runtime deployments");
+  return RuntimeDeploymentListResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeDeployments(filters: DeploymentFilters = {}) {
+  return useQuery({
+    queryKey: ["runtime", "deployments", filters],
+    queryFn: () => fetchDeployments(filters),
     staleTime: STALE_MS,
   });
 }

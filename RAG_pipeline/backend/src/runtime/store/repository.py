@@ -62,6 +62,7 @@ from src.runtime.models import (
     ListRuntimeComponentHotspotsInput,
     ListRuntimeConnectionsInput,
     ListRuntimeDependenciesInput,
+    ListRuntimeDeploymentsInput,
     ListRuntimeEnginesInput,
     ListRuntimeErrorSignaturesInput,
     ListRuntimeInventoryInput,
@@ -75,6 +76,7 @@ from src.runtime.models import (
     RuntimeComponentHotspot,
     RuntimeConnection,
     RuntimeDependencySummary,
+    RuntimeDeployment,
     RuntimeErrorSignature,
     RuntimeExecution,
     RuntimeEngine,
@@ -83,6 +85,7 @@ from src.runtime.models import (
     RuntimeEnvironment,
     RuntimeEstateOverview,
     RuntimeExecutionState,
+    RuntimeExecutableKind,
     RuntimeExtendedMetadataAvailability,
     RuntimeFailure,
     RuntimeHealthSummary,
@@ -502,6 +505,7 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeExecutionRow.job_name == params.job_name)
         if params.state is not None:
             stmt = stmt.where(RuntimeExecutionRow.state == params.state.value)
+        stmt = stmt.where(RuntimeExecutionRow.executable_kind == params.executable_kind.value)
         if params.since:
             stmt = stmt.where(RuntimeExecutionRow.started_at >= params.since)
         if params.until:
@@ -760,6 +764,9 @@ class RuntimeStoreRepository:
             return []
         exec_stmt = select(RuntimeExecutionRow)
         exec_stmt = self._apply_scope(exec_stmt, RuntimeExecutionRow.project_id, scope)
+        exec_stmt = exec_stmt.where(
+            RuntimeExecutionRow.executable_kind == RuntimeExecutableKind.JOB.value
+        )
         if project_id is not None:
             exec_stmt = exec_stmt.where(RuntimeExecutionRow.project_id == project_id)
         if source_key is not None:
@@ -1671,6 +1678,8 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeJobRow.engine_id == params.engine_id)
         if params.status is not None:
             stmt = stmt.where(RuntimeJobRow.status == params.status)
+        if params.executable_kind is not None:
+            stmt = stmt.where(RuntimeJobRow.executable_kind == params.executable_kind.value)
         stmt = stmt.order_by(RuntimeJobRow.name.asc(), RuntimeJobRow.id.asc()).offset(params.offset).limit(params.limit)
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_job(row) for row in rows]
@@ -1692,7 +1701,75 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeJobRow.engine_id == params.engine_id)
         if params.status is not None:
             stmt = stmt.where(RuntimeJobRow.status == params.status)
+        if params.executable_kind is not None:
+            stmt = stmt.where(RuntimeJobRow.executable_kind == params.executable_kind.value)
         return int((await self._session.execute(stmt)).scalar_one())
+
+    async def list_deployments(
+        self,
+        scope: ProjectScope,
+        params: ListRuntimeDeploymentsInput,
+    ) -> list[RuntimeDeployment]:
+        """Return Route/Data Service inventory with its latest lifecycle row."""
+        deployments = await self._deployment_inventory(scope, params)
+        return deployments[params.offset : params.offset + params.limit]
+
+    async def _deployment_inventory(
+        self,
+        scope: ProjectScope,
+        params: ListRuntimeDeploymentsInput,
+    ) -> list[RuntimeDeployment]:
+        if self._denies_all(scope):
+            return []
+        kinds = (
+            [params.executable_kind.value]
+            if params.executable_kind is not None
+            else [RuntimeExecutableKind.ROUTE.value, RuntimeExecutableKind.DATA_SERVICE.value]
+        )
+        job_stmt = select(RuntimeJobRow)
+        job_stmt = self._apply_scope(job_stmt, RuntimeJobRow.project_id, scope)
+        if params.project_id is not None:
+            job_stmt = job_stmt.where(RuntimeJobRow.project_id == params.project_id)
+        if params.source_key is not None:
+            job_stmt = job_stmt.where(RuntimeJobRow.source_key == params.source_key)
+        job_stmt = job_stmt.where(RuntimeJobRow.executable_kind.in_(kinds))
+        jobs = list((await self._session.execute(job_stmt)).scalars().all())
+        if not jobs:
+            return []
+
+        run_stmt = select(RuntimeJobRunRow)
+        run_stmt = self._apply_scope(run_stmt, RuntimeJobRunRow.project_id, scope)
+        if params.project_id is not None:
+            run_stmt = run_stmt.where(RuntimeJobRunRow.project_id == params.project_id)
+        if params.source_key is not None:
+            run_stmt = run_stmt.where(RuntimeJobRunRow.source_key == params.source_key)
+        run_stmt = run_stmt.where(RuntimeJobRunRow.executable_kind.in_(kinds))
+        run_stmt = run_stmt.order_by(RuntimeJobRunRow.started_at.desc(), RuntimeJobRunRow.id.desc())
+        rows = list((await self._session.execute(run_stmt)).scalars().all())
+        latest: dict[tuple[str, str, str], RuntimeJobRunRow] = {}
+        for row in rows:
+            latest.setdefault((row.project_id, row.source_key, row.job_id), row)
+
+        deployments = [
+            _to_deployment(job, latest.get((job.project_id, job.source_key, job.job_id)))
+            for job in jobs
+        ]
+        if params.state is not None:
+            deployments = [item for item in deployments if item.state == params.state]
+        deployments.sort(key=lambda item: item.executable_name.casefold())
+        deployments.sort(
+            key=lambda item: item.started_at
+            or datetime.datetime.min.replace(tzinfo=datetime.UTC),
+            reverse=True,
+        )
+        return deployments
+
+    async def count_deployments(
+        self,
+        scope: ProjectScope,
+        params: ListRuntimeDeploymentsInput,
+    ) -> int:
+        return len(await self._deployment_inventory(scope, params))
 
     async def list_artifacts(
         self,
@@ -1865,6 +1942,9 @@ class RuntimeStoreRepository:
         if params.engine_id is not None:
             run_stmt = run_stmt.where(RuntimeJobRunRow.engine_id == params.engine_id)
             job_stmt = job_stmt.where(RuntimeJobRow.engine_id == params.engine_id)
+        executable_kind = params.executable_kind or RuntimeExecutableKind.JOB
+        run_stmt = run_stmt.where(RuntimeJobRunRow.executable_kind == executable_kind.value)
+        job_stmt = job_stmt.where(RuntimeJobRow.executable_kind == executable_kind.value)
 
         run_rows = list((await self._session.execute(run_stmt)).scalars().all())
         job_rows = list((await self._session.execute(job_stmt)).scalars().all())
@@ -2181,6 +2261,7 @@ class RuntimeStoreRepository:
         until: datetime.datetime | None,
         environment_ids: Sequence[str] | None = None,
         project_ids: Sequence[str] | None = None,
+        executable_kind: RuntimeExecutableKind | None = None,
     ):
         """Scoped, filtered execution rows as a subquery for aggregate composition.
 
@@ -2201,6 +2282,7 @@ class RuntimeStoreRepository:
             RuntimeExecutionRow.started_at.label("started_at"),
             RuntimeExecutionRow.ended_at.label("ended_at"),
             RuntimeExecutionRow.duration_ms.label("duration_ms"),
+            RuntimeExecutionRow.executable_kind.label("executable_kind"),
         )
         stmt = self._apply_scope(stmt, RuntimeExecutionRow.project_id, scope)
         if project_ids:
@@ -2211,6 +2293,8 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeExecutionRow.source_key == source_key)
         if job_name is not None:
             stmt = stmt.where(RuntimeExecutionRow.job_name == job_name)
+        if executable_kind is not None:
+            stmt = stmt.where(RuntimeExecutionRow.executable_kind == executable_kind.value)
         if since is not None:
             stmt = stmt.where(RuntimeExecutionRow.started_at >= since)
         if until is not None:
@@ -2265,6 +2349,7 @@ class RuntimeStoreRepository:
             job_name=params.job_name,
             since=params.since,
             until=params.until,
+            executable_kind=RuntimeExecutableKind.JOB,
         )
         bucket = _bucket_key_expr(self._dialect, base.c.started_at, params.bucket)
         keyed = select(
@@ -2334,6 +2419,7 @@ class RuntimeStoreRepository:
             job_name=params.job_name,
             since=None,
             until=None,
+            executable_kind=RuntimeExecutableKind.JOB,
         )
         row = (
             await self._session.execute(
@@ -2363,6 +2449,7 @@ class RuntimeStoreRepository:
             until=params.until,
             environment_ids=params.environment_ids,
             project_ids=params.project_ids,
+            executable_kind=RuntimeExecutableKind.JOB,
         )
         group = [base.c.project_id, base.c.source_key, base.c.job_name]
         percentiles = self._duration_percentiles(base, group)
@@ -2521,6 +2608,7 @@ class RuntimeStoreRepository:
             until=params.until,
             environment_ids=params.environment_ids,
             project_ids=params.project_ids,
+            executable_kind=RuntimeExecutableKind.JOB,
         )
         group = [base.c.project_id, base.c.source_key, base.c.job_name]
         if params.attention_only:
@@ -2642,6 +2730,7 @@ class RuntimeStoreRepository:
             )
             .where(RuntimeExecutionRow.project_id == project_id)
             .where(RuntimeExecutionRow.state == RuntimeExecutionState.FAILED.value)
+            .where(RuntimeExecutionRow.executable_kind == RuntimeExecutableKind.JOB.value)
             .where(key_filter)
             .group_by(RuntimeExecutionRow.source_key, RuntimeExecutionRow.job_name)
         )
@@ -2691,6 +2780,7 @@ class RuntimeStoreRepository:
                 ),
             )
             .where(RuntimeExecutionRow.project_id == project_id)
+            .where(RuntimeExecutionRow.executable_kind == RuntimeExecutableKind.JOB.value)
             .where(key_filter)
             .where(RuntimeIncidentRow.confidence.in_(("high", "medium")))
             .where(RuntimeIncidentRow.pattern_id.notin_(("generic.unknown", "exception.generic")))
@@ -3028,6 +3118,7 @@ class RuntimeStoreRepository:
             RuntimeExecutionRow.duration_ms.label("duration_ms"),
         ).where(
             RuntimeExecutionRow.job_name.in_(job_names),
+            RuntimeExecutionRow.executable_kind == RuntimeExecutableKind.JOB.value,
             RuntimeExecutionRow.started_at >= since,
             RuntimeExecutionRow.state == RuntimeExecutionState.SUCCESS.value,
             RuntimeExecutionRow.ended_at.is_not(None),
@@ -3395,6 +3486,7 @@ class RuntimeStoreRepository:
                 ),
             )
             .where(RuntimeExecutionRow.job_name.in_(job_names))
+            .where(RuntimeExecutionRow.executable_kind == RuntimeExecutableKind.JOB.value)
             .where(RuntimeExecutionRow.started_at >= since)
             .where(RuntimeExecutionRow.state == RuntimeExecutionState.FAILED.value)
             .group_by(RuntimeExecutionRow.job_name)
@@ -3475,6 +3567,7 @@ class RuntimeStoreRepository:
                 isouter=True,
             )
             .where(RuntimeExecutionRow.job_name.in_(job_names))
+            .where(RuntimeExecutionRow.executable_kind == RuntimeExecutableKind.JOB.value)
             .where(RuntimeExecutionRow.started_at >= since)
             .where(RuntimeIncidentRow.confidence.in_(("high", "medium")))
             .where(RuntimeIncidentRow.pattern_id.notin_(("generic.unknown", "exception.generic")))
@@ -3733,6 +3826,7 @@ class RuntimeStoreRepository:
             job_name=params.job_name,
             since=params.since,
             until=params.until,
+            executable_kind=RuntimeExecutableKind.JOB,
         )
         metrics = self._scoped_metric_base(
             scope, project_id=params.project_id, source_key=params.source_key
@@ -4046,6 +4140,7 @@ class RuntimeStoreRepository:
         row.name = job.name
         row.display_name = job.display_name
         row.job_type = job.job_type
+        row.executable_kind = job.executable_kind.value
         row.status = job.status
         row.environment_id = job.environment_id
         row.environment_name = job.environment_name
@@ -4055,6 +4150,9 @@ class RuntimeStoreRepository:
         row.engine_name = job.engine_name
         row.owner = job.owner
         row.artifact_name = job.artifact_name
+        row.artifact_id = job.artifact_id
+        row.artifact_version = job.artifact_version
+        row.metric_path = job.metric_path
         row.last_seen_at = job.last_seen_at
         row.source_updated_at = job.source_updated_at
         row.ingested_at = ingested_at
@@ -4178,6 +4276,7 @@ class RuntimeStoreRepository:
         row.job_name = run.job_name
         row.execution_id = run.execution_id
         row.state = run.state.value
+        row.executable_kind = run.executable_kind.value
         row.environment_id = run.environment_id
         row.environment_name = run.environment_name
         row.workspace_id = run.workspace_id
@@ -4187,6 +4286,17 @@ class RuntimeStoreRepository:
         row.started_at = run.started_at
         row.ended_at = run.ended_at
         row.duration_ms = run.duration_ms
+        row.completed_exchanges = run.completed_exchanges
+        row.failed_exchanges = run.failed_exchanges
+        row.total_exchanges = run.total_exchanges
+        row.last_process_time_ms = run.last_process_time_ms
+        row.mean_process_time_ms = run.mean_process_time_ms
+        row.metrics_updated_at = run.metrics_updated_at
+        row.metric_path = run.metric_path
+        row.service_call_count = run.service_call_count
+        row.one_minute_rate = run.one_minute_rate
+        row.five_minute_rate = run.five_minute_rate
+        row.fifteen_minute_rate = run.fifteen_minute_rate
         row.ingested_at = ingested_at
         await self._session.flush()
 
@@ -4277,6 +4387,7 @@ class RuntimeStoreRepository:
         row.job_name = execution.job_name
         row.project_name = execution.project_name
         row.state = execution.state.value
+        row.executable_kind = execution.executable_kind.value
         row.started_at = execution.started_at
         row.ended_at = execution.ended_at
         row.duration_ms = execution.duration_ms
@@ -4335,6 +4446,8 @@ class RuntimeStoreRepository:
         row.message = redact_credentials(event.message)
         row.line_ordinal = event.line_ordinal
         row.source_key = source_key
+        row.scope = event.scope
+        row.attribution_safe = event.attribution_safe
         row.ingested_at = ingested_at
         await self._session.flush()
 
@@ -4416,6 +4529,7 @@ def _to_execution(row: RuntimeExecutionRow) -> RuntimeExecution:
         job_name=row.job_name,
         project_name=row.project_name,
         state=RuntimeExecutionState(row.state),
+        executable_kind=RuntimeExecutableKind(row.executable_kind),
         started_at=_as_utc(row.started_at),
         ended_at=_as_utc(row.ended_at),
         duration_ms=row.duration_ms,
@@ -4439,6 +4553,8 @@ def _to_log_event(row: RuntimeLogEventRow) -> RuntimeLogEvent:
         severity=RuntimeLogSeverity(row.severity),
         message=row.message,
         line_ordinal=row.line_ordinal,
+        scope=row.scope,
+        attribution_safe=row.attribution_safe,
     )
 
 
@@ -4554,6 +4670,7 @@ def _to_job(row: RuntimeJobRow) -> RuntimeJob:
         name=row.name,
         display_name=row.display_name,
         job_type=row.job_type,
+        executable_kind=RuntimeExecutableKind(row.executable_kind),
         status=row.status,
         environment_id=row.environment_id,
         environment_name=row.environment_name,
@@ -4563,6 +4680,9 @@ def _to_job(row: RuntimeJobRow) -> RuntimeJob:
         engine_name=row.engine_name,
         owner=row.owner,
         artifact_name=row.artifact_name,
+        artifact_id=row.artifact_id,
+        artifact_version=row.artifact_version,
+        metric_path=row.metric_path,
         last_seen_at=_as_utc(row.last_seen_at),
         source_updated_at=_as_utc(row.source_updated_at),
     )
@@ -4620,6 +4740,7 @@ def _to_job_run(row: RuntimeJobRunRow) -> RuntimeJobRun:
         source_key=row.source_key,
         execution_id=row.execution_id,
         state=RuntimeExecutionState(row.state),
+        executable_kind=RuntimeExecutableKind(row.executable_kind),
         environment_id=row.environment_id,
         environment_name=row.environment_name,
         workspace_id=row.workspace_id,
@@ -4629,6 +4750,51 @@ def _to_job_run(row: RuntimeJobRunRow) -> RuntimeJobRun:
         started_at=_as_utc(row.started_at),
         ended_at=_as_utc(row.ended_at),
         duration_ms=row.duration_ms,
+        completed_exchanges=row.completed_exchanges,
+        failed_exchanges=row.failed_exchanges,
+        total_exchanges=row.total_exchanges,
+        last_process_time_ms=row.last_process_time_ms,
+        mean_process_time_ms=row.mean_process_time_ms,
+        metrics_updated_at=_as_utc(row.metrics_updated_at),
+        metric_path=row.metric_path,
+        service_call_count=row.service_call_count,
+        one_minute_rate=row.one_minute_rate,
+        five_minute_rate=row.five_minute_rate,
+        fifteen_minute_rate=row.fifteen_minute_rate,
+    )
+
+
+def _to_deployment(
+    job: RuntimeJobRow,
+    row: RuntimeJobRunRow | None,
+) -> RuntimeDeployment:
+    return RuntimeDeployment(
+        project_id=job.project_id,
+        source_key=job.source_key,
+        deployment_id=row.run_id if row is not None else None,
+        executable_id=job.job_id,
+        executable_name=job.name,
+        executable_kind=RuntimeExecutableKind(job.executable_kind),
+        state=RuntimeExecutionState(row.state) if row is not None else None,
+        environment_name=(row.environment_name if row is not None else None)
+        or job.environment_name,
+        workspace_name=(row.workspace_name if row is not None else None)
+        or job.workspace_name,
+        engine_name=(row.engine_name if row is not None else None) or job.engine_name,
+        started_at=_as_utc(row.started_at) if row is not None else None,
+        ended_at=_as_utc(row.ended_at) if row is not None else None,
+        duration_ms=row.duration_ms if row is not None else None,
+        completed_exchanges=row.completed_exchanges if row is not None else None,
+        failed_exchanges=row.failed_exchanges if row is not None else None,
+        total_exchanges=row.total_exchanges if row is not None else None,
+        last_process_time_ms=row.last_process_time_ms if row is not None else None,
+        mean_process_time_ms=row.mean_process_time_ms if row is not None else None,
+        metrics_updated_at=_as_utc(row.metrics_updated_at) if row is not None else None,
+        metric_path=(row.metric_path if row is not None else None) or job.metric_path,
+        service_call_count=row.service_call_count if row is not None else None,
+        one_minute_rate=row.one_minute_rate if row is not None else None,
+        five_minute_rate=row.five_minute_rate if row is not None else None,
+        fifteen_minute_rate=row.fifteen_minute_rate if row is not None else None,
     )
 
 

@@ -41,6 +41,7 @@ export function RuntimeLogViewer({ executionId }: { executionId: string }) {
   const events = query.data?.events ?? [];
   const total = query.data?.total ?? 0;
   const pages = Math.max(1, Math.ceil(total / LOG_PAGE_SIZE));
+  const hasEngineScopedEvidence = events.some((event) => !event.attribution_safe);
 
   function toggle(key: string) {
     setExpanded((current) => {
@@ -99,6 +100,14 @@ export function RuntimeLogViewer({ executionId }: { executionId: string }) {
           >
             Retry
           </Button>
+        </div>
+      )}
+
+      {hasEngineScopedEvidence && (
+        <div className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-800 dark:text-amber-300">
+          TMC supplied this as a shared OSGi Runtime log. It can include sibling Routes or Data
+          Services on the same engine, so these lines are not used for per-deployment incident
+          attribution.
         </div>
       )}
 

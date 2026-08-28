@@ -11,10 +11,15 @@ from src.runtime.models import (
     GetExecutionLogsInput,
     ListExecutionsInput,
     RuntimeExecutionState,
+    RuntimeExecutableKind,
     RuntimeLogSeverity,
 )
 from src.runtime.providers import RuntimeProviderError
-from src.runtime.providers.talend_tmc import TalendTmcRuntimeProvider, _bounded_log_head_tail
+from src.runtime.providers.talend_tmc import (
+    TalendTmcRuntimeProvider,
+    _bounded_log_entries,
+    _bounded_log_head_tail,
+)
 
 _TOKEN = "super-secret-talend-token-value"
 
@@ -28,6 +33,9 @@ def test_long_logs_keep_startup_context_and_terminal_failure():
     assert bounded[999]["line"] == 999
     assert bounded[1_000]["line"] == 3_000
     assert bounded[-1]["line"] == 11_999
+    indexed = _bounded_log_entries(logs, 10_000)
+    assert indexed[1_000][0] == 3_000
+    assert indexed[-1][0] == 11_999
 
 
 @pytest.fixture
@@ -327,6 +335,16 @@ class TestRuntimeBatchMapping:
                 ],
                 "total": 2,
             },
+            "/orchestration/executables/tasks/task-1": {
+                "id": "task-1",
+                "artifact": {"id": "artifact-1", "name": "orders_route", "version": "1.2.3"},
+                "parameters": {"metric_path": "orders_route"},
+            },
+            "/orchestration/executables/tasks/task-2": {
+                "id": "task-2",
+                "artifact": {"id": "artifact-2", "name": "billing_route", "version": "2.0.0"},
+                "parameters": {"metric_path": "billing_route"},
+            },
             "/processing/executables/tasks/task-1/executions": {
                 "items": [
                     {
@@ -353,6 +371,14 @@ class TestRuntimeBatchMapping:
                         "startTimestamp": "2026-06-18T01:00:05.000Z",
                         "finishTimestamp": "2026-06-18T01:00:20.000Z",
                         "errorMessage": "connection timeout",
+                        "routeMetrics": {
+                            "completedExchanges": 41,
+                            "failedExchanges": 1,
+                            "totalExchanges": 42,
+                            "lastProcessTimeMs": 12,
+                            "meanProcessTimeMs": 8,
+                            "metricsUpdatedAt": "2026-06-18T01:00:19Z",
+                        },
                     }
                 ],
                 "total": 1,
@@ -415,12 +441,16 @@ class TestRuntimeBatchMapping:
         assert "/processing/executables/tasks/executions" not in seen
         assert "/processing/executables/tasks/task-1/executions" in seen
         assert "/processing/executables/tasks/task-2/executions" in seen
+        assert "/monitoring/executions/exec-1/logs" in seen
+        assert "/monitoring/executions/exec-2/logs" in seen
         assert "/processing/executables/plans/plan-1/executions" in seen
         assert [source.source_key for source in batch.sources] == ["talend_tmc"]
         assert [environment.environment_id for environment in batch.environments] == ["env-prod"]
         assert [workspace.workspace_id for workspace in batch.workspaces] == ["ws-1"]
         assert [engine.name for engine in batch.engines] == ["prod-engine-01"]
         assert {job.name for job in batch.jobs} == {"nightly-load", "hourly-sync"}
+        assert {job.executable_kind for job in batch.jobs} == {RuntimeExecutableKind.ROUTE}
+        assert {job.metric_path for job in batch.jobs} == {"orders_route", "billing_route"}
         assert {artifact.name for artifact in batch.artifacts} == {"orders_route", "billing_route"}
         assert [connection.name for connection in batch.connections] == ["Oracle Orders"]
         assert {
@@ -433,13 +463,21 @@ class TestRuntimeBatchMapping:
             ("task-2", "connection", "conn-1"),
         }
         assert {run.run_id for run in batch.job_runs} == {"exec-1", "exec-2"}
-        assert [failure.error_summary for failure in batch.failures] == ["connection timeout"]
+        failed_route = next(run for run in batch.job_runs if run.run_id == "exec-2")
+        assert failed_route.total_exchanges == 42
+        assert failed_route.failed_exchanges == 1
+        assert failed_route.metric_path == "billing_route"
+        # Route logs are emitted by the shared OSGi engine and cannot safely be
+        # converted into per-deployment batch failures.
+        assert batch.failures == []
         assert [plan.name for plan in batch.plans] == ["nightly-orchestration"]
         assert batch.plans[0].steps[0].job_id == "task-1"
         assert [run.run_id for run in batch.plan_runs] == ["pexec-1"]
         assert batch.plan_runs[0].step_results[0].execution_id == "exec-1"
         assert batch.log_events[0].message == "[tDBInput_1] connection timeout"
         assert batch.log_events[0].timestamp.isoformat() == "2026-06-18T01:00:20+00:00"
+        assert batch.log_events[0].scope == "engine"
+        assert batch.log_events[0].attribution_safe is False
 
     async def test_sync_uses_supplied_source_credentials(self, tmc):
         seen_headers: list[str | None] = []

@@ -7,6 +7,8 @@ import RuntimeExecutionsPage from "@/app/admin/logs/executions/page";
 import RuntimePerformancePage from "@/app/admin/logs/performance/page";
 import RuntimeSignaturesPage from "@/app/admin/logs/signatures/page";
 import RuntimeIncidentsPage from "@/app/admin/logs/incidents/page";
+import RuntimeRoutesPage from "@/app/admin/logs/routes/page";
+import RuntimeDataServicesPage from "@/app/admin/logs/data-services/page";
 import {
   alignTrendPoints,
   buildDurationScale,
@@ -17,6 +19,7 @@ import {
 const mocks = vi.hoisted(() => ({
   useRuntimeExecution: vi.fn(), useRuntimeExecutions: vi.fn(), useRuntimeHealth: vi.fn(),
   useRuntimeIncidents: vi.fn(), useRuntimeIncident: vi.fn(), useRuntimeJobs: vi.fn(),
+  useRuntimeDeployments: vi.fn(),
   useRuntimeOverview: vi.fn(), useRuntimePlans: vi.fn(), useRuntimeSources: vi.fn(),
   useRuntimeEngines: vi.fn(), useUserProjects: vi.fn(), handleSendMessage: vi.fn(), push: vi.fn(), replace: vi.fn(),
   searchParams: vi.fn(),
@@ -121,6 +124,7 @@ function setDefaults() {
   mocks.useRuntimeExecution.mockReturnValue(queryState({ execution: { execution_id: "exec-1", job_name: "orders_sync", state: "failed", started_at: "2026-07-15T10:00:00Z" } }));
   mocks.useRuntimeIncident.mockReturnValue(queryState({ incident: null }));
   mocks.useRuntimeJobs.mockReturnValue(queryState({ jobs: [], total: 0 }));
+  mocks.useRuntimeDeployments.mockReturnValue(queryState({ deployments: [], total: 0 }));
   mocks.useRuntimePlans.mockReturnValue(queryState({ plans: [], total: 0 }));
   mocks.useRuntimeSources.mockReturnValue(queryState({
     sources: [{ project_id: "werkorder", source_key: "tmc", label: "TMC", source_type: "tmc", status: "ok", enabled: true, sync_interval_seconds: 300, last_synced_at: null }],
@@ -146,6 +150,50 @@ function setDefaults() {
 
 describe("RuntimeLogsPage", () => {
   beforeEach(() => { vi.clearAllMocks(); setDefaults(); });
+
+  it("renders Routes and Data services as deployment views", () => {
+    mocks.useRuntimeDeployments.mockReturnValue(queryState({
+      deployments: [{
+        project_id: "werkorder",
+        source_key: "tmc",
+        deployment_id: "route-run-1",
+        executable_id: "route-1",
+        executable_name: "Orders API Route",
+        executable_kind: "route",
+        state: "running",
+        environment_name: "PROD",
+        engine_name: "runtime-1",
+        started_at: "2026-08-27T10:00:00Z",
+        total_exchanges: 42,
+        completed_exchanges: 41,
+        failed_exchanges: 1,
+      }, {
+        project_id: "werkorder",
+        source_key: "tmc",
+        executable_id: "route-2",
+        executable_name: "Customer API Route",
+        executable_kind: "route",
+        metric_path: "customer_route",
+      }],
+      total: 2,
+    }));
+    const routeView = renderPage(RuntimeRoutesPage);
+    expect(screen.getByText("Route deployments")).toBeTruthy();
+    expect(screen.getByText("Orders API Route")).toBeTruthy();
+    expect(screen.getByText(/41 completed · 1 failed · 42 total/)).toBeTruthy();
+    expect(screen.getByText("Customer API Route")).toBeTruthy();
+    expect(screen.getByText("never deployed")).toBeTruthy();
+    fireEvent.click(screen.getByText("Orders API Route"));
+    expect(screen.getByRole("dialog", { name: "Runtime details" })).toBeTruthy();
+    expect(mocks.useRuntimeExecutionLogs).toHaveBeenCalledWith(
+      "route-run-1",
+      expect.objectContaining({ limit: 100 }),
+    );
+    routeView.unmount();
+
+    renderPage(RuntimeDataServicesPage);
+    expect(screen.getByText("Data service deployments")).toBeTruthy();
+  });
 
   it("renders a summary-first hub and does not invoke entity inventory queries", () => {
     renderPage(RuntimeLogsPage);

@@ -31,6 +31,7 @@ import { Input } from "@/components/ui/input";
 import { SelectMenu } from "@/components/ui/select-menu";
 import {
   useRuntimeEngines,
+  useRuntimeDeployments,
   useRuntimeExecution,
   useRuntimeExecutions,
   useRuntimeIncident,
@@ -48,6 +49,7 @@ import { useChatContext } from "@/contexts/ChatContext";
 import { cn } from "@/lib/utils";
 import type {
   RuntimeEngine,
+  RuntimeDeployment,
   RuntimeExecution,
   RuntimeExecutionState,
   RuntimeIncidentInsight,
@@ -98,6 +100,8 @@ export type RuntimeConsoleView =
   | "hub"
   | "executions"
   | "jobs"
+  | "routes"
+  | "data_services"
   | "plans"
   | "incidents"
   | "performance"
@@ -113,6 +117,8 @@ const NAV: Array<{
   { view: "hub", href: "/admin/logs", label: "Overview", icon: LayoutGrid },
   { view: "executions", href: "/admin/logs/executions", label: "Runs", icon: ScrollText },
   { view: "jobs", href: "/admin/logs/jobs", label: "Jobs", icon: Workflow },
+  { view: "routes", href: "/admin/logs/routes", label: "Routes", icon: Activity },
+  { view: "data_services", href: "/admin/logs/data-services", label: "Data services", icon: Server },
   { view: "plans", href: "/admin/logs/plans", label: "Plans", icon: ListTree },
   { view: "incidents", href: "/admin/logs/incidents", label: "Incidents", icon: AlertTriangle },
   { view: "performance", href: "/admin/logs/performance", label: "Performance", icon: Gauge },
@@ -182,6 +188,7 @@ function useSyncFreshness(scope?: string): SyncFreshness | null {
 
 type Detail =
   | { kind: "execution"; item: RuntimeExecution }
+  | { kind: "deployment"; item: RuntimeDeployment }
   | { kind: "incident"; item: RuntimeIncidentInsight }
   | { kind: "job"; item: RuntimeJob }
   | { kind: "plan"; item: RuntimePlan }
@@ -300,7 +307,7 @@ export function RuntimeConsole({ view }: { view: RuntimeConsoleView }) {
   return (
     <section className="mx-auto flex w-full max-w-7xl flex-col gap-5 overflow-x-hidden pb-10">
       <header className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="min-w-0">
+        <div className="min-w-0" data-tour="runtime-header">
           <h1 className="text-xl font-semibold tracking-tight text-foreground">Runtime logs</h1>
           <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
             <span>What ran, what failed, and why.</span>
@@ -367,6 +374,7 @@ export function RuntimeConsole({ view }: { view: RuntimeConsoleView }) {
         </div>
       </header>
       <nav
+        data-tour="admin-logs-views"
         aria-label="Runtime views"
         className="flex gap-1 overflow-x-auto rounded-xl border border-border bg-muted/30 p-1"
       >
@@ -399,6 +407,8 @@ export function RuntimeConsole({ view }: { view: RuntimeConsoleView }) {
       )}
       {hasSelectedProject && view === "executions" && <Executions {...viewProps} />}
       {hasSelectedProject && view === "jobs" && <Jobs {...viewProps} />}
+      {hasSelectedProject && view === "routes" && <Deployments {...viewProps} kind="route" />}
+      {hasSelectedProject && view === "data_services" && <Deployments {...viewProps} kind="data_service" />}
       {hasSelectedProject && view === "plans" && <Plans {...viewProps} />}
       {hasSelectedProject && view === "incidents" && <Incidents {...viewProps} />}
       {hasSelectedProject && view === "performance" && <Performance {...viewProps} />}
@@ -481,7 +491,7 @@ function Hub({
         attentionInsights,
         runs,
       ]}>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" data-tour="runtime-kpis">
           <Kpi
             icon={Activity}
             label="Runs"
@@ -670,7 +680,7 @@ function EvidenceQuality({
       icon={CheckCircle2}
       description="How much of the failure population the captured logs can honestly explain."
     >
-      <dl className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <dl className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" data-tour="runtime-evidence">
         {metrics.map((metric) => (
           <div key={metric.label} className="min-w-0 rounded-lg border border-border bg-muted/20 p-3">
             <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -868,7 +878,12 @@ function Executions({ scope, since, onDetail }: ViewProps) {
 function Jobs({ scope, since, onDetail }: ViewProps) {
   const [page, setPage] = useState(0);
   useEffect(() => setPage(0), [scope]);
-  const query = useRuntimeJobs({ projectId: scope, limit: PAGE_SIZE, offset: page * PAGE_SIZE });
+  const query = useRuntimeJobs({
+    projectId: scope,
+    executableKind: "job",
+    limit: PAGE_SIZE,
+    offset: page * PAGE_SIZE,
+  });
 
   return (
     <div className="flex flex-col gap-6">
@@ -903,6 +918,90 @@ function Jobs({ scope, since, onDetail }: ViewProps) {
         </Panel>
       </QueryState>
     </div>
+  );
+}
+
+function deploymentState(deployment: RuntimeDeployment): string {
+  if (!deployment.deployment_id || !deployment.state || !deployment.started_at) {
+    return "never deployed";
+  }
+  if (!deployment.ended_at) {
+    return deployment.state === "failed" ? "failed to deploy" : "deployed";
+  }
+  return deployment.state === "failed" ? "failed" : "undeployed";
+}
+
+function Deployments({
+  scope,
+  kind,
+  onDetail,
+}: ViewProps & { kind: "route" | "data_service" }) {
+  const [page, setPage] = useState(0);
+  useEffect(() => setPage(0), [scope, kind]);
+  const query = useRuntimeDeployments({
+    projectId: scope,
+    executableKind: kind,
+    limit: PAGE_SIZE,
+    offset: page * PAGE_SIZE,
+  });
+  const noun = kind === "route" ? "Route" : "Data service";
+
+  return (
+    <QueryState queries={[query]}>
+      <Panel
+        title={`${noun} deployments`}
+        icon={kind === "route" ? Activity : Server}
+        description={`Latest deployment lifecycle and ${kind === "route" ? "Camel exchange" : "service"} telemetry. An open deployment is healthy long-running work, not a job that never finished.`}
+        flush
+      >
+        <PaginatedTable
+          rows={query.data?.deployments ?? []}
+          total={query.data?.total ?? 0}
+          page={page}
+          onPage={setPage}
+          render={(rows) => (
+            <EntityTable
+              headers={[
+                noun,
+                "Environment / engine",
+                "Deployment",
+                kind === "route" ? "Exchanges" : "Calls",
+                kind === "route" ? "Process time" : "Request rates",
+                "Metrics",
+              ]}
+              rows={rows}
+              rowKey={(deployment) => deployment.deployment_id ?? `${deployment.source_key}:${deployment.executable_id}`}
+              onClick={(deployment) => onDetail({ kind: "deployment", item: deployment })}
+              cells={(deployment) => [
+                deployment.executable_name,
+                `${deployment.environment_name ?? "-"} / ${deployment.engine_name ?? "-"}`,
+                `${deploymentState(deployment)}${deployment.started_at ? ` · ${deployment.ended_at ? formatDuration(deployment.duration_ms) : `since ${formatAge(Date.now() - new Date(deployment.started_at).getTime())}`}` : ""}`,
+                kind === "route"
+                  ? deployment.total_exchanges == null
+                    ? "Not supplied"
+                    : `${formatCompact(deployment.completed_exchanges ?? 0)} completed · ${formatCompact(deployment.failed_exchanges ?? 0)} failed · ${formatCompact(deployment.total_exchanges)} total`
+                  : deployment.service_call_count == null
+                    ? "Not supplied"
+                    : `${formatCompact(deployment.service_call_count)} calls`,
+                kind === "route"
+                  ? deployment.mean_process_time_ms == null && deployment.last_process_time_ms == null
+                    ? "Not supplied"
+                    : `last ${formatDuration(deployment.last_process_time_ms)} · mean ${formatDuration(deployment.mean_process_time_ms)}`
+                  : deployment.one_minute_rate == null && deployment.five_minute_rate == null
+                    ? "Not supplied"
+                    : `1m ${(deployment.one_minute_rate ?? 0).toFixed(2)} · 5m ${(deployment.five_minute_rate ?? 0).toFixed(2)} · 15m ${(deployment.fifteen_minute_rate ?? 0).toFixed(2)}`,
+                deployment.metrics_updated_at
+                  ? `${formatAge(Date.now() - new Date(deployment.metrics_updated_at).getTime())} ago · ${deployment.metric_path ?? "default path"}`
+                  : deployment.metric_path
+                    ? `Configured · ${deployment.metric_path}`
+                    : "Not configured / supplied",
+              ]}
+              emptyLabel={`No ${noun.toLowerCase()} deployments were observed in this scope.`}
+            />
+          )}
+        />
+      </Panel>
+    </QueryState>
   );
 }
 
@@ -1122,14 +1221,16 @@ function DetailDrawer({ detail, onClose }: { detail: Detail | null; onClose: () 
         ? incident.data?.incident ?? detail.item
         : detail.item;
 
-  // Both kinds resolve to an execution, which is what the insight panel and the
-  // log viewer key on.
+  // Runs/incidents use per-execution diagnostics. Deployments expose only the
+  // captured shared-engine log because it is not safe to derive a Route cause.
   const executionId =
     detail.kind === "execution"
       ? detail.item.execution_id
       : detail.kind === "incident"
         ? detail.item.execution_id
-        : null;
+        : detail.kind === "deployment"
+          ? detail.item.deployment_id ?? null
+          : null;
 
   return (
     <div
@@ -1164,7 +1265,9 @@ function DetailDrawer({ detail, onClose }: { detail: Detail | null; onClose: () 
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
           <div className="flex min-w-0 flex-col gap-6">
             <DetailFields item={item as Record<string, unknown>} />
-            {executionId && <RuntimeInsightPanel executionId={executionId} />}
+            {executionId && detail.kind !== "deployment" && (
+              <RuntimeInsightPanel executionId={executionId} />
+            )}
             {executionId && <RuntimeLogViewer executionId={executionId} />}
           </div>
         </div>
@@ -1353,7 +1456,9 @@ function StateCell({ run }: { run: RuntimeExecution }) {
 
 function detailTitle(detail: Detail, item: Record<string, unknown>) {
   return String(
-    item.execution_id ??
+      item.execution_id ??
+      item.deployment_id ??
+      item.executable_id ??
       item.incident_id ??
       item.job_id ??
       item.plan_id ??

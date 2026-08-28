@@ -50,6 +50,7 @@ from src.runtime.models import (
     ListRuntimeComponentHotspotsInput,
     ListRuntimeConnectionsInput,
     ListRuntimeDependenciesInput,
+    ListRuntimeDeploymentsInput,
     ListRuntimeEnginesInput,
     ListRuntimeErrorSignaturesInput,
     ListRuntimeInventoryInput,
@@ -64,6 +65,7 @@ from src.runtime.models import (
     RuntimeComponentHotspot,
     RuntimeConnection,
     RuntimeDependencySummary,
+    RuntimeDeployment,
     RuntimeEngine,
     RuntimeEngineHealth,
     RuntimeEngineStatus,
@@ -71,6 +73,7 @@ from src.runtime.models import (
     RuntimeEstateOverview,
     RuntimeExecution,
     RuntimeExecutionState,
+    RuntimeExecutableKind,
     RuntimeFailure,
     RuntimeHealthSummary,
     RuntimeJob,
@@ -170,6 +173,11 @@ class RuntimeOverviewResponse(BaseModel):
 
 class RuntimeJobListResponse(BaseModel):
     jobs: list[RuntimeJob]
+    total: int
+
+
+class RuntimeDeploymentListResponse(BaseModel):
+    deployments: list[RuntimeDeployment]
     total: int
 
 
@@ -980,6 +988,7 @@ async def list_runtime_jobs(
     workspace_id: str | None = None,
     engine_id: str | None = None,
     status: str | None = None,
+    executable_kind: RuntimeExecutableKind | None = RuntimeExecutableKind.JOB,
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> RuntimeJobListResponse:
@@ -993,6 +1002,7 @@ async def list_runtime_jobs(
         workspace_id=workspace_id,
         engine_id=engine_id,
         status=status,
+        executable_kind=executable_kind,
         limit=limit,
         offset=offset,
     )
@@ -1000,6 +1010,40 @@ async def list_runtime_jobs(
     return RuntimeJobListResponse(
         jobs=jobs,
         total=await repo.count_jobs(selected_scope, params),
+    )
+
+
+@router.get(
+    "/deployments",
+    response_model=RuntimeDeploymentListResponse,
+    summary="List latest Route and Data Service deployments",
+)
+async def list_runtime_deployments(
+    user: CurrentUser,
+    db: DBSession,
+    project_id: str | None = None,
+    source_key: str | None = None,
+    executable_kind: RuntimeExecutableKind | None = None,
+    state: RuntimeExecutionState | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> RuntimeDeploymentListResponse:
+    if executable_kind == RuntimeExecutableKind.JOB:
+        raise HTTPException(status_code=422, detail="Deployments only support routes and data services")
+    scope = await get_user_project_ids(user, db)
+    repo = RuntimeStoreRepository(db)
+    selected_scope = _intersect_scope(scope, project_id)
+    params = ListRuntimeDeploymentsInput(
+        project_id=project_id,
+        source_key=source_key,
+        executable_kind=executable_kind,
+        state=state,
+        limit=limit,
+        offset=offset,
+    )
+    return RuntimeDeploymentListResponse(
+        deployments=await repo.list_deployments(selected_scope, params),
+        total=await repo.count_deployments(selected_scope, params),
     )
 
 

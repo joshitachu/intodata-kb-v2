@@ -368,11 +368,12 @@ export default function AdminUsagePage() {
   }
 
   return (
-    <div className="max-w-7xl mx-auto py-6 space-y-6">
+    <div className="max-w-7xl mx-auto py-6 space-y-6" data-tour="admin-usage">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Usage Dashboard</h1>
         <select
+          data-tour="admin-usage-range"
           value={days}
           onChange={(e) => handleDaysChange(parseInt(e.target.value, 10))}
           className="px-3 py-2 border rounded-md text-sm"
@@ -384,7 +385,7 @@ export default function AdminUsagePage() {
       </div>
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-5 gap-4">
+      <div className="grid grid-cols-5 gap-4" data-tour="admin-usage-kpis">
         {[
           { label: "Total Queries", value: formatNumber(totalQueries) },
           { label: "Input Tokens", value: formatNumber(totalInputTokens) },
@@ -392,7 +393,13 @@ export default function AdminUsagePage() {
           { label: "Total Cost", value: formatCost(totalCost) },
           { label: "Active Users", value: formatNumber(activeUsers) },
         ].map((card) => (
-          <div key={card.label} className="bg-white border rounded-lg p-4">
+          <div
+            key={card.label}
+            // Anchors the walkthrough's cost step to the cost tile itself
+            // rather than to the page, so the spotlight means something.
+            data-tour={card.label === "Total Cost" ? "admin-usage-cost" : undefined}
+            className="bg-white border rounded-lg p-4"
+          >
             <p className="text-xs text-gray-500 uppercase tracking-wide">
               {card.label}
             </p>
@@ -403,7 +410,7 @@ export default function AdminUsagePage() {
 
       {/* Tabs */}
       <div className="border-b">
-        <nav className="flex gap-6">
+        <nav className="flex gap-6" data-tour="admin-usage-tabs">
           {tabs.map((t) => (
             <button
               key={t.key}
@@ -508,7 +515,7 @@ function OverviewTab({
   return (
     <div className="space-y-6">
       {/* Charts row */}
-      <div className="grid grid-cols-2 gap-6">
+      <div className="grid grid-cols-2 gap-6" data-tour="admin-usage-trends">
         <div className="bg-white border rounded-lg p-4">
           <h3 className="text-sm font-semibold text-gray-700 mb-3">
             Daily Queries
@@ -524,7 +531,7 @@ function OverviewTab({
       </div>
 
       {/* Pie + tables */}
-      <div className="grid grid-cols-3 gap-6">
+      <div className="grid grid-cols-3 gap-6" data-tour="admin-usage-breakdown">
         <div className="bg-white border rounded-lg p-4">
           <CostPieChart data={pieData} title="Cost by Interface" />
         </div>

@@ -19,6 +19,7 @@ from sqlalchemy import (
     BigInteger,
     DateTime,
     ForeignKey,
+    Float,
     Index,
     Integer,
     String,
@@ -51,6 +52,7 @@ class RuntimeExecutionRow(Base):
     job_name: Mapped[str] = mapped_column(String(255), nullable=False)
     project_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     state: Mapped[str] = mapped_column(String(20), nullable=False)
+    executable_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="job")
     started_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ended_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -105,6 +107,8 @@ class RuntimeLogEventRow(Base):
     line_ordinal: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     event_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     source_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    scope: Mapped[str] = mapped_column(String(20), nullable=False, default="execution")
+    attribution_safe: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -379,6 +383,7 @@ class RuntimeJobRow(Base):
         Index("ix_runtime_jobs_workspace_id", "workspace_id"),
         Index("ix_runtime_jobs_engine_id", "engine_id"),
         Index("ix_runtime_jobs_status", "status"),
+        Index("ix_runtime_jobs_executable_kind", "executable_kind"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -388,6 +393,7 @@ class RuntimeJobRow(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     job_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    executable_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="job")
     status: Mapped[str | None] = mapped_column(String(80), nullable=True)
     environment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     environment_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -397,6 +403,9 @@ class RuntimeJobRow(Base):
     engine_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
     artifact_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    artifact_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    artifact_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    metric_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     last_seen_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source_updated_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -517,6 +526,7 @@ class RuntimeJobRunRow(Base):
         Index("ix_runtime_job_runs_state", "state"),
         Index("ix_runtime_job_runs_started_at", "started_at"),
         Index("ix_runtime_job_runs_execution_id", "execution_id"),
+        Index("ix_runtime_job_runs_executable_kind", "executable_kind"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -527,6 +537,7 @@ class RuntimeJobRunRow(Base):
     job_name: Mapped[str] = mapped_column(String(255), nullable=False)
     execution_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     state: Mapped[str] = mapped_column(String(20), nullable=False)
+    executable_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="job")
     environment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     environment_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     workspace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -536,6 +547,17 @@ class RuntimeJobRunRow(Base):
     started_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ended_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    completed_exchanges: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    failed_exchanges: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    total_exchanges: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_process_time_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    mean_process_time_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    metrics_updated_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metric_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    service_call_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    one_minute_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    five_minute_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fifteen_minute_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
     ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

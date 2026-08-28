@@ -26,6 +26,7 @@ from src.runtime.models import (
     GetExecutionLogsInput,
     ListExecutionsInput,
     ListRuntimeEnginesInput,
+    ListRuntimeDeploymentsInput,
     ListRuntimeInventoryInput,
     ListRuntimeJobRunsInput,
     ListRuntimeJobsInput,
@@ -36,6 +37,7 @@ from src.runtime.models import (
     RuntimeEngineStatus,
     RuntimeEnvironment,
     RuntimeExecutionState,
+    RuntimeExecutableKind,
     RuntimeFailure,
     RuntimeJob,
     RuntimeJobRun,
@@ -721,6 +723,84 @@ class TestPagination:
 
 
 class TestReadFilters:
+    async def test_routes_are_separate_deployments_not_job_inventory(self, db_session):
+        repo = RuntimeStoreRepository(db_session)
+        route = _job(job_id="route-1", name="orders_route").model_copy(
+            update={"executable_kind": RuntimeExecutableKind.ROUTE}
+        )
+        never_deployed = _job(job_id="route-2", name="customer_route").model_copy(
+            update={
+                "executable_kind": RuntimeExecutableKind.ROUTE,
+                "metric_path": "customer_route",
+            }
+        )
+        deployment = _job_run(
+            run_id="deployment-1",
+            job_id="route-1",
+            job_name="orders_route",
+            state=RuntimeExecutionState.RUNNING,
+        ).model_copy(
+            update={
+                "executable_kind": RuntimeExecutableKind.ROUTE,
+                "ended_at": None,
+                "duration_ms": None,
+                "total_exchanges": 42,
+                "failed_exchanges": 1,
+            }
+        )
+        previous_deployment = deployment.model_copy(
+            update={
+                "run_id": "deployment-0",
+                "execution_id": "deployment-0",
+                "state": RuntimeExecutionState.FAILED,
+                "started_at": _T0 - datetime.timedelta(days=1),
+                "ended_at": _T0 - datetime.timedelta(days=1) + datetime.timedelta(seconds=1),
+            }
+        )
+        await repo.upsert_job("project-a", route, _SRC, _T0)
+        await repo.upsert_job("project-a", never_deployed, _SRC, _T0)
+        await repo.upsert_job_run("project-a", previous_deployment, _SRC, _T0)
+        await repo.upsert_job_run("project-a", deployment, _SRC, _T0)
+
+        jobs = await repo.list_jobs(
+            ["project-a"],
+            ListRuntimeJobsInput(executable_kind=RuntimeExecutableKind.JOB),
+        )
+        routes = await repo.list_deployments(
+            ["project-a"],
+            ListRuntimeDeploymentsInput(executable_kind=RuntimeExecutableKind.ROUTE),
+        )
+        failed_routes = await repo.list_deployments(
+            ["project-a"],
+            ListRuntimeDeploymentsInput(
+                executable_kind=RuntimeExecutableKind.ROUTE,
+                state=RuntimeExecutionState.FAILED,
+            ),
+        )
+
+        assert jobs == []
+        assert len(routes) == 2
+        assert routes[0].deployment_id == "deployment-1"
+        assert routes[0].ended_at is None
+        assert routes[0].total_exchanges == 42
+        assert routes[0].failed_exchanges == 1
+        assert routes[1].executable_name == "customer_route"
+        assert routes[1].deployment_id is None
+        assert routes[1].state is None
+        assert routes[1].started_at is None
+        assert routes[1].metric_path == "customer_route"
+        assert failed_routes == []
+        assert (
+            await repo.count_deployments(
+                ["project-a"],
+                ListRuntimeDeploymentsInput(
+                    executable_kind=RuntimeExecutableKind.ROUTE,
+                    state=RuntimeExecutionState.RUNNING,
+                ),
+            )
+            == 1
+        )
+
     async def test_job_name_filter(self, db_session):
         repo = RuntimeStoreRepository(db_session)
         await _seed_execution(repo, "project-a", _exec(execution_id="a1", job="nightly_sync"))

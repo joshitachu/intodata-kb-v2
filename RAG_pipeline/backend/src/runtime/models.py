@@ -38,6 +38,15 @@ class RuntimeEngineStatus(str, Enum):
     STALE = "stale"
 
 
+class RuntimeExecutableKind(str, Enum):
+    """Operational semantics of a TMC executable, independent of its API shape."""
+
+    JOB = "job"
+    ROUTE = "route"
+    DATA_SERVICE = "data_service"
+    UNKNOWN = "unknown"
+
+
 class RuntimeExecutionState(str, Enum):
     SUCCESS = "success"
     FAILED = "failed"
@@ -317,6 +326,7 @@ class RuntimeJob(BaseModel):
     name: str
     display_name: str | None = None
     job_type: str | None = None
+    executable_kind: RuntimeExecutableKind = RuntimeExecutableKind.JOB
     status: str | None = None
     environment_id: str | None = None
     environment_name: str | None = None
@@ -326,6 +336,9 @@ class RuntimeJob(BaseModel):
     engine_name: str | None = None
     owner: str | None = None
     artifact_name: str | None = None
+    artifact_id: str | None = None
+    artifact_version: str | None = None
+    metric_path: str | None = None
     last_seen_at: datetime | None = None
     source_updated_at: datetime | None = None
 
@@ -384,6 +397,7 @@ class RuntimeJobRun(BaseModel):
     source_key: str
     execution_id: str | None = None
     state: RuntimeExecutionState
+    executable_kind: RuntimeExecutableKind = RuntimeExecutableKind.JOB
     environment_id: str | None = None
     environment_name: str | None = None
     workspace_id: str | None = None
@@ -393,6 +407,46 @@ class RuntimeJobRun(BaseModel):
     started_at: datetime
     ended_at: datetime | None = None
     duration_ms: int | None = None
+    completed_exchanges: int | None = None
+    failed_exchanges: int | None = None
+    total_exchanges: int | None = None
+    last_process_time_ms: int | None = None
+    mean_process_time_ms: int | None = None
+    metrics_updated_at: datetime | None = None
+    metric_path: str | None = None
+    service_call_count: int | None = None
+    one_minute_rate: float | None = None
+    five_minute_rate: float | None = None
+    fifteen_minute_rate: float | None = None
+
+
+class RuntimeDeployment(BaseModel):
+    """Latest observed deployment lifecycle for a Route or Data Service."""
+
+    project_id: str
+    source_key: str
+    deployment_id: str | None = None
+    executable_id: str
+    executable_name: str
+    executable_kind: RuntimeExecutableKind
+    state: RuntimeExecutionState | None = None
+    environment_name: str | None = None
+    workspace_name: str | None = None
+    engine_name: str | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    duration_ms: int | None = None
+    completed_exchanges: int | None = None
+    failed_exchanges: int | None = None
+    total_exchanges: int | None = None
+    last_process_time_ms: int | None = None
+    mean_process_time_ms: int | None = None
+    metrics_updated_at: datetime | None = None
+    metric_path: str | None = None
+    service_call_count: int | None = None
+    one_minute_rate: float | None = None
+    five_minute_rate: float | None = None
+    fifteen_minute_rate: float | None = None
 
 
 class RuntimeJobHealth(BaseModel):
@@ -835,6 +889,7 @@ class RuntimeExecution(BaseModel):
     job_name: str
     project_name: str | None = None
     state: RuntimeExecutionState
+    executable_kind: RuntimeExecutableKind = RuntimeExecutableKind.JOB
     started_at: datetime
     ended_at: datetime | None = None
     duration_ms: int | None = None
@@ -855,6 +910,11 @@ class RuntimeLogEvent(BaseModel):
     message: str
     # Position is part of a line's identity: repeated messages are valid log data.
     line_ordinal: int = Field(default=0, ge=0)
+    # TMC Route/Data Service exports are OSGi Runtime scoped and can contain
+    # lines from sibling deployments. Keep the evidence, but do not attribute
+    # it to one Route or use it to synthesize an incident.
+    scope: Literal["execution", "engine"] = "execution"
+    attribution_safe: bool = True
 
 
 # --- Generic tool input models ---
@@ -864,6 +924,9 @@ class ListExecutionsInput(BaseModel):
     project_name: str | None = None
     job_name: str | None = None
     state: RuntimeExecutionState | None = None
+    # The generic Runs surface is batch semantics. Long-running Route/Data
+    # Service lifecycles are exposed by the deployments endpoint instead.
+    executable_kind: RuntimeExecutableKind = RuntimeExecutableKind.JOB
     since: datetime | None = None
     until: datetime | None = None
     # Duration/completion filters surface implausibly long and never-completed runs,
@@ -1020,6 +1083,12 @@ class ListRuntimeJobsInput(ListRuntimeInventoryInput):
     workspace_id: str | None = None
     engine_id: str | None = None
     status: str | None = None
+    executable_kind: RuntimeExecutableKind | None = RuntimeExecutableKind.JOB
+
+
+class ListRuntimeDeploymentsInput(ListRuntimeInventoryInput):
+    executable_kind: RuntimeExecutableKind | None = None
+    state: RuntimeExecutionState | None = None
 
 
 class ListRuntimeJobRunsInput(ListRuntimeInventoryInput):

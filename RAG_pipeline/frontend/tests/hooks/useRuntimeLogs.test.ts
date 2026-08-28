@@ -10,6 +10,7 @@ import {
   useRuntimeArtifacts,
   useRuntimeConnections,
   useRuntimeDependencies,
+  useRuntimeDeployments,
   useRuntimeDependencySummary,
   useRuntimeEngineHealth,
   useRuntimeEngines,
@@ -321,6 +322,35 @@ describe("useRuntimeLogs", () => {
     expect(url).toContain("/api/runtime/artifacts?");
     expect(url).toContain("artifact_type=route");
     expect(result.current.data?.artifacts[0].version).toBe("1.2.3");
+  });
+
+  it("fetches Route deployments with lifecycle and exchange metrics", async () => {
+    const fetchSpy = mockFetchOnce({
+      deployments: [{
+        project_id: "project-a",
+        source_key: "tmc",
+        deployment_id: "deploy-1",
+        executable_id: "route-1",
+        executable_name: "Orders route",
+        executable_kind: "route",
+        state: "running",
+        started_at: "2026-08-01T00:00:00Z",
+        total_exchanges: 42,
+        failed_exchanges: 1,
+      }],
+      total: 1,
+    });
+
+    const { result } = renderHook(
+      () => useRuntimeDeployments({ projectId: "project-a", executableKind: "route" }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = fetchSpy.mock.calls[0][0] as string;
+    expect(url).toContain("/api/runtime/deployments?");
+    expect(url).toContain("executable_kind=route");
+    expect(result.current.data?.deployments[0].total_exchanges).toBe(42);
   });
 
   it("fetches runtime connections", async () => {

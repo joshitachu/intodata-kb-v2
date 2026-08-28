@@ -40,6 +40,7 @@ from src.runtime.models import (
     RuntimeEnvironment,
     RuntimeExecution,
     RuntimeExecutionState,
+    RuntimeExecutableKind,
     RuntimeFailure,
     RuntimeJob,
     RuntimeJobDependency,
@@ -123,6 +124,13 @@ _STATE_MAP: dict[str, RuntimeExecutionState] = {
     "execution_running": RuntimeExecutionState.RUNNING,
     "running": RuntimeExecutionState.RUNNING,
     "in_progress": RuntimeExecutionState.RUNNING,
+    "deployed": RuntimeExecutionState.RUNNING,
+    "deploying": RuntimeExecutionState.RUNNING,
+    "starting": RuntimeExecutionState.RUNNING,
+    "starting_flow_execution": RuntimeExecutionState.RUNNING,
+    "undeployed": RuntimeExecutionState.SUCCESS,
+    "stopped": RuntimeExecutionState.SUCCESS,
+    "deployment_failed": RuntimeExecutionState.FAILED,
 }
 
 _SEVERITY_MAP: dict[str, RuntimeLogSeverity] = {
@@ -561,9 +569,10 @@ class TalendTmcRuntimeProvider:
         logs = await self._get_execution_logs_async(params.execution_id)
         if logs is None:
             logs = await self._get_execution_logs_paginated(params.execution_id, params.limit)
-        else:
-            logs = _bounded_log_head_tail(logs, params.limit)
-        events = [_to_log_event(item, params.execution_id, ordinal) for ordinal, item in enumerate(logs)]
+        events = [
+            _to_log_event(item, params.execution_id, ordinal)
+            for ordinal, item in _bounded_log_entries(logs, params.limit)
+        ]
         if params.min_severity is not None:
             allowed = _severities_at_or_above(params.min_severity)
             events = [item for item in events if item.severity in allowed]
@@ -657,6 +666,31 @@ class TalendTmcRuntimeProvider:
             if not tasks_raw:
                 raise RuntimeProviderError("No Talend TMC tasks matched the configured project scope")
 
+        task_detail_semaphore = asyncio.Semaphore(_DETAIL_FETCH_CONCURRENCY)
+
+        async def enrich_deployable_task(item: dict[str, Any]) -> dict[str, Any]:
+            artifact_id = _str_field(item, "artifactId", "artifact_id")
+            artifact = all_artifacts_by_id.get(artifact_id or "")
+            if artifact is None or _executable_kind(artifact.artifact_type) not in {
+                RuntimeExecutableKind.ROUTE,
+                RuntimeExecutableKind.DATA_SERVICE,
+            }:
+                return item
+            task_id = _str_field(item, "executable", "id")
+            if task_id is None:
+                return item
+            try:
+                async with task_detail_semaphore:
+                    detail = await self._get(f"/orchestration/executables/tasks/{task_id}")
+            except RuntimeProviderError:
+                logger.warning("TMC task detail fetch failed for deployment %s", task_id)
+                return item
+            enriched = dict(item)
+            enriched["taskDetail"] = detail
+            return enriched
+
+        tasks_raw = list(await asyncio.gather(*(enrich_deployable_task(item) for item in tasks_raw)))
+
         selected_artifact_ids = {
             artifact_id
             for item in tasks_raw
@@ -729,7 +763,10 @@ class TalendTmcRuntimeProvider:
         artifacts_by_id = {artifact.artifact_id: artifact for artifact in artifacts}
         connections_by_id = {connection.connection_id: connection for connection in connections}
 
-        jobs = [_to_job(item, source_key, synced_at, engines_by_id) for item in tasks_raw]
+        jobs = [
+            _to_job(item, source_key, synced_at, engines_by_id, artifacts_by_id)
+            for item in tasks_raw
+        ]
         jobs_by_id = {job.job_id: job for job in jobs}
         job_dependencies = _dependency_edges_from_tasks(
             tasks_raw,
@@ -776,9 +813,29 @@ class TalendTmcRuntimeProvider:
 
         async def fetch_task_runs(job: RuntimeJob) -> list[dict[str, Any]]:
             async with run_fetch_semaphore:
-                return await fetch_execution_history(
-                    f"/processing/executables/tasks/{job.job_id}/executions"
-                )
+                path = f"/processing/executables/tasks/{job.job_id}/executions"
+                current: list[dict[str, Any]] = []
+                if job.executable_kind in {
+                    RuntimeExecutableKind.ROUTE,
+                    RuntimeExecutableKind.DATA_SERVICE,
+                }:
+                    # Routes can stay deployed longer than the configured
+                    # history horizon. A latest-page probe without a date
+                    # window keeps that current deployment visible even when
+                    # its start timestamp is months old.
+                    try:
+                        current = await self._get_all_pages(path, max_items=25)
+                    except RuntimeProviderError:
+                        logger.warning(
+                            "TMC current deployment probe failed for executable %s; using bounded history",
+                            job.job_id,
+                        )
+                history = await fetch_execution_history(path)
+                merged: dict[str, dict[str, Any]] = {}
+                for index, item in enumerate(current + history):
+                    execution_id = _str_field(item, "executionId", "execution_id", "id")
+                    merged.setdefault(execution_id or f"anonymous:{index}", item)
+                return list(merged.values())
 
         task_run_pages = await asyncio.gather(*(fetch_task_runs(job) for job in jobs))
         task_runs_raw = [item for page in task_run_pages for item in page]
@@ -811,6 +868,7 @@ class TalendTmcRuntimeProvider:
             )
             for raw, run in zip(task_runs_raw, job_runs, strict=False)
             if run.state == RuntimeExecutionState.FAILED
+            and run.executable_kind == RuntimeExecutableKind.JOB
         ]
         runs_by_recency = sorted(job_runs, key=lambda item: item.started_at, reverse=True)
         # A ceiling of 0 means "no ceiling" — capture every failure in the window.
@@ -818,30 +876,73 @@ class TalendTmcRuntimeProvider:
         metric_ceiling = (
             settings.talend_tmc_component_metric_run_limit or _COMPONENT_METRIC_RUN_LIMIT
         )
-        all_failed_runs = [
-            item for item in runs_by_recency if item.state == RuntimeExecutionState.FAILED
+        all_failed_job_runs = [
+            item
+            for item in runs_by_recency
+            if item.state == RuntimeExecutionState.FAILED
+            and item.executable_kind == RuntimeExecutableKind.JOB
         ]
-        failed_runs = all_failed_runs[:log_ceiling]
-        if len(all_failed_runs) > len(failed_runs):
+        failed_job_runs = all_failed_job_runs[:log_ceiling]
+        if len(all_failed_job_runs) > len(failed_job_runs):
             # Silent truncation here reads downstream as "these runs had no logs",
             # which is indistinguishable from a genuinely log-free run.
             logger.warning(
                 "TMC log capture ceiling reached: %d of %d failed runs will have logs "
                 "downloaded this cycle (talend_tmc_failed_log_run_limit=%d)",
-                len(failed_runs),
-                len(all_failed_runs),
+                len(failed_job_runs),
+                len(all_failed_job_runs),
                 log_ceiling,
             )
-        metric_runs = runs_by_recency[:metric_ceiling]
+        # A Route/Data Service execution represents a deployment lifecycle, not
+        # a batch failure. Capture the latest deployment's shared OSGi log even
+        # while it is running so operators can actually inspect route activity.
+        latest_deployment_runs: dict[tuple[str, str], RuntimeJobRun] = {}
+        for run in runs_by_recency:
+            if run.executable_kind in {
+                RuntimeExecutableKind.ROUTE,
+                RuntimeExecutableKind.DATA_SERVICE,
+            }:
+                latest_deployment_runs.setdefault((run.source_key, run.job_id), run)
+        deployment_log_runs = list(latest_deployment_runs.values())[:log_ceiling]
+        if len(latest_deployment_runs) > len(deployment_log_runs):
+            logger.warning(
+                "TMC deployment log capture ceiling reached: %d of %d latest deployments "
+                "will have logs downloaded this cycle",
+                len(deployment_log_runs),
+                len(latest_deployment_runs),
+            )
+        log_runs = failed_job_runs + deployment_log_runs
+        # TMC component observability is a Data Integration Job API. Route
+        # exchange metrics are carried on deployment/run payloads instead.
+        metric_runs = [
+            run for run in runs_by_recency if run.executable_kind == RuntimeExecutableKind.JOB
+        ][:metric_ceiling]
         detail_fetch_semaphore = asyncio.Semaphore(_DETAIL_FETCH_CONCURRENCY)
         metric_failures = 0
 
         async def fetch_logs(run: RuntimeJobRun) -> list[RuntimeLogEvent]:
             try:
                 async with detail_fetch_semaphore:
-                    return await self.get_execution_logs(
+                    events = await self.get_execution_logs(
                         GetExecutionLogsInput(execution_id=run.run_id, limit=_LOG_CAPTURE_LIMIT)
                     )
+                    if run.executable_kind in {
+                        RuntimeExecutableKind.ROUTE,
+                        RuntimeExecutableKind.DATA_SERVICE,
+                    }:
+                        # TMC exports the shared OSGi Runtime log during the
+                        # deployment window; sibling Route lines may be present.
+                        return [
+                            event.model_copy(
+                                update={
+                                    "execution_id": run.run_id,
+                                    "scope": "engine",
+                                    "attribution_safe": False,
+                                }
+                            )
+                            for event in events
+                        ]
+                    return events
             except RuntimeProviderError:
                 logger.warning("TMC log fetch failed for execution %s", run.run_id)
                 return []
@@ -856,10 +957,10 @@ class TalendTmcRuntimeProvider:
                 return []
 
         detail_results = await asyncio.gather(
-            *(fetch_logs(run) for run in failed_runs),
+            *(fetch_logs(run) for run in log_runs),
             *(fetch_metrics(run) for run in metric_runs),
         )
-        log_result_count = len(failed_runs)
+        log_result_count = len(log_runs)
         log_events = [item for result in detail_results[:log_result_count] for item in result]
         component_metrics = [
             item for result in detail_results[log_result_count:] for item in result
@@ -1306,11 +1407,76 @@ def _to_engine(item: dict[str, Any], source_key: str, synced_at: datetime) -> Ru
     )
 
 
+def _executable_kind(artifact_type: str | None) -> RuntimeExecutableKind:
+    token = re.sub(r"[\s-]+", "_", (artifact_type or "").strip().lower())
+    if token in {"standard", "job", "batch", "data_integration"}:
+        return RuntimeExecutableKind.JOB
+    if token == "route":
+        return RuntimeExecutableKind.ROUTE
+    if token in {"data_service", "dataservice"}:
+        return RuntimeExecutableKind.DATA_SERVICE
+    # A TMC executable task with missing/novel artifact metadata retains the
+    # historical batch-job semantics. Only explicit Route/Data Service types
+    # switch to deployment semantics.
+    return RuntimeExecutableKind.JOB
+
+
+def _route_metric_objects(item: dict[str, Any]) -> list[dict[str, Any]]:
+    objects = [item]
+    for name in ("metrics", "routeMetrics", "camelMetrics", "deploymentMetrics", "deployment"):
+        value = item.get(name)
+        if isinstance(value, dict):
+            objects.append(value)
+    return objects
+
+
+def _route_metric_int(item: dict[str, Any], *names: str) -> int | None:
+    for candidate in _route_metric_objects(item):
+        value = _field(candidate, *names)
+        parsed = _as_int(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _route_metric_float(item: dict[str, Any], *names: str) -> float | None:
+    for candidate in _route_metric_objects(item):
+        value = _field(candidate, *names)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                parsed = float(value)
+            except ValueError:
+                continue
+            if math.isfinite(parsed):
+                return parsed
+    return None
+
+
+def _route_metric_datetime(item: dict[str, Any]) -> datetime | None:
+    for candidate in _route_metric_objects(item):
+        value = _field(
+            candidate,
+            "metricsUpdatedAt",
+            "metricTimestamp",
+            "metrics_updated_at",
+            "lastUpdated",
+        )
+        parsed = _parse_dt(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def _to_job(
     item: dict[str, Any],
     source_key: str,
     synced_at: datetime,
     engines_by_id: dict[str, RuntimeEngine],
+    artifacts_by_id: dict[str, RuntimeArtifact],
 ) -> RuntimeJob:
     workspace = _dict_field(item, "workspace")
     environment = _dict_field(workspace, "environment")
@@ -1319,12 +1485,19 @@ def _to_job(
     engine = engines_by_id.get(engine_id or "")
     job_id = _required_str(item, "executable", "task_id", "id")
     name = _str_field(item, "name") or job_id
+    artifact_id = _str_field(item, "artifactId", "artifact_id")
+    artifact = artifacts_by_id.get(artifact_id or "")
+    task_detail = _dict_field(item, "taskDetail")
+    parameters = _dict_field(task_detail, "parameters")
+    detail_artifact = _dict_field(task_detail, "artifact")
+    executable_kind = _executable_kind(artifact.artifact_type if artifact else None)
     return RuntimeJob(
         source_key=source_key,
         job_id=job_id,
         name=name,
         display_name=name,
         job_type="task",
+        executable_kind=executable_kind,
         status=_str_field(item, "status") or "active",
         environment_id=_str_field(environment, "id", "environment_id"),
         environment_name=_str_field(environment, "name", "environment_name"),
@@ -1333,7 +1506,13 @@ def _to_job(
         engine_id=engine_id,
         engine_name=engine.name if engine is not None else None,
         owner=_str_field(workspace, "owner"),
-        artifact_name=_str_field(item, "artifactId", "artifact_id"),
+        artifact_name=artifact.name if artifact is not None else artifact_id,
+        artifact_id=artifact_id,
+        artifact_version=(
+            _str_field(detail_artifact, "version")
+            or (artifact.version if artifact is not None else None)
+        ),
+        metric_path=_str_field(parameters, "metric_path", "metricPath"),
         last_seen_at=synced_at,
         source_updated_at=synced_at,
     )
@@ -1478,6 +1657,9 @@ def _to_job_run(
         job_name=job.name if job is not None else job_id,
         execution_id=_required_str(item, "executionId", "execution_id", "id"),
         state=_normalize_state(_field(item, "status", "executionStatus", "state")),
+        executable_kind=(
+            job.executable_kind if job is not None else RuntimeExecutableKind.UNKNOWN
+        ),
         environment_id=job.environment_id if job else None,
         environment_name=job.environment_name if job else None,
         workspace_id=job.workspace_id if job else None,
@@ -1487,6 +1669,27 @@ def _to_job_run(
         started_at=started,
         ended_at=ended,
         duration_ms=_duration_ms(started, ended),
+        completed_exchanges=_route_metric_int(
+            item, "completedExchanges", "completed_exchanges", "exchangesCompleted"
+        ),
+        failed_exchanges=_route_metric_int(
+            item, "failedExchanges", "failed_exchanges", "exchangesFailed"
+        ),
+        total_exchanges=_route_metric_int(
+            item, "totalExchanges", "total_exchanges", "exchangesTotal"
+        ),
+        last_process_time_ms=_route_metric_int(
+            item, "lastProcessTime", "lastProcessTimeMs", "last_process_time_ms"
+        ),
+        mean_process_time_ms=_route_metric_int(
+            item, "meanProcessTime", "meanProcessTimeMs", "mean_process_time_ms"
+        ),
+        metrics_updated_at=_route_metric_datetime(item),
+        metric_path=job.metric_path if job is not None else None,
+        service_call_count=_route_metric_int(item, "Count", "count", "serviceCallCount"),
+        one_minute_rate=_route_metric_float(item, "OneMinuteRate", "oneMinuteRate"),
+        five_minute_rate=_route_metric_float(item, "FiveMinuteRate", "fiveMinuteRate"),
+        fifteen_minute_rate=_route_metric_float(item, "FifteenMinuteRate", "fifteenMinuteRate"),
     )
 
 
@@ -1554,6 +1757,7 @@ def _execution_from_job_run(run: RuntimeJobRun, project_id: str) -> RuntimeExecu
         job_name=run.job_name,
         project_name=project_id,
         state=run.state,
+        executable_kind=run.executable_kind,
         started_at=run.started_at,
         ended_at=run.ended_at,
         duration_ms=run.duration_ms,
@@ -1573,6 +1777,22 @@ def _bounded_log_head_tail(
     if tail_size <= 0:
         return items[:limit]
     return items[:head_size] + items[-tail_size:]
+
+
+def _bounded_log_entries(
+    items: list[dict[str, Any]], limit: int
+) -> list[tuple[int, dict[str, Any]]]:
+    """Bound logs while retaining source positions for idempotent re-imports."""
+    if limit <= 0:
+        return []
+    indexed = list(enumerate(items))
+    if len(indexed) <= limit:
+        return indexed
+    head_size = min(_LOG_HEAD_CAPTURE, limit)
+    tail_size = limit - head_size
+    if tail_size <= 0:
+        return indexed[:limit]
+    return indexed[:head_size] + indexed[-tail_size:]
 
 
 def _to_log_event(item: Any, fallback_execution_id: str, line_ordinal: int = 0) -> RuntimeLogEvent:

@@ -11,6 +11,9 @@ export const RuntimeExecutionStateSchema = z.enum([
 ]);
 export type RuntimeExecutionState = z.infer<typeof RuntimeExecutionStateSchema>;
 
+export const RuntimeExecutableKindSchema = z.enum(["job", "route", "data_service", "unknown"]);
+export type RuntimeExecutableKind = z.infer<typeof RuntimeExecutableKindSchema>;
+
 export const RuntimeLogSeveritySchema = z.enum([
   "debug",
   "info",
@@ -24,6 +27,7 @@ export const RuntimeExecutionSchema = z.object({
   job_name: z.string(),
   project_name: z.string().nullable().optional(),
   state: RuntimeExecutionStateSchema,
+  executable_kind: RuntimeExecutableKindSchema.optional().default("job"),
   started_at: z.string(),
   ended_at: z.string().nullable().optional(),
   duration_ms: z.number().nullable().optional(),
@@ -46,6 +50,8 @@ export const RuntimeLogEventSchema = z.object({
   // Position is part of a line's identity: repeated messages are valid log data,
   // so consumers must key on (execution_id, line_ordinal), not on the message.
   line_ordinal: z.number().optional().default(0),
+  scope: z.enum(["execution", "engine"]).optional().default("execution"),
+  attribution_safe: z.boolean().optional().default(true),
 });
 export type RuntimeLogEvent = z.infer<typeof RuntimeLogEventSchema>;
 
@@ -206,6 +212,7 @@ export const RuntimeJobSchema = z.object({
   name: z.string(),
   display_name: z.string().nullable().optional(),
   job_type: z.string().nullable().optional(),
+  executable_kind: RuntimeExecutableKindSchema.optional().default("job"),
   status: z.string().nullable().optional(),
   environment_id: z.string().nullable().optional(),
   environment_name: z.string().nullable().optional(),
@@ -215,6 +222,9 @@ export const RuntimeJobSchema = z.object({
   engine_name: z.string().nullable().optional(),
   owner: z.string().nullable().optional(),
   artifact_name: z.string().nullable().optional(),
+  artifact_id: z.string().nullable().optional(),
+  artifact_version: z.string().nullable().optional(),
+  metric_path: z.string().nullable().optional(),
   last_seen_at: z.string().nullable().optional(),
   source_updated_at: z.string().nullable().optional(),
 });
@@ -227,6 +237,7 @@ export const RuntimeJobRunSchema = z.object({
   source_key: z.string(),
   execution_id: z.string().nullable().optional(),
   state: RuntimeExecutionStateSchema,
+  executable_kind: RuntimeExecutableKindSchema.optional().default("job"),
   environment_id: z.string().nullable().optional(),
   environment_name: z.string().nullable().optional(),
   workspace_id: z.string().nullable().optional(),
@@ -236,8 +247,53 @@ export const RuntimeJobRunSchema = z.object({
   started_at: z.string(),
   ended_at: z.string().nullable().optional(),
   duration_ms: z.number().nullable().optional(),
+  completed_exchanges: z.number().nullable().optional(),
+  failed_exchanges: z.number().nullable().optional(),
+  total_exchanges: z.number().nullable().optional(),
+  last_process_time_ms: z.number().nullable().optional(),
+  mean_process_time_ms: z.number().nullable().optional(),
+  metrics_updated_at: z.string().nullable().optional(),
+  metric_path: z.string().nullable().optional(),
+  service_call_count: z.number().nullable().optional(),
+  one_minute_rate: z.number().nullable().optional(),
+  five_minute_rate: z.number().nullable().optional(),
+  fifteen_minute_rate: z.number().nullable().optional(),
 });
 export type RuntimeJobRun = z.infer<typeof RuntimeJobRunSchema>;
+
+export const RuntimeDeploymentSchema = z.object({
+  project_id: z.string(),
+  source_key: z.string(),
+  deployment_id: z.string().nullable().optional(),
+  executable_id: z.string(),
+  executable_name: z.string(),
+  executable_kind: RuntimeExecutableKindSchema,
+  state: RuntimeExecutionStateSchema.nullable().optional(),
+  environment_name: z.string().nullable().optional(),
+  workspace_name: z.string().nullable().optional(),
+  engine_name: z.string().nullable().optional(),
+  started_at: z.string().nullable().optional(),
+  ended_at: z.string().nullable().optional(),
+  duration_ms: z.number().nullable().optional(),
+  completed_exchanges: z.number().nullable().optional(),
+  failed_exchanges: z.number().nullable().optional(),
+  total_exchanges: z.number().nullable().optional(),
+  last_process_time_ms: z.number().nullable().optional(),
+  mean_process_time_ms: z.number().nullable().optional(),
+  metrics_updated_at: z.string().nullable().optional(),
+  metric_path: z.string().nullable().optional(),
+  service_call_count: z.number().nullable().optional(),
+  one_minute_rate: z.number().nullable().optional(),
+  five_minute_rate: z.number().nullable().optional(),
+  fifteen_minute_rate: z.number().nullable().optional(),
+});
+export type RuntimeDeployment = z.infer<typeof RuntimeDeploymentSchema>;
+
+export const RuntimeDeploymentListResponseSchema = z.object({
+  deployments: z.array(RuntimeDeploymentSchema),
+  total: z.number(),
+});
+export type RuntimeDeploymentListResponse = z.infer<typeof RuntimeDeploymentListResponseSchema>;
 
 export const RuntimeJobHealthSchema = z.object({
   project_id: z.string(),
