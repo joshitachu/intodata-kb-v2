@@ -71,6 +71,28 @@ All admin endpoints require the relevant permission (see `system/subsystems.md` 
 | GET    | /api/v1/admin/audit-logs               | view_audit_logs  | Paginated audit log               |
 | GET    | /api/v1/admin/usage/summary            | manage_users     | Aggregated token/cost usage       |
 | GET    | /api/v1/admin/usage/recent             | manage_users     | Recent usage records (paginated)  |
+| GET    | /api/v1/admin/access-requests          | manage_users     | Pending requests + open invites   |
+| POST   | /api/v1/admin/access-requests/{id}/approve | manage_users | Approve, choosing the member role |
+| POST   | /api/v1/admin/access-requests/{id}/reject  | manage_users | Reject with a reason              |
+
+### Approving access
+
+`POST /admin/access-requests/{id}/approve` body (all fields optional):
+
+```json
+{ "role_id": 3, "project_ids": ["werkorder"], "welcome_note": "..." }
+```
+
+- `role_id` -- role the invitee arrives with. Owner-named roles are rejected
+  (403). Omitting it means acceptance applies `DEFAULT_MEMBER_ROLE`.
+- `project_ids` -- pre-granted as membership, never ownership. Requires
+  `assign_projects` in addition to `manage_users` (403 otherwise).
+- `welcome_note` -- shown on the invitee's first screen next to the approver's
+  name.
+
+The decision is stored on the invite and applied by `POST /auth/invite/accept`.
+The grant is audited as `access_request_approved`. Calling with no body remains
+valid, so an older client keeps working.
 
 ---
 
@@ -100,11 +122,32 @@ All admin endpoints require the relevant permission (see `system/subsystems.md` 
 
 | Method | Path                                        | Auth | Description                        |
 |--------|---------------------------------------------|------|------------------------------------|
-| GET    | /api/v1/onboarding/status                   | Yes  | Current user onboarding state      |
+| GET    | /api/v1/onboarding/status                   | Yes  | User onboarding state + persona    |
 | POST   | /api/v1/onboarding/step/{step}              | Yes  | Complete a user onboarding step    |
+| PUT    | /api/v1/onboarding/tour/step                | Yes  | Save walkthrough progress          |
+| POST   | /api/v1/onboarding/tour/complete            | Yes  | Mark the walkthrough finished      |
 | GET    | /api/v1/company-onboarding/status           | Yes  | Company setup state                |
 | GET    | /api/v1/company-onboarding/setup-status     | No   | Whether company setup is complete  |
 | POST   | /api/v1/company-onboarding/step/{step}      | Admin| Complete a company onboarding step |
+
+`GET /onboarding/status` additionally returns:
+
+- `persona` -- `owner | admin | project_owner | developer`, resolved server-side
+  by `src/rbac/persona.py`. Drives which wizard and which walkthrough the user
+  gets. The frontend must not re-derive it.
+- `tour_variant`, `tour_seen_steps` -- resumable walkthrough progress, tracked by
+  step id because each persona's tour is a different length.
+- `invite_context` -- `{approved_by, assigned_role, assigned_project_ids,
+  welcome_note}`, present only while the user's wizard is incomplete, so the
+  first screen can name who approved them.
+
+`PUT /onboarding/tour/step` body: `{tour_step, step_id?, variant?}`. `step_id`
+and `variant` are optional for backwards compatibility but required in practice
+for resume to work.
+
+Any new field must also be added to `OnboardingStatusSchema` in
+`frontend/types/onboarding.ts` -- Zod strips undeclared keys, so an unlisted
+field is permanently `undefined` in the browser with no error.
 
 ---
 
