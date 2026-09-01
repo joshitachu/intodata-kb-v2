@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -12,7 +11,6 @@ from src.api.dependencies import CurrentUser, DBSession, QdrantClient
 from src.api.errors import api_error
 from src.api.routes.auth import limiter
 from src.config import settings
-from src.memory.context import build_memory_context
 from src.db.models import QueryUsage
 from src.generation.llm_client import generate_answer_stream, get_last_usage
 from src.generation.prompt_builder import (
@@ -22,15 +20,6 @@ from src.generation.prompt_builder import (
 )
 from src.retrieval.metadata_retriever import get_system_knowledge_summary
 from src.generation.rag_chain import _execute_role_aware_search, run_rag_query
-from src.memory.hindsight_client import (
-    ensure_corrections_bank,
-    ensure_quality_bank,
-    ensure_user_bank,
-    recall_corrections,
-    recall_quality_insights,
-    recall_user_memory,
-    retain_interaction,
-)
 from src.rbac.permissions import get_user_groups, get_user_project_ids
 from src.retrieval.embedder import embed_text, get_last_embed_tokens
 from src.retrieval.search import merge_sources_by_document
@@ -161,22 +150,12 @@ async def query_stream(
         project_ids = [body.project_id]
     knowledge_revisions = await active_knowledge_revisions(db, project_ids)
     start = time.perf_counter()
-    uid = str(user.id)
 
-    # 0. Recall memories from Hindsight (non-blocking, empty when disabled)
-    await ensure_user_bank(uid)
-    await ensure_quality_bank()
-    await ensure_corrections_bank()
-    user_memories, quality_insights, corrections = await asyncio.gather(
-        recall_user_memory(uid, body.query),
-        recall_quality_insights(body.query),
-        recall_corrections(body.query),
-    )
-    memory_context = build_memory_context(user_memories, quality_insights, corrections)
+    # Hindsight recall used to run here, before any retrieval. It was removed
+    # from the answer path: the three bank ensures plus the recall gather were
+    # awaited before generation started, costing ~20-25s per turn against a 90s
+    # turn-claim lease. Memory remains reachable via the /memory routes.
     answer_style = "code" if should_use_code_assistant(body.query, project_ids) else "assistant"
-    if memory_context:
-        logger.info("Stream: Injecting %d user memories + %d quality insights + %d corrections",
-                     len(user_memories), len(quality_insights), len(corrections))
 
     # Fetch system knowledge for injection
     system_knowledge: str | None = None
@@ -197,7 +176,6 @@ async def query_stream(
             body.query,
             sources,
             reference_numbers=ref_map,
-            memory_context=memory_context,
             system_knowledge=system_knowledge,
             answer_style=answer_style,
             auxiliary_sources=auxiliary_sources,
@@ -206,7 +184,6 @@ async def query_stream(
     else:
         messages = build_no_results_messages(
             body.query,
-            memory_context=memory_context,
             system_knowledge=system_knowledge,
             answer_style=answer_style,
         )
@@ -259,20 +236,6 @@ async def query_stream(
                     await db.commit()
                 except Exception as db_err:
                     logger.warning("Failed to persist query usage: %s", db_err)
-
-            # Retain interaction to Hindsight (fire-and-forget — does not block response)
-            source_names = [s.filename for s in document_sources] if document_sources else []
-            asyncio.create_task(retain_interaction(
-                user_id=uid,
-                query=body.query,
-                answer=accumulated,
-                sources_used=source_names,
-                search_result_count=len(document_sources),
-                latency_ms=latency_ms,
-                action="document_search",
-                query_type="document_answer",
-                project_ids=project_ids,
-            ))
 
             yield "event: done\ndata: {}\n\n"
         except Exception as e:

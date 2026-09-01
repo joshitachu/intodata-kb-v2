@@ -20,6 +20,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.config import settings
 from src.db.models.conversation import Conversation, ConversationMessage
 from src.db.models.harness import (
     HarnessConversationStateRow,
@@ -31,7 +32,21 @@ from src.db.models.harness import (
 from src.db.models.harness_pack import HarnessPackDraftRow
 
 
-_CLAIM_SECONDS = 90
+# The lease has to outlive the work it protects, and it is not a heartbeat: it is
+# only renewed as a side effect of a stateful domain effect (see
+# ``record_call_started``), so a turn that spends its whole budget inside
+# read-only tools never renews it once. Pinned at a literal 90s while a turn was
+# separately allowed to run to ``agent_runtime_v2_hard_deadline_seconds`` (300s),
+# every turn between those two numbers was killed at finalization with "Turn
+# claim expired" -- discarding an answer that had already been generated.
+#
+# ``config.py`` already reconciles the provider timeouts, the soft deadline and
+# the read-tool timeout against the hard deadline; this constant lived in another
+# module and was left out of that reconciliation. Deriving it from the same
+# budget is what stops the two drifting apart again. The margin covers
+# finalization itself, which runs after the turn's own budget is spent.
+_CLAIM_MARGIN_SECONDS = 30
+_CLAIM_SECONDS = int(settings.agent_runtime_v2_hard_deadline_seconds) + _CLAIM_MARGIN_SECONDS
 _MAX_FINGERPRINTS = 20
 _MAX_EFFECT_RECEIPTS = 12
 _MAX_FINAL_RESULT_CHARS = 16_000

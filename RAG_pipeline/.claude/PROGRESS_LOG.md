@@ -1,5 +1,28 @@
 # IntoData KB -- Progress Log
 
+## Session: 2026-09-01 -- A completed answer was being thrown away two seconds after it was produced
+
+### Feature/Fix: Hindsight removed from the RAG answer path; turn-claim lease derived from the turn budget
+
+- **Files changed (backend)**: `src/generation/rag_chain.py`, `src/api/routes/query.py`, `src/harness/conversation_state.py`.
+- **Tests**: no new tests. `pytest tests/ --ignore=tests/test_scripts` -> **2672 passed, 5 failed**, all 5 pre-existing (2x `test_project_ownership_api` SQLite "no such table", `test_agentic_retrieval_capabilities::test_project_and_evidence_policy_denial_never_invokes_backend`, and 2 `ModuleNotFoundError` for `langchain_openai`/`pypdf` missing from the local env). Verified pre-existing by stashing the diff and re-running the same four -- identical failures on the unmodified tree.
+
+- **Problem (reported)**: conversation 159 failed after ~90s. Backend logged `Agent turn stopped unexpectedly conversation_id=159 message_id=646 exception_type=ConversationStateConflict`.
+
+- **Root cause 1 (the discarded answer)**: the answer was *not* lost to a model timeout. `rag_chain` logged `Completed in 70948ms | 4 document sources returned` -- a full answer with citations existed. It was destroyed 56ms later at finalization. The claim row shows why: created `06:22:09.292`, lease expired `06:23:39.307`, turn finished `06:23:41.301`. It overshot a 90s lease by **two seconds** and was marked `abandoned`. The lease is not a heartbeat -- it is renewed only as a side effect of a stateful domain effect (`record_call_started`, `conversation_state.py:465/509/546`), so a turn spending its budget inside read-only retrieval never renews it once. Meanwhile `agent_runtime_v2_hard_deadline_seconds` permits the same turn to run to 300s. Every turn landing between 90s and 300s was guaranteed to be killed after doing all its work. The next message proved the margin: 62.2s, survived.
+
+- **Root cause 2 (why it reached 92s)**: Hindsight recall ran before generation could start and cost ~20-25s per turn (measured: `recall_corrections` 06:24:11, `recall_user_memory` 06:24:23, `recall_quality_insights` 06:24:30). It is *already* declared optional -- the whole block in `_recall_memories` is wrapped in `except Exception` returning `None` -- yet was given `hindsight_timeout = 300s`, i.e. an explicitly non-essential enhancement was allowed to block 3.3x longer than the lease protecting the turn. Checked before acting: the three recalls are already `asyncio.gather`ed, so serialization was NOT the problem and parallelizing would have been a no-op fix.
+
+- **Change 1**: removed Hindsight from both RAG entry points. `rag_chain._recall_memories` -> `_answer_style` (the answer-style choice was the only non-Hindsight thing it did, and it is now synchronous); the `retain_interaction` fire-and-forget task dropped from `rag_chain` and from the `query.py` stream generator; `memory_context` no longer passed to `build_messages`/`build_no_results_messages` (both already default it to `None`). `_persist_query` shed `uid`/`action`/`query_type`/`project_ids`, which existed only to feed the retain call. `hindsight_client`, the `/memory` routes and the health check are untouched -- memory is still reachable, just not on the answer path.
+
+- **Change 2**: `_CLAIM_SECONDS` is no longer the literal `90`. It is derived: `int(settings.agent_runtime_v2_hard_deadline_seconds) + _CLAIM_MARGIN_SECONDS` = **330s**. `config.py` already has a `_reconcile` validator that harmonises provider timeouts, the soft deadline and the read-tool timeout against the hard deadline; this constant lived in a different module and had been left out of it. Deriving it from the same budget is what stops the two drifting apart again.
+
+- **Why this approach**: the two changes are one defect seen from both ends -- work allowed to outlive the lease that protects it. Bounding Hindsight with a short timeout (the smaller alternative) would have kept an optional 20s dependency on the critical path of every documentation answer; removing it is what the user asked for and removes the retains that were separately hanging the full 300s (`Hindsight retain (quality) failed [TimeoutError]` at 06:28:41 and 06:30:13, exactly 300s after their turns).
+
+- **NOT fixed, still open**: (a) the 429s on conversation 160 are unrelated -- probed the endpoint directly and it returns `{"type":"engine_overloaded_error"}`, i.e. Moonshot capacity, not our quota or request rate, and there is no cross-provider fallback in the V2 runtime (`config.py:15` documents the omission as deliberate). (b) No lease heartbeat: a genuinely crashed turn now blocks its conversation for 330s instead of 90s; the cheap mitigation is sweeping `claimed` rows to `abandoned` on backend startup, not implemented. (c) Prompt cache reporting 0% (`0/5795`, `0/11808`) on kimi-k2.6.
+
+- **Verification**: measured, not assumed -- claim timings read from `harness_conversation_turn_claims` on the production DB; the 429 classification came from an actual request to the provider, not from the exception type.
+
 ## Session: 2026-08-28 -- Walkthrough transitions rebuilt, step anchors made meaningful, /guide split by audience, and a reset endpoint that did the opposite of its docstring
 
 ### Feature/Fix: presentation-vs-resolution split in the tour engine, per-region step anchors, two-edition product guide, working onboarding reset
