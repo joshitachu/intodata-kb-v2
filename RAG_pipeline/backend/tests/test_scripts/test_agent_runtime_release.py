@@ -443,7 +443,7 @@ def test_release_evidence_assembly_preserves_review_without_owner_invention() ->
         corpus_version="v1",
         application_revision="abc+dirty",
         runtime_version="runtime-v2",
-        model_profile="kimi/kimi-k2.5",
+        model_profile="kimi/kimi-k2.6",
         prompt_version="prompt-v2",
         manifest_sha256="m" * 64,
         corpus_sha256="c" * 64,

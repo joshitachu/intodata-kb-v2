@@ -92,7 +92,7 @@ logger = logging.getLogger(__name__)
 
 READONLY_RUNTIME_RELEASE = "slice-3-readonly-primary-v1"
 READONLY_PROMPT_VERSION = "evidence-fusion-source-ownership-v1"
-READONLY_MODEL_PROFILE = "kimi/kimi-k2.5"
+READONLY_MODEL_PROFILE = "kimi/kimi-k2.6"
 
 _KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 

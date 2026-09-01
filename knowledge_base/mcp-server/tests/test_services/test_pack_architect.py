@@ -116,7 +116,7 @@ async def test_turn_is_accepted_immediately_and_uses_one_batch_model_call(
                         },
                     }
                 ),
-                model_name="kimi-k2.5",
+                model_name="kimi-k2.6",
             )
 
     monkeypatch.setattr(pack_architect, "build_model_provider", lambda _model: FakeProvider())
@@ -157,7 +157,7 @@ async def test_clarifying_turn_changes_no_files(
                         "design": None,
                     }
                 ),
-                model_name="kimi-k2.5",
+                model_name="kimi-k2.6",
             )
 
     monkeypatch.setattr(pack_architect, "build_model_provider", lambda _model: FakeProvider())

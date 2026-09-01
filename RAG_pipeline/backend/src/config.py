@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     # from the prefix by the provider registry. A superadmin override
     # (`rag_chat_model` in instance_settings) takes precedence. Selecting a model
     # routes to exactly its provider — there is no cross-provider fallback chain.
-    rag_default_model: str = "kimi/kimi-k2.5"
+    rag_default_model: str = "kimi/kimi-k2.6"
 
     # Provider preference for non-agent generation surfaces.
     llm_providers: list[str] = ["kimi", "ollama"]
@@ -156,7 +156,12 @@ class Settings(BaseSettings):
 
     # Kimi (Moonshot AI)
     kimi_api_key: str = ""
-    kimi_llm_model: str = "kimi-k2.5"
+    # Read directly by the V2 read-only runtime (readonly_runtime._build_model),
+    # which does NOT consult instance_settings -- so this default, not the
+    # `rag_chat_model` override, decides which model a chat turn calls. Moonshot
+    # retired kimi-k2.5 (404 "Not found the model or Permission denied"), which
+    # surfaced as every turn failing with stop_reason=planner_unavailable.
+    kimi_llm_model: str = "kimi-k2.6"
     kimi_temperature: float = 0.6
     kimi_timeout: float = 300.0
 

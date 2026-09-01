@@ -84,7 +84,7 @@ DEFAULT_MODEL_PRICING: dict[str, ModelPricing] = {
 #   here is wrong by up to 2x in one direction. Pick a convention and set it
 #   explicitly via MCP_MODEL_PRICING_JSON rather than guessing here.
 # * gpt-5.6 / gpt-5.6-sol / gpt-5.6-terra and the older gpt-5.x / gpt-4.x
-#   ids, kimi-k2.5, and the gemini-* ids -- present in
+#   ids, the kimi-* ids, and the gemini-* ids -- present in
 #   data/model_catalogue.json but not in production use for doc generation,
 #   and not independently verified. Add them with a source when needed.
 #

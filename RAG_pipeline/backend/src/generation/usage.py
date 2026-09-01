@@ -11,7 +11,10 @@ from dataclasses import dataclass, field
 MODEL_PRICING: dict[str, tuple[float, float]] = {
     # (input_price_per_M, output_price_per_M)
     # Kimi / Moonshot
-    "kimi-k2.5": (0.30, 0.60),
+    # UNVERIFIED: carried over from the retired kimi-k2.5 entry when that model
+    # was removed. Not confirmed against Moonshot's current price list -- check
+    # before trusting spend figures for this model.
+    "kimi-k2.6": (0.30, 0.60),
     "moonshot-v1-128k": (0.30, 0.60),
     # OpenAI
     "gpt-5.5": (5.00, 15.00),
@@ -53,9 +56,10 @@ MODEL_PRICING: dict[str, tuple[float, float]] = {
 # for a provider whose discount we have not confirmed: an unverified saving must
 # never show up as revenue in the usage dashboard.
 MODEL_CACHE_READ_DISCOUNT: dict[str, float] = {
-    # Moonshot/Kimi publishes cached input at CNY 0.70/M against CNY 4.00/M
-    # uncached for k2.5 => 0.175. Automatic prefix cache, no cache-write fee.
-    "kimi-k2.5": 0.175,
+    # Moonshot/Kimi published cached input at CNY 0.70/M against CNY 4.00/M
+    # uncached for the retired k2.5 => 0.175. Automatic prefix cache, no
+    # cache-write fee. UNVERIFIED for k2.6: ratio assumed unchanged.
+    "kimi-k2.6": 0.175,
     # moonshot-v1-* has no cache discount, so it is intentionally absent.
     # Anthropic: cache read is 0.1x base input, cache write 1.25x base input.
     "claude-sonnet-4-6": 0.10,

@@ -80,7 +80,7 @@ def _decision(tool_call=None, text=None):
         tool_calls=[tool_call] if tool_call else [],
         text=text,
         assistant_message={"role": "assistant", "content": text or "", "tool_calls": []},
-        usage=UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=10, output_tokens=5),
+        usage=UsageStats(provider="kimi", model="kimi-k2.6", input_tokens=10, output_tokens=5),
     )
 
 

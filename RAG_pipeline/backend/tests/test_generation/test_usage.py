@@ -5,10 +5,10 @@ from src.generation.usage import MODEL_PRICING, StreamUsageStats, UsageStats
 
 class TestUsageStats:
     def test_calculate_cost_known_model(self):
-        """kimi-k2.5: $0.30/M input, $0.60/M output."""
+        """kimi-k2.6: $0.30/M input, $0.60/M output."""
         stats = UsageStats(
             provider="kimi",
-            model="kimi-k2.5",
+            model="kimi-k2.6",
             input_tokens=1000,
             output_tokens=500,
         )
@@ -31,7 +31,7 @@ class TestUsageStats:
 
     def test_calculate_cost_zero_tokens(self):
         """0 tokens = $0.00 regardless of model."""
-        stats = UsageStats(model="kimi-k2.5", input_tokens=0, output_tokens=0)
+        stats = UsageStats(model="kimi-k2.6", input_tokens=0, output_tokens=0)
         cost = stats.calculate_cost()
         assert cost == 0.0
 
@@ -47,12 +47,12 @@ class TestUsageStats:
 
     def test_model_pricing_table(self):
         """All expected models present in pricing table."""
-        expected_models = {"kimi-k2.5", "gemma3:4b", "gemma3:12b", "nomic-embed-text"}
+        expected_models = {"kimi-k2.6", "gemma3:4b", "gemma3:12b", "nomic-embed-text"}
         assert expected_models.issubset(set(MODEL_PRICING.keys()))
 
     def test_cost_rounding(self):
         """Cost is rounded to 6 decimal places."""
-        stats = UsageStats(model="kimi-k2.5", input_tokens=1, output_tokens=1)
+        stats = UsageStats(model="kimi-k2.6", input_tokens=1, output_tokens=1)
         cost = stats.calculate_cost()
         # Very small cost — should be rounded to 6 places
         assert cost == round(cost, 6)
@@ -68,7 +68,7 @@ class TestStreamUsageStats:
         """finalize() returns UsageStats with calculated cost."""
         stream = StreamUsageStats(
             provider="kimi",
-            model="kimi-k2.5",
+            model="kimi-k2.6",
             input_tokens=2000,
             output_tokens=1000,
             latency_ms=350,
@@ -76,7 +76,7 @@ class TestStreamUsageStats:
         result = stream.finalize()
         assert isinstance(result, UsageStats)
         assert result.provider == "kimi"
-        assert result.model == "kimi-k2.5"
+        assert result.model == "kimi-k2.6"
         assert result.input_tokens == 2000
         assert result.output_tokens == 1000
         assert result.latency_ms == 350
@@ -102,15 +102,15 @@ class TestCachedTokenPricing:
 
     def test_no_cache_data_bills_exactly_as_before(self):
         """Regression guard: 0 cached tokens reduces to the flat input formula."""
-        stats = UsageStats(model="kimi-k2.5", input_tokens=10_000, output_tokens=500)
+        stats = UsageStats(model="kimi-k2.6", input_tokens=10_000, output_tokens=500)
         cost = stats.calculate_cost()
         expected = (10_000 / 1_000_000) * 0.30 + (500 / 1_000_000) * 0.60
         assert cost == round(expected, 6)
 
     def test_full_cache_hit_costs_the_discounted_input_rate(self):
-        """kimi-k2.5 cache read is 0.175x the input price."""
+        """kimi-k2.6 cache read is 0.175x the input price."""
         stats = UsageStats(
-            model="kimi-k2.5",
+            model="kimi-k2.6",
             input_tokens=10_000,
             cached_input_tokens=10_000,
             output_tokens=500,
@@ -119,12 +119,12 @@ class TestCachedTokenPricing:
         expected = (10_000 / 1_000_000) * 0.30 * 0.175 + (500 / 1_000_000) * 0.60
         assert cost == round(expected, 6)
         assert cost < UsageStats(
-            model="kimi-k2.5", input_tokens=10_000, output_tokens=500
+            model="kimi-k2.6", input_tokens=10_000, output_tokens=500
         ).calculate_cost()
 
     def test_partial_cache_hit_splits_the_input_bill(self):
         stats = UsageStats(
-            model="kimi-k2.5", input_tokens=22_407, cached_input_tokens=15_000
+            model="kimi-k2.6", input_tokens=22_407, cached_input_tokens=15_000
         )
         cost = stats.calculate_cost()
         expected = (7_407 * 0.30 + 15_000 * 0.30 * 0.175) / 1_000_000
@@ -165,7 +165,7 @@ class TestCachedTokenPricing:
 
     def test_stream_finalize_carries_cache_counts(self):
         stream = StreamUsageStats(
-            model="kimi-k2.5",
+            model="kimi-k2.6",
             input_tokens=10_000,
             cached_input_tokens=9_000,
             output_tokens=100,

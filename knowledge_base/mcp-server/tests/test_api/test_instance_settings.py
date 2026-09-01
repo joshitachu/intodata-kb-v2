@@ -72,10 +72,10 @@ class TestPut:
     async def test_put_accepts_dedicated_pack_author_model(self, client):
         resp = await client.put(
             "/mcp/admin/instance-settings",
-            json={"settings": {"pack_author_model": "kimi/kimi-k2.5"}},
+            json={"settings": {"pack_author_model": "kimi/kimi-k2.6"}},
         )
         assert resp.status_code == 200
-        assert resp.json()["settings"]["pack_author_model"] == "kimi/kimi-k2.5"
+        assert resp.json()["settings"]["pack_author_model"] == "kimi/kimi-k2.6"
 
     async def test_put_writes_and_audits(self, client, db_session):
         resp = await client.put(

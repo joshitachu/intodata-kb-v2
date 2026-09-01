@@ -11,7 +11,7 @@ const groundedAnswer = {
   attribution: {
     runtime_release: "slice-3-readonly-primary-v1",
     manifest_snapshot_hash: "a".repeat(64),
-    model_profile: "kimi/kimi-k2.5",
+    model_profile: "kimi/kimi-k2.6",
     prompt_version: "slice-3-readonly-primary-v2",
   },
 } as const;

@@ -774,7 +774,7 @@ then fail at the first doc-generation run. Decide per client:
 
 `MCP_MODEL_PRICING_JSON` supplies per-model pricing for cost reporting; leave
 empty to report tokens without cost. Pack authoring uses
-`MCP_PACK_AUTHOR_MODEL` (default `kimi/kimi-k2.5`, needs `KIMI_API_KEY`).
+`MCP_PACK_AUTHOR_MODEL` (default `kimi/kimi-k2.6`, needs `KIMI_API_KEY`).
 
 Apply with `up -d` (env change, not `restart`):
 

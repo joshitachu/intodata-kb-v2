@@ -20,8 +20,8 @@ class StrictModel(BaseModel):
 
 
 class KimiProfile(StrictModel):
-    selected_model: Literal["kimi/kimi-k2.5"] = "kimi/kimi-k2.5"
-    provider_model: Literal["kimi-k2.5"] = "kimi-k2.5"
+    selected_model: Literal["kimi/kimi-k2.6"] = "kimi/kimi-k2.6"
+    provider_model: Literal["kimi-k2.6"] = "kimi-k2.6"
     base_url: Literal["https://api.moonshot.ai/v1"] = "https://api.moonshot.ai/v1"
     temperature: Literal[0.6] = 0.6
     timeout_seconds: Literal[300.0] = 300.0
@@ -45,7 +45,7 @@ KIMI_PROFILE = KimiProfile()
 class SpikeRunIdentity(StrictModel):
     agent_run_id: str = Field(pattern=r"^spike-[a-z0-9-]{8,80}$")
     manifest_hash: str = Field(pattern=r"^[a-zA-Z0-9._:-]{3,128}$")
-    model_profile: Literal["kimi/kimi-k2.5"] = "kimi/kimi-k2.5"
+    model_profile: Literal["kimi/kimi-k2.6"] = "kimi/kimi-k2.6"
     runtime_release: Literal["slice-1-shadow-spike"] = "slice-1-shadow-spike"
 
     @property

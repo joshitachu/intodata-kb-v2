@@ -55,7 +55,7 @@ def test_exact_candidate_versions_and_live_profile_wire_contract(monkeypatch) ->
     }
     model = build_kimi_chat_model("placeholder-not-a-credential")
     params = model._default_params
-    assert model.model_name == "kimi-k2.5"
+    assert model.model_name == "kimi-k2.6"
     assert str(model.openai_api_base) == "https://api.moonshot.ai/v1"
     assert params["temperature"] == 0.6
     assert params["extra_body"] == {

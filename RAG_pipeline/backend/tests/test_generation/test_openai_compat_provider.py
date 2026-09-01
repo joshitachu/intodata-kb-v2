@@ -109,7 +109,7 @@ class TestPromptCacheAccounting:
             )
         )
         with patch.object(provider, "_get_client", AsyncMock(return_value=fake_client)):
-            _, usage = await provider.generate(model="kimi-k2.5", messages=MESSAGES)
+            _, usage = await provider.generate(model="kimi-k2.6", messages=MESSAGES)
 
         assert usage.input_tokens == 6266
         assert usage.cached_input_tokens == 6144

@@ -17,7 +17,8 @@ Two jobs, both provider-agnostic:
    single `UsageStats` invariant, and `log_cache_effect` puts the hit ratio in
    the logs so a regression is noticeable without a database query.
 
-Measured against api.moonshot.ai (kimi-k2.5, 2026-08-20): the prefix cache is
+Measured against api.moonshot.ai (kimi-k2.5, 2026-08-20; that model has since
+been retired upstream and this was not re-probed): the prefix cache is
 automatic, granular to 128-token blocks, and reported as
 `usage.prompt_tokens_details.cached_tokens`. There is no explicit cache marker
 to set — see `docs` note in `openai_compat`.

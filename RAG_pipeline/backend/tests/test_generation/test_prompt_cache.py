@@ -125,13 +125,13 @@ class TestReadOpenAICacheTokens:
 class TestApplyCacheTokens:
     def test_clamps_cached_to_prompt_size(self):
         """An over-reporting upstream must never make cost read as negative."""
-        stats = UsageStats(model="kimi-k2.5", input_tokens=100)
+        stats = UsageStats(model="kimi-k2.6", input_tokens=100)
         apply_cache_tokens(stats, 500, 0)
         assert stats.cached_input_tokens == 100
         assert stats.uncached_input_tokens == 0
 
     def test_negative_counts_floor_at_zero(self):
-        stats = UsageStats(model="kimi-k2.5", input_tokens=100)
+        stats = UsageStats(model="kimi-k2.6", input_tokens=100)
         apply_cache_tokens(stats, -5, -5)
         assert stats.cached_input_tokens == 0
         assert stats.cache_write_tokens == 0
@@ -144,7 +144,7 @@ class TestApplyCacheTokens:
         assert stats.uncached_input_tokens == 0
 
     def test_works_on_stream_usage_stats(self):
-        acc = StreamUsageStats(model="kimi-k2.5", input_tokens=1000)
+        acc = StreamUsageStats(model="kimi-k2.6", input_tokens=1000)
         apply_cache_tokens(acc, 900, 0)
         assert acc.finalize().cached_input_tokens == 900
 

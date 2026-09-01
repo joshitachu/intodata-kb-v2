@@ -13,7 +13,7 @@
     { "id": "openai/gpt-4.1", "provider": "openai", "label": "OpenAI GPT-4.1", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["OPENAI_API_KEY"], "rag_capable": true },
     { "id": "openai/gpt-4o", "provider": "openai", "label": "OpenAI GPT-4o", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["OPENAI_API_KEY"], "rag_capable": true },
 
-    { "id": "kimi/kimi-k2.5", "provider": "kimi", "label": "Kimi K2.5", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["KIMI_API_KEY", "MOONSHOT_API_KEY"], "rag_capable": true },
+    { "id": "kimi/kimi-k2.6", "provider": "kimi", "label": "Kimi K2.6", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["KIMI_API_KEY", "MOONSHOT_API_KEY"], "rag_capable": true },
 
     { "id": "deepseek/deepseek-chat", "provider": "deepseek", "label": "DeepSeek Chat", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_DOC_GENERATION_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"], "rag_capable": true },
     { "id": "deepseek/deepseek-reasoner", "provider": "deepseek", "label": "DeepSeek Reasoner", "supports_analysis": true, "supports_writing": true, "is_local": false, "credential_env": ["MCP_DOC_GENERATION_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"], "rag_capable": true },

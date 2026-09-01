@@ -83,7 +83,7 @@ async def test_provider_error_surfaces_no_fallback():
     """Selected provider fails → RuntimeError; no other provider is tried."""
     provider = FakeProvider(provider_id="kimi")
     provider.generate.side_effect = Exception("kimi 500")
-    p_id, p_resolve = _patch_selection(provider, "kimi-k2.5")
+    p_id, p_resolve = _patch_selection(provider, "kimi-k2.6")
     with p_id, p_resolve:
         with pytest.raises(RuntimeError, match="kimi.*failed"):
             await generate_answer(MESSAGES)
@@ -100,12 +100,12 @@ async def test_document_answer_retries_then_uses_approved_fallback():
 
     def resolve(model_id):  # noqa: ANN001, ANN202
         return {
-            "kimi/kimi-k2.5": (kimi, "kimi-k2.5"),
+            "kimi/kimi-k2.6": (kimi, "kimi-k2.6"),
             "openai/gpt-5": (openai, "gpt-5"),
         }[model_id]
 
     with (
-        patch.object(llm_client, "get_rag_chat_model_id", AsyncMock(return_value="kimi/kimi-k2.5")),
+        patch.object(llm_client, "get_rag_chat_model_id", AsyncMock(return_value="kimi/kimi-k2.6")),
         patch.object(llm_client.registry, "resolve", side_effect=resolve),
         patch.object(settings, "rag_approved_fallback_models", ["openai/gpt-5"]),
         patch.object(settings, "rag_documentation_provider_max_retries", 1),
@@ -128,8 +128,8 @@ async def test_document_answer_all_approved_providers_fail_explicitly():
     kimi = FakeProvider(provider_id="kimi")
     kimi.generate.side_effect = RuntimeError("down")
     with (
-        patch.object(llm_client, "get_rag_chat_model_id", AsyncMock(return_value="kimi/kimi-k2.5")),
-        patch.object(llm_client.registry, "resolve", return_value=(kimi, "kimi-k2.5")),
+        patch.object(llm_client, "get_rag_chat_model_id", AsyncMock(return_value="kimi/kimi-k2.6")),
+        patch.object(llm_client.registry, "resolve", return_value=(kimi, "kimi-k2.6")),
         patch.object(settings, "rag_approved_fallback_models", []),
         patch.object(settings, "rag_documentation_provider_max_retries", 0),
     ):
@@ -157,12 +157,12 @@ async def test_document_stream_never_fails_over_after_output_begins():
 
     def resolve(model_id):  # noqa: ANN001, ANN202
         return {
-            "kimi/kimi-k2.5": (kimi, "kimi-k2.5"),
+            "kimi/kimi-k2.6": (kimi, "kimi-k2.6"),
             "openai/gpt-5": (openai, "gpt-5"),
         }[model_id]
 
     with (
-        patch.object(llm_client, "get_rag_chat_model_id", AsyncMock(return_value="kimi/kimi-k2.5")),
+        patch.object(llm_client, "get_rag_chat_model_id", AsyncMock(return_value="kimi/kimi-k2.6")),
         patch.object(llm_client.registry, "resolve", side_effect=resolve),
         patch.object(settings, "rag_approved_fallback_models", ["openai/gpt-5"]),
         patch.object(settings, "rag_documentation_provider_max_retries", 1),
@@ -206,7 +206,7 @@ async def test_stream_routes_and_strips_prefix():
 async def test_stream_error_surfaces():
     provider = FakeProvider(provider_id="kimi")
     provider._stream_error = Exception("stream boom")
-    p_id, p_resolve = _patch_selection(provider, "kimi-k2.5")
+    p_id, p_resolve = _patch_selection(provider, "kimi-k2.6")
     with p_id, p_resolve:
         with pytest.raises(RuntimeError, match="streaming"):
             async for _ in generate_answer_stream(MESSAGES):
@@ -227,16 +227,16 @@ async def test_tool_aware_returns_tool_call():
     provider.generate_with_tools.return_value = ToolAwareLLMResponse(
         provider="kimi",
         tool_calls=[RuntimeToolCallRequest(call_id="call_1", tool_name="list_executions", arguments={})],
-        usage=UsageStats(provider="kimi", model="kimi-k2.5"),
+        usage=UsageStats(provider="kimi", model="kimi-k2.6"),
     )
-    p_id, p_resolve = _patch_selection(provider, "kimi-k2.5")
+    p_id, p_resolve = _patch_selection(provider, "kimi-k2.6")
     with p_id, p_resolve:
         response = await generate_answer_with_runtime_tools(MESSAGES, RUNTIME_TOOLS)
 
     assert response.tool_calls[0].tool_name == "list_executions"
     assert response.no_tool_support is False
     provider.generate_with_tools.assert_awaited_once_with(
-        model="kimi-k2.5", messages=MESSAGES, runtime_tools=RUNTIME_TOOLS, images=None
+        model="kimi-k2.6", messages=MESSAGES, runtime_tools=RUNTIME_TOOLS, images=None
     )
 
 
@@ -253,7 +253,7 @@ async def test_tool_aware_provider_without_tools_degrades():
 async def test_tool_aware_provider_error_degrades():
     provider = FakeProvider(provider_id="kimi", supports_tools=True)
     provider.generate_with_tools.side_effect = Exception("kimi tool error")
-    p_id, p_resolve = _patch_selection(provider, "kimi-k2.5")
+    p_id, p_resolve = _patch_selection(provider, "kimi-k2.6")
     with p_id, p_resolve:
         response = await generate_answer_with_runtime_tools(MESSAGES, RUNTIME_TOOLS)
 
@@ -270,10 +270,10 @@ async def test_turn_usage_accumulates_across_calls():
     reset_turn_usage()
     provider = FakeProvider(provider_id="kimi")
     provider.generate.side_effect = [
-        ("a1", UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=10, output_tokens=5, cost_usd=0.001, latency_ms=100)),
-        ("a2", UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=20, output_tokens=7, cost_usd=0.002, latency_ms=200)),
+        ("a1", UsageStats(provider="kimi", model="kimi-k2.6", input_tokens=10, output_tokens=5, cost_usd=0.001, latency_ms=100)),
+        ("a2", UsageStats(provider="kimi", model="kimi-k2.6", input_tokens=20, output_tokens=7, cost_usd=0.002, latency_ms=200)),
     ]
-    p_id, p_resolve = _patch_selection(provider, "kimi-k2.5")
+    p_id, p_resolve = _patch_selection(provider, "kimi-k2.6")
     with p_id, p_resolve:
         await generate_answer(MESSAGES)
         await generate_answer(MESSAGES)
@@ -284,16 +284,16 @@ async def test_turn_usage_accumulates_across_calls():
     assert total.output_tokens == 12
     assert total.cost_usd == pytest.approx(0.003)
     assert total.latency_ms == 300
-    assert total.model == "kimi-k2.5"
+    assert total.model == "kimi-k2.6"
 
 
 async def test_reset_turn_usage_clears_last_and_accumulated():
     reset_turn_usage()
     provider = FakeProvider(provider_id="kimi")
     provider.generate.return_value = (
-        "a", UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=10, output_tokens=5),
+        "a", UsageStats(provider="kimi", model="kimi-k2.6", input_tokens=10, output_tokens=5),
     )
-    p_id, p_resolve = _patch_selection(provider, "kimi-k2.5")
+    p_id, p_resolve = _patch_selection(provider, "kimi-k2.6")
     with p_id, p_resolve:
         await generate_answer(MESSAGES)
 
@@ -323,9 +323,9 @@ async def test_usage_is_isolated_between_concurrent_tasks():
     reset_turn_usage()
     provider = FakeProvider(provider_id="kimi")
     provider.generate.return_value = (
-        "a", UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=5, output_tokens=2),
+        "a", UsageStats(provider="kimi", model="kimi-k2.6", input_tokens=5, output_tokens=2),
     )
-    p_id, p_resolve = _patch_selection(provider, "kimi-k2.5")
+    p_id, p_resolve = _patch_selection(provider, "kimi-k2.6")
     with p_id, p_resolve:
         async def worker():
             await generate_answer(MESSAGES)

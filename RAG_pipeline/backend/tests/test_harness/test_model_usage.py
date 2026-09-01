@@ -62,7 +62,7 @@ def test_a_cache_count_larger_than_the_prompt_cannot_reduce_billable_tokens() ->
     assert usage.cached_input_tokens == 100
     assert usage.cache_write_tokens == 0
     # Never negative: `uncached_input_tokens` must not be able to credit us.
-    assert model_cost_usd(usage, model_name="kimi-k2.5") > 0
+    assert model_cost_usd(usage, model_name="kimi-k2.6") > 0
 
 
 def test_non_ai_messages_and_missing_metadata_are_ignored() -> None:
@@ -79,13 +79,13 @@ def test_non_ai_messages_and_missing_metadata_are_ignored() -> None:
 
 
 def test_cached_prompt_tokens_are_billed_at_the_published_discount() -> None:
-    input_price, output_price = MODEL_PRICING["kimi-k2.5"]
-    discount = MODEL_CACHE_READ_DISCOUNT["kimi-k2.5"]
+    input_price, output_price = MODEL_PRICING["kimi-k2.6"]
+    discount = MODEL_CACHE_READ_DISCOUNT["kimi-k2.6"]
     usage = ModelTokenUsage(
         input_tokens=1_000_000, output_tokens=0, cached_input_tokens=900_000
     )
     expected = (100_000 * input_price + 900_000 * input_price * discount) / 1_000_000
-    assert model_cost_usd(usage, model_name="kimi-k2.5") == pytest.approx(expected)
+    assert model_cost_usd(usage, model_name="kimi-k2.6") == pytest.approx(expected)
     del output_price
 
 
@@ -114,8 +114,8 @@ def test_the_budget_controller_prices_a_cached_call_below_a_flat_one() -> None:
     flat = SimpleNamespace(
         result=[_kimi_message(input_tokens=3_023, output_tokens=100)]
     )
-    cached_cost = _model_cost(cached, model_name="kimi-k2.5")
-    flat_cost = _model_cost(flat, model_name="kimi-k2.5")
+    cached_cost = _model_cost(cached, model_name="kimi-k2.6")
+    flat_cost = _model_cost(flat, model_name="kimi-k2.6")
     assert cached_cost < flat_cost
     # 93% of this prompt is cached at 0.175x, so the saving is large, not marginal.
     assert cached_cost == pytest.approx(0.00027, abs=1e-6)
@@ -137,7 +137,7 @@ def test_a_provider_billed_figure_still_wins_over_the_local_table() -> None:
             )
         ]
     )
-    assert _model_cost(response, model_name="kimi-k2.5") == pytest.approx(0.5)
+    assert _model_cost(response, model_name="kimi-k2.6") == pytest.approx(0.5)
 
 
 def test_turn_usage_accumulates_the_cache_breakdown_across_model_calls() -> None:

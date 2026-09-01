@@ -16,7 +16,7 @@ def _fresh_registry():
 
 def test_parse_strips_provider_prefix():
     assert registry.parse_model_id("ollama/gemma3:12b") == ("ollama", "gemma3:12b")
-    assert registry.parse_model_id("kimi/kimi-k2.5") == ("kimi", "kimi-k2.5")
+    assert registry.parse_model_id("kimi/kimi-k2.6") == ("kimi", "kimi-k2.6")
 
 
 def test_parse_openai_style_id():
@@ -24,7 +24,7 @@ def test_parse_openai_style_id():
 
 
 def test_parse_no_prefix_falls_back_to_default_provider():
-    # settings.rag_default_model defaults to 'kimi/kimi-k2.5' → default provider 'kimi'.
+    # settings.rag_default_model defaults to 'kimi/kimi-k2.6' → default provider 'kimi'.
     provider_id, bare = registry.parse_model_id("gemma3:12b")
     assert provider_id == "kimi"
     assert bare == "gemma3:12b"
@@ -67,10 +67,10 @@ def test_resolve_ollama_returns_provider_and_bare_model():
 
 
 def test_resolve_kimi_uses_openai_compatible_adapter():
-    provider, bare = registry.resolve("kimi/kimi-k2.5")
+    provider, bare = registry.resolve("kimi/kimi-k2.6")
     assert isinstance(provider, OpenAICompatibleProvider)
     assert provider.provider_id == "kimi"
-    assert bare == "kimi-k2.5"
+    assert bare == "kimi-k2.6"
 
 
 def test_resolve_unknown_provider_raises():

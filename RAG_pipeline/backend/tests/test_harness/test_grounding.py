@@ -243,14 +243,14 @@ def test_to_structured_answer_is_additive_v2_payload() -> None:
     payload = answer.to_structured_answer(
         runtime_release="rel",
         manifest_snapshot_hash="hash",
-        model_profile="kimi/kimi-k2.5",
+        model_profile="kimi/kimi-k2.6",
         prompt_version="v1",
     )
     assert payload["response_type"] == "agent_response_v2_grounded"
     assert payload["content"] == answer.content
     assert payload["answer_status"] == "grounded"
     assert payload["citations"][0]["evidence_refs"] == ["doc:1"]
-    assert payload["attribution"]["model_profile"] == "kimi/kimi-k2.5"
+    assert payload["attribution"]["model_profile"] == "kimi/kimi-k2.6"
 
 
 def test_evidence_ref_key_prefers_id_then_composite() -> None:

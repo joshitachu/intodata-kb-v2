@@ -135,7 +135,7 @@ class TestQueryUsageModel:
             user_id=user.id,
             interface="rag_query",
             query_text="What is the revenue?",
-            model_name="kimi-k2.5",
+            model_name="kimi-k2.6",
             provider="kimi",
             input_tokens=500,
             output_tokens=200,
@@ -153,7 +153,7 @@ class TestQueryUsageModel:
         assert fetched.user_id == user.id
         assert fetched.interface == "rag_query"
         assert fetched.query_text == "What is the revenue?"
-        assert fetched.model_name == "kimi-k2.5"
+        assert fetched.model_name == "kimi-k2.6"
         assert fetched.provider == "kimi"
         assert fetched.input_tokens == 500
         assert fetched.output_tokens == 200
@@ -211,7 +211,7 @@ class TestBenchmarkRunModel:
             tag="baseline",
             corpus_name="default",
             corpus_version="1.0",
-            llm_model="kimi-k2.5",
+            llm_model="kimi-k2.6",
             embed_model="nomic-embed-text",
             num_questions=10,
             avg_precision_at_5=0.85,

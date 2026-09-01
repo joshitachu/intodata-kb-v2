@@ -5,7 +5,9 @@ endpoint: Kimi/Moonshot now, OpenAI and DeepSeek in later slices. Uses the
 official ``openai`` AsyncOpenAI client (all three speak that protocol).
 
 Prompt caching on this wire format is AUTOMATIC, not requested. Probed against
-api.moonshot.ai with kimi-k2.5 on 2026-08-20:
+api.moonshot.ai with kimi-k2.5 on 2026-08-20 (that model has since been retired
+upstream; the findings are recorded as measured and are assumed to hold for the
+rest of the kimi family, but have not been re-probed):
 
 * Repeating an identical request reported ``cached_tokens == prompt_tokens``
   (6266/6266); the first, cold call reported ``prompt_tokens_details: null``.

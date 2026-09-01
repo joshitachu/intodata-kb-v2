@@ -74,7 +74,7 @@ def _decision(tool_call=None, tool_calls=None, text=None, no_tool_support=False,
         text=text,
         assistant_message={"role": "assistant", "content": text or "", "tool_calls": []},
         no_tool_support=no_tool_support,
-        usage=usage or UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=10, output_tokens=5),
+        usage=usage or UsageStats(provider="kimi", model="kimi-k2.6", input_tokens=10, output_tokens=5),
     )
 
 

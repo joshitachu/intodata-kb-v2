@@ -89,7 +89,7 @@ async def test_v2_grounded_answer_persists_additive_structured_metadata(
     assert structured["response_type"] == "agent_response_v2_grounded"
     assert structured["answer_status"] == "grounded"
     assert "search your indexed documentation" in structured["content"]
-    assert structured["attribution"]["model_profile"] == "kimi/kimi-k2.5"
+    assert structured["attribution"]["model_profile"] == "kimi/kimi-k2.6"
     # No fact-ID renderer artifact leaked into the visible content.
     assert "nexus-grounding" not in execution.assistant_message.content
 
@@ -142,7 +142,7 @@ async def test_get_conversation_reads_back_v2_grounded_and_ignores_unknown(
         "answer_status": "grounded",
         "citations": [{"claim_key": "count", "evidence_refs": ["ev-1"]}],
         "disclosures": [],
-        "attribution": {"runtime_release": "r", "model_profile": "kimi/kimi-k2.5"},
+        "attribution": {"runtime_release": "r", "model_profile": "kimi/kimi-k2.6"},
     }
     db_session.add_all(
         [

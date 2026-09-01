@@ -187,9 +187,9 @@ def _scope() -> ManifestScope:
 async def test_provider_connection_retry_is_bounded_and_configured() -> None:
     model = build_readonly_primary_chat_model(
         SimpleNamespace(
-            rag_default_model="kimi/kimi-k2.5",
+            rag_default_model="kimi/kimi-k2.6",
             kimi_api_key="placeholder-not-a-credential",
-            kimi_llm_model="kimi-k2.5",
+            kimi_llm_model="kimi-k2.6",
             kimi_temperature=0.6,
             kimi_timeout=300.0,
             agent_runtime_v2_provider_max_retries=1,

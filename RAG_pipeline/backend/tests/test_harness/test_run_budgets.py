@@ -234,4 +234,4 @@ def test_model_token_cost_uses_the_shared_pricing_authority() -> None:
         content="answer",
         usage_metadata={"input_tokens": 1_000_000, "output_tokens": 500_000, "total_tokens": 1_500_000},
     )])
-    assert _model_cost(response, model_name="kimi-k2.5") == pytest.approx(0.6)
+    assert _model_cost(response, model_name="kimi-k2.6") == pytest.approx(0.6)

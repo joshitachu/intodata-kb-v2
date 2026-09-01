@@ -92,6 +92,12 @@ services:
       APP_ENV: ${APP_ENV:-production}
       VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
       KIMI_API_KEY: ${KIMI_API_KEY:-}
+      # The V2 read-only runtime builds its client from settings.kimi_llm_model
+      # directly and never consults instance_settings, so the `rag_chat_model`
+      # override does NOT reach a chat turn. Without this passthrough the image
+      # default silently decides the chat model -- which is how the retired
+      # kimi-k2.5 kept 404ing as stop_reason=planner_unavailable.
+      KIMI_LLM_MODEL: ${KIMI_LLM_MODEL:-kimi-k2.6}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
@@ -374,7 +380,7 @@ services:
       MCP_OPS_TELEMETRY_INTERVAL_SECONDS: ${MCP_OPS_TELEMETRY_INTERVAL_SECONDS:-300}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       KIMI_API_KEY: ${KIMI_API_KEY:-}
-      MCP_PACK_AUTHOR_MODEL: ${MCP_PACK_AUTHOR_MODEL:-kimi/kimi-k2.5}
+      MCP_PACK_AUTHOR_MODEL: ${MCP_PACK_AUTHOR_MODEL:-kimi/kimi-k2.6}
       MCP_PACK_AUTHOR_TIMEOUT_SECONDS: ${MCP_PACK_AUTHOR_TIMEOUT_SECONDS:-120}
       MCP_PACK_AUTHOR_MAX_OUTPUT_TOKENS: ${MCP_PACK_AUTHOR_MAX_OUTPUT_TOKENS:-32768}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

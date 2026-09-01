@@ -26,7 +26,7 @@ def test_model_registry_exposes_current_discovery_models():
             "openai/gpt-4.5",
                 "openai/gpt-4.1",
                 "openai/gpt-4o",
-                "kimi/kimi-k2.5",
+                "kimi/kimi-k2.6",
                 "deepseek/deepseek-chat",
             "deepseek/deepseek-reasoner",
             "deepseek/deepseek-v4-pro",

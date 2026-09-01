@@ -268,12 +268,12 @@ class TestStoredChatLoop:
                 provider="kimi",
                 tool_calls=[RuntimeToolCallRequest(call_id="c1", tool_name="detect_failures", arguments={})],
                 assistant_message={"role": "assistant", "content": "", "tool_calls": []},
-                usage=UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=10, output_tokens=5),
+                usage=UsageStats(provider="kimi", model="kimi-k2.6", input_tokens=10, output_tokens=5),
             ),
             ToolAwareLLMResponse(
                 provider="kimi",
                 text="The nightly_sync job failed.",
-                usage=UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=10, output_tokens=5),
+                usage=UsageStats(provider="kimi", model="kimi-k2.6", input_tokens=10, output_tokens=5),
             ),
         ]
 

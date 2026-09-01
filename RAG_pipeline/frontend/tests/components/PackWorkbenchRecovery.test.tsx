@@ -33,7 +33,7 @@ const unfinishedDraft = {
   revision: 1,
   source_pack_id: null,
   platform: null,
-  model_id: "kimi/kimi-k2.5",
+  model_id: "kimi/kimi-k2.6",
   messages: [],
   manifest_yaml: "name: swap-pack-starter\nversion: 0.1.0\n",
   files: { "README.md": "# Starter" },

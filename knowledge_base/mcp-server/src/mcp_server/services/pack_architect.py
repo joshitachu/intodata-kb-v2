@@ -326,7 +326,7 @@ def _snapshot(session_id: str, payload: dict[str, Any]) -> PackArchitectSnapshot
 
 
 async def _model_id() -> str:
-    default = os.environ.get("MCP_PACK_AUTHOR_MODEL", "").strip() or "kimi/kimi-k2.5"
+    default = os.environ.get("MCP_PACK_AUTHOR_MODEL", "").strip() or "kimi/kimi-k2.6"
     return (
         await instance_settings_service.get_value("pack_author_model", default=default)
         or default
