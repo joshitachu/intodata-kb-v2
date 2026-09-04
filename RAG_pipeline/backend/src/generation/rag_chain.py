@@ -15,6 +15,7 @@ from src.generation.llm_client import (
     generate_document_answer_stream,
     get_last_usage,
 )
+from src.generation.usage import TRUNCATION_NOTICE, mark_if_truncated
 from src.harness.trusted_answer import ANSWER_DELTA_CHARS
 from src.retrieval.embedder import get_last_embed_tokens
 from src.generation.prompt_builder import (
@@ -344,7 +345,16 @@ async def _generate_streaming_answer(
                     pending = 0
             if buffer:
                 await on_delta("".join(buffer))
-            return "".join(produced)
+            # Truncation is only knowable once the stream has ended and the
+            # provider's final usage record has arrived, so the notice is
+            # published as a last delta rather than woven into the text. Doing it
+            # here rather than only on the returned string means a reader
+            # watching the answer arrive live sees it too, not just someone who
+            # reloads the conversation later.
+            marked = mark_if_truncated("".join(produced), get_last_usage())
+            if len(marked) != sum(len(p) for p in produced):
+                await on_delta(TRUNCATION_NOTICE)
+            return marked
         except Exception:
             if produced or attempt == attempts[-1]:
                 raise
@@ -430,6 +440,12 @@ async def run_rag_query(
             answer = await generate_answer(messages)
         else:
             answer = await _generate_streaming_answer(messages, on_delta)
+
+    # A model that stops because it exhausted its output budget ends its stream
+    # cleanly and raises nothing, so without this check a fragment is persisted
+    # and rendered as a finished answer. The notice is appended to the text
+    # itself because that is what every surface shows and stores.
+    answer = mark_if_truncated(answer, get_last_usage())
 
     latency_ms = int((time.perf_counter() - start) * 1000)
 

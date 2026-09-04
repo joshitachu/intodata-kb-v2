@@ -18,6 +18,26 @@ class Settings(BaseSettings):
     # Provider preference for non-agent generation surfaces.
     llm_providers: list[str] = ["kimi", "ollama"]
 
+    # Maximum tokens ANY answer-generating model call may emit. One value for
+    # every provider and every surface.
+    #
+    # This was previously four hardcoded numbers that disagreed: 4096 in the
+    # OpenAI-compatible adapter, 2048 in the Anthropic and Google adapters, 2048
+    # in the agent runtime's extra_body, and no ceiling at all on the agent's
+    # openai/deepseek branch. The same question therefore truncated at a
+    # different length -- or not at all -- depending only on which provider
+    # served it, and the LOWEST ceiling sat on the agent path that produces the
+    # longest answers. Six answers in the production history stopped exactly on
+    # one of these ceilings.
+    #
+    # 8192 is deliberately moderate: double the previous highest ceiling and
+    # comfortably inside every configured model's output limit. Output tokens are
+    # billed only when actually emitted, so raising the ceiling costs nothing for
+    # answers that were never going to reach it -- it only stops the long ones
+    # being cut off. Truncation is still DETECTED and surfaced above this limit;
+    # the ceiling reduces how often it happens, it is not the fix on its own.
+    llm_max_output_tokens: int = Field(default=8192, ge=256, le=32768)
+
     # Explicitly approved, contract-compatible fallbacks for documentation answer
     # generation. Values are full provider/model ids. Empty by default: notably,
     # the locally configured Ollama model is not silently treated as equivalent.

@@ -123,6 +123,15 @@ class UsageStats:
     cache_write_tokens: int = 0
     """Prompt tokens written into an explicit cache (billed at a premium).
     Stays 0 on providers with an automatic prefix cache and no write fee."""
+    truncated: bool = False
+    """The provider stopped because the output ceiling was reached, not because
+    the model was finished. The accompanying text is a fragment.
+
+    Every provider reports this (OpenAI-compatible ``finish_reason == "length"``,
+    Anthropic ``stop_reason == "max_tokens"``, Gemini ``MAX_TOKENS``) and it was
+    previously discarded at the adapter, so a stream that stopped early was
+    indistinguishable from one that finished and was persisted as a complete
+    answer."""
 
     @property
     def uncached_input_tokens(self) -> int:
@@ -174,6 +183,7 @@ class StreamUsageStats:
     latency_ms: int = 0
     cached_input_tokens: int = 0
     cache_write_tokens: int = 0
+    truncated: bool = False
 
     def finalize(self) -> UsageStats:
         stats = UsageStats(
@@ -184,6 +194,40 @@ class StreamUsageStats:
             latency_ms=self.latency_ms,
             cached_input_tokens=self.cached_input_tokens,
             cache_write_tokens=self.cache_write_tokens,
+            truncated=self.truncated,
         )
         stats.calculate_cost()
         return stats
+
+
+TRUNCATION_NOTICE = (
+    "\n\n---\n\n"
+    "**⚠ This answer was cut off before it finished.** The model reached its "
+    "maximum response length, so the text above stops mid-thought and the "
+    "remaining content is missing. Ask a narrower question, or ask for the "
+    "remainder, to get the rest."
+)
+
+
+def append_truncation_notice(answer: str) -> str:
+    """Append the visible truncation notice, once.
+
+    The marker goes into the answer TEXT rather than onto a separate flag because
+    the text is the one thing every surface renders and persists. A boolean on
+    the message row can be ignored by a UI that has not been taught about it, and
+    the failure this guards against is precisely one the reader cannot see: the
+    output stops mid-sentence but is otherwise well-formed, so a truncated answer
+    reads as a finished one.
+
+    Idempotent, so paths that mark at more than one layer cannot double-append.
+    """
+    if TRUNCATION_NOTICE.strip() in answer:
+        return answer
+    return answer.rstrip() + TRUNCATION_NOTICE
+
+
+def mark_if_truncated(answer: str, usage: UsageStats | None) -> str:
+    """Append the truncation notice when ``usage`` says the ceiling was hit."""
+    if usage is None or not usage.truncated:
+        return answer
+    return append_truncation_notice(answer)

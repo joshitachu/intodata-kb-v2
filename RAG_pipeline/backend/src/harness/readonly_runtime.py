@@ -28,6 +28,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
 from langchain_core.runnables import Runnable
 
+from src.generation.usage import append_truncation_notice
 from src.harness.agent_loop import (
     AgentBoundaryAction,
     AgentLoopResult,
@@ -874,7 +875,10 @@ def build_readonly_primary_chat_model(settings) -> BaseChatModel:  # noqa: ANN00
             temperature=settings.kimi_temperature,
             timeout=settings.kimi_timeout,
             max_retries=settings.agent_runtime_v2_provider_max_retries,
-            extra_body={"thinking": {"type": "disabled"}, "max_tokens": 2048},
+            extra_body={
+                "thinking": {"type": "disabled"},
+                "max_tokens": settings.llm_max_output_tokens,
+            },
             streaming=True,
             stream_usage=True,
         )
@@ -898,6 +902,10 @@ def build_readonly_primary_chat_model(settings) -> BaseChatModel:  # noqa: ANN00
                 settings.openai_timeout if provider == "openai" else settings.deepseek_timeout
             ),
             max_retries=settings.agent_runtime_v2_provider_max_retries,
+            # Previously unset on this branch alone, so a turn served by the
+            # fallback provider had no output ceiling while the same turn on Kimi
+            # was capped. One value now applies to every provider.
+            max_tokens=settings.llm_max_output_tokens,
             streaming=True,
             stream_usage=True,
         )
@@ -1037,6 +1045,7 @@ async def _run_readonly_attempts(
     outcome_verdict = GroundingVerdict.UNSAFE
     correction_rounds = 0
     outcome_reason_code = "not_evaluated"
+    output_ceiling_hit = False
 
     budget_stop: BudgetStopReason | None = None
     for attempt in range(max_corrections + 1):
@@ -1056,6 +1065,9 @@ async def _run_readonly_attempts(
             break
         new_messages = result_state.get("messages", [])
         messages = list(new_messages)
+        # Reassigned each round, so a round that was cut off but then rewritten
+        # by the correction loop does not leave a stale truncation mark behind.
+        output_ceiling_hit = _hit_output_ceiling(new_messages)
         usage = _accumulate_usage(usage, new_messages)
         envelopes = _collect_envelopes(new_messages)
         if trusted_answer_sink is not None and trusted_answer_sink.answer is not None:
@@ -1206,6 +1218,15 @@ async def _run_readonly_attempts(
     action = (
         AgentBoundaryAction.CLARIFY if needs_input else AgentBoundaryAction.ANSWER
     )
+    # Marked here, after the correction loop has settled on the answer that will
+    # actually be shown, so the notice reaches the fingerprint, the streamed
+    # deltas and the persisted output as one consistent string. A fallback answer
+    # replaces the truncated text entirely, so it is not marked.
+    if output_ceiling_hit and not used_fallback:
+        grounded = grounded.model_copy(
+            update={"content": append_truncation_notice(grounded.content)}
+        )
+
     fingerprint = response_fingerprint(
         action, grounded.content, state_version=state_version, observations=read_observations
     )
@@ -1735,6 +1756,23 @@ def _collect_topology_targets(messages: list[Any]) -> list[dict[str, Any]]:
             seen.add(key)
             collected.append(target)
     return collected
+
+
+def _hit_output_ceiling(messages: list[Any]) -> bool:
+    """True when the terminal assistant message stopped at the output ceiling.
+
+    The agent path does not go through ``src.generation.providers``; LangChain
+    surfaces the same provider signal on ``response_metadata``. Without this, a
+    turn whose answer was cut off mid-sentence is recorded as ``status=completed``
+    exactly like a finished one.
+    """
+    for message in reversed(messages):
+        if isinstance(message, AIMessage) and not message.tool_calls:
+            metadata = getattr(message, "response_metadata", None) or {}
+            if not isinstance(metadata, dict):
+                return False
+            return metadata.get("finish_reason") == "length"
+    return False
 
 
 def _final_assistant_text(messages: list[Any]) -> str:

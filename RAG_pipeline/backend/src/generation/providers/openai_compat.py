@@ -37,6 +37,7 @@ from collections.abc import AsyncGenerator
 
 import httpx
 
+from src.config import settings
 from src.generation.providers.base import ChatProvider
 from src.generation.providers.prompt_cache import (
     apply_cache_tokens,
@@ -50,6 +51,37 @@ from src.generation.usage import StreamUsageStats, UsageStats
 from src.runtime.models import RuntimeToolDefinition
 
 logger = logging.getLogger(__name__)
+
+# The OpenAI wire value meaning "stopped because max_tokens was reached".
+# "stop" (finished), "tool_calls" and "content_filter" are all NOT this.
+_CEILING_FINISH_REASON = "length"
+
+
+def _hit_output_ceiling(response: object) -> bool:
+    """True when a response or stream chunk was cut short by the output ceiling.
+
+    Every field is read with ``getattr`` so an SDK or endpoint that omits
+    ``finish_reason`` degrades to "not truncated" instead of raising. Reading it
+    directly would turn a missing optional field into a mid-stream crash.
+    """
+    choices = getattr(response, "choices", None)
+    if not choices:
+        return False
+    return getattr(choices[0], "finish_reason", None) == _CEILING_FINISH_REASON
+
+
+def _warn_truncated(provider_id: str, model: str, output_tokens: int) -> None:
+    """Log a ceiling hit.
+
+    Worth a WARNING rather than INFO: the response is a fragment, but nothing
+    downstream raises, so this log line is the only operational trace that the
+    answer a user received was incomplete.
+    """
+    logger.warning(
+        "%s/%s stopped at the output ceiling (finish_reason=length, %d output "
+        "tokens); the answer is truncated",
+        provider_id, model, output_tokens,
+    )
 
 
 def _apply_images(messages: list[dict], images: list[str] | None) -> list[dict]:
@@ -100,7 +132,7 @@ class OpenAICompatibleProvider(ChatProvider):
         api_key: str,
         timeout: float = 300.0,
         temperature: float = 0.6,
-        max_tokens: int = 4096,
+        max_tokens: int | None = None,
         extra_body: dict | None = None,
     ) -> None:
         self.provider_id = provider_id
@@ -108,7 +140,11 @@ class OpenAICompatibleProvider(ChatProvider):
         self._api_key = api_key
         self._timeout = timeout
         self._temperature = temperature
-        self._max_tokens = max_tokens
+        # Resolved here rather than as a default argument: a default is bound at
+        # import time, which would freeze the configured value.
+        self._max_tokens = (
+            max_tokens if max_tokens is not None else settings.llm_max_output_tokens
+        )
         # extra_body lets a provider disable "thinking" etc. (Kimi/Moonshot).
         self._extra_body = extra_body or None
         self._client = None
@@ -143,12 +179,15 @@ class OpenAICompatibleProvider(ChatProvider):
         )
         elapsed = int((time.perf_counter() - t0) * 1000)
         usage = UsageStats(provider=self.provider_id, model=model, latency_ms=elapsed)
+        usage.truncated = _hit_output_ceiling(response)
         if response.usage:
             usage.input_tokens = response.usage.prompt_tokens or 0
             usage.output_tokens = response.usage.completion_tokens or 0
             apply_cache_tokens(usage, *read_openai_cache_tokens(response.usage))
             usage.calculate_cost()
             log_cache_effect(self.provider_id, model, usage)
+        if usage.truncated:
+            _warn_truncated(self.provider_id, model, usage.output_tokens)
         return response.choices[0].message.content, usage
 
     async def stream(
@@ -169,6 +208,12 @@ class OpenAICompatibleProvider(ChatProvider):
         async for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
+            # `finish_reason` rides the same chunks as the content and is the only
+            # signal distinguishing "the model finished" from "the model ran out
+            # of output budget". A stream ends cleanly either way, so without this
+            # a fragment is indistinguishable from a complete answer.
+            if _hit_output_ceiling(chunk):
+                acc.truncated = True
             # OpenAI-compat APIs send usage in the final chunk.
             if chunk.usage:
                 acc.input_tokens = chunk.usage.prompt_tokens or 0
@@ -177,6 +222,8 @@ class OpenAICompatibleProvider(ChatProvider):
         acc.latency_ms = int((time.perf_counter() - t0) * 1000)
         final = acc.finalize()
         log_cache_effect(self.provider_id, model, final)
+        if final.truncated:
+            _warn_truncated(self.provider_id, model, final.output_tokens)
         yield final
 
     async def generate_with_tools(
@@ -201,12 +248,15 @@ class OpenAICompatibleProvider(ChatProvider):
         )
         elapsed = int((time.perf_counter() - t0) * 1000)
         usage = UsageStats(provider=self.provider_id, model=model, latency_ms=elapsed)
+        usage.truncated = _hit_output_ceiling(response)
         if response.usage:
             usage.input_tokens = response.usage.prompt_tokens or 0
             usage.output_tokens = response.usage.completion_tokens or 0
             apply_cache_tokens(usage, *read_openai_cache_tokens(response.usage))
             usage.calculate_cost()
             log_cache_effect(self.provider_id, model, usage)
+        if usage.truncated:
+            _warn_truncated(self.provider_id, model, usage.output_tokens)
 
         message = response.choices[0].message
         if message.tool_calls:

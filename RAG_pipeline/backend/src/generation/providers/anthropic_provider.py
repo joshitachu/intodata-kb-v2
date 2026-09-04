@@ -17,6 +17,7 @@ from collections.abc import AsyncGenerator
 
 import httpx
 
+from src.config import settings
 from src.generation.providers.base import ChatProvider
 from src.generation.providers.prompt_cache import (
     apply_cache_tokens,
@@ -30,11 +31,29 @@ from src.runtime.models import RuntimeToolDefinition
 
 logger = logging.getLogger(__name__)
 
-_MAX_TOKENS = 2048
+_MAX_TOKENS = settings.llm_max_output_tokens
+
+# Anthropic's spelling of "I stopped because max_tokens was reached". The
+# OpenAI-compatible wire calls the same condition finish_reason == "length".
+_CEILING_STOP_REASON = "max_tokens"
 
 # Anthropic prompt caching is OPT-IN: without a cache_control breakpoint nothing
 # is cached, unlike the OpenAI-compatible endpoints which cache automatically.
 _EPHEMERAL_CACHE = {"type": "ephemeral"}
+
+
+def _hit_output_ceiling(response: object) -> bool:
+    """True when the response was cut short by the output ceiling."""
+    return getattr(response, "stop_reason", None) == _CEILING_STOP_REASON
+
+
+def _warn_truncated(model: str, output_tokens: int) -> None:
+    """Log a ceiling hit; nothing downstream raises, so this is the only trace."""
+    logger.warning(
+        "anthropic/%s stopped at the output ceiling (stop_reason=max_tokens, %d "
+        "output tokens); the answer is truncated",
+        model, output_tokens,
+    )
 
 
 def _to_anthropic(messages: list[dict], images: list[str] | None) -> tuple[str, list[dict]]:
@@ -210,6 +229,9 @@ class AnthropicProvider(ChatProvider):
         )
         elapsed = int((time.perf_counter() - t0) * 1000)
         usage = _anthropic_usage(resp.usage, model, elapsed)
+        usage.truncated = _hit_output_ceiling(resp)
+        if usage.truncated:
+            _warn_truncated(model, usage.output_tokens)
         return _text_from_content(resp.content), usage
 
     async def stream(
@@ -227,6 +249,7 @@ class AnthropicProvider(ChatProvider):
                 if text:
                     yield text
             final = await stream.get_final_message()
+        acc.truncated = _hit_output_ceiling(final)
         if final and final.usage:
             # Reuse the shared conversion so the total-prompt invariant and the
             # cache accounting are identical to the non-streaming path.
