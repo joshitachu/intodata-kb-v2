@@ -10,7 +10,11 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
 from mcp_server.services.business_topology.evidence import BusinessTopologyEvidenceBundle
-from mcp_server.services.business_topology.models import BusinessTopology, EvidenceBackedClaim
+from mcp_server.services.business_topology.models import (
+    BusinessTopology,
+    ContractWidth,
+    EvidenceBackedClaim,
+)
 
 
 _DIRECTIONAL_EVIDENCE_TYPES = frozenset(
@@ -101,6 +105,23 @@ def _normalize_structured_fields(topology: BusinessTopology) -> None:
         business_object.aliases = list(
             dict.fromkeys(alias.strip() for alias in business_object.aliases if alias.strip())
         )
+    for rule in topology.business_rules:
+        rule.statement = rule.statement.strip()
+        rule.output = rule.output.strip()
+        rule.inputs = list(dict.fromkeys(item.strip() for item in rule.inputs if item.strip()))
+        rule.stream_ids = list(dict.fromkeys(rule.stream_ids))
+        rule.transformation_ids = list(dict.fromkeys(rule.transformation_ids))
+    for stream in topology.data_streams:
+        stream.document_refs = list(
+            dict.fromkeys(ref.strip() for ref in stream.document_refs if ref.strip())
+        )
+        stream.conditions = [
+            condition
+            for condition in stream.conditions
+            if condition.statement.strip()
+        ]
+        for condition in stream.conditions:
+            condition.statement = condition.statement.strip()
 _SYSTEM_IDENTITY_EVIDENCE_TYPES = frozenset(
     {
         "scanner_connection",
@@ -165,6 +186,24 @@ def _strip_json_fence(text: str) -> str:
     return value
 
 
+def _contract_width_is_inconsistent(width: ContractWidth) -> bool:
+    """True when the three counts do not narrow.
+
+    A funnel is only evidence if it narrows: what a destination persists cannot
+    exceed what the mapping read, which cannot exceed what the source offered.
+    A builder that swaps two of the counts produces a plausible-looking table
+    that argues the opposite of the truth, so this is checked rather than
+    trusted.
+    """
+
+    steps = [width.offered, width.mapped, width.written]
+    present = [value for value in steps if value is not None]
+    return any(
+        earlier < later
+        for earlier, later in zip(present, present[1:])
+    )
+
+
 def _all_claims(topology: BusinessTopology) -> Iterable[EvidenceBackedClaim]:
     collections = (
         topology.systems,
@@ -173,6 +212,7 @@ def _all_claims(topology: BusinessTopology) -> Iterable[EvidenceBackedClaim]:
         topology.data_streams,
         topology.delivery_paths,
         topology.transformations,
+        topology.business_rules,
         topology.controls,
         topology.runtime_observations,
         topology.conflicts,
@@ -674,6 +714,17 @@ def validate_business_topology(
                     f"{transformation.id} has unknown artifact_id {artifact_id}"
                 )
 
+    transformation_ids = {item.id for item in topology.transformations}
+    for rule in topology.business_rules:
+        if not rule.statement:
+            errors.append(f"{rule.id} has no statement")
+        for ref in rule.stream_ids:
+            if ref not in stream_ids:
+                errors.append(f"{rule.id} has unknown stream_id {ref}")
+        for ref in rule.transformation_ids:
+            if ref not in transformation_ids:
+                errors.append(f"{rule.id} has unknown transformation_id {ref}")
+
     observation_ids = {item.id for item in topology.runtime_observations}
     conflict_ids = {item.id for item in topology.conflicts}
     for stream in topology.data_streams:
@@ -816,6 +867,34 @@ def validate_business_topology(
         warnings.append(
             f"{incomplete_segments} delivery segment(s) lack a structured protocol, "
             "component, or resource"
+        )
+    inconsistent_widths = [
+        stream.id
+        for stream in topology.data_streams
+        if stream.contract_width is not None
+        and _contract_width_is_inconsistent(stream.contract_width)
+    ]
+    if inconsistent_widths:
+        warnings.append(
+            "contract width is not a narrowing funnel for "
+            + ", ".join(inconsistent_widths[:5])
+        )
+    unnested_value_domains = sum(
+        transformation.kind == "value_domain" and not transformation.target_field
+        for transformation in topology.transformations
+    )
+    if unnested_value_domains:
+        warnings.append(
+            f"{unnested_value_domains} value-domain claim(s) name no target field; "
+            "a renderer cannot nest them under the field they constrain"
+        )
+    unowned_rules = sum(
+        not rule.owner and not rule.owner_question
+        for rule in topology.business_rules
+    )
+    if unowned_rules:
+        warnings.append(
+            f"{unowned_rules} business rule(s) name no owner and no owner question"
         )
     empty_transformations = sum(
         not transformation.mappings for transformation in topology.transformations

@@ -15,23 +15,35 @@ harness path only because the capability imports and renders them. (This comment
 previously claimed the registry was "where the harness renders tool guidance",
 which was false for the harness path and is why an operation could go unused.)
 
-What is here is everything the capability contract cannot express -- the shape of
-a structural answer, source honesty, unresolved-mapping honesty, per-stream
-attribution, navigation intent, and the untrusted page hint.
+What is here is everything the capability contract cannot express -- source
+honesty, unresolved-mapping honesty, per-stream attribution, navigation intent,
+and the untrusted page hint.
 
-Citation is suppressed on the topology surface and kept everywhere else, which is
-a deliberate asymmetry rather than an inconsistency. On the canvas the user is
-already looking at the artifact, so "(from the project topology)" and a quoted
-edge key are tautology occupying the space the explanation needed. In plain chat
-there is no diagram on screen, so the same label is the only thing distinguishing
-structure from a document or a log line, and `TOPOLOGY_MINIMAL_GUIDANCE` keeps it.
+One block of answer rules, both surfaces
+----------------------------------------
+`SHARED_ANSWER_GUIDANCE` is emitted everywhere; each surface then adds only what
+is genuinely specific to it. The rules are shared because every one of them is
+about whether a sentence is TRUE, and that does not vary by surface.
 
-Two things are easily mistaken for citation and are NOT suppressed on either
-surface, because both change whether a sentence is true rather than merely
-sourced: disclosing that a source was empty (the alternative is answering from
-somewhere else unannounced, which is how a question about one integration gets
-answered about a different one), and disclosing that a relationship is inferred
-or human-authored rather than read out of the code.
+This replaced a split in which the canvas carried its own 1 679-word block and
+`/chat` a 333-word one. The two overlapped heavily and had drifted, and the long
+one was mostly prohibitions -- 22 of them under 12 shouted headings -- which in
+practice bought terse, hedged answers rather than accurate ones. Three of its
+rules were actively harmful and are gone rather than merged:
+
+* a brevity instruction ("your answer may be rendered in a ~360px side panel...
+  one line beats five bullets"), which clipped explanations the user had asked
+  for;
+* ~450 words of citation-suppression machinery, now enforced after the fact in
+  `readonly_runtime._humanize_visible_content` where it cannot cost the model
+  attention mid-answer;
+* an instruction to exhaust a capped result page by page with `offset`. A real
+  design has ~250 components against a listing cap of 12, so obeying it meant
+  ~21 sequential model->tool->model rounds inside a 300s turn deadline. The turn
+  hit the deadline, and `readonly_runtime` then discards everything it collected
+  and substitutes a budget-stop message. `ANSWER FROM WHAT ONE READ RETURNS`
+  replaces it: report the total the result carries, answer from the page you
+  have, and page further only on demand.
 
 Availability is decided elsewhere, and no longer by question shape. The topology
 capability is exposed on the topology surface and withheld in plain chat, full
@@ -121,168 +133,78 @@ def _prompt_identifier(value: Any, *, limit: int = 500) -> str | None:
     return normalized[:limit] or None
 
 
-TOPOLOGY_ANSWER_GUIDANCE = (
-    "Structural answers (complete inventory and counts, what is connected to what, "
-    "what feeds or consumes something, dependency traversal, where a job or "
-    "component sits, and how a field is mapped or computed) come from the project's "
-    "published topology — the same artifacts the topology canvas renders, so your "
-    "answer should match what the user sees on screen.\n"
-    "Draw the line between sources by ownership, not by vocabulary. The "
-    "deterministic scan owns WHAT THE CODE DOES, field by field: which designs and "
-    "components exist, how they are wired, which target columns are populated, and "
+SHARED_ANSWER_GUIDANCE = (
+    "SOURCE OWNERSHIP. The deterministic scan owns WHAT THE CODE DOES: which designs "
+    "and components exist, how they are wired, which target columns are populated, and "
     "the expressions that compute them. Documentation owns WHY IT EXISTS: purpose, "
-    "business meaning, and business policy. So 'what does this transform and how' is "
-    "a topology question and 'why does this rule exist' is a documentation question, "
-    "even when the user says 'business rule' for both. Runtime "
-    "records and logs own present-tense claims about executions, failures, health, "
-    "and timestamps. These sources complement one another; none silently substitutes "
-    "for a missing or failed source.\n"
+    "business meaning, and business policy. Runtime records and logs own present-tense "
+    "claims about executions, failures, health, and timestamps. So 'what does this "
+    "transform and how' is a structural question and 'why does this rule exist' is a "
+    "documentation question, even when the user says 'business rule' for both. These "
+    "sources complement one another; none silently substitutes for another.\n"
     "\n"
-    "Shape a structural answer differently from a failure answer. Lead with the "
-    "entities, not with a diagnosis:\n"
-    "  name the entities involved, exactly as the tool returned them;\n"
-    "  explain the mechanism — what moves, in which direction, carried by what;\n"
-    "  say plainly when something is inferred rather than confirmed.\n"
-    "Do not add a next-checks section to a structural answer. The "
-    "Finding/Freshness/Evidence/Likely Cause/Next Checks shape belongs to runtime "
-    "failure questions; there is nothing to check about structure — it either is or "
-    "is not in the artifact.\n"
+    "NEVER SUBSTITUTE A SOURCE SILENTLY. If a structural lookup returned nothing and "
+    "you answer from documents or runtime data instead, say which source answered it "
+    "AND that the structural artifact did not cover it. An unlabelled document answer "
+    "to a structural question reads as established fact and is a defect, even when the "
+    "document happens to be right. Honor explicit source instructions the same way: if "
+    "the user excludes a source you need, disclose the unsupported portion or ask, "
+    "rather than reaching for it quietly.\n"
     "\n"
-    "Brevity: your answer may be rendered in a narrow (~360px) side panel beside the "
-    "diagram it describes. When the answer is a single fact the user can already see "
-    "on screen, one line beats five bullets. Expand only when the question genuinely "
-    "needs it.\n"
-    "\n"
-    "NO CITATION MACHINERY ON THIS SURFACE. The user is looking at the topology, so "
-    "telling them a topology fact came from the topology is noise that displaces the "
-    "explanation they asked for. Never print artifact ids, entity ids, edge keys, "
-    "evidence ids, tool or operation names, raw field names copied out of a tool "
-    "result, or a parenthetical like '(from the project topology)'. Ids are given to "
-    "you so you can look things up, not so you can quote them: refer to everything by "
-    "its human label. Spend those words on how the integration actually works.\n"
-    "  CITE IN THE GROUNDING BLOCK, NOT IN THE PROSE. This rule does not ask you to "
-    "stop citing, and obeying it cannot cost you the answer. Your citations belong in "
-    "the structured grounding block, which is the only place the validator reads them "
-    "from; a factual grounded answer still has to carry them there. Repeating them in "
-    "the prose earns nothing and is what this rule forbids. So: full references in the "
-    "grounding block, none in the sentences the user reads.\n"
-    "  Two narrow exceptions. When an answer genuinely MIXES sources, mark the "
-    "non-topology parts — '(from logs)' for runtime results, '(from <doc name>)' for "
-    "document claims — so a live observation or a written document cannot be mistaken "
-    "for the structure on screen. And when the user explicitly asks where something "
-    "came from, tell them.\n"
-    "Presenting topology structure as live log data, or log data as topology "
-    "structure, remains a defect.\n"
-    "\n"
-    "For a mixed question, gather the structural topology and present-tense runtime "
-    "observations before calling the terminal answer_from_documentation capability. "
-    "Keep every source observation in this current turn so the evidence summary can "
-    "label all families used.\n"
-    "\n"
-    "HONOR SOURCE INSTRUCTIONS. If the user includes or excludes topology, "
-    "documentation, runtime records, or logs, obey that instruction. If an excluded "
-    "source is necessary for a complete or reliable answer, do not call it silently: "
-    "answer the supported portion and disclose exactly which portion cannot be "
-    "grounded, or ask permission to use the source.\n"
-    "\n"
-    "NEVER SUBSTITUTE A SOURCE SILENTLY. If the topology tools returned nothing for a "
-    "structural question and you answer from documents or from runtime data instead, "
-    "the answer must say which source answered it AND that the topology artifact did "
-    "not cover it. For example: 'The topology artifact has no entry for this; the "
-    "following comes from <doc name> and I could not confirm it against the "
-    "landscape.' An unlabelled document answer to a structural question reads as "
-    "topology fact and is a defect, even when the document happens to be right.\n"
-    "\n"
-    "SAY WHEN A SOURCE IS EMPTY. 'The topology artifact does not describe X at this "
-    "level' is a correct, useful, complete answer. Reaching quietly for the "
-    "next-best source is not. The levels are distinct: the landscape rollup holds "
-    "systems, applications and their relationships and contains NO jobs, components "
-    "or fields; jobs, components and column-level mappings come from the "
-    "design-level operations (get_job_detail, get_component_detail, "
-    "get_field_lineage). A job, component or field question that the "
-    "rollup cannot answer means calling the design-level operation, not switching "
-    "source.\n"
+    "SAY WHEN A SOURCE IS EMPTY. 'That is not described at this level' is a correct, "
+    "useful, complete answer. Reaching for the next-best source is not.\n"
     "\n"
     "PRESENCE AND ABSENCE ARE LOOKUPS, NOT JUDGEMENTS. Whether a system, design or "
-    "field exists in this project is decided by a tool result and by nothing else. "
-    "Never write that something 'appears in the landscape', 'exists but is not "
-    "connected', or 'is present elsewhere' unless a call returned it. If a search "
-    "returns no match, the correct sentence is that the name is not in this "
-    "landscape at all — which is a complete and useful answer. Inventing presence is "
-    "the same defect as inventing a relationship and is harder to catch, because a "
-    "reader checking the diagram for a connection will conclude the diagram is "
-    "incomplete rather than that the answer is wrong.\n"
+    "field exists is decided by a tool result and by nothing else. Never write that "
+    "something 'appears in the landscape', 'exists but is not connected', or 'is "
+    "present elsewhere' unless a call returned it. Inventing presence is harder to "
+    "catch than inventing a relationship, because a reader checking the diagram will "
+    "conclude the diagram is incomplete rather than that the answer is wrong.\n"
     "\n"
     "NEVER EXPLAIN A NAME YOU DID NOT READ. If the user types an entity name that no "
-    "tool result contains — misremembered, abbreviated, or mistyped — do not gloss it, "
-    "do not describe what that kind of name usually means, and do not carry it into "
-    "your answer as though it were real. Say you cannot find it, offer the closest "
-    "names the artifact does contain, and answer about the selection on screen. A "
-    "plausible-sounding explanation of a name that does not exist is a fabrication "
-    "even when every general statement in it is true.\n"
+    "result contains -- misremembered, abbreviated, or mistyped -- do not gloss it and "
+    "do not describe what that kind of name usually means. Say you cannot find it and "
+    "offer the closest names that do exist. A plausible explanation of a name that does "
+    "not exist is a fabrication even when every general statement in it is true.\n"
     "\n"
-    "CONFIDENCE IS PER ROW. Never write 'all streams are confirmed', 'all mappings "
-    "resolve', or any other blanket confidence claim unless every row you listed "
-    "carries that state. One proposed or inferred row among confirmed ones makes the "
-    "blanket sentence false, and the user can see the badge on screen that "
-    "contradicts you. Count them instead: 'five confirmed, one proposed'.\n"
+    "SAY WHAT IS UNCERTAIN, IN PLAIN WORDS. A stream the scan could only infer, a "
+    "business name a person wrote rather than the scanner reading it out of the code, "
+    "an overlay that is stale -- name that weakness in ordinary language: 'this one is "
+    "inferred: the scan can see traffic between them but not what it carries'. Silence "
+    "here is a defect, because an inferred relationship then reads exactly like a "
+    "confirmed one. Facts read straight from the code need no caveat.\n"
     "\n"
-    "SAY WHAT IS UNCERTAIN, IN PLAIN WORDS. This is not citation and it survives the "
-    "rule above: it is the difference between a fact and a guess. A stream the scan "
-    "could only infer, a business name a person or an agent wrote rather than the "
-    "scanner reading it out of the code, an overlay that is stale or unvalidated — "
-    "name that weakness in ordinary language. For example 'this one is inferred: the "
-    "scan can see traffic between them but not what it carries', or 'these business "
-    "names were written by an analyst rather than derived from the code'. Do not quote "
-    "the field that told you, and do not name the overlay's internal states; just say "
-    "it. Silence here is a defect, because an inferred relationship then reads exactly "
-    "like a confirmed one. Facts the scanner read straight from the code (job names, "
-    "component names, wiring, mapping expressions) need no caveat.\n"
+    "CONFIDENCE IS PER ROW, AND SO IS ATTRIBUTION. Never write 'all streams are "
+    "confirmed' unless every row you listed carries that state; count them instead -- "
+    "'five confirmed, one proposed'. One relationship between two systems is routinely "
+    "several streams carried by DIFFERENT integrations, so attribute per stream. A "
+    "single-carrier headline above a table whose rows have different carriers is worse "
+    "than no headline, because a reader trusts the headline over the table.\n"
     "\n"
-    "NEVER COLLAPSE A PLURAL INTO A SINGULAR HEADLINE. One relationship between two "
-    "systems is routinely several streams carried by DIFFERENT integrations — work "
-    "orders over a Talend job and inspection data over the ESB, say, in the same "
-    "direction between the same two systems. Attribute per stream. A line like "
-    "'Integration solution: <one name>' above a table whose rows have different "
-    "carriers is a defect, and a worse one than omitting the line, because a reader "
-    "trusts the headline over the table. The same applies to mechanism, protocol, "
-    "confidence and direction: if the rows differ, either the summary says so or "
-    "there is no summary.\n"
+    "A DESIGN IS NOT A COMPONENT. A design is a whole job or route -- "
+    "'AssetCheckMessageHandler'. A component is one box inside a design -- 'tMap_1'. "
+    "Names that implement a relationship are designs; call them jobs or routes.\n"
     "\n"
-    "A DESIGN IS NOT A COMPONENT. These words are not interchangeable here and "
-    "getting them wrong sends the reader to the wrong place. A design is a whole "
-    "job or route — 'AssetCheckMessageHandler', 'Maximo2Quintiq_Workorder'. A "
-    "component is one box inside a design — 'tMap_1', 'cJMS_2'. Names that "
-    "implement a relationship are designs; call them jobs or routes. Never call a "
-    "design a component, and never call a component a job.\n"
+    "MAPPINGS: ABSENCE AND UNRESOLVED ARE DIFFERENT THINGS. When a component reports "
+    "no published column-level mapping, say exactly that -- not that it does not "
+    "transform anything. And roughly 39% of field-lineage entries across this corpus "
+    "are decided at runtime rather than written in the code, so state both numbers when "
+    "you present mappings: 'of 41 target fields, 25 have a resolved expression and 16 "
+    "are decided at runtime'. Presenting only the resolved subset reads as a complete "
+    "mapping and understates the integration.\n"
     "\n"
-    "A SELECTED STREAM IS A REQUEST FOR ITS CONTENTS. When the page scope has a "
-    "connection, stream or edge selected and the user asks what it carries, what data "
-    "moves across it, or how it works, the landscape rollup alone is not the answer — "
-    "it names the business object but not the fields. Read the field lineage of the "
-    "integration that carries it and answer at field level. 'What data flows', phrased "
-    "loosely, still means the fields when a specific stream is on screen.\n"
+    "ANSWER FROM WHAT ONE READ RETURNS. Structural results are capped and report their "
+    "own totals. Say the total, describe what you read, and stop -- 'this design has "
+    "251 components; the main ones are ...'. Do not walk a result page by page to "
+    "exhaust it: the turn has a deadline, and an answer that never arrives is worth "
+    "less than an honest partial one. Read a further page only when the user asks for "
+    "something a later page specifically holds.\n"
     "\n"
-    "Never present a mapping absence as an absence of transformation. When a "
-    "component detail reports mapping_available false, say that no column-level "
-    "mapping is published for that component — not that it does not transform "
-    "anything.\n"
-    "\n"
-    "COUNT THE UNRESOLVED MAPPINGS OUT LOUD. Roughly 39% of field-lineage entries "
-    "across this corpus are dynamic: the expression is decided at runtime and is not "
-    "written in the code, so the scan can see that the field is mapped but not to "
-    "what. When you present mappings or lineage, state both numbers -- how many "
-    "target fields have a resolved expression and how many are dynamic or otherwise "
-    "unresolved -- for example 'of 41 target fields, 25 have a resolved expression "
-    "and 16 are decided at runtime'. Presenting only the resolved subset silently "
-    "understates the integration and reads as a complete mapping, which is a defect "
-    "of exactly the same kind as presenting a mapping absence as an absence of "
-    "transformation. If a result was capped, say so and read the next page with "
-    "offset rather than treating the omitted rows as non-existent.\n"
-    "\n"
-    "When a project has no published topology yet, say the project needs a rescan to "
-    "produce one. That is a missing artifact, not a failure, and never a reason to "
-    "describe structure you did not read."
+    "LABEL A MIXED ANSWER BY ORIGIN -- '(from logs)' for runtime results, '(from <doc "
+    "name>)' for document claims -- so a live observation cannot be mistaken for "
+    "published structure, or the reverse. When a project has no published topology "
+    "yet, say it needs a rescan: that is a missing artifact, not a failure, and never "
+    "a reason to describe structure you did not read."
 )
 
 
@@ -301,44 +223,26 @@ NAVIGATION_INTENT_GUIDANCE = (
 )
 
 
-#: Everywhere other than the topology page, where the structural reader is NOT
-#: exposed (``src.harness.surface_policy``). This text used to tell the model to
-#: "gather topology before a terminal documentation call", which became an
-#: instruction to use a tool that is not in the list -- the reliable way to get a
-#: model to improvise the structure it was told to look up. It now does the
-#: opposite job: name the boundary, and make handing the user to the canvas the
-#: sanctioned move rather than a failure.
-TOPOLOGY_MINIMAL_GUIDANCE = (
+#: Appended in ``/chat`` only, where the structural reader is NOT exposed (see
+#: ``src.harness.surface_policy``). It names the boundary and makes handing the
+#: user to the canvas the sanctioned move rather than a failure. Keep it short:
+#: it is a boundary notice, and the answer rules it sits beside are shared.
+#:
+#: This text must never instruct the model to "gather topology first". It used
+#: to, which became an instruction to use a tool that is not in the list -- the
+#: reliable way to get a model to improvise the structure it was told to look up.
+CHAT_TOPOLOGY_BOUNDARY = (
     "You cannot read the project's published topology on this surface. Complete "
-    "inventory and counts, what connects to what, dependency traversal, which jobs "
-    "or components implement a flow, and column-level field mappings all live in "
-    "that artifact, and the tool that reads it is deliberately not available here — "
-    "it is available on the topology page, where the user can see the diagram the "
-    "answer refers to.\n"
+    "inventory and counts, what connects to what, dependency traversal, which jobs or "
+    "components implement a flow, and column-level field mappings all live in that "
+    "artifact, and the tool that reads it is deliberately not available here -- it is "
+    "available on the topology page, where the user can see the diagram the answer "
+    "refers to.\n"
     "So for a structural question: answer whatever indexed documentation genuinely "
-    "supports, say plainly which part you could not verify, and point the user to "
-    "the topology page for the structural detail. That referral is a correct and "
-    "complete answer, not an apology — do not pad it with speculation to look more "
-    "helpful.\n"
-    "Never infer structure to fill the gap. Do not state that a system, design or "
-    "field exists, that two things are connected, or that something is unconnected, "
-    "unless a document you actually read says so and you name it. Do not explain an "
-    "entity name that appeared in no result — say you cannot find it. A remembered "
-    "or plausible-sounding integration landscape is not evidence.\n"
-    "Indexed documentation owns why something exists: purpose, business meaning, "
-    "and business policy. Runtime records and logs own present-tense executions, "
-    "failures, health, and timestamps — those tools ARE available here. For a "
-    "question that spans both, gather runtime evidence before a terminal "
-    "answer_from_documentation call so every observation remains in the "
-    "current-turn evidence summary. Never silently substitute one source for a "
-    "missing or failed one, and honor explicit source exclusions; if an excluded "
-    "source is required, disclose the unsupported portion or ask permission.\n"
-    "Label each claim by origin — '(from logs)' for runtime and log results, "
-    "'(from <doc name>)' for document claims. There is no diagram on screen on this "
-    "surface, so the label is the only thing separating a written document from a "
-    "live observation. (On the topology canvas the opposite rule applies: the user "
-    "is looking at the artifact, so a topology label there is tautology and is "
-    "suppressed. Same goal, different surface.)"
+    "supports, say plainly which part you could not verify, and point the user to the "
+    "topology page for the structural detail. That referral is a correct and complete "
+    "answer, not an apology -- do not pad it with speculation to look more helpful, "
+    "and never infer the structure to fill the gap."
 )
 
 
@@ -620,26 +524,26 @@ def is_topology_surface(page_scope: Any) -> bool:
 def topology_turn_guidance(page_scope: Any = None) -> str:
     """Compose the guidance appended to a cohort's system prompt for one turn.
 
-    On the topology surface the full rules are emitted, then the page context
-    LAST. The order used to be the other way around, on the reasoning that the
-    model should know where the user is before reading the answer-shape rules.
-    In practice last means nearest the question: the hint is a handful of lines
-    against several thousand words of rules, and when it led, answers came back
-    scoped to the level above the selection with the selected entity demoted to
-    a parenthetical. The rules are general and stable; the subject is specific
-    to this turn and is what the next token has to get right.
+    One shared block of answer rules on both surfaces, plus what is specific to
+    each: navigation intent on the canvas (it governs the targets only the canvas
+    can act on), the boundary notice in ``/chat`` (the structural reader is not
+    offered there). The page context goes LAST wherever it exists.
 
-    Everywhere else only the short source-honesty reminder is emitted: the tool
-    definitions are unchanged and still reachable, but a conversation about
-    something else is not nudged toward topology.
+    Two things about this shape are deliberate and were both learned the hard
+    way. The rules are shared because they are about whether a sentence is TRUE,
+    which does not vary by surface -- the previous split maintained two
+    overlapping copies and the canvas one had grown to five times the size of
+    the other, mostly prohibitions, which bought terse defensive answers rather
+    than accurate ones. And the page hint goes last because last means nearest
+    the question: when it led, answers came back scoped to the level above the
+    selection with the selected entity demoted to a parenthetical.
     """
 
-    sections: list[str] = []
+    sections: list[str] = [SHARED_ANSWER_GUIDANCE]
     if is_topology_surface(page_scope):
-        sections.append(TOPOLOGY_ANSWER_GUIDANCE)
         sections.append(NAVIGATION_INTENT_GUIDANCE)
     else:
-        sections.append(TOPOLOGY_MINIMAL_GUIDANCE)
+        sections.append(CHAT_TOPOLOGY_BOUNDARY)
     hint = describe_page_scope(page_scope)
     if hint is not None:
         sections.append(hint)
@@ -647,9 +551,9 @@ def topology_turn_guidance(page_scope: Any = None) -> str:
 
 
 __all__ = [
+    "CHAT_TOPOLOGY_BOUNDARY",
     "NAVIGATION_INTENT_GUIDANCE",
-    "TOPOLOGY_ANSWER_GUIDANCE",
-    "TOPOLOGY_MINIMAL_GUIDANCE",
+    "SHARED_ANSWER_GUIDANCE",
     "describe_page_scope",
     "is_topology_surface",
     "topology_turn_guidance",

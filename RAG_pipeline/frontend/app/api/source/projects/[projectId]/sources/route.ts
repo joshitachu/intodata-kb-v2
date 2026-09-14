@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { AddSourceResponseSchema } from "@/types";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 import { KB_API_URL, safeProjectId } from "../../../_proxy";
 
 export const dynamic = "force-dynamic";
@@ -71,7 +72,6 @@ export async function POST(
     // go through the schema rather than an untyped passthrough.
     return NextResponse.json(AddSourceResponseSchema.parse(JSON.parse(text)));
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Adding the source failed";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("source/projects/[projectId]/sources POST", error, "Adding the source failed");
   }
 }

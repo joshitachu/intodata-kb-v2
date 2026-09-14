@@ -205,6 +205,24 @@ def test_shared_routine_change_invalidates_every_partition(tmp_path):
     assert after["repo_b"] != before["repo_b"]
 
 
+def test_root_qualified_routine_change_invalidates_only_its_partition(tmp_path):
+    root, facts, plan = _two_repo_fixture(tmp_path)
+    path = root / "scan" / "routines.json"
+    path.write_text(json.dumps([
+        {"routine_id": "a::r", "source_root": f"Proj/repo_a{REPO}/REPO_A",
+         "source_code": "int x = 1;", "source_complete": True},
+        {"routine_id": "b::r", "source_root": f"Proj/repo_b{REPO}/REPO_B",
+         "source_code": "int y = 1;", "source_complete": True},
+    ]), encoding="utf-8")
+    before = compute_partition_fingerprints(root, plan, facts)
+    routines = json.loads(path.read_text())
+    routines[0]["source_code"] = "int x = 2;"
+    path.write_text(json.dumps(routines), encoding="utf-8")
+    after = compute_partition_fingerprints(root, plan, facts)
+    assert after["repo_a"] != before["repo_a"]
+    assert after["repo_b"] == before["repo_b"]
+
+
 def test_project_wide_call_graph_change_does_not_invalidate_partitions(tmp_path):
     """manifest.json holds the project-wide graph, so any repo's change rewrites it.
 

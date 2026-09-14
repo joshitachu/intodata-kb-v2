@@ -1,0 +1,129 @@
+# Semantic field categories -- declarative, extensible, NOT code.
+#
+# This file is the anti-hardcoding device. A question like "are there asset
+# identification fields on this interface?" is answered by filtering on a
+# category, so adding a new question dimension ("are there person fields?",
+# "where does cost structure cross a boundary?") is a data change here, not a
+# code change.
+#
+# Matching, in order of decreasing confidence:
+#   exact          -- field name equals one of these (case-insensitive)   -> certain
+#   name_pattern   -- field name matches this regex                       -> likely
+#   source         -- the SOURCE column/expression matches this regex     -> inferred
+#   value          -- observed values match this regex                    -> inferred
+# First category to match at the highest available tier wins; ties break on
+# the declared order below, so put the more specific categories first.
+#
+# Patterns are matched case-insensitively against the leaf field name (the
+# last path segment) AND the full path. Dutch and English patterns are both
+# present because integration landscapes are routinely bilingual -- that is
+# language coverage, not domain hardcoding.
+#
+# Per-client additions belong in a sibling file passed via
+# --categories extra.yaml; it is merged on top of this one by category name.
+
+version: 1
+
+categories:
+
+  # -- security first: if a field is a credential we want to know before
+  #    anything else, because it must never appear in generated output.
+  - name: credential
+    description: Authentication material. Must never be published.
+    exact: [password, passwd, pwd, secret, token, apikey, api_key, authorization, auth, salt, credential]
+    name_pattern: '(pass(word|wd)?|secret|token|api[_-]?key|authoriz|bearer|salt|credential|wachtwoord)'
+    severity: blocking
+
+  - name: asset
+    description: Identifies a physical asset, installation or piece of equipment.
+    exact: [assetnum, asset, assetid, serialnumber, serienummer, equipmentnr, installatienummer, itemnum]
+    name_pattern: '(assetnum|asset(id|nr|number)?$|serial|serie(nummer|nr)|installatie(nummer|nr)|equipment|machine(nr|num|soort|type)|item(num|nr)$|cinum)'
+    source: '(ASSETNUM|SERIALNUM|INSTALLATION|EQUIPMENT)'
+
+  - name: location
+    description: Where the work or asset is -- code, address or coordinate.
+    exact: [location, locatie, address, adres, postcode, postalcode, city, woonplaats, latitude, longitude]
+    name_pattern: '(location|locatie|address|adres|postcode|postal|city|woonplaats|plaats$|breedtegraad|lengtegraad|latitud|longitud|geo(code)?$|coord|bezoekadres|aanvoeradres|afvoeradres|werkzone|rijbaan|km(van|tot)$)'
+    source: '(LOCATION|SERVICEADDRESS|LATITUDE|LONGITUDE|FORMATTEDADDRESS|POSTALCODE)'
+
+  - name: person
+    description: Identifies or contacts a natural person. Drives privacy handling.
+    exact: [laborcode, medewerker, monteur, employee, employeenr, supervisor, owner, melder, contactpersoon, email, phone, telefoon]
+    name_pattern: '(laborcode|medewerker|monteur|employee|personeel|persoon|supervisor|inspector|melder|reportedby|changeby|createby|createdby|contact(persoon|person|tel)?|owner$|lead$|assignedto|onbehalfof|e-?mail|telefoon|phone|mobiel)'
+    source: '(LABORCODE|SUPERVISOR|REPORTEDBY|CHANGEBY|CREATEBY|OWNER|VLPERSON|LEAD)'
+    severity: privacy
+
+  - name: customer
+    description: The party the work is done for.
+    exact: [customer, customerno, klantnaam, klantorder, relatienummer]
+    name_pattern: '(customer|klant|relatie(nummer|nr)?$|opdrachtgever)'
+    source: '(PLUSPCUSTOMER|CUSTOMER)'
+
+  - name: organisation
+    description: Internal organisational or tenant scoping.
+    exact: [orgid, organizationcode, siteid, company, companyid, bedrijf, domain, domainid]
+    name_pattern: '(org(id|anization|anisatie)|site(id|code)?$|company|bedrijf$|tenant|domain(id)?$|division|afdeling|ownergroup|crew|contractgebied)'
+    source: '(ORGID|SITEID|OWNERGROUP|AMCREW)'
+
+  - name: cost_account
+    description: Financial posting dimension -- account, cost centre, budget.
+    exact: [glaccount, glcomp, costcenter, kostenplaats, budget]
+    name_pattern: '(gl-?(account|comp)|account(nr|num)?$|cost(centre|center|account)|kosten|budget|invoice|factuur|rate$|total$|amount|bedrag)'
+    source: '(GLACCOUNT|GLCOMP|COST)'
+
+  - name: project_structure
+    description: Project, WBS, element, contract -- how work is structured for delivery.
+    exact: [projectnr, project, element, wbs, masterproject, masterelement, contract, agreement, serviceorder]
+    name_pattern: '(project(nr|nummer|no)?$|wbs\d*|master(project|element)|element$|contract(nummer|nr)?$|agreement|serviceorder|activiteitregel|werknummer)'
+    source: '(PLUSPAGREEMENT|VR_WBS|PROJECT|VR_SO_TBV_ERP)'
+
+  - name: identifier
+    description: A key or reference that identifies the record itself.
+    exact: [wonum, workordernr, workorderid, werkbon, assignmentid, no, refexternal, externalrefid, id]
+    name_pattern: '(^id$|^no$|(work)?order(nr|no|id|nummer)|werkbon(nummer|nr)?$|assignment(id)?$|ref(external|erence|num|id)?$|externalref|systemid|guid$|uuid|nummer$|_nr$|ticketid|jobnum)'
+
+  - name: status
+    description: Lifecycle state of the record.
+    exact: [status, state, opdrachtstatus, statusiface, firstapprstatus]
+    name_pattern: '(status|state$|statusdat|phase|fase|stadium|afgerond|geheelafgerond|processed|isprocessed|historyflag|disabled|active|milestone)'
+    source: '(STATUS|HISTORYFLAG|FIRSTAPPRSTATUS)'
+
+  - name: sla_time
+    description: A committed or achieved service-level moment. Target vs realised.
+    name_pattern: '(response(tijd|time)|hersteltijd|herstel$|uit_(funct|def)_herstel|restore|veiligstellen|deadline|targ(et)?(start|comp|finish|response|resolution|delivery)|streefdatum|adjustedtarget|slat)'
+    source: '(TARGETSTART|TARGETFINISH|ADJUSTEDTARGET|PLUSPTARGDELIVERYDATE|TARGCOMPDATE|TARGSTARTDATE)'
+
+  - name: planning_time
+    description: Planned or scheduled timing and effort.
+    name_pattern: '(sched(ule)?(date|start|finish)?|gepland|planstart|planeinde|start_opdracht|duur|duration|estdur|cycle|laborhrs|shift|dienst(code|naam|start)?$|consignatie|plannedstart|plannedend)'
+    source: '(SCHEDULEDATE|SCHEDSTART|SCHEDFINISH|ESTDUR|LABORHRS)'
+
+  - name: realisation_time
+    description: What actually happened, when.
+    name_pattern: '(actual(start|finish|contact)?|gerealiseerd|realisatie|eindtijd|starttijd|uitvoeringsdatum|act(start|finish)$|finishtime|starttime|transtype|downtime|labtrans)'
+    source: '(ACTSTART|ACTFINISH|ACTUALSTART|ACTUALFINISH|FINISHTIME|STARTTIME|LABTRANS)'
+
+  - name: diagnosis
+    description: Fault diagnosis -- symptom, problem, cause, resolution.
+    exact: [symptoom, symptomcode, probleem, probleemcode, oorzaak, oorzaakcode, oplossing, failurecode]
+    name_pattern: '(symptoom|symptom|probleem|problem(code)?$|oorzaak|cause|oplossing|resolution|solution|failure(code)?$|storing|remedy|reparatie)'
+
+  - name: quantity
+    description: A counted or measured amount.
+    name_pattern: '(qty|quantity|kwantiteit|aantal|count$|hours|hrs$|uren|units|eenheid|measurement|totalworkunits)'
+
+  - name: classification
+    description: Typing and coding that classifies the record.
+    name_pattern: '(worktype|servicetype|taaksoort|taaknummer|type$|soort$|kind$|categor|klasse|class(structureid)?$|code$|monitoringcode|checkcode|priorit|urgentie|woclass|installatietype)'
+
+  - name: free_text
+    description: Unstructured prose. A frequent sink for lost structure.
+    name_pattern: '(description|omschrijving|remark|opmerking|comment|toelichting|notes?$|text$|tekst|meldingstekst|calltekst|longdescription|reparatietekst|memo)'
+
+  - name: technical_envelope
+    description: Transport and correlation metadata, not business content.
+    name_pattern: '(session(id)?$|correlat|messageid|message_?monitoring|clientreference|runtechref|runtimereference|exchangedata|entityguid|formtemplateguid|formstatusguid|formgroupguid|formtypeguid|priorityguid|xmlns|namespace|envelope|soapaction|filename$|xml$|json$|body$|payload|header$|encoding|timezone|totalpages|totalcount|pagenum|pageno)'
+
+  - name: monitoring
+    description: Logging, severity and operational telemetry.
+    name_pattern: '(severity|loginfo|logcode|log$|eventtype|processname|monitoring|errorcode|errormessage|errorjsonfield|retry|statuscode|message_?type|duration$|moment$|pid$)'

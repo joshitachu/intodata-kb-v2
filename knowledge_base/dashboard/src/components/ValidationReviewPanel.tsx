@@ -5,13 +5,19 @@ import {
   useReviews,
   useSubmitReview,
 } from "../hooks/useProjects";
+import { UNKNOWN_DISPLAY } from "../lib/loadable";
+import { parseApiError } from "../lib/errors";
 
 interface Props {
   projectId: string;
 }
 
 export default function ValidationReviewPanel({ projectId }: Props) {
-  const { data: runsData } = useGenerateRuns(projectId);
+  const { data: runsData, isError: runsFailed, error: runsError } = useGenerateRuns(projectId);
+  // `runsData === undefined` means the run list is not known yet, which is a
+  // different statement from "there are no completed runs" -- see the empty
+  // state below.
+  const runsKnown = runsData !== undefined;
   const runs = (runsData?.runs ?? []).filter((r) => r.status === "completed");
   const [runId, setRunId] = useState<number | null>(runs[0]?.id ?? null);
   const [reviewer, setReviewer] = useState("");
@@ -69,7 +75,13 @@ export default function ValidationReviewPanel({ projectId }: Props) {
         <h3 className="text-sm font-mono text-slate-400">Validation Review</h3>
       </div>
       <div className="p-4 space-y-4">
-        {runs.length === 0 ? (
+        {!runsKnown ? (
+          runsFailed ? (
+            <p className="text-sm text-red-400">Failed to load runs: {parseApiError(runsError)}</p>
+          ) : (
+            <p className="text-sm text-slate-500">Loading runs...</p>
+          )
+        ) : runs.length === 0 ? (
           <p className="text-sm text-slate-500">No completed runs available for review.</p>
         ) : (
           <>
@@ -87,19 +99,27 @@ export default function ValidationReviewPanel({ projectId }: Props) {
                 </select>
               </div>
               <div className="bg-surface-raised rounded px-3 py-2.5 border border-white/[0.07]">
-                <div className="text-lg font-mono text-slate-300">
-                  {reviews.data?.total_reviews ?? 0}
+                {/* `?? 0` here claimed "no reviews" while the query was still
+                    in flight -- and the tile beside it already rendered a
+                    placeholder for the same unknown state. */}
+                <div className={`text-lg font-mono ${reviews.data ? "text-slate-300" : "text-slate-600"}`}>
+                  {reviews.data ? reviews.data.total_reviews : UNKNOWN_DISPLAY}
                 </div>
                 <div className="text-xs text-slate-500">Reviews</div>
               </div>
               <div className="bg-surface-raised rounded px-3 py-2.5 border border-white/[0.07]">
                 <div className={`text-lg font-mono ${
-                  reviews.data?.pass_result ? "text-[#a0e06f]" : "text-amber-400"
+                  !reviews.data
+                    ? "text-slate-600"
+                    : reviews.data.pass_result
+                      ? "text-[#a0e06f]"
+                      : "text-amber-400"
                 }`}>
-                  {reviews.data ? reviews.data.average_overall.toFixed(2) : "-"}
+                  {reviews.data ? reviews.data.average_overall.toFixed(2) : UNKNOWN_DISPLAY}
                 </div>
                 <div className="text-xs text-slate-500">
-                  Average Overall {reviews.data?.pass_result ? "PASS" : "OPEN"}
+                  Average Overall{" "}
+                  {reviews.data ? (reviews.data.pass_result ? "PASS" : "OPEN") : UNKNOWN_DISPLAY}
                 </div>
               </div>
             </div>

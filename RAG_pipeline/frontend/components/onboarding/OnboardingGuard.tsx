@@ -50,7 +50,6 @@ export function OnboardingGuard({ children }: Props) {
   // Blocking on a failed request would lock the user out of a working product
   // over an onboarding-flag lookup.
   if (isError) return <>{children}</>;
-  if (onboardingLoading) return null;
 
   const companyDone = status?.company_wizard_completed ?? false;
   const userDone = status ? status.wizard_completed : user.onboarding_completed;
@@ -59,7 +58,22 @@ export function OnboardingGuard({ children }: Props) {
   // the member walkthrough, not a setup flow they have no reason to run.
   const canProvision = status?.persona === "owner" || user.is_superadmin;
 
-  if (!sessionStarted.current && !sessionDismissed) {
+  // While the status lookup is in flight the app renders and NO wizard
+  // decision is made. Two separate reasons, and both matter:
+  //
+  //  - This gate used to `return null`, unmounting the entire application for
+  //    the duration of an onboarding-flag lookup. On a cold load /auth/me and
+  //    /onboarding/status race: the moment `user` lands while status is still
+  //    pending, the whole tree blanked and then remounted, losing page-local
+  //    state (app/docs/page.tsx `selectedDoc` reset to null). If the status
+  //    request failed, `isLoading` stayed true across the retry backoff and
+  //    the app was blank for seconds before the isError branch let it through.
+  //  - Deciding early would be worse than blanking: `sessionStarted` is a ref,
+  //    so latching against unknown flags (`companyDone` defaulting to false)
+  //    would pin the provisioning wizard for the rest of the session on a
+  //    deployment that is already configured. The decision waits; the app
+  //    does not. The wizard mounts over the app when the flags arrive.
+  if (!onboardingLoading && !sessionStarted.current && !sessionDismissed) {
     if (canProvision && !companyDone) {
       sessionStarted.current = "admin";
     } else if (!userDone) {

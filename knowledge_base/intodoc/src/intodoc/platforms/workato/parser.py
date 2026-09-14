@@ -30,6 +30,7 @@ from intodoc.models import (
     TRunJobRef,
 )
 from intodoc.platforms.base_parser import BaseParser
+from intodoc.scanner.fswalk import child_dirs, walk_files
 from intodoc.scanner.walker import walk_repo
 
 if TYPE_CHECKING:
@@ -462,12 +463,14 @@ class WorkatoParser(BaseParser):
             return repo_root
 
         # Look for manifest.json in subdirectories (1 level deep)
-        for child in repo_root.iterdir():
-            if child.is_dir() and (child / "manifest.json").exists():
+        for child in child_dirs(repo_root):
+            if (child / "manifest.json").exists():
                 return child
 
         # Look for any .recipe.json file
-        recipe_files = list(repo_root.rglob("*.recipe.json"))
+        recipe_files = list(
+            walk_files(repo_root, patterns=("*.recipe.json",), on_error=None)
+        )
         if recipe_files:
             # Return the common parent
             parents = {f.parent for f in recipe_files}
@@ -476,7 +479,9 @@ class WorkatoParser(BaseParser):
             return repo_root
 
         # Content-based fallback: find directories with JSON files that look like recipes
-        for json_path in repo_root.rglob("*.json"):
+        for json_path in walk_files(
+            repo_root, patterns=("*.json",), on_error=None
+        ):
             try:
                 text = json_path.read_text(encoding="utf-8", errors="replace")
                 data = json.loads(text)

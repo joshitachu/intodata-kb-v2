@@ -5,14 +5,16 @@ from __future__ import annotations
 import re
 import hashlib
 import xml.etree.ElementTree as ET
-from collections.abc import Iterable
-from pathlib import Path
+from collections.abc import Callable, Iterable, Sequence
+from pathlib import Path, PurePosixPath
 
 from rich.console import Console
 
 from intodoc.models import (
     Component,
     ComponentParam,
+    ComponentSchema,
+    ComponentSchemaColumn,
     Connection,
     ContextGroup,
     ContextVariable,
@@ -24,6 +26,8 @@ from intodoc.models import (
     Routine,
     ScanResult,
     ScanWarning,
+    ServiceDefinition,
+    StructureDefinition,
     TdmMap,
     TdmMapField,
     TdmMapTree,
@@ -34,9 +38,27 @@ from intodoc.models import (
     TXMLMapField,
     TXMLMapTree,
     ArtifactReference,
+    XsltTransform,
 )
 from intodoc.platforms.base_parser import BaseParser
+from intodoc.platforms.talend.resource_refs import build_resource_refs
+from intodoc.platforms.talend.parse_cache import CachedDesign, TalendDesignCache, design_cache_key
+from intodoc.platforms.talend.services import (
+    claimed_service_files,
+    parse_services,
+    parse_standalone_wsdls,
+)
+from intodoc.platforms.talend.structures import parse_structures
+from intodoc.platforms.talend.xslt import parse_xslt_transforms
 from intodoc.scanner.credential_filter import CredentialFilter
+from intodoc.scanner.fswalk import (
+    case_variant_names,
+    child_dir,
+    child_dirs,
+    child_file,
+    walk_dirs,
+    walk_files,
+)
 from intodoc.scanner.walker import walk_repo
 
 console = Console()
@@ -186,14 +208,18 @@ NS = {
 class TalendParser(BaseParser):
     """Parse a Talend project into structured models."""
 
-    def __init__(self, cred_filter: CredentialFilter) -> None:
+    def __init__(self, cred_filter: CredentialFilter, *, parse_cache_dir: Path | None = None) -> None:
         super().__init__(cred_filter)
+        self._parse_cache = TalendDesignCache(parse_cache_dir) if parse_cache_dir else None
         # xmi:id → MetadataConnection lookup (built at scan start)
         self._xmi_id_index: dict[str, MetadataConnection] = {}
-        # Property.id → Property.label lookup for resolving tRunJob XMI refs
-        self._job_id_index: dict[str, str] = {}
+        # Property.id → (Property.label, version-stripped repository path)
+        # for resolving tRunJob/cTalendJob refs by IDENTITY. The path breaks
+        # same-name ambiguity inside one root, which a label alone cannot.
+        self._job_id_index: dict[str, tuple[str, str]] = {}
         # Superseded job versions skipped by _latest_job_versions (per scan)
         self._superseded_versions = 0
+        self._artifact_versions: dict[str, dict[str, str]] = {}
 
     def parse(self, repo_root: Path) -> ScanResult:
         """Parse every Talend root in a source bundle as one logical project."""
@@ -204,6 +230,9 @@ class TalendParser(BaseParser):
         self._warnings = []
         self._warn_root = repo_root
         self._superseded_versions = 0
+        self._artifact_versions = {}
+        if self._parse_cache:
+            self._parse_cache.reset_metrics()
 
         execution_roots = _find_talend_roots(repo_root)
         support_roots = [
@@ -219,6 +248,13 @@ class TalendParser(BaseParser):
             return ScanResult(
                 platform="talend",
                 repo_root=str(repo_root),
+                stats={
+                    "parse_cache_enabled": self._parse_cache is not None,
+                    "parse_cache_hits": 0,
+                    "parse_cache_misses": 0,
+                    "parse_cache_invalid_entries": 0,
+                    "parse_cache_writes": 0,
+                },
                 warnings=[
                     ScanWarning(
                         kind="missing_file",
@@ -230,7 +266,10 @@ class TalendParser(BaseParser):
             )
 
         # Walk and classify files — exclude UNKNOWN to shrink scan output
-        all_files = walk_repo(repo_root, plugin)
+        source_inventory: list[dict[str, str]] = []
+        all_files = walk_repo(
+            repo_root, plugin, inventory=source_inventory, on_error=self._walk_error,
+        )
         files = [f for f in all_files if f.file_type != FileType.UNKNOWN]
         for scanned_file in files:
             matching_roots = [root for root in talend_roots if scanned_file.path.is_relative_to(root)]
@@ -243,6 +282,9 @@ class TalendParser(BaseParser):
         context_groups: list[ContextGroup] = []
         routines: list[Routine] = []
         tdm_maps: list[TdmMap] = []
+        structures: list[StructureDefinition] = []
+        xslt_transforms: list[XsltTransform] = []
+        services: list[ServiceDefinition] = []
         root_descriptors: list[dict[str, str]] = []
         superseded_versions = 0
         all_warnings: list[ScanWarning] = []
@@ -277,9 +319,34 @@ class TalendParser(BaseParser):
                 source_role=role,
             )
             context_groups.extend(root_contexts)
-            routines.extend(self._parse_routines(talend_root))
+            routines.extend(self._parse_routines(talend_root, source_root=source_root))
             tdm_maps.extend(self._parse_tdm_maps(talend_root, source_root, root_jobs))
-            self._warn_unscanned_categories(talend_root, talend_roots)
+            # Enterprise artifact categories discovered by REPOSITORY
+            # LAYOUT: `Structures/` and `services/` are Talend conventions
+            # read together with their `.properties` sidecars, so a project
+            # root is the correct scope for them and a directory of that
+            # name outside a project proves nothing. They are parsed for
+            # every root, including support-only roots: a shared Structures/
+            # project is exactly the case where the schema lives apart from
+            # the map. Stylesheets and standalone WSDLs are discovered by
+            # FILE TYPE and are handled bundle-wide after this loop.
+            structures.extend(parse_structures(
+                talend_root, source_root,
+                read_text=self._read_filtered,
+                read_sidecar=self._read_properties_sidecar,
+                warn=self._warn,
+                latest_files=self._latest_versioned_files,
+            ))
+            services.extend(parse_services(
+                talend_root, source_root,
+                read_text=self._read_filtered,
+                read_sidecar=self._read_properties_sidecar,
+                warn=self._warn,
+                latest_files=self._latest_versioned_files,
+            ))
+            self._warn_unscanned_categories(
+                talend_root, talend_roots, classify=plugin.classify_file,
+            )
             superseded_versions += self._superseded_versions
             all_warnings.extend(self._warnings)
             root_descriptors.append({
@@ -293,11 +360,85 @@ class TalendParser(BaseParser):
                 "description": project_metadata.get("description", ""),
             })
 
+        # Stylesheets and standalone WSDLs are self-describing: each carries
+        # its whole meaning in its own bytes and needs neither a
+        # `.properties` sidecar nor a `talend.project` above it. Discovering
+        # them inside the per-root loop confined the search to directories
+        # holding a Talend project descriptor, so every one an estate ships
+        # in a separately uploaded mapping folder was classified in the file
+        # inventory and then never parsed -- on the reference estate, 34 of
+        # 42 stylesheets and 1 of 2 WSDLs. Discovery is therefore bundle-wide
+        # and ownership is resolved per file.
+        self._warnings = []
+        attribute = _support_artifact_owner(repo_root, talend_roots)
+        xslt_transforms = parse_xslt_transforms(
+            repo_root, attribute,
+            read_text=self._read_filtered,
+            warn=self._warn,
+        )
+        services.extend(parse_standalone_wsdls(
+            repo_root, attribute,
+            claimed=claimed_service_files(repo_root, services),
+            read_text=self._read_filtered,
+            warn=self._warn,
+        ))
+        services.sort(key=lambda service: (service.source_root, service.path))
+        all_warnings.extend(self._warnings)
+
         composite = len(execution_roots) > 1
         connections = self._qualify_composite_connections(jobs, connections, composite)
         self._qualify_composite_jobs(jobs, composite)
         self._qualify_context_groups(context_groups)
         manifest = self._build_manifest(jobs, routines, root_descriptors, context_groups)
+        manifest.artifact_versions = list(self._artifact_versions.values())
+        # Exact-token binding of components to the support artifacts they
+        # name. Also fills XsltTransform.referenced_by, so the transform
+        # list and this ledger can never disagree.
+        manifest.resource_refs = build_resource_refs(
+            jobs,
+            structures=structures,
+            transforms=xslt_transforms,
+            services=services,
+            tdm_maps=tdm_maps,
+        )
+        # `ParsedJob.path` is relative to its DESIGN directory (process/,
+        # routes/, ...), not to the source root, so joining it directly
+        # produced a path that matched no inventory row -- every parsed job
+        # was reported as merely "indexed" and the file-outcome accounting
+        # under-counted every scan.
+        parsed_paths = {
+            (
+                Path(job.source_root) / (job.source_design or "process") / job.path
+            ).as_posix()
+            for job in jobs
+        } | {
+            (Path(r.source_root) / r.path).as_posix() for r in routines if r.source_complete
+        } | {(Path(t.source_root) / t.path).as_posix() for t in tdm_maps} | {
+            (Path(artifact.source_root) / artifact.path).as_posix()
+            for collection in (structures, xslt_transforms, services)
+            for artifact in collection
+            if artifact.parse_outcome != "unsupported"
+        } | {
+            (Path(service.source_root) / service.wsdl_path).as_posix()
+            for service in services
+            if service.wsdl_path and service.parse_outcome != "unsupported"
+        }
+        # Only warnings about extraction completeness downgrade a file's
+        # outcome. A stale label cache or an unscanned sibling directory
+        # says nothing about whether THIS file parsed, and treating every
+        # warning kind as a parse failure made a fully parsed job report
+        # "partial_or_failed".
+        warning_paths = {
+            w.file for w in all_warnings if w.kind in _PARTIAL_OUTCOME_WARNINGS
+        }
+        for entry in source_inventory:
+            path = entry["path"]
+            if path in self._artifact_versions and self._artifact_versions[path]["selection"] == "superseded":
+                entry.update(outcome="superseded", reason="higher_export_version_selected")
+            elif path in warning_paths:
+                entry.update(outcome="partial_or_failed", reason="see_scan_warnings")
+            elif path in parsed_paths:
+                entry.update(outcome="parsed", reason="supported_artifact_extracted")
         job_call_edges = sum(len(callees) for callees in manifest.job_calls.values())
         route_invocation_edges = sum(
             relation.get("relation_type") == "route_invokes_job"
@@ -309,6 +450,12 @@ class TalendParser(BaseParser):
             f"{job_call_edges} Job→Job calls, "
             f"{route_invocation_edges} Route→Job invocations"
         )
+        if self._parse_cache:
+            console.print(
+                "  Talend parse cache: "
+                f"{self._parse_cache.hits} hit(s), {self._parse_cache.misses} miss(es), "
+                f"{self._parse_cache.invalid_entries} invalid entry/entries"
+            )
 
         return ScanResult(
             platform="talend",
@@ -320,6 +467,9 @@ class TalendParser(BaseParser):
             routines=routines,
             manifest=manifest,
             tdm_maps=tdm_maps,
+            structures=structures,
+            xslt_transforms=xslt_transforms,
+            services=services,
             stats={
                 "total_files_walked": len(all_files),
                 "total_files_indexed": len(files),
@@ -349,16 +499,40 @@ class TalendParser(BaseParser):
                 "tdm_map_unresolved_count": sum(
                     tdm.association == "unresolved" for tdm in tdm_maps
                 ),
+                "structure_count": len(structures),
+                "structure_element_count": sum(s.element_count for s in structures),
+                "xslt_transform_count": len(xslt_transforms),
+                "xslt_referenced_count": sum(
+                    bool(t.referenced_by) for t in xslt_transforms
+                ),
+                "service_count": len(services),
+                "service_operation_count": sum(
+                    len(service.operations) for service in services
+                ),
+                "parse_cache_enabled": self._parse_cache is not None,
+                "parse_cache_hits": self._parse_cache.hits if self._parse_cache else 0,
+                "parse_cache_misses": self._parse_cache.misses if self._parse_cache else 0,
+                "parse_cache_invalid_entries": self._parse_cache.invalid_entries if self._parse_cache else 0,
+                "parse_cache_writes": self._parse_cache.writes if self._parse_cache else 0,
+                "disabled_component_count": sum(
+                    not component.active
+                    for job in jobs for component in job.components
+                ),
+                "component_schema_count": sum(
+                    len(component.schemas)
+                    for job in jobs for component in job.components
+                ),
             },
             warnings=all_warnings,
+            source_inventory=source_inventory,
         )
 
     # ── Metadata Index ───────────────────────────────────────────────
 
     def _build_metadata_index(self, talend_root: Path) -> None:
         """Build xmi:id → MetadataConnection index from metadata/connections/*.item files."""
-        conn_dir = talend_root / "metadata" / "connections"
-        if not conn_dir.exists():
+        conn_dir = child_dir(talend_root, "metadata", "connections", on_error=self._walk_error)
+        if conn_dir is None:
             return
 
         for item_file in self._latest_item_files(conn_dir):
@@ -410,15 +584,17 @@ class TalendParser(BaseParser):
         cTalendJob targets to canonical ``job`` artifacts.
         """
         props_files = [
-            props_file
+            (directory, props_file)
             for directory in self._JOB_SOURCE_DIRS
-            for props_file in sorted((talend_root / directory).rglob("*.properties"))
-            if (talend_root / directory).exists()
+            if (source := child_dir(talend_root, directory)) is not None
+            for props_file in sorted(
+                walk_files(source, patterns=("*.properties",), on_error=self._walk_error)
+            )
         ]
         if not props_files:
             return
 
-        for props_file in props_files:
+        for directory, props_file in props_files:
             try:
                 text = self._read_filtered(props_file)
                 root = ET.fromstring(text)
@@ -428,8 +604,17 @@ class TalendParser(BaseParser):
                         prop_id = elem.get("id", "")
                         prop_label = elem.get("label", "")
                         if prop_id and prop_label:
-                            self._job_id_index[prop_id] = prop_label
-                            self._job_id_index[prop_id.lstrip("_")] = prop_label
+                            entry = (
+                                prop_label,
+                                _artifact_path_key(
+                                    directory,
+                                    props_file.relative_to(
+                                        talend_root / directory,
+                                    ).as_posix(),
+                                ),
+                            )
+                            self._job_id_index[prop_id] = entry
+                            self._job_id_index[prop_id.lstrip("_")] = entry
             except ET.ParseError as e:
                 console.print(f"  [yellow]XML parse error in {props_file.name}: {e}[/yellow]")
                 self._warn(kind="parse_error", file=props_file, message=str(e), phase="job_id_index")
@@ -437,7 +622,11 @@ class TalendParser(BaseParser):
     # ── Context Parsing ──────────────────────────────────────────────
 
     def _latest_item_files(self, base_dir: Path) -> list[Path]:
-        """Highest-version .item file per (directory, artifact name), recursive.
+        """Highest-version .item file per (directory, artifact name)."""
+        return self._latest_versioned_files(base_dir, "*.item")
+
+    def _latest_versioned_files(self, base_dir: Path, pattern: str = "*.item") -> list[Path]:
+        """Highest-version file per (directory, artifact name), recursive.
 
         Talend Studio exports keep every saved version of an item
         (Name_0.1.item ... Name_3.3.item) and may nest items in per-group
@@ -445,7 +634,12 @@ class TalendParser(BaseParser):
         Superseded versions are counted in self._superseded_versions.
         """
         latest: dict[tuple[str, str], tuple[tuple[int, ...], Path]] = {}
-        for f in sorted(base_dir.rglob("*.item")):
+        # One walk feeds both passes below. Two independent walks could also
+        # disagree with each other if the tree changed between them.
+        all_files = sorted(
+            walk_files(base_dir, patterns=(pattern,), on_error=self._walk_error)
+        )
+        for f in all_files:
             m = re.match(r"(.+?)_(\d+(?:\.\d+)*)$", f.stem)
             if m:
                 name, key = m.group(1), self._version_sort_key(m.group(2))
@@ -459,7 +653,17 @@ class TalendParser(BaseParser):
             self._superseded_versions += 1
             if key > current[0]:
                 latest[k] = (key, f)
-        return [f for _, f in sorted(latest.values(), key=lambda t: str(t[1]))]
+        selected = [f for _, f in sorted(latest.values(), key=lambda t: str(t[1]))]
+        for f in all_files:
+            match = re.match(r"(.+?)_(\d+(?:\.\d+)*)$", f.stem)
+            path = f.relative_to(self._warn_root).as_posix() if self._warn_root and f.is_relative_to(self._warn_root) else f.name
+            self._artifact_versions[path] = {
+                "path": path,
+                "version": match.group(2) if match else "",
+                "selection": "selected" if f in selected else "superseded",
+                "reason": "highest_export_version_not_deployment_evidence",
+            }
+        return selected
 
     def _parse_all_contexts(
         self,
@@ -470,8 +674,9 @@ class TalendParser(BaseParser):
         source_role: str = "",
     ) -> list[ContextGroup]:
         """Parse context/**/*.item files (latest version per group)."""
-        ctx_dir = talend_root / "context"
-        if not ctx_dir.exists():
+        ctx_dir = child_dir(talend_root, "context", on_error=self._walk_error)
+        if ctx_dir is None:
+            self._warn_case_variant(talend_root, "context", phase="context")
             return []
 
         groups: list[ContextGroup] = []
@@ -617,6 +822,11 @@ class TalendParser(BaseParser):
         "process", "routes", "joblets", "routelets",
         "context", "metadata", "code", "Maps",
         "Structures", "Namespace Containers", "Sample Data",
+        # services/ is parsed (see services.py). resources/ and
+        # route_resources/ deliberately stay OUT: their stylesheets are
+        # parsed but they also hold payloads nothing reads, and
+        # _warn_unscanned_categories counts exactly those.
+        "services",
         "lib", "sqlPatterns", ".settings",
     })
 
@@ -625,12 +835,13 @@ class TalendParser(BaseParser):
         (with their .properties sidecars) into ParsedJob records."""
         jobs: list[ParsedJob] = []
         for dir_name, artifact_kind in self._ARTIFACT_DIR_KINDS.items():
-            base_dir = talend_root / dir_name
-            if not base_dir.exists():
+            base_dir = child_dir(talend_root, dir_name, on_error=self._walk_error)
+            if base_dir is None:
+                self._warn_case_variant(talend_root, dir_name, phase="job")
                 continue
             for item_file in self._latest_item_files(base_dir):
                 try:
-                    job = self._parse_job(item_file, base_dir)
+                    job = self._parse_job_cached(item_file, base_dir)
                     if job:
                         job.source_design = dir_name
                         # Repository location is the canonical identity. A
@@ -667,8 +878,148 @@ class TalendParser(BaseParser):
 
         return jobs
 
+    def _resolution_fingerprint(self, item_file: Path) -> str:
+        """Hash only resolution records this design can actually reference.
+
+        A project-wide index fingerprint made every unchanged design miss its
+        cache when an unrelated job was added.  Talend references live in XML
+        attributes, so matching index identities against those raw values
+        preserves correctness: a newly resolvable or renamed referenced target
+        changes the key, while unrelated index growth does not.  Target paths
+        remain excluded because replay deliberately rebinds rename-only moves.
+        """
+
+        try:
+            root = ET.parse(item_file).getroot()
+            attribute_values = "\x1f".join(
+                str(value)
+                for element in root.iter()
+                for value in element.attrib.values()
+            )
+        except (OSError, ET.ParseError):
+            attribute_values = ""
+        jobs = sorted(
+            {
+                (key, value[0])
+                for key, value in self._job_id_index.items()
+                if key and key in attribute_values
+            }
+        )
+        metadata = sorted(
+            {
+                (key, value.name)
+                for key, value in self._xmi_id_index.items()
+                if key and key in attribute_values
+            }
+        )
+        return hashlib.sha256(repr((jobs, metadata)).encode("utf-8")).hexdigest()
+
+    def _parse_job_cached(self, item_file: Path, base_dir: Path) -> ParsedJob | None:
+        if self._parse_cache is None:
+            job = self._parse_job(item_file, base_dir)
+            if job is not None:
+                self.cred_filter.normalize_model_tokens(job)
+            return job
+        key = design_cache_key(
+            item_file,
+            redaction_fingerprint=self.cred_filter.cache_fingerprint,
+            resolution_fingerprint=self._resolution_fingerprint(item_file),
+        )
+        relative_item = (
+            item_file.relative_to(self._warn_root).as_posix()
+            if self._warn_root and item_file.is_relative_to(self._warn_root)
+            else item_file.name
+        )
+        cached = self._parse_cache.read(key)
+        if cached is not None:
+            self.cred_filter.replay_audit(cached.redaction_audit)
+            return self._replay_cached_design(cached, item_file, base_dir, relative_item)
+
+        warning_start = len(self._warnings)
+        audit_checkpoint = self.cred_filter.audit_checkpoint()
+        properties = self._read_properties_sidecar(item_file)
+        job = self._parse_job(item_file, base_dir, properties=properties)
+        if job is not None:
+            # Descriptor tokens are process-local transports. Normalize every
+            # unconsumed token before returning or caching the public parsed
+            # model so cold and warm scans are byte-equivalent.
+            self.cred_filter.normalize_model_tokens(job)
+            self._parse_cache.write(
+                key,
+                job=job,
+                warnings=self._warnings[warning_start:],
+                source_item=relative_item,
+                name_from_path=not bool(properties.get("label")),
+                redaction_audit=self.cred_filter.audit_since(audit_checkpoint),
+            )
+        return job
+
+    def _replay_cached_design(
+        self, cached: CachedDesign, item_file: Path, base_dir: Path, relative_item: str,
+    ) -> ParsedJob:
+        job = cached.job.model_copy(deep=True)
+        old_path = job.path
+        new_path = item_file.relative_to(base_dir).as_posix()
+        old_target_paths = {
+            ref.child_job_xmi_id: ref.target_item_path for ref in job.trunjob_refs if ref.child_job_xmi_id
+        } | {
+            ref.target_xmi_id: ref.target_item_path for ref in job.artifact_refs if ref.target_xmi_id
+        }
+        job.path = new_path
+        parts = new_path.split("/")
+        job.group = parts[0] if len(parts) > 1 else ""
+        job.subgroup = parts[1] if len(parts) > 2 else ""
+        if cached.name_from_path:
+            job.name = item_file.stem.rsplit("_0.", 1)[0]
+
+        for component in job.components:
+            if component.repository_property_ref:
+                resolved = self._xmi_id_index.get(component.repository_property_ref)
+                component.metadata_connection_ref = resolved.name if resolved else ""
+        for ref in job.trunjob_refs:
+            identity = next((self._job_id_index.get(candidate)
+                             for candidate in _identity_candidates(ref.child_job_xmi_id)
+                             if self._job_id_index.get(candidate)), None)
+            if identity:
+                ref.child_job, ref.target_item_path, ref.reference_source = identity[0], identity[1], "identity"
+        for ref in job.artifact_refs:
+            identity = next((self._job_id_index.get(candidate)
+                             for candidate in _identity_candidates(ref.target_xmi_id)
+                             if self._job_id_index.get(candidate)), None)
+            if identity:
+                ref.target_name, ref.target_item_path, ref.reference_source = identity[0], identity[1], "identity"
+
+        replacements = {cached.source_item: relative_item, old_path: new_path}
+        for ref in [*job.trunjob_refs, *job.artifact_refs]:
+            guid = getattr(ref, "child_job_xmi_id", "") or getattr(ref, "target_xmi_id", "")
+            old_target = old_target_paths.get(guid, "")
+            if old_target and ref.target_item_path:
+                replacements[old_target] = ref.target_item_path
+        for warning in cached.warnings:
+            replay = warning.model_copy(deep=True)
+            if replay.file == cached.source_item:
+                replay.file = relative_item
+            for old, new in replacements.items():
+                if old and old != new:
+                    replay.message = replay.message.replace(old, new)
+            self._warnings.append(replay)
+        return job
+
+    # File types this parser extracts into the scan result. A directory
+    # holding only these is scanned, whatever its name.
+    _PARSED_FILE_TYPES: frozenset[FileType] = frozenset({
+        FileType.JOB, FileType.JOB_PROPERTIES, FileType.CONNECTION,
+        FileType.CONTEXT, FileType.ROUTINE, FileType.JOBLET,
+        FileType.TDM_MAP, FileType.STRUCTURE, FileType.XSLT,
+        FileType.SERVICE, FileType.WSDL, FileType.PROJECT,
+    })
+
     def _warn_unscanned_categories(
-        self, talend_root: Path, all_roots: Iterable[Path],
+        self,
+        talend_root: Path,
+        all_roots: Iterable[Path],
+        *,
+        classify: Callable[[Path], FileType] | None = None,
     ) -> None:
         """Flag top-level Talend repository directories this scanner never
         parses, so a future undiscovered artifact category (e.g. resources/,
@@ -684,8 +1035,8 @@ class TalendParser(BaseParser):
             root for root in all_roots
             if root != talend_root and root.is_relative_to(talend_root)
         ]
-        for child in sorted(talend_root.iterdir()):
-            if not child.is_dir() or child.name.startswith("."):
+        for child in sorted(child_dirs(talend_root, on_error=self._walk_error)):
+            if child.name.startswith("."):
                 continue
             if child.name in self._KNOWN_TALEND_ROOT_DIRS:
                 continue
@@ -694,26 +1045,67 @@ class TalendParser(BaseParser):
                 for root in nested_roots
             ):
                 continue
-            file_count = sum(1 for _ in child.rglob("*") if _.is_file())
-            if file_count == 0:
+            # Count only files nothing extracts. route_resources/ holding
+            # nothing but stylesheets IS scanned now, and claiming otherwise
+            # would be a false gap; a jar beside them still is one.
+            candidates = sorted(walk_files(child, on_error=self._walk_error))
+            unparsed = [
+                candidate
+                for candidate in candidates
+                if not (
+                    classify is not None
+                    and classify(candidate) in self._PARSED_FILE_TYPES
+                )
+            ]
+            if not unparsed:
                 continue
+            # Name the files, not the directory. `resources/` holds both the
+            # stylesheets this scanner parses and payloads it does not, so
+            # "the directory is not parsed, its contents are invisible" read
+            # as a denial of evidence that is demonstrably in the scan --
+            # exactly the failure mode a downstream document must not repeat.
             self._warn(
                 kind="unscanned_category",
                 file=child,
                 message=(
-                    f"Talend repository directory '{child.name}' ({file_count} files) "
-                    "is not parsed by this scanner; its contents are invisible to "
-                    "downstream analysis."
+                    f"Talend repository directory '{child.name}': "
+                    f"{len(candidates)} files, "
+                    f"{len(candidates) - len(unparsed)} parsed as supported "
+                    f"artifacts, {len(unparsed)} of a kind this scanner does "
+                    "not parse -- those are invisible to downstream analysis."
                 ),
                 phase="root_discovery",
             )
+
+    def _warn_case_variant(self, parent: Path, *names: str, phase: str) -> None:
+        """Say so when a directory exists under a different capitalisation.
+
+        Talend's repository layout has fixed casing, so a differently-cased
+        directory is a customer folder rather than the convention one -- but
+        skipping it silently would look identical to it not being there.
+        """
+        variants = case_variant_names(parent, *names)
+        if not variants:
+            return
+        self._warn(
+            kind="case_variant_directory",
+            file=parent / variants[0],
+            message=(
+                f"Directory {variants[0]!r} differs only by case from the Talend "
+                f"convention {names[0]!r} and was NOT parsed as it; Talend uses "
+                "exact lowercase repository directories."
+            ),
+            phase=phase,
+        )
 
     @staticmethod
     def _version_sort_key(version: str) -> tuple[int, ...]:
         """Numeric sort key for Talend item versions ('3.3' > '0.10' > '0.9')."""
         return tuple(int(part) for part in re.findall(r"\d+", version))
 
-    def _parse_job(self, item_file: Path, base_dir: Path) -> ParsedJob | None:
+    def _parse_job(
+        self, item_file: Path, base_dir: Path, *, properties: dict[str, str] | None = None,
+    ) -> ParsedJob | None:
         """Parse a single job .item file + its .properties sidecar.
 
         `base_dir` is the process/, routes/, joblets/, or routelets/
@@ -724,7 +1116,7 @@ class TalendParser(BaseParser):
         body = _find_process_body(root)
 
         # Read .properties sidecar for name/version/dates
-        props = self._read_properties_sidecar(item_file)
+        props = properties if properties is not None else self._read_properties_sidecar(item_file)
 
         # Derive group/subgroup from path (first two folder levels under base_dir)
         rel = item_file.relative_to(base_dir).as_posix()
@@ -785,6 +1177,7 @@ class TalendParser(BaseParser):
             if tag == "Property":
                 result["label"] = elem.get("label", "")
                 result["version"] = elem.get("version", "")
+                result["property_id"] = elem.get("id", "")
                 # Parse additionalProperties for dates
                 for child in elem:
                     child_tag = _local_tag(child.tag)
@@ -854,6 +1247,8 @@ class TalendParser(BaseParser):
         unique_name = ""
         params: list[ComponentParam] = []
         txmlmaps: list[TXMLMapData] = []
+        tmaps: list[TMapData] = []
+        schema_elements: list[ET.Element] = []
 
         for child in node_elem:
             tag = _local_tag(child.tag)
@@ -868,8 +1263,17 @@ class TalendParser(BaseParser):
                     # Skip UI noise
                     if name in ("COMP_DEFAULT_FILE_DIR",) or name.startswith("offsetLabel"):
                         continue
+                    # A TABLE-field parameter carries its payload in
+                    # <elementValue> children and leaves `value` EMPTY, so
+                    # the empty-value skip below used to discard the entire
+                    # table: every tRunJob CONTEXTPARAMS override in every
+                    # scan was silently lost.
+                    rows = (
+                        _parse_table_param_rows(child, self.cred_filter)
+                        if field.strip().upper() == "TABLE" else []
+                    )
                     # Skip empty values
-                    if not value:
+                    if not value and not rows:
                         continue
                     # Layer 1 may have replaced a whole URI with an opaque
                     # descriptor marker.  Recover only its safe structural
@@ -878,12 +1282,24 @@ class TalendParser(BaseParser):
                     # model can be persisted or exposed downstream.
                     descriptor = self.cred_filter.descriptor_from_redaction_token(value)
                     value = self.cred_filter.normalize_redaction_tokens(value)
+                    if descriptor is None and rows:
+                        # `rows` is dict[str, str] with no descriptor slot, so
+                        # a row URI is only summarized when exactly one row
+                        # value carried a marker -- never guessed from
+                        # several conflicting ones.
+                        descriptor = _single_row_descriptor(child, self.cred_filter)
                     params.append(ComponentParam(
                         name=name,
                         value=value,
                         field_type=field,
+                        rows=rows,
                         redaction_descriptor=descriptor,
                     ))
+
+            elif tag == "metadata":
+                # Component row schema (one <metadata> per connector:
+                # FLOW, REJECT, or a component-specific name).
+                schema_elements.append(child)
 
             elif tag == "nodeData":
                 # tMap MapperData / tXMLMap XmlMapData — try multiple namespace patterns
@@ -893,22 +1309,19 @@ class TalendParser(BaseParser):
                     or child.get("type", "")
                 )
                 if "MapperData" in xsi_type and "XmlMapData" not in xsi_type:
-                    tmap = self._parse_mapper_data(child)
-                    job.tmap_data.append(tmap)
+                    tmaps.append(self._parse_mapper_data(child))
                 elif "XmlMapData" in xsi_type:
-                    txmap = self._parse_xml_map_data(child)
+                    txmap = self._parse_xml_map_data(child, node_index=len(job.components))
                     txmlmaps.append(txmap)
-                    if item_file is not None:
+                    if item_file is not None and txmap.unresolved_connections:
                         self._warn(
                             kind="partial_parse",
                             file=item_file,
                             message=(
                                 f"tXMLMap '{unique_name or comp_type}' in job "
                                 f"'{job.name}': input/output field trees and "
-                                "output expressions captured, but the "
-                                "positional connections list is stored raw "
-                                "and not resolved into typed source/target "
-                                "pairs."
+                                f"output expressions captured; {len(txmap.unresolved_connections)} "
+                                "positional connections have unsupported or invalid references."
                             ),
                             phase="txmlmap",
                         )
@@ -919,22 +1332,41 @@ class TalendParser(BaseParser):
         for txmap in txmlmaps:
             txmap.component_name = unique_name
         job.txmlmap_data.extend(txmlmaps)
+        # Same ownership evidence for classic tMap. `TMapData.component_name`
+        # existed but was never populated, so every tMap in every scan was
+        # anonymous and no consumer could attribute a mapping to a component.
+        for tmap in tmaps:
+            tmap.component_name = unique_name
+        job.tmap_data.extend(tmaps)
 
         # Resolve metadata connection reference (REPOSITORY_PROPERTY_TYPE)
         conn_ref = ""
+        repository_property_ref = ""
+        declaration = ""
         for p in params:
-            if p.name in ("REPOSITORY_PROPERTY_TYPE", "PROPERTY:REPOSITORY_PROPERTY_TYPE"):
+            if p.name in ("PROPERTY:PROPERTY_TYPE", "PROPERTY_TYPE") and not declaration:
+                declaration = p.value.strip().lower()
+            elif (
+                p.name in ("REPOSITORY_PROPERTY_TYPE", "PROPERTY:REPOSITORY_PROPERTY_TYPE")
+                and not repository_property_ref
+            ):
                 # Value is an xmi:id — resolve to connection name
+                repository_property_ref = p.value
                 resolved = self._xmi_id_index.get(p.value)
                 if resolved:
                     conn_ref = resolved.name
-                break
 
         comp = Component(
             unique_name=unique_name,
             component_type=comp_type,
             params=params,
             metadata_connection_ref=conn_ref,
+            schemas=self._parse_component_schemas(schema_elements, params),
+            active=_component_is_active(params),
+            declaration=(
+                declaration if declaration in ("built_in", "repository") else ""
+            ),
+            repository_property_ref=repository_property_ref,
         )
         # Surface custom code (tJava/tJavaRow/tJavaFlex) as a top-level
         # field so downstream consumers don't have to know param layout.
@@ -943,9 +1375,9 @@ class TalendParser(BaseParser):
 
         # Extract tRunJob references
         if comp_type == "tRunJob":
-            self._extract_trunjob_ref(params, job)
+            self._extract_trunjob_ref(params, job, unique_name, item_file)
         elif comp_type == "cTalendJob":
-            self._extract_ctalendjob_ref(params, job, unique_name)
+            self._extract_ctalendjob_ref(params, job, unique_name, item_file)
         elif any(
             param.name == "FAMILY" and param.value.strip().lower() == "joblets"
             for param in params
@@ -960,12 +1392,77 @@ class TalendParser(BaseParser):
                 component_name=unique_name,
             ))
 
+    def _parse_component_schemas(
+        self, schema_elements: list[ET.Element], params: list[ComponentParam],
+    ) -> list[ComponentSchema]:
+        """Parse every <metadata> row schema carried by one component.
+
+        Talend states the schema's origin in a separate parameter pair
+        (``SCHEMA:SCHEMA_TYPE`` + ``SCHEMA:REPOSITORY_SCHEMA_TYPE``, and the
+        same pair under a connector-specific prefix such as
+        ``SCHEMA_REJECT``). The pair is bound to its connector by that
+        prefix; when no prefix matches, the declaration stays ``unknown``
+        rather than being taken from an unrelated connector -- except for
+        the single-schema/single-declaration case, where there is only one
+        thing it can mean.
+        """
+        declarations = _schema_declarations(params)
+        schemas: list[ComponentSchema] = []
+        for elem in schema_elements:
+            connector = elem.get("connector", "")
+            columns: list[ComponentSchemaColumn] = []
+            dynamic = False
+            for column in elem:
+                if _local_tag(column.tag) != "column":
+                    continue
+                column_type = column.get("type", "")
+                # An id_Dynamic column stands for an unknown number of real
+                # columns: the schema is no longer an enumerated field list.
+                column_dynamic = column_type.strip().casefold() == "id_dynamic"
+                dynamic = dynamic or column_dynamic
+                columns.append(ComponentSchemaColumn(
+                    name=column.get("name", ""),
+                    type=column_type,
+                    nullable=column.get("nullable", "true").strip().casefold() == "true",
+                    key=column.get("key", "false").strip().casefold() == "true",
+                    length=column.get("length", ""),
+                    precision=column.get("precision", ""),
+                    default_value=self.cred_filter.normalize_redaction_tokens(
+                        column.get("defaultValue", ""),
+                    ),
+                    pattern=self.cred_filter.normalize_redaction_tokens(
+                        column.get("pattern", ""),
+                    ),
+                    comment=self.cred_filter.normalize_redaction_tokens(
+                        column.get("comment", ""),
+                    ),
+                    source_type=column.get("sourceType", ""),
+                    dynamic=column_dynamic,
+                ))
+            declaration, repository_ref = _bind_schema_declaration(
+                declarations, connector, len(schema_elements),
+            )
+            schemas.append(ComponentSchema(
+                connector=connector,
+                name=elem.get("name", ""),
+                columns=columns,
+                dynamic=dynamic,
+                declaration=declaration,
+                repository_schema_ref=repository_ref,
+            ))
+        return schemas
+
     def _parse_mapper_data(self, node_data: ET.Element) -> TMapData:
         """Parse a TalendMapper:MapperData nodeData element."""
         tmap = TMapData()
 
         for child in node_data:
             tag = _local_tag(child.tag)
+            if tag in {"inputTables", "outputTables", "varTables"}:
+                tmap.table_details.append({
+                    "kind": tag, "attributes": dict(child.attrib),
+                    "entries": [dict(entry.attrib) for entry in child if _local_tag(entry.tag) == "mapperTableEntries"],
+                })
 
             if tag == "inputTables":
                 table_name = child.get("name", "")
@@ -997,7 +1494,7 @@ class TalendParser(BaseParser):
 
         return tmap
 
-    def _parse_xml_map_data(self, node_data: ET.Element) -> TXMLMapData:
+    def _parse_xml_map_data(self, node_data: ET.Element, *, node_index: int | None = None) -> TXMLMapData:
         """Parse a TalendXMLMap:XmlMapData nodeData element (tXMLMap component).
 
         Distinct wire format from classic tMap MapperData: fields form a
@@ -1009,10 +1506,33 @@ class TalendParser(BaseParser):
         full. The sibling ``connections`` elements use positional EMF proxy
         refs (``//@node.N/@nodeData/@inputTrees.0/@nodes.1``) purely to
         redraw the Studio wiring diagram; those are preserved verbatim in
-        ``raw_connections`` rather than resolved into typed pairs (see the
-        ``ScanWarning`` the caller emits alongside this).
+        ``raw_connections``. Supported local references are additionally
+        resolved into typed pairs; unsupported forms stay explicit and cause
+        the caller to emit a ``ScanWarning``.
         """
         txmap = TXMLMapData()
+        # Only resolve structural EMF indices relative to this exact node.
+        # Cross-node/resource proxies and unknown features remain explicit.
+        def resolve(ref: str) -> dict[str, str] | None:
+            match = re.fullmatch(r"//@node\.(\d+)/@nodeData(?:\.0)?/(.+)", ref)
+            if not match or node_index is None or int(match.group(1)) != node_index:
+                return None
+            current = node_data
+            table = ""
+            for index, segment in enumerate(match.group(2).split("/")):
+                feature = re.fullmatch(r"@(inputTrees|outputTrees|nodes|children|varTables|mapperTableEntries)\.(\d+)", segment)
+                if not feature:
+                    return None
+                children = [e for e in current if _local_tag(e.tag) == feature.group(1)]
+                ordinal = int(feature.group(2))
+                if ordinal >= len(children):
+                    return None
+                current = children[ordinal]
+                if index == 0:
+                    table = current.get("name", "")
+            if _local_tag(current.tag) not in {"nodes", "children", "mapperTableEntries"}:
+                return None
+            return {"table": table, "field": current.get("name", ""), "xpath": current.get("xpath", ""), "locator": ref}
 
         def collect_fields(elem: ET.Element) -> list[TXMLMapField]:
             fields: list[TXMLMapField] = []
@@ -1064,75 +1584,170 @@ class TalendParser(BaseParser):
                 target = child.get("target", "")
                 if source or target:
                     txmap.raw_connections.append(f"{source} -> {target}")
+                    source_field, target_field = resolve(source), resolve(target)
+                    if source_field is not None and target_field is not None:
+                        txmap.resolved_connections.append({
+                            **{f"source_{k}": v for k, v in source_field.items()},
+                            **{f"target_{k}": v for k, v in target_field.items()},
+                            "resolution": "exact_local_emf",
+                        })
+                    else:
+                        txmap.unresolved_connections.append({"source": source, "target": target, "reason": "unsupported_or_out_of_range_emf_reference"})
 
         return txmap
 
-    def _extract_trunjob_ref(self, params: list[ComponentParam], job: ParsedJob) -> None:
-        """Extract tRunJob child job reference from component parameters."""
-        readable_name = ""
-        xmi_ref = ""
-        context_params: list[ComponentParam] = []
+    # Talend serializes a design-to-design invocation under a parameter
+    # prefix that varies by component (tRunJob: PROCESS, cTalendJob:
+    # SELECTED_JOB_NAME, older exports: JOB_NAME) but with identical
+    # ":PROCESS_TYPE_*" sub-parameters. One resolver serves every caller so
+    # the identity-first rule cannot be implemented twice, differently.
+    _PROCESS_REFERENCE_PREFIXES = ("PROCESS", "SELECTED_JOB_NAME", "JOB_NAME")
 
-        for p in params:
-            if p.name == "PROCESS":
-                readable_name = p.value
-            elif p.name == "PROCESS:PROCESS_TYPE_PROCESS":
-                xmi_ref = p.value
+    def _resolve_process_reference(
+        self,
+        params: list[ComponentParam],
+        job: ParsedJob,
+        *,
+        component_name: str,
+        item_file: Path | None,
+    ) -> dict | None:
+        """Resolve a design reference IDENTITY-FIRST, label second.
 
-        # Prefer readable name; resolve XMI ref as fallback
-        child_job = readable_name
-        if not child_job and xmi_ref:
-            # Format is typically "PROJECT_NAME:_xmiId" — extract the ID part
-            parts = xmi_ref.split(":")
-            xmi_id = parts[-1].lstrip("_") if parts else xmi_ref
-            child_job = self._job_id_index.get(xmi_id, xmi_ref)
+        ``PROCESS`` / ``SELECTED_JOB_NAME`` is a Studio label CACHE: it
+        holds whatever the child job was called when the caller was last
+        saved, and Talend does not rewrite it when the child is renamed.
+        ``*:PROCESS_TYPE_PROCESS`` is the child's repository GUID and is
+        stable. Preferring the label -- which is what this parser used to do
+        -- makes a renamed child resolve to nothing, or worse, to a
+        different job that happens to now carry the stale name. When the two
+        disagree the GUID wins and the disagreement is reported as a
+        ``stale_label`` warning rather than silently normalized away.
+        """
+        by_name = {param.name: param for param in params}
+        for prefix in self._PROCESS_REFERENCE_PREFIXES:
+            guid_param = by_name.get(f"{prefix}:PROCESS_TYPE_PROCESS")
+            label_param = by_name.get(prefix)
+            if guid_param is None and label_param is None:
+                continue
+            guid = guid_param.value.strip() if guid_param is not None else ""
+            label = label_param.value.strip() if label_param is not None else ""
+            identity: tuple[str, str] | None = None
+            for candidate in _identity_candidates(guid):
+                identity = self._job_id_index.get(candidate)
+                if identity is not None:
+                    break
+            if identity is not None:
+                target, item_path, source = identity[0], identity[1], "identity"
+                if label and label != target:
+                    self._warn(
+                        kind="stale_label",
+                        file=item_file if item_file is not None else Path(job.path),
+                        message=(
+                            f"'{job.name}' component '{component_name}' caches "
+                            f"child label '{label}', but repository identity "
+                            f"{guid or '(none)'} resolves to '{target}' "
+                            f"({item_path}). The identity is authoritative; "
+                            "the cached label is stale."
+                        ),
+                        phase="artifact_reference",
+                    )
+            elif label:
+                target, item_path, source = label, "", "label"
+            else:
+                target, item_path, source = guid, "", "none"
+            return {
+                "prefix": prefix,
+                "guid": guid,
+                "label": label,
+                "target": target,
+                "item_path": item_path,
+                "reference_source": source,
+                "version": _param_value(by_name, f"{prefix}:PROCESS_TYPE_VERSION"),
+                "context_name": _param_value(by_name, f"{prefix}:PROCESS_TYPE_CONTEXT"),
+                "context_params": _context_param_overrides(by_name.get("CONTEXTPARAMS")),
+            }
+        return None
 
-        if child_job:
-            job.trunjob_refs.append(TRunJobRef(
-                child_job=child_job,
-                child_job_xmi_id=xmi_ref,
-                context_params=context_params,
-            ))
+    def _extract_trunjob_ref(
+        self,
+        params: list[ComponentParam],
+        job: ParsedJob,
+        component_name: str = "",
+        item_file: Path | None = None,
+    ) -> None:
+        """Extract a tRunJob child-job reference and its call semantics."""
+        reference = self._resolve_process_reference(
+            params, job, component_name=component_name, item_file=item_file,
+        )
+        if reference is None:
+            return
+        by_name = {param.name: param for param in params}
+        dynamic_job = _bool_param(by_name, "USE_DYNAMIC_JOB") is True
+        if not reference["target"] and not dynamic_job:
+            return
+        job.trunjob_refs.append(TRunJobRef(
+            child_job=reference["target"],
+            child_job_xmi_id=reference["guid"],
+            context_params=reference["context_params"],
+            version=reference["version"],
+            context_name=reference["context_name"],
+            transmit_whole_context=_bool_param(by_name, "TRANSMIT_WHOLE_CONTEXT"),
+            transmit_original_context=_bool_param(by_name, "TRANSMIT_ORIGINAL_CONTEXT"),
+            die_on_child_error=_bool_param(by_name, "DIE_ON_CHILD_ERROR"),
+            dynamic_job=dynamic_job,
+            reference_source=reference["reference_source"],
+            target_item_path=reference["item_path"],
+            # USE_DYNAMIC_JOB picks the child at runtime, so there is no
+            # static target to resolve and none must be invented.
+            resolution="dynamic" if dynamic_job else "unresolved",
+        ))
 
     def _extract_ctalendjob_ref(
-        self, params: list[ComponentParam], job: ParsedJob, component_name: str,
+        self,
+        params: list[ComponentParam],
+        job: ParsedJob,
+        component_name: str,
+        item_file: Path | None = None,
     ) -> None:
         """Extract a Route -> Job invocation without trusting a display label.
 
-        Talend Studio versions serialize the selected Job under different
-        parameter names.  We retain both the human-readable target and the
-        repository identity, resolving only when there is one safe match.
+        Same identity-first rule as tRunJob (see
+        ``_resolve_process_reference``); the two used to disagree, with the
+        route path preferring the label outright.
         """
-        target_name = ""
-        xmi_ref = ""
-        for param in params:
-            if param.name in {"SELECTED_JOB_NAME", "JOB_NAME", "PROCESS"}:
-                target_name = param.value
-            elif param.name in {
-                "SELECTED_JOB_NAME:PROCESS_TYPE_PROCESS",
-                "PROCESS:PROCESS_TYPE_PROCESS",
-                "JOB_NAME:PROCESS_TYPE_PROCESS",
-            }:
-                xmi_ref = param.value
-        if not target_name and xmi_ref:
-            candidate_id = xmi_ref.split(":")[-1].lstrip("_")
-            target_name = self._job_id_index.get(candidate_id, "")
-        if target_name or xmi_ref:
-            job.artifact_refs.append(ArtifactReference(
-                target_name=target_name or xmi_ref,
-                target_xmi_id=xmi_ref,
-                relation_type="route_invokes_job",
-                component_name=component_name,
-            ))
+        reference = self._resolve_process_reference(
+            params, job, component_name=component_name, item_file=item_file,
+        )
+        if reference is None or not (reference["target"] or reference["guid"]):
+            return
+        by_name = {param.name: param for param in params}
+        job.artifact_refs.append(ArtifactReference(
+            target_name=reference["target"] or reference["guid"],
+            target_xmi_id=reference["guid"],
+            relation_type="route_invokes_job",
+            component_name=component_name,
+            version=reference["version"],
+            context_name=reference["context_name"],
+            use_route_context=_bool_param(by_name, "USE_ROUTE_CONTEXT"),
+            reference_source=reference["reference_source"],
+            context_params=reference["context_params"],
+            target_item_path=reference["item_path"],
+        ))
 
     def _parse_connection(self, conn_elem: ET.Element, job: ParsedJob) -> None:
         """Parse a <connection> element."""
         name = ""
+        active = True
         for child in conn_elem:
             tag = _local_tag(child.tag)
-            if tag == "elementParameter" and child.get("name") == "UNIQUE_NAME":
+            if tag != "elementParameter":
+                continue
+            if child.get("name") == "UNIQUE_NAME":
                 name = child.get("value", "")
-                break
+            elif child.get("name") == "ACTIVATE":
+                # Same convention as components: the parameter is absent on
+                # an active link and false on a disabled one.
+                active = child.get("value", "").strip().casefold() != "false"
 
         conn = Connection(
             name=name or conn_elem.get("label", ""),
@@ -1140,6 +1755,7 @@ class TalendParser(BaseParser):
             target=conn_elem.get("target", ""),
             connector_name=conn_elem.get("connectorName", ""),
             line_style=int(conn_elem.get("lineStyle", "0")),
+            active=active,
         )
         job.connections.append(conn)
 
@@ -1152,38 +1768,42 @@ class TalendParser(BaseParser):
         "TalendString", "MDM",
     })
 
-    _MAX_ROUTINE_LINES = 200
-
-    def _parse_routines(self, talend_root: Path) -> list[Routine]:
+    def _parse_routines(self, talend_root: Path, *, source_root: str = ".") -> list[Routine]:
         """Collect routines from code/routines/ with source code."""
-        routines_dir = talend_root / "code" / "routines"
-        if not routines_dir.exists():
+        routines_dir = child_dir(talend_root, "code", "routines", on_error=self._walk_error)
+        if routines_dir is None:
             return []
 
         routines: list[Routine] = []
-        for item_file in sorted(routines_dir.rglob("*.item")):
-            name = item_file.stem.rsplit("_0.", 1)[0]
+        for item_file in self._latest_item_files(routines_dir):
+            match = re.match(r"(.+?)_(\d+(?:\.\d+)*)$", item_file.stem)
+            props = self._read_properties_sidecar(item_file)
+            name = props.get("label") or (match.group(1) if match else item_file.stem)
             is_system = name in self._SYSTEM_ROUTINES
 
             source_code = ""
+            complete = False
             if not is_system:
                 try:
                     raw = item_file.read_text(encoding="utf-8", errors="replace")
-                    # Apply credential filtering
-                    raw = self.cred_filter.filter_text(raw)
-                    # Cap at max lines
-                    lines = raw.splitlines()
-                    if len(lines) > self._MAX_ROUTINE_LINES:
-                        lines = lines[: self._MAX_ROUTINE_LINES]
-                        lines.append(f"// ... truncated at {self._MAX_ROUTINE_LINES} lines")
-                    source_code = "\n".join(lines)
-                except Exception:
-                    pass
+                    source_code = self.cred_filter.normalize_redaction_tokens(self.cred_filter.filter_text(raw))
+                    complete = True
+                except OSError as exc:
+                    self._warn(kind="parse_error", file=item_file, message=f"Routine source read failed: {type(exc).__name__}", phase="routine")
 
+            path = item_file.relative_to(talend_root).as_posix()
+            logical_path = (item_file.relative_to(talend_root).parent / name).as_posix()
             routines.append(Routine(
                 name=name,
                 source_code=source_code,
                 is_system=is_system,
+                routine_id=f"{source_root}::{props.get('property_id') or logical_path}",
+                source_root=source_root,
+                path=path,
+                version=props.get("version") or (match.group(2) if match else ""),
+                property_id=props.get("property_id", ""),
+                source_complete=complete,
+                source_sha256=hashlib.sha256(source_code.encode("utf-8")).hexdigest() if complete else "",
             ))
 
         return routines
@@ -1195,7 +1815,9 @@ class TalendParser(BaseParser):
     # Services projects to define request/response transformations outside
     # any single job's inline components. See models.TdmMap docstring.
 
-    _MAX_TDM_FIELDS = 500
+    # Storage preserves the complete supported tree. Consumers paginate their
+    # reads; an explicit deployment override still produces the existing gap.
+    _MAX_TDM_FIELDS: int | None = None
 
     def _parse_tdm_maps(
         self, talend_root: Path, source_root: str, root_jobs: list[ParsedJob],
@@ -1208,15 +1830,18 @@ class TalendParser(BaseParser):
         subfolder) are reported with ``association="unresolved"`` rather
         than guessed from name similarity.
         """
-        maps_dir = talend_root / "Maps"
-        if not maps_dir.exists():
+        maps_dir = child_dir(talend_root, "Maps", on_error=self._walk_error)
+        if maps_dir is None:
+            self._warn_case_variant(talend_root, "Maps", phase="tdm_map")
             return []
 
         jobs_by_name = {job.name: job for job in root_jobs if job.artifact_kind == "job"}
         routes_by_name = {job.name: job for job in root_jobs if job.artifact_kind == "route"}
 
         results: list[TdmMap] = []
-        for xml_file in sorted(maps_dir.rglob("*.xml")):
+        for xml_file in sorted(
+            walk_files(maps_dir, patterns=("*.xml",), on_error=self._walk_error)
+        ):
             rel_to_root = xml_file.relative_to(talend_root).as_posix()
             parts = xml_file.relative_to(maps_dir).parts
 
@@ -1312,7 +1937,7 @@ class TalendParser(BaseParser):
             for child in elem:
                 if _local_tag(child.tag) != "child":
                     continue
-                if len(fields) >= self._MAX_TDM_FIELDS:
+                if self._MAX_TDM_FIELDS is not None and len(fields) >= self._MAX_TDM_FIELDS:
                     truncated = True
                     return
                 name = child.get("name", "")
@@ -1407,8 +2032,17 @@ class TalendParser(BaseParser):
                 job.job_id = job.name
         for job in jobs:
             for ref in job.trunjob_refs:
-                same_root = by_root_name.get((job.source_root, ref.child_job), [])
-                global_matches = by_name.get(ref.child_job, [])
+                if ref.resolution == "dynamic":
+                    # The child is selected at runtime; there is no static
+                    # target and none may be invented from the label cache.
+                    continue
+                same_root = TalendParser._narrow_by_item_path(
+                    by_root_name.get((job.source_root, ref.child_job), []),
+                    ref.target_item_path,
+                )
+                global_matches = TalendParser._narrow_by_item_path(
+                    by_name.get(ref.child_job, []), ref.target_item_path,
+                )
                 if len(same_root) == 1:
                     ref.resolved_job_id = same_root[0].job_id
                     ref.resolution = "same_root"
@@ -1427,14 +2061,14 @@ class TalendParser(BaseParser):
                 target_kind = (
                     "joblet" if ref.relation_type == "job_uses_joblet" else "job"
                 )
-                candidates = [
+                candidates = TalendParser._narrow_by_item_path([
                     item for item in by_root_name.get((job.source_root, ref.target_name), [])
                     if item.artifact_kind == target_kind
-                ]
-                global_candidates = [
+                ], ref.target_item_path)
+                global_candidates = TalendParser._narrow_by_item_path([
                     item for item in by_name.get(ref.target_name, [])
                     if item.artifact_kind == target_kind
-                ]
+                ], ref.target_item_path)
                 if len(candidates) == 1:
                     ref.resolved_artifact_id = candidates[0].job_id
                     ref.resolution = "same_root"
@@ -1445,6 +2079,23 @@ class TalendParser(BaseParser):
                     ref.resolution = "global"
                 elif len(global_candidates) > 1:
                     ref.resolution = "ambiguous"
+
+    @staticmethod
+    def _narrow_by_item_path(
+        candidates: list[ParsedJob], item_path: str,
+    ) -> list[ParsedJob]:
+        """Break same-name ambiguity with the repository path the GUID named.
+
+        Two jobs in one root can legitimately share a display name (Talend
+        keys designs by path, not label). A label-only resolver reports that
+        as ``ambiguous`` forever; the GUID already told us which file it is.
+        Narrowing is applied only when it yields exactly one candidate --
+        never to pick a "best" match.
+        """
+        if len(candidates) <= 1 or not item_path:
+            return candidates
+        exact = [job for job in candidates if _job_path_key(job) == item_path]
+        return exact if len(exact) == 1 else candidates
 
     @staticmethod
     def _qualify_context_groups(context_groups: list[ContextGroup]) -> None:
@@ -1476,6 +2127,9 @@ class TalendParser(BaseParser):
         m = ProjectManifest()
 
         m.source_roots = source_roots
+        for routine in routines:
+            if routine.routine_id:
+                m.routine_metadata[routine.routine_id] = routine.model_dump(exclude={"source_code"})
         composite_execution_bundle = sum(
             root.get("role", "execution") == "execution"
             for root in source_roots
@@ -1641,6 +2295,23 @@ class TalendParser(BaseParser):
             # routines_used_by
             for rname in job.raw_routines:
                 m.routines_used_by.setdefault(rname, []).append(job_key)
+                candidates = [r for r in routines if r.name == rname and r.source_root == job.source_root]
+                # Support roots are not assumed to be shared libraries merely
+                # because a name matches. No cross-root fallback can bind the
+                # wrong implementation to a caller.
+                if len(candidates) == 1 and candidates[0].routine_id:
+                    routine = candidates[0]
+                    m.job_routine_links.setdefault(job_key, []).append({
+                        "routine_id": routine.routine_id, "name": rname,
+                        "resolution": "same_root", "path": routine.path,
+                        "source_root": routine.source_root,
+                    })
+                else:
+                    m.unresolved_routine_refs.setdefault(job_key, []).append({
+                        "name": rname,
+                        "resolution": "ambiguous" if candidates else "unresolved",
+                        "candidates": [r.routine_id for r in candidates],
+                    })
 
             # job_external_systems (derived from component types)
             systems: set[str] = set()
@@ -1671,6 +2342,12 @@ class TalendParser(BaseParser):
                             "artifact": job_key,
                             "channel_type": channel_type,
                             "channel": channel,
+                            # Additive: whether the destination was a literal
+                            # name or a runtime expression, captured before
+                            # `channel` collapsed a dynamic one.
+                            "channel_binding": classify_channel_binding(
+                                _find_route_channel_value(comp.params) or "",
+                            ),
                             # Additive: structural facts (scheme/auth/tls/
                             # category) captured from the raw endpoint value
                             # before it was collapsed into `channel` above.
@@ -1731,8 +2408,18 @@ class TalendParser(BaseParser):
 
 
 def _is_talend_root(candidate: Path) -> bool:
-    """A Talend root has a process/ (Job Designs) and/or routes/ (Route Designs) dir."""
-    return (candidate / "process").is_dir() or (candidate / "routes").is_dir()
+    """A Talend root has a process/ (Job Designs) and/or routes/ (Route Designs) dir.
+
+    The names must match EXACTLY. macOS and Windows mounts are case-insensitive,
+    so the old ``(candidate / "process").is_dir()`` was true for any customer
+    folder called ``Process`` -- which is how a data directory holding
+    ``Process/Processed`` was registered as a Talend execution root on a real
+    upload, and then walked as though it held Job Designs.
+    """
+    return (
+        child_dir(candidate, "process") is not None
+        or child_dir(candidate, "routes") is not None
+    )
 
 
 def _has_safe_connection_discriminator(value: str) -> bool:
@@ -1756,9 +2443,8 @@ def _find_talend_roots(repo_root: Path) -> list[Path]:
     """Find all independent Talend roots below an arbitrary source bundle."""
     candidates = [repo_root] if _is_talend_root(repo_root) else []
     candidates.extend(
-        p for p in repo_root.rglob("*")
-        if p.is_dir()
-        and "__MACOSX" not in p.relative_to(repo_root).parts
+        p for p in walk_dirs(repo_root)
+        if "__MACOSX" not in p.relative_to(repo_root).parts
         and not any(part.startswith("._") for part in p.relative_to(repo_root).parts)
         and _is_talend_root(p)
     )
@@ -1772,7 +2458,7 @@ def _find_talend_roots(repo_root: Path) -> list[Path]:
         if any(candidate.is_relative_to(root / "process") or candidate.is_relative_to(root / "routes") for root in selected):
             continue
         if any(candidate.is_relative_to(root) for root in selected) and not (
-            (candidate / "talend.project").is_file() or (candidate / ".project").is_file()
+            child_file(candidate, "talend.project") or child_file(candidate, ".project")
         ):
             continue
         selected.append(candidate)
@@ -1787,7 +2473,7 @@ def _find_talend_project_roots(repo_root: Path) -> list[Path]:
         descriptors.append(root_descriptor)
     descriptors.extend(
         descriptor
-        for descriptor in repo_root.rglob("talend.project")
+        for descriptor in walk_files(repo_root, patterns=("talend.project",))
         if descriptor != root_descriptor
         and "__MACOSX" not in descriptor.relative_to(repo_root).parts
         and not any(part.startswith("._") for part in descriptor.relative_to(repo_root).parts)
@@ -1806,12 +2492,50 @@ def _find_talend_project_roots(repo_root: Path) -> list[Path]:
     return roots
 
 
+def _support_artifact_owner(
+    repo_root: Path, talend_roots: Sequence[Path],
+) -> Callable[[Path], tuple[str, str]]:
+    """Build the ``(source_root, path)`` attribution for a support artifact.
+
+    Inside a Talend project the answer is that project, so a stylesheet that
+    always parsed keeps exactly the project-relative path it has always had.
+    Outside one -- the separately uploaded mapping folder that holds most of
+    an estate's stylesheets -- the owner is the largest ancestor directory
+    that contains no Talend project at all, which is the upload as a human
+    named it (``ETTM mappings-2``, not ``.``). Both forms join back to the
+    file inventory's bundle-relative path, so the parse accounting still
+    resolves.
+    """
+
+    def owner(path: Path) -> Path:
+        enclosing = [root for root in talend_roots if path.is_relative_to(root)]
+        if enclosing:
+            return max(enclosing, key=lambda root: len(root.parts))
+        area = repo_root
+        for part in path.relative_to(repo_root).parts[:-1]:
+            area = area / part
+            if not any(root.is_relative_to(area) for root in talend_roots):
+                return area
+        # Every ancestor holds a project: the file sits on the bundle's
+        # spine and belongs to no area smaller than its own directory.
+        return area
+
+    def attribute(path: Path) -> tuple[str, str]:
+        area = owner(path)
+        return (
+            area.relative_to(repo_root).as_posix() or ".",
+            path.relative_to(area).as_posix(),
+        )
+
+    return attribute
+
+
 def _has_supported_talend_artifacts(candidate: Path) -> bool:
     """Whether a descriptor-backed project contains scanner-supported artifacts."""
     return any((
-        (candidate / "context").is_dir(),
-        (candidate / "metadata" / "connections").is_dir(),
-        (candidate / "code" / "routines").is_dir(),
+        child_dir(candidate, "context") is not None,
+        child_dir(candidate, "metadata", "connections") is not None,
+        child_dir(candidate, "code", "routines") is not None,
     ))
 
 
@@ -1820,6 +2544,209 @@ def _qualified_job_id(source_root: str, discriminator: str) -> str:
     raw = f"{source_root}::{discriminator}"
     slug = re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_") or "job"
     return f"{slug[:56].rstrip('_') or 'job'}-{hashlib.sha256(raw.encode()).hexdigest()[:12]}"
+
+
+# Warning kinds that mean "this file was not fully extracted". Any other
+# kind (stale_label, unscanned_category) is a finding ABOUT the scan, not a
+# statement that the named file failed to parse.
+_PARTIAL_OUTCOME_WARNINGS: frozenset[str] = frozenset({
+    "parse_error", "partial_parse", "missing_file", "unknown",
+})
+
+
+# ── Component parameter / schema helpers ─────────────────────────────
+
+_VERSION_SUFFIX_RE = re.compile(r"(.+?)_(\d+(?:\.\d+)*)$")
+
+# SCHEMA:SCHEMA_TYPE, SCHEMA_REJECT:SCHEMA_TYPE, ... -- the prefix names the
+# connector the declaration belongs to.
+_SCHEMA_TYPE_RE = re.compile(r"^(SCHEMA(?:_[A-Za-z0-9_]+)?):SCHEMA_TYPE$")
+_SCHEMA_REPOSITORY_RE = re.compile(
+    r"^(SCHEMA(?:_[A-Za-z0-9_]+)?):REPOSITORY_SCHEMA_TYPE$"
+)
+
+
+def _strip_version_suffix(stem: str) -> str:
+    """'Orders_Load_3.2' -> 'Orders_Load'. A version is not identity."""
+    match = _VERSION_SUFFIX_RE.match(stem)
+    return match.group(1) if match else stem
+
+
+def _artifact_path_key(design_dir: str, relative_path: str) -> str:
+    """Version-stripped repository path of one design, e.g.
+    ``process/Orders/Orders_Load``.
+
+    Used to compare a GUID-resolved target against a parsed job when their
+    display names collide. The export version is stripped because the
+    ``.properties`` sidecar and the selected ``.item`` need not be the same
+    saved version.
+    """
+    path = PurePosixPath(relative_path)
+    stem = _strip_version_suffix(path.stem)
+    parent = path.parent.as_posix()
+    return f"{design_dir}/{parent}/{stem}" if parent not in ("", ".") else f"{design_dir}/{stem}"
+
+
+def _job_path_key(job: ParsedJob) -> str:
+    return _artifact_path_key(job.source_design or "process", job.path)
+
+
+def _identity_candidates(raw: str) -> list[str]:
+    """Every spelling one serialized repository GUID may take.
+
+    Talend writes either the bare id or ``PROJECT:_id``, and the leading
+    underscore is present in some exports and not others.
+    """
+    if not raw:
+        return []
+    tail = raw.split(":")[-1]
+    ordered = [raw, raw.lstrip("_"), tail, tail.lstrip("_")]
+    return [candidate for candidate in dict.fromkeys(ordered) if candidate]
+
+
+def _param_value(by_name: dict[str, ComponentParam], name: str) -> str:
+    param = by_name.get(name)
+    return param.value.strip() if param is not None else ""
+
+
+def _bool_param(by_name: dict[str, ComponentParam], name: str) -> bool | None:
+    """Tri-state parameter read: absent stays unknown, never False.
+
+    "The export did not say" and "the export said false" are different
+    facts about a job's behaviour.
+    """
+    param = by_name.get(name)
+    if param is None:
+        return None
+    normalized = param.value.strip().casefold()
+    if normalized in {"true", "1", "yes"}:
+        return True
+    if normalized in {"false", "0", "no"}:
+        return False
+    return None
+
+
+def _parse_table_param_rows(
+    param_elem: ET.Element, cred_filter: CredentialFilter,
+) -> list[dict[str, str]]:
+    """Group a TABLE parameter's <elementValue> children into rows.
+
+    Talend serializes a table as one flat run of ``elementValue`` entries
+    (``PARAM_NAME_COLUMN``, ``PARAM_VALUE_COLUMN``, ``PARAM_NAME_COLUMN``,
+    ...), so a new row starts each time the first column key reappears.
+    """
+    rows: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    first_key = ""
+    for child in param_elem:
+        if _local_tag(child.tag) != "elementValue":
+            continue
+        key = child.get("elementRef", "")
+        if not key:
+            continue
+        if not first_key:
+            first_key = key
+        elif key == first_key and current:
+            rows.append(current)
+            current = {}
+        current[key] = cred_filter.normalize_redaction_tokens(child.get("value", ""))
+    if current:
+        rows.append(current)
+    return rows
+
+
+def _single_row_descriptor(
+    param_elem: ET.Element, cred_filter: CredentialFilter,
+) -> RedactionDescriptor | None:
+    """Safe structural facts for a TABLE row URI, only when unambiguous."""
+    descriptors: dict[str, RedactionDescriptor] = {}
+    for child in param_elem:
+        if _local_tag(child.tag) != "elementValue":
+            continue
+        descriptor = cred_filter.descriptor_from_redaction_token(child.get("value", ""))
+        if descriptor is not None:
+            descriptors[descriptor.model_dump_json(exclude_none=True)] = descriptor
+    return next(iter(descriptors.values())) if len(descriptors) == 1 else None
+
+
+def _component_is_active(params: list[ComponentParam]) -> bool:
+    """Whether a component runs.
+
+    Talend omits ACTIVATE entirely on an active component and serializes
+    ``value="false"`` on a disabled one, so absence means active. (Joblet
+    embeds carry an explicit ``true``.)
+    """
+    return not any(
+        param.name == "ACTIVATE" and param.value.strip().casefold() == "false"
+        for param in params
+    )
+
+
+def _schema_declarations(
+    params: list[ComponentParam],
+) -> dict[str, tuple[str, str]]:
+    """prefix -> (declaration, repository schema id) from parameter pairs."""
+    declarations: dict[str, str] = {}
+    repositories: dict[str, str] = {}
+    for param in params:
+        type_match = _SCHEMA_TYPE_RE.match(param.name)
+        if type_match:
+            declarations[type_match.group(1)] = param.value.strip().lower()
+            continue
+        repository_match = _SCHEMA_REPOSITORY_RE.match(param.name)
+        if repository_match:
+            repositories[repository_match.group(1)] = param.value.strip()
+    return {
+        prefix: (declaration, repositories.get(prefix, ""))
+        for prefix, declaration in declarations.items()
+    }
+
+
+def _bind_schema_declaration(
+    declarations: dict[str, tuple[str, str]], connector: str, schema_count: int,
+) -> tuple[str, str]:
+    """Bind one <metadata> connector to its SCHEMA*:SCHEMA_TYPE declaration.
+
+    The main flow uses the bare ``SCHEMA`` prefix; every other connector
+    uses ``SCHEMA_<CONNECTOR>``. When neither matches, the declaration is
+    reported ``unknown`` instead of being borrowed from another connector --
+    except when the component has exactly one schema and exactly one
+    declaration, where there is only one thing it can mean.
+    """
+    prefix = "SCHEMA" if connector.upper() in ("", "FLOW") else f"SCHEMA_{connector.upper()}"
+    entry = declarations.get(prefix)
+    if entry is None and len(declarations) == 1 and schema_count == 1:
+        entry = next(iter(declarations.values()))
+    if entry is None:
+        return "unknown", ""
+    declaration, repository_ref = entry
+    if declaration == "repository":
+        return "repository", repository_ref
+    if declaration == "built_in":
+        return "built_in", repository_ref
+    return "unknown", repository_ref
+
+
+def _context_param_overrides(param: ComponentParam | None) -> list[ComponentParam]:
+    """CONTEXTPARAMS rows as name/value overrides passed to a child design.
+
+    These are the only record of what a parent actually hands its child, and
+    the cross-job lineage stitcher already looks for them
+    (``lineage._stitch_trunjob_context_params``) -- it just never found any,
+    because the TABLE parameter carrying them was dropped at parse time.
+    """
+    if param is None or not param.rows:
+        return []
+    overrides: list[ComponentParam] = []
+    for row in param.rows:
+        name = ComponentParam.row_column(row, "NAME")
+        value = ComponentParam.row_column(row, "VALUE")
+        if not name and not value:
+            continue
+        overrides.append(ComponentParam(
+            name=name, value=value, field_type="CONTEXTPARAM",
+        ))
+    return overrides
 
 
 _ROUTE_CHANNEL_PARAM_NAMES = frozenset({
@@ -1840,6 +2767,22 @@ def _find_route_channel_value(params: list[ComponentParam]) -> str | None:
     return None
 
 
+# Markers that make a destination/URI a runtime value rather than a name:
+# a context variable, a globalMap lookup, or Java string concatenation.
+_DYNAMIC_CHANNEL_MARKERS: tuple[str, ...] = ("context.", "globalmap", "+")
+
+
+def classify_channel_binding(value: str) -> str:
+    """``literal`` | ``dynamic`` | ``absent`` for a channel/endpoint value."""
+    text = value.strip()
+    if not text:
+        return "absent"
+    lowered = text.casefold()
+    if any(marker in lowered for marker in _DYNAMIC_CHANNEL_MARKERS):
+        return "dynamic"
+    return "literal"
+
+
 def _safe_route_channel(params: list[ComponentParam]) -> str:
     """Return non-sensitive channel evidence suitable for the topology API.
 
@@ -1856,6 +2799,14 @@ def _safe_route_channel(params: list[ComponentParam]) -> str:
     # service path. Preserve only that an endpoint is configured.
     if "://" in value or "@" in value or "password" in value.lower():
         return "configured endpoint"
+    if classify_channel_binding(value) == "dynamic":
+        # `context.QUEUE` is not a channel name: two routes carrying that
+        # same expression resolve to different queues per environment.
+        # Returning the placeholder keeps both the manifest connection node
+        # and the landscape channel identity from fabricating a shared
+        # dependency -- the same rule `_has_safe_connection_discriminator`
+        # applies to repository connections.
+        return "configured channel"
     return re.sub(r"\s+", " ", value)[:120]
 
 

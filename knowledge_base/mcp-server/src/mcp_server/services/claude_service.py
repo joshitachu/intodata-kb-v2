@@ -33,6 +33,7 @@ from mcp_server.services.generation_run_state import (
     LockHeartbeat,
     acquire_generation_lock,
     persist_nexus_execution_receipt,
+    persist_generation_profile,
     refresh_generation_lock,
     release_generation_lock,
     write_run_manifest,
@@ -1114,6 +1115,7 @@ Required sections:
         scoped_docs: set[str] | None = None,
         partition=None,
         initiating_user_id: int | None = None,
+        generation_profile: dict | None = None,
     ) -> dict:
         """Spawn Claude Code CLI to generate docs for a project.
 
@@ -1137,6 +1139,17 @@ Required sections:
             WHOLE_PROJECT_PARTITION,
             partition_output_subdir,
         )
+        from mcp_server.services.generation_profile import (
+            is_agent_workspace_profile,
+            normalize_profile,
+            validate_profile_route,
+        )
+
+        generation_profile = normalize_profile(generation_profile)
+        # One coherent investigation over the whole estate. Everything the
+        # legacy path does to shape work into phases, groups and partitions is
+        # skipped -- the agent decides how to read the workspace it is given.
+        agentic_run = is_agent_workspace_profile(generation_profile)
 
         output_dir = config.project_root / "output" / project_id
         unit_allowlist: set[str] | None = None
@@ -1211,6 +1224,10 @@ Required sections:
             d.chmod(0o777)
 
         try:
+            persist_generation_profile(
+                staging_dir, generation_profile,
+                resume=resume_state is not None or scoped_docs is not None,
+            )
             nexus_execution_receipt = build_nexus_execution_receipt(
                 pack_ids=nexus_pack_ids or [],
                 snapshot=nexus_pack_snapshot,
@@ -1361,6 +1378,7 @@ Required sections:
         restored_groups: list[str] | None = None
         if (
             not skip_preprocess
+            and not agentic_run
             # A scoped reingestion prepares staging deliberately (unchanged
             # groups' analyses restored, changed groups removed) — mirror the
             # fresh-staging guard above and never overwrite that.
@@ -1381,7 +1399,14 @@ Required sections:
                     logger.warning("Extraction cache restore failed: %s", exc)
                     restored_groups = None
 
-        if skip_preprocess:
+        if agentic_run:
+            await self.log_manager.emit(
+                project_id,
+                "Agentic contract selected: bypassing legacy preprocess and phase orchestration",
+                level="info",
+            )
+            preprocess_groups = []
+        elif skip_preprocess:
             await self.log_manager.emit(
                 project_id,
                 "RESUME: Skipping preprocessing (files already exist)",
@@ -1439,7 +1464,7 @@ Required sections:
         assessment_dir = staging_dir / "_assessment"
         assessment_dir.mkdir(parents=True, exist_ok=True)
         quick_scan_path = assessment_dir / "quick_scan.md"
-        if not skip_preprocess or not quick_scan_path.exists():
+        if not agentic_run and (not skip_preprocess or not quick_scan_path.exists()):
             self._run_quick_scan(staging_dir, preprocess_groups)
 
         # Determine which analysis guide file sub-agents should read
@@ -1469,6 +1494,12 @@ Required sections:
         resolved_provider = model_resolution.provider_type
         effective_model = model_resolution.analysis_model
         effective_write_model = model_resolution.write_model
+
+        try:
+            validate_profile_route(generation_profile, platform=platform, engine=resolved_provider)
+        except ValueError as exc:
+            release_generation_lock(staging_dir, run_id=run_id)
+            return {"success": False, "error": str(exc)}
 
         connector_runtime = None
         if (
@@ -1522,6 +1553,7 @@ Required sections:
             live_evidence=live_evidence,
             run_id=run_id,
             connector_runtime=connector_runtime,
+            generation_profile=generation_profile,
         )
 
         provider = get_provider(
@@ -1533,6 +1565,11 @@ Required sections:
             instruction_pack_dir=instruction_pack_dir,
             plugin_pack_dir=plugin_pack_dir,
         )
+
+        if agentic_run:
+            from mcp_server.providers.agent_workspace.runner import AgentWorkspaceProvider
+
+            provider = AgentWorkspaceProvider(model_route=effective_model)
 
         if plugin_pack_dir is not None and not model_resolution.uses_opencode_cli:
             provider = build_plugin_runner(
@@ -1564,10 +1601,14 @@ Required sections:
             main_model_name = effective_model
             write_model_name = effective_model
         provider_details = (
-            f"provider={resolved_provider} "
-            f"phase1={investigation_model_name} "
-            f"phase2={main_model_name} "
-            f"phase3={write_model_name}"
+            f"provider={resolved_provider} coherent_investigation={effective_model}"
+            if agentic_run
+            else (
+                f"provider={resolved_provider} "
+                f"phase1={investigation_model_name} "
+                f"phase2={main_model_name} "
+                f"phase3={write_model_name}"
+            )
         )
         await self.log_manager.emit(
             project_id,
@@ -1596,7 +1637,11 @@ Required sections:
                 run_id=run_id,
                 project_id=project_id,
                 phase="provider",
-                status="completed" if result.get("success") else "failed",
+                status=(
+                    "completed" if result.get("success")
+                    else "cancelled" if result.get("cancelled")
+                    else "failed"
+                ),
                 extra={"error": result.get("error")},
             )
             return result

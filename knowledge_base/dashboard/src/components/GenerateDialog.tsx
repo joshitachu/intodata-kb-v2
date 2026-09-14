@@ -70,6 +70,14 @@ export default function GenerateDialog({
   const [pluginPackId, setPluginPackId] = useState<number | null>(project.plugin_pack_id);
   const [runGenerationMethod, setRunGenerationMethod] =
     useState<GenerationMethod | null>(null);
+  // The one agentic lane: Nexus stages a readable workspace plus the
+  // instructions for analysing it, and the coding agent writes the
+  // documentation. There is no second experimental contract to be mutually
+  // exclusive with any more.
+  const [useAgentic, setUseAgentic] = useState(false);
+  const [agenticGoal, setAgenticGoal] = useState(
+    "Produce complete integration documentation for this estate",
+  );
   const [runInvestigationModel, setRunInvestigationModel] = useState("");
   const [runAnalysisModel, setRunAnalysisModel] = useState("");
   const [runWriteModel, setRunWriteModel] = useState("");
@@ -85,6 +93,8 @@ export default function GenerateDialog({
       setLiveEvidence(true);
       setPluginPackId(project.plugin_pack_id);
       setRunGenerationMethod(null);
+      setUseAgentic(false);
+      setAgenticGoal("Produce complete integration documentation for this estate");
       setRunInvestigationModel("");
       setRunAnalysisModel("");
       setRunWriteModel("");
@@ -172,6 +182,10 @@ export default function GenerateDialog({
   const generationMethod =
     runGenerationMethod ?? (configuredForOpenCode ? "opencode" : "legacy");
   const usesOpenCode = generationMethod === "opencode";
+  // One agentic lane besides legacy. Not platform-gated: any scan that
+  // produces the workspace inputs qualifies, and the backend contract is
+  // platform-neutral too (`validate_profile_route`).
+  const canUseAgentic = usesOpenCode;
   const configuredLegacyAnalysisModel =
     project.doc_generation_provider &&
     project.doc_generation_provider !== "custom" &&
@@ -216,6 +230,14 @@ export default function GenerateDialog({
           : runAnalysisModel || configuredLegacyAnalysisModel,
         writeModel: usesOpenCode ? null : runWriteModel || savedWrite,
         generationMethod: usesOpenCode ? "opencode-cli" : "custom",
+        ...(canUseAgentic && useAgentic
+          ? {
+              generationProfile: {
+                contract: "agent-workspace-v1",
+                agent_workspace: { goal: agenticGoal.trim() },
+              },
+            }
+          : {}),
         // BOTH engines read `live_evidence`. OpenCode ignored it until the
         // runtime producer became a shared preparation step that its own
         // `_prepare_run` calls -- withholding the flag here would leave the
@@ -286,12 +308,21 @@ export default function GenerateDialog({
         <div className="flex-1 overflow-y-auto px-7 py-5 space-y-6">
           {/* First in the body on purpose: what this run will cost is the
               decision being made here, and every control below it is a detail
-              of a run the operator has not yet agreed to pay for. */}
-          <GenerationPlanSection
-            state={planState}
-            plan={previewablePlan}
-            onRetry={() => setPlanReload((n) => n + 1)}
-          />
+              of a run the operator has not yet agreed to pay for.
+
+              Hidden for the agentic lane, and not merely cosmetically: that
+              lane never enters the partition orchestrator, so the panel would
+              describe work the run will not do. It would show a 142-design
+              estate as "3 of 3 sub-projects will regenerate", with the note
+              that each was split to fit a per-run model-call budget -- the
+              fixed-partition model this lane exists to remove. */}
+          {!useAgentic && (
+            <GenerationPlanSection
+              state={planState}
+              plan={previewablePlan}
+              onRetry={() => setPlanReload((n) => n + 1)}
+            />
+          )}
 
           <section className="space-y-3 rounded border border-white/[0.08] bg-black/10 p-4">
             <h4 className="font-mono uppercase tracking-wider text-xs text-accent-primary/80">
@@ -394,9 +425,51 @@ export default function GenerateDialog({
             </div>
             <p className="text-xs text-slate-500">
               {usesOpenCode
-                ? "One OpenCode orchestrator session runs the complete legacy-compatible workflow."
+                ? useAgentic
+                  ? "The agent receives one workspace -- the scan, the instructions for reading it, and an output directory -- and writes the documentation itself. It decides what to read and how far to go."
+                  : "One OpenCode orchestrator session runs the complete legacy-compatible workflow."
                 : "The existing Python pipeline runs each legacy phase with its configured model."}
             </p>
+            {canUseAgentic && (
+              <label className="flex items-start gap-2.5 rounded border border-accent-primary/30 bg-accent-primary/5 p-3 text-sm text-slate-300 select-none">
+                <input
+                  type="checkbox"
+                  aria-label="Use agentic documentation"
+                  checked={useAgentic}
+                  onChange={(event) => setUseAgentic(event.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-accent-primary"
+                />
+                <span>
+                  <span className="block font-medium text-slate-200">
+                    Use agentic documentation
+                  </span>
+                  <span className="mt-1 block text-xs text-slate-500">
+                    Requires a completed scan. The whole estate goes to one agent
+                    as a single workspace -- no job batches, no sub-project splits.
+                    Documentation publishes unless it leaks a credential or an
+                    internal path.
+                  </span>
+                </span>
+              </label>
+            )}
+            {canUseAgentic && useAgentic && (
+              <label className="block space-y-2 text-sm text-slate-300">
+                <span className="block font-medium text-slate-200">Investigation goal</span>
+                <textarea
+                  aria-label="Investigation goal"
+                  value={agenticGoal}
+                  onChange={(event) => setAgenticGoal(event.target.value)}
+                  rows={4}
+                  maxLength={4000}
+                  className="w-full rounded border border-white/[0.12] bg-black/20 px-3 py-2 text-sm text-slate-100 outline-none focus:border-accent-primary/60"
+                />
+                <span className="block text-xs text-slate-500">
+                  Ask for complete documentation or a focused investigation. The whole
+                  estate is parsed; expensive analysis follows the goal and its connected
+                  dependencies.
+                </span>
+              </label>
+            )}
           </section>
 
           <section className="space-y-3">
@@ -559,7 +632,8 @@ export default function GenerateDialog({
             disabled={
               submitPending ||
               assignPluginPack.isPending ||
-              (usesOpenCode && !runAnalysisModel)
+              (usesOpenCode && !runAnalysisModel) ||
+              (useAgentic && agenticGoal.trim().length < 3)
             }
           >
             {submitPending

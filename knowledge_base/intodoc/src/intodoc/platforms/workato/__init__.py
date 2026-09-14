@@ -87,7 +87,9 @@ class WorkatoPlugin(GenericPlugin):
         # Fall back to Generic classification
         return super().classify_file(path)
 
-    def parse_project(self, repo_root: Path, cred_filter: CredentialFilter) -> ScanResult:
+    def parse_project(
+        self, repo_root: Path, cred_filter: CredentialFilter, *, cache_dir: Path | None = None,
+    ) -> ScanResult:
         """Parse using the Workato-specific parser."""
         from intodoc.platforms.workato.parser import WorkatoParser
 

@@ -356,9 +356,12 @@ def _empty_group_stub(group: str, units: list[str]) -> str:
 
     The stub satisfies the coverage, depth, and guide-sections gates without any LLM call.
     """
-    covered = "\n".join(f"- COVERED: {u}" for u in units)
+    covered = "\n".join(
+        f"- SKIPPED: {u} -- supplied preprocessing packet contains too little material for analysis"
+        for u in units
+    )
     unit_lines = "\n".join(
-        f"- {u}: scanner-limited; no source code in scanner output" for u in units
+        f"- {u}: packet-limited; source extraction status is not established by this artifact" for u in units
     )
     return (
         f"# Phase 2 Analysis: {group}\n\n"
@@ -366,8 +369,8 @@ def _empty_group_stub(group: str, units: list[str]) -> str:
         f"{covered}\n\n"
         "## Model Analysis\n\n"
         "### GROUP_SUMMARY\n\n"
-        f"Scanner-limited group. The source artifact for `{group}` contains no analysable "
-        "source code, logic, or configuration. All units are documented as data-only stubs.\n\n"
+        f"Evidence-packet gap for `{group}`. The supplied preprocessing artifact contains too "
+        "little material for analysis. This does not establish that the source or scanner lacked it.\n\n"
         f"Units:\n{unit_lines}\n"
     )
 
@@ -2443,7 +2446,7 @@ Fallback plan example:
         if group_file.stat().st_size < config.min_investigation_content_bytes:
             analysis_path.write_text(_empty_group_stub(group, group_units), encoding="utf-8")
             self._write_phase2_coverage_record(
-                ctx, group, group_units, analysis_path, status="scanner_limited"
+                ctx, group, group_units, analysis_path, status="packet_limited"
             )
             return
 
@@ -2600,6 +2603,7 @@ Fallback plan example:
             shared_context=[path for path in shared_context if path != evidence_brief],
             investigation_context=investigation_context,
             scoped_evidence=evidence_slice,
+            scan_output_dir=config.intodoc_output_dir / ctx.project_id,
             max_bytes=config.phase2_task_context_bytes,
             max_scoped_artifact_bytes=config.phase2_filtered_map_bytes,
             artifact_names=spec.artifact_names,
@@ -2951,6 +2955,7 @@ Fallback plan example:
                     shared_context=base_context,
                     investigation_context=investigation_context,
                     scoped_evidence=task_evidence[0] if task_evidence else None,
+                    scan_output_dir=config.intodoc_output_dir / ctx.project_id,
                     max_bytes=config.phase2_task_context_bytes,
                     max_scoped_artifact_bytes=config.phase2_filtered_map_bytes,
                 )
@@ -3235,10 +3240,11 @@ Fallback plan example:
             "Shared systems, dependencies, repeated patterns, contradictions between jobs, "
             "cross-cutting risks, and end-to-end flows that span multiple jobs.\n\n"
             f"`### {GROUP_SUMMARY_SECTION}`\n"
-            "A concise group-level index for Phase 3: units covered and scanner-limited units; top "
+            "A concise group-level index for Phase 3: units covered and units limited at a named evidence stage; top "
             "flows and entrypoints; external systems and runtime/config facts; business rules and "
             "transformations with evidence pointers; top risks, unknowns, and redacted vs missing vs "
-            "scanner-limited distinctions; deep evidence pointers to the assembled sections.\n\n"
+            "distinctions among absent source, extraction, resolution, packet, and analysis gaps; "
+            "deep evidence pointers to the assembled sections.\n\n"
             "Canonical units:\n"
             + "\n".join(f"- {name}" for name in group_units)
         )
@@ -3538,10 +3544,10 @@ Fallback plan example:
         file_bytes = group_file.stat().st_size
         if file_bytes < config.min_investigation_content_bytes:
             analysis_path.write_text(_empty_group_stub(group, group_units), encoding="utf-8")
-            self._write_phase2_coverage_record(ctx, group, group_units, analysis_path, status="scanner_limited")
+            self._write_phase2_coverage_record(ctx, group, group_units, analysis_path, status="packet_limited")
             await log_cb(
                 ctx.project_id,
-                f"[custom] Phase 2 direct: wrote scanner-limited stub for {group}",
+                f"[custom] Phase 2 direct: wrote evidence-packet-limited stub for {group}",
                 "warning",
             )
             return
@@ -3640,6 +3646,7 @@ Fallback plan example:
             shared_context=[path for path in shared_context if path != evidence_brief],
             investigation_context=investigation_context,
             scoped_evidence=evidence_slice,
+            scan_output_dir=config.intodoc_output_dir / ctx.project_id,
             max_bytes=config.phase2_task_context_bytes,
             max_scoped_artifact_bytes=config.phase2_filtered_map_bytes,
         )
@@ -3724,16 +3731,16 @@ Fallback plan example:
             async with semaphore:
                 target = ctx.staging_dir / "_analysis" / f"{group}.md"
 
-                # If the group has no meaningful source content, write a scanner-limited
+                # If the group packet has no meaningful content, write a packet-limited
                 # stub rather than dispatching a repair that would hallucinate.
                 preprocess_file = ctx.staging_dir / "_preprocess" / f"{group}.md"
                 preprocess_size = preprocess_file.stat().st_size if preprocess_file.exists() else 0
                 if preprocess_size < config.min_investigation_content_bytes:
                     target.write_text(_empty_group_stub(group, units), encoding="utf-8")
-                    self._write_phase2_coverage_record(ctx, group, units, target, status="scanner_limited")
+                    self._write_phase2_coverage_record(ctx, group, units, target, status="packet_limited")
                     await log_cb(
                         ctx.project_id,
-                        f"[custom] Phase 2 repair: wrote scanner-limited stub for {group}",
+                        f"[custom] Phase 2 repair: wrote evidence-packet-limited stub for {group}",
                         "warning",
                     )
                     return
@@ -3764,7 +3771,8 @@ Fallback plan example:
                     "- Write markdown sections that can be appended under `## Model Analysis`.\n"
                     "- Preserve exact canonical unit names.\n"
                     "- Use only supplied scanner, investigation, and EngineeringFacts evidence.\n"
-                    "- If evidence is unavailable, explicitly state scanner-limited evidence for the unit.\n\n"
+                    "- If evidence is unavailable, name the evidenced failure stage. A packet omission is "
+                    "not proof of a scanner or source gap.\n\n"
                     "Validator errors:\n"
                     + ("\n".join(f"- {error}" for error in group_errors) or "- None")
                     + "\n\nRoot-cause classification:\n"
@@ -4015,7 +4023,7 @@ Fallback plan example:
         included_obligations, unmatched_obligations, obligation_text = self._doc_obligation_context(facts, doc_name)
         groups = ", ".join(f"{group}={count}" for group, count in sorted(facts.groups.items())) or "none"
         units = "\n".join(
-            f"- {unit.name} | group={unit.group} | path={unit.path or 'scanner-limited'} | "
+            f"- {unit.name} | group={unit.group} | path={unit.path or 'source path unavailable'} | "
             f"type={unit.unit_type} | systems={', '.join(unit.key_systems) or 'none'}"
             for unit in facts.units
         )
@@ -4024,7 +4032,8 @@ Fallback plan example:
         coverage_note = source_coverage.relative_to(ctx.staging_dir).as_posix() if source_coverage.exists() else "No direct source coverage file"
         pack = (
             f"# Document Evidence Pack: {doc_name}\n\n"
-            "This evidence pack is your PRIMARY and SUFFICIENT source for writing this document. "
+            "This evidence pack is your PRIMARY scoped source for writing this document. It is not "
+            "proof that every retained source fact is present. "
             "Write directly from the evidence below. Do NOT call tools to re-read analysis, source "
             "files, or artifacts that are already included in this pack — that content is here. "
             "Use a tool only to fill a specific, named gap you genuinely cannot answer from this pack.\n\n"
@@ -4694,28 +4703,6 @@ Fallback plan example:
                 f"{state.facts_manifest.canonical_unit_label}.\n\n"
                 f"{self._unit_catalog_markdown(state)}"
             )
-        scanner_limited_disclosures = {
-            "03_DATA_FLOWS_AND_LINEAGE": (
-                "Scanner-Limited: schemas, field-level lineage, transformations, and validation "
-                "details not established by the cited scanner evidence remain unknown and must "
-                "not be inferred."
-            ),
-            "05_RUNTIME_CONFIG_AND_EXTERNALS": (
-                "Scanner-Limited: runtime, configuration, and external-system details not "
-                "established by the cited scanner evidence remain unknown and must not be inferred."
-            ),
-        }
-        disclosure = scanner_limited_disclosures.get(doc_name)
-        if disclosure and not re.search(r"\bScanner\-Limited\b", content, re.IGNORECASE):
-            # The authoritative Phase 3 prompt requires this literal evidence
-            # classification. Models sometimes convey the limitation correctly
-            # but vary the label (for example, "scanner limits"). Normalize only
-            # the label and a conservative unknown boundary; never invent facts.
-            content = (
-                f"{content.rstrip()}\n\n"
-                "## Scanner-Limited Evidence\n\n"
-                f"{disclosure}\n"
-            )
         return content.rstrip() + "\n"
 
     async def _phase35_critic_expander(
@@ -5135,7 +5122,7 @@ Fallback plan example:
                 instruction_text = (
                     f"SLICE INSTRUCTION: You are processing slice {idx} of {len(slices)} "
                     f"for target {target}. Use only this slice's evidence. Preserve exact "
-                    "names and mark any unresolved coverage as scanner-limited. The slices "
+                    "names and mark unresolved coverage with its evidenced failure stage. The slices "
                     "are merged by section afterwards: write only sections this slice's "
                     "evidence supports, do not restate content that needs no evidence, and "
                     + (

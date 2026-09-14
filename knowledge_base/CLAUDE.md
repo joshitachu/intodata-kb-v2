@@ -34,7 +34,7 @@ cd ../RAG_pipeline/backend && python -m uvicorn src.api.main:app --port 8000
 ## Rules
 
 1. **Read `.agent/README.md` first** -- it tells you which docs to read for your task
-2. **Read `.claude/` files before starting work** -- read `context.md`, `PROJECT_MEMORY.md`, `progress.md`, and `PROGRESS_LOG.md` at session start. Follow the unified logging rules in root `CLAUDE.md` (section "Logging Rules") for all changes -- same format, same discipline as `RAG_pipeline/`.
+2. **Run the `session-start` skill before starting work** -- it reads `context.md` (live state, capped at 60 lines) and the newest 3 entries of `PROGRESS_LOG.md`. Architecture decisions live in `.agent/decisions/`. Follow the logging rules in root `CLAUDE.md` (section "Logging") for all changes -- same format, same discipline as `RAG_pipeline/`.
 3. **Credential filter first** -- never send raw credentials to any LLM
 4. **ASCII-only Markdown** -- no Unicode box-drawing characters in generated docs
 5. **No intermediate files** -- only final `.md` docs in `output/{project_id}/docs/` (generated via `docs_staging/`, see Documentation Generation)
@@ -44,9 +44,8 @@ cd ../RAG_pipeline/backend && python -m uvicorn src.api.main:app --port 8000
 9. **No workarounds** -- fixes must address the root cause, not suppress symptoms. If a proper fix requires broader changes, make them. Never ship a narrow patch when the defect pattern exists elsewhere in the codebase.
 10. **Generalize fixes** -- before fixing anything, check whether the same failure can occur in other places. Fix it at the level that prevents all recurrences. One-off special-case branches are not acceptable solutions.
 11. **Use design patterns** -- before writing a new class, service, or module, identify whether an established pattern fits (Strategy, Repository, Factory, Observer, Pipeline, etc.). Don't invent bespoke structures when a well-understood pattern solves the problem.
-12. **Full pipeline gate** -- any non-Scout change requires the full pipeline: `/grill` → `/prd` → `/slices` → `/plan` → `/plan-approve pass` → build → `/inspect` → `/validate` → commit. See root `CLAUDE.md` Development Workflow.
-13. **Inspector required** -- after building any change to harness pipeline phases or MCP API routes, run `/inspect` before committing. Max 2 block cycles before escalating to the human.
-14. **Emergency path** -- use `/lfe-force` for production emergencies only; it logs to `PROTOCOL_DEBT.md` and session-start will warn until `/debt-resolve` clears it.
+12. **Plan gate** -- anything beyond a small, well-understood change needs `plan` → the user sets `verdict: PASS` → build → `inspect` → `validate` → commit. The agent never sets `verdict: PASS` itself. See root `CLAUDE.md` Development Workflow.
+13. **Inspect required** -- after building any change to harness pipeline phases or MCP API routes, run `inspect` before committing. Max 2 BLOCK cycles before escalating to the human.
 
 ## Documentation Generation
 
@@ -69,7 +68,7 @@ This is the primary method for generating project documentation. Follow it exact
   `_preprocess/{group}.md` file sizes before Phase 3. Groups below 500 bytes emit a
   `THIN_BUNDLE` warning and are listed in `state.thin_bundle_groups`. Phase 3 prepends
   an evidence notice to all generated docs when thin groups are detected.
-- Phase 2 plans job-boundary evidence tasks per group (`providers/custom/evidence_tasks.py`): whole `## Job:` sections are bin-packed up to `MCP_PHASE2_TASK_EVIDENCE_BYTES` (default 70000); a job is never split, and each task's evidence header lists exactly the units it contains. One analysis agent runs per task (`MCP_AGENT_PHASE2_CONCURRENCY`, default 6). Multi-task groups are assembled deterministically in Python (verbatim section selection with per-task provenance) and a single group synthesis task writes `GROUP_SUMMARY` + `CROSS_JOB_FINDINGS`. The former char-based chunker, its lying 'visible in this chunk' headers, and the LLM merge task (`MCP_PHASE2_MERGE_MODE`) were removed — they caused chunk agents to fabricate analyses for jobs whose evidence they never had.
+- Phase 2 plans job-boundary evidence tasks per group (`providers/custom/evidence_tasks.py`): whole `## Job:` sections are bin-packed up to `MCP_PHASE2_TASK_EVIDENCE_BYTES` (default 48000; `config.py` `phase2_task_evidence_bytes`); a job is never split, and each task's evidence header lists exactly the units it contains. One analysis agent runs per task (`MCP_AGENT_PHASE2_CONCURRENCY`, default 6). Multi-task groups are assembled deterministically in Python (verbatim section selection with per-task provenance) and a single group synthesis task writes `GROUP_SUMMARY` + `CROSS_JOB_FINDINGS`. The former char-based chunker, its lying 'visible in this chunk' headers, and the LLM merge task (`MCP_PHASE2_MERGE_MODE`) were removed — they caused chunk agents to fabricate analyses for jobs whose evidence they never had.
 - Phase 2.6 scorecard and Phase 3 document writing are also persisted agent tasks under `docs_staging/_agent_tasks/{phase}/{target_id}/`.
 - Phase 3 dispatches one document task per required markdown document, with configurable concurrency (`MCP_AGENT_PHASE3_CONCURRENCY`, default 4).
 - **Phase 2 section parser** (`_parse_phase2_sections`): recognises h3-only headings (`### SECTION_NAME`). All-caps sub-headings (e.g. `#### HIGH` inside `RISK_FLAGS`) do not break the owning section. `CROSS_JOB_FINDINGS` is a registered section name (legacy `CROSS_CHUNK_FINDINGS` stays registered so cached analyses parse). Plugin ANALYSIS_GUIDE h3 sections are registered at call time via `_guide_section_names` + `extra_section_names` param.
@@ -612,6 +611,69 @@ This is the primary method for generating project documentation. Follow it exact
   scanner landscape is thin (werkorder: 25 edges over 429 jobs, with `Log` / `Common` /
   `Talend` appearing as "systems"), which is the deeper reason the deterministic
   overlay always looked wrong and is a separate scanner-side follow-up.
+
+### Enterprise Talend method (`talend-enterprise-v1`, 2026-09-09)
+
+ADR-030. Selected by `generation_profile.contract = "talend-enterprise-v1"` (dashboard: "Use
+enterprise Talend documentation method"); Talend + `opencode-cli` only. Everything lives in
+`providers/custom/enterprise/` and is routed from `OpenCodeCliProvider.run()` right after
+`_prepare_run`. Other platforms and the legacy/landscape contracts are unchanged.
+
+- **Inputs the scanner must have produced** (rescan an old project first, the run fails closed
+  before any model call otherwise): `scan/sanitized/` + `manifest.json` (every textual export
+  file after credential filtering, digest per file, `residual_free`), `scan/mapping_accounting.json`
+  (per mapper: offered / written / mapped / constant / lookup / dynamic / unresolved, all rows),
+  `scan/capability_ledger.json`. `workspace.py` re-verifies every digest while copying the
+  package to `docs_staging/_workspace/` and renders `_analysis/_exact/` (units, dependencies,
+  interfaces, configuration, mapping_tables/<table_id>.md, capability ledger, index.md).
+- **Method**: `services/investigation_method.py` stages the pinned Integration Suite Talend
+  guides (revision `0c68b22633a6d067fcc30e29dd18e86d9ea6d24f`, sha256-verified from
+  `data/investigation_methods/talend/method.yaml`) plus `nexus-adaptation.md` under
+  `_method/talend/`. Talend only. Editing a guide without updating the digest is a hard error.
+- **Runtime**: `providers/custom/runtime_authority.py` fuses the TMC store payload
+  (`_transient/runtime/runtime_evidence.json`, so it must run before Phase 4) and an optional
+  normalised Elastic aggregate into `_analysis/_runtime_authority.json`; absence is
+  `unavailable`, never non-execution; routes get the DI-only TMC limitation.
+- **Phases** (`phase_runner.py`, `phase_contracts.py`): deep_analyze_estate,
+  reconstruct_integrations, build_knowledge_model, reconcile_authorities (model ledgers), then
+  Python assembles + validates `_evidence_registry/enterprise/knowledge_model.json`
+  (`knowledge_model.py`), writes `question_coverage.json` (`knowledge_questions.py`), builds the
+  dossier plan (`integration_projection.py`), runs write_catalogue_dossiers, review,
+  targeted_repair, then `publication_policy.evaluate_publication` ->
+  `_assessment/publication_verdict.json` + `enterprise_gates.json` + `enterprise_run_receipt.json`.
+  Each OpenCode session gets the whole workspace (`_execute_step(exploration_artifacts=None)`),
+  one typed submission tool (facade dispatch on `metadata["enterprise_phase"]`), and the
+  profile budgets (`EnterpriseBudgets`: session/run time, turns, processed tokens, cost dispatch
+  ceiling, repair/regenerate attempts, units_per_session, concurrency). Assignments are
+  scheduling records only. Ledger state is in `_evidence_registry/enterprise/phases/<phase>/ledger/`
+  and `phase_state.json` (fingerprinted on workspace manifest + exact index + method manifest +
+  prompt templates; a changed fingerprint resets ledgers, an identical one resumes).
+- **Repair vs regenerate**: a rejected or never-submitted key gets a RECOVERY round (fresh
+  session, same access); an accepted entry that fails assembled validation gets a REPAIR session
+  naming exactly the failed entries (`repair_targets_from_validation`); a review finding
+  re-runs only that document's section contract. No-progress recovery rounds stop the phase
+  and the run ends `incomplete` (AgentResult failure -> staging preserved, baseline untouched).
+- **Documents**: `INTEGRATION_CATALOGUE.md` (every interface once, every journey named,
+  coverage + capability limitations in client language) and top-level `INTEGRATION__<slug>.md`
+  dossiers for material groups (>= `dossier_min_designs` designs, or exact tables, or error
+  paths). Python renders structure, flow/interface/runtime tables and the exact mapping tables
+  verbatim; the model submits JSON prose sections with `claim_ids`. Provenance sidecars live in
+  `_evidence_registry/enterprise/doc_provenance/`. `client_language.leakage_findings` blocks
+  internal paths/ids/registers/`scanner detail is limited` in client prose. The plan said
+  `integrations/<slug>.md`; top-level files were chosen because seven publication consumers
+  and the viewer route only see top-level `docs/*.md`.
+- **Publication**: `_run_generate_background` reads the verdict; a failing one is a blocking
+  gate (`run_verdict = held_client_readiness`, no swap, no RAG push, draft kept). RAG gets the
+  knowledge-model projection as internal layer `knowledge_model` (`_rag_support/knowledge_model/`)
+  plus per-group `_analysis/<group>.md` rendered from designs so the technical-analysis layer
+  and the incremental cache keep working.
+- **Model route**: a profile `model` pin wins; otherwise the request/`MCP_OPENCODE_MODEL` route
+  is inherited and, when neither is set, the OpenCode runtime default applies. The receipt
+  records `model.source`.
+- **Tests**: `tests/test_providers/test_enterprise_*.py`, `tests/test_api/test_enterprise_publication_gate.py`,
+  `tests/test_services/test_investigation_method.py`, `tests/test_providers/test_runtime_authority.py`;
+  frozen fixture `tests/fixtures/talend_enterprise/expected.json` via
+  `scripts/evaluate_enterprise_talend.py`. NOT DONE: the paid pilot (plan slice 10).
 
 ### Composite-Upload Orchestration (partition runs)
 

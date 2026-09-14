@@ -46,6 +46,46 @@ intodoc scan <source-dir> --platform talend --output-dir ../intodoc-output
 - `Global.asax.cs` contains ServiceStack/OrmLite setup and named database connection registrations. Future scanner/EngineeringFacts work should expose redacted connection names and app-setting keys so docs can say which runtime connections exist without leaking credentials.
 - The bug is downstream synthesis/evidence surfacing, not source absence: generic docs relied on normalized maps that only showed file paths and dependencies, missing the richer redacted source evidence already present in the scan cache.
 
+## Enterprise Artifact Fidelity (Sep 2026)
+
+Talend scans now cover the artifact categories that used to be invisible, and
+publish two deterministic ledgers so coverage is measurable rather than assumed.
+Full rationale and known gaps: `.agent/decisions/003-enterprise-artifact-fidelity.md`.
+
+New scan artifacts (all additive; historic `scan_result.json` still loads):
+
+| Artifact | Contents |
+|----------|----------|
+| `scan/structures.json` | TDM structures (`Structures/**/*.xml`) as path-qualified element trees, with `parse_outcome` + `unmatched_tags` |
+| `scan/xslt.json` | XSLT stylesheets (templates, value-producing instructions, variables, includes) plus `referenced_by` component bindings |
+| `scan/services.json` | ESB service designs (`services/*.item` + `*.wsdl`) as portType/operation names |
+| `scan/mapping_accounting.json` | Per mapper component: offered / written / mapped / constant / lookup / dynamic field counts, lookups, filters, rejects, and one row per written field (tMap, tXMLMap, TDM, XSLT) |
+| `scan/capability_ledger.json` | Every construct the scan saw with a capability status, plus `file_outcomes` that sums to the inventory row count |
+| `scan/sanitized/` | Redacted mirror of every textual source file, with a manifest of what was written and what was refused (categories only, never values) |
+
+Rules that matter when working on this area:
+
+- **Identity beats the label cache.** `tRunJob` `PROCESS` and `cTalendJob`
+  `SELECTED_JOB_NAME` are Studio label caches that go stale on rename;
+  `*:PROCESS_TYPE_PROCESS` (the repository GUID) is authoritative. Disagreement is
+  a `stale_label` warning, and `reference_source` records which one was used.
+  `USE_DYNAMIC_JOB` means `resolution="dynamic"` with no target.
+- **Absence is not a value.** `ACTIVATE` is omitted on an active component, so
+  `Component.active` derives from absence. Call flags are `bool | None` so "not
+  stated" stays distinguishable from "false".
+- **A dynamic destination is not a channel identity.** `context.*` / `globalMap`
+  destinations collapse to the non-identity placeholder so no shared dependency is
+  fabricated between routes that resolve differently per environment.
+- **Publishing raw text needs the structural redaction rule at text level.**
+  Layer 1's key/value pattern is XML-attribute shaped with a fixed key list; the
+  structural layer redacts by token-aware variable NAME. The mirror applies
+  `CredentialFilter.redact_named_value_pairs` and then REFUSES any file that still
+  trips `detect_residual`. Never widen the mirror's extension set without checking
+  that the filter can prove that format clean.
+- **A gap is a row, not a silence.** Unsupported constructs, unresolved
+  references and unenumerable schemas are ledger rows with a status. Never drop
+  one to keep an output tidy.
+
 ## Planned State
 - **Migration generators** -- auto-generate code for Lobster, Databricks, etc. (Phase 3)
 

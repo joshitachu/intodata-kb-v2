@@ -30,8 +30,12 @@ import {
 
 type FormMode = "none" | "create" | "assign";
 
+interface ProjectsPanelProps {
+  canCreateProjects?: boolean;
+}
+
 /** Projects and the member assignments that grant access to them. */
-export function ProjectsPanel() {
+export function ProjectsPanel({ canCreateProjects = true }: ProjectsPanelProps) {
   const [filterUser, setFilterUser] = useState("");
   const [filterProject, setFilterProject] = useState("");
 
@@ -146,14 +150,16 @@ export function ProjectsPanel() {
         description="Create projects and control which members can reach their documents and scans."
         actions={
           <>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => { setFormMode((mode) => (mode === "create" ? "none" : "create")); setError(""); }}
-            >
-              <Plus className="h-3.5 w-3.5" aria-hidden />
-              New project
-            </Button>
+            {canCreateProjects && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => { setFormMode((mode) => (mode === "create" ? "none" : "create")); setError(""); }}
+              >
+                <Plus className="h-3.5 w-3.5" aria-hidden />
+                New project
+              </Button>
+            )}
             <Button
               size="sm"
               onClick={() => { setFormMode((mode) => (mode === "assign" ? "none" : "assign")); setError(""); }}

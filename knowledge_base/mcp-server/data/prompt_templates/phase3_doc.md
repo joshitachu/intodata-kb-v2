@@ -18,17 +18,23 @@ FACTUAL CONSTRAINTS (enforced):
 - Platform: ${PLATFORM}
 - Canonical inventory: exactly ${CANONICAL_UNIT_COUNT} ${CANONICAL_UNIT_LABEL} -- never use a conflicting count
 - Cover or mention all canonical units where relevant to this document
-- If detail is absent for a unit, write "scanner detail is limited for this unit" -- never invent
+- If detail is absent, identify the evidenced failure stage: source missing,
+  parse unsupported/partial, dependency unresolved, packet omission, analysis unfinished,
+  or document omission. Use "scanner detail is limited" only with a cited extraction gap.
+  An empty packet alone does not establish missing source or failed scanning.
 - Synthesize from the supplied validated analysis; do not re-extract from raw scanner data
 
 DOC-PACK TRACEABILITY RULE (enforced):
-- The preloaded `_analysis/_doc_pack_${DOC_NAME}.md` evidence pack is the primary and
-  sufficient evidence source for this document. You do not need any tools -- every fact you
-  need is in the pack. Synthesize it into the document's required decisions and sections. Group
+- The preloaded `_analysis/_doc_pack_${DOC_NAME}.md` evidence pack is the primary scoped
+  evidence selection for this document, not proof that all source information is present.
+  Use supplied reference parts and accepted analysis to explain required decisions. Group
   repeated findings and cite their counts and scope; do not reproduce the pack or a fact map row
   by row. Do NOT re-read analysis or source artifacts already included in the pack.
 - Every factual claim about a unit, flow, system, or rule must
   trace to a specific section in the doc-pack.
+- For every accepted interpreted claim used in the document, preserve its
+  `<!-- claim:<id> -->` marker. Link exact details to the supplied source-reference
+  part instead of compressing them away.
 - If the doc-pack does not mention a unit that belongs to the canonical inventory, write the
   unit's exact name and state that doc-pack evidence is absent -- do NOT omit the unit from
   the Canonical Unit Inventory section or any inventory table.

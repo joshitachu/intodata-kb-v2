@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 
 const KB_API_URL = process.env.KB_API_URL || "http://localhost:8002";
 
@@ -29,8 +30,6 @@ export async function GET(
     const data = await res.json();
     return NextResponse.json(data);
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Failed to fetch job graph";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("projects/[id]/jobs/[jobName]/graph GET", error, "Failed to fetch job graph");
   }
 }

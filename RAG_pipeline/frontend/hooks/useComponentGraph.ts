@@ -6,6 +6,7 @@ import {
   ComponentGraphFallbackSchema,
   type ComponentGraphResponse,
 } from "@/types/componentGraph";
+import { authedFetch } from "@/lib/authedFetch";
 
 // Thrown when the API's documented 404 { fallback: "inspector" } contract
 // fires (any component without a level-3 graph - all non-tMap types today).
@@ -25,7 +26,7 @@ async function fetchComponentGraph(
   jobName: string,
   componentName: string,
 ): Promise<ComponentGraphResponse> {
-  const res = await fetch(
+  const res = await authedFetch(
     `/api/projects/${encodeURIComponent(projectId)}/jobs/${encodeURIComponent(jobName)}/components/${encodeURIComponent(componentName)}/graph`,
   );
 

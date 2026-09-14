@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 
 const KB_API_URL = process.env.KB_API_URL || "http://localhost:8001";
 
@@ -58,8 +59,6 @@ export async function GET(
       },
     });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Failed to fetch file";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("docs/[projectId]/[filename] GET", error, "Failed to fetch file");
   }
 }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ConnectAzureDevOpsSchema } from "@/types";
 import { proxyMcpJson, proxyMcpJsonSanitized } from "../../_proxy";
+import { badRequestOrUpstreamResponse } from "@/lib/backendProxy";
 
 export const dynamic = "force-dynamic";
 
@@ -22,8 +23,6 @@ export async function POST(request: NextRequest) {
       }),
     });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Invalid Azure DevOps connection";
-    return NextResponse.json({ error: message }, { status: 400 });
+    return badRequestOrUpstreamResponse("source/azure-devops/connections POST", error, "Invalid Azure DevOps connection");
   }
 }

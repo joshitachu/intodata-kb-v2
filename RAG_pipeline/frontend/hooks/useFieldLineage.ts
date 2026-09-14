@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { authedFetch } from "@/lib/authedFetch";
 import {
   LineageFieldResponseSchema,
   type FieldLineageQuery,
@@ -32,7 +33,10 @@ async function fetchFieldLineage(
   if (query.direction) params.set("direction", query.direction);
   if (query.maxDepth !== undefined) params.set("max_depth", String(query.maxDepth));
 
-  const res = await fetch(
+  // `authedFetch`, not `fetchJson`: the 404 below is a documented absence that
+  // has to be classified (and keep the body's message) before the generic
+  // error path can turn it into a plain failure.
+  const res = await authedFetch(
     `/api/projects/${encodeURIComponent(projectId)}/lineage/field?${params.toString()}`,
   );
 

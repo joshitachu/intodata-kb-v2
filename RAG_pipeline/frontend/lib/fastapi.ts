@@ -1,5 +1,6 @@
 import { cookies, headers } from "next/headers";
 import { clientAddressHeaders } from "@/lib/proxyHeaders";
+import { BackendResponseError, UpstreamUnavailableError } from "@/lib/upstreamErrors";
 
 export const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 
@@ -35,6 +36,26 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
   return forwarded;
 }
 
+/**
+ * Call the backend and throw a *typed* failure.
+ *
+ * Two distinct outcomes, never conflated:
+ * - the backend answered with an error -> `BackendResponseError` carrying its
+ *   status, so a route handler can forward 401/403/409 unchanged;
+ * - the backend did not answer -> `UpstreamUnavailableError`, which is a 503
+ *   ("try again"), not a 500.
+ *
+ * Pass either to `upstreamErrorResponse()` and the classification is done.
+ */
+async function callBackend(path: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(`${FASTAPI_URL}${path}`, init);
+  } catch (error) {
+    const aborted = error instanceof Error && error.name === "AbortError";
+    throw new UpstreamUnavailableError(path, aborted ? "timeout" : "network", error);
+  }
+}
+
 export async function fastapiFetch<T>(
   path: string,
   options: FetchOptions = {},
@@ -42,7 +63,7 @@ export async function fastapiFetch<T>(
   const { body, headers, ...rest } = options;
   const authHeaders = await getAuthHeaders();
 
-  const res = await fetch(`${FASTAPI_URL}${path}`, {
+  const res = await callBackend(path, {
     ...rest,
     headers: {
       "Content-Type": "application/json",
@@ -53,8 +74,7 @@ export async function fastapiFetch<T>(
   });
 
   if (!res.ok) {
-    const detail = await res.text();
-    throw new Error(`FastAPI ${res.status}: ${detail}`);
+    throw new BackendResponseError(res.status, await res.text(), path);
   }
 
   if (res.status === 204) {
@@ -70,7 +90,7 @@ export async function fastapiUpload<T>(
 ): Promise<T> {
   const authHeaders = await getAuthHeaders();
 
-  const res = await fetch(`${FASTAPI_URL}${path}`, {
+  const res = await callBackend(path, {
     method: "POST",
     headers: {
       ...authHeaders,
@@ -79,8 +99,7 @@ export async function fastapiUpload<T>(
   });
 
   if (!res.ok) {
-    const detail = await res.text();
-    throw new Error(`FastAPI ${res.status}: ${detail}`);
+    throw new BackendResponseError(res.status, await res.text(), path);
   }
 
   return res.json() as Promise<T>;

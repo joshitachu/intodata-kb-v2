@@ -1410,8 +1410,27 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
                 await pack_governance.require_generation_authority(pack)
             except PackGovernanceDenied as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
+        from mcp_server.services.generation_profile import (
+            normalize_profile,
+            validate_profile_route,
+        )
+
+        generation_profile = normalize_profile(req.generation_profile)
+        try:
+            validate_profile_route(
+                generation_profile,
+                platform=project.platform,
+                engine=(
+                    req.doc_generation_provider
+                    or project.doc_generation_provider
+                    or config.doc_generation_provider
+                ),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         await registry.update_status(req.project_id, "generating")
         run = await registry.create_generate_run(req.project_id, triggered_by="api")
+        run.generation_profile = generation_profile
         # Pack audit record (docs/one-pack-program.md section 9). Written at
         # creation, not completion: the binding between a deliverable and the
         # pack version that produced it must survive a failed or crashed run.
@@ -1459,6 +1478,7 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
         instruction_pack_dir=project.instruction_pack_dir,
         enterprise_mode=req.mode == "enterprise",
         initiating_user_id=initiating_user_id,
+        generation_profile=generation_profile,
     )
     return StatusResponse(
         status="generation_triggered",
@@ -1487,12 +1507,14 @@ async def repair_latest_git_update(project_id: str, request: Request, background
         if not before_sha or not after_sha:
             raise HTTPException(status_code=400, detail="No stored Git diff is available to repair")
 
+    from uuid import uuid4
+
     background_tasks.add_task(
         AutoDocUpdateService(log_mgr=log_mgr).run,
         project_id=project_id,
         before_sha=before_sha,
         after_sha=after_sha,
-        trigger="repair_latest",
+        trigger=f"repair_latest:{uuid4().hex}",
     )
     return StatusResponse(
         status="repair_triggered",
@@ -2136,6 +2158,19 @@ def _has_permanent_error(errors: list[str]) -> bool:
     return False
 
 
+def _usage_provider(model_name: object, generation_provider: str | None) -> str:
+    """Report the actual model route without pretending every run is Anthropic."""
+
+    route = str(model_name or "").strip()
+    if "/" in route:
+        return route.split("/", 1)[0]
+    requested = str(generation_provider or "").strip()
+    return {
+        "claude-cli": "anthropic",
+        "opencode-cli": "opencode",
+    }.get(requested, requested or "unknown")
+
+
 async def _push_with_retry(
     bridge,
     project_id: str,
@@ -2336,6 +2371,32 @@ async def _write_plugin_pack_execution_receipt(
     )
 
 
+def _count_staged_docs(staging_dir: Path) -> int:
+    """Count the markdown a finished run produced in staging.
+
+    ``doc_count == 0`` is the gate that turns a successful generation into a
+    failed run, so this has to see every document the run is about to publish.
+
+    Additive by construction: top-level ``*.md`` is exactly the historical
+    count, and the nested pass only admits files whose every path segment is
+    visible. No docs tree produced by the legacy or composite lanes has a
+    subdirectory that is not underscore-prefixed (``_assessment``, ``_audit``,
+    ``_topology``, ``_rag_support``, ...), so their count is unchanged. The
+    nested pass exists for ``agent-workspace-v1``, where the agent chooses the
+    document structure and may write ``integrations/orders.md``.
+    """
+    if not staging_dir.exists():
+        return 0
+    return sum(
+        1
+        for path in staging_dir.rglob("*.md")
+        if not any(
+            part.startswith(("_", "."))
+            for part in path.relative_to(staging_dir).parts[:-1]
+        )
+    )
+
+
 async def _run_generate_background(
     project_id: str,
     run_id: int,
@@ -2358,6 +2419,7 @@ async def _run_generate_background(
     pre_swap_gate: "Callable[[Path], GateOutcome] | None" = None,
     scoped_docs: set[str] | None = None,
     initiating_user_id: int | None = None,
+    generation_profile: dict | None = None,
 ):
     """Background task: spawn Claude Code for doc generation.
 
@@ -2387,7 +2449,21 @@ async def _run_generate_background(
     if current_task is not None:
         _generation_tasks[project_id] = current_task
 
-    if scoped_docs is None and pre_swap_gate is None and not partial_rag_sync:
+    # Goal-driven analysis owns one coherent estate-level investigation.  The
+    # legacy partition orchestrator is a document-generation scaling mechanism
+    # and must never become an analysis/session plan for this contract.
+    from mcp_server.services.generation_profile import (
+        is_agent_workspace_profile,
+        is_goal_driven_profile,
+    )
+
+    if (
+        scoped_docs is None
+        and pre_swap_gate is None
+        and not partial_rag_sync
+        and not is_goal_driven_profile(generation_profile)
+        and not is_agent_workspace_profile(generation_profile)
+    ):
         from mcp_server.services.partition_orchestrator import (
             plan_composite_generation,
             run_partitioned_generation,
@@ -2417,6 +2493,7 @@ async def _run_generate_background(
                         "doc_generation_provider": doc_generation_provider,
                         "instruction_pack_dir": instruction_pack_dir,
                         "enterprise_mode": enterprise_mode,
+                        "generation_profile": generation_profile,
                     },
                 )
             except Exception:
@@ -2450,12 +2527,14 @@ async def _run_generate_background(
             enterprise_mode=enterprise_mode,
             scoped_docs=scoped_docs,
             initiating_user_id=initiating_user_id,
+            generation_profile=generation_profile,
         )
     except asyncio.CancelledError:
         await log_mgr.emit(project_id, "Generation cancelled by user.", level="warning")
         result = {
             "success": False,
             "error": "Generation cancelled by user",
+            "cancelled": True,
             "model_name": model,
             "write_model_name": write_model,
         }
@@ -2475,7 +2554,7 @@ async def _run_generate_background(
 
     if success:
         # Count docs produced in staging
-        doc_count = len(list(staging_dir.glob("*.md"))) if staging_dir.exists() else 0
+        doc_count = _count_staged_docs(staging_dir)
         gate_results = _load_enterprise_gate_results(staging_dir) if staging_dir.exists() else None
 
         if staging_dir.exists() and plugin_pack_id is not None:
@@ -2511,6 +2590,28 @@ async def _run_generate_background(
                         + ", ".join(failed_blocking)
                     ),
                 )
+        held_verdict = "held_manual_review"
+        if gate_outcome is None and doc_count > 0 and staging_dir.exists():
+            # Enterprise Talend runs write a client-readiness verdict over the
+            # FINAL staged product. A failing verdict is a blocking gate exactly
+            # like the reingestion gate: no swap, no RAG push, staging kept as
+            # a labelled draft, previous baseline untouched.
+            from mcp_server.providers.custom.enterprise.publication_policy import (
+                load_publication_verdict,
+            )
+
+            verdict = load_publication_verdict(staging_dir)
+            if verdict is not None and not verdict.ok:
+                held_verdict = "held_client_readiness"
+                gate_outcome = GateOutcome(
+                    passed=False,
+                    evaluated=True,
+                    reason=(
+                        "client-readiness policy blocked publication: "
+                        + "; ".join(verdict.blocking[:3])
+                        + (f" (+{len(verdict.blocking) - 3} more)" if len(verdict.blocking) > 3 else "")
+                    ),
+                )
         if gate_outcome is not None and not gate_outcome.passed:
             # Blocking correctness gate held the swap. Keep docs_staging/ intact
             # (existing keep-old-docs mechanism) so the previous good docs in
@@ -2543,7 +2644,7 @@ async def _run_generate_background(
                     quality_score=None,
                     error_message=manual_review_reason,
                     log_file=log_file,
-                    run_verdict="held_manual_review",
+                    run_verdict=held_verdict,
                     gate_results=_load_enterprise_gate_results(staging_dir) if staging_dir.exists() else None,
                 )
                 await db.commit()
@@ -2648,7 +2749,9 @@ async def _run_generate_background(
                     cost_usd=result.get("cost_usd"),
                     latency_ms=result.get("duration_ms"),
                     model_name=result.get("model_name", "claude"),
-                    provider="anthropic",
+                    provider=_usage_provider(
+                        result.get("model_name"), doc_generation_provider
+                    ),
                 )
             except Exception as e:
                 logger.warning("Failed to post doc_generation usage: %s", e)
@@ -2828,9 +2931,19 @@ async def _run_generate_background(
                 project_id, "error", error_message=result.get("error") or "Doc generation failed"
             )
             # Keep existing doc_count — old docs are still on disk
+            cancelled = bool(result.get("cancelled"))
+            # A run that stopped early with a resumable draft is not the same
+            # event as one that failed, and the two used to be one word in the
+            # record. ``status`` keeps its existing vocabulary (the dashboard
+            # and every historical row depend on it); the finer outcome rides
+            # on ``run_verdict``, which is already free-form and already
+            # carries held_manual_review / held_client_readiness.
+            outcome = str(result.get("outcome") or "")
+            if outcome not in {"incomplete", "cancelled", "failed"}:
+                outcome = "cancelled" if cancelled else "failed"
             await registry.complete_generate_run(
                 run_id,
-                status="failed",
+                status="cancelled" if cancelled else "failed",
                 cost_usd=result.get("cost_usd"),
                 duration_ms=result.get("duration_ms"),
                 duration_api_ms=result.get("duration_api_ms"),
@@ -2843,7 +2956,7 @@ async def _run_generate_background(
                 write_model_name=result.get("write_model_name"),
                 error_message=result.get("error") or "Doc generation failed",
                 log_file=log_file,
-                run_verdict="failed",
+                run_verdict=outcome,
                 gate_results=_load_enterprise_gate_results(staging_dir) if staging_dir.exists() else None,
             )
             await db.commit()
@@ -3497,10 +3610,10 @@ async def reset_status(req: ResetStatusRequest, request: Request):
             update(GenerateRun)
             .where(GenerateRun.project_id == req.project_id, GenerateRun.status == "running")
             .values(
-                status="failed",
+                status="cancelled" if was_generating else "failed",
                 completed_at=now,
                 error_message="Generation cancelled by user" if was_generating else "Manually reset by user",
-                run_verdict="failed",
+                run_verdict="cancelled" if was_generating else "failed",
             )
         )
         await db.execute(
@@ -3545,6 +3658,7 @@ def _run_to_response(r) -> GenerateRunResponse:
         auto_baseline_run_id=getattr(r, "auto_baseline_run_id", None),
         run_verdict=getattr(r, "run_verdict", None),
         gate_results=getattr(r, "gate_results", None),
+        generation_profile=getattr(r, "generation_profile", None),
     )
 
 

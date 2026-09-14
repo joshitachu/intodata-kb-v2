@@ -47,7 +47,10 @@ const AuthContext = createContext<AuthContextValue>({
   refreshUser: async () => null,
 });
 
-const PUBLIC_PATHS = ["/login", "/onboarding"];
+// Must match the page routes made public by middleware.ts. Middleware allows
+// the initial request through; this list prevents the client-side 401 handler
+// from undoing that decision once the application has hydrated.
+const PUBLIC_PATHS = ["/login", "/onboarding", "/guide"];
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const auth = useAuth();

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 
 const KB_API_URL = process.env.KB_API_URL || "http://localhost:8002";
 
@@ -51,7 +52,6 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Upload failed";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("source/upload-zip POST", error, "Upload failed");
   }
 }

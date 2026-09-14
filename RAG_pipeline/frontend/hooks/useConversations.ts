@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { fetchJson } from "@/lib/authedFetch";
 import type {
   ConversationCreateRequest,
   ConversationDetailResponse,
@@ -14,44 +15,28 @@ import type {
 // --- Fetch functions ---
 
 async function fetchConversations(): Promise<ConversationListResponse> {
-  const res = await fetch("/api/conversations");
-  if (!res.ok) {
-    const text = await res.text();
-    let message = "Failed to fetch conversations";
-    try { message = JSON.parse(text).error || message; } catch {}
-    throw new Error(message);
-  }
-  return res.json();
+  return fetchJson<ConversationListResponse>("/api/conversations", {
+    fallbackError: "Failed to fetch conversations",
+  });
 }
 
 async function fetchConversation(
   id: number
 ): Promise<ConversationDetailResponse> {
-  const res = await fetch(`/api/conversations/${id}`);
-  if (!res.ok) {
-    const text = await res.text();
-    let message = "Failed to fetch conversation";
-    try { message = JSON.parse(text).error || message; } catch {}
-    throw new Error(message);
-  }
-  return res.json();
+  return fetchJson<ConversationDetailResponse>(`/api/conversations/${id}`, {
+    fallbackError: "Failed to fetch conversation",
+  });
 }
 
 async function createConversation(
   request?: ConversationCreateRequest
 ): Promise<ConversationResponse> {
-  const res = await fetch("/api/conversations", {
+  return fetchJson<ConversationResponse>("/api/conversations", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request || {}),
+    fallbackError: "Failed to create conversation",
   });
-  if (!res.ok) {
-    const text = await res.text();
-    let message = "Failed to create conversation";
-    try { message = JSON.parse(text).error || message; } catch {}
-    throw new Error(message);
-  }
-  return res.json();
 }
 
 async function updateConversation({
@@ -61,28 +46,20 @@ async function updateConversation({
   id: number;
   request: ConversationUpdateRequest;
 }): Promise<ConversationResponse> {
-  const res = await fetch(`/api/conversations/${id}`, {
+  return fetchJson<ConversationResponse>(`/api/conversations/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
+    fallbackError: "Failed to update conversation",
   });
-  if (!res.ok) {
-    const text = await res.text();
-    let message = "Failed to update conversation";
-    try { message = JSON.parse(text).error || message; } catch {}
-    throw new Error(message);
-  }
-  return res.json();
 }
 
 async function deleteConversation(id: number): Promise<void> {
-  const res = await fetch(`/api/conversations/${id}`, { method: "DELETE" });
-  if (!res.ok && res.status !== 204) {
-    const text = await res.text();
-    let message = "Failed to delete conversation";
-    try { message = JSON.parse(text).error || message; } catch {}
-    throw new Error(message);
-  }
+  // The route answers 204, which `fetchJson` returns without parsing a body.
+  await fetchJson<unknown>(`/api/conversations/${id}`, {
+    method: "DELETE",
+    fallbackError: "Failed to delete conversation",
+  });
 }
 
 async function sendMessage({
@@ -92,18 +69,12 @@ async function sendMessage({
   conversationId: number;
   request: ConversationMessageRequest;
 }): Promise<MessageResponse> {
-  const res = await fetch(`/api/conversations/${conversationId}/messages`, {
+  return fetchJson<MessageResponse>(`/api/conversations/${conversationId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
+    fallbackError: "Failed to send message",
   });
-  if (!res.ok) {
-    const text = await res.text();
-    let message = "Failed to send message";
-    try { message = JSON.parse(text).error || message; } catch {}
-    throw new Error(message);
-  }
-  return res.json();
 }
 
 // --- Hooks ---

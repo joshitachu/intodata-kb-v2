@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fastapiFetch } from "@/lib/fastapi";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 
 export async function GET(
   request: NextRequest,
@@ -16,8 +17,6 @@ export async function GET(
     );
     return NextResponse.json(data);
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Failed to reflect";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("admin/memory/banks/[bankId]/reflect GET", error, "Failed to reflect");
   }
 }

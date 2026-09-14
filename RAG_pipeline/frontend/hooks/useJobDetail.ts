@@ -2,12 +2,13 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { JobDetailResponseSchema, type JobDetailResponse } from "@/types/jobDetail";
+import { authedFetch } from "@/lib/authedFetch";
 
 async function fetchJobDetail(
   projectId: string,
   jobName: string,
 ): Promise<JobDetailResponse> {
-  const res = await fetch(
+  const res = await authedFetch(
     `/api/projects/${encodeURIComponent(projectId)}/jobs/${encodeURIComponent(jobName)}/detail`,
   );
   if (!res.ok) {

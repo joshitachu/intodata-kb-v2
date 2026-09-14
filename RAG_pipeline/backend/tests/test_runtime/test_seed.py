@@ -63,7 +63,11 @@ class TestSeedIdempotency:
 class TestRichSeed:
     async def test_rich_seed_writes_deep_failed_run(self, db_session):
         summary = await seed_rich_runtime_data(db_session, project_id="esbmain", synced_at=_SYNCED_AT)
-        assert summary.executions == 2  # one failed, one prior success
+        # failed order sync, prior success, success billing export, misfire, timeout
+        assert summary.executions == 5
+        assert summary.executions == await _count(db_session, RuntimeExecutionRow)
+        # Only the failed run produces a failure row: a misfire never ran and a
+        # timeout was killed rather than raising.
         assert summary.failures == 1
         assert summary.log_events >= 15  # in-depth log sequence
 

@@ -38,10 +38,31 @@ rules:
     type: config
     description: "Routine metadata properties"
 
-  # Joblets
+  # Routes (ESB/Camel designs -- same serialized format as a Job)
+  - pattern: "routes/**/*.item"
+    type: job
+    description: "Talend Route design (artifact_kind=route)"
+
+  - pattern: "routes/**/*.properties"
+    type: job_properties
+    description: "Route metadata sidecar"
+
+  # Joblets / Routelets (reusable fragments)
   - pattern: "joblets/**/*.item"
     type: joblet
     description: "Reusable joblet definition"
+
+  - pattern: "routelets/**/*.item"
+    type: joblet
+    description: "Reusable routelet definition"
+
+  - pattern: "joblets/**/*.properties"
+    type: job_properties
+    description: "Joblet metadata sidecar"
+
+  - pattern: "routelets/**/*.properties"
+    type: job_properties
+    description: "Routelet metadata sidecar"
 
   # SQL patterns
   - pattern: "sqlPatterns/**/*"
@@ -52,6 +73,51 @@ rules:
   - pattern: "documentations/**/*"
     type: documentation
     description: "Project documentation"
+
+  # Talend Data Mapper (TDM) maps and the structures they map between
+  - pattern: "Maps/**/*.xml"
+    type: tdm_map
+    description: "Talend Data Mapper map definition (input/output tree + expressions)"
+
+  - pattern: "Structures/**/*.xml"
+    type: structure
+    description: "Talend Data Mapper structure (element tree schema)"
+
+  - pattern: "Namespace Containers/*.xml"
+    type: namespace
+    description: "TDM namespace container"
+
+  # XSLT transforms, wherever a route or job stores them
+  - pattern: "**/*.xsl"
+    type: xslt
+    description: "XSLT stylesheet referenced from a route/job component"
+
+  - pattern: "**/*.xslt"
+    type: xslt
+    description: "XSLT stylesheet referenced from a route/job component"
+
+  # ESB services
+  - pattern: "services/**/*.item"
+    type: service
+    description: "Talend ESB service design"
+
+  - pattern: "**/*.wsdl"
+    type: wsdl
+    description: "SOAP service contract"
+
+  # Project descriptor
+  - pattern: "talend.project"
+    type: project
+    description: "Talend project descriptor (label, technical label, id)"
+
+  # Route/job support payloads that are inventoried but not parsed
+  - pattern: "route_resources/**/*"
+    type: resource
+    description: "Route resource payload (schema, sample, jar)"
+
+  - pattern: "resources/**/*"
+    type: resource
+    description: "Job/route resource payload (schema, sample, jar)"
 
 # File extensions to always skip
 skip_extensions:

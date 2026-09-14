@@ -60,6 +60,7 @@ def _prunable_ids(topology: BusinessTopology) -> dict[str, str]:
         "data_streams",
         "delivery_paths",
         "transformations",
+        "business_rules",
         "controls",
         "risks",
         "unknowns",
@@ -101,6 +102,7 @@ def _apply_drops(topology: BusinessTopology, drop_ids: set[str]) -> None:
         "data_streams",
         "delivery_paths",
         "transformations",
+        "business_rules",
         "controls",
         "risks",
         "unknowns",
@@ -181,6 +183,19 @@ def _cascade(topology: BusinessTopology) -> None:
         item for item in topology.transformations if item.stream_ids
     ]
 
+    transformation_ids = {item.id for item in topology.transformations}
+    for rule in topology.business_rules:
+        rule.stream_ids = [ref for ref in rule.stream_ids if ref in stream_ids]
+        rule.transformation_ids = [
+            ref for ref in rule.transformation_ids if ref in transformation_ids
+        ]
+    # A rule detached from every stream can no longer be acted on: nobody can
+    # tell which exchange it governs, so publishing it would leave an
+    # unanswerable question rather than a finding.
+    topology.business_rules = [
+        item for item in topology.business_rules if item.stream_ids
+    ]
+
     for observation in topology.runtime_observations:
         observation.stream_ids = [
             ref for ref in observation.stream_ids if ref in stream_ids
@@ -203,6 +218,7 @@ def _cascade(topology: BusinessTopology) -> None:
             "data_streams",
             "delivery_paths",
             "transformations",
+            "business_rules",
             "controls",
             "risks",
             "unknowns",

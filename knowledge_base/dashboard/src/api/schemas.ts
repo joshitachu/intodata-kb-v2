@@ -52,7 +52,7 @@ export const GenerateRunSchema = z.object({
   triggered_by: z.string(),
   // Composite orchestration: sub-project partition of a "composite" child run.
   partition_name: z.string().nullable().optional(),
-  status: z.enum(["pending", "running", "completed", "failed"]),
+  status: z.enum(["pending", "running", "completed", "completed_warnings", "failed", "cancelled"]),
   started_at: z.string(),
   completed_at: z.string().nullable(),
   cost_usd: z.number().nullable(),
@@ -70,7 +70,7 @@ export const GenerateRunSchema = z.object({
   quality_score: z.number().nullable(),
   auto_verdict: z.enum(["PASS", "FAIL"]).nullable(),
   auto_baseline_run_id: z.number().nullable(),
-  run_verdict: z.enum(["draft", "failed", "published", "published_with_rag_error", "client_ready"] as const).nullable(),
+  run_verdict: z.enum(["draft", "failed", "cancelled", "published", "published_with_rag_error", "client_ready", "held_manual_review", "held_client_readiness"] as const).nullable(),
   gate_results: z.record(z.string(), z.unknown()).nullable(),
 });
 
@@ -177,6 +177,13 @@ export const LogContentSchema = z.object({
 
 export const DocFileSchema = z.object({
   name: z.string(),
+  // Sub-project this document belongs to; null for a flat project. Undeclared
+  // fields are STRIPPED by zod, so leaving this out did not degrade
+  // gracefully -- it made the server's answer permanently invisible to the
+  // browser, and every content request for a partitioned project 404'd.
+  // `name` alone does not identify a document: every partition emits the same
+  // enterprise document names.
+  subproject: z.string().nullable().optional().default(null),
   type: z.string(),
   size_bytes: z.number(),
   has_pdf: z.boolean(),
@@ -186,10 +193,16 @@ export const DocListResponseSchema = z.object({
   project_id: z.string(),
   docs: z.array(DocFileSchema),
   total: z.number(),
+  // Sub-projects present in `docs`, in display order. Empty for a flat
+  // project, which is what lets the viewer hide the grouping entirely rather
+  // than showing a one-entry control.
+  subprojects: z.array(z.string()).optional().default([]),
 });
 
 export const DocContentSchema = z.object({
   filename: z.string(),
+  // Echoed back by the server: which tree the bytes actually came from.
+  subproject: z.string().nullable().optional().default(null),
   content: z.string(),
 });
 

@@ -64,6 +64,12 @@ export function RuntimeReliabilityPanel({ scope, since }: ScopeProps) {
                 "Job",
                 "Runs",
                 "Failed",
+                // A misfire never started; it must not be read as another
+                // failure column, so it gets its own header rather than
+                // folding into "Failed".
+                "Misfired",
+                "Timed out",
+                "Terminated",
                 "Failure rate",
                 "Streak",
                 "Never finished",
@@ -73,12 +79,15 @@ export function RuntimeReliabilityPanel({ scope, since }: ScopeProps) {
               ]}
               rows={rows}
               rowKey={(job) => `${job.project_id}:${job.source_key}:${job.job_name}`}
-              numeric={[1, 2, 3, 4, 5, 6, 7]}
+              numeric={[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]}
               emptyLabel="No runs were recorded in this window."
               cells={(job) => [
                 job.job_name,
                 job.total_runs.toLocaleString(),
                 job.failed_runs.toLocaleString(),
+                job.misfired_runs > 0 ? job.misfired_runs.toLocaleString() : "-",
+                job.timed_out_runs > 0 ? job.timed_out_runs.toLocaleString() : "-",
+                job.terminated_runs > 0 ? job.terminated_runs.toLocaleString() : "-",
                 formatPercent(job.failure_rate),
                 job.current_failure_streak.toLocaleString(),
                 job.unfinished_runs > 0 ? job.unfinished_runs.toLocaleString() : "-",

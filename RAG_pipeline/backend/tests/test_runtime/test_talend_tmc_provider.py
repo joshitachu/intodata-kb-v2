@@ -1,6 +1,8 @@
 """Fixture tests for the Talend TMC runtime provider adapter."""
 
+import logging
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -19,6 +21,9 @@ from src.runtime.providers.talend_tmc import (
     TalendTmcRuntimeProvider,
     _bounded_log_entries,
     _bounded_log_head_tail,
+    _failure_summary_for_task_run,
+    _to_job_run,
+    _unknown_states_warned,
 )
 
 _TOKEN = "super-secret-talend-token-value"
@@ -59,6 +64,143 @@ def tmc(tmp_path):
             tmp_path=tmp_path,
             provider=lambda handler: TalendTmcRuntimeProvider(transport=httpx.MockTransport(handler)),
         )
+
+
+def _task_execution(**overrides: Any) -> dict[str, Any]:
+    """A task execution shaped like the live TMC payload."""
+    item: dict[str, Any] = {
+        "executionId": "exec-1",
+        "taskId": "task-1",
+        "executionType": "SCHEDULED",
+        "startTimestamp": "2026-06-18T00:05:57.252Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def _run(**overrides: Any):
+    return _to_job_run(_task_execution(**overrides), "talend_tmc", {}, {})
+
+
+class TestExecutionStateMapping:
+    """Every TMC status observed on a live tenant must reach a real state.
+
+    Six statuses are sent in practice (execution_successful, execution_failed,
+    deploy_failed, terminated_timeout, terminated, executing); four of them used
+    to land as ``unknown``.
+    """
+
+    def test_deploy_failed_with_a_misfire_reason_is_a_misfire(self):
+        run = _run(
+            status="deploy_failed",
+            executionStatus="DEPLOY_FAILED",
+            misfiredExecutionReason="PARALLEL_EXECUTION_FORBIDDEN",
+            # A misfire never starts, so TMC dates it from the trigger.
+            startTimestamp=None,
+            triggerTimestamp="2026-06-18T00:05:00.000Z",
+        )
+
+        assert run.state == RuntimeExecutionState.MISFIRED
+        assert run.misfire_reason == "PARALLEL_EXECUTION_FORBIDDEN"
+        assert run.raw_state == "deploy_failed"
+        assert run.execution_type == "SCHEDULED"
+
+    def test_deploy_failed_without_a_reason_is_a_failure(self):
+        run = _run(status="deploy_failed", executionStatus="DEPLOY_FAILED")
+
+        assert run.state == RuntimeExecutionState.FAILED
+        assert run.misfire_reason is None
+        assert run.raw_state == "deploy_failed"
+
+    def test_executing_is_running_even_though_status_is_read_first(self):
+        """The precedence regression: ``status`` is present on every execution.
+
+        Resolving the first field that is PRESENT rather than the first that
+        MAPS made ``executionStatus`` unreachable, so live Route deployments
+        reporting ``executing`` were stored as ``unknown``.
+        """
+        run = _run(status="executing", executionStatus="STARTING_FLOW_EXECUTION")
+
+        assert run.state == RuntimeExecutionState.RUNNING
+        assert run.raw_state == "executing"
+
+    def test_an_unmapped_status_falls_through_to_a_field_that_maps(self):
+        run = _run(status="waiting_for_slot", executionStatus="EXECUTION_SUCCESSFUL")
+
+        assert run.state == RuntimeExecutionState.SUCCESS
+        # raw_state stays the first PRESENT value: it records what TMC said,
+        # not which field the mapping happened to succeed on.
+        assert run.raw_state == "waiting_for_slot"
+
+    @pytest.mark.parametrize(
+        ("status", "execution_status", "expected"),
+        [
+            ("terminated_timeout", "EXECUTION_TERMINATED_TIMEOUT", RuntimeExecutionState.TIMED_OUT),
+            ("terminated", "EXECUTION_TERMINATED", RuntimeExecutionState.TERMINATED),
+            ("execution_successful", "EXECUTION_SUCCESSFUL", RuntimeExecutionState.SUCCESS),
+            ("execution_failed", "EXECUTION_FAILED", RuntimeExecutionState.FAILED),
+        ],
+    )
+    def test_observed_statuses_map_to_distinct_states(self, status, execution_status, expected):
+        run = _run(status=status, executionStatus=execution_status)
+
+        assert run.state == expected
+        assert run.raw_state == status
+
+    def test_a_novel_status_is_unknown_and_warned_about_once(self, caplog):
+        _unknown_states_warned.clear()
+        with caplog.at_level(logging.WARNING, logger="src.runtime.providers.talend_tmc"):
+            first = _run(status="quarantined_by_governance")
+            second = _run(status="quarantined_by_governance")
+
+        assert first.state == RuntimeExecutionState.UNKNOWN
+        assert second.state == RuntimeExecutionState.UNKNOWN
+        # The verbatim status survives even when the mapping does not.
+        assert first.raw_state == "quarantined_by_governance"
+        warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "quarantined_by_governance" in warnings[0].getMessage()
+
+    def test_a_payload_with_no_status_at_all_is_not_warned_about(self, caplog):
+        _unknown_states_warned.clear()
+        with caplog.at_level(logging.WARNING, logger="src.runtime.providers.talend_tmc"):
+            run = _run()
+
+        assert run.state == RuntimeExecutionState.UNKNOWN
+        assert run.raw_state is None
+        assert [record for record in caplog.records if record.levelno == logging.WARNING] == []
+
+
+class TestFailureSummaries:
+    def test_a_misfire_without_an_error_message_reports_the_reason(self):
+        raw = _task_execution(
+            status="deploy_failed", misfiredExecutionReason="PARALLEL_EXECUTION_FORBIDDEN"
+        )
+        run = _to_job_run(raw, "talend_tmc", {}, {})
+
+        assert run.state == RuntimeExecutionState.MISFIRED
+        assert (
+            _failure_summary_for_task_run(raw, run)
+            == "Run did not start: PARALLEL_EXECUTION_FORBIDDEN"
+        )
+
+    def test_a_timeout_is_not_described_as_a_failure(self):
+        raw = _task_execution(status="terminated_timeout")
+        run = _to_job_run(raw, "talend_tmc", {}, {})
+
+        assert _failure_summary_for_task_run(raw, run) == (
+            "task-1 was stopped by its configured timeout"
+        )
+
+    def test_an_error_message_still_wins_and_stays_truncated(self):
+        raw = _task_execution(
+            status="deploy_failed",
+            misfiredExecutionReason="TASK_IS_PAUSED",
+            errorMessage="x" * 500,
+        )
+        run = _to_job_run(raw, "talend_tmc", {}, {})
+
+        assert _failure_summary_for_task_run(raw, run) == "x" * 300
 
 
 class TestEndpointMapping:
@@ -467,9 +609,14 @@ class TestRuntimeBatchMapping:
         assert failed_route.total_exchanges == 42
         assert failed_route.failed_exchanges == 1
         assert failed_route.metric_path == "billing_route"
-        # Route logs are emitted by the shared OSGi engine and cannot safely be
-        # converted into per-deployment batch failures.
-        assert batch.failures == []
+        # A failed Route is a failure. Its LOGS are engine-scoped and cannot be
+        # attributed to one deployment (asserted below), but its own
+        # errorMessage is the executable's, and gating failure records on
+        # executable_kind == JOB discarded it along with every other Route
+        # error in the window.
+        assert [(failure.execution_id, failure.error_summary) for failure in batch.failures] == [
+            ("exec-2", "connection timeout")
+        ]
         assert [plan.name for plan in batch.plans] == ["nightly-orchestration"]
         assert batch.plans[0].steps[0].job_id == "task-1"
         assert [run.run_id for run in batch.plan_runs] == ["pexec-1"]

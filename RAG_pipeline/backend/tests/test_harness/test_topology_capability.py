@@ -29,6 +29,13 @@ from src.harness.cohort import CohortDecision, RuntimeCohort
 from src.harness.executor import HarnessCapabilityExecutor
 from src.harness.grounding import AnswerStatus, GroundedAnswer, GroundingValidator
 from src.harness.manifest import ManifestScope, build_runtime_capability_manifest
+from src.harness.models import (
+    DOCUMENTATION_ANSWER_CAPABILITY,
+    DOCUMENT_SEARCH_CAPABILITY,
+    CapabilityDefinition,
+    HarnessProviderType,
+    HarnessRiskTier,
+)
 from src.harness.readonly_runtime import (
     _collect_topology_targets,
     _emit_tool_event,
@@ -54,8 +61,9 @@ from src.harness.topology_guidance import (
     topology_turn_guidance,
 )
 from src.harness.surface_policy import (
+    CHAT_DENIED_CAPABILITY_IDS,
+    CHAT_NON_RAG_DOCUMENT_CAPABILITY_IDS,
     CONTROL_PLANE_PREFIXES,
-    TOPOLOGY_SURFACE_CAPABILITY_IDS,
     surface_denied_capability_ids,
 )
 from src.runtime.models import (
@@ -486,7 +494,7 @@ class TestPageScopeIsUntrusted:
         guidance = topology_turn_guidance(None)
 
         assert "cannot read the project's published topology on this surface" in guidance
-        assert "Never infer structure to fill the gap" in guidance
+        assert "never infer the structure to fill the gap" in guidance
         assert "PAGE CONTEXT" not in guidance
 
 
@@ -646,9 +654,10 @@ class TestTheSelectionSurvivesTheCanvasIdSpaces:
     def test_the_subject_is_stated_after_the_rules_not_before(self) -> None:
         """Last means nearest the question.
 
-        The hint is a few lines against several thousand words of answer rules.
+        The hint is a few lines against the answer rules that precede it.
         Leading with it put every rule between the subject and the first token of
-        the answer.
+        the answer, and answers came back scoped to the level above the selection
+        with the selected entity demoted to a parenthetical.
         """
         scope = {
             "surface": "topology",
@@ -658,7 +667,7 @@ class TestTheSelectionSurvivesTheCanvasIdSpaces:
 
         guidance = topology_turn_guidance(scope)
 
-        assert guidance.index("PAGE CONTEXT") > guidance.index("Structural answers")
+        assert guidance.index("PAGE CONTEXT") > guidance.index("SOURCE OWNERSHIP")
 
 
 class TestFabricationRules:
@@ -695,8 +704,8 @@ class TestFabricationRules:
         """
         guidance = topology_turn_guidance(None)
 
-        assert "Do not state that a system, design or field exists" in guidance
-        assert "Do not explain an entity name that appeared in no result" in guidance
+        assert "PRESENCE AND ABSENCE ARE LOOKUPS, NOT JUDGEMENTS" in guidance
+        assert "NEVER EXPLAIN A NAME YOU DID NOT READ" in guidance
 
 
 class TestTurnPlumbing:
@@ -767,10 +776,11 @@ class TestTurnPlumbing:
         # halves have to be in it: the authoritative scope and the turn guidance.
         assert '"authorized_project_scope": ["project-a"]' in context
         assert "PAGE CONTEXT" in context
-        # `PAGE_SCOPE` is a topology-surface scope, so the citation-suppression
-        # rules are what prove the full guidance was appended -- not the
-        # "(from topology)" label, which this surface deliberately no longer emits.
-        assert "NO CITATION MACHINERY" in context
+        # `PAGE_SCOPE` is a topology-surface scope, so the navigation rules are
+        # what prove the canvas guidance was appended -- not the "(from topology)"
+        # label, which this surface deliberately no longer emits.
+        assert "Navigation intent" in context
+        assert "NEVER SUBSTITUTE A SOURCE SILENTLY" in context
         assert "(from topology)" not in context
 
 
@@ -783,17 +793,40 @@ TOPOLOGY_PAGE_SCOPE = {
 
 
 class TestPromptGuidance:
-    def test_the_structural_shape_is_distinguished_from_the_failure_shape(self) -> None:
+    def test_a_capped_result_is_reported_not_exhausted(self) -> None:
+        """The rule that replaced "read the next page with offset".
+
+        That instruction is why this surface timed out. A real design carries
+        ~250 components against a listing cap of 12 (``GetJobDetailInput``), so
+        obeying it meant ~21 sequential model->tool->model rounds inside a 300s
+        turn deadline. The turn hit the deadline, and ``readonly_runtime``
+        discards everything collected and substitutes a budget-stop message --
+        so the instruction to be thorough produced no answer at all.
+        """
+
         guidance = topology_turn_guidance(TOPOLOGY_PAGE_SCOPE)
 
-        assert "Next Checks" in guidance
-        assert "Do not add a next-checks section to a structural answer" in guidance
+        assert "ANSWER FROM WHAT ONE READ RETURNS" in guidance
+        assert "Do not walk a result page by page to exhaust it" in guidance
+        assert "read the next page with offset" not in guidance
 
-    def test_the_brevity_and_overlay_rules_are_stated(self) -> None:
+    def test_the_answer_is_not_told_to_be_brief(self) -> None:
+        """Brevity was a panel-width instruction and it clipped explanations.
+
+        "your answer may be rendered in a narrow (~360px) side panel ... one line
+        beats five bullets" made the model withhold detail the user had asked
+        for. Panel width is a layout concern and belongs in the layout.
+        """
+
         guidance = topology_turn_guidance(TOPOLOGY_PAGE_SCOPE)
 
-        assert "360px" in guidance
-        assert "unvalidated" in guidance
+        assert "360px" not in guidance
+        assert "one line beats five bullets" not in guidance
+
+    def test_the_overlay_and_rescan_rules_are_stated(self) -> None:
+        guidance = topology_turn_guidance(TOPOLOGY_PAGE_SCOPE)
+
+        assert "stale" in guidance
         assert "rescan" in guidance
 
     def test_source_labelling_separates_topology_from_logs(self) -> None:
@@ -810,7 +843,12 @@ class TestPromptGuidance:
         assert "(from topology)" not in guidance
         assert "(from logs)" in guidance
         assert "is a defect" in guidance
-        assert "NO CITATION MACHINERY" in guidance
+        # Suppression is no longer argued for in the prompt. ~450 words of
+        # citation-formatting rules competed for the model's attention with the
+        # rules about whether a sentence is TRUE, and lost the wrong half:
+        # `readonly_runtime._humanize_visible_content` strips the tautological
+        # label after the fact, where it costs the answer nothing.
+        assert "NO CITATION MACHINERY" not in guidance
 
     def test_the_off_canvas_surface_labels_the_sources_it_still_has(self) -> None:
         """The suppression is surface-scoped, not a global relaxation.
@@ -821,11 +859,11 @@ class TestPromptGuidance:
         structural reader is withheld on this surface, so the only way to emit
         that label would be to have made the claim up.
         """
-        from src.harness.topology_guidance import TOPOLOGY_MINIMAL_GUIDANCE
+        guidance = topology_turn_guidance(None)
 
-        assert "(from logs)" in TOPOLOGY_MINIMAL_GUIDANCE
-        assert "(from <doc name>)" in TOPOLOGY_MINIMAL_GUIDANCE
-        assert "'(from topology)'" not in TOPOLOGY_MINIMAL_GUIDANCE
+        assert "(from logs)" in guidance
+        assert "(from <doc name>)" in guidance
+        assert "'(from topology)'" not in guidance
 
     def test_the_capability_contract_carries_the_name_and_ambiguity_guidance(self) -> None:
         snapshot = build_semantic_tool_snapshot(
@@ -1329,10 +1367,9 @@ class TestGuidanceSalienceBySurface:
         {"surface": "documents", "project_id": "project-a", "level": {"kind": "project"}},
     ]
 
-    def test_the_topology_surface_gets_the_full_guidance_and_the_intent_rules(self) -> None:
+    def test_the_topology_surface_gets_the_shared_rules_and_the_intent_rules(self) -> None:
         guidance = topology_turn_guidance(TOPOLOGY_PAGE_SCOPE)
 
-        assert "Do not add a next-checks section" in guidance
         assert "NEVER SUBSTITUTE A SOURCE SILENTLY" in guidance
         assert "SAY WHEN A SOURCE IS EMPTY" in guidance
         assert "Navigation intent" in guidance
@@ -1346,15 +1383,28 @@ class TestGuidanceSalienceBySurface:
         assert "topology_state" not in guidance
 
     @pytest.mark.parametrize("page_scope", OTHER_SURFACES)
-    def test_other_surfaces_get_the_short_reminder_only(self, page_scope) -> None:
+    def test_other_surfaces_get_the_boundary_notice_not_the_intent_rules(
+        self, page_scope
+    ) -> None:
+        """Off the canvas: same answer rules, plus the boundary, minus navigation.
+
+        This no longer asserts that the off-canvas guidance is SHORTER. It used
+        to be, by a factor of five, and that was the defect rather than the
+        contract: the rules in the shared block are about whether a sentence is
+        true, which does not vary by surface, so both surfaces get all of them.
+        What legitimately varies is navigation intent -- it governs targets only
+        the canvas can act on -- and the boundary notice, which is only true
+        where the structural reader is withheld.
+        """
+
         guidance = topology_turn_guidance(page_scope)
 
         assert "cannot read the project's published topology on this surface" in guidance
         assert "point the user to the topology page" in guidance
+        assert "NEVER SUBSTITUTE A SOURCE SILENTLY" in guidance
         # Not nudged toward topology in a conversation about something else.
         assert "Navigation intent" not in guidance
         assert "360px" not in guidance
-        assert len(guidance) < len(topology_turn_guidance(TOPOLOGY_PAGE_SCOPE))
 
     def test_the_page_hint_still_travels_on_a_non_topology_surface(self) -> None:
         """The hint resolves "this job"; it is independent of guidance length."""
@@ -1377,10 +1427,28 @@ class TestGuidanceSalienceBySurface:
         assert "surface" not in json.dumps(record.input_schema)
 
     @staticmethod
-    def _registered() -> list[str]:
+    def _registered() -> list[CapabilityDefinition]:
         from src.harness.registry import base_capability_registry
 
-        return [capability.id for capability in base_capability_registry().list()]
+        return base_capability_registry().list()
+
+    @staticmethod
+    def _capability(capability_id: str, risk_tier: HarnessRiskTier) -> CapabilityDefinition:
+        """A minimal registrable capability, for "what about a new one?" cases."""
+
+        return CapabilityDefinition(
+            id=capability_id,
+            label="Vendor capability",
+            purpose="Exercise the surface policy against an unknown registration.",
+            preconditions=[],
+            failure_recovery={"failed": "Report the safe failure summary."},
+            provider_type=HarnessProviderType.RETRIEVAL,
+            provider_id="vendor.provider",
+            action="do_something",
+            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            output_type="evidence_items",
+            risk_tier=risk_tier,
+        )
 
     def test_topology_structure_is_withheld_from_plain_chat(self) -> None:
         """Withheld by SURFACE, not by question shape.
@@ -1394,16 +1462,60 @@ class TestGuidanceSalienceBySurface:
         denied = surface_denied_capability_ids(self._registered(), None)
         assert TOPOLOGY_STRUCTURE_CAPABILITY.id in denied
 
-    def test_topology_surface_exposes_only_the_measured_capabilities(self) -> None:
+    def test_topology_surface_exposes_every_read_only_capability(self) -> None:
+        """The canvas keep-set is the read-only tier, derived from the registry.
+
+        Asserted as the RULE rather than as a list of names. The enumerated form
+        this replaces is what silently cost the canvas ``search_documentation``:
+        an id nobody remembered to add is indistinguishable from an id someone
+        decided to leave out, and neither fails.
+        """
+
         registered = self._registered()
         denied = surface_denied_capability_ids(registered, TOPOLOGY_PAGE_SCOPE)
-        exposed = {item for item in registered if item not in denied}
-        domain = {
-            item
-            for item in exposed
-            if not item.startswith(CONTROL_PLANE_PREFIXES)
+        exposed = {
+            capability.id
+            for capability in registered
+            if capability.id not in denied
+            and not capability.id.startswith(CONTROL_PLANE_PREFIXES)
         }
-        assert domain == set(TOPOLOGY_SURFACE_CAPABILITY_IDS)
+        expected = {
+            capability.id
+            for capability in registered
+            if capability.risk_tier is HarnessRiskTier.READ_ONLY
+            and capability.id not in CHAT_NON_RAG_DOCUMENT_CAPABILITY_IDS
+            and not capability.id.startswith(CONTROL_PLANE_PREFIXES)
+        }
+        assert exposed == expected
+
+    def test_topology_surface_regains_the_non_terminal_documentation_search(self) -> None:
+        """The specific regression this policy shape exists to prevent.
+
+        ``answer_from_documentation`` is terminal: it returns a deterministic RAG
+        answer and short-circuits the turn, discarding whatever structure the
+        model read first. When it was the canvas's ONLY documentation route,
+        every mixed question collapsed into a document answer with no reference
+        to the diagram. ``search_documentation`` is the non-terminal alternative.
+        """
+
+        denied = surface_denied_capability_ids(self._registered(), TOPOLOGY_PAGE_SCOPE)
+        assert DOCUMENT_SEARCH_CAPABILITY.id not in denied
+        assert DOCUMENTATION_ANSWER_CAPABILITY.id not in denied
+        assert TOPOLOGY_STRUCTURE_CAPABILITY.id not in denied
+
+    def test_topology_surface_withholds_every_capability_that_changes_something(self) -> None:
+        """Read anything, change nothing -- for every non-read tier, not a sample."""
+
+        registered = self._registered()
+        denied = surface_denied_capability_ids(registered, TOPOLOGY_PAGE_SCOPE)
+        mutating = [
+            capability
+            for capability in registered
+            if capability.risk_tier is not HarnessRiskTier.READ_ONLY
+            and not capability.id.startswith(CONTROL_PLANE_PREFIXES)
+        ]
+        assert mutating, "expected the registry to contain mutating capabilities"
+        assert {capability.id for capability in mutating} <= denied
 
     def test_topology_surface_keeps_the_forced_control_plane(self) -> None:
         """The plan cohort force-calls these; denying one is a hard turn failure.
@@ -1417,30 +1529,51 @@ class TestGuidanceSalienceBySurface:
         registered = self._registered()
         denied = surface_denied_capability_ids(registered, TOPOLOGY_PAGE_SCOPE)
         control_plane = {
-            item for item in registered if item.startswith(CONTROL_PLANE_PREFIXES)
+            capability.id
+            for capability in registered
+            if capability.id.startswith(CONTROL_PLANE_PREFIXES)
         }
         assert control_plane, "expected agent-plan control capabilities to exist"
         assert not (control_plane & denied)
         assert "nexus.agent_plan.project_objective" in control_plane
 
-    def test_a_new_capability_is_withheld_from_the_topology_surface(self) -> None:
-        """Fail closed: the policy subtracts a keep-list from the live registry.
+    def test_a_new_mutating_capability_is_withheld_from_the_topology_surface(self) -> None:
+        """Fail closed: a capability registered later needs no edit to be denied.
 
-        A capability registered later -- including one contributed by a pack --
-        must not appear on the narrowed surface just because nobody remembered
-        to add it to a denial list.
+        Including one contributed by a pack. It must not appear on the narrowed
+        surface just because nobody remembered to add it to a denial list.
         """
 
-        registered = [*self._registered(), "vendor.newthing.do_something"]
-        denied = surface_denied_capability_ids(registered, TOPOLOGY_PAGE_SCOPE)
-        assert "vendor.newthing.do_something" in denied
+        newcomer = self._capability(
+            "vendor.newthing.do_something", HarnessRiskTier.WRITES_CONTENT
+        )
+        denied = surface_denied_capability_ids(
+            [*self._registered(), newcomer], TOPOLOGY_PAGE_SCOPE
+        )
+        assert newcomer.id in denied
+
+    def test_a_new_read_only_capability_reaches_the_topology_surface(self) -> None:
+        """The other half of the rule, and the half the old keep-list got wrong.
+
+        A read capability added later must become available on the canvas with
+        no edit to this policy. Under the enumerated keep-list it stayed
+        invisible, which is how ``search_documentation`` went missing: a
+        capability that is never offered cannot surface as an error.
+        """
+
+        newcomer = self._capability("vendor.newthing.read_something", HarnessRiskTier.READ_ONLY)
+        denied = surface_denied_capability_ids(
+            [*self._registered(), newcomer], TOPOLOGY_PAGE_SCOPE
+        )
+        assert newcomer.id not in denied
 
     def test_denied_set_never_names_an_unregistered_capability(self) -> None:
         """Denial is reported in operator telemetry; phantom ids read as bugs."""
 
+        only = self._capability("rag.docs.answer_question", HarnessRiskTier.READ_ONLY)
         for page_scope in (None, TOPOLOGY_PAGE_SCOPE):
-            denied = surface_denied_capability_ids(["rag.docs.answer_question"], page_scope)
-            assert denied <= {"rag.docs.answer_question"}
+            denied = surface_denied_capability_ids([only], page_scope)
+            assert denied <= {only.id}
 
     def test_exposure_cannot_depend_on_question_wording(self) -> None:
         """Message text is not an input to exposure, structurally.
@@ -1450,13 +1583,13 @@ class TestGuidanceSalienceBySurface:
         the parameter is what actually makes "phrased outside the regexes, so
         the tool vanished" unrepresentable. The escape hatch this replaces
         ("answer without topology") is gone by design; the model is told about
-        the boundary in TOPOLOGY_MINIMAL_GUIDANCE instead.
+        the boundary in the shared turn guidance instead.
         """
 
         import inspect
 
         parameters = inspect.signature(surface_denied_capability_ids).parameters
-        assert list(parameters) == ["registered_capability_ids", "page_scope"]
+        assert list(parameters) == ["registered_capabilities", "page_scope"]
 
     def test_chat_keeps_everything_except_the_structural_reader(self) -> None:
         """The split is one-directional: /chat loses topology and nothing else.
@@ -1471,6 +1604,9 @@ class TestGuidanceSalienceBySurface:
         assert "nexus.packs.create" not in denied
         assert "nexus.workflow.onboard_project" not in denied
         assert "rag.docs.search_evidence" not in denied
+        # The canvas narrowing must not leak here: /chat keeps the mutating
+        # capabilities it has always had.
+        assert denied == (CHAT_NON_RAG_DOCUMENT_CAPABILITY_IDS | CHAT_DENIED_CAPABILITY_IDS)
 
 
 class TestDepthOperationsOnTheCapability:
@@ -1634,7 +1770,7 @@ class TestDepthSteering:
     def test_the_turn_guidance_states_the_same_ownership_line(self) -> None:
         guidance = topology_turn_guidance(TOPOLOGY_PAGE_SCOPE)
 
-        assert "WHAT THE CODE DOES, field by field" in guidance
+        assert "WHAT THE CODE DOES" in guidance
         assert "WHY IT EXISTS" in guidance
         # The old wording gave "explanatory implementation" and "mapping
         # explanation" to documentation, contradicting the capability contract.
@@ -1644,20 +1780,19 @@ class TestDepthSteering:
     def test_the_unresolved_lineage_count_is_a_stated_defect(self) -> None:
         guidance = topology_turn_guidance(TOPOLOGY_PAGE_SCOPE)
 
-        assert "COUNT THE UNRESOLVED MAPPINGS OUT LOUD" in guidance
+        assert "MAPPINGS: ABSENCE AND UNRESOLVED ARE DIFFERENT THINGS" in guidance
         assert "39%" in guidance
         assert "decided at runtime" in guidance
         assert "understates the integration" in guidance
-        # And the older rule it is a sibling of survives verbatim.
-        assert "Never present a mapping absence as an absence of transformation" in guidance
+        # And the rule it is a sibling of, now stated in the same paragraph.
+        assert "not that it does not transform anything" in guidance
 
     def test_the_source_honesty_rules_are_not_weakened(self) -> None:
         guidance = topology_turn_guidance(TOPOLOGY_PAGE_SCOPE)
 
         assert "NEVER SUBSTITUTE A SOURCE SILENTLY" in guidance
         assert "SAY WHEN A SOURCE IS EMPTY" in guidance
-        assert "HONOR SOURCE INSTRUCTIONS" in guidance
-        assert "360px" in guidance
+        assert "Honor explicit source instructions" in guidance
         assert "Navigation intent" in guidance
         # Suppressing citation must not take these with it. Disclosing an empty
         # source and disclosing an inferred relationship both change whether a
@@ -1665,7 +1800,7 @@ class TestDepthSteering:
         # substitution is how a question about one integration gets answered about
         # a different one, which is the failure this whole rule set exists for.
         assert "SAY WHAT IS UNCERTAIN" in guidance
-        assert "NEVER COLLAPSE A PLURAL INTO A SINGULAR HEADLINE" in guidance
+        assert "CONFIDENCE IS PER ROW, AND SO IS ATTRIBUTION" in guidance
 
     def test_the_minimal_guidance_names_mapping_as_out_of_reach_here(self) -> None:
         """Mapping still belongs to topology; on this surface it is unreachable.
@@ -1674,15 +1809,12 @@ class TestDepthSteering:
         should know it does, and say where to get it -- but to stop it being
         presented as something answerable from here.
         """
-        from src.harness.topology_guidance import TOPOLOGY_MINIMAL_GUIDANCE
+        from src.harness.topology_guidance import CHAT_TOPOLOGY_BOUNDARY
 
-        assert "column-level field mappings" in TOPOLOGY_MINIMAL_GUIDANCE
-        assert "deliberately not available here" in TOPOLOGY_MINIMAL_GUIDANCE
-        assert "mapping explanation" not in TOPOLOGY_MINIMAL_GUIDANCE
-        # Contracts the source-ownership policy tests depend on, kept intact:
-        # runtime is still reachable here, so its ordering rule still applies.
-        assert "current-turn evidence summary" in TOPOLOGY_MINIMAL_GUIDANCE
-        assert "not from documents" not in TOPOLOGY_MINIMAL_GUIDANCE.casefold()
+        assert "column-level field mappings" in CHAT_TOPOLOGY_BOUNDARY
+        assert "deliberately not available here" in CHAT_TOPOLOGY_BOUNDARY
+        assert "mapping explanation" not in CHAT_TOPOLOGY_BOUNDARY
+        assert "not from documents" not in CHAT_TOPOLOGY_BOUNDARY.casefold()
 
 
 class TestSchemaContract:

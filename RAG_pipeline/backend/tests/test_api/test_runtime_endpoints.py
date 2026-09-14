@@ -23,6 +23,15 @@ _OTHER = "other-proj"
 _FAILED_EXEC = "esbmain-route-7841"
 _SUCCESS_EXEC = "esbmain-route-7840"
 _BILLING_EXEC = "billing-route-2190"
+# The two "capture state" runs seed_rich_runtime_data always adds alongside the
+# three above (src/runtime/store/seed.py::_demo_capture_state_executions) --
+# the widened outcome vocabulary's own fixtures: a misfire never started, a
+# timeout was killed by its own limit.
+_MISFIRED_JOB = "esb_inventory_sync_task"
+_MISFIRED_EXEC = "esbmain-task-4417"
+_TIMED_OUT_JOB = "esb_nightly_reconcile_batch"
+_TIMED_OUT_EXEC = "esbmain-batch-5501"
+_ESB_ALL_EXECS = {_FAILED_EXEC, _SUCCESS_EXEC, _BILLING_EXEC, _MISFIRED_EXEC, _TIMED_OUT_EXEC}
 
 
 def _mock_user(id: int = 1) -> User:
@@ -66,8 +75,8 @@ class TestListExecutions:
         assert resp.status_code == 200
         body = resp.json()
         ids = {e["execution_id"] for e in body["executions"]}
-        assert ids == {_FAILED_EXEC, _SUCCESS_EXEC, _BILLING_EXEC}
-        assert body["total"] == 3
+        assert ids == _ESB_ALL_EXECS
+        assert body["total"] == 5
 
     async def test_unrestricted_scope_sees_both_projects(self, seeded_client):
         with _scope(None):
@@ -107,7 +116,84 @@ class TestListExecutions:
             resp = await seeded_client.get("/api/v1/runtime/executions?limit=1&offset=1")
         assert resp.status_code == 200
         assert len(resp.json()["executions"]) == 1
-        assert resp.json()["total"] == 3
+        assert resp.json()["total"] == 5
+
+
+class TestWidenedExecutionStates:
+    """MISFIRED, TIMED_OUT and TERMINATED, plus the outcome-provenance fields
+    (raw_state, misfire_reason, execution_type) mixed into runs/executions/plan
+    runs by `RuntimeOutcomeProvenance`. Before this vocabulary widened, both
+    seeded runs here reported as `unknown` and were indistinguishable from a
+    genuine gap in the data.
+    """
+
+    async def test_state_filter_accepts_misfired(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/executions?state=misfired")
+        assert resp.status_code == 200
+        executions = resp.json()["executions"]
+        assert [e["execution_id"] for e in executions] == [_MISFIRED_EXEC]
+
+    async def test_state_filter_accepts_timed_out(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/executions?state=timed_out")
+        assert resp.status_code == 200
+        executions = resp.json()["executions"]
+        assert [e["execution_id"] for e in executions] == [_TIMED_OUT_EXEC]
+
+    async def test_state_filter_accepts_terminated_with_no_matches(self, seeded_client):
+        # No TERMINATED run is seeded; the point of this test is that the value
+        # is a valid enum member (200 + empty), not a 422 from an unknown state.
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/executions?state=terminated")
+        assert resp.status_code == 200
+        assert resp.json() == {"executions": [], "total": 0}
+
+    async def test_misfired_execution_carries_provenance(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get(f"/api/v1/runtime/executions/{_MISFIRED_EXEC}")
+        assert resp.status_code == 200
+        execution = resp.json()["execution"]
+        assert execution["state"] == "misfired"
+        assert execution["raw_state"] == "EXECUTION_MISFIRED"
+        assert execution["misfire_reason"] == "PARALLEL_EXECUTION_FORBIDDEN"
+        assert execution["execution_type"] == "SCHEDULED"
+        # A misfire never ran, so it has no end time and no duration.
+        assert execution["ended_at"] is None
+        assert execution["duration_ms"] is None
+
+    async def test_timed_out_execution_has_no_misfire_reason(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get(f"/api/v1/runtime/executions/{_TIMED_OUT_EXEC}")
+        assert resp.status_code == 200
+        execution = resp.json()["execution"]
+        assert execution["state"] == "timed_out"
+        assert execution["raw_state"] == "EXECUTION_TIMEOUT"
+        # misfire_reason is misfire-specific; a timeout must not carry one.
+        assert execution.get("misfire_reason") is None
+        assert execution["execution_type"] == "SCHEDULED"
+        assert execution["ended_at"] is not None
+
+    async def test_job_run_mirrors_carry_the_same_provenance(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/job-runs?state=misfired")
+        assert resp.status_code == 200
+        runs = resp.json()["runs"]
+        assert [r["run_id"] for r in runs] == [_MISFIRED_EXEC]
+        assert runs[0]["misfire_reason"] == "PARALLEL_EXECUTION_FORBIDDEN"
+        assert runs[0]["execution_type"] == "SCHEDULED"
+
+    async def test_job_reliability_breaks_out_the_three_new_counters(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/job-reliability")
+        assert resp.status_code == 200
+        by_job = {job["job_name"]: job for job in resp.json()["jobs"]}
+        misfired_job = by_job[_MISFIRED_JOB]
+        assert misfired_job["misfired_runs"] == 1
+        assert misfired_job["failed_runs"] == 0  # never counted as a failure
+        timed_out_job = by_job[_TIMED_OUT_JOB]
+        assert timed_out_job["timed_out_runs"] == 1
+        assert timed_out_job["failed_runs"] == 0
 
 
 class TestExecutionDetail:
@@ -299,8 +385,13 @@ class TestRuntimeInventory:
         assert overview["engines_degraded"] == 1
         assert overview["environments_total"] == 2
         assert overview["workspaces_total"] == 1
-        assert overview["engines_unhealthy"] == 1
-        assert overview["jobs_unhealthy"] == 1
+        # engine-prod-02 was already unhealthy from the ORA-12170 failure;
+        # engine-prod-01 joins it because the misfired/timed-out capture-state
+        # jobs default onto it (see seed.py's job_context fallback) and both
+        # states are attention-worthy (RuntimeStoreRepository._ATTENTION_STATES).
+        assert overview["engines_unhealthy"] == 2
+        # order-sync (failed) + the misfired and timed-out capture-state jobs.
+        assert overview["jobs_unhealthy"] == 3
         assert overview["plans_unhealthy"] == 1
         assert overview["sources_stale"] == 1
 
@@ -442,8 +533,13 @@ class TestOutcomeTrendEndpoint:
         body = resp.json()
         assert body["bucket"] == "day"
         assert body["total"] == len(body["points"])
-        assert sum(point["total_runs"] for point in body["points"]) == 3
+        assert sum(point["total_runs"] for point in body["points"]) == 5
         assert sum(point["failed_runs"] for point in body["points"]) == 1
+        # A misfire/timeout must never inflate `failed_runs` -- each has its
+        # own counter (widened outcome vocabulary contract).
+        assert sum(point["misfired_runs"] for point in body["points"]) == 1
+        assert sum(point["timed_out_runs"] for point in body["points"]) == 1
+        assert sum(point["terminated_runs"] for point in body["points"]) == 0
         assert body["coverage"]["observed_from"] is not None
         assert body["coverage"]["observed_until"] is not None
         assert body["coverage"]["completeness"] == "unknown"
@@ -489,10 +585,19 @@ class TestJobReliabilityEndpoint:
         with _scope([_ESB]):
             resp = await seeded_client.get("/api/v1/runtime/job-reliability?attention_only=true")
         assert resp.status_code == 200
+        jobs = resp.json()["jobs"]
+        # Attention widens to FAILED, MISFIRED and TIMED_OUT -- never TERMINATED,
+        # which the backend deliberately excludes (an operator already looked).
         assert all(
-            job["latest_state"] == "failed" or job["latest_unfinished"]
-            for job in resp.json()["jobs"]
+            job["latest_state"] in {"failed", "misfired", "timed_out"} or job["latest_unfinished"]
+            for job in jobs
         )
+        # The two states that used to hide as "unknown" must actually surface here.
+        by_job = {job["job_name"]: job for job in jobs}
+        assert by_job[_MISFIRED_JOB]["latest_state"] == "misfired"
+        assert by_job[_MISFIRED_JOB]["misfired_runs"] == 1
+        assert by_job[_TIMED_OUT_JOB]["latest_state"] == "timed_out"
+        assert by_job[_TIMED_OUT_JOB]["timed_out_runs"] == 1
 
     async def test_pagination_keeps_total_honest(self, seeded_client):
         with _scope([_ESB]):
@@ -567,7 +672,7 @@ class TestStuckRunFilters:
             filtered = await seeded_client.get(
                 "/api/v1/runtime/executions?min_duration_ms=999999999"
             )
-        assert baseline.json()["total"] == 3
+        assert baseline.json()["total"] == 5
         # No seeded run is anywhere near this long, so the page and its total agree at 0.
         assert filtered.json()["executions"] == []
         assert filtered.json()["total"] == 0
@@ -578,7 +683,12 @@ class TestStuckRunFilters:
             finished = await seeded_client.get("/api/v1/runtime/executions?unfinished=false")
         assert unfinished.status_code == 200
         assert finished.status_code == 200
-        assert unfinished.json()["total"] + finished.json()["total"] == 3
+        assert unfinished.json()["total"] + finished.json()["total"] == 5
+        # MISFIRED is the only capture-state run with no ended_at (it never
+        # started, so nothing could stamp an end) -- see
+        # RuntimeStoreRepository._OPEN_ENDED_STATES.
+        assert unfinished.json()["total"] == 1
+        assert [e["execution_id"] for e in unfinished.json()["executions"]] == [_MISFIRED_EXEC]
 
     async def test_negative_min_duration_is_rejected(self, seeded_client):
         with _scope([_ESB]):

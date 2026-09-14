@@ -1,5 +1,6 @@
 import { type ZodType } from "zod";
 import { getLoginUrl } from "../hooks/useAuth";
+import { ApiError } from "../lib/errors";
 import {
   AddSourceResponseSchema,
   AssignPluginPackResponseSchema,
@@ -92,7 +93,10 @@ async function request<T>(
 
   if (!res.ok) {
     const detail = await res.text();
-    throw new Error(`${res.status}: ${detail}`);
+    // Typed so react-query's retry policy can tell a permanent 4xx from a
+    // transient 5xx. `ApiError.message` is still `"{status}: {body}"`, which is
+    // what `parseApiError` and every existing caller read.
+    throw new ApiError(res.status, detail);
   }
   if (res.status === 204) return undefined as T;
   const data = await res.json();
@@ -479,19 +483,52 @@ export const api = {
       ScanRunListResponseSchema
     ),
 
+  /**
+   * Documents for a project, across every sub-project it publishes.
+   *
+   * Within a project a document is identified by `(subproject, name)`, never by
+   * `name` alone: a partitioned (composite-ZIP) project emits the same
+   * enterprise document names in every partition. Each entry therefore carries
+   * its own `subproject`, and `subprojects` lists them in display order --
+   * empty for a flat project, which is how a caller knows not to show a
+   * sub-project control at all.
+   */
   listDocs: (projectId: string, source: import("../types").DocSource = "published") =>
-    request<{ project_id: string; docs: import("../types").DocFile[]; total: number }>(
-      `/mcp/projects/${projectId}/docs?source=${source}`,
+    request<{
+      project_id: string;
+      docs: import("../types").DocFile[];
+      total: number;
+      subprojects: string[];
+    }>(
+      `/mcp/projects/${encodeURIComponent(projectId)}/docs?source=${source}`,
       {},
       DocListResponseSchema
     ),
 
-  getDocContent: (projectId: string, filename: string, source: import("../types").DocSource = "published") =>
-    request<{ filename: string; content: string }>(
-      `/mcp/projects/${projectId}/docs/${filename}/content?source=${source}`,
+  /**
+   * Raw markdown for one document.
+   *
+   * `subproject` MUST be the value from that document's own list entry. The
+   * server resolves it against the project's real layout and no location has a
+   * null sub-project once a project is partitioned, so omitting it there is a
+   * guaranteed 404 -- and passing one for a flat project is an equally
+   * guaranteed 404. There is nothing to guess and nothing to fall back to: the
+   * list endpoint already returned the answer.
+   */
+  getDocContent: (
+    projectId: string,
+    filename: string,
+    source: import("../types").DocSource = "published",
+    subproject: string | null = null,
+  ) => {
+    const query = new URLSearchParams({ source });
+    if (subproject) query.set("subproject", subproject);
+    return request<{ filename: string; subproject: string | null; content: string }>(
+      `/mcp/projects/${encodeURIComponent(projectId)}/docs/${encodeURIComponent(filename)}/content?${query.toString()}`,
       {},
       DocContentSchema
-    ),
+    );
+  },
 
   getProjectUsage: (projectId: string) =>
     request<import("../types").ProjectUsage>(
@@ -821,6 +858,11 @@ export const api = {
     writeModel?: string | null;
     generationMethod?: "custom" | "opencode-cli" | null;
     /**
+     * An explicit, versioned generation contract. Omitted means legacy;
+     * an empty object asks the server to apply the selected contract defaults.
+     */
+    generationProfile?: Record<string, unknown> | null;
+    /**
      * Whether this run may use the project's mirrored runtime evidence.
      * Omitted entirely when undefined, so the server's `project_default`
      * stands. A run can only decline the project's grant, never widen it.
@@ -838,6 +880,9 @@ export const api = {
           model: options.model ?? null,
           write_model: options.writeModel ?? null,
           doc_generation_provider: options.generationMethod ?? null,
+          ...(options.generationProfile === undefined
+            ? {}
+            : { generation_profile: options.generationProfile }),
           ...(options.liveEvidence === undefined
             ? {}
             : { live_evidence: options.liveEvidence ? "project_default" : "off" }),

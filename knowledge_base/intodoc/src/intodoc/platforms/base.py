@@ -23,10 +23,13 @@ class PlatformPlugin(ABC):
         ...
 
     @abstractmethod
-    def parse_project(self, repo_root: Path, cred_filter: CredentialFilter) -> ScanResult:
+    def parse_project(
+        self, repo_root: Path, cred_filter: CredentialFilter, *, cache_dir: Path | None = None,
+    ) -> ScanResult:
         """Parse the entire project and return structured scan results.
 
         The credential filter must be applied to raw text BEFORE parsing.
+        Platforms without deterministic parse caching may ignore ``cache_dir``.
         """
         ...
 

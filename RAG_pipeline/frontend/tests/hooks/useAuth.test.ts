@@ -11,6 +11,10 @@ vi.mock("next/navigation", () => ({
 import { renderHook, waitFor, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { refreshSession, useAuth } from "@/hooks/useAuth";
+import {
+  requestSessionRevalidation,
+  resetSessionRevalidationThrottle,
+} from "@/lib/session";
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -217,6 +221,65 @@ describe("useAuth", () => {
       await waitFor(() => {
         expect(result.current.status).toBe("unauthenticated");
       });
+
+      expect(result.current.user).toBeNull();
+    });
+  });
+
+  /**
+   * `handleUnauthorized` used to live here: declared on the interface, defined
+   * in the hook, returned from it — and called by nothing. It was also absent
+   * from `AuthContextValue`, so no component could even reach it. Every 401
+   * the app hit went unhandled with a refresh routine one unreachable call
+   * away. It is replaced by a subscription the data-fetch layer really uses.
+   */
+  describe("a data request that could not be authorized", () => {
+    it("re-probes /auth/me instead of trusting that route's status", async () => {
+      resetSessionRevalidationThrottle();
+      // A fresh Response per call: a body can only be read once, so a shared
+      // instance would make the second probe fail to parse.
+      const fetchMock = vi.spyOn(global, "fetch").mockImplementation(
+        async () =>
+          new Response(JSON.stringify(mockUser()), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+
+      const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
+      await waitFor(() => expect(result.current.isAuthenticated).toBe(true));
+
+      const probesBefore = fetchMock.mock.calls.filter(
+        ([url]) => url === "/api/auth/me",
+      ).length;
+
+      await act(async () => {
+        requestSessionRevalidation();
+      });
+
+      await waitFor(() => {
+        const probesAfter = fetchMock.mock.calls.filter(
+          ([url]) => url === "/api/auth/me",
+        ).length;
+        expect(probesAfter).toBe(probesBefore + 1);
+      });
+
+      // A data route's 401 is not authoritative, so the session survives when
+      // /auth/me says the user is still signed in.
+      expect(result.current.status).toBe("authenticated");
+      expect(mockPush).not.toHaveBeenCalled();
+    });
+
+    it("becomes a real logout only when /auth/me confirms it", async () => {
+      resetSessionRevalidationThrottle();
+      vi.spyOn(global, "fetch").mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === "/api/auth/me") return new Response(null, { status: 401 });
+        return new Response(null, { status: 401 }); // refresh refused too
+      });
+
+      const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
+      await waitFor(() => expect(result.current.status).toBe("unauthenticated"));
 
       expect(result.current.user).toBeNull();
     });

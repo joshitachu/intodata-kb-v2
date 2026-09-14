@@ -41,7 +41,7 @@ docs:
       - Describe the system topology and execution/orchestration shape.
       - Identify group boundaries, entry points, parent-child/caller-callee relationships, dependency graph, shared infrastructure, and cross-system interactions.
       - Include per-group or per-domain architecture summary with exact unit examples.
-      - Explain scanner-limited architecture gaps explicitly.
+      - Explain evidence gaps by their proven stage; use scanner-limited only for a cited extraction gap.
 
       TALEND CONNECTION SEMANTIC TABLE:
       Include a `## Connection Semantic Table` section with this exact table structure:
@@ -76,7 +76,7 @@ docs:
       SPECIFIC REQUIREMENTS:
       - Provide a canonical unit inventory table covering every unit: name | group | source artifact/path | type | purpose | key dependencies | evidence confidence.
       - Include component/step/action/module census using platform-specific vocabulary from the supplied platform obligations.
-      - Include missing references, orphaned/inactive assets, scanner-limited units, and shared dependencies.
+      - Include missing references, orphaned/inactive assets, shared dependencies, and units limited at a named evidence stage.
       - This is the exhaustive "what exists" reference; do not collapse units into vague summaries.
 
   - name: "03_DATA_FLOWS_AND_LINEAGE"

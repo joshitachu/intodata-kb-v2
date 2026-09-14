@@ -387,6 +387,7 @@ class ProjectRegistry:
         triggered_by: str = "api",
         model_name: str | None = None,
         partition_name: str | None = None,
+        generation_profile: dict | None = None,
     ) -> GenerateRun:
         run = GenerateRun(
             project_id=project_id,
@@ -394,6 +395,7 @@ class ProjectRegistry:
             status="running",
             model_name=model_name,
             partition_name=partition_name,
+            generation_profile=generation_profile,
         )
         self.db.add(run)
         await self.db.flush()

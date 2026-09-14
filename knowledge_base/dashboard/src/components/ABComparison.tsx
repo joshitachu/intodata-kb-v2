@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useGenerateRuns, useReviews } from "../hooks/useProjects";
 import { api } from "../api/client";
+import { parseApiError } from "../lib/errors";
 import type { RunComparisonRun } from "../types";
 
 interface Props {
@@ -32,7 +33,11 @@ function qualityBreakdown(run: RunComparisonRun) {
 }
 
 export default function ABComparison({ projectId, preloadRunA, preloadRunB }: Props) {
-  const { data: runsData } = useGenerateRuns(projectId);
+  const { data: runsData, isError: runsFailed, error: runsError } = useGenerateRuns(projectId);
+  // Same rule as everywhere else: an absent list is unknown, not empty. Saying
+  // "need at least 2 completed runs" before the list arrives tells an operator
+  // with ten runs that they have fewer than two.
+  const runsKnown = runsData !== undefined;
   const runs = (runsData?.runs ?? []).filter((r) => r.status === "completed");
 
   const [runA, setRunA] = useState<number | null>(preloadRunA ?? null);
@@ -51,6 +56,18 @@ export default function ABComparison({ projectId, preloadRunA, preloadRunB }: Pr
     queryFn: () => api.compareGenerateRuns(projectId, runA!, runB!),
     enabled: runA != null && runB != null && runA !== runB,
   });
+
+  if (!runsKnown) {
+    return (
+      <div className="card-dark p-6 text-sm font-mono">
+        {runsFailed ? (
+          <span className="text-red-400">Failed to load runs: {parseApiError(runsError)}</span>
+        ) : (
+          <span className="text-slate-500">Loading runs...</span>
+        )}
+      </div>
+    );
+  }
 
   if (runs.length < 2) {
     return (

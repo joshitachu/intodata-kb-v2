@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fastapiUpload } from "@/lib/fastapi";
 import { DocumentRoleSchema, IngestResponseSchema } from "@/types";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 
 export const config = {
   api: {
@@ -46,7 +47,6 @@ export async function POST(request: NextRequest) {
     const validated = IngestResponseSchema.parse(data);
     return NextResponse.json(validated);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Ingestion failed";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("ingest POST", error, "Ingestion failed");
   }
 }

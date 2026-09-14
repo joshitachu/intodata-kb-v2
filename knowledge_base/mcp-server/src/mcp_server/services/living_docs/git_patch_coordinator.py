@@ -75,6 +75,7 @@ class GitPatchCoordinator:
         changed_groups: list[str],
         active_docs_dir: Path,
         base_knowledge_revision_id: str | None,
+        repair_attempt_id: str | None = None,
     ) -> PatchCandidate:
         """Create a source-bound patch candidate and its deterministic floor."""
 
@@ -88,10 +89,16 @@ class GitPatchCoordinator:
         groups = tuple(sorted({group for group in changed_groups if group}))
         if not groups:
             raise ValueError("A Git patch candidate requires changed groups")
+        idempotency_key = f"git:{project_id}:{after_sha}"
+        if repair_attempt_id:
+            # Repairs are deliberate new attempts.  Keep the original held
+            # candidate/journal immutable while a normal webhook or poller
+            # replay continues to use the stable source key above.
+            idempotency_key = f"{idempotency_key}:repair:{repair_attempt_id}"
         changes = ChangeSet(
             source_revision=source,
             base_source_revision_id=before_sha or None,
-            idempotency_key=f"git:{project_id}:{after_sha}",
+            idempotency_key=idempotency_key,
             changes=tuple(
                 SemanticChange(
                     kind=ChangeKind.SEMANTIC,
@@ -125,6 +132,7 @@ class GitPatchCoordinator:
         after_sha: str,
         changed_files: list[object],
         base_knowledge_revision_id: str | None,
+        repair_attempt_id: str | None = None,
     ) -> PatchCandidate:
         """Create an idempotent candidate whose semantic scope is agent-owned.
 
@@ -180,7 +188,7 @@ class GitPatchCoordinator:
             # An immutable source revision is replay-safe within one contract
             # version.  A contract revision intentionally gets a new candidate,
             # retaining any prior held candidate as audit evidence.
-            idempotency_key=f"git:{project_id}:{after_sha}:opencode-v3",
+            idempotency_key=f"git:{project_id}:{before_sha}:{after_sha}:{base_knowledge_revision_id}:opencode-v4:{repair_attempt_id or ''}",
             changes=tuple(changes),
         )
         floor = DeterministicImpactFloor(
@@ -193,14 +201,14 @@ class GitPatchCoordinator:
                 ),
             ),
             evidence_ids=("git:diff",),
-            mapper_version="opencode-v3",
+            mapper_version="opencode-v4",
         )
         candidate = PatchCandidate.new(
             change_set=change_set,
             impact_floor=floor,
             base_knowledge_revision_id=base_knowledge_revision_id,
             knowledge_revision_id=(
-                f"kr-{hashlib.sha256(source.key.encode()).hexdigest()[:24]}"
+                f"kr-{hashlib.sha256(change_set.idempotency_key.encode()).hexdigest()[:24]}"
             ),
         )
         try:
@@ -282,6 +290,8 @@ class GitPatchCoordinator:
         changed_files: list[object] | None = None,
         full_diff_text: str = "",
         scan_before_patch: bool = True,
+        evidence_bundle: dict | None = None,
+        suggested_docs: list[str] | None = None,
     ) -> GitPatchOutcome:
         """Patch, stage, validate, and activate without any full fallback."""
 
@@ -293,6 +303,16 @@ class GitPatchCoordinator:
                 candidate.knowledge_revision_id,
                 patched_docs=self._reported_docs(candidate.id),
                 reason_code="already_active",
+            )
+        if status.state in {CandidateState.HELD, CandidateState.FAILED, CandidateState.SUPERSEDED}:
+            # A terminal candidate is immutable evidence.  In particular, a
+            # poller replay must not invoke a provider again for the same held
+            # source revision.
+            return GitPatchOutcome(
+                "held",
+                candidate.id,
+                candidate.knowledge_revision_id,
+                reason_code=status.reason_code or "candidate_terminal",
             )
         if status.state in {CandidateState.RAG_PREPARED, CandidateState.RECOVERY_REQUIRED}:
             return GitPatchOutcome(
@@ -306,7 +326,15 @@ class GitPatchCoordinator:
                 candidate.id, expected_version=status.version, target=CandidateState.PREPARING
             )
         workspace_output = self._workspace_output(candidate.id, active_output_dir)
-        self._copy_active_output(active_output_dir, workspace_output)
+        self._copy_active_output(active_output_dir, workspace_output, incremental_only=evidence_bundle is not None)
+        from mcp_server.services.living_docs.opencode_reingestion import _snapshot_tree
+        initial_docs = _snapshot_tree(active_output_dir / "docs")
+        if _snapshot_tree(workspace_output / "docs") != initial_docs:
+            return self._hold(candidate, "Active documents changed while taking their snapshot",
+                              "active_document_conflict")
+        if evidence_bundle is not None:
+            from mcp_server.services.living_docs.run_journal import atomic_json
+            atomic_json(workspace_output / "_reingestion" / "evidence.json", evidence_bundle)
         scan_output_dir = candidate_scan_output_dir
         if source_path is not None and scan_before_patch:
             scan = await ScannerService(log_manager=log_mgr).run_scan(
@@ -336,6 +364,8 @@ class GitPatchCoordinator:
             publish_rag=False,
             changed_files=changed_files or [],
             full_diff_text=full_diff_text,
+            suggested_docs=suggested_docs or [],
+            source_path=source_path,
         )
         if result.action != "true_patch":
             reason_code = str(result.summary.get("reason_code") or "patch_validation_failed")
@@ -346,6 +376,14 @@ class GitPatchCoordinator:
                 patch_summary=result.summary,
             )
         try:
+            from mcp_server.services.living_docs.run_journal import atomic_json
+            atomic_json(self._store.candidate_root(candidate.id) / "patch_summary.json", result.summary)
+            if rollout_stage == "shadow":
+                return self._hold(candidate, "Validated proposal retained without publishing",
+                                  "shadow_proposal_only", patch_summary=result.summary)
+            if _snapshot_tree(active_output_dir / "docs") != initial_docs:
+                return self._hold(candidate, "Active documents changed during analysis",
+                                  "active_document_conflict", patch_summary=result.summary)
             publication = await self._publisher.prepare(
                 candidate,
                 candidate_docs_dir=workspace_output / "docs",
@@ -374,7 +412,16 @@ class GitPatchCoordinator:
                 active_output_dir=active_output_dir,
                 active_source_revision_key=active_source_revision_key,
             )
+            index = workspace_output / "_reingestion" / "next_evidence_index.json"
+            if index.is_file():
+                import json
+                atomic_json(active_output_dir / "_version_history" / "evidence_index.json",
+                            json.loads(index.read_text()))
         except Exception as exc:
+            if self._store.status(candidate.id).state is CandidateState.ACTIVE:
+                return GitPatchOutcome("active", candidate.id, candidate.knowledge_revision_id,
+                    patched_docs=tuple(result.patched_docs), publication=publication,
+                    patch_summary={**result.summary, "index_recovery_required": str(exc)})
             return self._hold(
                 candidate,
                 str(exc),
@@ -463,10 +510,20 @@ class GitPatchCoordinator:
             return ()
 
     @staticmethod
-    def _copy_active_output(active_output_dir: Path, workspace_output: Path) -> None:
+    def _copy_active_output(active_output_dir: Path, workspace_output: Path, *, incremental_only: bool = False) -> None:
         if workspace_output.exists():
             shutil.rmtree(workspace_output)
         workspace_output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if incremental_only:
+            # Git-object evidence replaces scan caches. Do not copy the growing
+            # run journal and all historical analysis into every new candidate.
+            shutil.copytree(active_output_dir / "docs", workspace_output / "docs")
+            index = active_output_dir / "_version_history" / "evidence_index.json"
+            if index.is_file():
+                destination = workspace_output / "_version_history" / "evidence_index.json"
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(index, destination)
+            return
         shutil.copytree(
             active_output_dir,
             workspace_output,

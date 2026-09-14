@@ -291,6 +291,9 @@ class GenerateRun(Base):
         JSONB().with_variant(JSON(), "sqlite"),
         nullable=True,
     )
+    generation_profile: Mapped[dict | None] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=True,
+    )
 
     # Pack audit record (docs/one-pack-program.md section 9, "Substitute
     # controls for dropping Git on user packs"). Mandatory GitHub PR review is

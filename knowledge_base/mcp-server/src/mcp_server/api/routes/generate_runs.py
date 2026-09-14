@@ -591,6 +591,8 @@ async def rerun_phase(
             model_name=parent_run.model_name,
         )
         new_run_id = new_run.id
+        generation_profile = getattr(parent_run, "generation_profile", None)
+        new_run.generation_profile = generation_profile
         # Record parent link
         from sqlalchemy import update
         await db.execute(
@@ -608,6 +610,7 @@ async def rerun_phase(
         phase=req.phase,
         target=req.target,
         log_mgr=log_mgr,
+        generation_profile=generation_profile,
     )
 
     return {
@@ -627,6 +630,7 @@ async def _run_phase_rerun_background(
     phase: str,
     target: str | None,
     log_mgr,
+    generation_profile: dict | None = None,
 ) -> None:
     """Background task: invalidate the target artifact and resume the full pipeline.
 
@@ -676,6 +680,8 @@ async def _run_phase_rerun_background(
             run_id,
             log_mgr,
             resume=True,
+            generation_profile=generation_profile,
+            doc_generation_provider=(generation_profile or {}).get("engine"),
         )
 
     except Exception as exc:

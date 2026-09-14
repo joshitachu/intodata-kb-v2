@@ -156,6 +156,57 @@ def test_phase2_packet_preserves_required_source_and_reports_required_overage(tm
     assert any("scoped_known_risks.md" in path for path in packet.omitted)
 
 
+def test_phase2_packet_includes_full_root_resolved_routine_source(tmp_path):
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    task = staging / "task.md"
+    task.write_text("# InboundJob source\n", encoding="utf-8")
+    scan_output = tmp_path / "scan-output"
+    (scan_output / "scan").mkdir(parents=True)
+    tail_rule = "return allowOnlyValidatedOrders(value);"
+    routine_source = "\n".join([f"// line {index}" for index in range(240)] + [tail_rule])
+    (scan_output / "scan_result.json").write_text(
+        json.dumps({
+            "jobs": [{"job_id": "InboundJob", "name": "InboundJob"}],
+            "routines": [{
+                "routine_id": "root-a::Rules::1", "name": "Rules",
+                "source_root": "root-a", "path": "code/routines/Rules_1.0.item",
+                "source_complete": True, "source_code": routine_source,
+            }],
+        }),
+        encoding="utf-8",
+    )
+    (scan_output / "scan" / "manifest.json").write_text(
+        json.dumps({"job_routine_links": {"InboundJob": [{
+            "routine_id": "root-a::Rules::1", "source_root": "root-a",
+            "resolution": "same_root",
+        }]}}),
+        encoding="utf-8",
+    )
+
+    packet = build_phase2_context_packet(
+        staging_dir=staging,
+        facts=_facts(),
+        group="Integration",
+        task_id="routine_call",
+        unit_names=["InboundJob"],
+        task_evidence=task,
+        shared_context=[],
+        investigation_context=[],
+        scoped_evidence=None,
+        max_bytes=100_000,
+        max_scoped_artifact_bytes=8_000,
+        scan_output_dir=scan_output,
+    )
+
+    routine_packet = next(path for path in packet.files if path.name == "ROUTINE_DEPENDENCIES.md")
+    rendered = routine_packet.read_text(encoding="utf-8")
+    assert tail_rule in rendered
+    assert "root-a/code/routines/Rules_1.0.item" in rendered
+    manifest = json.loads(packet.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["includes_resolved_routine_dependencies"] is True
+
+
 def test_phase2_packet_leads_with_the_run_shared_prefix(tmp_path):
     """Two tasks of one run must share a byte-identical leading context prefix.
 

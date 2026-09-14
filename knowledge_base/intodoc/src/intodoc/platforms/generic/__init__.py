@@ -132,7 +132,9 @@ class GenericPlugin(PlatformPlugin):
 
         return FileType.ROUTINE
 
-    def parse_project(self, repo_root: Path, cred_filter: CredentialFilter) -> ScanResult:
+    def parse_project(
+        self, repo_root: Path, cred_filter: CredentialFilter, *, cache_dir: Path | None = None,
+    ) -> ScanResult:
         """Parse the project using the generic parser."""
         from intodoc.platforms.generic.parser import GenericParser
 

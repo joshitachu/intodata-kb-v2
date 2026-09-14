@@ -1,0 +1,105 @@
+# Versioned Talend investigation method.
+#
+# The five guide files are copied VERBATIM from the Integration Suite at the
+# revision below. `nexus-adaptation.md` is the only Nexus-authored file here: it
+# reconciles the guides' procedural instructions with a Nexus run.
+#
+# `sha256` is computed over the bytes AS STORED IN THIS REPOSITORY.
+# `services/investigation_method.py` verifies every digest at load time and
+# fails closed on a mismatch. Editing a guide without updating its digest is
+# therefore a hard error, not a silent drift: a method whose provenance cannot
+# be proved must not be handed to a model as authority.
+#
+# To re-import from a newer Integration Suite revision: copy the files, update
+# `source.revision`, recompute every `sha256`, and append an `update_log` entry
+# naming what changed. Do not edit a copied guide in place -- an adaptation
+# belongs in `nexus-adaptation.md`, where it is visibly Nexus-owned.
+
+platform: talend
+method_version: talend-method-1
+
+source:
+  name: integration-suite
+  repository: local colleague checkout
+  revision: 0c68b22633a6d067fcc30e29dd18e86d9ea6d24f
+  adapted_on: "2026-09-09"
+
+files:
+  - name: profile.md
+    role: profile
+    sha256: e9b015e5d6b6e91f2da63871bcdc9a9ca8f4a6bf2c2cf2adfcd2a4a8e2882ecf
+  - name: parsing-core.md
+    role: core
+    sha256: 0306370e3f28b052ed4ca0135a6bd2c22ea402dd831642977e7b5fb000c6bed2
+  - name: parsing-di-jobs.md
+    role: di
+    sha256: c585c8793d077e2442b028dc139d57beeb0443c9cf639109c7068b62ab9ff794
+  - name: parsing-esb-routes.md
+    role: esb
+    sha256: 36296112e09c4495a86424a37bf413541e2104e3107a8f831728ab2f7fbad4b3
+  - name: platform-behaviour.md
+    role: behaviour
+    sha256: 31203fa99a844afda95f4a464c1380b38f1dae11d1059ac60129630b0afe792d
+  - name: nexus-adaptation.md
+    role: nexus-adaptation
+    sha256: db51499632855e1ab9f936119eb2748d45c932274fb98740d683987ca95ac55e
+
+update_log:
+  - revision: 0c68b22633a6d067fcc30e29dd18e86d9ea6d24f
+    date: "2026-09-09"
+    note: >-
+      Initial import of the Talend platform profile, the three parsing guides
+      (core, DI jobs, ESB routes) and the platform-behaviour guide, verbatim.
+      Added nexus-adaptation.md: sanitized read-only _workspace/ layout,
+      scanner-computed facts as index rather than authority, the ban on identity
+      joins over redaction placeholders, GUID resolution and version dedup
+      already computed, artifact submission through
+      nexus_artifacts_submit_artifact only, deterministic table ids instead of
+      re-tabulation, explicit-unknown reporting, and the exclusion list
+      (scoring rubric, pipeline phases 2-6, bypassPermissions, WebFetch, direct
+      file writes, assessment templates).
+  - revision: 0c68b22633a6d067fcc30e29dd18e86d9ea6d24f
+    date: "2026-09-10"
+    note: >-
+      Rewrote nexus-adaptation.md for the agent-workspace lane. No Talend source
+      tree is staged any more, so the sanitized `_workspace/` layout section was
+      replaced by the scan's own layout, and the three parsing guides moved from
+      "prefix the path with your source root" to "not staged, and here is where
+      each of their results already lives". Output changed from one
+      nexus_artifacts_submit_artifact call to direct writes under `output/` and
+      `notes/`. GUID resolution, version dedup, the redaction rules and the
+      explicit-unknown shape are unchanged in substance and re-pointed at scan
+      field names. The five upstream guides are untouched; only the Nexus-owned
+      adaptation changed, so only its digest moves.
+  - revision: 0c68b22633a6d067fcc30e29dd18e86d9ea6d24f
+    date: "2026-09-11"
+    note: >-
+      Re-pointed nexus-adaptation.md at the routed workspace layout and the
+      closed source boundary. The guides are now staged one file per guide under
+      instructions/platform/ with a README router instead of being concatenated
+      into a single talend_semantics.md, so section 3 no longer claims the
+      parsing guides are absent -- their procedures are inapplicable, their
+      reasoning is not. New section 1b states that component code bodies and
+      routine sources are withheld and replaced by a code_withheld summary
+      (length, digest, referenced identifiers), that mapping expressions and
+      component params are staged in full, and that a withheld body is reported
+      as a boundary rather than as absent logic. INDEX.md and facts/navigation/
+      added to the layout; "code body withheld" added to the unknown-reason
+      vocabulary and to the not-applicable table. The five upstream guides are
+      untouched; only the Nexus-owned adaptation changed, so only its digest
+      moves.
+  - revision: 0c68b22633a6d067fcc30e29dd18e86d9ea6d24f
+    date: "2026-09-14"
+    note: >-
+      Removed two real client identifiers from nexus-adaptation.md. The
+      design-name example in the unit-identity section and the locator example
+      in the unknown-reporting shape both named jobs and a source group from a
+      customer estate. This file is copied verbatim into EVERY project's
+      workspace, so those names were shown to every other client's agent --
+      the same cross-client exposure that was previously removed from the
+      Nexus-authored prompt text. Replaced with invented equivalents that make
+      the identical point: LoadCustomer / LoadCustomers for the plural trap
+      (never normalise two design names into one), and a neutral scan path for
+      the locator. No procedural change. The five upstream guides are
+      untouched; only the Nexus-owned adaptation changed, so only its digest
+      moves.

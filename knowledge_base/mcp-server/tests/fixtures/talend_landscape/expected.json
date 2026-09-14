@@ -1,0 +1,12 @@
+{
+  "exact_retained_facts": [
+    "row.C39 + 39",
+    "return decisiveRule(value);"
+  ],
+  "required_gap_stages": [
+    "source"
+  ],
+  "forbidden_public_phrases": [
+    "scanner detail is limited"
+  ]
+}

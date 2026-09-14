@@ -141,14 +141,14 @@ class Phase3Docs(Phase):
         if sql_gate_errors:
             summary = f"{len(sql_gate_errors)} SQL usage gate finding(s): " + "; ".join(sql_gate_errors[:3])
             await log_cb(ctx.project_id, f"[custom] Phase 3 SQL usage gate: {summary}", "warning")
-        else:
+        elif doc_report.ok:
             await log_cb(ctx.project_id, "[custom] Phase 3 factual gates passed", "info")
 
         if execution_plan is not None:
             self._helpers.record_dag_node_result(
                 ctx,
                 "validate_docs",
-                "passed",
+                "passed" if doc_report.ok and not sql_gate_errors else "advisory",
                 artifacts=["_assessment/doc_validation_report.json"],
                 validation="validate_docs",
             )
@@ -225,7 +225,7 @@ class Phase3Docs(Phase):
                         validation="enterprise_gates",
                         error=" | ".join(failed[:5]),
                     )
-            if execution_plan is not None:
+            if execution_plan is not None and not failed:
                 self._helpers.record_dag_node_result(
                     ctx,
                     "enterprise_gates",
@@ -233,7 +233,8 @@ class Phase3Docs(Phase):
                     artifacts=["_assessment/enterprise_gates.json"],
                     validation="enterprise_gates",
                 )
-            await log_cb(ctx.project_id, "[custom] Enterprise publish gates passed", "info")
+            if not failed:
+                await log_cb(ctx.project_id, "[custom] Enterprise publish gates passed", "info")
         else:
             state.warnings.append("Draft mode: enterprise publish gates are advisory only")
             if execution_plan is not None:

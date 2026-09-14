@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 import { KB_API_URL, safeProjectId } from "../_proxy";
 
 export const dynamic = "force-dynamic";
@@ -60,7 +61,6 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ project_id: projectId, filename, lines });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to fetch log history";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("source/log-history GET", error, "Failed to fetch log history");
   }
 }

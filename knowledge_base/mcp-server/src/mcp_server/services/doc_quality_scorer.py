@@ -18,7 +18,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from mcp_server.config import config
-from mcp_server.providers.custom.doc_catalog import load_doc_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -35,23 +34,54 @@ _BASE_MIN_LINES_AT_50: dict[str, int] = {
     "07_QUALITY_SECURITY_RISK_SCORECARD": 900,
     "08_CHANGE_PLAYBOOK": 800,
 }
-# Retained for backwards compatibility with existing imports/tests. The scorer
-# itself is contract-driven (One Pack decision D2): it scores every published
-# top-level document rather than filtering against the default catalog, so
+# REMOVED: ``_PUBLISHABLE_DOC_KEYS = frozenset(load_doc_catalog().required_docs)``.
+# It was documented as "retained for backwards compatibility with existing
+# imports/tests" and had exactly one occurrence in the repository -- its own
+# assignment. It also made importing this module load the whole doc catalog for
+# nothing. The scorer is contract-driven (One Pack decision D2): it scores every
+# published document rather than filtering against the default catalog, so
 # pack-named document sets (e.g. INJECTION_FINDINGS.md) score normally instead
 # of returning overall=0.0 with an empty doc list.
-_PUBLISHABLE_DOC_KEYS = frozenset(load_doc_catalog().required_docs)
 _SCALE_REFERENCE_UNITS = 50
 
 # Non-document top-level markdown files that must never be scored as product
 # docs (support artifacts that legitimately live at the docs root).
 _NON_PRODUCT_DOC_KEYS = frozenset({"CROSS_PROJECT_TOPOLOGY", "README"})
 
-# Engineering-fact support artifacts (engineering_facts.md, dependency_map.md,
-# sql_usage.md, ...) are all-lowercase snake_case at the docs root on older
-# runs; product docs -- legacy numbered and pack-declared alike -- carry an
-# uppercase or numbered key.
-_SUPPORT_ARTIFACT_KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+def _support_artifact_keys() -> frozenset[str]:
+    """The derived fact maps the legacy harness writes to the docs ROOT.
+
+    Derived from the code that WRITES them, not guessed from their shape.
+
+    This used to be ``re.compile(r"^[a-z][a-z0-9_]*$")`` -- "a lowercase
+    snake_case name is an engineering-fact artifact". That was a proxy for the
+    real property, and the proxy is wrong for every document whose author is
+    not the legacy harness. Every ``agent-workspace-v1`` document is lowercase
+    snake_case (the agent chooses its own file names), so all of them were
+    classified as support artifacts and dropped: run 250 scored ``0.00/5.0``
+    with eight real documents published, and the same predicate gates the
+    dashboard document list and the PDF export.
+
+    The property that actually makes a file internal is who wrote it and why.
+    ``MARKDOWN_ARTIFACTS`` is the registry the markdown fact writer iterates,
+    so a fact map added there is excluded here without anyone remembering to
+    update a list; the three stragglers are written by their own modules and
+    are named beside the writer that produces each one.
+    """
+
+    from mcp_server.providers.custom.engineering_facts.writers.markdown_writer import (
+        MARKDOWN_ARTIFACTS,
+    )
+
+    return frozenset(MARKDOWN_ARTIFACTS) | {
+        # markdown_writer.MarkdownFactWriter.write, the aggregate itself
+        "engineering_facts",
+        # providers/custom/sql_usage.py::write_sql_usage_artifacts
+        "sql_usage",
+        # providers/custom/source_context.py, the schema dictionary
+        "schema_dictionary",
+    }
 
 
 def is_support_artifact_filename(filename: str) -> bool:
@@ -60,7 +90,34 @@ def is_support_artifact_filename(filename: str) -> bool:
     These are deterministic derived fact maps (``engineering_facts.md``,
     ``dependency_map.md``, ``sql_usage.md``, ...), not generated documents.
     """
-    return bool(_SUPPORT_ARTIFACT_KEY_RE.match(_doc_key(filename)))
+    return _doc_key(filename) in _support_artifact_keys()
+
+
+def is_published_doc_path(relative: str | Path) -> bool:
+    """True when a path under ``docs/`` belongs to the published document set.
+
+    THE publication predicate, expressed over a path rather than a bare name so
+    a nested document is decided by the same rule as a top-level one. Two
+    exclusions, and only two:
+
+    * any path segment marked internal -- ``_``- or ``.``-prefixed. This is the
+      same rule ``publish._is_visible``, ``_count_staged_docs`` and
+      ``RagBridge._read_nested_md_files`` apply, and it is the rule this
+      function is supposed to be sharing with them.
+    * one of the derived fact maps at the docs ROOT
+      (:func:`is_support_artifact_filename`). Root-only on purpose: those files
+      only ever exist there, and applying the name rule below the root is what
+      dropped ``integrations/order_flow.md`` for having a lowercase name.
+    """
+
+    path = Path(relative)
+    if path.suffix.lower() != ".md":
+        return False
+    if any(part.startswith(("_", ".")) for part in path.parts):
+        return False
+    if len(path.parts) == 1 and is_support_artifact_filename(path.name):
+        return False
+    return True
 
 
 def is_published_doc_filename(filename: str) -> bool:
@@ -69,35 +126,35 @@ def is_published_doc_filename(filename: str) -> bool:
     Single definition of the publication predicate, shared with
     ``services.rag_bridge._read_md_files`` (One Pack decisions D45/R8): a
     pack's declared document names are authoritative, so neither a numeric
-    ``NN_`` prefix nor a catalog allowlist may gate publication. Only two
-    classes are excluded:
+    ``NN_`` prefix nor a catalog allowlist may gate publication.
 
-    * ``_``-prefixed internal artifacts -- pushed separately as internal RAG
-      layers by ``RagBridge.sync_internal_layers``.
-    * lowercase snake_case engineering-fact support artifacts.
+    Thin wrapper over :func:`is_published_doc_path`; callers that hold a
+    relative path should use that one instead, so a nested document is not
+    silently judged by its basename.
 
     ``CROSS_PROJECT_TOPOLOGY.md`` and ``README.md`` ARE published (the
     partition orchestrator pushes the former deliberately); they are excluded
     only from *scoring* and from patch targeting -- see
     :func:`is_product_doc_filename`.
     """
-    if not filename.endswith(".md") or filename.startswith("_"):
-        return False
-    return not is_support_artifact_filename(filename)
+    return is_published_doc_path(filename)
 
 
-def is_product_doc_filename(filename: str) -> bool:
-    """True when a top-level ``docs/*.md`` file is a generated product document.
+def is_product_doc_filename(filename: str | Path) -> bool:
+    """True when a published ``docs/`` markdown file is a product document.
 
     Narrower than :func:`is_published_doc_filename`: also excludes the
-    non-product markdown that legitimately lives at the docs root
-    (``CROSS_PROJECT_TOPOLOGY.md``, ``README.md``). Used where a document is
-    *scored* or *rewritten* -- the quality scorer and the diff patcher -- and
-    deliberately NOT used on the RAG push path, which must stay a superset.
+    non-product markdown that legitimately lives in a docs tree
+    (``CROSS_PROJECT_TOPOLOGY.md``, and a ``README.md`` at any level -- both
+    are index pages, written by the orchestrator and by the register compiler
+    respectively, and scoring an index against document-depth heuristics
+    measures nothing). Used where a document is *scored* or *rewritten* -- the
+    quality scorer and the diff patcher -- and deliberately NOT used on the RAG
+    push path, which must stay a superset.
     """
-    if not is_published_doc_filename(filename):
+    if not is_published_doc_path(filename):
         return False
-    return _doc_key(filename) not in _NON_PRODUCT_DOC_KEYS
+    return _doc_key(Path(filename).name) not in _NON_PRODUCT_DOC_KEYS
 
 
 def _scaled_min_lines(doc_key: str, unit_count: int) -> int:
@@ -401,12 +458,24 @@ def _score_assistant_usefulness(content: str) -> tuple[float, list[str]]:
     return round(min(5.0, score), 2), flags
 
 
-def score_doc(path: Path, unit_count: int = _SCALE_REFERENCE_UNITS) -> DocScore:
-    """Score a single Markdown file. unit_count calibrates minimum line thresholds."""
+def score_doc(
+    path: Path,
+    unit_count: int = _SCALE_REFERENCE_UNITS,
+    *,
+    label: str | None = None,
+) -> DocScore:
+    """Score a single Markdown file. unit_count calibrates minimum line thresholds.
+
+    ``label`` is what the report calls the document. The caller passes the
+    docs-relative path so a nested set does not report two different documents
+    as ``orders.md``; the default keeps the historical bare-name behaviour for
+    a flat tree.
+    """
+    label = label or path.name
     try:
         content = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return DocScore(file=path.name, lines=0, score=0.0, flags=["unreadable"])
+        return DocScore(file=label, lines=0, score=0.0, flags=["unreadable"])
 
     lines = content.count("\n")
     doc_key = _doc_key(path.name)
@@ -435,7 +504,7 @@ def score_doc(path: Path, unit_count: int = _SCALE_REFERENCE_UNITS) -> DocScore:
     flags.extend(usefulness_flags)
 
     return DocScore(
-        file=path.name,
+        file=label,
         lines=lines,
         score=round(composite, 2),
         flags=flags,
@@ -472,13 +541,25 @@ def score_project(
         docs_dir = config.project_root / "output" / project_id / "docs"
 
     def _is_product_doc(p: Path) -> bool:
-        if not p.is_file() or not is_product_doc_filename(p.name):
+        if not p.is_file():
+            return False
+        try:
+            relative = p.relative_to(docs_dir)
+        except ValueError:  # pragma: no cover - rglob never leaves docs_dir
+            return False
+        if not is_product_doc_filename(relative):
             return False
         if allowed_docs is not None:
             return _doc_key(p.name) in allowed_docs
         return True
 
-    doc_files = sorted(p for p in docs_dir.glob("*.md") if _is_product_doc(p))
+    # RECURSIVE. ``glob("*.md")`` saw only the docs root, so every nested
+    # document was unscorable: ``integrations/exchanges.md`` and everything
+    # under ``reference/`` in an ``agent-workspace-v1`` publication, where the
+    # agent chooses the document structure. The internal-segment rule inside
+    # ``is_product_doc_filename`` is what keeps ``_assessment/`` and
+    # ``_rag_support/`` out, so widening the walk admits no internal artifact.
+    doc_files = sorted(p for p in docs_dir.rglob("*.md") if _is_product_doc(p))
 
     if not doc_files:
         return RunQualityReport(
@@ -496,7 +577,10 @@ def score_project(
         except (json.JSONDecodeError, OSError, ValueError) as exc:
             logger.warning("Failed to read facts_manifest.json for %s: %s", docs_dir, exc)
 
-    doc_scores = [score_doc(f, unit_count=unit_count) for f in doc_files]
+    doc_scores = [
+        score_doc(f, unit_count=unit_count, label=f.relative_to(docs_dir).as_posix())
+        for f in doc_files
+    ]
     overall = round(sum(d.score for d in doc_scores) / len(doc_scores), 2)
 
     return RunQualityReport(

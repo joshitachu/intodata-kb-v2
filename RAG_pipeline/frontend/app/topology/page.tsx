@@ -38,6 +38,8 @@ import { useTopologyNavigation, type TopologyLevel } from "@/hooks/useTopologyNa
 import { useProjectLandscape, LandscapeUnavailableError } from "@/hooks/useProjectLandscape";
 import { useFieldLineage } from "@/hooks/useFieldLineage";
 import { useJobHealth } from "@/hooks/useJobHealth";
+import { useDeepDiveProjects } from "@/hooks/useDeepDiveProjects";
+import { queryOutcome } from "@/lib/queryState";
 import {
   componentLineageHighlight,
   jobLineageHighlight,
@@ -160,6 +162,9 @@ interface ProjectOption {
   };
 }
 
+/** Stable reference so the effects below do not re-run on every render. */
+const EMPTY_PROJECTS: ProjectOption[] = [];
+
 interface GraphData {
   project_id: string;
   manifest: ManifestData;
@@ -206,7 +211,20 @@ const nodeTypes = {
 function TopologyContent() {
   const router = useRouter();
   const { selectedProject: globalProject, setSelectedProject: setGlobalProject } = useChatContext();
-  const [projects, setProjects] = useState<ProjectOption[]>([]);
+  // The project list comes from the same shared hook the toolbar selectors
+  // use, so it inherits the authed-fetch refresh-and-replay, the retry policy
+  // and — crucially — an honest three-way state. The previous inline
+  // `fetch(...).then(res => res.json())` had no `res.ok` check: a backend
+  // error body ({error: ...}) parses as JSON perfectly well, `data.projects`
+  // came back undefined, the `if (data.projects)` guard silently skipped, and
+  // `.catch` never fired because it only covers transport/JSON failures. The
+  // picker then said "No scanned projects" — a backend failure rendered as an
+  // empty account.
+  const projectsQuery = useDeepDiveProjects();
+  const projectsOutcome = queryOutcome(projectsQuery, "Could not load scanned projects");
+  const projects: ProjectOption[] = projectsOutcome.kind === "ready"
+    ? projectsOutcome.data.projects
+    : EMPTY_PROJECTS;
   const [selectedProject, setSelectedProjectLocal] = useState("");
   const [graphData, setGraphData] = useState<GraphData | null>(null);
   const [flowResult, setFlowResult] = useState<FlowResult | null>(null);
@@ -1392,18 +1410,6 @@ function TopologyContent() {
     return ids && ids.size > 0 ? ids : null;
   }, [copilotHover, copilotHighlightIds]);
 
-  // Fetch available projects
-  useEffect(() => {
-    fetch("/api/deep-dive/projects")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.projects) {
-          setProjects(data.projects);
-        }
-      })
-      .catch(() => setError("Failed to load projects"));
-  }, []);
-
   // Sync with global project selection, fall back to first scanned project.
   // A deep link outranks both, once -- it is the most specific statement of
   // intent available, but only until the user picks something themselves.
@@ -2408,7 +2414,16 @@ function TopologyContent() {
             className="appearance-none cursor-pointer rounded-full border border-input bg-muted/40 pl-3 pr-7 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-muted focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
           >
             {projects.length === 0 && (
-              <option value="">No scanned projects</option>
+              // Three distinct placeholders for three distinct states. Only a
+              // successful, genuinely empty response may claim the account has
+              // nothing scanned.
+              <option value="">
+                {projectsOutcome.kind === "unknown"
+                  ? "Loading projects…"
+                  : projectsOutcome.kind === "failed"
+                    ? "Projects unavailable — retry"
+                    : "No scanned projects"}
+              </option>
             )}
             {projects.map((p) => {
               const counts = p.artifact_counts;
@@ -2548,6 +2563,25 @@ function TopologyContent() {
             <div className="flex items-center gap-2 text-muted-foreground">
               <div className="h-4 w-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
               Loading topology...
+            </div>
+          </div>
+        )}
+
+        {/* A project-list failure is its own failure with its own retry, and
+            must not be silently rendered as an account with nothing scanned. */}
+        {projectsOutcome.kind === "failed" && !selectedProject && !loading && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="text-center text-muted-foreground">
+              <p className="text-sm">{projectsOutcome.message}</p>
+              <p className="mt-1 text-xs">
+                The project list could not be loaded. Your session is still valid.
+              </p>
+              <button
+                onClick={() => void projectsQuery.refetch()}
+                className="mt-2 text-xs underline hover:text-foreground"
+              >
+                Retry
+              </button>
             </div>
           </div>
         )}

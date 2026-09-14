@@ -22,7 +22,7 @@ import math
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import httpx
 
@@ -113,6 +113,13 @@ _PROJECT_SCOPE_KEYWORDS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Status tokens that mean the same thing whatever else the payload says. Keys
+# are lower-cased; both the `status` spelling (execution_successful) and its
+# `executionStatus` twin (EXECUTION_SUCCESSFUL) fold onto the same key.
+#
+# Entries are never removed: a TMC deployment other than the one this was
+# calibrated against may still send them, and an unmapped status degrades to
+# UNKNOWN, which is exactly the data loss this map exists to prevent.
 _STATE_MAP: dict[str, RuntimeExecutionState] = {
     "execution_successful": RuntimeExecutionState.SUCCESS,
     "success": RuntimeExecutionState.SUCCESS,
@@ -123,6 +130,7 @@ _STATE_MAP: dict[str, RuntimeExecutionState] = {
     "error": RuntimeExecutionState.FAILED,
     "execution_running": RuntimeExecutionState.RUNNING,
     "running": RuntimeExecutionState.RUNNING,
+    "executing": RuntimeExecutionState.RUNNING,
     "in_progress": RuntimeExecutionState.RUNNING,
     "deployed": RuntimeExecutionState.RUNNING,
     "deploying": RuntimeExecutionState.RUNNING,
@@ -130,8 +138,71 @@ _STATE_MAP: dict[str, RuntimeExecutionState] = {
     "starting_flow_execution": RuntimeExecutionState.RUNNING,
     "undeployed": RuntimeExecutionState.SUCCESS,
     "stopped": RuntimeExecutionState.SUCCESS,
+    "terminated": RuntimeExecutionState.TERMINATED,
+    "execution_terminated": RuntimeExecutionState.TERMINATED,
+    "terminated_timeout": RuntimeExecutionState.TIMED_OUT,
+    "execution_terminated_timeout": RuntimeExecutionState.TIMED_OUT,
+    # Retained for other deployments; the live tenants send `deploy_failed`,
+    # which is resolved from the payload by _STATE_RESOLVERS below.
     "deployment_failed": RuntimeExecutionState.FAILED,
 }
+
+# Field names that can carry a status, in the order they are consulted.
+# `executionStatus` is the upper-case twin of `status`; `state` is a defensive
+# spelling seen on older payload shapes.
+_STATUS_FIELDS: tuple[str, ...] = ("status", "executionStatus", "execution_status", "state")
+
+_MISFIRE_REASON_FIELDS: tuple[str, ...] = (
+    "misfiredExecutionReason",
+    "misfired_execution_reason",
+)
+
+_EXECUTION_TYPE_FIELDS: tuple[str, ...] = ("executionType", "execution_type")
+
+
+def _deploy_failed_state(item: dict[str, Any]) -> RuntimeExecutionState:
+    """`deploy_failed` covers two different events, told apart by the payload.
+
+    TMC reports a scheduled run that never started (the previous run was still
+    holding the executable, the task was paused, deployment attempts were
+    exhausted) with the same status as a deployment that genuinely broke. The
+    misfire reason is the discriminator, and it is only present on the former --
+    so its absence must fall back to FAILED rather than be assumed.
+    """
+    return (
+        RuntimeExecutionState.MISFIRED
+        if _misfire_reason(item)
+        else RuntimeExecutionState.FAILED
+    )
+
+
+# Statuses whose meaning depends on the rest of the payload. Kept separate from
+# _STATE_MAP so the common case stays a dict lookup and the exceptions have to
+# justify themselves in one place.
+_STATE_RESOLVERS: dict[str, Callable[[dict[str, Any]], RuntimeExecutionState]] = {
+    "deploy_failed": _deploy_failed_state,
+}
+
+# One warning per distinct unrecognised status per process. A sync walks tens of
+# thousands of executions and a novel status is systemic, not incidental: an
+# un-deduplicated warning would emit thousands of identical lines and get muted,
+# which is how the previous silent-UNKNOWN mapping survived unnoticed.
+_UNKNOWN_STATE_WARN_LIMIT = 50
+_unknown_states_warned: set[str] = set()
+
+# Outcomes that owe the operator an explanation, and therefore get a failure
+# record. Not just FAILED, and not just Jobs: a Route that fails carries the
+# same errorMessage a Job does, and a misfire is the one outcome where TMC's
+# explanation is the ONLY evidence that will ever exist -- nothing ran, so no
+# logs will be fetched for it.
+_DIAGNOSABLE_STATES: frozenset[RuntimeExecutionState] = frozenset(
+    {
+        RuntimeExecutionState.FAILED,
+        RuntimeExecutionState.MISFIRED,
+        RuntimeExecutionState.TIMED_OUT,
+        RuntimeExecutionState.TERMINATED,
+    }
+)
 
 _SEVERITY_MAP: dict[str, RuntimeLogSeverity] = {
     "debug": RuntimeLogSeverity.DEBUG,
@@ -531,6 +602,12 @@ class TalendTmcRuntimeProvider:
         }
         items = await self._get_all_pages(path, params=query, max_items=params.limit)
         executions = [_to_execution(item) for item in items]
+        if params.state is not None:
+            # `_tmc_status` only knows a server-side value for the states TMC
+            # accepts as a query filter; for the rest it sends none. Without
+            # this check, asking for MISFIRED would return every execution and
+            # look like a filter that matched everything.
+            executions = [item for item in executions if item.state == params.state]
         if params.job_name:
             executions = [item for item in executions if item.job_name == params.job_name]
         if params.project_name:
@@ -867,8 +944,7 @@ class TalendTmcRuntimeProvider:
                 error_detail=_failure_detail_for_task_run(raw),
             )
             for raw, run in zip(task_runs_raw, job_runs, strict=False)
-            if run.state == RuntimeExecutionState.FAILED
-            and run.executable_kind == RuntimeExecutableKind.JOB
+            if run.state in _DIAGNOSABLE_STATES
         ]
         runs_by_recency = sorted(job_runs, key=lambda item: item.started_at, reverse=True)
         # A ceiling of 0 means "no ceiling" — capture every failure in the window.
@@ -1316,10 +1392,68 @@ def _parse_dt(value: Any) -> datetime | None:
         raise RuntimeProviderError("Talend TMC payload has unparseable datetime") from e
 
 
-def _normalize_state(raw: Any) -> RuntimeExecutionState:
-    if not isinstance(raw, str):
-        return RuntimeExecutionState.UNKNOWN
-    return _STATE_MAP.get(raw.strip().lower(), RuntimeExecutionState.UNKNOWN)
+def _status_token(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return value.strip().lower() or None
+
+
+def _normalize_state(item: dict[str, Any]) -> RuntimeExecutionState:
+    """Map a TMC execution payload onto the generic outcome vocabulary.
+
+    Takes the whole payload, not one string, for two reasons:
+
+    - `deploy_failed` cannot be resolved without `misfiredExecutionReason`.
+    - The status fields must be tried until one MAPS, not until one is PRESENT.
+      `status` is on 100% of executions, so a first-present rule made every
+      other field unreachable -- `starting_flow_execution` sat in the map as
+      dead code while its executions were stored as `unknown`.
+
+    An unrecognised status is warned about once per process and stored as
+    UNKNOWN; the verbatim string is kept on the run (see `_raw_state`) so the
+    outcome is recoverable without re-fetching from TMC.
+    """
+    tokens: list[str] = []
+    for name in _STATUS_FIELDS:
+        token = _status_token(item.get(name))
+        if token is None or token in tokens:
+            continue
+        tokens.append(token)
+        resolver = _STATE_RESOLVERS.get(token)
+        if resolver is not None:
+            return resolver(item)
+        state = _STATE_MAP.get(token)
+        if state is not None:
+            return state
+    if tokens:
+        _warn_unknown_state(tokens)
+    return RuntimeExecutionState.UNKNOWN
+
+
+def _warn_unknown_state(tokens: list[str]) -> None:
+    key = "|".join(tokens)
+    if key in _unknown_states_warned or len(_unknown_states_warned) >= _UNKNOWN_STATE_WARN_LIMIT:
+        return
+    _unknown_states_warned.add(key)
+    logger.warning(
+        "Talend TMC returned an execution status this adapter does not map: %s. "
+        "Those executions are stored with state=unknown; add the status to "
+        "_STATE_MAP in talend_tmc.py to count them correctly.",
+        ", ".join(repr(token) for token in tokens),
+    )
+
+
+def _raw_state(item: dict[str, Any]) -> str | None:
+    """The provider's status string, verbatim -- not lower-cased, not mapped."""
+    return _str_field(item, *_STATUS_FIELDS)
+
+
+def _misfire_reason(item: dict[str, Any]) -> str | None:
+    return _str_field(item, *_MISFIRE_REASON_FIELDS)
+
+
+def _execution_type(item: dict[str, Any]) -> str | None:
+    return _str_field(item, *_EXECUTION_TYPE_FIELDS)
 
 
 def _normalize_engine_status(raw: Any, availability: Any = None) -> RuntimeEngineStatus:
@@ -1356,7 +1490,10 @@ def _to_execution(item: Any) -> RuntimeExecution:
         execution_id=_required_str(item, "executionId", "id"),
         job_name=_required_str(item, "taskName", "name", "job_name", "artifactName"),
         project_name=_str_field(item, "workspaceName", "workspace_name", "projectName", "project_name"),
-        state=_normalize_state(_field(item, "status", "state")),
+        state=_normalize_state(item),
+        raw_state=_raw_state(item),
+        misfire_reason=_misfire_reason(item),
+        execution_type=_execution_type(item),
         started_at=started,
         ended_at=ended,
         duration_ms=duration,
@@ -1656,7 +1793,10 @@ def _to_job_run(
         job_id=job_id,
         job_name=job.name if job is not None else job_id,
         execution_id=_required_str(item, "executionId", "execution_id", "id"),
-        state=_normalize_state(_field(item, "status", "executionStatus", "state")),
+        state=_normalize_state(item),
+        raw_state=_raw_state(item),
+        misfire_reason=_misfire_reason(item),
+        execution_type=_execution_type(item),
         executable_kind=(
             job.executable_kind if job is not None else RuntimeExecutableKind.UNKNOWN
         ),
@@ -1739,7 +1879,10 @@ def _to_plan_run(
         run_id=run_id,
         plan_id=plan_id,
         plan_name=plan.name if plan is not None else plan_id,
-        state=_normalize_state(_field(item, "status", "executionStatus", "state")),
+        state=_normalize_state(item),
+        raw_state=_raw_state(item),
+        misfire_reason=_misfire_reason(item),
+        execution_type=_execution_type(item),
         environment_id=plan.environment_id if plan is not None else None,
         environment_name=plan.environment_name if plan is not None else None,
         workspace_id=plan.workspace_id if plan is not None else None,
@@ -1757,6 +1900,9 @@ def _execution_from_job_run(run: RuntimeJobRun, project_id: str) -> RuntimeExecu
         job_name=run.job_name,
         project_name=project_id,
         state=run.state,
+        raw_state=run.raw_state,
+        misfire_reason=run.misfire_reason,
+        execution_type=run.execution_type,
         executable_kind=run.executable_kind,
         started_at=run.started_at,
         ended_at=run.ended_at,
@@ -1835,6 +1981,26 @@ def _failure_summary_for_task_run(raw: dict[str, Any], run: RuntimeJobRun) -> st
     message = _str_field(raw, "errorMessage", "error_message")
     if message:
         return message[:300]
+    return _synthesized_failure_summary(run)[:300]
+
+
+def _synthesized_failure_summary(run: RuntimeJobRun) -> str:
+    """Describe a non-success outcome TMC attached no error message to.
+
+    Each state gets its own sentence because they are not the same event: "did
+    not start" and "failed" send an operator to different places, and a summary
+    that says "failed" for a run that never ran is a false diagnosis.
+    """
+    if run.state == RuntimeExecutionState.MISFIRED:
+        return (
+            f"Run did not start: {run.misfire_reason}"
+            if run.misfire_reason
+            else f"{run.job_name} did not start in Talend TMC"
+        )
+    if run.state == RuntimeExecutionState.TIMED_OUT:
+        return f"{run.job_name} was stopped by its configured timeout"
+    if run.state == RuntimeExecutionState.TERMINATED:
+        return f"{run.job_name} was terminated before completing"
     return f"{run.job_name} failed in Talend TMC"
 
 
@@ -1892,7 +2058,7 @@ def _plan_step_results(plan_id: str, task_runs_raw: list[dict[str, Any]]) -> lis
                 step_id=job_id or execution_id or "unknown",
                 job_id=job_id,
                 job_name=None,
-                state=_normalize_state(_field(item, "status", "executionStatus", "state")),
+                state=_normalize_state(item),
                 execution_id=execution_id,
             )
         )
@@ -1924,6 +2090,12 @@ def _last_days_from_window(since: datetime | None, until: datetime | None) -> in
 
 
 def _tmc_status(state: RuntimeExecutionState | None) -> str | None:
+    """Server-side narrowing hint only; `list_executions` still filters locally.
+
+    Returning None means "let TMC send everything" -- which is correct for the
+    states whose accepted query spelling is unverified, because a wrong value
+    silently narrows the result to nothing.
+    """
     if state == RuntimeExecutionState.FAILED:
         return "EXECUTION_FAILED"
     if state == RuntimeExecutionState.SUCCESS:

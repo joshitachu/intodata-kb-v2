@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PdfGenerateResponseSchema } from "@/types";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 
 const KB_API_URL = process.env.KB_API_URL || "http://localhost:8001";
 
@@ -34,8 +35,6 @@ export async function POST(
     const validated = PdfGenerateResponseSchema.parse(data);
     return NextResponse.json(validated);
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Failed to generate PDFs";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("docs/[projectId]/generate-pdfs POST", error, "Failed to generate PDFs");
   }
 }

@@ -48,10 +48,51 @@ class RuntimeExecutableKind(str, Enum):
 
 
 class RuntimeExecutionState(str, Enum):
+    """Outcome vocabulary shared by every runtime provider.
+
+    A run that did not succeed is not necessarily a run that failed, and
+    collapsing the distinctions loses the only fact that says what to do about
+    it: a MISFIRED run never started (nothing ran, so no logs exist to
+    diagnose), a TIMED_OUT run was killed by its own configured limit, and a
+    TERMINATED run was stopped by something outside it. Providers that only
+    report success/failure simply never emit the middle three.
+    """
+
     SUCCESS = "success"
     FAILED = "failed"
+    # Scheduled run that never started (e.g. the previous run was still
+    # holding the executable, or the task was paused at trigger time).
+    MISFIRED = "misfired"
+    # Started, then killed by its configured timeout.
+    TIMED_OUT = "timed_out"
+    # Stopped before completing, by an operator or the platform.
+    TERMINATED = "terminated"
     RUNNING = "running"
     UNKNOWN = "unknown"
+
+
+class RuntimeOutcomeProvenance(BaseModel):
+    """The provider's own account of an outcome, carried alongside the state.
+
+    `RuntimeExecutionState` is a lossy projection by design -- six TMC statuses
+    already collapse into it, and a seventh will appear without warning. Keeping
+    the verbatim string means a status we mapped coarsely (or not at all) can
+    still be counted, queried and re-mapped after the fact, instead of being
+    unrecoverable the moment it is written.
+
+    Mixed into every run-shaped model so the three fields cannot drift apart
+    between job runs, executions and plan runs.
+    """
+
+    # The provider's status string exactly as sent -- never the normalised one.
+    raw_state: str | None = None
+    # Why a scheduled run never started (TMC: misfiredExecutionReason, e.g.
+    # PARALLEL_EXECUTION_FORBIDDEN, TASK_IS_PAUSED). The provider explains every
+    # misfire; discarding it leaves a non-run with no diagnosis attached.
+    misfire_reason: str | None = None
+    # What triggered the run: MANUAL | SCHEDULED | PLAN. Separates "someone ran
+    # this by hand" from "the schedule fired", which changes what a failure means.
+    execution_type: str | None = None
 
 
 class RuntimeSyncState(BaseModel):
@@ -390,7 +431,7 @@ class RuntimeExtendedMetadataAvailability(BaseModel):
     unavailable: list[str] = Field(default_factory=list)
 
 
-class RuntimeJobRun(BaseModel):
+class RuntimeJobRun(RuntimeOutcomeProvenance):
     run_id: str
     job_id: str
     job_name: str
@@ -516,7 +557,7 @@ class RuntimePlanRunStepResult(BaseModel):
     execution_id: str | None = None
 
 
-class RuntimePlanRun(BaseModel):
+class RuntimePlanRun(RuntimeOutcomeProvenance):
     run_id: str
     plan_id: str
     plan_name: str
@@ -646,6 +687,12 @@ class RuntimeOutcomeTrendPoint(BaseModel):
     failed_runs: int
     running_runs: int
     unknown_runs: int
+    # Non-success outcomes that are not failures. Default 0 so a provider that
+    # cannot distinguish them reports "none observed" rather than a gap, and so
+    # success + failed + these + running + unknown accounts for total_runs.
+    misfired_runs: int = 0
+    terminated_runs: int = 0
+    timed_out_runs: int = 0
     failure_rate: float
     p50_duration_ms: int | None = None
     p95_duration_ms: int | None = None
@@ -670,6 +717,10 @@ class RuntimeJobReliability(BaseModel):
     success_runs: int
     failed_runs: int
     unfinished_runs: int
+    # See RuntimeOutcomeTrendPoint: non-success outcomes that are not failures.
+    misfired_runs: int = 0
+    terminated_runs: int = 0
+    timed_out_runs: int = 0
     failure_rate: float
     current_failure_streak: int
     first_run_at: datetime | None = None
@@ -884,7 +935,7 @@ class RuntimeLogSeverity(str, Enum):
     ERROR = "error"
 
 
-class RuntimeExecution(BaseModel):
+class RuntimeExecution(RuntimeOutcomeProvenance):
     execution_id: str
     job_name: str
     project_name: str | None = None

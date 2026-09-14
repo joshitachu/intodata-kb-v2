@@ -135,6 +135,37 @@ export const BusinessObjectSchema = z.object({
   evidence_ids: BusinessEvidenceIdsSchema,
 }).strict();
 
+/**
+ * Additive structured slots on a data stream, mirroring
+ * `services/business_topology/models.py`.
+ *
+ * Every field below is optional or defaulted on purpose. These objects are
+ * `.strict()`, so a field the backend serializes but this contract omits
+ * rejects the WHOLE topology and blanks the canvas -- and conversely a payload
+ * produced before these slots existed must still parse unchanged. Keeping the
+ * mirror complete in both directions is the only thing that guarantees both.
+ */
+export const ContractWidthSchema = z.object({
+  offered: z.number().int().nonnegative().nullable().default(null),
+  mapped: z.number().int().nonnegative().nullable().default(null),
+  written: z.number().int().nonnegative().nullable().default(null),
+  note: z.string().default(""),
+}).strict();
+
+export const StreamConditionSchema = z.object({
+  kind: z.enum(["trigger", "filter", "ordering", "schedule", "disabled", "guard", "unknown"]).default("unknown"),
+  statement: z.string().default(""),
+  evidence_note: z.string().default(""),
+}).strict();
+
+export const DeploymentAgreementSchema = z.object({
+  supplied_version: z.string().default(""),
+  deployed_version: z.string().default(""),
+  built_at: z.string().default(""),
+  agreement: z.enum(["equal", "supplied_behind", "supplied_ahead", "unknown"]).default("unknown"),
+  note: z.string().default(""),
+}).strict();
+
 export const BusinessDataStreamSchema = z.object({
   id: z.string(),
   source_system_id: z.string(),
@@ -156,6 +187,22 @@ export const BusinessDataStreamSchema = z.object({
   conflict_ids: z.array(z.string()).optional(),
   evidence_ids: BusinessEvidenceIdsSchema,
   artifact_ids: z.array(z.string()).default([]),
+  // Additive: `.optional()` rather than `.default()` on purpose, exactly as
+  // `runtime_observation_ids` / `conflict_ids` above. A `.default()` is applied
+  // at parse time but makes the field REQUIRED in the inferred output type,
+  // which breaks every hand-built `ProjectLandscapeResponse` literal in the
+  // codebase. Consumers read these through one projection that supplies the
+  // fallback (`lib/architectureViewModel.ts`).
+  mechanism: z.string().optional(),
+  generation: z.string().optional(),
+  direction_pattern: z.enum(["push", "pull", "hybrid", "unknown"]).optional(),
+  lifecycle: z.enum(["active", "duplicate", "stopped", "dormant", "reference_only", "unknown"]).optional(),
+  contract_width: ContractWidthSchema.nullable().optional(),
+  conditions: z.array(StreamConditionSchema).optional(),
+  deployment: DeploymentAgreementSchema.nullable().optional(),
+  key_form: z.string().optional(),
+  verdict: z.string().optional(),
+  document_refs: z.array(z.string()).optional(),
 }).strict();
 
 export const BusinessDeliveryPathSegmentSchema = z.object({
@@ -191,6 +238,12 @@ export const TransformationMappingSchema = z.object({
   source: z.string(),
   target: z.string(),
   mapping_type: z.enum(["direct", "value", "derived", "constant", "unknown"]).default("unknown"),
+  // `source` stays the short identity used for graph joins; `expression` is the
+  // verbatim rule when the two differ. Additive, therefore optional.
+  expression: z.string().optional(),
+  category: z.string().optional(),
+  reaches_target: z.enum(["yes", "no", "partial", "disabled", "unknown"]).optional(),
+  note: z.string().optional(),
 }).strict();
 
 const EvidenceBackedClaimSchema = z.object({
@@ -207,6 +260,50 @@ export const BusinessTransformationSchema = EvidenceBackedClaimSchema.extend({
   integration_solution_ids: z.array(z.string()).default([]),
   artifact_ids: z.array(z.string()).default([]),
   mappings: z.array(TransformationMappingSchema).default([]),
+  // A field mapping, a value domain and a derived rule are three different
+  // kinds of fact. Rendered as one flat list they are indistinguishable, so a
+  // status value table reads as a business decision.
+  kind: z.enum(["field_mapping", "value_domain", "derived_rule", "constant_set", "unknown"]).optional(),
+  // For `value_domain`: the target field whose accepted values this table
+  // defines, so a renderer can nest it under that field instead of beside it.
+  target_field: z.string().optional(),
+}).strict();
+
+/**
+ * A decision the integration layer takes on behalf of the business. Separate
+ * from a transformation on purpose: a transformation says how a value is
+ * carried, a rule says which of several outcomes the business gets and
+ * therefore needs a named owner to confirm or retire it.
+ */
+export const BusinessRuleSchema = EvidenceBackedClaimSchema.extend({
+  kind: z.enum([
+    "value_mapping",
+    "precedence",
+    "derivation",
+    "selection",
+    "feedback",
+    "ordering",
+    "disabled",
+    "threshold",
+    "unknown",
+  ]).default("unknown"),
+  statement: z.string().default(""),
+  inputs: z.array(z.string()).default([]),
+  output: z.string().default(""),
+  stream_ids: z.array(z.string()).default([]),
+  transformation_ids: z.array(z.string()).default([]),
+  owner: z.string().default(""),
+  owner_question: z.string().default(""),
+}).strict();
+
+/** One measured number, with the window and source it came from. */
+export const RuntimeMetricSchema = z.object({
+  label: z.string().default(""),
+  value: z.string().default(""),
+  unit: z.string().default(""),
+  window: z.string().default(""),
+  source: z.string().default(""),
+  note: z.string().default(""),
 }).strict();
 
 export const RuntimeObservationSchema = EvidenceBackedClaimSchema.extend({
@@ -214,6 +311,19 @@ export const RuntimeObservationSchema = EvidenceBackedClaimSchema.extend({
   delivery_path_ids: z.array(z.string()).default([]),
   observed_behavior: z.string(),
   observation_window: z.string().default(""),
+  kind: z.enum([
+    "volume",
+    "reliability",
+    "latency",
+    "cadence",
+    "throughput",
+    "deployment",
+    "coverage",
+    "absence",
+    "unknown",
+  ]).optional(),
+  metrics: z.array(RuntimeMetricSchema).optional(),
+  source: z.string().optional(),
 }).strict();
 
 export const BusinessConflictSchema = EvidenceBackedClaimSchema.extend({
@@ -284,6 +394,7 @@ export const BusinessTopologySchema = z.object({
   data_streams: z.array(BusinessDataStreamSchema).default([]),
   delivery_paths: z.array(BusinessDeliveryPathSchema).default([]),
   transformations: z.array(BusinessTransformationSchema).default([]),
+  business_rules: z.array(BusinessRuleSchema).optional(),
   controls: z.array(BusinessControlSchema).default([]),
   risks: z.array(BusinessRiskSchema).default([]),
   runtime_observations: z.array(RuntimeObservationSchema).optional(),
@@ -388,7 +499,12 @@ export type BusinessDataStream = z.infer<typeof BusinessDataStreamSchema>;
 export type BusinessDeliveryPath = z.infer<typeof BusinessDeliveryPathSchema>;
 export type BusinessDeliveryPathSegment = z.infer<typeof BusinessDeliveryPathSegmentSchema>;
 export type BusinessTransformation = z.infer<typeof BusinessTransformationSchema>;
+export type BusinessRule = z.infer<typeof BusinessRuleSchema>;
 export type TransformationMapping = z.infer<typeof TransformationMappingSchema>;
+export type ContractWidth = z.infer<typeof ContractWidthSchema>;
+export type StreamCondition = z.infer<typeof StreamConditionSchema>;
+export type DeploymentAgreement = z.infer<typeof DeploymentAgreementSchema>;
+export type RuntimeMetric = z.infer<typeof RuntimeMetricSchema>;
 export type BusinessControl = z.infer<typeof BusinessControlSchema>;
 export type BusinessRisk = z.infer<typeof BusinessRiskSchema>;
 export type RuntimeObservation = z.infer<typeof RuntimeObservationSchema>;

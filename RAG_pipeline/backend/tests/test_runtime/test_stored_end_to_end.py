@@ -126,13 +126,30 @@ class TestStoredHighLevelTools:
 
         assert result.success is True
         data = result.data
-        assert data["overview"]["engines_unhealthy"] == 1
-        assert data["overview"]["jobs_unhealthy"] == 1
+        # engine-prod-02 hosts the failed order sync; engine-prod-01 hosts the
+        # misfired and timed-out runs, which are unhealthy too even though
+        # neither is a FAILED run and neither contributes to a failure rate.
+        assert data["overview"]["engines_unhealthy"] == 2
+        assert data["overview"]["jobs_unhealthy"] == 3
         assert data["overview"]["plans_unhealthy"] == 1
         assert data["sources"][0]["last_synced_at"] == _SYNCED_AT.isoformat().replace("+00:00", "Z")
-        assert [engine["engine_name"] for engine in data["unhealthy_engines"]] == ["remote-engine-prod-02"]
-        assert [job["job_name"] for job in data["unhealthy_jobs"]] == ["esb_order_sync_route"]
+        assert {engine["engine_name"] for engine in data["unhealthy_engines"]} == {
+            "remote-engine-prod-01",
+            "remote-engine-prod-02",
+        }
+        assert {job["job_name"] for job in data["unhealthy_jobs"]} == {
+            "esb_order_sync_route",
+            "esb_inventory_sync_task",
+            "esb_nightly_reconcile_batch",
+        }
         assert [plan["plan_name"] for plan in data["unhealthy_plans"]] == ["nightly_order_flow"]
+        # The misfired and timed-out jobs are surfaced with a zero failure rate:
+        # widening "needs attention" must not restate the failure numbers.
+        by_name = {job["job_name"]: job for job in data["unhealthy_jobs"]}
+        assert by_name["esb_inventory_sync_task"]["failed_runs"] == 0
+        assert by_name["esb_inventory_sync_task"]["failure_rate"] == 0.0
+        assert by_name["esb_nightly_reconcile_batch"]["failed_runs"] == 0
+        assert by_name["esb_nightly_reconcile_batch"]["failure_rate"] == 0.0
 
     async def test_chat_estate_tool_arguments_cannot_widen_scope(self, db_session):
         await seed_rich_runtime_data(db_session, project_id=_ESB, synced_at=_SYNCED_AT, build_insights=True)

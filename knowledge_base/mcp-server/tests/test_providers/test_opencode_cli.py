@@ -180,25 +180,18 @@ def test_1187_preflight_accepts_pinned_runtime_without_retry_gate(monkeypatch):
     assert allowlist == {}
 
 
-def test_resume_uses_runtime_session_only_when_it_still_exists(monkeypatch):
-    responses = iter(
-        [
-            SimpleNamespace(
-                returncode=0,
-                stdout='[{"id":"ses_existing"}]',
-                stderr="",
-            ),
-            SimpleNamespace(returncode=0, stdout="", stderr=""),
-        ]
-    )
-    monkeypatch.setattr(
-        "mcp_server.providers.opencode_cli.subprocess.run",
-        lambda *_args, **_kwargs: next(responses),
-    )
-    provider = OpenCodeCliProvider()
+def test_no_lane_probes_the_runtime_for_a_surviving_session():
+    """``_session_exists`` is gone, and nothing may reintroduce a probe.
 
-    assert provider._session_exists("/usr/bin/opencode", "ses_existing") is True
-    assert provider._session_exists("/usr/bin/opencode", "ses_missing") is False
+    It had no production caller -- only this test -- while the failure it
+    was meant to prevent still happened: a repair attempt exited 1 with
+    ``Error: Session not found`` after a valid artifact had been written.
+    ``agent-workspace-v1`` restarts with a FRESH session and a prose
+    checkpoint instead of asking whether the old one survived, so a probe is
+    not the fix and its absence is the contract.
+    """
+
+    assert not hasattr(OpenCodeCliProvider, "_session_exists")
 
 
 def test_runtime_env_repairs_system_account_home_from_xdg(monkeypatch, tmp_path):
@@ -766,6 +759,12 @@ def test_real_json_event_shapes_are_parsed_without_fake_phase_events():
         "session_id": "ses_1",
     }
     assert provider._parse_json_event({"type": "phase_completed", "phase": "gather"}) is None
+    assert provider._parse_json_event(
+        {"type": "tool", "tool": "read", "state": {"status": "completed"}}
+    ) == {"type": "tool", "status": "completed", "failed": False}
+    assert provider._parse_json_event(
+        {"type": "tool", "tool": "read", "state": {"status": "error"}}
+    ) == {"type": "tool", "status": "error", "failed": True}
 
 
 def test_step_finish_usage_is_collected_without_persisting_content():
@@ -1869,3 +1868,41 @@ def test_subprocess_progress_is_streamed_before_process_exit(monkeypatch, tmp_pa
         assert result.session_id == "ses_stream"
 
     asyncio.run(scenario())
+
+
+def test_both_step_finish_event_shapes_are_charged_to_the_budget():
+    """A usage ceiling that sees half the turns is not a ceiling.
+
+    Regression from a real `opencode-go/gpt-5.6-luna` session: 19 turns were
+    written to the live log and only 11 were charged, because the accounting
+    keyed on a top-level `type: "step_finish"` while the log also accepted the
+    nested `part.type: "step-finish"`. The run-level processed-token limit
+    therefore read 1,586,524 of an actual 3,157,666.
+    """
+    from mcp_server.providers.opencode_cli import _is_turn_finished
+
+    top_level = {"type": "step_finish", "part": {"tokens": {"input": 1, "output": 2}}}
+    nested = {"type": "message.part.updated",
+              "part": {"type": "step-finish", "tokens": {"input": 3, "output": 4}}}
+    assert _is_turn_finished(top_level) is True
+    assert _is_turn_finished(nested) is True
+    # Anything else must not be charged.
+    for other in (
+        {"type": "step_start", "part": {"type": "step-start"}},
+        {"type": "text", "part": {"type": "text"}},
+        {"type": "error"},
+        {"part": None},
+        {},
+    ):
+        assert _is_turn_finished(other) is False, other
+
+
+def test_turn_usage_is_read_from_either_shape():
+    from mcp_server.providers.opencode_cli import OpenCodeCliProvider
+
+    nested = {"type": "message.part.updated", "part": {
+        "type": "step-finish",
+        "tokens": {"input": 11, "output": 22, "reasoning": 3, "cache": {"read": 100, "write": 50}},
+        "cost": 0.5,
+    }}
+    assert OpenCodeCliProvider._event_usage(nested) == (11, 22, 0.5)

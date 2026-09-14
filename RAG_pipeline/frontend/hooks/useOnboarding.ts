@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiErrorMessage } from "@/lib/apiError";
+import { authedFetch, fetchJson } from "@/lib/authedFetch";
 import {
   CommTool,
   CompleteWizardResponse,
@@ -18,52 +18,56 @@ import {
 } from "@/types/onboarding";
 
 async function fetchStatus(): Promise<OnboardingStatus> {
-  const res = await fetch("/api/onboarding/status", { cache: "no-store" });
-  if (!res.ok) {
-    throw new Error("Failed to fetch onboarding status");
-  }
-  return OnboardingStatusSchema.parse(await res.json());
+  // Routed through `fetchJson` so a 401 in the stale-access-token window on a
+  // cold load is refreshed and replayed. It used to throw, and the resulting
+  // retry backoff held `isLoading` true for ~7s — during which
+  // `OnboardingGuard` rendered nothing at all and the whole app was blank.
+  return OnboardingStatusSchema.parse(
+    await fetchJson<unknown>("/api/onboarding/status", {
+      cache: "no-store",
+      fallbackError: "Failed to fetch onboarding status",
+    }),
+  );
 }
 
 async function putStep<T>(step: string, body: T): Promise<OnboardingStatus> {
-  const res = await fetch(`/api/onboarding/step/${step}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(apiErrorMessage(data.detail, `Failed to save ${step}`));
-  }
-  return OnboardingStatusSchema.parse(await res.json());
+  return OnboardingStatusSchema.parse(
+    await fetchJson<unknown>(`/api/onboarding/step/${step}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      fallbackError: `Failed to save ${step}`,
+    }),
+  );
 }
 
 async function postComplete(): Promise<CompleteWizardResponse> {
-  const res = await fetch("/api/onboarding/complete", { method: "POST" });
-  if (!res.ok) {
-    throw new Error("Failed to complete wizard");
-  }
-  return CompleteWizardResponseSchema.parse(await res.json());
+  return CompleteWizardResponseSchema.parse(
+    await fetchJson<unknown>("/api/onboarding/complete", {
+      method: "POST",
+      fallbackError: "Failed to complete wizard",
+    }),
+  );
 }
 
 async function fetchSetupStatus(): Promise<SetupStatusResponse> {
-  const res = await fetch("/api/onboarding/setup-status", { cache: "no-store" });
-  if (!res.ok) {
-    throw new Error("Failed to fetch setup status");
-  }
-  return SetupStatusResponseSchema.parse(await res.json());
+  return SetupStatusResponseSchema.parse(
+    await fetchJson<unknown>("/api/onboarding/setup-status", {
+      cache: "no-store",
+      fallbackError: "Failed to fetch setup status",
+    }),
+  );
 }
 
 async function postTourComplete(variant?: string): Promise<OnboardingStatus> {
-  const res = await fetch("/api/onboarding/tour/complete", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ variant: variant ?? null }),
-  });
-  if (!res.ok) {
-    throw new Error("Failed to complete tour");
-  }
-  return OnboardingStatusSchema.parse(await res.json());
+  return OnboardingStatusSchema.parse(
+    await fetchJson<unknown>("/api/onboarding/tour/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ variant: variant ?? null }),
+      fallbackError: "Failed to complete tour",
+    }),
+  );
 }
 
 export interface TourStepProgress {
@@ -74,15 +78,14 @@ export interface TourStepProgress {
 }
 
 async function putTourStep(progress: TourStepProgress): Promise<OnboardingStatus> {
-  const res = await fetch("/api/onboarding/tour/step", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(progress),
-  });
-  if (!res.ok) {
-    throw new Error("Failed to update tour step");
-  }
-  return OnboardingStatusSchema.parse(await res.json());
+  return OnboardingStatusSchema.parse(
+    await fetchJson<unknown>("/api/onboarding/tour/step", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(progress),
+      fallbackError: "Failed to update tour step",
+    }),
+  );
 }
 
 export function useOnboardingStatus() {
@@ -94,7 +97,10 @@ export function useOnboardingStatus() {
 }
 
 async function fetchConfig(): Promise<OnboardingConfig> {
-  const res = await fetch("/api/onboarding/config", { cache: "no-store" });
+  // Keeps the never-block fallback below, but a 401 now rotates and replays
+  // first — otherwise a cold load inside the stale-token window silently
+  // pinned the wizard to the hardcoded platform list for the whole session.
+  const res = await authedFetch("/api/onboarding/config", { cache: "no-store" });
   if (!res.ok) {
     // Let the wizard keep working with the fallback list — don't block UX
     // on a config fetch failure.

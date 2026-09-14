@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fastapiFetch } from "@/lib/fastapi";
 import { DocumentListResponseSchema } from "@/types";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 
 export async function GET(request: NextRequest) {
   try {
@@ -15,8 +16,7 @@ export async function GET(request: NextRequest) {
     const validated = DocumentListResponseSchema.parse(data);
     return NextResponse.json(validated);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to fetch documents";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("documents GET", error, "Failed to fetch documents");
   }
 }
 
@@ -32,7 +32,6 @@ export async function DELETE(request: NextRequest) {
     await fastapiFetch(`/api/v1/documents/${id}`, { method: "DELETE" });
     return new NextResponse(null, { status: 204 });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Delete failed";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("documents DELETE", error, "Delete failed");
   }
 }

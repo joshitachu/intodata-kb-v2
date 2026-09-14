@@ -22,6 +22,8 @@ from mcp_server.services.living_docs.opencode_reingestion import (
 )
 from mcp_server.services.living_docs.rag_revisions import InMemoryRevisionedRagStore
 from mcp_server.services.rag_bridge import RagBridge
+from mcp_server.services.living_docs.git_evidence import collect_git_evidence
+from mcp_server.services.living_docs.change_analysis import sections, digest
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -80,14 +82,43 @@ def _sha(content: str) -> str:
 
 
 class _ReportRuntime:
-    def __init__(self, report_factory) -> None:
+    def __init__(self, report_factory, hook=None) -> None:
         self._report_factory = report_factory
+        self.hook = hook
         self.calls = 0
 
     async def run(self, *, workspace: Path, contract, **kwargs) -> AgentResult:
         self.calls += 1
         report = self._report_factory(workspace)
+        if contract.output_artifact.endswith("analysis.json"):
+            task = json.loads((workspace / "_reingestion/task.json").read_text())
+            bundle = json.loads((workspace / "_reingestion/evidence.json").read_text())
+            evidence = next({"path": p, "version": v, "quote": content}
+                            for p, versions in bundle["files"].items()
+                            for v, content in versions.items() if content)
+            report = {
+                **{k: task[k] for k in ("candidate_id", "before_sha", "after_sha")},
+                "summary": "Fixture change analysis", "covered_paths": [c["path"] for c in task["changed_files"]],
+                "findings": [{"id": "F1", "before": "Old behavior", "after": "New behavior",
+                              "intent": "Unknown", "intent_basis": "unknown", "evidence": [evidence],
+                              "disposition": "update" if report["operations"] else "no_change", "reason": "Fixture evidence"}],
+                "targets": [{"path": op["path"], "action": op["action"],
+                             "sections": ["*"] if op["action"] == "create" else list(sections((workspace / "docs" / op["path"]).read_text())),
+                             "finding_ids": ["F1"], "reason": op["reason"]} for op in report["operations"]],
+                "unchanged_docs": {p: "Unaffected" for p in task["suggested_docs"] if p not in {o["path"] for o in report["operations"]}},
+                "uncertainties": [],
+            }
+        elif contract.output_artifact.endswith("review.json"):
+            analysis = (workspace / "_reingestion/analysis.json").read_text()
+            patch = (workspace / "_reingestion/patch_report.json").read_text()
+            report = {"candidate_id": json.loads(analysis)["candidate_id"],
+                      "analysis_sha256": digest(analysis), "patch_sha256": digest(patch),
+                      "verdict": "pass", "finding_verdicts": {"F1": "pass"},
+                      "unsupported_claims": [], "missed_impacts": [], "contradictions": [],
+                      "explanation": "Fixture reviewer checked evidence"}
         target = workspace / contract.output_artifact
+        if self.hook:
+            self.hook(contract.output_artifact, report)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         return AgentResult(
@@ -129,6 +160,7 @@ async def _run_candidate(
     store: FileCandidateStore,
     rag: InMemoryRevisionedRagStore,
     runtime: _ReportRuntime,
+    rollout_stage: str = "auto_scoped",
 ):
     changes, diff = _change(repo, before, after)
     bridge = RagBridge(revisioned_rag=rag)
@@ -158,6 +190,9 @@ async def _run_candidate(
         changed_files=changes,
         full_diff_text=diff,
         scan_before_patch=False,
+        evidence_bundle=await collect_git_evidence(str(repo), before, after, changes),
+        rollout_stage=rollout_stage,
+        source_path=str(repo),
     )
     return coordinator, candidate, outcome
 
@@ -220,7 +255,7 @@ async def test_scripted_small_push_patches_in_place_and_replay_skips_opencode(tm
     assert outcome.publication.changed_logical_ids == ("canonical/01_ARCHITECTURE.md",)
     assert outcome.publication.deleted_logical_ids == ()
     assert outcome.publication.base_knowledge_revision_id == baseline.knowledge_revision_id
-    assert runtime.calls == 1
+    assert runtime.calls == 3
 
     replay = await coordinator.run(
         candidate,
@@ -239,7 +274,7 @@ async def test_scripted_small_push_patches_in_place_and_replay_skips_opencode(tm
     assert replay.action == "active"
     assert replay.reason_code == "already_active"
     assert replay.patched_docs == ("01_ARCHITECTURE.md",)
-    assert runtime.calls == 1
+    assert runtime.calls == 3
 
 
 @pytest.mark.asyncio
@@ -358,3 +393,77 @@ async def test_unreported_or_overbroad_patch_is_held_before_publication(
     assert outcome.reason_code == "opencode_patch_validation_failed"
     assert (docs / "01_ARCHITECTURE.md").read_text() == "# Architecture\n"
     assert (docs / "02_OPERATIONS.md").read_text() == "# Operations\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["invented_evidence", "rejected_review", "shadow", "no_change"])
+async def test_untrusted_analysis_review_and_shadow_never_publish(tmp_path, case):
+    repo, shas = _fixture_repo(tmp_path)
+    output = tmp_path / "active"
+    docs = output / "docs"
+    docs.mkdir(parents=True)
+    original = "# Architecture\nThreshold: 0.36\n"
+    (docs / "01_ARCHITECTURE.md").write_text(original)
+    rag = InMemoryRevisionedRagStore()
+    baseline = await prime_project_baseline(project_id="poly-fixture", source_revision_id=shas["base"],
+                                            docs_dir=docs, rag=RagBridge(revisioned_rag=rag))
+
+    def report_factory(workspace):
+        operations = [] if case == "no_change" else [{
+            "path": "01_ARCHITECTURE.md", "action": "update", "base_sha256": _sha(original),
+            "content": original.replace("0.36", "0.37"), "evidence_paths": ["weather-trader/config.py"],
+            "reason": "Threshold changed",
+        }]
+        return _report(workspace, operations, summary="Fixture result")
+
+    def hook(stage, report):
+        if case == "invented_evidence" and stage.endswith("analysis.json"):
+            report["findings"][0]["evidence"][0]["quote"] = "not present in source"
+        if case == "rejected_review" and stage.endswith("review.json"):
+            report["contradictions"] = ["Support document contradicts canonical document"]
+
+    _, _, outcome = await _run_candidate(repo=repo, before=shas["base"], after=shas["small"],
+        active_output=output, store=FileCandidateStore((tmp_path / "store").resolve()), rag=rag,
+        runtime=_ReportRuntime(report_factory, hook=hook), rollout_stage="shadow" if case == "shadow" else "auto_scoped")
+    assert (docs / "01_ARCHITECTURE.md").read_text() == original
+    if case == "no_change":
+        assert outcome.action == "active"
+        assert outcome.patched_docs == ()
+        assert outcome.publication.embedded_content_count == 0
+    else:
+        assert outcome.action == "held"
+        assert await RagBridge(revisioned_rag=rag).active_knowledge_revision("poly-fixture") == baseline.knowledge_revision_id
+
+
+@pytest.mark.asyncio
+async def test_evidence_reads_exact_old_commits_without_changing_checkout(tmp_path):
+    repo, shas = _fixture_repo(tmp_path)
+    changes, _ = _change(repo, shas["base"], shas["small"])
+    head = _git(repo, "rev-parse", "HEAD")
+    assert not (repo / "weather-trader/config.py").exists()
+    evidence = await collect_git_evidence(str(repo), shas["base"], shas["small"], changes)
+    assert "0.36" in evidence["files"]["weather-trader/config.py"]["before"]
+    assert "0.37" in evidence["files"]["weather-trader/config.py"]["after"]
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert not (repo / "weather-trader/config.py").exists()
+
+
+@pytest.mark.asyncio
+async def test_analyzer_can_request_one_bounded_context_expansion(tmp_path):
+    repo, shas = _fixture_repo(tmp_path)
+    output = tmp_path / "active"
+    docs = output / "docs"
+    docs.mkdir(parents=True)
+    (docs / "01_ARCHITECTURE.md").write_text("# Architecture\n")
+    rag = InMemoryRevisionedRagStore()
+    await prime_project_baseline(project_id="poly-fixture", source_revision_id=shas["base"],
+                                docs_dir=docs, rag=RagBridge(revisioned_rag=rag))
+    def hook(stage, report):
+        if stage == "_reingestion/analysis.json":
+            report.clear()
+            report.update(additional_paths=["weather-trader/worker.py"], reason="Check the worker consuming configuration")
+    runtime = _ReportRuntime(lambda workspace: _report(workspace, [], summary="No documentation impact"), hook)
+    _, _, outcome = await _run_candidate(repo=repo, before=shas["base"], after=shas["small"],
+        active_output=output, store=FileCandidateStore((tmp_path / "store").resolve()), rag=rag, runtime=runtime)
+    assert outcome.action == "active"
+    assert runtime.calls == 4

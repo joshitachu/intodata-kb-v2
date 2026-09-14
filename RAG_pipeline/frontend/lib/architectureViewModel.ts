@@ -1,11 +1,20 @@
 import type {
+  BusinessConflict,
   BusinessDataStream,
   BusinessIntegrationSolution,
   BusinessObject,
+  BusinessRisk,
+  BusinessRule,
   BusinessSystem,
   BusinessTopology,
   BusinessDeliveryPath,
   BusinessTransformation,
+  BusinessUnknown,
+  ContractWidth,
+  DeploymentAgreement,
+  RuntimeObservation,
+  StreamCondition,
+  TransformationMapping,
 } from "@/types/landscape";
 
 /**
@@ -71,7 +80,90 @@ export interface ArchitecturePairRelationship {
   streamIds: string[];
 }
 
-export interface ArchitectureFlowProjection {
+/**
+ * The additive schema slots are `.optional()` so an older payload still parses
+ * (see `types/landscape.ts`). This projection is the ONE place that resolves
+ * them to a definite value, so no renderer has to decide what a missing
+ * `lifecycle` means.
+ */
+export type TransformationKind = NonNullable<BusinessTransformation["kind"]>;
+export type BusinessRuleKind = NonNullable<BusinessRule["kind"]>;
+export type StreamConditionKind = NonNullable<StreamCondition["kind"]>;
+export type ReachesTarget = NonNullable<TransformationMapping["reaches_target"]>;
+export type StreamDirectionPattern = NonNullable<BusinessDataStream["direction_pattern"]>;
+export type StreamLifecycle = NonNullable<BusinessDataStream["lifecycle"]>;
+
+/**
+ * One field-level mapping row, flattened out of its owning transformation but
+ * keeping that transformation's identity and kind. A row is the unit a reader
+ * scans; the transformation is the unit that says what kind of fact it is.
+ */
+export interface StreamFieldRow {
+  /** 1-based position within this stream's field table, assigned once here so
+   * the panel and the full table number the same row identically. */
+  index: number;
+  transformationId: string;
+  transformationName: string;
+  transformationKind: TransformationKind;
+  targetField: string;
+  source: string;
+  expression: string;
+  /** What to show in one column: the verbatim rule when there is one. */
+  sourceOrExpression: string;
+  mappingType: NonNullable<TransformationMapping["mapping_type"]>;
+  category: string;
+  reachesTarget: ReachesTarget;
+  note: string;
+}
+
+/** Value-domain transformations collected under the target field they define. */
+export interface StreamValueDomainGroup {
+  targetField: string;
+  transformations: BusinessTransformation[];
+}
+
+/** One measured number with the observation that reported it. */
+export interface StreamRuntimeMetricRow {
+  id: string;
+  label: string;
+  value: string;
+  unit: string;
+  window: string;
+  source: string;
+  note: string;
+  observationId: string;
+  observationName: string;
+  observationKind: NonNullable<RuntimeObservation["kind"]>;
+}
+
+/**
+ * Everything structured that is attached to ONE data stream, resolved from the
+ * topology by id in exactly one place.
+ *
+ * Transformations are partitioned by `kind`, never merged: a field mapping, a
+ * value domain and a derived rule are three different kinds of fact, and a
+ * status value table flat-listed beside field mappings reads as a business
+ * decision. Transformations the producer did not classify stay in
+ * `unclassifiedTransformations` -- they are NOT promoted into a classified
+ * bucket, because inventing a classification is the same defect in reverse.
+ */
+export interface StreamStructuredFacts {
+  fieldMappings: BusinessTransformation[];
+  valueDomains: BusinessTransformation[];
+  derivedRules: BusinessTransformation[];
+  constantSets: BusinessTransformation[];
+  unclassifiedTransformations: BusinessTransformation[];
+  fieldRows: StreamFieldRow[];
+  valueDomainGroups: StreamValueDomainGroup[];
+  businessRules: BusinessRule[];
+  runtimeObservations: RuntimeObservation[];
+  runtimeMetrics: StreamRuntimeMetricRow[];
+  risks: BusinessRisk[];
+  unknowns: BusinessUnknown[];
+  conflicts: BusinessConflict[];
+}
+
+export interface ArchitectureFlowProjection extends StreamStructuredFacts {
   id: string;
   sourceSystemId: string;
   destinationSystemId: string;
@@ -85,6 +177,168 @@ export interface ArchitectureFlowProjection {
   evidenceIds: string[];
   deliveryPath?: BusinessDeliveryPath;
   transformations: BusinessTransformation[];
+  /** Structured stream facts that were previously concatenated into prose. */
+  mechanism: string;
+  generation: string;
+  directionPattern: StreamDirectionPattern;
+  lifecycle: StreamLifecycle;
+  contractWidth: ContractWidth | null;
+  conditions: StreamCondition[];
+  deployment: DeploymentAgreement | null;
+  keyForm: string;
+  verdict: string;
+  documentRefs: string[];
+}
+
+/**
+ * Each vocabulary below has ONE audience, and its language follows that
+ * audience. This one heads the mapping groups in the L2 design panel, which is
+ * English alongside "scanner lineage" / "structured transformation".
+ */
+export const TRANSFORMATION_KIND_LABEL: Record<TransformationKind, string> = {
+  field_mapping: "Field mapping",
+  value_domain: "Value domain",
+  derived_rule: "Derived rule",
+  constant_set: "Constant set",
+  unknown: "Unclassified",
+};
+
+/** Client-facing (Dutch) vocabulary: rendered only in the business panels. */
+export const BUSINESS_RULE_KIND_LABEL: Record<BusinessRuleKind, string> = {
+  value_mapping: "Waardevertaling",
+  precedence: "Voorrang",
+  derivation: "Afleiding",
+  selection: "Selectie",
+  feedback: "Terugkoppeling",
+  ordering: "Volgorde",
+  disabled: "Uitgeschakeld",
+  threshold: "Drempel",
+  unknown: "Niet geclassificeerd",
+};
+
+/** Client-facing (Dutch) vocabulary: rendered only in the business panels. */
+export const STREAM_CONDITION_KIND_LABEL: Record<StreamConditionKind, string> = {
+  trigger: "Trigger",
+  filter: "Filter",
+  ordering: "Volgorde",
+  schedule: "Planning",
+  disabled: "Uitgeschakeld",
+  guard: "Bewaking",
+  unknown: "Niet geclassificeerd",
+};
+
+/** Client-facing (Dutch) vocabulary: rendered only in the business panels. */
+export const REACHES_TARGET_LABEL: Record<ReachesTarget, string> = {
+  yes: "Bereikt doel",
+  no: "Niet gelezen",
+  partial: "Deels",
+  disabled: "Uitgeschakeld",
+  unknown: "Niet vastgesteld",
+};
+
+/** Field rows are emitted in this kind order so numbering is deterministic. */
+const FIELD_ROW_KIND_ORDER: TransformationKind[] = ["field_mapping", "derived_rule", "constant_set"];
+
+function fieldRowsFor(byKind: Map<TransformationKind, BusinessTransformation[]>): StreamFieldRow[] {
+  const rows: StreamFieldRow[] = [];
+  for (const kind of FIELD_ROW_KIND_ORDER) {
+    for (const transformation of byKind.get(kind) ?? []) {
+      for (const mapping of transformation.mappings) {
+        rows.push({
+          index: rows.length + 1,
+          transformationId: transformation.id,
+          transformationName: transformation.name,
+          transformationKind: kind,
+          targetField: mapping.target || transformation.target_field || "",
+          source: mapping.source,
+          expression: mapping.expression ?? "",
+          sourceOrExpression: mapping.expression || mapping.source,
+          mappingType: mapping.mapping_type ?? "unknown",
+          category: mapping.category ?? "",
+          reachesTarget: mapping.reaches_target ?? "unknown",
+          note: mapping.note ?? "",
+        });
+      }
+    }
+  }
+  return rows;
+}
+
+function valueDomainGroupsFor(valueDomains: BusinessTransformation[]): StreamValueDomainGroup[] {
+  const groups = new Map<string, BusinessTransformation[]>();
+  for (const transformation of valueDomains) {
+    // A value table without a declared target field is still shown, under its
+    // own name -- dropping it would hide evidence the producer did supply.
+    const key = transformation.target_field || transformation.name || transformation.id;
+    groups.set(key, [...(groups.get(key) ?? []), transformation]);
+  }
+  return [...groups.entries()].map(([targetField, transformations]) => ({ targetField, transformations }));
+}
+
+function runtimeMetricRows(observations: RuntimeObservation[]): StreamRuntimeMetricRow[] {
+  return observations.flatMap((observation) =>
+    (observation.metrics ?? []).map((metric, index) => ({
+      id: `${observation.id}:${index}`,
+      label: metric.label,
+      value: metric.value,
+      unit: metric.unit,
+      window: metric.window || observation.observation_window,
+      source: metric.source || observation.source || "",
+      note: metric.note,
+      observationId: observation.id,
+      observationName: observation.name,
+      observationKind: observation.kind ?? "unknown",
+    })),
+  );
+}
+
+/**
+ * Resolves every structured fact attached to one stream. The single resolution
+ * point for both the L1 flow panel and the L2 detail tabs: two lookups of the
+ * same relationship are two rules free to drift apart.
+ */
+export function streamStructuredFacts(
+  topology: BusinessTopology,
+  stream: BusinessDataStream,
+): StreamStructuredFacts {
+  const transformations = topology.transformations.filter((transformation) =>
+    transformation.stream_ids.includes(stream.id),
+  );
+  const byKind = new Map<TransformationKind, BusinessTransformation[]>();
+  for (const transformation of transformations) {
+    const kind = transformation.kind ?? "unknown";
+    byKind.set(kind, [...(byKind.get(kind) ?? []), transformation]);
+  }
+  const transformationIds = new Set(transformations.map((transformation) => transformation.id));
+  const businessRules = (topology.business_rules ?? []).filter((rule) =>
+    rule.stream_ids.includes(stream.id)
+    || rule.transformation_ids.some((id) => transformationIds.has(id)),
+  );
+  const observationIds = new Set(stream.runtime_observation_ids ?? []);
+  const runtimeObservations = (topology.runtime_observations ?? []).filter((observation) =>
+    observationIds.has(observation.id) || observation.stream_ids.includes(stream.id),
+  );
+  const riskIds = new Set(stream.risk_ids);
+  const unknownIds = new Set(stream.unknown_ids);
+  const conflictIds = new Set(stream.conflict_ids ?? []);
+  const valueDomains = byKind.get("value_domain") ?? [];
+  return {
+    fieldMappings: byKind.get("field_mapping") ?? [],
+    valueDomains,
+    derivedRules: byKind.get("derived_rule") ?? [],
+    constantSets: byKind.get("constant_set") ?? [],
+    unclassifiedTransformations: byKind.get("unknown") ?? [],
+    fieldRows: fieldRowsFor(byKind),
+    valueDomainGroups: valueDomainGroupsFor(valueDomains),
+    businessRules,
+    runtimeObservations,
+    runtimeMetrics: runtimeMetricRows(runtimeObservations),
+    risks: topology.risks.filter((risk) => riskIds.has(risk.id) || risk.stream_ids.includes(stream.id)),
+    unknowns: topology.unknowns.filter((unknown) => unknownIds.has(unknown.id) || unknown.stream_ids.includes(stream.id)),
+    conflicts: (topology.conflicts ?? []).filter((conflict) =>
+      conflictIds.has(conflict.id) || conflict.subject_refs.includes(stream.id),
+    ),
+  };
 }
 
 const CORE_SYSTEM_IDS = new Set([
@@ -338,7 +592,19 @@ function unique<T>(items: T[]): T[] {
  * streams between the same visible systems become one relationship. Nothing
  * is discarded: every relationship keeps its raw stream ids for L2/L3.
  */
-export function normalizeArchitectureL1(topology: BusinessTopology): ArchitectureL1ViewModel {
+export function normalizeArchitectureL1(
+  topology: BusinessTopology,
+  options: { maxVisibleRelationships?: number } = {},
+): ArchitectureL1ViewModel {
+  // The cap keeps the default map quiet on a wide estate. It is a parameter
+  // rather than a constant because the omission was previously silent: the
+  // measured estate hid 10 of 28 relationships, `hiddenRelationshipIds` had no
+  // consumer, and a whole system family was therefore invisible with nothing
+  // on screen saying so.
+  const maxVisibleRelationships = Math.max(
+    1,
+    options.maxVisibleRelationships ?? MAX_VISIBLE_RELATIONSHIPS,
+  );
   const systemById = new Map(topology.systems.map((system) => [system.id, system]));
   const objectById = new Map(topology.business_objects.map((object) => [object.id, object]));
   const anchorSystemId = selectAnchorSystemId(topology);
@@ -429,7 +695,7 @@ export function normalizeArchitectureL1(topology: BusinessTopology): Architectur
     const bScore = Math.max(...b.streamIds.map((id) => statusRank(topology.data_streams.find((stream) => stream.id === id)?.status ?? ""))) * 100 + b.streamIds.length;
     return bScore - aScore || a.id.localeCompare(b.id);
   });
-  const visibleRelationships = sorted.slice(0, MAX_VISIBLE_RELATIONSHIPS);
+  const visibleRelationships = sorted.slice(0, maxVisibleRelationships);
   const visibleNodeIds = new Set(visibleRelationships.flatMap((relationship) => [relationship.source, relationship.target]));
   const nodeDegree = new Map<string, number>();
   for (const relationship of visibleRelationships) {
@@ -458,7 +724,7 @@ export function normalizeArchitectureL1(topology: BusinessTopology): Architectur
     source: "business_topology",
     nodes: visibleNodes,
     relationships: visibleRelationships,
-    hiddenRelationshipIds: sorted.slice(MAX_VISIBLE_RELATIONSHIPS).map((relationship) => relationship.id),
+    hiddenRelationshipIds: sorted.slice(maxVisibleRelationships).map((relationship) => relationship.id),
     hiddenInternalStreamIds,
   };
 }
@@ -510,6 +776,17 @@ export function architectureFlowsForPair(
       evidenceIds: stream.evidence_ids,
       deliveryPath: pathByStreamId.get(stream.id),
       transformations: topology.transformations.filter((transformation) => transformation.stream_ids.includes(stream.id)),
+      mechanism: stream.mechanism ?? "",
+      generation: stream.generation ?? "",
+      directionPattern: stream.direction_pattern ?? "unknown",
+      lifecycle: stream.lifecycle ?? "unknown",
+      contractWidth: stream.contract_width ?? null,
+      conditions: stream.conditions ?? [],
+      deployment: stream.deployment ?? null,
+      keyForm: stream.key_form ?? "",
+      verdict: stream.verdict ?? "",
+      documentRefs: stream.document_refs ?? [],
+      ...streamStructuredFacts(topology, stream),
     }));
 }
 

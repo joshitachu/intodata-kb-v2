@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const PUBLIC_PATHS = ["/login", "/onboarding", "/api/auth", "/api/tenant"];
+// These routes intentionally remain readable without a Nexus account. Keep this
+// list aligned with AuthProvider's public-route handling: middleware runs before
+// the app loads, while AuthProvider handles a 401 after client hydration.
+const PUBLIC_PATHS = ["/login", "/onboarding", "/guide", "/api/auth", "/api/tenant"];
 const MFA_SETUP_PATH = "/settings/security";
 
 function decodeJwtPayload(token: string): Record<string, unknown> | null {

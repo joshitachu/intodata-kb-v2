@@ -59,11 +59,11 @@ RAG_pipeline/
 
 ## MANDATORY: Logging & Documentation Rules
 
-See root `CLAUDE.md` (section "Logging Rules") for the full logging format and rules. They apply here without exception — same format, same discipline.
+See root `CLAUDE.md` (section "Logging") for the full logging format and rules. They apply here without exception — same format, same discipline.
 
-**Before coding**: read `.claude/context.md`, `.claude/PROGRESS_LOG.md`, `.claude/PROJECT_MEMORY.md`, `.claude/progress.md`.
+**Before coding**: run the `session-start` skill. It reads `.claude/context.md` (live state, capped at 60 lines) and the newest 3 entries of `.claude/PROGRESS_LOG.md`. Architecture decisions live in `knowledge_base/.agent/decisions/`.
 
-**After every change**: update `PROGRESS_LOG.md` (files changed, problem, root cause, fix, verification) and `context.md`.
+**After every change**: run the `session-end` skill. It prepends to `PROGRESS_LOG.md` (newest-first) and rewrites `context.md` in place. Never append a dated section to `context.md` — history belongs in the log.
 
 ---
 
@@ -134,9 +134,8 @@ return (
 9. **No workarounds**: Fixes must address the root cause, not suppress symptoms. If a proper fix requires broader refactoring, do it. Never ship a narrow patch when the defect pattern exists elsewhere.
 10. **Generalize fixes**: Before fixing anything, check whether the same failure can occur in other places. Fix it at the level that prevents all recurrences — one-off special-case branches are not acceptable.
 11. **Use design patterns**: Before writing a new class, service, or module, identify whether an established pattern fits (Strategy, Repository, Factory, Observer, Pipeline, etc.). Don't invent bespoke structures when a well-understood pattern solves the problem.
-12. **Full pipeline gate**: Any non-Scout change requires the full pipeline: `/grill` → `/prd` → `/slices` → `/plan` → `/plan-approve pass` → build → `/inspect` → `/validate` → commit. See root `CLAUDE.md` Development Workflow.
-13. **Inspector required**: After building any change to the RAG retrieval chain (`src/retrieval/`) or auth/RBAC (`src/auth/`, `src/rbac/`), run `/inspect` before committing. Max 2 block cycles before escalating to the human.
-14. **Emergency path**: Use `/lfe-force` for production emergencies only; it logs to `PROTOCOL_DEBT.md` and session-start will warn until `/debt-resolve` clears it.
+12. **Plan gate**: Anything beyond a small, well-understood change needs `plan` → the user sets `verdict: PASS` → build → `inspect` → `validate` → commit. The agent never sets `verdict: PASS` itself. See root `CLAUDE.md` Development Workflow.
+13. **Inspect required**: After building any change to the RAG retrieval chain (`src/retrieval/`) or auth/RBAC (`src/auth/`, `src/rbac/`), run `inspect` before committing. Max 2 BLOCK cycles before escalating to the human.
 
 ## Agent Docs
 
@@ -149,7 +148,7 @@ Read `.agent/README.md` first — it tells you which docs to read for your task.
 | System architecture             | `.agent/system/architecture.md`          |
 | A runtime failure               | `.agent/SOP/troubleshooting.md`          |
 | Adding a new route              | `.agent/SOP/add-route.md`                |
-| Architecture decisions          | `.agent/decisions/` + `.claude/PROJECT_MEMORY.md` |
+| Architecture decisions          | `knowledge_base/.agent/decisions/`       |
 
 ## Common Commands
 ```bash

@@ -33,6 +33,17 @@ class AgentResult:
     write_model_name: str | None = None
     required_docs: list[str] = field(default_factory=list)
     has_warnings: bool = False
+    cancelled: bool = False
+    #: The terminal outcome, when the provider can distinguish more than
+    #: succeeded/failed. ``"incomplete"`` is the one ``success``/``cancelled``
+    #: cannot express: a run that stopped early with a resumable draft is not
+    #: the same event as one that failed, and reporting them identically is
+    #: what made a partial agent-workspace run indistinguishable from a broken
+    #: one. Empty means "derive it from ``success`` and ``cancelled``", which
+    #: is what every provider that does not set it gets; the run record's
+    #: ``status`` column is unchanged either way and only ``run_verdict``
+    #: carries the finer distinction.
+    outcome: str = ""
 
     def to_dict(self) -> dict:
         """Return a plain dict compatible with the legacy result format."""
@@ -50,6 +61,8 @@ class AgentResult:
             "write_model_name": self.write_model_name,
             "required_docs": self.required_docs,
             "has_warnings": self.has_warnings,
+            "cancelled": self.cancelled,
+            "outcome": self.outcome,
         }
 
 
@@ -95,6 +108,8 @@ class DocGenContext:
     # resolve or consume it.  It intentionally contains no provider credential.
     run_id: int | None = None
     connector_runtime: Any | None = None
+    # Frozen by the coordinator; None denotes the historical contract.
+    generation_profile: dict | None = None
 
 
 # Type alias for the log callback passed to providers

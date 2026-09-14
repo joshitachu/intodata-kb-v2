@@ -1,26 +1,18 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { fetchJson } from "@/lib/authedFetch";
 import type { DocsProjectsResponse } from "@/types";
-
-async function fetchDocsProjects(): Promise<DocsProjectsResponse> {
-  const res = await fetch("/api/docs/projects");
-  if (!res.ok) {
-    const text = await res.text();
-    let message = "Failed to fetch projects";
-    try {
-      message = JSON.parse(text).error || message;
-    } catch {
-      // ignore
-    }
-    throw new Error(message);
-  }
-  return res.json();
-}
 
 export function useDocsProjects() {
   return useQuery({
     queryKey: ["docs-projects"],
-    queryFn: fetchDocsProjects,
+    // `fetchJson` refreshes the session and replays once on a 401, so the
+    // stale-access-token window on a cold load resolves itself instead of
+    // leaving the selector claiming the account has no projects.
+    queryFn: () =>
+      fetchJson<DocsProjectsResponse>("/api/docs/projects", {
+        fallbackError: "Failed to fetch projects",
+      }),
   });
 }

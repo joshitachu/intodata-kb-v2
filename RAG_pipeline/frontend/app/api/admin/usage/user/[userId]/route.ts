@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fastapiFetch } from "@/lib/fastapi";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 
 export async function GET(
   request: NextRequest,
@@ -12,7 +13,6 @@ export async function GET(
     const data = await fastapiFetch(`/api/v1/admin/usage/user/${userId}?days=${days}`);
     return NextResponse.json(data);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to fetch user detail usage";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("admin/usage/user/[userId] GET", error, "Failed to fetch user detail usage");
   }
 }

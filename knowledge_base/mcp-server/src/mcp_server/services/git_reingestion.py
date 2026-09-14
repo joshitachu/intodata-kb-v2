@@ -375,10 +375,20 @@ async def run_git_reingestion(
         )
         return False
 
+    from mcp_server.services.generation_profile import load_published_profile
+    generation_profile = load_published_profile(
+        config.project_root / "output" / project_id / "docs"
+    )
+    if generation_profile is not None:
+        doc_generation_provider = generation_profile["engine"]
+
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         await registry.update_status(project_id, "generating")
-        gen_run = await registry.create_generate_run(project_id, triggered_by=triggered_by)
+        gen_run = await registry.create_generate_run(
+            project_id, triggered_by=triggered_by,
+            generation_profile=generation_profile,
+        )
         await db.commit()
         gen_run_id = gen_run.id
 
@@ -414,6 +424,7 @@ async def run_git_reingestion(
         partial_rag_sync=not is_first_push,
         pre_swap_gate=pre_swap_gate,
         scoped_docs=scoped_docs,
+        generation_profile=generation_profile,
     )
 
     gate_held = bool(last_outcome and not last_outcome[0].passed)
@@ -431,7 +442,8 @@ async def run_git_reingestion(
             registry = ProjectRegistry(db)
             await registry.update_status(project_id, "generating")
             retry_run = await registry.create_generate_run(
-                project_id, triggered_by=f"{triggered_by}:gate_retry"
+                project_id, triggered_by=f"{triggered_by}:gate_retry",
+                generation_profile=generation_profile,
             )
             await db.commit()
             retry_run_id = retry_run.id
@@ -445,6 +457,7 @@ async def run_git_reingestion(
             partial_rag_sync=not is_first_push,
             pre_swap_gate=pre_swap_gate,
             scoped_docs=scoped_docs,
+            generation_profile=generation_profile,
         )
         gate_held = bool(last_outcome and not last_outcome[0].passed)
 

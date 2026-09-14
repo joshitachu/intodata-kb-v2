@@ -304,7 +304,9 @@ def _coverage_report_from_identities(
         skipped_unit_ids=dict(sorted((unit_id, reason) for unit_id, reason in skipped_ids.items() if unit_id in expected_ids)),
         missing_units=sorted(_unit_label(units_by_id[unit_id], duplicate_names) for unit_id in missing_ids),
         missing_unit_ids=missing_ids,
-        coverage_count=len((covered_ids & expected_ids) | (set(skipped_ids) & expected_ids)),
+        # Skipped/limited units are accounted for, not understood. Counting
+        # them as covered made a partial run indistinguishable from a complete one.
+        coverage_count=len(covered_ids & expected_ids),
         expected_count=facts.unit_count,
         errors=errors,
         warnings=report_warnings,
@@ -338,7 +340,7 @@ def _structured_phase2_coverage(
             errors.append(f"Structured Phase 2 coverage record is invalid JSON: {record_path.name}")
             continue
         status = str(record.get("status") or "")
-        if status not in {"completed", "scanner_limited"}:
+        if status not in {"completed", "scanner_limited", "packet_limited"}:
             errors.append(f"Structured Phase 2 coverage record for group {group} is not completed: {status or 'missing'}")
             continue
         analysis_file = analysis_dir / str(record.get("analysis_file") or f"{group}.md")
@@ -349,8 +351,12 @@ def _structured_phase2_coverage(
             errors.append(f"Structured Phase 2 coverage record for group {group} has empty analysis output")
             continue
         for unit in units_by_group.get(group, []):
-            if status == "scanner_limited":
-                skipped_ids[_unit_id(unit)] = "scanner-limited evidence"
+            if status in {"scanner_limited", "packet_limited"}:
+                skipped_ids[_unit_id(unit)] = (
+                    "legacy scanner-limited classification"
+                    if status == "scanner_limited"
+                    else "preprocessing packet below analysis threshold; extraction status unknown"
+                )
             else:
                 covered_ids.add(_unit_id(unit))
 

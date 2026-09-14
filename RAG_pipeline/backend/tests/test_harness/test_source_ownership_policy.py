@@ -15,10 +15,17 @@ from src.harness.manifest import ManifestScope
 from src.harness.readonly_runtime import READ_ONLY_PRIMARY_SYSTEM_PROMPT
 from src.harness.registry import default_capability_registry
 from src.harness.semantic_tools import build_semantic_tool_snapshot
+from src.harness.surface_policy import surface_denied_capability_ids
 from src.harness.topology_guidance import (
-    TOPOLOGY_ANSWER_GUIDANCE,
-    TOPOLOGY_MINIMAL_GUIDANCE,
+    CHAT_TOPOLOGY_BOUNDARY,
+    SHARED_ANSWER_GUIDANCE,
 )
+
+TOPOLOGY_PAGE_SCOPE = {
+    "surface": "topology",
+    "project_id": "project-a",
+    "level": {"kind": "project"},
+}
 
 
 @dataclass(frozen=True)
@@ -134,23 +141,47 @@ def test_purpose_and_structural_inventory_are_not_claimed_by_both_sources(
     assert "asks only for complete inventory" in documentation
     assert "use topology rather than similarity search" in documentation
     assert "not from documents" not in topology.casefold()
-    assert "not from documents" not in TOPOLOGY_MINIMAL_GUIDANCE.casefold()
+    assert "not from documents" not in CHAT_TOPOLOGY_BOUNDARY.casefold()
 
 
 def test_mixed_source_order_keeps_all_evidence_in_the_current_turn(
     descriptions: dict[str, str],
 ) -> None:
+    """The ordering rule lives with the tool it constrains, and in the base prompt.
+
+    It used to be restated in the per-surface guidance as well. That copy is gone:
+    the rule is about one capability's terminal behaviour, so the capability
+    contract and the shared system prompt are where it belongs, and a third copy
+    was free to drift from both.
+    """
+
     documentation = descriptions["answer_from_documentation"]
 
     assert "topology and runtime tools first" in documentation
     assert "terminal documentation answer" in documentation
-    assert "before calling the terminal answer_from_documentation" in (
-        TOPOLOGY_ANSWER_GUIDANCE
-    )
-    assert "current-turn evidence summary" in TOPOLOGY_MINIMAL_GUIDANCE
     assert "call every needed topology and runtime read before" in (
         READ_ONLY_PRIMARY_SYSTEM_PROMPT
     )
+
+
+def test_the_canvas_has_a_non_terminal_documentation_route(
+    descriptions: dict[str, str],
+) -> None:
+    """Why the ordering rule above is no longer load-bearing on the canvas.
+
+    ``answer_from_documentation`` is terminal: it returns a deterministic RAG
+    answer and short-circuits the turn, so structure read beforehand never
+    reaches the prose. When it was the canvas's ONLY documentation route, an
+    ordering instruction was the only thing standing between a mixed question
+    and a document answer that ignored the diagram. ``search_documentation`` is
+    the non-terminal alternative, and it must be reachable there.
+    """
+
+    denied = surface_denied_capability_ids(
+        default_capability_registry().list(), TOPOLOGY_PAGE_SCOPE
+    )
+    assert "rag.docs.search_evidence" not in denied
+    assert "search_documentation" in descriptions
 
 
 def test_explicit_source_exclusion_is_honored_or_disclosed(

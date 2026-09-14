@@ -1,36 +1,30 @@
 "use client";
 
-import { FolderOpen, Loader2 } from "lucide-react";
+import { FolderOpen } from "lucide-react";
 import { SelectMenu, type SelectMenuOption } from "@/components/ui/select-menu";
+import { SelectorFailed, SelectorPending } from "@/components/ui/selector-status";
+import { queryOutcome } from "@/lib/queryState";
 import { useUserProjects } from "@/hooks/useUserProjects";
 import { useChatContext } from "@/contexts/ChatContext";
 
 export function RagProjectSelector() {
   const { selectedProject, setSelectedProject } = useChatContext();
-  const { data, isLoading, error } = useUserProjects();
+  const query = useUserProjects();
+  const outcome = queryOutcome(query, "Could not load your projects");
 
-  if (isLoading) {
-    return (
-      <div className="flex h-7 items-center gap-1.5 px-2 text-xs text-muted-foreground">
-        <Loader2 className="h-3 w-3 animate-spin" />
-        <span>Projects...</span>
-      </div>
-    );
+  if (outcome.kind === "unknown") return <SelectorPending phase={outcome.phase} />;
+  if (outcome.kind === "failed") {
+    return <SelectorFailed message={outcome.message} onRetry={() => void query.refetch()} />;
   }
 
-  if (error) {
-    return (
-      <span className="px-2 text-xs text-destructive">Projects unavailable</span>
-    );
-  }
-
-  if (!data || data.projects.length === 0) {
-    return null;
-  }
+  // Nothing to scope by, so the control has nothing to offer. Reached only
+  // from a confirmed empty response — never from an unanswered request, which
+  // used to make the whole retrieval-scope control silently disappear.
+  if (outcome.data.projects.length === 0) return null;
 
   const options: SelectMenuOption[] = [
     { value: "", label: "All Projects" },
-    ...data.projects.map((project) => ({
+    ...outcome.data.projects.map((project) => ({
       value: project.id,
       label: project.display_name,
     })),

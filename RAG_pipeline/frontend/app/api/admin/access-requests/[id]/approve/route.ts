@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { fastapiFetch } from "@/lib/fastapi";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 
 export async function POST(
   request: Request,
@@ -19,16 +20,6 @@ export async function POST(
     });
     return NextResponse.json(data);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to approve request";
-    const status = message.includes("502")
-      ? 502
-      : message.includes("409")
-        ? 409
-        : message.includes("403")
-          ? 403
-          : message.includes("400")
-            ? 400
-            : 500;
-    return NextResponse.json({ error: message }, { status });
+    return upstreamErrorResponse("admin/access-requests/[id]/approve POST", error, "Failed to approve request");
   }
 }

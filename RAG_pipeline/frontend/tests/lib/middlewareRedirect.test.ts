@@ -3,6 +3,12 @@ import { NextRequest } from "next/server";
 import { middleware } from "@/middleware";
 
 describe("auth middleware login redirect", () => {
+  it("allows the product guide without an authentication cookie", () => {
+    const response = middleware(new NextRequest("https://client.example.com/guide"));
+
+    expect(response.headers.get("location")).toBeNull();
+  });
+
   it("preserves the query string of the blocked request", () => {
     // The GitHub App post-install return trip carries its whole payload in the
     // query string; dropping it sends the user back to a useless URL.

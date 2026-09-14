@@ -3,6 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
+import {
+  classifyAuthFailure,
+  onSessionRevalidationNeeded,
+  refreshSession,
+} from "@/lib/session";
+
+// Re-exported: `refreshSession` moved to lib/session.ts so lib/authedFetch.ts
+// can share the single-flight rotation without importing a hook module.
+export { refreshSession } from "@/lib/session";
 
 interface AuthUser {
   id: number;
@@ -37,48 +46,10 @@ const RETRY_BACKOFF_MS = [2_000, 5_000, 10_000, 20_000, 30_000];
 /** Don't revalidate on tab focus more than once per minute. */
 const FOCUS_REVALIDATE_THROTTLE_MS = 60_000;
 
-type RefreshOutcome = "refreshed" | "unauthenticated" | "unavailable";
 type ProbeOutcome =
   | { kind: "authenticated"; user: AuthUser }
   | { kind: "unauthenticated" }
   | { kind: "unavailable" };
-
-/**
- * Module-level so every caller in the tab shares one in-flight request.
- * Refresh-token rotation is single-use: two concurrent POSTs mean one of them
- * presents an already-rotated token and gets a spurious 401.
- */
-let inFlightRefresh: Promise<RefreshOutcome> | null = null;
-
-/**
- * 401 is the only status that means "logged out". Everything else — 429 from a
- * shared rate-limit bucket, 5xx from a restarting or saturated backend, 403
- * from an authorization rule on a perfectly valid session — leaves the session
- * intact and is retried.
- */
-function classify(status: number): "unauthenticated" | "unavailable" {
-  return status === 401 ? "unauthenticated" : "unavailable";
-}
-
-async function requestRefresh(): Promise<RefreshOutcome> {
-  try {
-    const res = await fetch("/api/auth/refresh", { method: "POST", cache: "no-store" });
-    if (res.ok) return "refreshed";
-    return classify(res.status);
-  } catch {
-    // Network-level failure: the answer is unknown, so assume nothing.
-    return "unavailable";
-  }
-}
-
-/** Rotate the refresh token, collapsing concurrent callers onto one request. */
-export function refreshSession(): Promise<RefreshOutcome> {
-  if (inFlightRefresh) return inFlightRefresh;
-  inFlightRefresh = requestRefresh().finally(() => {
-    inFlightRefresh = null;
-  });
-  return inFlightRefresh;
-}
 
 interface UseAuthReturn {
   user: AuthUser | null;
@@ -93,8 +64,6 @@ interface UseAuthReturn {
   loginAs: (user: AuthUser) => void;
   /** Refetch /auth/me and update local auth state. */
   refreshUser: () => Promise<AuthUser | null>;
-  /** Attempt a token refresh on 401. Returns true if refreshed (caller should retry). */
-  handleUnauthorized: () => Promise<boolean>;
 }
 
 export function useAuth(): UseAuthReturn {
@@ -144,7 +113,7 @@ export function useAuth(): UseAuthReturn {
       }
     }
 
-    return { kind: classify(res.status) };
+    return { kind: classifyAuthFailure(res.status) };
   }, []);
 
   const fetchUser = useCallback(async (): Promise<AuthUser | null> => {
@@ -198,21 +167,16 @@ export function useAuth(): UseAuthReturn {
     void fetchUser();
   }, [fetchUser]);
 
-  // Intercept a 401 response: try refreshing the token once. Returns true when
-  // the caller should retry. Only a definitive logout redirects; a transient
-  // failure leaves the session alone so the caller can back off and retry.
-  const handleUnauthorized = useCallback(async (): Promise<boolean> => {
-    const outcome = await refreshSession();
-    if (outcome === "refreshed") return true;
-    if (outcome === "unavailable") {
-      setStatus("unavailable");
-      return false;
-    }
-    applyUser(null, "unauthenticated");
-    router.push("/login");
-    router.refresh();
-    return false;
-  }, [router, applyUser]);
+  // A data request could not be authorized even after a fresh token
+  // (`lib/authedFetch.ts`). Re-probe /auth/me rather than trusting that route's
+  // status: it is the only endpoint whose 401 definitively means "logged out",
+  // and `probe()` already classifies 401 / 429 / 5xx / network correctly.
+  //
+  // This replaces `handleUnauthorized`, which was dead code — declared on the
+  // interface, defined here, returned from the hook, absent from
+  // `AuthContextValue`, and called by nothing. Every 401 the app hit went
+  // unhandled while a refresh routine sat one unreachable call away.
+  useEffect(() => onSessionRevalidationNeeded(() => void fetchUser()), [fetchUser]);
 
   // Periodic token refresh, well before the 60-minute access token expiry.
   // A failure here must not end the session: only an explicit 401 does.
@@ -271,6 +235,5 @@ export function useAuth(): UseAuthReturn {
     logout,
     loginAs,
     refreshUser: fetchUser,
-    handleUnauthorized,
   };
 }

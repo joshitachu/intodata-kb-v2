@@ -46,6 +46,10 @@ LAYER_SUPPORT_MAPS = "support_maps"
 LAYER_SCORECARD = "scorecard"
 LAYER_EVIDENCE_SLICES = "evidence_slices"
 LAYER_EDITORIAL_OVERLAYS = "editorial_overlays"
+# Enterprise Talend runs project the validated knowledge model (journeys,
+# designs, unknowns) under _rag_support/knowledge_model/ so RAG can answer
+# developer/operator/architect/business-owner questions the client prose omits.
+LAYER_KNOWLEDGE_MODEL = "knowledge_model"
 
 REASON_MISSING_BASELINE = "missing_baseline_commit"
 REASON_MISSING_DOCS = "missing_docs"
@@ -402,6 +406,12 @@ def collect_internal_artifacts(
             LAYER_EDITORIAL_OVERLAYS,
             "editorial_overlay",
             sorted((docs_dir / RAG_SUPPORT_DIRNAME / "editorial_overlays").glob("*.md")),
+            None,
+        ),
+        (
+            LAYER_KNOWLEDGE_MODEL,
+            "knowledge_model",
+            sorted((docs_dir / RAG_SUPPORT_DIRNAME / LAYER_KNOWLEDGE_MODEL).glob("*.md")),
             None,
         ),
     ]

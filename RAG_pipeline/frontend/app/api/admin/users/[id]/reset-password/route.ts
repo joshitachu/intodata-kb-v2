@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fastapiFetch } from "@/lib/fastapi";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -15,7 +16,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     });
     return NextResponse.json(data);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to reset password";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("admin/users/[id]/reset-password POST", error, "Failed to reset password");
   }
 }

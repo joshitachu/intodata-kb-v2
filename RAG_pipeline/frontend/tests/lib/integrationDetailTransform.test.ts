@@ -96,4 +96,114 @@ describe("integrationDetailForEdge", () => {
     expect(detail.mappings).toEqual([]);
     expect(detail.mappingAttribution).toBe("ambiguous");
   });
+  /**
+   * A mapping row is only readable if it says what KIND of fact it is. Grouping
+   * on the transformation NAME alone put a status value table and a field
+   * mapping under indistinguishable headings, which is how `GGK -> In Process`
+   * came to read as a business decision.
+   */
+  it("carries the kind, expression, category, reach and note through, grouped by kind", () => {
+    const claim = { name: "", description: "", status: "observed" as const, confidence: 0.8, evidence_ids: ["artifact:fetch"] };
+    const stream = {
+      id: "stream:orders", name: "Orders", description: "", status: "inferred" as const,
+      confidence: 0.8, evidence_ids: ["edge:orders"], source_system_id: "system:maximo",
+      destination_system_id: "application:assetcheck", business_object_ids: [],
+      business_summary: "Moves orders into AssetCheck.", integration_solution_ids: [],
+      protocols: ["REST"], requiredness: "not_established" as const, control_ids: [], risk_ids: [],
+      unknown_ids: [], artifact_ids: ["artifact:fetch"],
+    };
+    const enriched: ProjectLandscapeResponse = {
+      ...landscape,
+      business_topology: {
+        schema_version: "business-topology-v1", scan_fingerprint: "f",
+        metadata: { project_id: "demo", scan_fingerprint: "f", generated_by: "test", model_name: "" },
+        systems: [], business_objects: [], data_streams: [stream], delivery_paths: [], controls: [], risks: [], unknowns: [],
+        runtime_observations: [], conflicts: [], component_annotations: [], lineage_annotations: [],
+        integration_solutions: [], artifact_annotations: [],
+        transformations: [
+          {
+            ...claim, id: "transform:fields", name: "Order fields", kind: "field_mapping",
+            stream_ids: [stream.id], integration_solution_ids: [], artifact_ids: ["artifact:fetch"],
+            mappings: [{
+              source: "Order.Description", target: "serviceOrders.description", mapping_type: "derived",
+              expression: "substring(DESCRIPTION, 1, 50)", category: "text", reaches_target: "partial",
+              note: "Truncated at 50 characters.",
+            }],
+          },
+          {
+            ...claim, id: "transform:status", name: "Order status", kind: "value_domain",
+            target_field: "serviceOrders.status",
+            stream_ids: [stream.id], integration_solution_ids: [], artifact_ids: ["artifact:fetch"],
+            mappings: [{ source: "GGK", target: "In Process", mapping_type: "value" }],
+          },
+        ],
+        coverage: { total_artifacts: 1, cited_artifacts: 1, total_evidence: 1, cited_evidence: 1, coverage_ratio: 1, notes: [] },
+      },
+      topology_evidence: {
+        artifacts: [{ id: "artifact:fetch", name: "Fetch", job_id: "Fetch", source_root: "A", artifact_kind: "route", artifact_role: "transformation" }],
+        components: [], lineage: [], relations: [],
+      },
+    };
+    const edge = { ...enriched.edges[0], businessStream: stream };
+    const detail = implementingDesignDetail(enriched, edge, edge.provenance[0]);
+
+    expect(detail.mappings).toEqual([
+      expect.objectContaining({
+        group: "Field mapping",
+        transformationKind: "field_mapping",
+        transformationName: "Order fields",
+        target: "serviceOrders.description",
+        expression: "substring(DESCRIPTION, 1, 50)",
+        category: "text",
+        reachesTarget: "partial",
+        note: "Truncated at 50 characters.",
+      }),
+      expect.objectContaining({
+        group: "Value domain",
+        transformationKind: "value_domain",
+        targetField: "serviceOrders.status",
+        source: "GGK",
+        target: "In Process",
+        reachesTarget: "unknown",
+      }),
+    ]);
+  });
+
+  it("keeps an unclassified transformation under its own name", () => {
+    const claim = { name: "", description: "", status: "observed" as const, confidence: 0.8, evidence_ids: ["artifact:fetch"] };
+    const stream = {
+      id: "stream:orders", name: "Orders", description: "", status: "inferred" as const,
+      confidence: 0.8, evidence_ids: [], source_system_id: "system:maximo",
+      destination_system_id: "application:assetcheck", business_object_ids: [],
+      business_summary: "", integration_solution_ids: [], protocols: [],
+      requiredness: "not_established" as const, control_ids: [], risk_ids: [],
+      unknown_ids: [], artifact_ids: ["artifact:fetch"],
+    };
+    const legacy: ProjectLandscapeResponse = {
+      ...landscape,
+      business_topology: {
+        schema_version: "business-topology-v1", scan_fingerprint: "f",
+        metadata: { project_id: "demo", scan_fingerprint: "f", generated_by: "test", model_name: "" },
+        systems: [], business_objects: [], data_streams: [stream], delivery_paths: [], controls: [], risks: [], unknowns: [],
+        runtime_observations: [], conflicts: [], component_annotations: [], lineage_annotations: [],
+        integration_solutions: [], artifact_annotations: [],
+        transformations: [{
+          ...claim, id: "transform:legacy", name: "Order mapping",
+          stream_ids: [stream.id], integration_solution_ids: [], artifact_ids: ["artifact:fetch"],
+          mappings: [{ source: "Order.Status", target: "serviceOrders.status", mapping_type: "value" }],
+        }],
+        coverage: { total_artifacts: 1, cited_artifacts: 1, total_evidence: 1, cited_evidence: 1, coverage_ratio: 1, notes: [] },
+      },
+      topology_evidence: {
+        artifacts: [{ id: "artifact:fetch", name: "Fetch", job_id: "Fetch", source_root: "A", artifact_kind: "route", artifact_role: "transformation" }],
+        components: [], lineage: [], relations: [],
+      },
+    };
+    const edge = { ...legacy.edges[0], businessStream: stream };
+    const detail = implementingDesignDetail(legacy, edge, edge.provenance[0]);
+
+    expect(detail.mappings).toEqual([
+      expect.objectContaining({ group: "Order mapping", transformationKind: "unknown", expression: "", reachesTarget: "unknown" }),
+    ]);
+  });
 });

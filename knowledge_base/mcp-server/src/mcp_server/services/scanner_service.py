@@ -7,6 +7,7 @@ import json
 import logging
 import shutil
 import subprocess
+import tempfile
 import sys
 import traceback
 from pathlib import Path
@@ -50,15 +51,49 @@ class ScannerService:
                 "output_dir": str(out_dir),
             }
         try:
-            return await self._run_scan_locked(
-                project_id=project_id,
-                repo_path=repo_path,
-                platform=platform,
-                out_dir=out_dir,
-            )
+            # The CLI writes several mutually dependent files. Never let its
+            # intermediate writes touch the active snapshot. The sibling
+            # directory shares a filesystem so promotion uses directory rename.
+            with tempfile.TemporaryDirectory(prefix=f".{out_dir.name}.scan-candidate-", dir=out_dir.parent) as temporary:
+                candidate = Path(temporary) / "snapshot"
+                result = await self._run_scan_locked(
+                    project_id=project_id, repo_path=repo_path,
+                    platform=platform, out_dir=candidate,
+                )
+                if result.get("success"):
+                    self._promote_scan_snapshot(candidate, out_dir)
+                    result["scan_result_path"] = str(out_dir / "scan_result.json")
+                else:
+                    result["scan_result_path"] = None
+                result["output_dir"] = str(out_dir)
+                return result
         finally:
             if owned_lock:
                 active_lock.release()
+
+    @staticmethod
+    def _promote_scan_snapshot(candidate: Path, active: Path) -> None:
+        """Replace the entire snapshot while the caller holds its scan lock.
+
+        Two renames can briefly expose an absent directory, never a mixture of
+        revisions. A process crash leaves the prior snapshot at the explicit
+        backup path and the lock fails closed; caught failures roll back. This
+        is not an atomic exchange and does not claim uninterrupted availability.
+        """
+        backup = active.with_name(f".{active.name}.scan-previous")
+        if backup.exists():
+            raise RuntimeError(f"Previous scan snapshot needs recovery: {backup}")
+        moved_old = active.exists()
+        if moved_old:
+            active.rename(backup)
+        try:
+            candidate.rename(active)
+        except BaseException:
+            if moved_old:
+                backup.rename(active)
+            raise
+        if moved_old:
+            shutil.rmtree(backup)
 
     async def _run_scan_locked(
         self,

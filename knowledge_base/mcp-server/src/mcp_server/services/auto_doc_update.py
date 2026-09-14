@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +36,8 @@ from mcp_server.services.living_docs.git_patch_coordinator import GitPatchCoordi
 from mcp_server.services.living_docs.audit import FilePatchAuditStore, PatchAuditReceipt, PatchUsage
 from mcp_server.services.living_docs.baseline import prime_project_baseline
 from mcp_server.services.living_docs.opencode_reingestion import OpenCodeReingestionExecutor
+from mcp_server.services.living_docs.git_evidence import collect_git_evidence
+from mcp_server.services.living_docs.run_journal import ProjectRunLock, RunJournal
 from mcp_server.services.living_docs.rollout import RolloutStage, inspect_project_patch_readiness
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
@@ -149,16 +152,6 @@ class AutoDocAgentRuntime:
                     "Only ignored/non-doc-impacting files changed",
                 )
 
-            if config.living_doc_patching_enabled:
-                return await self._opencode_reingestion(
-                    ctx,
-                    before_sha=before_sha,
-                    after_sha=after_sha,
-                    summary=summary,
-                    changed_files=inspect_result["_changed_files"],
-                    full_diff_text=full_diff_text,
-                )
-
             decision = await self._decide(
                 ctx,
                 quick_scan=quick_scan,
@@ -170,6 +163,25 @@ class AutoDocAgentRuntime:
             summary.update(impact)
             summary["routing"] = decision.model_dump()
             summary["touched_docs"] = list(impact["affected_docs"])
+
+            # OpenCode remains the agentic editor, but only after the
+            # deterministic scanner/router has established a bounded, safe
+            # change. It works in a private candidate; it never edits active
+            # docs or calls RAG directly.
+            if (
+                config.living_doc_patching_enabled
+                and decision.strategy in {"bounded_patch", "scoped_regen"}
+            ):
+                return await self._opencode_reingestion(
+                    ctx,
+                    before_sha=before_sha,
+                    after_sha=after_sha,
+                    summary=summary,
+                    changed_files=inspect_result["_changed_files"],
+                    full_diff_text=full_diff_text,
+                    changed_groups=decision.changed_groups,
+                    suggested_docs=decision.affected_docs,
+                )
 
             if decision.strategy == "skip":
                 return await self._skip(
@@ -256,7 +268,7 @@ class AutoDocAgentRuntime:
         after_sha: str,
     ) -> dict[str, Any]:
         await fetch_remote(ctx.local_path, ctx.credential, git_func=_git)
-        name_status = await _git(ctx.local_path, "diff", "--name-status", before_sha, after_sha)
+        name_status = await _git(ctx.local_path, "diff", "--name-status", before_sha, after_sha, "-M")
         changes = parse_name_status(name_status)
         changed_files = [change.path for change in changes]
         full_diff_text = ""
@@ -268,7 +280,7 @@ class AutoDocAgentRuntime:
                 before_sha,
                 after_sha,
                 "--",
-                *changed_files,
+                *sorted(set(changed_files) | {change.previous_path for change in changes if change.previous_path}),
             )
         quick_scan = self.quick_scanner.scan(changes, full_diff_text)
         changed_file_list = [
@@ -324,11 +336,20 @@ class AutoDocAgentRuntime:
         summary: dict[str, Any],
         changed_files: list[ChangedFile],
         full_diff_text: str,
+        changed_groups: list[str],
+        suggested_docs: list[str],
     ) -> DiffPatchResult:
         """Run every doc-relevant push through one candidate OpenCode session."""
 
         output_dir = config.project_root / "output" / ctx.project_id
         docs_dir = output_dir / "docs"
+        if not config.opencode_model.strip():
+            return self._held(summary, "Configure MCP_OPENCODE_MODEL before automatic updates",
+                              reason_code="opencode_model_not_configured")
+        try:
+            evidence = await collect_git_evidence(ctx.local_path, before_sha, after_sha, changed_files)
+        except Exception as exc:
+            return self._held(summary, str(exc), reason_code="immutable_evidence_failed")
         raw_bridge = RagBridge(log_manager=self.log_mgr)
         revision_bridge = RagBridge(
             log_manager=self.log_mgr,
@@ -357,7 +378,7 @@ class AutoDocAgentRuntime:
                     reason_code=preflight.reason_codes[0],
                 )
             baseline_receipt = None
-            if base_revision is None:
+            if base_revision is None and config.living_doc_rollout_stage != "shadow":
                 baseline_receipt = await prime_project_baseline(
                     project_id=ctx.project_id,
                     source_revision_id=before_sha,
@@ -380,7 +401,7 @@ class AutoDocAgentRuntime:
                 feature_enabled=True,
                 stage=RolloutStage(config.living_doc_rollout_stage),
                 source_revision_id=before_sha or None,
-                active_knowledge_revision_id=base_revision,
+                active_knowledge_revision_id=base_revision or ("shadow-baseline" if config.living_doc_rollout_stage == "shadow" else None),
             )
             if not readiness.ready:
                 return self._held(
@@ -400,23 +421,27 @@ class AutoDocAgentRuntime:
                 after_sha=after_sha,
                 changed_files=changed_files,
                 base_knowledge_revision_id=base_revision,
+                repair_attempt_id=(str(summary.get("trigger", "")).partition(":")[2]
+                                   if str(summary.get("trigger", "")).startswith("repair_latest:") else None),
             )
             outcome = await coordinator.run(
                 candidate,
                 active_output_dir=output_dir,
                 candidate_scan_output_dir=config.intodoc_output_dir / ctx.project_id,
-                changed_groups=[],
+                changed_groups=changed_groups,
                 platform=await self._project_platform(ctx.project_id),
                 log_mgr=self.log_mgr,
                 before_sha=before_sha,
                 after_sha=after_sha,
                 active_source_revision_key=candidate.change_set.source_revision.key,
-                source_path=None,
+                source_path=ctx.local_path,
                 rollout_stage=config.living_doc_rollout_stage,
                 low_risk_max_artifacts=config.living_doc_low_risk_max_artifacts,
                 changed_files=changed_files,
                 full_diff_text=full_diff_text,
                 scan_before_patch=False,
+                evidence_bundle=evidence,
+                suggested_docs=[name if name.endswith(".md") else name + ".md" for name in suggested_docs],
             )
         except Exception as exc:
             logger.exception("OpenCode reingestion failed for %s", ctx.project_id)
@@ -436,7 +461,7 @@ class AutoDocAgentRuntime:
         usage = PatchUsage(
             input_tokens=int(patch_summary.get("input_tokens") or 0),
             output_tokens=int(patch_summary.get("output_tokens") or 0),
-            provider_calls=0 if outcome.reason_code == "already_active" else 1,
+            provider_calls=int(patch_summary.get("provider_calls") or 0),
             billed_cost_usd=float(patch_summary.get("cost_usd") or 0.0),
             elapsed_ms=int(patch_summary.get("elapsed_ms") or 0),
         )
@@ -560,12 +585,13 @@ class AutoDocAgentRuntime:
         # failure it returns the deterministic decision unchanged. It can only
         # ADD docs, never shrink the set or change the strategy.
         all_docs = [name[:-3] if name.endswith(".md") else name for name in generated_docs]
-        decision = await self.router.expand(
-            decision,
-            diff_chunks=diff_chunks,
-            all_docs=all_docs,
-            doc_generation_provider=ctx.doc_generation_provider,
-        )
+        if not config.living_doc_patching_enabled:
+            decision = await self.router.expand(
+                decision,
+                diff_chunks=diff_chunks,
+                all_docs=all_docs,
+                doc_generation_provider=ctx.doc_generation_provider,
+            )
         self._record_tool(
             "finish_decision",
             {
@@ -697,6 +723,40 @@ class AutoDocAgentRuntime:
             )
             try:
                 base_revision = await revision_bridge.active_knowledge_revision(ctx.project_id)
+                # Do the same baseline preflight/activation as the legacy
+                # agent lane.  Candidate true-patching must never silently
+                # operate with a missing revisioned RAG baseline.
+                preflight = inspect_project_patch_readiness(
+                    project_id=ctx.project_id,
+                    output_dir=output_dir,
+                    feature_enabled=True,
+                    stage=RolloutStage(config.living_doc_rollout_stage),
+                    source_revision_id=before_sha or None,
+                    active_knowledge_revision_id=base_revision or "baseline-pending",
+                )
+                if not preflight.ready:
+                    return self._held(
+                        summary,
+                        f"Living-document baseline is not ready: {', '.join(preflight.reason_codes)}",
+                        reason_code=preflight.reason_codes[0],
+                    )
+                if base_revision is None:
+                    baseline_receipt = await prime_project_baseline(
+                        project_id=ctx.project_id,
+                        source_revision_id=before_sha,
+                        docs_dir=output_dir / "docs",
+                        rag=revision_bridge,
+                    )
+                    base_revision = baseline_receipt.knowledge_revision_id
+                    await self.log_mgr.emit(
+                        ctx.project_id,
+                        (
+                            "Living-document baseline activated "
+                            f"({baseline_receipt.artifact_count} artifacts, "
+                            f"revision={base_revision})"
+                        ),
+                        "info",
+                    )
                 readiness = inspect_project_patch_readiness(
                     project_id=ctx.project_id,
                     output_dir=output_dir,
@@ -719,6 +779,7 @@ class AutoDocAgentRuntime:
                     changed_groups=decision.changed_groups,
                     active_docs_dir=output_dir / "docs",
                     base_knowledge_revision_id=base_revision,
+                    repair_attempt_id=(trigger.removeprefix("repair_latest:") if trigger.startswith("repair_latest:") else None),
                 )
             except Exception as exc:
                 return self._held(
@@ -1106,16 +1167,68 @@ class AutoDocUpdateService:
         self.quick_scanner = quick_scanner or QuickChangeScanner()
 
     async def run(
+        self, *, project_id: str, before_sha: str, after_sha: str,
+        trigger: str = "webhook",
+    ) -> bool:
+        output = config.project_root / "output" / project_id
+        lock = ProjectRunLock(output)
+        journal = RunJournal(output)
+        run_id = journal.start(before_sha, after_sha, trigger)
+        # Persist receipt before waiting. Polling retries timed-out events from
+        # the last successful baseline, including all intervening commits.
+        for _ in range(1200):
+            if lock.acquire():
+                break
+            try:
+                await asyncio.sleep(0.25)
+            except asyncio.CancelledError:
+                journal.finish(run_id, {"action": "interrupted", "reason": "Cancelled while waiting for another update"})
+                raise
+        else:
+            journal.finish(run_id, {"action": "deferred", "reason": "Another project update is still running"})
+            return False
+        try:
+            journal.activate(run_id)
+            return await self._run_serialized(project_id=project_id, before_sha=before_sha,
+                after_sha=after_sha, trigger=trigger, journal=journal, run_id=run_id)
+        except BaseException as exc:
+            journal.finish(run_id, {"action": "interrupted" if isinstance(exc, asyncio.CancelledError) else "failed",
+                                    "reason": str(exc)})
+            raise
+        finally:
+            lock.release()
+
+    async def _run_serialized(
         self,
         *,
         project_id: str,
         before_sha: str,
         after_sha: str,
         trigger: str = "webhook",
+        journal: RunJournal,
+        run_id: str,
     ) -> bool:
         ctx = await self._load_context(project_id)
         if not ctx:
+            journal.finish(run_id, {"action": "failed", "reason": "Project not found"})
             return False
+        candidate_root = (config.data_dir / "living_docs/candidates" / project_id).resolve()
+        if (candidate_root / "candidates").is_dir():
+            from mcp_server.services.living_docs.git_recovery import recover_git_activations
+            bridge = RagBridge(log_manager=self.log_mgr)
+            revision_bridge = RagBridge(log_manager=self.log_mgr, revisioned_rag=bridge.http_revisioned_adapter())
+            recovered = await recover_git_activations(store=FileCandidateStore(candidate_root),
+                rag=revision_bridge, output=config.project_root / "output" / project_id,
+                source_baseline=ctx.last_ingested_commit_sha)
+            for summary in recovered:
+                recovery_run = journal.start(summary["before"] or "", summary["after"], "recovery")
+                await self._persist_result(project_id, summary["after"], DiffPatchResult(
+                    action="true_patch", summary=summary, patched_docs=summary["touched_docs"], advance_commit=True))
+                journal.finish(recovery_run, summary)
+            if recovered:
+                ctx = await self._load_context(project_id)
+                if ctx is None:
+                    raise ValueError("Project disappeared during recovery")
 
         await self.log_mgr.emit(
             project_id,
@@ -1124,6 +1237,18 @@ class AutoDocUpdateService:
         )
 
         effective_before = ctx.last_ingested_commit_sha or before_sha
+        if effective_before == after_sha:
+            journal.finish(run_id, {"action": "skipped", "reason": "Commit already documented"})
+            return True
+        if ctx.last_ingested_commit_sha:
+            await fetch_remote(ctx.local_path, ctx.credential, git_func=_git)
+            common = (await _git(ctx.local_path, "merge-base", effective_before, after_sha)).strip()
+            if common == after_sha:
+                journal.finish(run_id, {"action": "skipped", "reason": "Out-of-order delivery; newer commit already documented"})
+                return True
+            if common and common != effective_before and not trigger.startswith("repair_latest:"):
+                journal.finish(run_id, {"action": "held", "reason": "History was rewritten; explicit repair required"})
+                return False
         if effective_before != before_sha:
             await self.log_mgr.emit(
                 project_id,
@@ -1140,6 +1265,7 @@ class AutoDocUpdateService:
             trigger=trigger,
         )
         await self._persist_result(project_id, after_sha, result)
+        journal.finish(run_id, result.summary)
         return result.error is None
 
     async def _load_context(self, project_id: str) -> AutoDocUpdateContext | None:

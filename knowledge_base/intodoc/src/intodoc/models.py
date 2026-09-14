@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -62,6 +63,16 @@ class FileType(str, Enum):
     SQL_PATTERN = "sql_pattern"
     DOCUMENTATION = "documentation"
     CONFIG = "config"
+    # Enterprise Talend artifact categories. Additive members; historic scan
+    # JSON never carries them, and every existing member keeps its value.
+    STRUCTURE = "structure"          # Structures/**/*.xml (TDM structure)
+    XSLT = "xslt"                    # *.xsl / *.xslt (route/job transforms)
+    TDM_MAP = "tdm_map"              # Maps/**/*.xml (TDM map)
+    SERVICE = "service"              # services/*.item (SOAP service design)
+    WSDL = "wsdl"                    # *.wsdl service contract
+    NAMESPACE = "namespace"          # "Namespace Containers"/*.xml
+    PROJECT = "project"              # talend.project descriptor
+    RESOURCE = "resource"            # other files under resources/ route_resources/
     UNKNOWN = "unknown"
 
 
@@ -81,10 +92,81 @@ class ComponentParam(BaseModel):
     name: str
     value: str
     field_type: str = ""
+    # Additive: a Talend TABLE-field parameter carries its payload in
+    # <elementValue elementRef=.. value=..> children, not in `value` (which
+    # is serialized empty). Each dict is one row keyed by elementRef, in
+    # document order. Empty for every non-TABLE parameter.
+    rows: list[dict[str, str]] = Field(default_factory=list)
     # Additive: populated only when `value` was redacted (see post_filter.py
     # ._filter_component_params). Captures structural facts about the
     # original value that the redaction placeholder alone would discard.
     redaction_descriptor: RedactionDescriptor | None = None
+
+    @staticmethod
+    def row_column_key(row: dict[str, str], role: str) -> str:
+        """The key of one logical column of a TABLE row ("NAME"/"VALUE").
+
+        Talend names table columns with elementRefs such as
+        ``PARAM_NAME_COLUMN`` / ``PARAM_VALUE_COLUMN``. Positional order is
+        the last resort so an unfamiliar table is still readable rather
+        than silently empty. Defined here, on the model that owns `rows`,
+        because the parser, the structural redaction layer and the
+        verification gate must all agree on which cell names which -- a
+        second copy of this rule is how a sensitive value slips past one of
+        the three.
+        """
+        exact = f"PARAM_{role}_COLUMN"
+        if exact in row:
+            return exact
+        for key in row:
+            if key.upper().endswith(f"_{role}_COLUMN"):
+                return key
+        keys = list(row)
+        index = 0 if role == "NAME" else 1
+        return keys[index] if len(keys) > index else ""
+
+    @classmethod
+    def row_column(cls, row: dict[str, str], role: str) -> str:
+        """The value of one logical column of a TABLE row."""
+        return row.get(cls.row_column_key(row, role), "")
+
+
+class ComponentSchemaColumn(BaseModel):
+    """One <column> of a component <metadata> schema, verbatim.
+
+    `dynamic` marks Talend's `id_Dynamic` column type: a dynamic column
+    stands for an unknown number of real columns, so a schema containing
+    one can never be treated as an enumerated field list (see
+    `ComponentSchema.dynamic`).
+    """
+    name: str
+    type: str = ""
+    nullable: bool = True
+    key: bool = False
+    length: str = ""
+    precision: str = ""
+    default_value: str = ""
+    pattern: str = ""
+    comment: str = ""
+    source_type: str = ""
+    dynamic: bool = False
+
+
+class ComponentSchema(BaseModel):
+    """A component's row schema for one connector (FLOW, REJECT, custom).
+
+    `declaration` records whether Talend stores the schema inline
+    (`built_in`) or by reference to a repository schema
+    (`repository`, with `repository_schema_ref` holding the metadata id);
+    `unknown` means the export carried no SCHEMA*:SCHEMA_TYPE parameter
+    that could be bound to this connector -- never guessed.
+    """
+    connector: str = ""
+    name: str = ""
+    columns: list[ComponentSchemaColumn] = Field(default_factory=list)
+    dynamic: bool = False
+    declaration: Literal["built_in", "repository", "unknown"] = "unknown"
+    repository_schema_ref: str = ""
 
 
 class Component(BaseModel):
@@ -98,6 +180,16 @@ class Component(BaseModel):
     incoming_connections: list[str] = Field(default_factory=list)
     outgoing_connections: list[str] = Field(default_factory=list)
     metadata_connection_ref: str = ""
+    # Additive enterprise-fidelity fields. Defaults preserve historic JSON.
+    schemas: list[ComponentSchema] = Field(default_factory=list)
+    # Talend omits the ACTIVATE parameter on an active component and writes
+    # ACTIVATE=false on a disabled one, so absence means active.
+    active: bool = True
+    # PROPERTY:PROPERTY_TYPE, lower-cased: "built_in" | "repository" | "".
+    declaration: str = ""
+    # PROPERTY:REPOSITORY_PROPERTY_TYPE verbatim (the repository metadata id).
+    # `metadata_connection_ref` above holds the RESOLVED connection name.
+    repository_property_ref: str = ""
 
     # Param names that carry executable custom code, in execution order.
     CODE_PARAM_NAMES: ClassVar[tuple[str, ...]] = (
@@ -122,6 +214,10 @@ class TMapEntry(BaseModel):
 
 
 class TMapData(BaseModel):
+    component_name: str = ""
+    # Complete sanitized attributes retain lookup, filter/reject and schema
+    # semantics even when a consumer does not yet interpret that capability.
+    table_details: list[dict] = Field(default_factory=list)
     input_tables: list[str] = Field(default_factory=list)
     output_tables: list[str] = Field(default_factory=list)
     entries: list[TMapEntry] = Field(default_factory=list)
@@ -158,14 +254,16 @@ class TXMLMapData(BaseModel):
     content is captured directly. The component's positional ``connections``
     list uses EMF proxy refs (e.g.
     ``//@node.2/@nodeData/@inputTrees.0/@nodes.1``) that Talend Studio uses
-    only to redraw the wiring diagram; those are preserved verbatim in
-    ``raw_connections`` but are NOT resolved into typed source/target pairs.
-    This is a partial parse -- see the ``ScanWarning`` emitted alongside it.
+    to redraw the wiring diagram. Supported local references are resolved into
+    typed pairs; every reference is retained verbatim and unsupported/cross-node
+    forms remain explicit in ``unresolved_connections`` with a scan warning.
     """
     input_trees: list[TXMLMapTree] = Field(default_factory=list)
     output_trees: list[TXMLMapTree] = Field(default_factory=list)
     var_entries: list[TMapEntry] = Field(default_factory=list)
     raw_connections: list[str] = Field(default_factory=list)
+    resolved_connections: list[dict[str, str]] = Field(default_factory=list)
+    unresolved_connections: list[dict[str, str]] = Field(default_factory=list)
     # The tXMLMap component's Talend UNIQUE_NAME. This is known directly from
     # the enclosing node even when its XML-tree proxy wires cannot be resolved
     # into upstream/downstream components; it is safe L3/L4 runtime evidence.
@@ -173,11 +271,34 @@ class TXMLMapData(BaseModel):
 
 
 class TRunJobRef(BaseModel):
+    """A tRunJob parent -> child invocation.
+
+    Resolution is IDENTITY-FIRST: the child is taken from
+    `PROCESS:PROCESS_TYPE_PROCESS` (a repository GUID) resolved through the
+    scanned `.properties` index, and only falls back to the `PROCESS`
+    parameter -- a Studio label CACHE that goes stale when the child job is
+    renamed. `reference_source` records which of the two produced
+    `child_job`, so a consumer never has to guess.
+    """
     child_job: str
     child_job_xmi_id: str = ""
     context_params: list[ComponentParam] = Field(default_factory=list)
     resolved_job_id: str = ""
-    resolution: str = "unresolved"  # same_root | global | ambiguous | unresolved
+    resolution: str = "unresolved"  # same_root | global | ambiguous | unresolved | dynamic
+    # Additive tRunJob call semantics, verbatim from the component parameters.
+    version: str = ""                              # PROCESS:PROCESS_TYPE_VERSION
+    context_name: str = ""                         # PROCESS:PROCESS_TYPE_CONTEXT
+    transmit_whole_context: bool | None = None     # TRANSMIT_WHOLE_CONTEXT
+    transmit_original_context: bool | None = None  # TRANSMIT_ORIGINAL_CONTEXT
+    die_on_child_error: bool | None = None         # DIE_ON_CHILD_ERROR
+    # USE_DYNAMIC_JOB=true: the child is chosen at runtime, so no static
+    # target exists and `resolution` stays "dynamic".
+    dynamic_job: bool = False
+    reference_source: Literal["identity", "label", "none"] = "none"
+    # Repository path of the design the GUID resolved to (version stripped,
+    # e.g. "process/Orders/Orders_Load"). Breaks same-name ambiguity inside
+    # one root; empty when resolution was not identity-based.
+    target_item_path: str = ""
 
 
 class ArtifactReference(BaseModel):
@@ -193,6 +314,14 @@ class ArtifactReference(BaseModel):
     component_name: str = ""
     resolved_artifact_id: str = ""
     resolution: str = "unresolved"  # same_root | global | ambiguous | unresolved
+    # Additive cTalendJob invocation semantics (see TRunJobRef for the
+    # identity-first rule; `reference_source` has the same meaning here).
+    version: str = ""            # SELECTED_JOB_NAME:PROCESS_TYPE_VERSION
+    context_name: str = ""       # SELECTED_JOB_NAME:PROCESS_TYPE_CONTEXT
+    use_route_context: bool | None = None  # USE_ROUTE_CONTEXT
+    reference_source: Literal["identity", "label", "none"] = "none"
+    context_params: list[ComponentParam] = Field(default_factory=list)
+    target_item_path: str = ""
 
 
 class Connection(BaseModel):
@@ -201,6 +330,8 @@ class Connection(BaseModel):
     target: str
     connector_name: str = ""
     line_style: int = 0  # 0=row, 1=trigger, etc.
+    # Same ACTIVATE convention as Component.active: absent means active.
+    active: bool = True
 
 
 class ContextVariable(BaseModel):
@@ -290,6 +421,15 @@ class Routine(BaseModel):
     name: str
     source_code: str = ""
     is_system: bool = False
+    routine_id: str = ""
+    source_root: str = ""
+    path: str = ""
+    version: str = ""
+    property_id: str = ""
+    # Historical payloads may contain the old 200-line preview.
+    source_complete: bool = False
+    source_sha256: str = ""
+    method_resolution: str = "whole_source_only"
 
 
 # ── Project Manifest ─────────────────────────────────────────────────
@@ -302,6 +442,11 @@ class ProjectManifest(BaseModel):
     connection_used_by: dict[str, list[str]] = Field(default_factory=dict)
     job_contexts_used: dict[str, list[str]] = Field(default_factory=dict)
     routines_used_by: dict[str, list[str]] = Field(default_factory=dict)
+    routine_metadata: dict[str, dict] = Field(default_factory=dict)
+    job_routine_links: dict[str, list[dict[str, str]]] = Field(default_factory=dict)
+    unresolved_routine_refs: dict[str, list[dict]] = Field(default_factory=dict)
+    artifact_versions: list[dict[str, str]] = Field(default_factory=list)
+    evidence_package: dict[str, str] = Field(default_factory=dict)
     job_groups: dict[str, str] = Field(default_factory=dict)
     job_external_systems: dict[str, list[str]] = Field(default_factory=dict)
     # Additive composite-bundle metadata.  Existing consumers can keep using
@@ -324,6 +469,14 @@ class ProjectManifest(BaseModel):
     artifact_channels: list[dict] = Field(default_factory=list)
     artifact_endpoints: list[dict] = Field(default_factory=list)
     artifact_resources: list[dict] = Field(default_factory=list)
+    # Pointer to scan/sanitized/manifest.json: the sanitized mirror of every
+    # textual source file the walker inventoried. Keys: path, sha256,
+    # file_count, capability_version (all strings, as evidence_package above).
+    sanitized_workspace: dict[str, str] = Field(default_factory=dict)
+    # Component/map -> support-artifact references (structure, xslt, tdm,
+    # service) with resolution "exact" | "unresolved". Exact-token matching
+    # only; a reference is never attributed by name similarity.
+    resource_refs: list[dict] = Field(default_factory=list)
 
 
 # ── Talend Data Mapper (TDM) Maps ───────────────────────────────────
@@ -372,6 +525,243 @@ class TdmMap(BaseModel):
     output_tree: TdmMapTree | None = None
 
 
+# ── TDM Structures (Structures/**/*.xml) ─────────────────────────────
+#
+# A Structure is the schema half of Talend Data Mapper: TDM maps
+# (``TdmMap`` above) reference structures by name for their input and
+# output trees. Structures live in their own repository directory with a
+# ``.properties`` sidecar, so they are independently versioned artifacts,
+# not part of any one job.
+
+
+class StructureElement(BaseModel):
+    """One element of a TDM structure, qualified by its path in the tree.
+
+    Every attribute is copied verbatim from the export. `nullable` is
+    `None` when the export did not state it -- absence is never read as
+    "nullable=true".
+    """
+    name: str
+    path: str
+    data_type: str = ""
+    occur_max_times: str = ""
+    min_size: str = ""
+    max_size: str = ""
+    nullable: bool | None = None
+    group_type: str = ""
+
+
+class StructureDefinition(BaseModel):
+    """A parsed ``Structures/**/*.xml`` structure definition.
+
+    `parse_outcome` is `partial` when the file contained element tags this
+    parser does not model (they are listed in `unmatched_tags`, never
+    dropped silently) and `unsupported` when the file could not be parsed
+    as XML at all. A structure is never omitted from the scan because of
+    either.
+    """
+    name: str
+    path: str
+    source_root: str = ""
+    property_id: str = ""
+    version: str = ""
+    root_element: str = ""
+    elements: list[StructureElement] = Field(default_factory=list)
+    element_count: int = 0
+    parse_outcome: Literal["parsed", "partial", "unsupported"] = "parsed"
+    unmatched_tags: list[str] = Field(default_factory=list)
+
+
+# ── XSLT Transforms (*.xsl / *.xslt) ────────────────────────────────
+#
+# Talend routes and jobs delegate transformation to XSLT stylesheets held
+# under ``route_resources/`` or ``resources/`` and referenced from a
+# component parameter (cXSLT RESOURCE_URI, tXSLT XSLT_FILE, ...). The
+# mapping logic is therefore invisible to any scan that only reads job
+# items.
+
+_XSLT_INSTRUCTIONS = (
+    "value-of", "copy-of", "copy", "for-each", "apply-templates", "if",
+    "when", "otherwise", "attribute", "element", "literal-element", "text",
+    "call-template",
+)
+
+
+class XsltMapping(BaseModel):
+    """One value-producing XSLT instruction inside a template.
+
+    `instruction` is a closed vocabulary; anything else the stylesheet
+    contains is recorded in `XsltTransform.unmatched_instructions` rather
+    than being coerced into one of these names. `literal-element` is a
+    non-XSL result element (literal output markup).
+    """
+    template_match: str = ""
+    instruction: Literal[
+        "value-of", "copy-of", "copy", "for-each", "apply-templates", "if",
+        "when", "otherwise", "attribute", "element", "literal-element",
+        "text", "call-template",
+    ]
+    select: str = ""
+    test: str = ""
+    output_path: str = ""
+    mode: str = ""
+
+
+class XsltTemplate(BaseModel):
+    match: str = ""
+    name: str = ""
+    mode: str = ""
+
+
+class XsltTransform(BaseModel):
+    """A parsed XSLT stylesheet plus the components that reference it.
+
+    `referenced_by` holds ``job_id::component_unique_name`` for every
+    component whose parameters name this exact file (full repository path
+    or file name). Matching is exact-token only: a stylesheet is never
+    attributed to a component by name similarity.
+    """
+    name: str
+    path: str
+    source_root: str = ""
+    templates: list[XsltTemplate] = Field(default_factory=list)
+    mappings: list[XsltMapping] = Field(default_factory=list)
+    variables: list[dict[str, str]] = Field(default_factory=list)
+    params: list[dict[str, str]] = Field(default_factory=list)
+    includes: list[str] = Field(default_factory=list)
+    parse_outcome: Literal["parsed", "partial", "unsupported"] = "parsed"
+    unmatched_instructions: list[str] = Field(default_factory=list)
+    referenced_by: list[str] = Field(default_factory=list)
+
+
+# ── SOAP Service Definitions (services/*.item + *.wsdl) ─────────────
+
+
+class ServiceOperation(BaseModel):
+    port_type: str = ""
+    operation: str
+    input_message: str = ""
+    output_message: str = ""
+
+
+class ServiceDefinition(BaseModel):
+    """A Talend ESB service design and the operations it publishes.
+
+    Only port type / operation / message NAMES are captured: a WSDL also
+    carries endpoint addresses, which are connection evidence handled by
+    the redaction layers, not service-contract structure.
+    """
+    name: str
+    path: str
+    source_root: str = ""
+    property_id: str = ""
+    version: str = ""
+    wsdl_path: str = ""
+    operations: list[ServiceOperation] = Field(default_factory=list)
+    parse_outcome: Literal["parsed", "partial", "unsupported"] = "parsed"
+
+
+# ── Mapping Accounting (deterministic, no LLM) ───────────────────────
+#
+# "How many fields did this mapper receive, how many did it write, and
+# where did each written field come from" -- answered per mapper component
+# so a reader can see coverage instead of inferring it from a sample of
+# expressions. Every list is complete; nothing here is truncated.
+
+
+class MappingRow(BaseModel):
+    """One written output field and the provenance of its expression."""
+    output_table: str
+    output_field: str
+    expression: str = ""
+    classification: Literal[
+        "direct_map", "expression", "constant", "lookup", "dynamic", "unresolved",
+    ]
+    # "table.column" (tMap) or tree path (tXMLMap/TDM/XSLT) references that
+    # resolved to a declared input of this mapper, Var chains followed.
+    source_refs: list[str] = Field(default_factory=list)
+    # References that did not resolve to a declared input: runtime lookups
+    # (context.*, globalMap, routine calls) and genuinely unknown identifiers.
+    dynamic_refs: list[str] = Field(default_factory=list)
+
+
+class MappingAccounting(BaseModel):
+    """Field-level coverage for one mapper component.
+
+    Invariant: ``mapped_from_input + constant_or_generated + lookup_derived
+    + dynamic_unresolved == written_fields == len(rows)``.
+
+    `offered_enumerable` is False when at least one input schema cannot be
+    enumerated -- an ``id_Dynamic`` column stands for an unknown number of
+    real columns, so `offered_fields` is a LOWER BOUND in that case and
+    `unwritten_offered` cannot be complete. The unenumerable inputs are
+    named in `unenumerable_inputs`.
+    """
+    unit_id: str = ""
+    component_name: str = ""
+    mapper_kind: Literal["tmap", "txmlmap", "tdm", "xslt"]
+    offered_fields: int = 0
+    offered_enumerable: bool = True
+    unenumerable_inputs: list[str] = Field(default_factory=list)
+    written_fields: int = 0
+    mapped_from_input: int = 0
+    constant_or_generated: int = 0
+    lookup_derived: int = 0
+    dynamic_unresolved: int = 0
+    unwritten_offered: list[str] = Field(default_factory=list)
+    lookup_tables: list[dict[str, str]] = Field(default_factory=list)
+    filters: list[str] = Field(default_factory=list)
+    reject_outputs: list[str] = Field(default_factory=list)
+    rows: list[MappingRow] = Field(default_factory=list)
+    # sha256("unit_id|component_name|mapper_kind")[:16] -- a stable join key
+    # for consumers that page over `rows`.
+    table_id: str = ""
+
+
+# ── Capability Ledger (deterministic, no LLM) ────────────────────────
+
+
+# `construct` is the published JSON key of this row (the ledger is a
+# cross-service contract), and it collides with pydantic's deprecated
+# `BaseModel.construct` classmethod, which makes pydantic emit a shadowing
+# UserWarning at class-creation time. Renaming the field would break the
+# contract; aliasing it would make `model_dump()` emit the wrong key. The
+# suppression is scoped to this one class definition and to that one
+# message -- no global warning filter, no behaviour change.
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message=r'Field name "construct".*', category=UserWarning)
+
+    class CapabilityCount(BaseModel):
+        """One (category, construct, status) tally derived from the scan.
+
+        `status` is about SCANNER capability, not code quality:
+        `supported` means the construct was fully modelled, `partial`
+        means modelled with a stated gap, `dynamic` means it is resolved
+        at runtime and therefore has no static answer, `unresolved` means
+        a reference that could not be bound, `unsupported` means the
+        scanner has no model for it at all.
+        """
+        category: str
+        construct: str
+        status: Literal[
+            "supported", "partial", "dynamic", "unsupported", "unresolved",
+        ]
+        count: int = 0
+        note: str = ""
+
+
+class CapabilityLedger(BaseModel):
+    """What this scan saw, and what it could not model, in one table.
+
+    `file_outcomes` tallies `ScanResult.source_inventory` by outcome, so
+    its values always sum to the number of walked inventory rows: every
+    file is accounted for.
+    """
+    capability_version: str = "talend-capability-2"
+    file_outcomes: dict[str, int] = Field(default_factory=dict)
+    constructs: list[CapabilityCount] = Field(default_factory=list)
+
+
 # ── Scan Result ──────────────────────────────────────────────────────
 
 
@@ -397,9 +787,17 @@ class ScanResult(BaseModel):
     routines: list[Routine] = Field(default_factory=list)
     manifest: ProjectManifest = Field(default_factory=ProjectManifest)
     tdm_maps: list[TdmMap] = Field(default_factory=list)
+    # Additive enterprise-artifact collections. Defaults keep every historic
+    # scan_result.json loadable.
+    structures: list[StructureDefinition] = Field(default_factory=list)
+    xslt_transforms: list[XsltTransform] = Field(default_factory=list)
+    services: list[ServiceDefinition] = Field(default_factory=list)
+    mapping_accounting: list[MappingAccounting] = Field(default_factory=list)
+    capability_ledger: CapabilityLedger | None = None
     schema_definitions: list[dict] = Field(default_factory=list)
     stats: dict = Field(default_factory=dict)
     warnings: list[ScanWarning] = Field(default_factory=list)
+    source_inventory: list[dict[str, str]] = Field(default_factory=list)
 
     @field_validator("routines", mode="before")
     @classmethod

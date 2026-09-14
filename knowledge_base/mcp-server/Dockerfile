@@ -47,6 +47,11 @@ COPY mcp-server/src/ src/
 COPY mcp-server/alembic/ alembic/
 COPY mcp-server/alembic.ini .
 COPY mcp-server/data/ data/
+# 168 KB of operator tooling. `build_agent_workspace.py` is the reason it is
+# here: the agent-workspace lane must be provable inside the real image with
+# no model call, and a dry run you can only perform on a developer laptop
+# proves nothing about what production will stage.
+COPY mcp-server/scripts/ scripts/
 # The grounded OpenAI runtime imports the separate OpenAI Agents SDK as
 # `agents`.  Keep it optional for library consumers, but include the declared
 # extra in the production image whenever this API route is advertised.

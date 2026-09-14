@@ -438,7 +438,16 @@ export interface GenerateRun {
   quality_score: number | null;
   auto_verdict: "PASS" | "FAIL" | null;
   auto_baseline_run_id: number | null;
-  run_verdict: "draft" | "failed" | "published" | "published_with_rag_error" | "client_ready" | null;
+  run_verdict:
+    | "draft"
+    | "failed"
+    | "cancelled"
+    | "published"
+    | "published_with_rag_error"
+    | "client_ready"
+    | "held_manual_review"
+    | "held_client_readiness"
+    | null;
   gate_results: Record<string, unknown> | null;
 }
 
@@ -476,6 +485,14 @@ export interface ScanStatusResponse {
 
 export interface DocFile {
   name: string;
+  /**
+   * Sub-project this document belongs to, or null for a flat project.
+   *
+   * A document's identity within a project is `(subproject, name)`. It must be
+   * carried back on every content/download request; the server resolves it
+   * against the project's real on-disk layout and cannot infer it.
+   */
+  subproject: string | null;
   type: string;
   size_bytes: number;
   has_pdf: boolean;

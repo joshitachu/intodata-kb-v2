@@ -64,6 +64,30 @@ def _item(unit: str = "UnitA", suffix: str = "") -> EvidenceItem:
     )
 
 
+def test_landscape_requires_exact_source_span_and_preserves_legacy(tmp_path: Path) -> None:
+    legacy, source_ref = _store(tmp_path)
+    strict = OpenCodeEvidenceStore(tmp_path, _facts(), strict_grounding=True)
+    strict.register_scope(_scope(source_ref))
+    with pytest.raises(EvidenceValidationError, match="does not occur"):
+        strict.submit_evidence(SubmitEvidenceRequest(scope_id="A_task_1", evidence=(_item(),)))
+    exact = _item().model_copy(update={"snippet": "sends customer records to UnitB", "line_range": "1"})
+    strict.submit_evidence(SubmitEvidenceRequest(scope_id="A_task_1", evidence=(exact,)))
+    assert strict.get_progress(GetProgressRequest(scope_id="A_task_1")).evidenced_units == ("UnitA",)
+    with pytest.raises(EvidenceValidationError, match="outside"):
+        strict.submit_evidence(SubmitEvidenceRequest(
+            scope_id="A_task_1", evidence=(exact.model_copy(update={"line_range": "2-3"}),),
+        ))
+    # Historical contracts preserve their established validation behavior.
+    assert legacy.submit_evidence(SubmitEvidenceRequest(scope_id="A_task_1", evidence=(_item(),))).accepted_count == 1
+
+
+def test_landscape_rejects_ambiguous_canonical_names(tmp_path: Path) -> None:
+    facts = _facts()
+    facts.units.append(facts.units[0].model_copy(update={"source_root": "other"}))
+    with pytest.raises(EvidenceValidationError, match="Ambiguous canonical"):
+        OpenCodeEvidenceStore(tmp_path, facts, strict_grounding=True)
+
+
 def test_submit_is_validated_durable_resumable_and_idempotent(tmp_path: Path) -> None:
     store, source_ref = _store(tmp_path)
     opened = store.register_scope(_scope(source_ref))

@@ -1961,6 +1961,19 @@ def _business_overlay_content(business: BusinessTopology | None) -> dict[str, An
         "risks": len(business.risks),
         "unknowns": len(business.unknowns),
         "conflicts": len(business.conflicts),
+        "transformations": len(business.transformations),
+        "transformations_by_kind": _counted(
+            item.kind or "unknown" for item in business.transformations
+        ),
+        # A rule is a decision the integration layer takes for the business. A
+        # count of zero means none were published, never that none exist.
+        "business_rules": len(business.business_rules),
+        "business_rules_by_kind": _counted(
+            item.kind or "unknown" for item in business.business_rules
+        ),
+        "streams_by_lifecycle": _counted(
+            item.lifecycle or "unknown" for item in business.data_streams
+        ),
         "integration_solutions": [
             {"id": item.id, "name": item.name, "role": item.role, "platform": item.platform}
             for item in business.integration_solutions[:MAX_OVERVIEW_ITEMS]

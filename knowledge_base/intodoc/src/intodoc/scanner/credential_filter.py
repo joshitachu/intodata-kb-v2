@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections import defaultdict
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import BaseModel
 
 from intodoc.config import RedactionLevel
 from intodoc.models import RedactionDescriptor
+
+
+def _is_redaction_placeholder(value: str) -> bool:
+    """True for a bracketed placeholder such as ``[PASSWORD_REDACTED]``."""
+    stripped = value.strip()
+    return stripped.startswith("[") and stripped.endswith("]")
 
 
 class CredentialFilter:
@@ -93,9 +102,20 @@ class CredentialFilter:
             r"auth[_-]?token|passphrase|credential)\s*=\s*)RAW\([^)\n]*\)",
             re.IGNORECASE,
         ), r"\1[CREDENTIAL_PARAM_REDACTED]", RedactionLevel.STANDARD),
-        # Credential file paths (always, even at standard)
+        # Credential file paths (always, even at standard).
+        #
+        # The leading `(?<![^\s"'<>])` anchors the match to the START of a
+        # delimiter-free token and is load-bearing for performance, not style.
+        # Without it the two unbounded `[^\s"'<>]*` runs around the alternation
+        # are retried at every position inside every token, which is quadratic
+        # in token length: measured on a real Talend estate, one 16 KB metadata
+        # file cost 1.08s for ZERO matches and `maximo_po_0.1.item` cost 60.3s.
+        # `filter_text` runs this pattern once per file and `detect_residual`
+        # twice more for XML, so a full sanitized-workspace pass over 6,768
+        # files took 89.6s in this pattern alone; anchored it takes 1.62s with
+        # byte-identical output on every one of those files.
         (re.compile(
-            r"[^\s\"'<>]*(Credentials|gcp\.json|service_account|\.pem|\.key)[^\s\"'<>]*",
+            r"(?<![^\s\"'<>])[^\s\"'<>]*(Credentials|gcp\.json|service_account|\.pem|\.key)[^\s\"'<>]*",
             re.IGNORECASE,
         ), "[CREDENTIAL_PATH]", RedactionLevel.STANDARD),
         # X509 certificate blocks
@@ -219,7 +239,8 @@ class CredentialFilter:
     # made the verification gate blind to them.
     _URL_RE = re.compile(
         r"(?:https?|wss?|jdbc(?::[A-Za-z][A-Za-z0-9+.\-]*)?|jms|amqps?|"
-        r"s?ftp|ftpes|tcp|smtps?|ldaps?|mqtt|stomp|file)://[^\s\"'<>]+",
+        r"s?ftp|ftpes|tcp|smtps?|ldaps?|mqtt|stomp|file)://"
+        r"(?:(?!&(?:quot|apos|#34|#39);)[^\s\"'<>])+",
         re.IGNORECASE,
     )
     _URL_HOST_RE = re.compile(
@@ -483,6 +504,29 @@ class CredentialFilter:
     def level(self) -> RedactionLevel:
         return self._level
 
+    @property
+    def cache_fingerprint(self) -> str:
+        """Stable identity of every effective redaction input.
+
+        Audit counters and generated descriptor tokens are deliberately absent:
+        they record execution but do not configure the filtered output.
+        """
+        payload = {
+            # This version is part of every content-addressed parse-cache key.
+            # v4 adds descriptor-aware URI redaction, so v3 parse results must
+            # never be replayed into a current scan.
+            "contract": "credential-filter-v4",
+            "level": self._level.value,
+            "patterns": [
+                {"pattern": pattern.pattern, "flags": pattern.flags, "replacement": replacement}
+                for pattern, replacement in self._active_patterns
+            ],
+            "safe_domains": sorted(self._SAFE_DOMAINS | self._custom_safe_domains),
+            "sensitive_variables": sorted(self._custom_sensitive_vars),
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
     def _level_includes(self, min_level: RedactionLevel) -> bool:
         """Check if current level includes patterns at min_level."""
         order = {RedactionLevel.STANDARD: 0, RedactionLevel.STRICT: 1, RedactionLevel.PARANOID: 2}
@@ -569,6 +613,40 @@ class CredentialFilter:
             return self._redaction_token_placeholders.get(token, "[URL_REDACTED]")
         return self._DESCRIPTOR_TOKEN_RE.sub(replacement, value)
 
+    def normalize_model_tokens(self, value: object) -> object:
+        """Remove private descriptor tokens from a parsed model tree in place.
+
+        Descriptor tokens are a short-lived transport between raw-text
+        filtering and exact parser fields. They are process-local and must
+        never enter a cache or a public parsed model: a later process cannot
+        recover their placeholder semantics. Exact fields consume their
+        descriptor before this pass; every remaining string is normalized to
+        its public redaction placeholder.
+        """
+        # Str-backed enums satisfy ``isinstance(value, str)``. Preserve their
+        # model type rather than replacing them with plain strings.
+        if isinstance(value, Enum):
+            return value
+        if isinstance(value, str):
+            return self.normalize_redaction_tokens(value)
+        if isinstance(value, BaseModel):
+            for field_name in type(value).model_fields:
+                setattr(
+                    value,
+                    field_name,
+                    self.normalize_model_tokens(getattr(value, field_name)),
+                )
+            return value
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                value[index] = self.normalize_model_tokens(item)
+            return value
+        if isinstance(value, dict):
+            for key, item in list(value.items()):
+                value[key] = self.normalize_model_tokens(item)
+            return value
+        return value
+
     def _filter_urls(self, text: str, *, capture_descriptors: bool = False) -> str:
         """Replace known-scheme URIs with a descriptor marker or URL placeholder.
 
@@ -644,16 +722,13 @@ class CredentialFilter:
         capture_uri_descriptors: bool = False,
     ) -> str:
         """Apply all redaction patterns to raw text. Returns cleaned text."""
-        stripped = text.lstrip()
         # Internal markers are only allowed between Layer 1 and the Talend
         # parser's exact-field descriptor attachment. Any later filtering pass
         # must erase them, including values embedded in expressions or model
         # fields that do not have a descriptor slot.
         if not capture_uri_descriptors:
             text = self.normalize_redaction_tokens(text)
-        is_xml = filename.lower().endswith(".xml") or (
-            stripped.startswith("<?xml") or stripped.startswith("<")
-        )
+        is_xml = self.is_xml_text(text, filename)
         xmlns_values: list[str] = []
         if is_xml:
             text, xmlns_values = self._mask_xmlns_decls(text)
@@ -760,6 +835,18 @@ class CredentialFilter:
         """Quick check if text likely contains credentials."""
         return bool(self.detect(text))
 
+    @classmethod
+    def is_xml_text(cls, text: str, filename: str = "") -> bool:
+        """Whether this content is treated as XML by the filter.
+
+        Single definition of the rule: `filter_text` protects xmlns
+        declarations and enables the XML-only patterns based on it, and a
+        gate that wants to reason about what the filter did to a file has
+        to ask the same question the same way.
+        """
+        stripped = text.lstrip()
+        return filename.lower().endswith(".xml") or stripped.startswith("<")
+
     def detect(self, text: str) -> dict[str, int]:
         """Scan text for residual sensitive matches WITHOUT mutating it.
 
@@ -777,7 +864,15 @@ class CredentialFilter:
                 continue  # XML-only pattern; too noisy on serialized JSON
             cat = repl.strip("[]").lower() if repl.startswith("[") else "pattern"
             _bump(cat, len(pattern.findall(text)))
-        _bump("sensitive_kv", len(self._SENSITIVE_KV.findall(text)))
+        # A pair whose value is already a placeholder is not a residual --
+        # it is proof the filter ran. Counting it made every correctly
+        # redacted `name="password" value="[PASSWORD_REDACTED]"` look like a
+        # leak, which matters wherever a detection means "refuse to publish
+        # this file".
+        _bump("sensitive_kv", sum(
+            1 for match in self._SENSITIVE_KV.finditer(text)
+            if not _is_redaction_placeholder(text[match.end(1):match.start(2)])
+        ))
         if self._level_includes(RedactionLevel.STANDARD):
             for m in self._URL_RE.finditer(text):
                 host_match = self._URL_HOST_RE.match(m.group(0))
@@ -792,6 +887,209 @@ class CredentialFilter:
         _bump("internal_descriptor_token", len(self._DESCRIPTOR_TOKEN_RE.findall(text)))
         return findings
 
+    # `url`/`fqdn`/`unc_host` findings that exist ONLY inside an xmlns
+    # declaration are not leaks: `filter_text` deliberately preserves those
+    # URIs because they are document structure (see `_XMLNS_DECL_RE`).
+    # Credential-shaped findings are never excused this way -- a namespace
+    # URI carrying `?password=` is a leak wherever it sits.
+    _NAMESPACE_STRUCTURAL_CATEGORIES: frozenset[str] = frozenset({
+        "url", "fqdn", "unc_host",
+    })
+
+    def detect_outside_namespaces(self, text: str) -> dict[str, int]:
+        """`detect`, minus endpoint findings that live only in xmlns decls.
+
+        Without this, every XML file declaring a project-specific namespace
+        (`xmlns:tns="http://orders.acme.internal/schema"`) reports a
+        residual URL and FQDN forever, because `filter_text` correctly left
+        it alone.
+        """
+        findings = self.detect(text)
+        if not findings:
+            return findings
+        masked, _ = self._mask_xmlns_decls(text)
+        outside = self.detect(masked)
+        return {
+            category: count
+            for category, count in findings.items()
+            if category in outside
+            or category not in self._NAMESPACE_STRUCTURAL_CATEGORIES
+        }
+
+    # `key = value` / `"key": "value"` in plain configuration text. The
+    # filter's own key/value pattern is XML-attribute shaped
+    # (`name="password" ... value="..."`) and its credential-parameter
+    # pattern requires query-string context, so a plain
+    # `datasource.password=hunter2` line in a .properties/.txt/.json file
+    # passes BOTH untouched (verified). This detector closes that gap for
+    # gates that copy such files; it never rewrites anything.
+    _PLAIN_KV_RE = re.compile(
+        r"""(?:^|[\s,{])["']?([A-Za-z_][\w.\-]{0,60})["']?\s*[:=]\s*["']?([^\s"',;}]+)""",
+        re.MULTILINE,
+    )
+
+    def detect_key_value_secrets(self, text: str) -> dict[str, int]:
+        """Count `sensitive_name = value` pairs in non-XML configuration text.
+
+        Intended for text the filter's XML-shaped patterns do not cover.
+        Applying it to XML/Java content would flag ordinary code such as
+        `String password = decoded.substring(0, i)`, which the filter
+        deliberately leaves intact.
+        """
+        count = 0
+        for name, value in self._PLAIN_KV_RE.findall(text):
+            if not value or _is_redaction_placeholder(value):
+                continue
+            if self.is_sensitive_var_name(name):
+                count += 1
+        return {"key_value_secret": count} if count else {}
+
+    def detect_residual(self, text: str, filename: str = "") -> dict[str, int]:
+        """Residual-secret findings for text about to be published as-is.
+
+        Chooses the detectors that match what `filter_text` actually did to
+        this content: XML keeps its namespace declarations (so those are
+        excused), plain configuration text gets the extra key/value sweep
+        the XML-shaped patterns cannot perform.
+        """
+        if self.is_xml_text(text, filename):
+            findings = dict(self.detect_outside_namespaces(text))
+            for category, count in self.detect_named_value_secrets(text).items():
+                findings[category] = findings.get(category, 0) + count
+            return findings
+        findings = dict(self.detect(text))
+        for category, count in self.detect_key_value_secrets(text).items():
+            findings[category] = findings.get(category, 0) + count
+        return findings
+
+    # ── Name-semantics rule at text level ───────────────────────────
+    #
+    # `_SENSITIVE_KV` above implements this rule for a FIXED key list
+    # (`name="password"`), while `post_filter` implements it for parsed
+    # models with the token-aware `is_sensitive_var_name` matcher. The two
+    # vocabularies had drifted, and a Talend context item is exactly where
+    # that shows: `<contextParameter name="DbPassword" type="id_Password"
+    # value="<plaintext>"/>` is redacted by the structural layer (which
+    # sees the parsed ContextVariable) and NOT by the text layer -- so the
+    # parsed scan is clean while the source file still holds the secret.
+    # That is invisible as long as only parsed models are published; it is
+    # a leak the moment raw file text is (see
+    # `evidence_store.write_sanitized_workspace`).
+    _XML_TAG_RE = re.compile(r"<[^<>]*>")
+    _XML_ATTR_RE = re.compile(r'([A-Za-z_:][-\w:.]*)\s*=\s*"([^"]*)"')
+    # Attributes that name the value carried by the same tag.
+    _NAME_ATTRIBUTES: tuple[str, ...] = ("name", "key", "field", "label")
+    # Attributes whose content IS the value.
+    _VALUE_ATTRIBUTES: tuple[str, ...] = ("value", "defaultValue")
+    _PASSWORD_TYPES: frozenset[str] = frozenset({"id_password", "password"})
+    # Attributes whose NAME may look sensitive but whose content is a label,
+    # an identifier or a type -- never the secret itself. `name="db_password"`
+    # is the fact a reader needs; `Password="..."` on a connection element is
+    # the secret. Compared on the local name (namespace prefix stripped).
+    _STRUCTURAL_ATTRIBUTES: frozenset[str] = frozenset({
+        "name", "key", "field", "label", "type", "id", "idref", "href",
+        "elementref", "connector", "componentname", "componentversion",
+        "displayname", "repositorycontextid", "version", "path",
+    })
+
+    @staticmethod
+    def _attribute_local_name(attribute: str) -> str:
+        return attribute.rsplit(":", 1)[-1]
+
+    def _sensitive_value_attributes(self, attributes: dict[str, str]) -> list[str]:
+        """Attribute names in one tag whose OWN name marks their value secret.
+
+        The second shape of the name-semantics rule. The first shape is a
+        `name="..."` attribute describing a sibling `value="..."`; this one is
+        the attribute itself being the named value, as Talend serializes it
+        on metadata connection elements (`Password="..."`, `ApiKey="..."`).
+        """
+        found: list[str] = []
+        for attribute, value in attributes.items():
+            local = self._attribute_local_name(attribute)
+            if local.casefold() in self._STRUCTURAL_ATTRIBUTES:
+                continue
+            if not value or _is_redaction_placeholder(value):
+                continue
+            if self.is_sensitive_var_name(local):
+                found.append(attribute)
+        return found
+
+    def _tag_is_sensitive(self, attributes: dict[str, str]) -> bool:
+        if attributes.get("type", "").strip().casefold() in self._PASSWORD_TYPES:
+            return True
+        return any(
+            self.is_sensitive_var_name(attributes[attribute])
+            for attribute in self._NAME_ATTRIBUTES
+            if attributes.get(attribute)
+        )
+
+    def redact_named_value_pairs(self, text: str) -> str:
+        """Redact `value="..."` in any tag whose NAME says it is sensitive.
+
+        The text-level counterpart of the structural name-semantics rule.
+        Scoped to one tag at a time so a name in one element can never
+        redact a value in another, and applied only to the attributes that
+        carry a value -- the name itself is kept, because "there is a
+        password here" is exactly the fact a reader needs.
+        """
+        def replace_tag(match: re.Match[str]) -> str:
+            tag = match.group(0)
+            attributes = dict(self._XML_ATTR_RE.findall(tag))
+            # Shape 2: the attribute name is the secret's name.
+            for attribute in self._sensitive_value_attributes(attributes):
+                self._record_redaction("sensitive_attribute", attributes[attribute])
+                tag = re.sub(
+                    rf'(\b{re.escape(attribute)}\s*=\s*")[^"]*(")',
+                    r"\1[REDACTED]\2",
+                    tag,
+                    count=1,
+                )
+            if not self._tag_is_sensitive(attributes):
+                return tag
+            # Shape 1: a name/type attribute marks the sibling value.
+            for attribute in self._VALUE_ATTRIBUTES:
+                current = attributes.get(attribute)
+                if not current or _is_redaction_placeholder(current):
+                    continue
+                self._record_redaction("named_value_pair", current)
+                tag = re.sub(
+                    rf'({re.escape(attribute)}\s*=\s*")[^"]*(")',
+                    r"\1[REDACTED]\2",
+                    tag,
+                    count=1,
+                )
+            return tag
+
+        return self._XML_TAG_RE.sub(replace_tag, text)
+
+    def detect_named_value_secrets(self, text: str) -> dict[str, int]:
+        """Count sensitive name/value tags that still carry a real value.
+
+        The verification half of `redact_named_value_pairs`: a gate that
+        publishes raw text must fail closed on a shape the redaction pass
+        did not recognize, rather than trusting that it handled everything.
+        """
+        count = 0
+        attribute_count = 0
+        for match in self._XML_TAG_RE.finditer(text):
+            attributes = dict(self._XML_ATTR_RE.findall(match.group(0)))
+            attribute_count += len(self._sensitive_value_attributes(attributes))
+            if not self._tag_is_sensitive(attributes):
+                continue
+            count += sum(
+                1
+                for attribute in self._VALUE_ATTRIBUTES
+                if attributes.get(attribute)
+                and not _is_redaction_placeholder(attributes[attribute])
+            )
+        findings: dict[str, int] = {}
+        if count:
+            findings["named_value_secret"] = count
+        if attribute_count:
+            findings["sensitive_attribute_secret"] = attribute_count
+        return findings
+
     def get_audit_report(self) -> dict[str, Any]:
         """Return audit data: category counts + hashes. Never raw values."""
         return {
@@ -803,6 +1101,23 @@ class CredentialFilter:
                 for cat, hashes in sorted(self._audit.items())
             },
         }
+
+    def audit_checkpoint(self) -> dict[str, int]:
+        """Capture audit offsets so a deterministic cache can store a delta."""
+        return {category: len(hashes) for category, hashes in self._audit.items()}
+
+    def audit_since(self, checkpoint: dict[str, int]) -> dict[str, list[str]]:
+        """Return only redaction hashes recorded after ``checkpoint``."""
+        return {
+            category: list(hashes[checkpoint.get(category, 0):])
+            for category, hashes in self._audit.items()
+            if len(hashes) > checkpoint.get(category, 0)
+        }
+
+    def replay_audit(self, delta: dict[str, list[str]]) -> None:
+        """Replay cached redaction audit evidence without handling raw values."""
+        for category, hashes in delta.items():
+            self._audit[category].extend(hashes)
 
     def reset_audit(self) -> None:
         """Clear the audit trail (e.g., between files)."""

@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+from collections.abc import Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models.runtime_data import (
@@ -58,6 +59,11 @@ from src.runtime.store import ProjectScope, RuntimeRecordNotFoundError
 
 # Severity ordering for min_severity filtering (lowest -> highest).
 _SEVERITY_ORDER = ["debug", "info", "warning", "error"]
+
+#: How far back the plan-run window reaches when linking an execution to the plan
+#: run that contains it. `runtime_plan_runs` has no execution_id column -- the link
+#: is inside `step_results` -- so the match is a bounded scan rather than a lookup.
+_PLAN_RUN_MATCH_WINDOW = 50
 
 
 def _severities_at_or_above(minimum: str) -> list[str]:
@@ -288,12 +294,25 @@ class RuntimeInsightRepository:
         exec_rows = (await self._session.execute(exec_stmt)).scalars().all()
         exec_map = {(row.project_id, row.execution_id): row for row in exec_rows}
 
-        incidents: list[RuntimeIncidentInsight] = []
-        for row in inc_rows:
-            exec_row = exec_map.get((row.project_id, row.execution_id))
-            estate_context = await self._load_estate_context(row.project_id, row.execution_id, exec_row)
-            incidents.append(_to_incident_insight(row, exec_row, estate_context))
-        return incidents
+        # One batched estate lookup for the whole page. Per-incident lookups made
+        # this endpoint issue six queries an incident -- 300 for a 50-row page --
+        # one of which read the 50 newest `runtime_plan_runs` rows WITH their
+        # `step_results` JSON, so a page of 50 de-TOASTed and deserialized that
+        # same JSON 50 times over.
+        contexts = await self._load_estate_contexts(
+            [
+                (row.project_id, row.execution_id, exec_map.get((row.project_id, row.execution_id)))
+                for row in inc_rows
+            ]
+        )
+        return [
+            _to_incident_insight(
+                row,
+                exec_map.get((row.project_id, row.execution_id)),
+                contexts[(row.project_id, row.execution_id)],
+            )
+            for row in inc_rows
+        ]
 
     async def count_incidents(
         self,
@@ -551,18 +570,331 @@ class RuntimeInsightRepository:
         execution_id: str,
         exec_row: RuntimeExecutionRow | None,
     ) -> RuntimeFailureEstateContext:
-        source_key = exec_row.source_key if exec_row else None
+        """The estate context for a single execution.
 
-        job_run = await self._load_job_run(project_id, execution_id)
-        if job_run is not None:
-            source_key = job_run.source_key
+        Delegates to the batch loader so the point lookup and the list page
+        resolve the estate by exactly one rule.
+        """
+        contexts = await self._load_estate_contexts([(project_id, execution_id, exec_row)])
+        return contexts[(project_id, execution_id)]
 
-        job = await self._load_job(project_id, source_key, job_run, exec_row)
-        engine = await self._load_engine(project_id, source_key, job_run, job)
-        source = await self._load_source(project_id, source_key)
-        plan_run = await self._load_plan_run_for_execution(project_id, source_key, execution_id)
-        plan = await self._load_plan(project_id, source_key, plan_run.plan_id if plan_run else None)
+    async def _load_estate_contexts(
+        self,
+        requests: Sequence[tuple[str, str, RuntimeExecutionRow | None]],
+    ) -> dict[tuple[str, str], RuntimeFailureEstateContext]:
+        """Estate context for many executions, in a fixed number of queries.
 
+        Each request is `(project_id, execution_id, exec_row)`; the result is
+        keyed by `(project_id, execution_id)` and always has an entry for every
+        request, because an execution with no inventory at all still gets an
+        all-None context.
+
+        The resolution order is the same chain a single lookup walked -- job run,
+        then job, then engine, then source, then plan run, then plan -- because
+        each step's key comes from the one before it. What changed is that every
+        step now runs once for the whole batch instead of once per execution.
+        """
+        if not requests:
+            return {}
+        keys = [(project_id, execution_id) for project_id, execution_id, _ in requests]
+        exec_rows = {key: exec_row for key, (_, _, exec_row) in zip(keys, requests, strict=True)}
+        project_ids = sorted({project_id for project_id, _ in keys})
+        execution_ids = sorted({execution_id for _, execution_id in keys})
+
+        job_runs = await self._batch_job_runs(project_ids, execution_ids)
+        # A job run is the authority on which source owns the execution; the
+        # execution row is the fallback, exactly as in the single lookup.
+        source_keys = {
+            key: (job_runs[key].source_key if key in job_runs else None)
+            or (exec_rows[key].source_key if exec_rows[key] else None)
+            for key in keys
+        }
+        jobs = await self._batch_jobs(keys, job_runs, exec_rows, source_keys)
+        engines = await self._batch_engines(keys, job_runs, jobs, source_keys)
+        sources = await self._batch_sources(project_ids, source_keys)
+        plan_runs = await self._batch_plan_runs(keys, source_keys)
+        plans = await self._batch_plans(keys, plan_runs, source_keys)
+
+        return {
+            key: self._build_estate_context(
+                source_key=source_keys[key],
+                exec_row=exec_rows[key],
+                job_run=job_runs.get(key),
+                job=jobs.get(key),
+                engine=engines.get(key),
+                source=sources.get(key),
+                plan_run=plan_runs.get(key),
+                plan=plans.get(key),
+            )
+            for key in keys
+        }
+
+    async def _batch_job_runs(
+        self, project_ids: Sequence[str], execution_ids: Sequence[str]
+    ) -> dict[tuple[str, str], RuntimeJobRunRow]:
+        stmt = (
+            select(RuntimeJobRunRow)
+            .where(
+                RuntimeJobRunRow.project_id.in_(project_ids),
+                RuntimeJobRunRow.execution_id.in_(execution_ids),
+            )
+            # `execution_id` is not unique per project, and the single lookup took
+            # whatever the unordered scan returned first. Ordering by `id` states
+            # that choice instead of inheriting it from the query plan.
+            .order_by(RuntimeJobRunRow.id.asc())
+        )
+        return self._first_by_key(
+            (await self._session.execute(stmt)).scalars().all(),
+            lambda row: (row.project_id, row.execution_id),
+        )
+
+    async def _batch_jobs(
+        self,
+        keys: Sequence[tuple[str, str]],
+        job_runs: dict[tuple[str, str], RuntimeJobRunRow],
+        exec_rows: dict[tuple[str, str], RuntimeExecutionRow | None],
+        source_keys: dict[tuple[str, str], str | None],
+    ) -> dict[tuple[str, str], RuntimeJobRow]:
+        """Jobs matched by id where a run named one, and by name otherwise.
+
+        Both lookups in one statement: the single-lookup version chose between
+        them per execution, so a batch that only supported one would silently
+        lose the estate for every execution the other branch covered.
+        """
+        wanted_job_ids = {
+            job_runs[key].job_id for key in keys if key in job_runs and source_keys[key]
+        }
+        wanted_names = {
+            exec_rows[key].job_name
+            for key in keys
+            if key not in job_runs and exec_rows[key] is not None and source_keys[key]
+        }
+        if not wanted_job_ids and not wanted_names:
+            return {}
+        alternatives = []
+        if wanted_job_ids:
+            alternatives.append(RuntimeJobRow.job_id.in_(sorted(wanted_job_ids)))
+        if wanted_names:
+            alternatives.append(RuntimeJobRow.name.in_(sorted(wanted_names)))
+        stmt = (
+            select(RuntimeJobRow)
+            .where(
+                RuntimeJobRow.project_id.in_(
+                    sorted({project_id for project_id, _ in keys})
+                ),
+                RuntimeJobRow.source_key.in_(
+                    sorted({value for value in source_keys.values() if value})
+                ),
+                or_(*alternatives),
+            )
+            .order_by(RuntimeJobRow.id.asc())
+        )
+        rows = (await self._session.execute(stmt)).scalars().all()
+        by_id = self._first_by_key(
+            rows, lambda row: (row.project_id, row.source_key, row.job_id)
+        )
+        by_name = self._first_by_key(
+            rows, lambda row: (row.project_id, row.source_key, row.name)
+        )
+        resolved: dict[tuple[str, str], RuntimeJobRow] = {}
+        for key in keys:
+            project_id, _ = key
+            source_key = source_keys[key]
+            if source_key is None:
+                continue
+            job_run = job_runs.get(key)
+            if job_run is not None:
+                match = by_id.get((project_id, source_key, job_run.job_id))
+            elif exec_rows[key] is not None:
+                match = by_name.get((project_id, source_key, exec_rows[key].job_name))
+            else:
+                match = None
+            if match is not None:
+                resolved[key] = match
+        return resolved
+
+    async def _batch_engines(
+        self,
+        keys: Sequence[tuple[str, str]],
+        job_runs: dict[tuple[str, str], RuntimeJobRunRow],
+        jobs: dict[tuple[str, str], RuntimeJobRow],
+        source_keys: dict[tuple[str, str], str | None],
+    ) -> dict[tuple[str, str], RuntimeEngineRow]:
+        engine_ids: dict[tuple[str, str], str | None] = {}
+        for key in keys:
+            job_run = job_runs.get(key)
+            job = jobs.get(key)
+            engine_ids[key] = _first_present(
+                job_run.engine_id if job_run else None,
+                job.engine_id if job else None,
+            )
+        wanted = {
+            engine_id
+            for key, engine_id in engine_ids.items()
+            if engine_id is not None and source_keys[key]
+        }
+        if not wanted:
+            return {}
+        stmt = (
+            select(RuntimeEngineRow)
+            .where(
+                RuntimeEngineRow.project_id.in_(
+                    sorted({project_id for project_id, _ in keys})
+                ),
+                RuntimeEngineRow.source_key.in_(
+                    sorted({value for value in source_keys.values() if value})
+                ),
+                RuntimeEngineRow.engine_id.in_(sorted(wanted)),
+            )
+            .order_by(RuntimeEngineRow.id.asc())
+        )
+        by_key = self._first_by_key(
+            (await self._session.execute(stmt)).scalars().all(),
+            lambda row: (row.project_id, row.source_key, row.engine_id),
+        )
+        return {
+            key: match
+            for key in keys
+            if (source_key := source_keys[key])
+            and engine_ids[key] is not None
+            and (match := by_key.get((key[0], source_key, engine_ids[key]))) is not None
+        }
+
+    async def _batch_sources(
+        self, project_ids: Sequence[str], source_keys: dict[tuple[str, str], str | None]
+    ) -> dict[tuple[str, str], RuntimeSourceRow]:
+        wanted = sorted({value for value in source_keys.values() if value})
+        if not wanted:
+            return {}
+        stmt = (
+            select(RuntimeSourceRow)
+            .where(
+                RuntimeSourceRow.project_id.in_(project_ids),
+                RuntimeSourceRow.source_key.in_(wanted),
+            )
+            .order_by(RuntimeSourceRow.id.asc())
+        )
+        by_key = self._first_by_key(
+            (await self._session.execute(stmt)).scalars().all(),
+            lambda row: (row.project_id, row.source_key),
+        )
+        return {
+            key: match
+            for key, source_key in source_keys.items()
+            if source_key and (match := by_key.get((key[0], source_key))) is not None
+        }
+
+    async def _batch_plan_runs(
+        self,
+        keys: Sequence[tuple[str, str]],
+        source_keys: dict[tuple[str, str], str | None],
+    ) -> dict[tuple[str, str], RuntimePlanRunRow]:
+        """Plan run owning each execution, from one window per (project, source).
+
+        `runtime_plan_runs` has no execution_id column -- the link lives inside
+        the `step_results` JSON -- so this still reads the same bounded window of
+        the newest `_PLAN_RUN_MATCH_WINDOW` rows and scans it. What it no longer
+        does is read that window once per execution: on one mirrored tenant the
+        window's JSON averages 23 kB a row, so a 50-incident page used to pull
+        roughly 57 MB of it out of TOAST to answer 50 questions about the same
+        50 rows. The query, its ordering and the first-match rule are unchanged,
+        so the answer is the same row it always was.
+        """
+        pairs = sorted(
+            {(project_id, source_key)
+             for (project_id, _), source_key in source_keys.items()
+             if source_key}
+        )
+        resolved: dict[tuple[str, str], RuntimePlanRunRow] = {}
+        for project_id, source_key in pairs:
+            wanted = {
+                execution_id
+                for (row_project_id, execution_id) in keys
+                if row_project_id == project_id and source_keys[(project_id, execution_id)] == source_key
+            }
+            stmt = (
+                select(RuntimePlanRunRow)
+                .where(
+                    RuntimePlanRunRow.project_id == project_id,
+                    RuntimePlanRunRow.source_key == source_key,
+                )
+                .order_by(RuntimePlanRunRow.started_at.desc())
+                .limit(_PLAN_RUN_MATCH_WINDOW)
+            )
+            for row in (await self._session.execute(stmt)).scalars().all():
+                for step in row.step_results or []:
+                    if not isinstance(step, dict):
+                        continue
+                    execution_id = step.get("execution_id")
+                    if execution_id in wanted:
+                        # First match in window order wins, as before.
+                        resolved.setdefault((project_id, execution_id), row)
+        return resolved
+
+    async def _batch_plans(
+        self,
+        keys: Sequence[tuple[str, str]],
+        plan_runs: dict[tuple[str, str], RuntimePlanRunRow],
+        source_keys: dict[tuple[str, str], str | None],
+    ) -> dict[tuple[str, str], RuntimePlanRow]:
+        wanted = {
+            plan_runs[key].plan_id
+            for key in keys
+            if key in plan_runs and source_keys[key]
+        }
+        if not wanted:
+            return {}
+        stmt = (
+            select(RuntimePlanRow)
+            .where(
+                RuntimePlanRow.project_id.in_(
+                    sorted({project_id for project_id, _ in keys})
+                ),
+                RuntimePlanRow.source_key.in_(
+                    sorted({value for value in source_keys.values() if value})
+                ),
+                RuntimePlanRow.plan_id.in_(sorted(wanted)),
+            )
+            .order_by(RuntimePlanRow.id.asc())
+        )
+        by_key = self._first_by_key(
+            (await self._session.execute(stmt)).scalars().all(),
+            lambda row: (row.project_id, row.source_key, row.plan_id),
+        )
+        return {
+            key: match
+            for key in keys
+            if (source_key := source_keys[key])
+            and key in plan_runs
+            and (match := by_key.get((key[0], source_key, plan_runs[key].plan_id))) is not None
+        }
+
+    @staticmethod
+    def _first_by_key(rows, key_of):
+        """Index rows by key, keeping the first occurrence.
+
+        A batched fetch has to reproduce `.first()` on the per-key query it
+        replaces, which is "the first row the scan returned" -- so later
+        duplicates are discarded rather than overwriting.
+        """
+        indexed: dict = {}
+        for row in rows:
+            indexed.setdefault(key_of(row), row)
+        return indexed
+
+    def _build_estate_context(
+        self,
+        *,
+        source_key: str | None,
+        exec_row: RuntimeExecutionRow | None,
+        job_run: RuntimeJobRunRow | None,
+        job: RuntimeJobRow | None,
+        engine: RuntimeEngineRow | None,
+        source: RuntimeSourceRow | None,
+        plan_run: RuntimePlanRunRow | None,
+        plan: RuntimePlanRow | None,
+    ) -> RuntimeFailureEstateContext:
+        """Fold the resolved inventory rows into one sanitized context."""
         environment_id = _first_present(
             job_run.environment_id if job_run else None,
             job.environment_id if job else None,
@@ -630,106 +962,6 @@ class RuntimeInsightRepository:
             plan_display_name=plan.display_name if plan else None,
             plan_run_id=plan_run.run_id if plan_run else None,
         )
-
-    async def _load_source(
-        self, project_id: str, source_key: str | None
-    ) -> RuntimeSourceRow | None:
-        if source_key is None:
-            return None
-        stmt = select(RuntimeSourceRow).where(
-            RuntimeSourceRow.project_id == project_id,
-            RuntimeSourceRow.source_key == source_key,
-        )
-        return (await self._session.execute(stmt)).scalars().first()
-
-    async def _load_job_run(
-        self, project_id: str, execution_id: str
-    ) -> RuntimeJobRunRow | None:
-        stmt = select(RuntimeJobRunRow).where(
-            RuntimeJobRunRow.project_id == project_id,
-            RuntimeJobRunRow.execution_id == execution_id,
-        )
-        return (await self._session.execute(stmt)).scalars().first()
-
-    async def _load_job(
-        self,
-        project_id: str,
-        source_key: str | None,
-        job_run: RuntimeJobRunRow | None,
-        exec_row: RuntimeExecutionRow | None,
-    ) -> RuntimeJobRow | None:
-        if source_key is None:
-            return None
-        stmt = select(RuntimeJobRow).where(
-            RuntimeJobRow.project_id == project_id,
-            RuntimeJobRow.source_key == source_key,
-        )
-        if job_run is not None:
-            stmt = stmt.where(RuntimeJobRow.job_id == job_run.job_id)
-        elif exec_row is not None:
-            stmt = stmt.where(RuntimeJobRow.name == exec_row.job_name)
-        else:
-            return None
-        return (await self._session.execute(stmt)).scalars().first()
-
-    async def _load_engine(
-        self,
-        project_id: str,
-        source_key: str | None,
-        job_run: RuntimeJobRunRow | None,
-        job: RuntimeJobRow | None,
-    ) -> RuntimeEngineRow | None:
-        engine_id = _first_present(
-            job_run.engine_id if job_run else None,
-            job.engine_id if job else None,
-        )
-        if source_key is None or engine_id is None:
-            return None
-        stmt = select(RuntimeEngineRow).where(
-            RuntimeEngineRow.project_id == project_id,
-            RuntimeEngineRow.source_key == source_key,
-            RuntimeEngineRow.engine_id == engine_id,
-        )
-        return (await self._session.execute(stmt)).scalars().first()
-
-    async def _load_plan_run_for_execution(
-        self,
-        project_id: str,
-        source_key: str | None,
-        execution_id: str,
-    ) -> RuntimePlanRunRow | None:
-        if source_key is None:
-            return None
-        stmt = (
-            select(RuntimePlanRunRow)
-            .where(
-                RuntimePlanRunRow.project_id == project_id,
-                RuntimePlanRunRow.source_key == source_key,
-            )
-            .order_by(RuntimePlanRunRow.started_at.desc())
-            .limit(50)
-        )
-        rows = (await self._session.execute(stmt)).scalars().all()
-        for row in rows:
-            for step in row.step_results or []:
-                if isinstance(step, dict) and step.get("execution_id") == execution_id:
-                    return row
-        return None
-
-    async def _load_plan(
-        self,
-        project_id: str,
-        source_key: str | None,
-        plan_id: str | None,
-    ) -> RuntimePlanRow | None:
-        if source_key is None or plan_id is None:
-            return None
-        stmt = select(RuntimePlanRow).where(
-            RuntimePlanRow.project_id == project_id,
-            RuntimePlanRow.source_key == source_key,
-            RuntimePlanRow.plan_id == plan_id,
-        )
-        return (await self._session.execute(stmt)).scalars().first()
 
 
 # -------------------------------------------------------------------------

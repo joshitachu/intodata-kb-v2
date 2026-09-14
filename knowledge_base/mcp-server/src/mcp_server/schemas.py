@@ -17,6 +17,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from mcp_server.services.generation_profile import GenerationProfile
 
 StrippedStr = Annotated[str, BeforeValidator(lambda v: v.strip() if isinstance(v, str) else v)]
 
@@ -984,6 +985,8 @@ class PackAuditRecord(BaseModel):
 class GenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    generation_profile: GenerationProfile | None = None
+
     project_id: StrippedStr = Field(..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN)
     doc_generation_provider: Literal["custom", "opencode-cli"] | None = Field(
         None,
@@ -1257,6 +1260,7 @@ class GenerateRunResponse(BaseModel):
     auto_baseline_run_id: int | None = None
     run_verdict: str | None = None
     gate_results: dict | None = None
+    generation_profile: dict | None = None
 
 
 class GenerateRunListResponse(BaseModel):
