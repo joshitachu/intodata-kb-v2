@@ -1,7 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { ZodError } from "zod";
 import { apiErrorMessage } from "@/lib/apiError";
 import { backendProxyHeaders } from "@/lib/proxyHeaders";
 import { FASTAPI_URL } from "@/lib/fastapi";
+import { BackendResponseError, UpstreamUnavailableError } from "@/lib/upstreamErrors";
 
 /**
  * Shared upstream call for route handlers that proxy to FastAPI.
@@ -18,16 +20,7 @@ import { FASTAPI_URL } from "@/lib/fastapi";
 /** Long enough for a slow query, short enough to fail before the browser gives up. */
 const DEFAULT_TIMEOUT_MS = Number(process.env.BACKEND_TIMEOUT_MS || 20_000);
 
-export class UpstreamUnavailableError extends Error {
-  constructor(
-    readonly path: string,
-    readonly reason: "timeout" | "network",
-    readonly cause: unknown,
-  ) {
-    super(`Backend ${reason} on ${path}`);
-    this.name = "UpstreamUnavailableError";
-  }
-}
+export { BackendResponseError, UpstreamUnavailableError };
 
 interface FetchBackendOptions extends RequestInit {
   /** Pass `null` to disable the timeout (streaming / long-poll routes). */
@@ -58,12 +51,62 @@ export async function fetchBackend(
 }
 
 /**
+ * The shapes `fetch` itself throws when nothing was delivered.
+ *
+ * Recognised here as well as in `fetchBackend` so a route that still calls
+ * `fetch` directly — the routes proxying to the MCP server do, deliberately,
+ * because several of them are long-running and must not inherit a timeout —
+ * still classifies "the backend is down" as 503 rather than 500.
+ */
+function transportFailure(error: unknown): "timeout" | "network" | null {
+  if (!(error instanceof Error)) return null;
+  if (error.name === "AbortError" || error.name === "TimeoutError") return "timeout";
+  // undici reports a refused connection / DNS failure as TypeError("fetch failed").
+  if (error instanceof TypeError && /fetch failed|network|socket|ECONN|EAI_AGAIN/i.test(error.message)) {
+    return "network";
+  }
+  return null;
+}
+
+/**
  * Turn a caught error into a logged, correctly-classified response.
  *
- * `503` for anything that means "the backend did not answer" so clients can
- * retry instead of treating it as a terminal failure.
+ * Three outcomes, and the distinction between them is the whole point:
+ *
+ * - `BackendResponseError` — the backend answered. Its status is its verdict
+ *   and is forwarded unchanged, so a client can tell "log in again" (401) from
+ *   "not allowed" (403) from "already exists" (409). Collapsing these to 500
+ *   is what left the browser unable to refresh an expired token: it could not
+ *   see that the refusal was an auth refusal.
+ * - `UpstreamUnavailableError` — the backend did not answer. `503` says "try
+ *   again"; a client must not confuse it with `401` "you are logged out".
+ * - anything else — a genuine defect in this handler, so `500`.
+ *
+ * `fallbackError` is the message used when the backend supplied no usable
+ * `detail`; it is never used to *replace* a detail the backend did send.
  */
-export function upstreamErrorResponse(context: string, error: unknown): NextResponse {
+export function upstreamErrorResponse(
+  context: string,
+  error: unknown,
+  fallbackError = "Request failed",
+): NextResponse {
+  if (error instanceof BackendResponseError) {
+    console.error(`[proxy] ${context}: backend ${error.status} (${error.path})`);
+    const detail = error.detail;
+    const code =
+      detail && typeof detail === "object" && typeof (detail as { code?: unknown }).code === "string"
+        ? (detail as { code: string }).code
+        : undefined;
+    return NextResponse.json(
+      {
+        error: apiErrorMessage(detail, fallbackError),
+        ...(code ? { code } : {}),
+        retryable: error.retryable,
+      },
+      { status: error.status },
+    );
+  }
+
   if (error instanceof UpstreamUnavailableError) {
     console.error(
       `[proxy] ${context}: backend ${error.reason} (${error.path})`,
@@ -75,8 +118,45 @@ export function upstreamErrorResponse(context: string, error: unknown): NextResp
     );
   }
 
+  const reason = transportFailure(error);
+  if (reason !== null) {
+    console.error(
+      `[proxy] ${context}: backend ${reason}`,
+      error instanceof Error ? error.message : error,
+    );
+    return NextResponse.json(
+      { error: "Backend unavailable", reason, retryable: true },
+      { status: 503, headers: { "Retry-After": "5" } },
+    );
+  }
+
   console.error(`[proxy] ${context}: unexpected failure`, error);
-  return NextResponse.json({ error: "Request failed" }, { status: 500 });
+  return NextResponse.json({ error: fallbackError }, { status: 500 });
+}
+
+/**
+ * For handlers whose single `try` covers both request validation and the
+ * upstream call.
+ *
+ * Those two failures are not the same answer and must not share one status.
+ * Several routes wrapped `Schema.parse(await request.json())` *and* a proxy
+ * call in one `catch` that returned `400 { error: error.message }` — so a
+ * backend that was simply down told the user their input was invalid, and
+ * leaked `fetch failed` / `connect ECONNREFUSED 127.0.0.1:8002` into the
+ * browser as the explanation.
+ *
+ * A schema violation or an unparseable body is the caller's fault (400,
+ * message unchanged). Anything else is classified by `upstreamErrorResponse`.
+ */
+export function badRequestOrUpstreamResponse(
+  context: string,
+  error: unknown,
+  invalidMessage: string,
+): NextResponse {
+  if (error instanceof ZodError || error instanceof SyntaxError) {
+    return NextResponse.json({ error: error.message || invalidMessage }, { status: 400 });
+  }
+  return upstreamErrorResponse(context, error, invalidMessage);
 }
 
 /** Copy Set-Cookie headers from an upstream response onto ours. */

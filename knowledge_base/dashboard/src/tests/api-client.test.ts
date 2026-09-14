@@ -341,6 +341,46 @@ describe("API client", () => {
     expect(JSON.parse(vi.mocked(globalThis.fetch).mock.calls[0][1]?.body as string)).not.toHaveProperty("use_connectors");
   });
 
+  it("submits an explicit empty profile to activate Talend landscape v2", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ status: "generation_started", message: "ok" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await api.generate({
+      projectId: "p1",
+      generationMethod: "opencode-cli",
+      generationProfile: {},
+    });
+
+    expect(JSON.parse(vi.mocked(globalThis.fetch).mock.calls[0][1]?.body as string)).toMatchObject({
+      doc_generation_provider: "opencode-cli",
+      generation_profile: {},
+    });
+  });
+
+  it("submits the enterprise Talend contract verbatim", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ status: "generation_started", message: "ok" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await api.generate({
+      projectId: "p1",
+      generationMethod: "opencode-cli",
+      generationProfile: { contract: "talend-enterprise-v1" },
+    });
+
+    expect(JSON.parse(vi.mocked(globalThis.fetch).mock.calls[0][1]?.body as string)).toMatchObject({
+      doc_generation_provider: "opencode-cli",
+      generation_profile: { contract: "talend-enterprise-v1" },
+    });
+  });
+
   it("declines the runtime lane with the contract's own vocabulary", async () => {
     // A fresh Response per call: a Body can only be read once.
     vi.spyOn(globalThis, "fetch").mockImplementation(async () =>

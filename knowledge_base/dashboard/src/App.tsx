@@ -19,6 +19,7 @@ import { useLogStream } from "./hooks/useLogStream";
 import { useProjects } from "./hooks/useProjects";
 import { useAuth, getLoginUrl } from "./hooks/useAuth";
 import { csrfHeaders } from "./api/client";
+import { loadableFromQuery, mapLoadable } from "./lib/loadable";
 import type { AuthUser } from "./hooks/useAuth";
 import type { GenerateRun } from "./types";
 
@@ -56,11 +57,15 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
   const [compareRunB, setCompareRunB] = useState<number | null>(null);
   const [topNav, setTopNav] = useState<TopNav>("projects");
   const { logs, clear, done, logFile } = useLogStream(activeProject);
-  const { data: projectsData } = useProjects();
+  const projectsQuery = useProjects();
   const queryClient = useQueryClient();
 
-  const activeProjectObj = projectsData?.projects.find((p) => p.id === activeProject) ?? null;
-  const projects = projectsData?.projects ?? [];
+  const activeProjectObj = projectsQuery.data?.projects.find((p) => p.id === activeProject) ?? null;
+  // The real query state, not `?? []`. `KpiBar` aggregates over this list, and
+  // an empty array would have it report a confident zero for a list nobody has
+  // received yet. `ProjectList` reads the same shared query itself and already
+  // renders its own skeleton/error states.
+  const projects = mapLoadable(loadableFromQuery(projectsQuery), (data) => data.projects);
   const canViewConnectors = Boolean(user?.is_superadmin || user?.permissions.includes("view_connectors") || user?.permissions.includes("manage_connectors"));
   const canManageConnectors = Boolean(user?.is_superadmin || user?.permissions.includes("manage_connectors"));
 
@@ -76,9 +81,23 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
       setSelectedLogFile(logFile);
       setLogOpen(true);
     }
+    // Everything derived from a finished run is invalidated HERE, at the event
+    // that changed it. This is what replaces the removed global 5s poll: it is
+    // exact, it costs one request per affected panel instead of one every five
+    // seconds forever, and the panels that were silently relying on that poll
+    // for their post-run refresh (`docs`, `project-usage`, `quality-history`)
+    // are now listed explicitly rather than left to a default that no longer
+    // exists.
     queryClient.invalidateQueries({ queryKey: ["generate-runs", activeProject] });
     queryClient.invalidateQueries({ queryKey: ["scan-runs", activeProject] });
+    queryClient.invalidateQueries({ queryKey: ["scan-status", activeProject] });
     queryClient.invalidateQueries({ queryKey: ["log-files", activeProject] });
+    queryClient.invalidateQueries({ queryKey: ["docs", activeProject] });
+    queryClient.invalidateQueries({ queryKey: ["project-usage", activeProject] });
+    queryClient.invalidateQueries({ queryKey: ["quality-history", activeProject] });
+    // The run's `_assessment/` evidence artifact only exists once the run
+    // finishes; it is keyed by run id, so the whole prefix goes.
+    queryClient.invalidateQueries({ queryKey: ["run-connector-evidence"] });
     queryClient.invalidateQueries({ queryKey: ["projects"] });
   }, [done, logFile, activeProject, queryClient]);
 

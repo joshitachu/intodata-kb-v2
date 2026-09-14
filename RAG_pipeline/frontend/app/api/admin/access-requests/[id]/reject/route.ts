@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fastapiFetch } from "@/lib/fastapi";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -11,8 +12,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     });
     return NextResponse.json(data);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to reject request";
-    const status = message.includes("409") ? 409 : 500;
-    return NextResponse.json({ error: message }, { status });
+    return upstreamErrorResponse("admin/access-requests/[id]/reject POST", error, "Failed to reject request");
   }
 }

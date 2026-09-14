@@ -12,43 +12,41 @@
 
 ## MANDATORY: Session Start
 
-Run `/session-start` first. It loads context, checks for an active plan, and classifies
-the work as Scout or full pipeline. Do not skip.
+Invoke the `session-start` skill first. It loads current state, recovers the pipeline
+position, and classifies the work. Do not skip.
 
-Manual steps (if not using the command):
+Manual steps (if not using the skill):
 1. `knowledge_base/CLAUDE.md` -- KB platform rules, doc generation workflow, known pitfalls
 2. `RAG_pipeline/CLAUDE.md` -- RAG system rules, logging format, code style
-3. The relevant `.claude/context.md` for the area you're working on
-4. The relevant `.claude/PROJECT_MEMORY.md` for architecture decisions and gotchas
-5. `.plans/active_plan.md` -- check for an active plan and its verdict before coding
+3. The relevant `.claude/context.md` -- live state only, no history
+4. `.plans/plan.md` -- if it exists, check its `verdict` before coding
 
 For knowledge_base work, also read `.agent/README.md` to find the right SOPs and system docs.
+Architecture decisions live in `knowledge_base/.agent/decisions/`.
 
 ## Development Workflow
 
-### Scout mode — minor fix (< 3 files, no new abstractions, no schema changes, no critical-area changes)
-1. `/session-start` → confirms Scout classification
+Two paths. The gate that matters is plan approval; everything else is a check, not a ritual.
+
+### Fast path — small, well-understood change
+1. `session-start` -- confirms fast-path classification
 2. Build
-3. `/validate` → commit
+3. `validate` -> commit
 
-### Full pipeline (everything else)
-1. `/session-start` → full pipeline classification + pipeline state recovery
-2. `/grill <description>` → `.plans/01_grill.md` — clarifying questions, assumptions, risk
-3. `/prd` → `.plans/02_prd.md` — product requirements
-4. `/slices` → `.plans/03_slices.md` — vertical slice breakdown
-5. `/plan <slice>` → `.plans/04_active_plan.md` with `verdict: PENDING`
-6. `/plan-approve pass` → `verdict: PASS` (gate opens)
-7. Build (only after `verdict: PASS`)
-8. `/inspect` → `.plans/05_inspection_report.md`
-9. `/validate` → commit (only after Inspector PASS or WARN)
+Qualifies when: fewer than ~3 files, no new module or schema or API contract, and no
+critical area touched.
 
-Repeat steps 5–9 for each remaining slice.
+### Planned — everything else
+1. `session-start` -- classification + pipeline recovery
+2. `plan <description>` -> `.plans/plan.md` with `verdict: PENDING`
+3. **You** set `verdict: PASS` -- this is the gate, and the agent must not open it itself
+4. Build
+5. `inspect` -> `.plans/inspection.md` (mandatory for critical areas)
+6. `validate` -> commit (only on inspection PASS or WARN)
 
-### Emergency path
-- `/lfe-force <description>` → immediate patch, bypasses plan gate and Inspector
-- Logs to `PROTOCOL_DEBT.md` — session-start warns until `/debt-resolve` clears it
+Multi-slice work repeats steps 4-6 per slice against the same plan.
 
-**Critical areas requiring `/inspect` without exception:**
+**Critical areas requiring `inspect` without exception:**
 - Harness pipeline phases (`knowledge_base/mcp-server/src/mcp_server/providers/custom/pipeline/`)
 - MCP API routes (`knowledge_base/mcp-server/src/mcp_server/api/`)
 - RAG retrieval chain (`RAG_pipeline/backend/src/retrieval/`)
@@ -56,14 +54,20 @@ Repeat steps 5–9 for each remaining slice.
 
 ### Pipeline coordination files (`.plans/`)
 ```
-01_grill.md             — clarifying questions + risk assessment
-02_prd.md               — product requirements
-03_slices.md            — vertical slice breakdown
-04_active_plan.md       — current slice plan (verdict: PENDING/PASS/BLOCK)
-05_inspection_report.md — Inspector audit result
-PROTOCOL_DEBT.md        — open emergency hotfix debt
+plan.md         -- intent, decisions, design, slices, risk (verdict: PENDING/PASS/BLOCK)
+inspection.md   -- audit result (verdict: PASS/WARN/BLOCK)
+archive/        -- completed and abandoned features; never read at session start
 ```
-Session-start reads these files to recover the pipeline position after a crash.
+Only loose `.md` files at the top level are live. `session-start` reads them to recover
+position after a crash. **One feature at a time** -- archive the previous feature's
+artifacts before starting the next, or pipeline detection becomes ambiguous.
+
+### Agent config
+- `.claude/skills/` is the single source of truth for skills.
+- `.codex/skills/` is a generated mirror. After editing a skill, run
+  `scripts/sync-agent-skills.sh`; `--check` fails if the mirror is stale.
+- Never hand-edit `.codex/skills/`. Three hand-maintained copies is what caused the
+  last drift, where every file disagreed with every other.
 
 ## Project Structure
 
@@ -171,9 +175,16 @@ Each sub-project has its own detailed CLAUDE.md. **Read the relevant one before 
 
 ## Logging
 
-After every change run `/session-end` -- it reads git diff, pre-fills the log entry,
-and updates context.md. Format and field rules are embedded in that command.
-Never skip. Use specific file paths and verbatim error messages.
+After every change run the `session-end` skill -- it reads the git diff, prepends the
+log entry to `PROGRESS_LOG.md` (newest-first), and rewrites `context.md` in place.
+Format and field rules are in that skill. Never skip. Use specific file paths and
+verbatim error messages.
+
+Two invariants keep these files usable:
+- `PROGRESS_LOG.md` is append-only history, **newest-first**, rotated to
+  `.claude/archive/` after ~30 days.
+- `context.md` is **live state only** -- no dated sections, under 60 lines. Adding a
+  `## Current State (date)` block to it is the regression that made it useless before.
 
 ## Key Rules
 

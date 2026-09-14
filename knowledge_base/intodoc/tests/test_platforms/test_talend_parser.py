@@ -618,7 +618,7 @@ class TestCompositeTalendBundles:
         _write_job(two, "Jobs", "Shared", "0.1")
         result = parser.parse(tmp_path)
         output = tmp_path / "out"
-        _save_scan_result(result, output)
+        _save_scan_result(result, output, CredentialFilter())
 
         segmented = json.loads((output / "scan" / "manifest.json").read_text())
         monolithic = json.loads((output / "scan_result.json").read_text())["manifest"]
@@ -636,7 +636,7 @@ class TestCompositeTalendBundles:
             platform="talend", repo_root="/synthetic", jobs=jobs,
             manifest={"source_roots": [{"id": "root-a", "path": "root-a"}, {"id": "root-b", "path": "root-b"}]},
         )
-        _save_scan_result(result, tmp_path)
+        _save_scan_result(result, tmp_path, CredentialFilter())
         paths = result.manifest.job_files
         assert len(set(paths.values())) == 2
         assert all(len(part) <= 80 for path in paths.values() for part in path.split("/"))
@@ -1126,17 +1126,31 @@ class TestTXMLMapExtraction:
         assert output_fields["GUIDElement"].expression == "row1.GUID"
         assert len(txmap.raw_connections) == 1
         assert "nodes.0" in txmap.raw_connections[0]
+        assert txmap.unresolved_connections == []
+        assert txmap.resolved_connections[0]["source_field"] == "GUID"
+        assert txmap.resolved_connections[0]["target_field"] == "GUIDElement"
 
-    def test_xml_map_data_emits_partial_parse_warning(self, parser, tmp_path):
+    def test_xml_map_data_does_not_call_resolved_wiring_partial(self, parser, tmp_path):
         project = _synthetic_project(tmp_path)
         _write_job(project, "Iface", "XmlMapJob", "1.0", body=_TXMLMAP_NODE)
 
         result = parser.parse(tmp_path)
 
         txmlmap_warnings = [w for w in result.warnings if w.phase == "txmlmap"]
-        assert len(txmlmap_warnings) == 1
-        assert txmlmap_warnings[0].kind == "partial_parse"
-        assert "tXMLMap_1" in txmlmap_warnings[0].message
+        assert txmlmap_warnings == []
+
+    def test_xml_map_data_preserves_unsupported_reference_as_gap(self, parser, tmp_path):
+        project = _synthetic_project(tmp_path)
+        body = _TXMLMAP_NODE.replace(
+            'source="//@node.0/@nodeData/@inputTrees.0/@nodes.0"',
+            'source="other.resource#//@inputTrees.0/@nodes.0"',
+        )
+        _write_job(project, "Iface", "XmlMapJob", "1.0", body=body)
+        result = parser.parse(tmp_path)
+        txmap = result.jobs[0].txmlmap_data[0]
+        assert txmap.resolved_connections == []
+        assert txmap.unresolved_connections[0]["reason"] == "unsupported_or_out_of_range_emf_reference"
+        assert len([w for w in result.warnings if w.phase == "txmlmap"]) == 1
 
     def test_classic_tmap_unaffected_by_xml_map_support(self, parser, tmp_path):
         """Regression guard: adding tXMLMap parsing must not break tMap."""
@@ -1147,6 +1161,34 @@ class TestTXMLMapExtraction:
         assert len(job.tmap_data) == 1
         assert len(job.txmlmap_data) == 0
         assert not [w for w in result.warnings if w.phase == "txmlmap"]
+
+
+class TestRoutineFidelity:
+    def test_routine_tail_is_preserved_and_root_qualified(self, parser, tmp_path):
+        root = tmp_path / "SYNTH"
+        routines = root / "code" / "routines"
+        routines.mkdir(parents=True)
+        lines = [f"// line {index}" for index in range(250)]
+        tail_secret = "FakeRoutineTailSecret42"
+        lines.append(
+            "public static String decisiveRule() { "
+            f"String endpoint = \"https://example.invalid?a=1&password={tail_secret}\"; "
+            "return \"tail-rule\"; }"
+        )
+        (routines / "Rules_1.2.item").write_text("\n".join(lines), encoding="utf-8")
+
+        parsed = parser._parse_routines(root, source_root="exports/SYNTH")
+
+        assert len(parsed) == 1
+        routine = parsed[0]
+        assert routine.source_complete is True
+        assert "tail-rule" in routine.source_code
+        assert tail_secret not in routine.source_code
+        assert "[URL_REDACTED]" in routine.source_code
+        assert "truncated" not in routine.source_code
+        assert routine.routine_id.startswith("exports/SYNTH::")
+        assert routine.version == "1.2"
+        assert len(routine.source_sha256) == 64
 
 
 def _tdm_map_xml(name, in_struct, out_struct, output_children):
@@ -1263,6 +1305,19 @@ class TestTdmMapDiscovery:
             if w.phase == "tdm_map" and "truncated" in w.message
         ]
         assert len(truncation_warnings) == 1
+
+    def test_tdm_map_preserves_more_than_legacy_field_limit_by_default(self, parser, tmp_path):
+        project = _synthetic_project(tmp_path)
+        maps_dir = project / "Maps"
+        maps_dir.mkdir(parents=True)
+        many_fields = [(f"F{i}", f"in$/F{i}") for i in range(501)]
+        (maps_dir / "big_map.xml").write_text(
+            _tdm_map_xml("big_map", "Structures/In.xml", "Structures/Out.xml", many_fields),
+            encoding="utf-8",
+        )
+        result = parser.parse(tmp_path)
+        assert result.tdm_maps[0].output_tree.truncated is False
+        assert len(result.tdm_maps[0].output_tree.fields) == 501
 
 
 class TestUnscannedTalendCategories:

@@ -72,6 +72,7 @@ import {
   TimelineResponse,
   TimelineResponseSchema,
 } from "@/types";
+import { authedFetch } from "@/lib/authedFetch";
 
 export interface ExecutionFilters {
   projectId?: string;
@@ -230,7 +231,7 @@ async function fetchExecutions(
     limit: filters.limit,
     offset: filters.offset,
   });
-  const res = await fetch(`/api/runtime/executions${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/executions${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch executions");
   }
@@ -248,7 +249,7 @@ export function useRuntimeExecutions(filters: ExecutionFilters = {}) {
 async function fetchExecution(
   executionId: string,
 ): Promise<ExecutionDetailResponse> {
-  const res = await fetch(
+  const res = await authedFetch(
     `/api/runtime/executions/${encodeURIComponent(executionId)}`,
     { cache: "no-store" },
   );
@@ -276,7 +277,7 @@ async function fetchExecutionLogs(
     limit: filters.limit,
     offset: filters.offset,
   });
-  const res = await fetch(
+  const res = await authedFetch(
     `/api/runtime/executions/${encodeURIComponent(executionId)}/logs${query}`,
     { cache: "no-store" },
   );
@@ -305,7 +306,7 @@ async function fetchFailures(filters: FailureFilters): Promise<FailureListRespon
     limit: filters.limit,
     offset: filters.offset,
   });
-  const res = await fetch(`/api/runtime/failures${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/failures${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch failures");
   }
@@ -326,7 +327,7 @@ async function fetchHealth(filters: HealthFilters): Promise<HealthSummaryRespons
     source_key: filters.sourceKey,
     limit: filters.limit,
   });
-  const res = await fetch(`/api/runtime/health${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/health${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch runtime health");
   }
@@ -347,7 +348,7 @@ async function fetchSources(filters: InventoryFilters): Promise<RuntimeSourceLis
     source_key: filters.sourceKey,
     limit: filters.limit,
   });
-  const res = await fetch(`/api/runtime/sources${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/sources${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch runtime sources");
   }
@@ -370,7 +371,7 @@ async function fetchEngines(filters: EngineFilters): Promise<RuntimeEngineListRe
     limit: filters.limit,
     offset: filters.offset,
   });
-  const res = await fetch(`/api/runtime/engines${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/engines${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch runtime engines");
   }
@@ -394,7 +395,7 @@ async function fetchEngineHealth(
     status: filters.status,
     limit: filters.limit,
   });
-  const res = await fetch(`/api/runtime/engine-health${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/engine-health${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch runtime engine health");
   }
@@ -414,7 +415,7 @@ async function fetchOverview(filters: InventoryFilters): Promise<RuntimeOverview
     project_id: filters.projectId,
     source_key: filters.sourceKey,
   });
-  const res = await fetch(`/api/runtime/overview${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/overview${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch runtime overview");
   }
@@ -441,7 +442,7 @@ async function fetchJobs(filters: JobFilters): Promise<RuntimeJobListResponse> {
     limit: filters.limit,
     offset: filters.offset,
   });
-  const res = await fetch(`/api/runtime/jobs${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/jobs${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch runtime jobs");
   }
@@ -467,7 +468,7 @@ async function fetchDeployments(
     limit: filters.limit,
     offset: filters.offset,
   });
-  const res = await fetch(`/api/runtime/deployments${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/deployments${query}`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to fetch runtime deployments");
   return RuntimeDeploymentListResponseSchema.parse(await res.json());
 }
@@ -490,7 +491,7 @@ async function fetchArtifacts(
     artifact_type: filters.artifactType,
     limit: filters.limit,
   });
-  const res = await fetch(`/api/runtime/artifacts${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/artifacts${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch runtime artifacts");
   }
@@ -515,7 +516,7 @@ async function fetchConnections(
     connection_type: filters.connectionType,
     limit: filters.limit,
   });
-  const res = await fetch(`/api/runtime/connections${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/connections${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch runtime connections");
   }
@@ -541,7 +542,7 @@ async function fetchDependencies(
     job_id: filters.jobId,
     limit: filters.limit,
   });
-  const res = await fetch(`/api/runtime/dependencies${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/dependencies${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch runtime dependencies");
   }
@@ -564,7 +565,7 @@ async function fetchDependencySummary(
     source_key: filters.sourceKey,
     limit: filters.limit,
   });
-  const res = await fetch(`/api/runtime/dependency-summary${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/dependency-summary${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch runtime dependency summary");
   }
@@ -590,7 +591,7 @@ async function fetchJobRuns(filters: JobRunFilters): Promise<RuntimeJobRunListRe
     until: filters.until,
     limit: filters.limit,
   });
-  const res = await fetch(`/api/runtime/job-runs${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/job-runs${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch runtime job runs");
   }
@@ -614,7 +615,7 @@ async function fetchJobHealth(filters: JobFilters): Promise<RuntimeJobHealthResp
     engine_id: filters.engineId,
     limit: filters.limit,
   });
-  const res = await fetch(`/api/runtime/job-health${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/job-health${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch runtime job health");
   }
@@ -639,7 +640,7 @@ async function fetchPlans(filters: PlanFilters): Promise<RuntimePlanListResponse
     limit: filters.limit,
     offset: filters.offset,
   });
-  const res = await fetch(`/api/runtime/plans${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/plans${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch runtime plans");
   }
@@ -664,7 +665,7 @@ async function fetchPlanRuns(filters: PlanRunFilters): Promise<RuntimePlanRunLis
     until: filters.until,
     limit: filters.limit,
   });
-  const res = await fetch(`/api/runtime/plan-runs${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/plan-runs${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch runtime plan runs");
   }
@@ -687,7 +688,7 @@ async function fetchPlanHealth(filters: PlanFilters): Promise<RuntimePlanHealthR
     workspace_id: filters.workspaceId,
     limit: filters.limit,
   });
-  const res = await fetch(`/api/runtime/plan-health${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/plan-health${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch runtime plan health");
   }
@@ -724,7 +725,7 @@ export interface EvidenceFilters {
 async function fetchExecutionSummary(
   executionId: string,
 ): Promise<ExecutionSummaryResponse> {
-  const res = await fetch(
+  const res = await authedFetch(
     `/api/runtime/executions/${encodeURIComponent(executionId)}/summary`,
     { cache: "no-store" },
   );
@@ -754,7 +755,7 @@ async function fetchExecutionTimeline(
     min_severity: filters.minSeverity,
     limit: filters.limit,
   });
-  const res = await fetch(
+  const res = await authedFetch(
     `/api/runtime/executions/${encodeURIComponent(executionId)}/timeline${query}`,
     { cache: "no-store" },
   );
@@ -785,7 +786,7 @@ async function fetchIncidents(filters: IncidentFilters): Promise<IncidentListRes
     limit: filters.limit,
     offset: filters.offset,
   });
-  const res = await fetch(`/api/runtime/incidents${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/incidents${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch incidents");
   }
@@ -801,7 +802,7 @@ export function useRuntimeIncidents(filters: IncidentFilters = {}) {
 }
 
 async function fetchIncident(incidentId: string): Promise<IncidentDetailResponse> {
-  const res = await fetch(
+  const res = await authedFetch(
     `/api/runtime/incidents/${encodeURIComponent(incidentId)}`,
     { cache: "no-store" },
   );
@@ -825,7 +826,7 @@ async function fetchIncidentEvidence(
   filters: EvidenceFilters,
 ): Promise<IncidentEvidenceResponse> {
   const query = buildQuery({ limit: filters.limit });
-  const res = await fetch(
+  const res = await authedFetch(
     `/api/runtime/incidents/${encodeURIComponent(incidentId)}/evidence${query}`,
     { cache: "no-store" },
   );
@@ -859,7 +860,7 @@ async function fetchSimilarFailures(
   filters: SimilarFailuresFilters,
 ): Promise<IncidentSimilarResponse> {
   const query = buildQuery({ limit: filters.limit });
-  const res = await fetch(
+  const res = await authedFetch(
     `/api/runtime/incidents/${encodeURIComponent(incidentId)}/similar${query}`,
     { cache: "no-store" },
   );
@@ -895,7 +896,7 @@ async function fetchTrend(filters: TrendFilters): Promise<RuntimeTrendResponse> 
     until: filters.until,
     limit: filters.limit,
   });
-  const res = await fetch(`/api/runtime/trend${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/trend${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch runtime trend");
   }
@@ -924,7 +925,7 @@ async function fetchJobReliability(
     offset: filters.offset,
     attention_only: filters.attentionOnly,
   });
-  const res = await fetch(`/api/runtime/job-reliability${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/job-reliability${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch job reliability");
   }
@@ -954,7 +955,7 @@ async function fetchJobInsights(
     limit: filters.limit,
     offset: filters.offset,
   });
-  const res = await fetch(`/api/runtime/job-insights${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/job-insights${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch runtime job insights");
   }
@@ -986,7 +987,7 @@ async function fetchComponentHotspots(
     limit: filters.limit,
     offset: filters.offset,
   });
-  const res = await fetch(`/api/runtime/component-hotspots${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/component-hotspots${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch component hotspots");
   }
@@ -1017,7 +1018,7 @@ async function fetchJobThroughput(
     limit: filters.limit,
     offset: filters.offset,
   });
-  const res = await fetch(`/api/runtime/job-throughput${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/job-throughput${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch job throughput");
   }
@@ -1049,7 +1050,7 @@ async function fetchErrorSignatures(
     limit: filters.limit,
     offset: filters.offset,
   });
-  const res = await fetch(`/api/runtime/error-signatures${query}`, { cache: "no-store" });
+  const res = await authedFetch(`/api/runtime/error-signatures${query}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error("Failed to fetch error signatures");
   }

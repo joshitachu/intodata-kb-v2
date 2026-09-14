@@ -139,6 +139,9 @@ class CandidatePublisher:
             )
 
         base_revision = candidate.base_knowledge_revision_id
+        from mcp_server.services.living_docs.run_journal import atomic_json
+        atomic_json(self._store.candidate_root(candidate.id) / "publication_base.json",
+                    {key: item.content_hash for key, item in active_artifacts.items()})
         mutations: list[RagMutation] = []
         if base_revision is None:
             mutations.extend(RagMutation.upsert(item) for item in candidate_artifacts.values())
@@ -206,24 +209,59 @@ class CandidatePublisher:
         status = self._store.status(candidate.id)
         if status.state is not CandidateState.RAG_PREPARED:
             raise CandidatePublicationError("Candidate RAG revision has not been prepared")
+        import json
+        from mcp_server.services.living_docs.run_journal import atomic_json
+        base_path = self._store.candidate_root(candidate.id) / "publication_base.json"
+        if base_path.is_file():
+            current = (collect_revision_artifacts(candidate.change_set.source_revision.project_id,
+                                                 active_output_dir / "docs")
+                       if (active_output_dir / "docs").is_dir() else {})
+            if {key: item.content_hash for key, item in current.items()} != json.loads(base_path.read_text()):
+                raise CandidatePublicationError("Active documents changed while the candidate was being prepared")
+        staging = active_output_dir / "docs_staging"
+        if staging.exists():
+            shutil.rmtree(staging)
+        # Copying can fail for ordinary filesystem reasons.  Do it before the
+        # RAG alias changes so such a failure cannot expose a split revision.
+        shutil.copytree(candidate_docs_dir, staging)
+        atomic_json(self._store.candidate_root(candidate.id) / "activation_intent.json", {
+            "candidate_id": candidate.id, "source_revision_key": active_source_revision_key,
+        })
         await self._rag.activate_revision(
             candidate.change_set.source_revision.project_id,
             candidate.knowledge_revision_id,
         )
-        staging = active_output_dir / "docs_staging"
-        if staging.exists():
-            shutil.rmtree(staging)
-        shutil.copytree(candidate_docs_dir, staging)
         try:
             swap_docs(active_output_dir)
         except Exception as exc:
+            # There is no distributed transaction across the RAG service and
+            # the filesystem.  Compensate immediately, leaving a durable
+            # recovery record only if the RAG CAS rollback itself cannot run.
+            try:
+                if candidate.base_knowledge_revision_id is None:
+                    raise CandidatePublicationError("no prior RAG revision is available for rollback")
+                await self._rag.rollback_revision(
+                    candidate.change_set.source_revision.project_id,
+                    candidate.base_knowledge_revision_id,
+                    expected_active_revision_id=candidate.knowledge_revision_id,
+                )
+            except Exception as rollback_exc:
+                self._store.transition(
+                    candidate.id,
+                    expected_version=status.version,
+                    target=CandidateState.RECOVERY_REQUIRED,
+                    reason_code="docs_activation_recovery_required",
+                )
+                raise CandidatePublicationError(
+                    "RAG activation succeeded but docs swap and rollback failed; recovery required"
+                ) from rollback_exc
             self._store.transition(
                 candidate.id,
                 expected_version=status.version,
-                target=CandidateState.RECOVERY_REQUIRED,
-                reason_code="docs_activation_recovery_required",
+                target=CandidateState.HELD,
+                reason_code="docs_activation_rolled_back",
             )
-            raise CandidatePublicationError("RAG activation succeeded but docs swap failed; recovery required") from exc
+            raise CandidatePublicationError("Docs swap failed; RAG activation was rolled back") from exc
         self._store.transition(
             candidate.id,
             expected_version=status.version,

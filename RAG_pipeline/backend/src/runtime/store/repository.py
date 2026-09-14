@@ -21,7 +21,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from typing import NamedTuple
 
-from sqlalchemy import and_, case, delete, func, or_, select
+from sqlalchemy import Float, and_, case, cast, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -135,6 +135,41 @@ from src.runtime.store import ProjectScope, RuntimeDuplicateSourceError, Runtime
 
 # Severity ordering for min_severity filtering (low -> high).
 _SEVERITY_ORDER: list[RuntimeLogSeverity] = list(RuntimeLogSeverity)
+
+
+# --- Run-state semantics -----------------------------------------------------
+#
+# Two different questions get asked of `state`, and widening the enum made the
+# difference load-bearing. Naming them separately is what stops the next state
+# from being folded into whichever predicate it was nearest.
+#
+# 1. "How often did this job FAIL?"  -> failure_rate, failed_runs, the failure
+#    streak, and diagnostic-coverage counts. FAILED only, forever. A misfire is
+#    a run that never started; counting it as a failure would silently restate
+#    every historical failure rate in the product and make yesterday's number
+#    incomparable with today's.
+#
+# 2. "Does a human need to look at this?" -> attention_only, and the
+#    unhealthy engines/jobs/plans surfaces. FAILED plus the states that mean
+#    work silently did not happen.
+#
+#: Runs that warrant a human. TERMINATED is deliberately absent: a termination
+#: is an operator action, so somebody has already looked.
+_ATTENTION_STATES: tuple[RuntimeExecutionState, ...] = (
+    RuntimeExecutionState.FAILED,
+    RuntimeExecutionState.MISFIRED,
+    RuntimeExecutionState.TIMED_OUT,
+)
+_ATTENTION_STATE_VALUES: tuple[str, ...] = tuple(state.value for state in _ATTENTION_STATES)
+
+#: States whose runs legitimately carry no end timestamp, and therefore must not
+#: be reported as "started but never finished". RUNNING has not finished yet;
+#: MISFIRED never started, so no source can stamp it with an end.
+_OPEN_ENDED_STATES: tuple[RuntimeExecutionState, ...] = (
+    RuntimeExecutionState.RUNNING,
+    RuntimeExecutionState.MISFIRED,
+)
+_OPEN_ENDED_STATE_VALUES: tuple[str, ...] = tuple(state.value for state in _OPEN_ENDED_STATES)
 
 
 def _severities_at_or_above(minimum: RuntimeLogSeverity) -> list[str]:
@@ -347,6 +382,19 @@ def _ratio(numerator: int | None, denominator: int | None) -> float | None:
     if numerator is None or not denominator:
         return None
     return numerator / denominator
+
+
+#: A captured log at the provider's row ceiling is a conservative truncation
+#: signal. Shared by every diagnostic-coverage aggregate so the two surfaces
+#: (operations console, documentation evidence) cannot report different
+#: truncation counts for the same execution.
+_LOG_CAPTURE_CEILING_LINES = 10_000
+
+#: A diagnosis is only "useful" if it is confident AND says something. The two
+#: generic patterns merely tell an operator to go read a log, which is exactly
+#: what the diagnosis was supposed to spare them.
+_USEFUL_DIAGNOSIS_CONFIDENCES: tuple[str, ...] = ("high", "medium")
+_UNINFORMATIVE_PATTERN_IDS: tuple[str, ...] = ("generic.unknown", "exception.generic")
 
 
 def _evidence_completeness(failed: int, logged: int, diagnosed: int) -> str:
@@ -759,66 +807,55 @@ class RuntimeStoreRepository:
         source_key: str | None = None,
         limit: int = 50,
     ) -> list[RuntimeHealthSummary]:
-        """Return DB-derived health rollups grouped by project/source/job."""
+        """Return DB-derived health rollups grouped by project/source/job.
+
+        Three grouped statements, no whole-row reads. Before this the rollup
+        fetched every in-scope execution (55k rows), every component metric (26k)
+        and every incident, then reduced them in Python to at most `limit`
+        summaries.
+        """
         if self._denies_all(scope):
             return []
-        exec_stmt = select(RuntimeExecutionRow)
-        exec_stmt = self._apply_scope(exec_stmt, RuntimeExecutionRow.project_id, scope)
-        exec_stmt = exec_stmt.where(
-            RuntimeExecutionRow.executable_kind == RuntimeExecutableKind.JOB.value
-        )
-        if project_id is not None:
-            exec_stmt = exec_stmt.where(RuntimeExecutionRow.project_id == project_id)
-        if source_key is not None:
-            exec_stmt = exec_stmt.where(RuntimeExecutionRow.source_key == source_key)
-        exec_rows = list((await self._session.execute(exec_stmt)).scalars().all())
-        if not exec_rows:
+        executions = self._health_execution_base(scope, project_id, source_key)
+        group = [executions.c.project_id, executions.c.source_key, executions.c.job_name]
+        rows = (
+            await self._session.execute(self._health_execution_rollup(executions, group))
+        ).mappings().all()
+        if not rows:
             return []
 
-        metric_stmt = select(RuntimeComponentMetricRow)
-        metric_stmt = self._apply_scope(metric_stmt, RuntimeComponentMetricRow.project_id, scope)
-        if project_id is not None:
-            metric_stmt = metric_stmt.where(RuntimeComponentMetricRow.project_id == project_id)
-        if source_key is not None:
-            metric_stmt = metric_stmt.where(RuntimeComponentMetricRow.source_key == source_key)
-        metric_rows = list((await self._session.execute(metric_stmt)).scalars().all())
+        metrics = await self._health_metric_totals(executions, group, source_key)
+        incidents = await self._health_incident_signatures(executions, group)
 
-        incident_stmt = select(RuntimeIncidentRow)
-        incident_stmt = self._apply_scope(incident_stmt, RuntimeIncidentRow.project_id, scope)
-        if project_id is not None:
-            incident_stmt = incident_stmt.where(RuntimeIncidentRow.project_id == project_id)
-        incident_rows = list((await self._session.execute(incident_stmt)).scalars().all())
-
-        exec_by_id = {(r.project_id, r.execution_id): r for r in exec_rows}
-        grouped: dict[tuple[str, str, str], list[RuntimeExecutionRow]] = defaultdict(list)
-        for row in exec_rows:
-            grouped[(row.project_id, row.source_key, row.job_name)].append(row)
-
-        metrics_by_group: dict[tuple[str, str, str], list[RuntimeComponentMetricRow]] = defaultdict(list)
-        for metric in metric_rows:
-            exec_row = exec_by_id.get((metric.project_id, metric.execution_id))
-            if exec_row is None:
-                continue
-            metrics_by_group[(exec_row.project_id, exec_row.source_key, exec_row.job_name)].append(metric)
-
-        incidents_by_group: dict[tuple[str, str, str], list[RuntimeIncidentRow]] = defaultdict(list)
-        for incident in incident_rows:
-            exec_row = exec_by_id.get((incident.project_id, incident.execution_id))
-            if exec_row is None:
-                continue
-            incidents_by_group[(exec_row.project_id, exec_row.source_key, exec_row.job_name)].append(incident)
-
-        summaries = [
-            _to_health_summary(
-                project_id=pid,
-                source_key=src,
-                job_name=job,
-                executions=rows,
-                metrics=metrics_by_group.get((pid, src, job), []),
-                incidents=incidents_by_group.get((pid, src, job), []),
+        summaries: list[RuntimeHealthSummary] = []
+        for row in rows:
+            key = (row["project_id"], row["source_key"], row["job_name"])
+            rows_total, rows_rejected = metrics.get(key, (None, None))
+            recurrence_count, signature_hash = incidents.get(key, (None, None))
+            summaries.append(
+                RuntimeHealthSummary(
+                    project_id=row["project_id"],
+                    source_key=row["source_key"],
+                    job_name=row["job_name"],
+                    total_executions=row["total_executions"],
+                    failed_executions=row["failed_executions"],
+                    failure_rate=_ratio(row["failed_executions"], row["total_executions"]) or 0.0,
+                    current_failure_streak=row["current_failure_streak"],
+                    last_failure_at=_as_utc(row["last_failure_at"]),
+                    last_execution_at=_as_utc(row["last_execution_at"]),
+                    p50_duration_ms=row["p50"],
+                    p95_duration_ms=row["p95"],
+                    rows_total=rows_total,
+                    rows_rejected=rows_rejected,
+                    reject_ratio=(
+                        rows_rejected / rows_total
+                        if rows_total is not None and rows_total > 0 and rows_rejected is not None
+                        else None
+                    ),
+                    recurrence_count=recurrence_count,
+                    signature_hash=signature_hash,
+                )
             )
-            for (pid, src, job), rows in grouped.items()
-        ]
         summaries.sort(
             key=lambda item: (
                 item.failure_rate,
@@ -829,6 +866,173 @@ class RuntimeStoreRepository:
             reverse=True,
         )
         return summaries[:limit]
+
+    def _health_execution_base(
+        self, scope: ProjectScope, project_id: str | None, source_key: str | None
+    ):
+        """Scoped job executions behind the health rollup, as a subquery.
+
+        Written once and reused by all three statements: the metric and incident
+        rollups join through it rather than re-stating its filters, so a metric
+        can never be attributed to an execution the rollup itself excluded.
+        """
+        stmt = select(
+            RuntimeExecutionRow.id.label("id"),
+            RuntimeExecutionRow.project_id.label("project_id"),
+            RuntimeExecutionRow.source_key.label("source_key"),
+            RuntimeExecutionRow.execution_id.label("execution_id"),
+            RuntimeExecutionRow.job_name.label("job_name"),
+            RuntimeExecutionRow.state.label("state"),
+            RuntimeExecutionRow.started_at.label("started_at"),
+            RuntimeExecutionRow.duration_ms.label("duration_ms"),
+        ).where(RuntimeExecutionRow.executable_kind == RuntimeExecutableKind.JOB.value)
+        stmt = self._apply_scope(stmt, RuntimeExecutionRow.project_id, scope)
+        if project_id is not None:
+            stmt = stmt.where(RuntimeExecutionRow.project_id == project_id)
+        if source_key is not None:
+            stmt = stmt.where(RuntimeExecutionRow.source_key == source_key)
+        return stmt.subquery()
+
+    def _health_execution_rollup(self, executions, group: Sequence):
+        """Outcome counts, streak, recency and duration percentiles per job name.
+
+        Ordered by `min(id)` so the caller's stable sort breaks ties in the same
+        order the old grouped dict did -- first appearance in the row fetch.
+        """
+        failed_state = RuntimeExecutionState.FAILED.value
+        ranked = select(
+            *group,
+            executions.c.id.label("id"),
+            executions.c.state.label("state"),
+            executions.c.started_at.label("started_at"),
+            executions.c.duration_ms.label("duration_ms"),
+            func.row_number()
+            .over(
+                partition_by=list(group),
+                order_by=[executions.c.started_at.desc(), executions.c.id.desc()],
+            )
+            .label("rn"),
+        ).subquery()
+        groups = [ranked.c[column.name] for column in group]
+        aggregated = (
+            select(
+                *groups,
+                func.count().label("total_executions"),
+                self._state_count(ranked.c.state, RuntimeExecutionState.FAILED).label(
+                    "failed_executions"
+                ),
+                func.coalesce(
+                    func.min(case((ranked.c.state != failed_state, ranked.c.rn))) - 1,
+                    func.count(),
+                ).label("current_failure_streak"),
+                func.max(
+                    case((ranked.c.state == failed_state, ranked.c.started_at))
+                ).label("last_failure_at"),
+                func.max(ranked.c.started_at).label("last_execution_at"),
+                func.min(ranked.c.id).label("first_seen_id"),
+            )
+            .group_by(*groups)
+            .subquery()
+        )
+        percentiles = self._duration_percentiles(ranked, groups)
+        return (
+            select(aggregated, percentiles.c.p50, percentiles.c.p95)
+            .join(
+                percentiles,
+                self._same_group(aggregated, percentiles, group),
+                isouter=True,
+            )
+            .order_by(aggregated.c.first_seen_id.asc())
+        )
+
+    async def _health_metric_totals(
+        self,
+        executions,
+        group: Sequence,
+        source_key: str | None,
+    ) -> dict[tuple[str, str, str], tuple[int | None, int | None]]:
+        """Row throughput per job name, summed in SQL.
+
+        `sum()` over an all-NULL group returns NULL, which is exactly the
+        "no metric reported a value" answer the Python reduce produced, so the
+        None-vs-zero distinction survives the move into the database.
+        """
+        stmt = (
+            select(
+                *group,
+                func.sum(RuntimeComponentMetricRow.rows_total).label("rows_total"),
+                func.sum(RuntimeComponentMetricRow.rows_rejected).label("rows_rejected"),
+            )
+            .select_from(RuntimeComponentMetricRow)
+            .join(
+                executions,
+                and_(
+                    executions.c.project_id == RuntimeComponentMetricRow.project_id,
+                    executions.c.execution_id == RuntimeComponentMetricRow.execution_id,
+                ),
+            )
+        )
+        # No project predicate here: scope arrives through the join to the
+        # already-scoped execution population, and a literal copy beside it is a
+        # second statement of one rule, free to drift. The metric-side
+        # `source_key` filter is NOT redundant -- it was an explicit predicate
+        # that can drop a metric row the execution join would keep.
+        if source_key is not None:
+            stmt = stmt.where(RuntimeComponentMetricRow.source_key == source_key)
+        rows = (await self._session.execute(stmt.group_by(*group))).mappings().all()
+        return {
+            (row["project_id"], row["source_key"], row["job_name"]): (
+                row["rows_total"],
+                row["rows_rejected"],
+            )
+            for row in rows
+        }
+
+    async def _health_incident_signatures(
+        self, executions, group: Sequence
+    ) -> dict[tuple[str, str, str], tuple[int, str | None]]:
+        """(recurrence_count, signature_hash) per job name.
+
+        The signature is the newest incident's, and the count is how many of the
+        group's incidents share it. Counting stays in Python because
+        `signature_hash` is nullable and a NULL-safe equality is spelled
+        differently on each backend; only one small row per (job, signature)
+        crosses the boundary, so there is nothing to gain from pushing it down.
+        """
+        stmt = (
+            select(
+                *group,
+                RuntimeIncidentRow.id.label("incident_row_id"),
+                RuntimeIncidentRow.signature_hash.label("signature_hash"),
+                RuntimeIncidentRow.first_bad_at.label("first_bad_at"),
+            )
+            .select_from(RuntimeIncidentRow)
+            .join(
+                executions,
+                and_(
+                    executions.c.project_id == RuntimeIncidentRow.project_id,
+                    executions.c.execution_id == RuntimeIncidentRow.execution_id,
+                ),
+            )
+            # `id` last so the iteration order this reduce depends on -- Python's
+            # `max` keeps the FIRST maximal element -- is the row order the
+            # unordered fetch happened to give before, made explicit.
+            .order_by(RuntimeIncidentRow.id.asc())
+        )
+        rows = (await self._session.execute(stmt)).mappings().all()
+        grouped: dict[tuple[str, str, str], list] = defaultdict(list)
+        for row in rows:
+            grouped[(row["project_id"], row["source_key"], row["job_name"])].append(row)
+        floor = datetime.datetime.min.replace(tzinfo=datetime.UTC)
+        result: dict[tuple[str, str, str], tuple[int, str | None]] = {}
+        for key, incidents in grouped.items():
+            latest = max(incidents, key=lambda row: _as_utc(row["first_bad_at"]) or floor)
+            signature_hash = latest["signature_hash"]
+            result[key] = (
+                sum(1 for row in incidents if row["signature_hash"] == signature_hash),
+                signature_hash,
+            )
+        return result
 
     async def list_sources(
         self,
@@ -1597,64 +1801,145 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeEngineRow.status == params.status.value)
         return int((await self._session.execute(stmt)).scalar_one())
 
+    def _engine_label_select(self, scope: ProjectScope, params: ListRuntimeEnginesInput):
+        """The engine inventory rows this surface may label and group by.
+
+        Only the columns the health model reads. The filter chain lives here so
+        the label lookup and the run-side group filter can never disagree about
+        which engines are in the inventory.
+        """
+        stmt = select(
+            RuntimeEngineRow.project_id.label("project_id"),
+            RuntimeEngineRow.source_key.label("source_key"),
+            RuntimeEngineRow.engine_id.label("engine_id"),
+            RuntimeEngineRow.name.label("name"),
+            RuntimeEngineRow.status.label("status"),
+            RuntimeEngineRow.environment_name.label("environment_name"),
+            RuntimeEngineRow.workspace_name.label("workspace_name"),
+        )
+        stmt = self._apply_scope(stmt, RuntimeEngineRow.project_id, scope)
+        if params.project_id is not None:
+            stmt = stmt.where(RuntimeEngineRow.project_id == params.project_id)
+        if params.source_key is not None:
+            stmt = stmt.where(RuntimeEngineRow.source_key == params.source_key)
+        if params.status is not None:
+            stmt = stmt.where(RuntimeEngineRow.status == params.status.value)
+        return stmt
+
+    def _engine_run_base(
+        self,
+        scope: ProjectScope,
+        params: ListRuntimeEnginesInput,
+        *,
+        inventory_is_populated: bool,
+    ):
+        """Scoped job-run rows grouped by engine, as a subquery.
+
+        `inventory_is_populated` reproduces a deliberate quirk of the reduce this
+        replaces: a run whose engine is absent from the filtered inventory was
+        dropped, but ONLY while that inventory had rows. An empty inventory means
+        "no engine filter to apply", not "no engines", so an unconditional join
+        would report zero engine health for any tenant whose engine inventory has
+        not been mirrored yet.
+        """
+        stmt = select(
+            RuntimeJobRunRow.id.label("id"),
+            RuntimeJobRunRow.project_id.label("project_id"),
+            RuntimeJobRunRow.source_key.label("source_key"),
+            RuntimeJobRunRow.engine_id.label("engine_id"),
+            RuntimeJobRunRow.engine_name.label("engine_name"),
+            RuntimeJobRunRow.environment_name.label("environment_name"),
+            RuntimeJobRunRow.workspace_name.label("workspace_name"),
+            RuntimeJobRunRow.state.label("state"),
+            RuntimeJobRunRow.started_at.label("started_at"),
+            RuntimeJobRunRow.duration_ms.label("duration_ms"),
+        ).where(RuntimeJobRunRow.engine_id.is_not(None))
+        stmt = self._apply_scope(stmt, RuntimeJobRunRow.project_id, scope)
+        if params.project_id is not None:
+            stmt = stmt.where(RuntimeJobRunRow.project_id == params.project_id)
+        if params.source_key is not None:
+            stmt = stmt.where(RuntimeJobRunRow.source_key == params.source_key)
+        if inventory_is_populated:
+            inventory = self._engine_label_select(scope, params).subquery()
+            stmt = stmt.join(
+                inventory,
+                and_(
+                    inventory.c.project_id == RuntimeJobRunRow.project_id,
+                    inventory.c.source_key == RuntimeJobRunRow.source_key,
+                    inventory.c.engine_id == RuntimeJobRunRow.engine_id,
+                ),
+            )
+        return stmt.subquery()
+
     async def list_engine_health(
         self,
         scope: ProjectScope,
         params: ListRuntimeEnginesInput,
+        *,
+        attention_only: bool = False,
     ) -> list[RuntimeEngineHealth]:
-        """Return DB-derived health grouped by runtime engine."""
+        """Return DB-derived health grouped by runtime engine.
+
+        `attention_only` narrows to engines with at least one run a human should
+        look at (see `_attention_run_count`). It lives here rather than in the
+        caller because only the repository can see run states -- the returned
+        health model reports FAILED counts alone, so a caller filtering on
+        `failed_runs` silently drops every misfire and timeout.
+        """
         if self._denies_all(scope):
             return []
-        run_stmt = select(RuntimeJobRunRow)
-        run_stmt = self._apply_scope(run_stmt, RuntimeJobRunRow.project_id, scope)
-        engine_stmt = select(RuntimeEngineRow)
-        engine_stmt = self._apply_scope(engine_stmt, RuntimeEngineRow.project_id, scope)
-
-        if params.project_id is not None:
-            run_stmt = run_stmt.where(RuntimeJobRunRow.project_id == params.project_id)
-            engine_stmt = engine_stmt.where(RuntimeEngineRow.project_id == params.project_id)
-        if params.source_key is not None:
-            run_stmt = run_stmt.where(RuntimeJobRunRow.source_key == params.source_key)
-            engine_stmt = engine_stmt.where(RuntimeEngineRow.source_key == params.source_key)
-        if params.status is not None:
-            engine_stmt = engine_stmt.where(RuntimeEngineRow.status == params.status.value)
-
-        run_rows = list((await self._session.execute(run_stmt)).scalars().all())
-        engine_rows = list((await self._session.execute(engine_stmt)).scalars().all())
         engines_by_key = {
-            (row.project_id, row.source_key, row.engine_id): row
-            for row in engine_rows
+            (row["project_id"], row["source_key"], row["engine_id"]): row
+            for row in (
+                await self._session.execute(self._engine_label_select(scope, params))
+            ).mappings()
         }
-        allowed_engine_keys = set(engines_by_key)
-
-        grouped: dict[tuple[str, str, str], list[RuntimeJobRunRow]] = defaultdict(list)
-        for row in run_rows:
-            if row.engine_id is None:
-                continue
-            key = (row.project_id, row.source_key, row.engine_id)
-            if allowed_engine_keys and key not in allowed_engine_keys:
-                continue
-            grouped[key].append(row)
-
-        summaries = [
-            _to_engine_health(
-                project_id=pid,
-                source_key=source_key,
-                engine_id=engine_id,
-                runs=rows,
-                engine=engines_by_key.get((pid, source_key, engine_id)),
-            )
-            for (pid, source_key, engine_id), rows in grouped.items()
-        ]
-        summaries.sort(
-            key=lambda item: (
-                item.failure_rate,
-                item.current_failure_streak,
-                item.latest_run_at or datetime.datetime.min.replace(tzinfo=datetime.UTC),
-            ),
-            reverse=True,
+        base = self._engine_run_base(
+            scope, params, inventory_is_populated=bool(engines_by_key)
         )
-        return summaries[: params.limit]
+        group = [base.c.project_id, base.c.source_key, base.c.engine_id]
+        stmt = self._run_group_health_statement(
+            base,
+            group,
+            latest_columns=("engine_name", "environment_name", "workspace_name"),
+            with_percentiles=True,
+            attention_only=attention_only,
+            limit=params.limit,
+        )
+        rows = (await self._session.execute(stmt)).mappings().all()
+        summaries: list[RuntimeEngineHealth] = []
+        for row in rows:
+            engine = engines_by_key.get(
+                (row["project_id"], row["source_key"], row["engine_id"])
+            )
+            summaries.append(
+                RuntimeEngineHealth(
+                    project_id=row["project_id"],
+                    source_key=row["source_key"],
+                    engine_id=row["engine_id"],
+                    engine_name=(
+                        engine["name"]
+                        if engine is not None
+                        else (row["latest_engine_name"] or row["engine_id"])
+                    ),
+                    engine_status=(
+                        RuntimeEngineStatus(engine["status"]) if engine is not None else None
+                    ),
+                    environment_name=(engine["environment_name"] if engine is not None else None)
+                    or row["latest_environment_name"],
+                    workspace_name=(engine["workspace_name"] if engine is not None else None)
+                    or row["latest_workspace_name"],
+                    total_runs=row["total_runs"],
+                    failed_runs=row["failed_runs"],
+                    failure_rate=_ratio(row["failed_runs"], row["total_runs"]) or 0.0,
+                    current_failure_streak=row["current_failure_streak"],
+                    latest_run_at=_as_utc(row["latest_run_at"]),
+                    latest_state=RuntimeExecutionState(row["latest_state"]),
+                    p50_duration_ms=row["p50"],
+                    p95_duration_ms=row["p95"],
+                )
+            )
+        return summaries
 
     async def list_jobs(
         self,
@@ -1914,65 +2199,123 @@ class RuntimeStoreRepository:
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_job_run(row) for row in rows]
 
+    def _job_label_select(self, scope: ProjectScope, params: ListRuntimeJobsInput):
+        """Job inventory rows supplying labels to the job-health surface.
+
+        Labels only -- unlike engines, a run is never dropped for having no
+        inventory row, so this is a lookup and not a filter.
+        """
+        stmt = select(
+            RuntimeJobRow.project_id.label("project_id"),
+            RuntimeJobRow.source_key.label("source_key"),
+            RuntimeJobRow.job_id.label("job_id"),
+            RuntimeJobRow.name.label("name"),
+            RuntimeJobRow.environment_name.label("environment_name"),
+            RuntimeJobRow.workspace_name.label("workspace_name"),
+            RuntimeJobRow.engine_name.label("engine_name"),
+        )
+        stmt = self._apply_scope(stmt, RuntimeJobRow.project_id, scope)
+        if params.project_id is not None:
+            stmt = stmt.where(RuntimeJobRow.project_id == params.project_id)
+        if params.source_key is not None:
+            stmt = stmt.where(RuntimeJobRow.source_key == params.source_key)
+        if params.environment_id is not None:
+            stmt = stmt.where(RuntimeJobRow.environment_id == params.environment_id)
+        if params.workspace_id is not None:
+            stmt = stmt.where(RuntimeJobRow.workspace_id == params.workspace_id)
+        if params.engine_id is not None:
+            stmt = stmt.where(RuntimeJobRow.engine_id == params.engine_id)
+        executable_kind = params.executable_kind or RuntimeExecutableKind.JOB
+        return stmt.where(RuntimeJobRow.executable_kind == executable_kind.value)
+
+    def _job_run_base(self, scope: ProjectScope, params: ListRuntimeJobsInput):
+        """Scoped job-run rows grouped by job, as a subquery."""
+        stmt = select(
+            RuntimeJobRunRow.id.label("id"),
+            RuntimeJobRunRow.project_id.label("project_id"),
+            RuntimeJobRunRow.source_key.label("source_key"),
+            RuntimeJobRunRow.job_id.label("job_id"),
+            RuntimeJobRunRow.job_name.label("job_name"),
+            RuntimeJobRunRow.environment_name.label("environment_name"),
+            RuntimeJobRunRow.workspace_name.label("workspace_name"),
+            RuntimeJobRunRow.engine_name.label("engine_name"),
+            RuntimeJobRunRow.state.label("state"),
+            RuntimeJobRunRow.started_at.label("started_at"),
+        )
+        stmt = self._apply_scope(stmt, RuntimeJobRunRow.project_id, scope)
+        if params.project_id is not None:
+            stmt = stmt.where(RuntimeJobRunRow.project_id == params.project_id)
+        if params.source_key is not None:
+            stmt = stmt.where(RuntimeJobRunRow.source_key == params.source_key)
+        if params.environment_id is not None:
+            stmt = stmt.where(RuntimeJobRunRow.environment_id == params.environment_id)
+        if params.workspace_id is not None:
+            stmt = stmt.where(RuntimeJobRunRow.workspace_id == params.workspace_id)
+        if params.engine_id is not None:
+            stmt = stmt.where(RuntimeJobRunRow.engine_id == params.engine_id)
+        executable_kind = params.executable_kind or RuntimeExecutableKind.JOB
+        return stmt.where(
+            RuntimeJobRunRow.executable_kind == executable_kind.value
+        ).subquery()
+
     async def list_job_health(
         self,
         scope: ProjectScope,
         params: ListRuntimeJobsInput,
+        *,
+        attention_only: bool = False,
     ) -> list[RuntimeJobHealth]:
-        """Return DB-derived health grouped by runtime job."""
+        """Return DB-derived health grouped by runtime job.
+
+        See `list_engine_health` for why `attention_only` belongs here.
+        """
         if self._denies_all(scope):
             return []
-        run_stmt = select(RuntimeJobRunRow)
-        run_stmt = self._apply_scope(run_stmt, RuntimeJobRunRow.project_id, scope)
-        job_stmt = select(RuntimeJobRow)
-        job_stmt = self._apply_scope(job_stmt, RuntimeJobRow.project_id, scope)
-
-        if params.project_id is not None:
-            run_stmt = run_stmt.where(RuntimeJobRunRow.project_id == params.project_id)
-            job_stmt = job_stmt.where(RuntimeJobRow.project_id == params.project_id)
-        if params.source_key is not None:
-            run_stmt = run_stmt.where(RuntimeJobRunRow.source_key == params.source_key)
-            job_stmt = job_stmt.where(RuntimeJobRow.source_key == params.source_key)
-        if params.environment_id is not None:
-            run_stmt = run_stmt.where(RuntimeJobRunRow.environment_id == params.environment_id)
-            job_stmt = job_stmt.where(RuntimeJobRow.environment_id == params.environment_id)
-        if params.workspace_id is not None:
-            run_stmt = run_stmt.where(RuntimeJobRunRow.workspace_id == params.workspace_id)
-            job_stmt = job_stmt.where(RuntimeJobRow.workspace_id == params.workspace_id)
-        if params.engine_id is not None:
-            run_stmt = run_stmt.where(RuntimeJobRunRow.engine_id == params.engine_id)
-            job_stmt = job_stmt.where(RuntimeJobRow.engine_id == params.engine_id)
-        executable_kind = params.executable_kind or RuntimeExecutableKind.JOB
-        run_stmt = run_stmt.where(RuntimeJobRunRow.executable_kind == executable_kind.value)
-        job_stmt = job_stmt.where(RuntimeJobRow.executable_kind == executable_kind.value)
-
-        run_rows = list((await self._session.execute(run_stmt)).scalars().all())
-        job_rows = list((await self._session.execute(job_stmt)).scalars().all())
-        jobs_by_key = {(row.project_id, row.source_key, row.job_id): row for row in job_rows}
-
-        grouped: dict[tuple[str, str, str], list[RuntimeJobRunRow]] = defaultdict(list)
-        for row in run_rows:
-            grouped[(row.project_id, row.source_key, row.job_id)].append(row)
-
-        summaries = [
-            _to_job_health(
-                project_id=pid,
-                source_key=source_key,
-                job_id=job_id,
-                runs=rows,
-                job=jobs_by_key.get((pid, source_key, job_id)),
-            )
-            for (pid, source_key, job_id), rows in grouped.items()
-        ]
-        summaries.sort(
-            key=lambda item: (
-                item.failure_rate,
-                item.current_failure_streak,
-                item.latest_run_at or datetime.datetime.min.replace(tzinfo=datetime.UTC),
+        jobs_by_key = {
+            (row["project_id"], row["source_key"], row["job_id"]): row
+            for row in (
+                await self._session.execute(self._job_label_select(scope, params))
+            ).mappings()
+        }
+        base = self._job_run_base(scope, params)
+        group = [base.c.project_id, base.c.source_key, base.c.job_id]
+        stmt = self._run_group_health_statement(
+            base,
+            group,
+            latest_columns=(
+                "job_name",
+                "environment_name",
+                "workspace_name",
+                "engine_name",
             ),
-            reverse=True,
+            attention_only=attention_only,
+            limit=params.limit,
         )
-        return summaries[: params.limit]
+        rows = (await self._session.execute(stmt)).mappings().all()
+        summaries: list[RuntimeJobHealth] = []
+        for row in rows:
+            job = jobs_by_key.get((row["project_id"], row["source_key"], row["job_id"]))
+            summaries.append(
+                RuntimeJobHealth(
+                    project_id=row["project_id"],
+                    source_key=row["source_key"],
+                    job_id=row["job_id"],
+                    job_name=job["name"] if job is not None else row["latest_job_name"],
+                    environment_name=(job["environment_name"] if job is not None else None)
+                    or row["latest_environment_name"],
+                    workspace_name=(job["workspace_name"] if job is not None else None)
+                    or row["latest_workspace_name"],
+                    engine_name=(job["engine_name"] if job is not None else None)
+                    or row["latest_engine_name"],
+                    total_runs=row["total_runs"],
+                    failed_runs=row["failed_runs"],
+                    failure_rate=_ratio(row["failed_runs"], row["total_runs"]) or 0.0,
+                    current_failure_streak=row["current_failure_streak"],
+                    latest_run_at=_as_utc(row["latest_run_at"]),
+                    latest_state=RuntimeExecutionState(row["latest_state"]),
+                )
+            )
+        return summaries
 
     async def list_plans(
         self,
@@ -2041,59 +2384,122 @@ class RuntimeStoreRepository:
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_plan_run(row) for row in rows]
 
+    def _plan_label_select(self, scope: ProjectScope, params: ListRuntimePlansInput):
+        """Plan inventory rows supplying labels to the plan-health surface.
+
+        `steps` is deliberately absent: it is a JSON column and no label needs it.
+        """
+        stmt = select(
+            RuntimePlanRow.project_id.label("project_id"),
+            RuntimePlanRow.source_key.label("source_key"),
+            RuntimePlanRow.plan_id.label("plan_id"),
+            RuntimePlanRow.name.label("name"),
+            RuntimePlanRow.environment_name.label("environment_name"),
+            RuntimePlanRow.workspace_name.label("workspace_name"),
+        )
+        stmt = self._apply_scope(stmt, RuntimePlanRow.project_id, scope)
+        if params.project_id is not None:
+            stmt = stmt.where(RuntimePlanRow.project_id == params.project_id)
+        if params.source_key is not None:
+            stmt = stmt.where(RuntimePlanRow.source_key == params.source_key)
+        if params.environment_id is not None:
+            stmt = stmt.where(RuntimePlanRow.environment_id == params.environment_id)
+        if params.workspace_id is not None:
+            stmt = stmt.where(RuntimePlanRow.workspace_id == params.workspace_id)
+        return stmt
+
+    def _plan_run_base(self, scope: ProjectScope, params: ListRuntimePlansInput):
+        """Scoped plan-run rows grouped by plan, as a subquery.
+
+        `step_results` is NEVER selected here. It is a JSON column whose TOAST is
+        two orders of magnitude larger than the table heap (157 MB against
+        2.5 MB on one mirrored tenant, averaging 23 kB a row), and no number on
+        this surface is derived from it. Selecting the whole ORM row made a
+        request that answers with a handful of integers de-TOAST, decompress,
+        ship and deserialize every byte of it.
+        """
+        stmt = select(
+            RuntimePlanRunRow.id.label("id"),
+            RuntimePlanRunRow.project_id.label("project_id"),
+            RuntimePlanRunRow.source_key.label("source_key"),
+            RuntimePlanRunRow.plan_id.label("plan_id"),
+            RuntimePlanRunRow.plan_name.label("plan_name"),
+            RuntimePlanRunRow.environment_name.label("environment_name"),
+            RuntimePlanRunRow.workspace_name.label("workspace_name"),
+            RuntimePlanRunRow.state.label("state"),
+            RuntimePlanRunRow.started_at.label("started_at"),
+            RuntimePlanRunRow.ended_at.label("ended_at"),
+        )
+        stmt = self._apply_scope(stmt, RuntimePlanRunRow.project_id, scope)
+        if params.project_id is not None:
+            stmt = stmt.where(RuntimePlanRunRow.project_id == params.project_id)
+        if params.source_key is not None:
+            stmt = stmt.where(RuntimePlanRunRow.source_key == params.source_key)
+        if params.environment_id is not None:
+            stmt = stmt.where(RuntimePlanRunRow.environment_id == params.environment_id)
+        if params.workspace_id is not None:
+            stmt = stmt.where(RuntimePlanRunRow.workspace_id == params.workspace_id)
+        return stmt.subquery()
+
     async def list_plan_health(
         self,
         scope: ProjectScope,
         params: ListRuntimePlansInput,
+        *,
+        attention_only: bool = False,
     ) -> list[RuntimePlanHealth]:
-        """Return DB-derived health grouped by runtime plan."""
+        """Return DB-derived health grouped by runtime plan.
+
+        See `list_engine_health` for why `attention_only` belongs here.
+        """
         if self._denies_all(scope):
             return []
-        run_stmt = select(RuntimePlanRunRow)
-        run_stmt = self._apply_scope(run_stmt, RuntimePlanRunRow.project_id, scope)
-        plan_stmt = select(RuntimePlanRow)
-        plan_stmt = self._apply_scope(plan_stmt, RuntimePlanRow.project_id, scope)
-
-        if params.project_id is not None:
-            run_stmt = run_stmt.where(RuntimePlanRunRow.project_id == params.project_id)
-            plan_stmt = plan_stmt.where(RuntimePlanRow.project_id == params.project_id)
-        if params.source_key is not None:
-            run_stmt = run_stmt.where(RuntimePlanRunRow.source_key == params.source_key)
-            plan_stmt = plan_stmt.where(RuntimePlanRow.source_key == params.source_key)
-        if params.environment_id is not None:
-            run_stmt = run_stmt.where(RuntimePlanRunRow.environment_id == params.environment_id)
-            plan_stmt = plan_stmt.where(RuntimePlanRow.environment_id == params.environment_id)
-        if params.workspace_id is not None:
-            run_stmt = run_stmt.where(RuntimePlanRunRow.workspace_id == params.workspace_id)
-            plan_stmt = plan_stmt.where(RuntimePlanRow.workspace_id == params.workspace_id)
-
-        run_rows = list((await self._session.execute(run_stmt)).scalars().all())
-        plan_rows = list((await self._session.execute(plan_stmt)).scalars().all())
-        plans_by_key = {(row.project_id, row.source_key, row.plan_id): row for row in plan_rows}
-
-        grouped: dict[tuple[str, str, str], list[RuntimePlanRunRow]] = defaultdict(list)
-        for row in run_rows:
-            grouped[(row.project_id, row.source_key, row.plan_id)].append(row)
-
-        summaries = [
-            _to_plan_health(
-                project_id=pid,
-                source_key=source_key,
-                plan_id=plan_id,
-                runs=rows,
-                plan=plans_by_key.get((pid, source_key, plan_id)),
-            )
-            for (pid, source_key, plan_id), rows in grouped.items()
-        ]
-        summaries.sort(
-            key=lambda item: (
-                item.failure_rate,
-                item.current_failure_streak,
-                item.latest_run_at or datetime.datetime.min.replace(tzinfo=datetime.UTC),
+        plans_by_key = {
+            (row["project_id"], row["source_key"], row["plan_id"]): row
+            for row in (
+                await self._session.execute(self._plan_label_select(scope, params))
+            ).mappings()
+        }
+        base = self._plan_run_base(scope, params)
+        group = [base.c.project_id, base.c.source_key, base.c.plan_id]
+        stmt = self._run_group_health_statement(
+            base,
+            group,
+            latest_columns=(
+                "plan_name",
+                "environment_name",
+                "workspace_name",
+                "ended_at",
             ),
-            reverse=True,
+            attention_only=attention_only,
+            limit=params.limit,
         )
-        return summaries[: params.limit]
+        rows = (await self._session.execute(stmt)).mappings().all()
+        summaries: list[RuntimePlanHealth] = []
+        for row in rows:
+            plan = plans_by_key.get(
+                (row["project_id"], row["source_key"], row["plan_id"])
+            )
+            summaries.append(
+                RuntimePlanHealth(
+                    project_id=row["project_id"],
+                    source_key=row["source_key"],
+                    plan_id=row["plan_id"],
+                    plan_name=plan["name"] if plan is not None else row["latest_plan_name"],
+                    environment_name=(plan["environment_name"] if plan is not None else None)
+                    or row["latest_environment_name"],
+                    workspace_name=(plan["workspace_name"] if plan is not None else None)
+                    or row["latest_workspace_name"],
+                    total_runs=row["total_runs"],
+                    failed_runs=row["failed_runs"],
+                    failure_rate=_ratio(row["failed_runs"], row["total_runs"]) or 0.0,
+                    current_failure_streak=row["current_failure_streak"],
+                    latest_run_at=_as_utc(row["latest_run_at"]),
+                    latest_finish_at=_as_utc(row["latest_ended_at"]),
+                    latest_state=RuntimeExecutionState(row["latest_state"]),
+                )
+            )
+        return summaries
 
     async def get_estate_overview(
         self,
@@ -2117,40 +2523,31 @@ class RuntimeStoreRepository:
                 workspaces_total=0,
             )
 
-        source_stmt = select(RuntimeSourceRow)
-        source_stmt = self._apply_scope(source_stmt, RuntimeSourceRow.project_id, scope)
-        engine_stmt = select(RuntimeEngineRow)
-        engine_stmt = self._apply_scope(engine_stmt, RuntimeEngineRow.project_id, scope)
-        env_stmt = select(RuntimeEnvironmentRow)
-        env_stmt = self._apply_scope(env_stmt, RuntimeEnvironmentRow.project_id, scope)
-        workspace_stmt = select(RuntimeWorkspaceRow)
-        workspace_stmt = self._apply_scope(workspace_stmt, RuntimeWorkspaceRow.project_id, scope)
-
-        if params.project_id is not None:
-            source_stmt = source_stmt.where(RuntimeSourceRow.project_id == params.project_id)
-            engine_stmt = engine_stmt.where(RuntimeEngineRow.project_id == params.project_id)
-            env_stmt = env_stmt.where(RuntimeEnvironmentRow.project_id == params.project_id)
-            workspace_stmt = workspace_stmt.where(RuntimeWorkspaceRow.project_id == params.project_id)
-        if params.source_key is not None:
-            source_stmt = source_stmt.where(RuntimeSourceRow.source_key == params.source_key)
-            engine_stmt = engine_stmt.where(RuntimeEngineRow.source_key == params.source_key)
-            env_stmt = env_stmt.where(RuntimeEnvironmentRow.source_key == params.source_key)
-            workspace_stmt = workspace_stmt.where(RuntimeWorkspaceRow.source_key == params.source_key)
-
-        sources = list((await self._session.execute(source_stmt)).scalars().all())
-        engines = list((await self._session.execute(engine_stmt)).scalars().all())
-        environments = list((await self._session.execute(env_stmt)).scalars().all())
-        workspaces = list((await self._session.execute(workspace_stmt)).scalars().all())
-        synced_values = [_as_utc(row.last_synced_at) for row in sources if row.last_synced_at]
-        engine_health = await self.list_engine_health(
-            scope,
-            ListRuntimeEnginesInput(
-                project_id=params.project_id,
-                source_key=params.source_key,
-                limit=params.limit,
-            ),
+        freshness_cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(minutes=5)
+        counts = await self._estate_inventory_counts(scope, params, freshness_cutoff)
+        # Ask for the attention subsets' SIZE directly. Counting `failed_runs > 0`
+        # over full health lists here would have re-derived "unhealthy" from a
+        # FAILED-only field and hidden every misfire and timeout from the tiles;
+        # building those lists just to call `len()` on them is what made this
+        # endpoint the slowest read on the router while answering with 383 bytes.
+        engine_params = ListRuntimeEnginesInput(
+            project_id=params.project_id,
+            source_key=params.source_key,
+            limit=params.limit,
         )
-        job_health = await self.list_job_health(
+        engine_inventory_is_populated = bool(
+            (
+                await self._session.execute(
+                    select(func.count()).select_from(
+                        self._engine_label_select(scope, engine_params).subquery()
+                    )
+                )
+            ).scalar_one()
+        )
+        engine_base = self._engine_run_base(
+            scope, engine_params, inventory_is_populated=engine_inventory_is_populated
+        )
+        job_base = self._job_run_base(
             scope,
             ListRuntimeJobsInput(
                 project_id=params.project_id,
@@ -2158,7 +2555,7 @@ class RuntimeStoreRepository:
                 limit=params.limit,
             ),
         )
-        plan_health = await self.list_plan_health(
+        plan_base = self._plan_run_base(
             scope,
             ListRuntimePlansInput(
                 project_id=params.project_id,
@@ -2166,48 +2563,127 @@ class RuntimeStoreRepository:
                 limit=params.limit,
             ),
         )
-        freshness_cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(minutes=5)
-
         return RuntimeEstateOverview(
             project_id=params.project_id,
-            sources_total=len(sources),
-            sources_failed=sum(1 for row in sources if row.status == RuntimeSyncStatus.FAILED.value),
-            sources_partial=sum(1 for row in sources if row.status == RuntimeSyncStatus.PARTIAL.value),
-            sources_demo=sum(1 for row in sources if row.is_demo),
-            engines_total=len(engines),
-            engines_online=sum(1 for row in engines if row.status == RuntimeEngineStatus.ONLINE.value),
-            engines_degraded=sum(1 for row in engines if row.status == RuntimeEngineStatus.DEGRADED.value),
-            engines_offline=sum(1 for row in engines if row.status == RuntimeEngineStatus.OFFLINE.value),
-            engines_unknown=sum(
-                1
-                for row in engines
-                if row.status in {RuntimeEngineStatus.UNKNOWN.value, RuntimeEngineStatus.STALE.value}
+            sources_total=counts["sources_total"],
+            sources_failed=counts["sources_failed"],
+            sources_partial=counts["sources_partial"],
+            sources_demo=counts["sources_demo"],
+            engines_total=counts["engines_total"],
+            engines_online=counts["engines_online"],
+            engines_degraded=counts["engines_degraded"],
+            engines_offline=counts["engines_offline"],
+            engines_unknown=counts["engines_unknown"],
+            engines_unhealthy=await self._count_attention_run_groups(
+                engine_base,
+                [engine_base.c.project_id, engine_base.c.source_key, engine_base.c.engine_id],
+                limit=params.limit,
             ),
-            engines_unhealthy=sum(
-                1
-                for row in engine_health
-                if row.failed_runs > 0 or row.current_failure_streak > 0
+            jobs_unhealthy=await self._count_attention_run_groups(
+                job_base,
+                [job_base.c.project_id, job_base.c.source_key, job_base.c.job_id],
+                limit=params.limit,
             ),
-            jobs_unhealthy=sum(
-                1
-                for row in job_health
-                if row.failed_runs > 0 or row.current_failure_streak > 0
+            plans_unhealthy=await self._count_attention_run_groups(
+                plan_base,
+                [plan_base.c.project_id, plan_base.c.source_key, plan_base.c.plan_id],
+                limit=params.limit,
             ),
-            plans_unhealthy=sum(
-                1
-                for row in plan_health
-                if row.failed_runs > 0 or row.current_failure_streak > 0
-            ),
-            sources_stale=sum(
-                1
-                for row in sources
-                if row.status in {RuntimeSyncStatus.FAILED.value, RuntimeSyncStatus.PARTIAL.value}
-                or (row.last_synced_at is not None and _as_utc(row.last_synced_at) < freshness_cutoff)
-            ),
-            environments_total=len(environments),
-            workspaces_total=len(workspaces),
-            last_synced_at=max(synced_values) if synced_values else None,
+            sources_stale=counts["sources_stale"],
+            environments_total=counts["environments_total"],
+            workspaces_total=counts["workspaces_total"],
+            last_synced_at=_as_utc(counts["last_synced_at"]),
         )
+
+    async def _estate_inventory_counts(
+        self,
+        scope: ProjectScope,
+        params: ListRuntimeInventoryInput,
+        freshness_cutoff: datetime.datetime,
+    ):
+        """The overview's inventory tiles, as one round trip of scalar subqueries.
+
+        Every value here is a count or a max, so none of it justifies reading a
+        row: this used to `select(RuntimeSourceRow)` and friends and reduce four
+        whole-row lists in Python to produce nine integers and one timestamp.
+        Each bucket is its own scoped scalar subquery over the same filter chain,
+        so a status bucket and its total can never be computed from different
+        predicates.
+        """
+
+        def aggregate(row_cls, expression, label: str, *conditions):
+            """One scoped scalar subquery over `row_cls`, filtered like every other."""
+            stmt = select(expression).select_from(row_cls)
+            stmt = self._apply_scope(stmt, row_cls.project_id, scope)
+            if params.project_id is not None:
+                stmt = stmt.where(row_cls.project_id == params.project_id)
+            if params.source_key is not None:
+                stmt = stmt.where(row_cls.source_key == params.source_key)
+            for condition in conditions:
+                stmt = stmt.where(condition)
+            return stmt.scalar_subquery().label(label)
+
+        def bucket(row_cls, label: str, *conditions):
+            return aggregate(row_cls, func.count(), label, *conditions)
+
+        stmt = select(
+            bucket(RuntimeSourceRow, "sources_total"),
+            bucket(
+                RuntimeSourceRow,
+                "sources_failed",
+                RuntimeSourceRow.status == RuntimeSyncStatus.FAILED.value,
+            ),
+            bucket(
+                RuntimeSourceRow,
+                "sources_partial",
+                RuntimeSourceRow.status == RuntimeSyncStatus.PARTIAL.value,
+            ),
+            # `is_demo` is an integer flag, and the Python it replaces counted
+            # truthiness -- so any non-zero value, not just 1.
+            bucket(RuntimeSourceRow, "sources_demo", RuntimeSourceRow.is_demo != 0),
+            bucket(
+                RuntimeSourceRow,
+                "sources_stale",
+                or_(
+                    RuntimeSourceRow.status.in_(
+                        (RuntimeSyncStatus.FAILED.value, RuntimeSyncStatus.PARTIAL.value)
+                    ),
+                    and_(
+                        RuntimeSourceRow.last_synced_at.is_not(None),
+                        RuntimeSourceRow.last_synced_at < freshness_cutoff,
+                    ),
+                ),
+            ),
+            aggregate(
+                RuntimeSourceRow, func.max(RuntimeSourceRow.last_synced_at), "last_synced_at"
+            ),
+            bucket(RuntimeEngineRow, "engines_total"),
+            bucket(
+                RuntimeEngineRow,
+                "engines_online",
+                RuntimeEngineRow.status == RuntimeEngineStatus.ONLINE.value,
+            ),
+            bucket(
+                RuntimeEngineRow,
+                "engines_degraded",
+                RuntimeEngineRow.status == RuntimeEngineStatus.DEGRADED.value,
+            ),
+            bucket(
+                RuntimeEngineRow,
+                "engines_offline",
+                RuntimeEngineRow.status == RuntimeEngineStatus.OFFLINE.value,
+            ),
+            bucket(
+                RuntimeEngineRow,
+                "engines_unknown",
+                RuntimeEngineRow.status.in_(
+                    (RuntimeEngineStatus.UNKNOWN.value, RuntimeEngineStatus.STALE.value)
+                ),
+            ),
+            bucket(RuntimeEnvironmentRow, "environments_total"),
+            bucket(RuntimeWorkspaceRow, "workspaces_total"),
+        )
+        return (await self._session.execute(stmt)).mappings().one()
 
     # --- SQL-computed aggregate rollups ---
     #
@@ -2367,6 +2843,9 @@ class RuntimeStoreRepository:
                 self._state_count(keyed.c.state, RuntimeExecutionState.FAILED).label("failed_runs"),
                 self._state_count(keyed.c.state, RuntimeExecutionState.RUNNING).label("running_runs"),
                 self._state_count(keyed.c.state, RuntimeExecutionState.UNKNOWN).label("unknown_runs"),
+                self._state_count(keyed.c.state, RuntimeExecutionState.MISFIRED).label("misfired_runs"),
+                self._state_count(keyed.c.state, RuntimeExecutionState.TERMINATED).label("terminated_runs"),
+                self._state_count(keyed.c.state, RuntimeExecutionState.TIMED_OUT).label("timed_out_runs"),
                 func.max(keyed.c.duration_ms).label("max_duration_ms"),
             )
             .group_by(keyed.c.bucket_key)
@@ -2391,6 +2870,10 @@ class RuntimeStoreRepository:
                 failed_runs=row["failed_runs"],
                 running_runs=row["running_runs"],
                 unknown_runs=row["unknown_runs"],
+                misfired_runs=row["misfired_runs"],
+                terminated_runs=row["terminated_runs"],
+                timed_out_runs=row["timed_out_runs"],
+                # FAILED only -- see the run-state semantics note at module top.
                 failure_rate=_ratio(row["failed_runs"], row["total_runs"]) or 0.0,
                 p50_duration_ms=row["p50"],
                 p95_duration_ms=row["p95"],
@@ -2459,14 +2942,36 @@ class RuntimeStoreRepository:
                 func.count().label("total_runs"),
                 self._state_count(base.c.state, RuntimeExecutionState.SUCCESS).label("success_runs"),
                 self._state_count(base.c.state, RuntimeExecutionState.FAILED).label("failed_runs"),
+                self._state_count(base.c.state, RuntimeExecutionState.MISFIRED).label("misfired_runs"),
+                self._state_count(base.c.state, RuntimeExecutionState.TERMINATED).label("terminated_runs"),
+                self._state_count(base.c.state, RuntimeExecutionState.TIMED_OUT).label("timed_out_runs"),
+                # "Started but no end recorded". A MISFIRED run never started,
+                # so it has no end by definition and is not an incomplete run --
+                # counting it here would report 417 phantom hung runs a month.
+                # RUNNING stays in, as it always has: it is genuinely unfinished.
                 func.coalesce(
-                    func.sum(case((base.c.ended_at.is_(None), 1), else_=0)), 0
+                    func.sum(
+                        case(
+                            (
+                                base.c.ended_at.is_(None)
+                                & base.c.state.notin_(
+                                    (RuntimeExecutionState.MISFIRED.value,)
+                                ),
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
                 ).label("unfinished_runs"),
                 func.min(base.c.started_at).label("first_run_at"),
                 func.max(base.c.started_at).label("last_run_at"),
                 func.max(base.c.duration_ms).label("max_duration_ms"),
                 # Anchor for the failure streak: every run after the most recent
                 # non-failed run is, by definition, part of the current streak.
+                # FAILED only, matching failure_rate -- a misfire or a timeout
+                # breaks a streak of failures the same way any other non-failed
+                # state always has.
                 func.max(
                     case((base.c.state != RuntimeExecutionState.FAILED.value, base.c.started_at))
                 ).label("last_ok_at"),
@@ -2522,8 +3027,13 @@ class RuntimeStoreRepository:
         if params.attention_only:
             # "Needs attention" is a current-state surface. Historical failures
             # followed by a healthy run are intentionally excluded.
+            #
+            # A misfired or timed-out latest run also needs a human: the work
+            # did not happen. Before the enum widened, both arrived as `unknown`
+            # and this filter dropped them, hiding 417 misfires and 251 timeouts
+            # a month on one tenant.
             stmt = stmt.where(
-                (recent.c.latest_state == RuntimeExecutionState.FAILED.value)
+                recent.c.latest_state.in_(_ATTENTION_STATE_VALUES)
                 | recent.c.latest_unfinished.is_(True)
             ).order_by(
                 recent.c.latest_unfinished.desc(),
@@ -2546,7 +3056,11 @@ class RuntimeStoreRepository:
                 total_runs=row["total_runs"],
                 success_runs=row["success_runs"],
                 failed_runs=row["failed_runs"],
+                misfired_runs=row["misfired_runs"],
+                terminated_runs=row["terminated_runs"],
+                timed_out_runs=row["timed_out_runs"],
                 unfinished_runs=row["unfinished_runs"],
+                # FAILED only -- see the run-state semantics note at module top.
                 failure_rate=_ratio(row["failed_runs"], row["total_runs"]) or 0.0,
                 current_failure_streak=row["current_failure_streak"] or 0,
                 first_run_at=_as_utc(row["first_run_at"]),
@@ -2568,10 +3082,13 @@ class RuntimeStoreRepository:
         ranked = select(
             *group_columns,
             base.c.state.label("state"),
+            # A run with no end time is only "stuck" if its state does not
+            # explain the missing end. RUNNING has not finished; MISFIRED never
+            # started. Anything else without an end really is unaccounted for.
             case(
                 (
                     (base.c.ended_at.is_(None))
-                    & (base.c.state != RuntimeExecutionState.RUNNING.value),
+                    & base.c.state.notin_(_OPEN_ENDED_STATE_VALUES),
                     True,
                 ),
                 else_=False,
@@ -2592,6 +3109,158 @@ class RuntimeStoreRepository:
             )
             .where(ranked.c.rn == 1)
             .subquery()
+        )
+
+    # --- run-group health (engines / jobs / plans) ---
+    #
+    # The three health surfaces answer the same question over three different run
+    # tables: group the runs by owner, count outcomes, measure the current failure
+    # streak, and describe the most recent run. They used to do it by fetching
+    # EVERY run row in scope and reducing in Python -- 55k `runtime_job_runs` rows
+    # per engine/job call, and for plans 5k `runtime_plan_runs` rows whose
+    # `step_results` JSON is 157 MB of TOAST, all de-TOASTed, shipped and
+    # deserialized to produce a few hundred small numbers. The aggregation now
+    # happens in the database and the run tables are never selected whole.
+    #
+    # There is one implementation because there is one rule. A second copy is how
+    # `failed_runs`, `failure_rate` and `current_failure_streak` drift apart.
+
+    @staticmethod
+    def _attention_run_count(state_column):
+        """Runs in the group that warrant a human, as a SQL aggregate.
+
+        The in-SQL form of the row-level attention test. It must stay a count over
+        `_ATTENTION_STATE_VALUES` rather than a `failed_runs > 0` test: the health
+        models report FAILED counts alone, so narrowing on those would silently
+        drop every misfire and timeout from the surfaces whose whole job is to
+        show them.
+        """
+        return func.coalesce(
+            func.sum(case((state_column.in_(_ATTENTION_STATE_VALUES), 1), else_=0)), 0
+        )
+
+    @staticmethod
+    def _same_group(left, right, group_columns: Sequence):
+        """Join predicate equating every grouping column of two grouped subqueries."""
+        return and_(
+            *[right.c[column.name] == left.c[column.name] for column in group_columns]
+        )
+
+    def _run_group_health_statement(
+        self,
+        base,
+        group_columns: Sequence,
+        *,
+        latest_columns: Sequence[str] = (),
+        with_percentiles: bool = False,
+        attention_only: bool = False,
+        limit: int,
+    ):
+        """Per-group run health as ONE statement, already ordered and page-limited.
+
+        `base` is a subquery of run rows carrying at least `id`, `state` and
+        `started_at` (plus `duration_ms` when `with_percentiles`) and every name in
+        `latest_columns`; `group_columns` are its grouping columns.
+
+        Ordering reproduces the Python reduce it replaces: failure rate, then
+        streak, then recency, all descending. `first_seen_id` is the final key on
+        purpose -- the old code sorted the grouped dict with a stable `sorted()`,
+        so equal keys kept the order the group was first seen in an unordered row
+        fetch, i.e. physical scan order. `min(id)` states that order explicitly
+        instead of inheriting it from the plan, so the same data now always pages
+        the same way.
+        """
+        failed_state = RuntimeExecutionState.FAILED.value
+        ranked_columns = [
+            base.c.id.label("id"),
+            base.c.state.label("state"),
+            base.c.started_at.label("started_at"),
+            *[base.c[name].label(name) for name in latest_columns],
+        ]
+        if with_percentiles:
+            ranked_columns.append(base.c.duration_ms.label("duration_ms"))
+        ranked = select(
+            *group_columns,
+            *ranked_columns,
+            func.row_number()
+            .over(
+                partition_by=list(group_columns),
+                order_by=[base.c.started_at.desc(), base.c.id.desc()],
+            )
+            .label("rn"),
+        ).subquery()
+        groups = [ranked.c[column.name] for column in group_columns]
+
+        def latest(column):
+            """The value this column holds on the group's most recent run.
+
+            Exactly one row per group has `rn == 1`, so the aggregate collapses to
+            that row's value -- and stays NULL when the latest run's own value is
+            NULL, which is what the caller wants: an older run's environment name
+            is not the latest run's environment name.
+            """
+            return func.max(case((ranked.c.rn == 1, column)))
+
+        aggregated = select(
+            *groups,
+            func.count().label("total_runs"),
+            self._state_count(ranked.c.state, RuntimeExecutionState.FAILED).label("failed_runs"),
+            # Every run more recent than the newest non-FAILED one is part of the
+            # current streak by definition, so the streak is that run's recency
+            # rank minus one. No non-FAILED run at all means the whole group is
+            # one unbroken streak.
+            func.coalesce(
+                func.min(case((ranked.c.state != failed_state, ranked.c.rn))) - 1,
+                func.count(),
+            ).label("current_failure_streak"),
+            latest(ranked.c.started_at).label("latest_run_at"),
+            latest(ranked.c.state).label("latest_state"),
+            *[latest(ranked.c[name]).label(f"latest_{name}") for name in latest_columns],
+            func.min(ranked.c.id).label("first_seen_id"),
+        ).group_by(*groups)
+        if attention_only:
+            aggregated = aggregated.having(self._attention_run_count(ranked.c.state) > 0)
+        aggregated = aggregated.subquery()
+
+        stmt = select(aggregated)
+        if with_percentiles:
+            percentiles = self._duration_percentiles(ranked, groups)
+            stmt = select(aggregated, percentiles.c.p50, percentiles.c.p95).join(
+                percentiles,
+                self._same_group(aggregated, percentiles, group_columns),
+                isouter=True,
+            )
+        # Cast to float rather than dividing integers: a NUMERIC division would
+        # order by a rounded quotient, so two groups whose Python failure rates
+        # differ could tie here.
+        failure_rate = cast(aggregated.c.failed_runs, Float) / aggregated.c.total_runs
+        return stmt.order_by(
+            failure_rate.desc(),
+            aggregated.c.current_failure_streak.desc(),
+            aggregated.c.latest_run_at.desc().nullslast(),
+            aggregated.c.first_seen_id.asc(),
+        ).limit(limit)
+
+    async def _count_attention_run_groups(
+        self, base, group_columns: Sequence, *, limit: int
+    ) -> int:
+        """How many groups in `base` hold at least one run needing attention.
+
+        The estate overview reports only the SIZE of the three unhealthy lists, so
+        it must not build them: no recency window, no percentiles, no ordering,
+        and -- for plans -- no `step_results`. The `limit` is applied before the
+        count because the list-returning surfaces truncate to the same page size,
+        and the overview tile has always shown the truncated figure.
+        """
+        grouped = (
+            select(*group_columns)
+            .group_by(*group_columns)
+            .having(self._attention_run_count(base.c.state) > 0)
+            .limit(limit)
+            .subquery()
+        )
+        return int(
+            (await self._session.execute(select(func.count()).select_from(grouped))).scalar_one()
         )
 
     async def count_job_reliability(
@@ -2616,7 +3285,7 @@ class RuntimeStoreRepository:
             groups = (
                 select(*[recent.c[column.name] for column in group])
                 .where(
-                    (recent.c.latest_state == RuntimeExecutionState.FAILED.value)
+                    recent.c.latest_state.in_(_ATTENTION_STATE_VALUES)
                     | recent.c.latest_unfinished.is_(True)
                 )
                 .subquery()
@@ -2624,6 +3293,133 @@ class RuntimeStoreRepository:
         else:
             groups = select(*group).distinct().subquery()
         return int((await self._session.execute(select(func.count()).select_from(groups))).scalar_one())
+
+    @staticmethod
+    def _evidence_coverage_statement(population_stmt, group_names: Sequence[str]):
+        """failed/logged/diagnosed/ceiling per group, over a BOUNDED population.
+
+        `population_stmt` must select `project_id`, `execution_id` and every
+        name in `group_names` for exactly the executions the caller reports on
+        -- already narrowed by project, window, scope and entity filters. The
+        population DRIVES the read: both evidence tables are reached only as a
+        correlated per-execution probe on `(project_id, execution_id)`.
+
+        That direction is the whole point. Both call sites previously
+        pre-aggregated the evidence table on its own and then joined the result
+        to the execution population:
+
+            LEFT JOIN (SELECT project_id, execution_id, count(id)
+                       FROM runtime_log_events
+                       WHERE project_id = :p
+                       GROUP BY project_id, execution_id) AS log_counts ...
+
+        so a question about at most a few hundred failed executions built a
+        multi-million-row grouped result first and threw nearly all of it away.
+        Measured on the live alitalend mirror: 3,763,044 log rows grouped to
+        answer for 98 failed executions -- 1,430 ms of a 1,539 ms request, and
+        the source of ~7 GB of temp-file spill on that database.
+        `_doc_evidence_log_quality` had the same shape with no project
+        predicate at all, so it grouped all 4,218,200 rows across every tenant.
+
+        It was also why the caller's `since` did not change the cost: the
+        window reached the outer execution filter but could not reach inside a
+        subquery that did not mention the population. Bounding the population
+        once, here, is what makes the window reach every part of the aggregate
+        -- and it is why this is one helper rather than a fix applied twice.
+
+        CORRELATED, not joined, and that part is load-bearing. Bounding the
+        subquery by a join to the population was measured and was NOT enough:
+        with 80 job keys the planner still chose a hash join and read the whole
+        4.2M-row table (`Seq Scan on runtime_log_events rows=4218200`, 790 ms,
+        319,339 blocks off disk), and the resulting plan cost of ~724,000 also
+        tripped `jit_above_cost` for another 571 ms of JIT compilation. A
+        sublink in the target list is executed per outer row, so the access
+        path cannot be re-planned into a scan of the fact table as the key
+        count grows.
+
+        Row counts, not indexes, were the defect:
+        `uq_runtime_log_events_project_exec_ordinal_fp` and
+        `uq_runtime_incidents_project_exec` already serve the per-execution
+        lookup this shape performs. Nothing was added.
+        """
+        population = population_stmt.subquery("evidence_population")
+        # A CAPPED count, and only two questions are ever asked of it: "any
+        # logs at all" and "at the capture ceiling". Both are answered exactly
+        # by min(count, ceiling), so the probe stops reading at the ceiling.
+        #
+        # That matters because log volume per execution is extremely skewed --
+        # measured here, 158 distinct executions hold 4,218,200 rows and the
+        # largest single execution has 430,800. An uncapped probe over a failed
+        # execution with a 400k-line log would read every one of those index
+        # entries to learn a fact the ceiling already settles. It also keeps
+        # the planner's cost estimate off `jit_above_cost`: with the uncapped
+        # form the estimate reached 38M (the table has n_distinct=55 for
+        # `execution_id`, so it expects ~19k rows per probe) and Postgres spent
+        # 222 ms of a 238 ms statement compiling the plan.
+        #
+        # Never expose this value: it is a bounded indicator, not a log count.
+        capped_lines = (
+            select(RuntimeLogEventRow.id)
+            .where(RuntimeLogEventRow.project_id == population.c.project_id)
+            .where(RuntimeLogEventRow.execution_id == population.c.execution_id)
+            .correlate(population)
+            .limit(_LOG_CAPTURE_CEILING_LINES)
+            .subquery("capped_log_lines")
+        )
+        log_lines = (
+            select(func.count()).select_from(capped_lines).scalar_subquery()
+        )
+        # `count(*) = 0` reproduces the old LEFT JOIN's outcome exactly: a
+        # zero-log execution produced no `log_counts` row under GROUP BY, so it
+        # arrived as NULL and was excluded from `logged` the same way.
+        #
+        # Rendered as 1/0 rather than a bare boolean so the CASE below means
+        # the same thing under both dialects.
+        diagnosed = case(
+            (
+                select(RuntimeIncidentRow.id)
+                .where(RuntimeIncidentRow.project_id == population.c.project_id)
+                .where(RuntimeIncidentRow.execution_id == population.c.execution_id)
+                .where(RuntimeIncidentRow.confidence.in_(_USEFUL_DIAGNOSIS_CONFIDENCES))
+                .where(RuntimeIncidentRow.pattern_id.notin_(_UNINFORMATIVE_PATTERN_IDS))
+                .correlate(population)
+                .exists(),
+                1,
+            ),
+            else_=0,
+        )
+        probed = select(
+            *[population.c[name] for name in group_names],
+            population.c.execution_id.label("execution_id"),
+            log_lines.label("log_lines"),
+            diagnosed.label("diagnosed"),
+        ).subquery("evidence_probed")
+        group = [probed.c[name] for name in group_names]
+        return select(
+            *group,
+            # DISTINCT is defensive: `uq_runtime_executions_project_exec` makes
+            # the population unique per (project, execution) already. It is
+            # retained because a caller grouping by job name ALONE (the shared
+            # documentation read) legitimately folds two projects together, and
+            # the previous shape counted that the same way.
+            func.count(func.distinct(probed.c.execution_id)).label("failed"),
+            func.count(
+                func.distinct(case((probed.c.log_lines > 0, probed.c.execution_id)))
+            ).label("logged"),
+            func.count(
+                func.distinct(case((probed.c.diagnosed == 1, probed.c.execution_id)))
+            ).label("diagnosed"),
+            func.count(
+                func.distinct(
+                    case(
+                        (
+                            probed.c.log_lines >= _LOG_CAPTURE_CEILING_LINES,
+                            probed.c.execution_id,
+                        )
+                    )
+                )
+            ).label("ceiling"),
+        ).group_by(*group)
 
     async def list_job_operational_insights(
         self,
@@ -2663,82 +3459,32 @@ class RuntimeStoreRepository:
                 for source_key, job_name in keys
             )
         )
-        log_counts = (
+        # The population, not the evidence tables, is what gets narrowed: the
+        # window, the project, the scope and the page's own job keys all land
+        # here, and `_evidence_coverage_statement` reaches log events and
+        # incidents only through it.
+        population_stmt = (
             select(
-                RuntimeLogEventRow.project_id.label("project_id"),
-                RuntimeLogEventRow.execution_id.label("execution_id"),
-                func.count(RuntimeLogEventRow.id).label("log_lines"),
-            )
-            .where(RuntimeLogEventRow.project_id == project_id)
-            .group_by(RuntimeLogEventRow.project_id, RuntimeLogEventRow.execution_id)
-            .subquery()
-        )
-        useful_diagnoses = (
-            select(
-                RuntimeIncidentRow.project_id.label("project_id"),
-                RuntimeIncidentRow.execution_id.label("execution_id"),
-            )
-            .where(RuntimeIncidentRow.project_id == project_id)
-            .where(RuntimeIncidentRow.confidence.in_(("high", "medium")))
-            .where(RuntimeIncidentRow.pattern_id.notin_(("generic.unknown", "exception.generic")))
-            .distinct()
-            .subquery()
-        )
-        coverage_stmt = (
-            select(
-                RuntimeExecutionRow.source_key,
-                RuntimeExecutionRow.job_name,
-                func.count(func.distinct(RuntimeExecutionRow.execution_id)).label("failed"),
-                func.count(
-                    func.distinct(
-                        case(
-                            (log_counts.c.execution_id.is_not(None), RuntimeExecutionRow.execution_id)
-                        )
-                    )
-                ).label("logged"),
-                func.count(
-                    func.distinct(
-                        case(
-                            (
-                                useful_diagnoses.c.execution_id.is_not(None),
-                                RuntimeExecutionRow.execution_id,
-                            )
-                        )
-                    )
-                ).label("diagnosed"),
-                func.count(
-                    func.distinct(
-                        case(
-                            (log_counts.c.log_lines >= 10_000, RuntimeExecutionRow.execution_id)
-                        )
-                    )
-                ).label("ceiling"),
-            )
-            .outerjoin(
-                log_counts,
-                and_(
-                    log_counts.c.project_id == RuntimeExecutionRow.project_id,
-                    log_counts.c.execution_id == RuntimeExecutionRow.execution_id,
-                ),
-            )
-            .outerjoin(
-                useful_diagnoses,
-                and_(
-                    useful_diagnoses.c.project_id == RuntimeExecutionRow.project_id,
-                    useful_diagnoses.c.execution_id == RuntimeExecutionRow.execution_id,
-                ),
+                RuntimeExecutionRow.project_id.label("project_id"),
+                RuntimeExecutionRow.execution_id.label("execution_id"),
+                RuntimeExecutionRow.source_key.label("source_key"),
+                RuntimeExecutionRow.job_name.label("job_name"),
             )
             .where(RuntimeExecutionRow.project_id == project_id)
             .where(RuntimeExecutionRow.state == RuntimeExecutionState.FAILED.value)
             .where(RuntimeExecutionRow.executable_kind == RuntimeExecutableKind.JOB.value)
             .where(key_filter)
-            .group_by(RuntimeExecutionRow.source_key, RuntimeExecutionRow.job_name)
         )
         if since is not None:
-            coverage_stmt = coverage_stmt.where(RuntimeExecutionRow.started_at >= since)
+            population_stmt = population_stmt.where(RuntimeExecutionRow.started_at >= since)
         if until is not None:
-            coverage_stmt = coverage_stmt.where(RuntimeExecutionRow.started_at <= until)
-        coverage_stmt = self._apply_scope(coverage_stmt, RuntimeExecutionRow.project_id, scope)
+            population_stmt = population_stmt.where(RuntimeExecutionRow.started_at <= until)
+        population_stmt = self._apply_scope(
+            population_stmt, RuntimeExecutionRow.project_id, scope
+        )
+        coverage_stmt = self._evidence_coverage_statement(
+            population_stmt, ("source_key", "job_name")
+        )
         coverage = {
             (row.source_key, row.job_name): (
                 int(row.failed or 0),
@@ -2782,8 +3528,8 @@ class RuntimeStoreRepository:
             .where(RuntimeExecutionRow.project_id == project_id)
             .where(RuntimeExecutionRow.executable_kind == RuntimeExecutableKind.JOB.value)
             .where(key_filter)
-            .where(RuntimeIncidentRow.confidence.in_(("high", "medium")))
-            .where(RuntimeIncidentRow.pattern_id.notin_(("generic.unknown", "exception.generic")))
+            .where(RuntimeIncidentRow.confidence.in_(_USEFUL_DIAGNOSIS_CONFIDENCES))
+            .where(RuntimeIncidentRow.pattern_id.notin_(_UNINFORMATIVE_PATTERN_IDS))
         )
         if since is not None:
             incident_stmt = incident_stmt.where(RuntimeExecutionRow.started_at >= since)
@@ -3418,87 +4164,49 @@ class RuntimeStoreRepository:
         truncation signal.  It may undercount truncation if a future provider
         lowers its own cap, but it never labels a complete shorter log as cut.
 
-        The two derived subqueries carry NO project predicate of their own.
-        `runtime_log_events` and `runtime_incidents` are reachable only through
-        the execution population, which is already scoped, and both joins equate
-        `project_id` column-to-column -- so scope arrives through the join and a
-        second literal filter would be a duplicate rule to keep in step. That
-        matters here more than elsewhere: the insights tables carry no
-        `source_key`, so the join IS their only scoping mechanism.
+        `runtime_log_events` and `runtime_incidents` carry NO project predicate
+        of their own. They are reachable only through the execution population
+        below, which is already scoped, and both joins equate `project_id`
+        column-to-column -- so scope arrives through the join and a second
+        literal filter would be a duplicate rule to keep in step. That matters
+        here more than elsewhere: the insights tables carry no `source_key`, so
+        the join IS their only scoping mechanism.
+
+        Reaching them THROUGH the population is also what bounds the read.
+        Aggregating them first and joining afterwards -- the previous shape --
+        grouped every log row in the database (4.2M across all tenants here,
+        with no project predicate at all) to answer for the matched jobs'
+        failures in the caller's window. See `_evidence_coverage_statement`.
+
+        Grouped by job name ALONE, deliberately: the result is keyed by name, so
+        under a shared read a project id in the GROUP BY would return two rows
+        for one key and the dict below would keep whichever arrived last. Same
+        rule as `_doc_evidence_durations`.
         """
-        log_counts = (
+        population_stmt = (
             select(
-                RuntimeLogEventRow.project_id.label("project_id"),
-                RuntimeLogEventRow.execution_id.label("execution_id"),
-                func.count(RuntimeLogEventRow.id).label("log_lines"),
-            )
-            .group_by(RuntimeLogEventRow.project_id, RuntimeLogEventRow.execution_id)
-            .subquery()
-        )
-        diagnosed = (
-            select(
-                RuntimeIncidentRow.project_id.label("project_id"),
-                RuntimeIncidentRow.execution_id.label("execution_id"),
-            )
-            .where(RuntimeIncidentRow.confidence.in_(("high", "medium")))
-            .where(RuntimeIncidentRow.pattern_id.notin_(("generic.unknown", "exception.generic")))
-            .distinct()
-            .subquery()
-        )
-        stmt = (
-            select(
-                RuntimeExecutionRow.job_name,
-                func.count(func.distinct(RuntimeExecutionRow.execution_id)).label("failed"),
-                func.count(
-                    func.distinct(
-                        case(
-                            (log_counts.c.execution_id.is_not(None), RuntimeExecutionRow.execution_id)
-                        )
-                    )
-                ).label("logged"),
-                func.count(
-                    func.distinct(
-                        case(
-                            (diagnosed.c.execution_id.is_not(None), RuntimeExecutionRow.execution_id)
-                        )
-                    )
-                ).label("diagnosed"),
-                func.count(
-                    func.distinct(
-                        case(
-                            (log_counts.c.log_lines >= 10_000, RuntimeExecutionRow.execution_id)
-                        )
-                    )
-                ).label("ceiling"),
-            )
-            .outerjoin(
-                log_counts,
-                and_(
-                    log_counts.c.project_id == RuntimeExecutionRow.project_id,
-                    log_counts.c.execution_id == RuntimeExecutionRow.execution_id,
-                ),
-            )
-            .outerjoin(
-                diagnosed,
-                and_(
-                    diagnosed.c.project_id == RuntimeExecutionRow.project_id,
-                    diagnosed.c.execution_id == RuntimeExecutionRow.execution_id,
-                ),
+                RuntimeExecutionRow.project_id.label("project_id"),
+                RuntimeExecutionRow.execution_id.label("execution_id"),
+                RuntimeExecutionRow.job_name.label("job_name"),
             )
             .where(RuntimeExecutionRow.job_name.in_(job_names))
             .where(RuntimeExecutionRow.executable_kind == RuntimeExecutableKind.JOB.value)
             .where(RuntimeExecutionRow.started_at >= since)
             .where(RuntimeExecutionRow.state == RuntimeExecutionState.FAILED.value)
-            .group_by(RuntimeExecutionRow.job_name)
         )
-        stmt = self._apply_read_projects(stmt, RuntimeExecutionRow.project_id, project_ids)
+        population_stmt = self._apply_read_projects(
+            population_stmt, RuntimeExecutionRow.project_id, project_ids
+        )
         if environment_ids is not None:
-            stmt = stmt.where(
+            population_stmt = population_stmt.where(
                 RuntimeExecutionRow.execution_id.in_(
                     self._environment_execution_ids(None, environment_ids, project_ids)
                 )
             )
-        stmt = self._apply_scope(stmt, RuntimeExecutionRow.project_id, scope)
+        population_stmt = self._apply_scope(
+            population_stmt, RuntimeExecutionRow.project_id, scope
+        )
+        stmt = self._evidence_coverage_statement(population_stmt, ("job_name",))
         return {
             job_name: RuntimeDocLogQuality(
                 failed_executions=int(failed or 0),
@@ -3569,8 +4277,8 @@ class RuntimeStoreRepository:
             .where(RuntimeExecutionRow.job_name.in_(job_names))
             .where(RuntimeExecutionRow.executable_kind == RuntimeExecutableKind.JOB.value)
             .where(RuntimeExecutionRow.started_at >= since)
-            .where(RuntimeIncidentRow.confidence.in_(("high", "medium")))
-            .where(RuntimeIncidentRow.pattern_id.notin_(("generic.unknown", "exception.generic")))
+            .where(RuntimeIncidentRow.confidence.in_(_USEFUL_DIAGNOSIS_CONFIDENCES))
+            .where(RuntimeIncidentRow.pattern_id.notin_(_UNINFORMATIVE_PATTERN_IDS))
             .order_by(RuntimeExecutionRow.job_name, RuntimeIncidentRow.first_bad_at.desc())
         )
         stmt = self._apply_read_projects(stmt, RuntimeExecutionRow.project_id, project_ids)
@@ -3818,6 +4526,20 @@ class RuntimeStoreRepository:
 
         The join is on (project_id, execution_id): a source owns its execution ids, so
         this is the same key the metric write-port uses.
+
+        The caller's window is deliberately NOT passed to
+        `_scoped_metric_base`, and that is not the same omission as the one
+        `_evidence_coverage_statement` documents. The two windows are defined
+        on different columns -- the execution's `started_at` and the metric's
+        `measured_at` -- so a metric recorded just after an in-window run
+        would be dropped by a `measured_at` predicate, and "rows moved by runs
+        in this window" would silently stop meaning that. The metric side
+        inherits the window through this INNER join, which is the correct
+        single definition. The bounding rule generalises as "reach the fact
+        table THROUGH the population", not "copy the window into every
+        subquery". Volume is a non-issue here regardless:
+        `runtime_component_metrics` is ~27k rows against `runtime_log_events`'
+        4.2M.
         """
         executions = self._scoped_execution_base(
             scope,
@@ -4276,6 +4998,9 @@ class RuntimeStoreRepository:
         row.job_name = run.job_name
         row.execution_id = run.execution_id
         row.state = run.state.value
+        row.raw_state = run.raw_state
+        row.misfire_reason = run.misfire_reason
+        row.execution_type = run.execution_type
         row.executable_kind = run.executable_kind.value
         row.environment_id = run.environment_id
         row.environment_name = run.environment_name
@@ -4358,6 +5083,9 @@ class RuntimeStoreRepository:
         row.plan_id = run.plan_id
         row.plan_name = run.plan_name
         row.state = run.state.value
+        row.raw_state = run.raw_state
+        row.misfire_reason = run.misfire_reason
+        row.execution_type = run.execution_type
         row.environment_id = run.environment_id
         row.environment_name = run.environment_name
         row.workspace_id = run.workspace_id
@@ -4387,6 +5115,9 @@ class RuntimeStoreRepository:
         row.job_name = execution.job_name
         row.project_name = execution.project_name
         row.state = execution.state.value
+        row.raw_state = execution.raw_state
+        row.misfire_reason = execution.misfire_reason
+        row.execution_type = execution.execution_type
         row.executable_kind = execution.executable_kind.value
         row.started_at = execution.started_at
         row.ended_at = execution.ended_at
@@ -4529,6 +5260,9 @@ def _to_execution(row: RuntimeExecutionRow) -> RuntimeExecution:
         job_name=row.job_name,
         project_name=row.project_name,
         state=RuntimeExecutionState(row.state),
+        raw_state=row.raw_state,
+        misfire_reason=row.misfire_reason,
+        execution_type=row.execution_type,
         executable_kind=RuntimeExecutableKind(row.executable_kind),
         started_at=_as_utc(row.started_at),
         ended_at=_as_utc(row.ended_at),
@@ -4740,6 +5474,9 @@ def _to_job_run(row: RuntimeJobRunRow) -> RuntimeJobRun:
         source_key=row.source_key,
         execution_id=row.execution_id,
         state=RuntimeExecutionState(row.state),
+        raw_state=row.raw_state,
+        misfire_reason=row.misfire_reason,
+        execution_type=row.execution_type,
         executable_kind=RuntimeExecutableKind(row.executable_kind),
         environment_id=row.environment_id,
         environment_name=row.environment_name,
@@ -4832,6 +5569,9 @@ def _to_plan_run(row: RuntimePlanRunRow) -> RuntimePlanRun:
         plan_name=row.plan_name,
         source_key=row.source_key,
         state=RuntimeExecutionState(row.state),
+        raw_state=row.raw_state,
+        misfire_reason=row.misfire_reason,
+        execution_type=row.execution_type,
         environment_id=row.environment_id,
         environment_name=row.environment_name,
         workspace_id=row.workspace_id,
@@ -4844,6 +5584,15 @@ def _to_plan_run(row: RuntimePlanRunRow) -> RuntimePlanRun:
 
 
 def _percentile(values: list[int], percentile: float) -> int | None:
+    """Reference implementation of the discrete percentile this module reports.
+
+    No read path calls it any more -- every percentile is computed in SQL by
+    `_percentile_at_rank`. It stays as the executable definition of "the value at
+    the ceil-ranked position", and
+    `tests/test_runtime/test_run_group_health.py::TestDurationPercentiles`
+    asserts the SQL form agrees with it for every group size. Delete one and the
+    other loses its specification.
+    """
     if not values:
         return None
     ordered = sorted(values)
@@ -4852,172 +5601,3 @@ def _percentile(values: list[int], percentile: float) -> int | None:
     rank = math.ceil((percentile / 100.0) * len(ordered)) - 1
     return ordered[max(0, min(rank, len(ordered) - 1))]
 
-
-def _to_health_summary(
-    *,
-    project_id: str,
-    source_key: str,
-    job_name: str,
-    executions: list[RuntimeExecutionRow],
-    metrics: list[RuntimeComponentMetricRow],
-    incidents: list[RuntimeIncidentRow],
-) -> RuntimeHealthSummary:
-    ordered = sorted(executions, key=lambda row: _as_utc(row.started_at), reverse=True)
-    failed = [row for row in ordered if row.state == RuntimeExecutionState.FAILED.value]
-    streak = 0
-    for row in ordered:
-        if row.state == RuntimeExecutionState.FAILED.value:
-            streak += 1
-        else:
-            break
-    durations = [row.duration_ms for row in ordered if row.duration_ms is not None]
-    rows_total_values = [row.rows_total or 0 for row in metrics if row.rows_total is not None]
-    rows_rejected_values = [
-        row.rows_rejected or 0 for row in metrics if row.rows_rejected is not None
-    ]
-    rows_total = sum(rows_total_values) if rows_total_values else None
-    rows_rejected = sum(rows_rejected_values) if rows_rejected_values else None
-    reject_ratio = (
-        rows_rejected / rows_total
-        if rows_total is not None and rows_total > 0 and rows_rejected is not None
-        else None
-    )
-    recurrence_count = None
-    signature_hash = None
-    if incidents:
-        latest = max(incidents, key=lambda row: _as_utc(row.first_bad_at) or datetime.datetime.min.replace(tzinfo=datetime.UTC))
-        signature_hash = latest.signature_hash
-        recurrence_count = sum(1 for row in incidents if row.signature_hash == signature_hash)
-    return RuntimeHealthSummary(
-        project_id=project_id,
-        source_key=source_key,
-        job_name=job_name,
-        total_executions=len(ordered),
-        failed_executions=len(failed),
-        failure_rate=(len(failed) / len(ordered)) if ordered else 0.0,
-        current_failure_streak=streak,
-        last_failure_at=_as_utc(failed[0].started_at) if failed else None,
-        last_execution_at=_as_utc(ordered[0].started_at) if ordered else None,
-        p50_duration_ms=_percentile(durations, 50),
-        p95_duration_ms=_percentile(durations, 95),
-        rows_total=rows_total,
-        rows_rejected=rows_rejected,
-        reject_ratio=reject_ratio,
-        recurrence_count=recurrence_count,
-        signature_hash=signature_hash,
-    )
-
-
-def _to_job_health(
-    *,
-    project_id: str,
-    source_key: str,
-    job_id: str,
-    runs: list[RuntimeJobRunRow],
-    job: RuntimeJobRow | None,
-) -> RuntimeJobHealth:
-    ordered = sorted(runs, key=lambda row: _as_utc(row.started_at), reverse=True)
-    failed = [row for row in ordered if row.state == RuntimeExecutionState.FAILED.value]
-    streak = 0
-    for row in ordered:
-        if row.state == RuntimeExecutionState.FAILED.value:
-            streak += 1
-        else:
-            break
-    latest = ordered[0] if ordered else None
-    fallback_name = latest.job_name if latest is not None else job_id
-    return RuntimeJobHealth(
-        project_id=project_id,
-        source_key=source_key,
-        job_id=job_id,
-        job_name=job.name if job is not None else fallback_name,
-        environment_name=(job.environment_name if job is not None else None)
-        or (latest.environment_name if latest is not None else None),
-        workspace_name=(job.workspace_name if job is not None else None)
-        or (latest.workspace_name if latest is not None else None),
-        engine_name=(job.engine_name if job is not None else None)
-        or (latest.engine_name if latest is not None else None),
-        total_runs=len(ordered),
-        failed_runs=len(failed),
-        failure_rate=(len(failed) / len(ordered)) if ordered else 0.0,
-        current_failure_streak=streak,
-        latest_run_at=_as_utc(latest.started_at) if latest is not None else None,
-        latest_state=RuntimeExecutionState(latest.state) if latest is not None else None,
-    )
-
-
-def _to_engine_health(
-    *,
-    project_id: str,
-    source_key: str,
-    engine_id: str,
-    runs: list[RuntimeJobRunRow],
-    engine: RuntimeEngineRow | None,
-) -> RuntimeEngineHealth:
-    ordered = sorted(runs, key=lambda row: _as_utc(row.started_at), reverse=True)
-    failed = [row for row in ordered if row.state == RuntimeExecutionState.FAILED.value]
-    streak = 0
-    for row in ordered:
-        if row.state == RuntimeExecutionState.FAILED.value:
-            streak += 1
-        else:
-            break
-    latest = ordered[0] if ordered else None
-    durations = [row.duration_ms for row in ordered if row.duration_ms is not None]
-    fallback_name = latest.engine_name if latest is not None and latest.engine_name else engine_id
-    return RuntimeEngineHealth(
-        project_id=project_id,
-        source_key=source_key,
-        engine_id=engine_id,
-        engine_name=engine.name if engine is not None else fallback_name,
-        engine_status=RuntimeEngineStatus(engine.status) if engine is not None else None,
-        environment_name=(engine.environment_name if engine is not None else None)
-        or (latest.environment_name if latest is not None else None),
-        workspace_name=(engine.workspace_name if engine is not None else None)
-        or (latest.workspace_name if latest is not None else None),
-        total_runs=len(ordered),
-        failed_runs=len(failed),
-        failure_rate=(len(failed) / len(ordered)) if ordered else 0.0,
-        current_failure_streak=streak,
-        latest_run_at=_as_utc(latest.started_at) if latest is not None else None,
-        latest_state=RuntimeExecutionState(latest.state) if latest is not None else None,
-        p50_duration_ms=_percentile(durations, 50),
-        p95_duration_ms=_percentile(durations, 95),
-    )
-
-
-def _to_plan_health(
-    *,
-    project_id: str,
-    source_key: str,
-    plan_id: str,
-    runs: list[RuntimePlanRunRow],
-    plan: RuntimePlanRow | None,
-) -> RuntimePlanHealth:
-    ordered = sorted(runs, key=lambda row: _as_utc(row.started_at), reverse=True)
-    failed = [row for row in ordered if row.state == RuntimeExecutionState.FAILED.value]
-    streak = 0
-    for row in ordered:
-        if row.state == RuntimeExecutionState.FAILED.value:
-            streak += 1
-        else:
-            break
-    latest = ordered[0] if ordered else None
-    fallback_name = latest.plan_name if latest is not None else plan_id
-    return RuntimePlanHealth(
-        project_id=project_id,
-        source_key=source_key,
-        plan_id=plan_id,
-        plan_name=plan.name if plan is not None else fallback_name,
-        environment_name=(plan.environment_name if plan is not None else None)
-        or (latest.environment_name if latest is not None else None),
-        workspace_name=(plan.workspace_name if plan is not None else None)
-        or (latest.workspace_name if latest is not None else None),
-        total_runs=len(ordered),
-        failed_runs=len(failed),
-        failure_rate=(len(failed) / len(ordered)) if ordered else 0.0,
-        current_failure_streak=streak,
-        latest_run_at=_as_utc(latest.started_at) if latest is not None else None,
-        latest_finish_at=_as_utc(latest.ended_at) if latest is not None else None,
-        latest_state=RuntimeExecutionState(latest.state) if latest is not None else None,
-    )

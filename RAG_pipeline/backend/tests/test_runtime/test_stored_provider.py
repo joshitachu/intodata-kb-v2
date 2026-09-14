@@ -118,12 +118,22 @@ class TestStoredProviderEstateTools:
 
         result = await provider.list_runtime_unhealthy(ListRuntimeInventoryInput(), ctx)
 
-        assert result.overview.engines_unhealthy == 1
-        assert result.overview.jobs_unhealthy == 1
+        # A misfired and a timed-out run each make their job -- and the engine
+        # hosting it -- something a human should look at, even though neither
+        # is a FAILED run.
+        assert result.overview.engines_unhealthy == 2
+        assert result.overview.jobs_unhealthy == 3
         assert result.overview.plans_unhealthy == 1
         assert result.sources[0].last_synced_at == _T0
-        assert [engine.engine_name for engine in result.unhealthy_engines] == ["remote-engine-prod-02"]
-        assert [job.job_name for job in result.unhealthy_jobs] == ["esb_order_sync_route"]
+        assert {engine.engine_name for engine in result.unhealthy_engines} == {
+            "remote-engine-prod-01",
+            "remote-engine-prod-02",
+        }
+        assert {job.job_name for job in result.unhealthy_jobs} == {
+            "esb_order_sync_route",
+            "esb_inventory_sync_task",
+            "esb_nightly_reconcile_batch",
+        }
         assert [plan.plan_name for plan in result.unhealthy_plans] == ["nightly_order_flow"]
 
     async def test_estate_tool_arguments_cannot_widen_project_scope(self, db_session):

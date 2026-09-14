@@ -198,7 +198,9 @@ the visible dashboard path.
 
 Generation runs persist:
 
-- `run_verdict`: `draft`, `failed`, `published`, `published_with_rag_error`, or `client_ready`
+- `run_verdict`: `draft`, `failed`, `published`, `published_with_rag_error`, `client_ready`,
+  `held_manual_review` (reingestion correctness gate held the swap) or `held_client_readiness`
+  (enterprise Talend client-readiness verdict held the swap; `docs_staging/` is the labelled draft)
 - `gate_results`: JSON copy of the enterprise gate report
 
 Operational meaning:
@@ -207,6 +209,14 @@ Operational meaning:
 - `published` means docs saved but did not meet full client-ready conditions.
 - `draft` means intentionally non-enterprise output.
 - `failed` means docs were not swapped into `docs/`; inspect preserved `docs_staging/`.
+- `held_client_readiness` means an enterprise Talend run (`generation_profile.contract =
+  talend-enterprise-v1`) completed but `_assessment/publication_verdict.json` lists blocking
+  findings (missing dossier, mapping table not embedded in full, internal-path leakage,
+  undisclosed contradiction, unplaced design, open review finding). Nothing was swapped or
+  pushed to RAG; the previous baseline stays published. Fix the findings and resume the run.
+  An enterprise run that stops on a budget ceiling or an incomplete phase is `failed` with
+  `_assessment/enterprise_run_receipt.json` naming the stop reason; resuming continues from
+  the durable ledgers under `_evidence_registry/enterprise/`.
 
 ## Scan Output Contract
 

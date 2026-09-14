@@ -35,6 +35,23 @@ def test_jdbc_url_redacted():
     assert "[CONNECTION_STRING_REDACTED]" in result
 
 
+def test_descriptor_capture_preserves_xml_encoded_expression_quotes():
+    credential_filter = CredentialFilter()
+    raw = (
+        'expression="&quot;jdbc:sqlserver://user:secret@example.invalid/db&quot;"'
+    )
+
+    filtered = credential_filter.filter_text(
+        raw,
+        filename="Job.item",
+        capture_uri_descriptors=True,
+    )
+    normalized = credential_filter.normalize_redaction_tokens(filtered)
+
+    assert normalized == 'expression="&quot;[CONNECTION_STRING_REDACTED]&quot;"'
+    assert "secret" not in normalized
+
+
 def test_credential_path_redacted():
     f = CredentialFilter()
     text = 'value="/path/to/gcp.json"'
@@ -922,3 +939,54 @@ def test_describe_value_plain_text_returns_none():
     """Ordinary non-connection text yields nothing determinable."""
     assert CredentialFilter.describe_value("batch_size=1000") is None
     assert CredentialFilter.describe_value("just some ordinary text value") is None
+
+
+# --- Redaction must stay linear in token length -----------------------------
+#
+# The credential-path pattern has two unbounded `[^\s"'<>]*` runs around an
+# alternation. Unanchored, it is retried at every position inside every
+# delimiter-free token, which is quadratic in token length. Measured on a real
+# Talend estate before the token-start anchor was added: a 16 KB metadata file
+# cost 1.08s for zero matches and `maximo_po_0.1.item` cost 60.3s, so a
+# sanitized-workspace pass over 6,768 files spent 89.6s in this one pattern.
+# These tests pin the complexity, because the symptom is a scan that looks
+# hung rather than a scan that fails.
+
+def test_long_delimiter_free_token_does_not_blow_up_redaction():
+    import time
+
+    from intodoc.scanner.credential_filter import CredentialFilter
+
+    # One 40,000-character token with no whitespace, quotes or angle brackets
+    # and no credential marker: the worst case, because nothing matches and the
+    # engine has no early exit.
+    text = '<a p="' + ("segment/" * 5_000) + 'x">'
+    cred_filter = CredentialFilter()
+    start = time.perf_counter()
+    cred_filter.filter_text(text, filename="big.xml")
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"redaction went superlinear on one long token ({elapsed:.2f}s)"
+
+
+def test_long_token_carrying_a_credential_marker_is_still_redacted():
+    from intodoc.scanner.credential_filter import CredentialFilter
+
+    prefix = "segment/" * 2_000
+    text = f'<a p="{prefix}service_account.json">'
+    cleaned = CredentialFilter().filter_text(text, filename="big.xml")
+    assert "[CREDENTIAL_PATH]" in cleaned
+    assert "service_account.json" not in cleaned
+    assert prefix not in cleaned, "the whole token is replaced, not just the marker"
+
+
+def test_credential_marker_is_matched_at_a_token_start_after_any_delimiter():
+    from intodoc.scanner.credential_filter import CredentialFilter
+
+    cred_filter = CredentialFilter()
+    for text in (
+        "keys/app.pem",
+        '<file>secret.key</file>',
+        "path=/etc/Credentials/x",
+        'a="b" /opt/gcp.json',
+    ):
+        assert "[CREDENTIAL_PATH]" in cred_filter.filter_text(text, filename="t.xml"), text

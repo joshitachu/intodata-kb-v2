@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { fetchJson } from "@/lib/authedFetch";
 import {
   CompanyStatus,
   CompanyStatusSchema,
@@ -12,34 +13,43 @@ import {
 } from "@/types/onboarding";
 
 async function fetchCompanyStatus(): Promise<CompanyStatus> {
-  const res = await fetch("/api/onboarding/company/status", { cache: "no-store" });
-  if (!res.ok) throw new Error("Failed to fetch company onboarding status");
-  return CompanyStatusSchema.parse(await res.json());
+  return CompanyStatusSchema.parse(
+    await fetchJson<unknown>("/api/onboarding/company/status", {
+      cache: "no-store",
+      fallbackError: "Failed to fetch company onboarding status",
+    }),
+  );
 }
 
 async function putCompanyStep<T>(step: string, body: T): Promise<CompanyStatus> {
-  const res = await fetch(`/api/onboarding/company/step/${step}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error((data as { detail?: string }).detail || `Failed to save ${step}`);
-  }
-  return CompanyStatusSchema.parse(await res.json());
+  // `fetchJson` already unwraps `error` / `detail` / `detail.message` from the
+  // response body, so the manual `detail` read this used to do is gone.
+  return CompanyStatusSchema.parse(
+    await fetchJson<unknown>(`/api/onboarding/company/step/${step}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      fallbackError: `Failed to save ${step}`,
+    }),
+  );
 }
 
 async function postCompanyComplete(): Promise<CompleteCompanyWizardResponse> {
-  const res = await fetch("/api/onboarding/company/complete", { method: "POST" });
-  if (!res.ok) throw new Error("Failed to complete company wizard");
-  return CompleteCompanyWizardResponseSchema.parse(await res.json());
+  return CompleteCompanyWizardResponseSchema.parse(
+    await fetchJson<unknown>("/api/onboarding/company/complete", {
+      method: "POST",
+      fallbackError: "Failed to complete company wizard",
+    }),
+  );
 }
 
 async function fetchCompanySetupStatus(): Promise<SetupStatusResponse> {
-  const res = await fetch("/api/onboarding/company/setup-status", { cache: "no-store" });
-  if (!res.ok) throw new Error("Failed to fetch company setup status");
-  return SetupStatusResponseSchema.parse(await res.json());
+  return SetupStatusResponseSchema.parse(
+    await fetchJson<unknown>("/api/onboarding/company/setup-status", {
+      cache: "no-store",
+      fallbackError: "Failed to fetch company setup status",
+    }),
+  );
 }
 
 export function useCompanyStatus() {

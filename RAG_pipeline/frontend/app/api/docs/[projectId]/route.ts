@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { DocListResponseSchema } from "@/types";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 
 const KB_API_URL = process.env.KB_API_URL || "http://localhost:8001";
 
@@ -31,8 +32,6 @@ export async function GET(
     const validated = DocListResponseSchema.parse(data);
     return NextResponse.json(validated);
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Failed to fetch docs";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("docs/[projectId] GET", error, "Failed to fetch docs");
   }
 }

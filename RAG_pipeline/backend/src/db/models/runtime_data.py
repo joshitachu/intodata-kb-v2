@@ -35,8 +35,31 @@ from sqlalchemy.orm import Mapped, mapped_column
 from src.db.base import Base
 
 
+# Provider evidence that the normalized `state` column deliberately discards.
+#
+# `state` is our own small vocabulary (RuntimeExecutionState); a source such as
+# TMC reports a wider one plus a machine reason for why a run never ran. Keeping
+# the verbatim strings alongside the normalized value means a mapping gap shows
+# up as `state='unknown'` NEXT TO the raw token that caused it, instead of being
+# unrecoverable. All three are nullable: no provider is obliged to supply them,
+# and every row written before this column existed legitimately has none.
+#
+# Widths are chosen against observed TMC values with headroom, and are the same
+# on all three run-carrying tables so a value can move between them unchanged:
+#   raw_state       e.g. "EXECUTION_MISFIRED"           -> 64
+#   misfire_reason  e.g. "PARALLEL_EXECUTION_FORBIDDEN" -> 64
+#   execution_type  MANUAL | SCHEDULED | PLAN           -> 32
+_RAW_STATE_LEN = 64
+_MISFIRE_REASON_LEN = 64
+_EXECUTION_TYPE_LEN = 32
+
+
 class RuntimeExecutionRow(Base):
-    """One runtime job execution. State is stored as the RuntimeExecutionState value."""
+    """One runtime job execution. State is stored as the RuntimeExecutionState value.
+
+    `state` is String(20), which already fits every RuntimeExecutionState member
+    including the widest new one (`terminated`, 10 chars). No widening needed.
+    """
 
     __tablename__ = "runtime_executions"
     __table_args__ = (
@@ -52,6 +75,9 @@ class RuntimeExecutionRow(Base):
     job_name: Mapped[str] = mapped_column(String(255), nullable=False)
     project_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     state: Mapped[str] = mapped_column(String(20), nullable=False)
+    raw_state: Mapped[str | None] = mapped_column(String(_RAW_STATE_LEN), nullable=True)
+    misfire_reason: Mapped[str | None] = mapped_column(String(_MISFIRE_REASON_LEN), nullable=True)
+    execution_type: Mapped[str | None] = mapped_column(String(_EXECUTION_TYPE_LEN), nullable=True)
     executable_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="job")
     started_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ended_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -537,6 +563,9 @@ class RuntimeJobRunRow(Base):
     job_name: Mapped[str] = mapped_column(String(255), nullable=False)
     execution_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     state: Mapped[str] = mapped_column(String(20), nullable=False)
+    raw_state: Mapped[str | None] = mapped_column(String(_RAW_STATE_LEN), nullable=True)
+    misfire_reason: Mapped[str | None] = mapped_column(String(_MISFIRE_REASON_LEN), nullable=True)
+    execution_type: Mapped[str | None] = mapped_column(String(_EXECUTION_TYPE_LEN), nullable=True)
     executable_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="job")
     environment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     environment_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -623,6 +652,9 @@ class RuntimePlanRunRow(Base):
     plan_id: Mapped[str] = mapped_column(String(255), nullable=False)
     plan_name: Mapped[str] = mapped_column(String(255), nullable=False)
     state: Mapped[str] = mapped_column(String(20), nullable=False)
+    raw_state: Mapped[str | None] = mapped_column(String(_RAW_STATE_LEN), nullable=True)
+    misfire_reason: Mapped[str | None] = mapped_column(String(_MISFIRE_REASON_LEN), nullable=True)
+    execution_type: Mapped[str | None] = mapped_column(String(_EXECUTION_TYPE_LEN), nullable=True)
     environment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     environment_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     workspace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)

@@ -3,9 +3,17 @@ import { z } from "zod";
 // Runtime logs API (EP-005 slice 2 backend contract). Datetimes arrive as ISO-8601
 // strings in JSON, mirroring RuntimeStatusResponse.checked_at.
 
+// "misfired" (a scheduled run that never started), "timed_out" and
+// "terminated" widen the original four-value outcome so TMC's real execution
+// vocabulary stops being flattened into "unknown". Every schema below that
+// re-uses this enum (job/engine/plan health, deployments, plan-run steps)
+// picks up the wider set automatically -- widen it once, here.
 export const RuntimeExecutionStateSchema = z.enum([
   "success",
   "failed",
+  "misfired",
+  "timed_out",
+  "terminated",
   "running",
   "unknown",
 ]);
@@ -31,6 +39,17 @@ export const RuntimeExecutionSchema = z.object({
   started_at: z.string(),
   ended_at: z.string().nullable().optional(),
   duration_ms: z.number().nullable().optional(),
+  // The verbatim TMC status (e.g. "deploy_failed"), kept alongside the
+  // normalized `state` so a reader can always see what the source actually
+  // said.
+  raw_state: z.string().nullable().optional(),
+  // Populated only when state === "misfired". One of
+  // PARALLEL_EXECUTION_FORBIDDEN / TASK_IS_PAUSED /
+  // MAX_DEPLOYMENT_ATTEMPTS_REACHED / UNKNOWN.
+  misfire_reason: z.string().nullable().optional(),
+  // MANUAL / SCHEDULED / PLAN. Populated on every record; the customer's
+  // per-view axis for "who or what triggered this run".
+  execution_type: z.string().nullable().optional(),
 });
 export type RuntimeExecution = z.infer<typeof RuntimeExecutionSchema>;
 
@@ -258,6 +277,10 @@ export const RuntimeJobRunSchema = z.object({
   one_minute_rate: z.number().nullable().optional(),
   five_minute_rate: z.number().nullable().optional(),
   fifteen_minute_rate: z.number().nullable().optional(),
+  // See RuntimeExecutionSchema.raw_state / misfire_reason / execution_type.
+  raw_state: z.string().nullable().optional(),
+  misfire_reason: z.string().nullable().optional(),
+  execution_type: z.string().nullable().optional(),
 });
 export type RuntimeJobRun = z.infer<typeof RuntimeJobRunSchema>;
 
@@ -496,6 +519,10 @@ export const RuntimePlanRunSchema = z.object({
   ended_at: z.string().nullable().optional(),
   duration_ms: z.number().nullable().optional(),
   step_results: z.array(RuntimePlanRunStepResultSchema).optional().default([]),
+  // See RuntimeExecutionSchema.raw_state / misfire_reason / execution_type.
+  raw_state: z.string().nullable().optional(),
+  misfire_reason: z.string().nullable().optional(),
+  execution_type: z.string().nullable().optional(),
 });
 export type RuntimePlanRun = z.infer<typeof RuntimePlanRunSchema>;
 
@@ -734,6 +761,13 @@ export const RuntimeOutcomeTrendPointSchema = z.object({
   p50_duration_ms: z.number().nullable().optional(),
   p95_duration_ms: z.number().nullable().optional(),
   max_duration_ms: z.number().nullable().optional(),
+  // A misfire never started, a timeout/termination stopped mid-flight -- none
+  // of the three were ever "unknown", so they get their own counters instead
+  // of continuing to hide inside it. Defaulted to 0 so an older backend
+  // response (pre-widening) still parses.
+  misfired_runs: z.number().optional().default(0),
+  terminated_runs: z.number().optional().default(0),
+  timed_out_runs: z.number().optional().default(0),
 });
 export type RuntimeOutcomeTrendPoint = z.infer<typeof RuntimeOutcomeTrendPointSchema>;
 
@@ -772,6 +806,11 @@ export const RuntimeJobReliabilitySchema = z.object({
   p50_duration_ms: z.number().nullable().optional(),
   p95_duration_ms: z.number().nullable().optional(),
   max_duration_ms: z.number().nullable().optional(),
+  // See RuntimeOutcomeTrendPointSchema: same three outcomes, same reason for
+  // defaulting to 0 rather than requiring the backend to have widened yet.
+  misfired_runs: z.number().optional().default(0),
+  terminated_runs: z.number().optional().default(0),
+  timed_out_runs: z.number().optional().default(0),
 });
 export type RuntimeJobReliability = z.infer<typeof RuntimeJobReliabilitySchema>;
 

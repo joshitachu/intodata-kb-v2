@@ -53,11 +53,11 @@ ${PLATFORM_SECTION_DEPTH}
 
 ### GROUP_SUMMARY
 Finish with a concise index for Phase 3. Include:
-- Units covered and scanner-limited units
+- Units covered and units limited at a named evidence stage
 - Top flows and entrypoints
 - External systems and runtime/config facts
 - Business rules and transformations with evidence pointers
-- Top risks, unknowns, and redacted vs missing vs scanner-limited distinctions
+- Top risks, unknowns, and distinctions between redaction, absent source, unsupported parsing, packet omission, and unfinished analysis
 - Deep evidence pointers to the sections above
 
 ${ANALYSIS_GUIDE_NOTE}
@@ -71,7 +71,7 @@ BOUNDED ANALYSIS RULES (strictly enforced):
 - "7 of 9 ${GROUP} jobs have no tLogCatcher" IS acceptable
 - Include concrete counts, percentages, exact names throughout
 - Do not repeat complete component inventories, expressions, SQL queries, custom-code blocks, or configuration tables
-- For no scoped evidence, emit one explicit UNKNOWN/scanner-limited statement rather than padding the section
+- For no scoped evidence, emit one explicit UNKNOWN with the evidenced failure stage rather than padding the section; an empty packet does not prove a scanner failure
 - Prefer compact tables or at most three evidence bullets per assigned unit in each section
 
 FACTUAL CONSTRAINTS:

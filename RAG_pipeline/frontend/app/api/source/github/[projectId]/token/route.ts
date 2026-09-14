@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { UpdateGithubTokenSchema } from "@/types";
 import { proxyMcpJsonSanitized, safeProjectId } from "../../../_proxy";
+import { badRequestOrUpstreamResponse } from "@/lib/backendProxy";
 
 export const dynamic = "force-dynamic";
 
@@ -19,7 +20,6 @@ export async function PATCH(
       body: JSON.stringify({ github_token: body.github_token }),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Invalid GitHub token";
-    return NextResponse.json({ error: message }, { status: 400 });
+    return badRequestOrUpstreamResponse("source/github/[projectId]/token PATCH", error, "Invalid GitHub token");
   }
 }

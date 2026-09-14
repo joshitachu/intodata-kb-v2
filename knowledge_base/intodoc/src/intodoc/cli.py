@@ -94,6 +94,17 @@ def scan(
 
     filter_scan_result(scan_result, cred_filter)
 
+    # Deterministic derived artifacts, built BEFORE the verification gate.
+    # Both copy expressions and identifiers out of the parsed models, so
+    # they must be inside the same defense-in-depth sweep as
+    # scan_result.json -- computing them after the gate would publish
+    # unverified derivatives of verified data.
+    from intodoc.capability_ledger import build_capability_ledger
+    from intodoc.mapping_accounting import build_mapping_accounting
+
+    scan_result.mapping_accounting = build_mapping_accounting(scan_result)
+    scan_result.capability_ledger = build_capability_ledger(scan_result)
+
     # Layer 3: verification gate -- no scan output is written unless the
     # filtered result independently verifies clean (or the operator
     # explicitly opted into --allow-redaction-failures).
@@ -121,7 +132,7 @@ def scan(
             console.print("[red]Scan output NOT written. Fix redaction rules or re-run with --allow-redaction-failures.[/red]")
             raise click.exceptions.Exit(2)
 
-    _save_scan_result(scan_result, config.output_dir)
+    _save_scan_result(scan_result, config.output_dir, cred_filter)
     if scan_result.platform == "talend":
         console.print(
             "[green]Talend designs: "
@@ -226,7 +237,11 @@ def _do_scan(config: IntodocConfig):
         level=config.redaction_level,
         config_path=config.redaction_config,
     )
-    result = plugin.parse_project(config.repo_path, cred_filter)
+    result = plugin.parse_project(
+        config.repo_path,
+        cred_filter,
+        cache_dir=config.cache_dir / "deterministic-parse" / config.platform,
+    )
 
     elapsed = time.monotonic() - t0
     if result.platform == "talend":
@@ -265,6 +280,34 @@ _PUBLICATION_ARTIFACTS = (
     "scan/landscape.json",
 )
 
+# ── Agent-eligible artifact tree ─────────────────────────────────────
+#
+# The four aggregates above are not the bytes a documentation workspace
+# stages.  It stages every `scan/jobs/<group>/<design>.json` shard, the estate
+# collections, and the inventory inside `scan/meta.json`; none of those was
+# hashed, so editing one shard after approval was undetectable and the
+# redaction verification that makes an approval mean anything had run against
+# different bytes.
+#
+# The receipt therefore also states the COMPLETE eligible set.  It carries the
+# membership RULE (roots plus exclusions) as well as the resulting membership,
+# so a consumer derives the set from the receipt instead of keeping its own
+# copy of the rule -- two copies drift, and a drifted tree digest either
+# misses evidence or rejects a harmless file.
+_APPROVAL_TREE_ALGORITHM = "sha256-relpath-pairs-1"
+
+#: Everything under these roots, relative to the scan output directory.
+_AGENT_ARTIFACT_ROOTS: tuple[str, ...] = ("scan",)
+
+#: ...except these.  `scan/sanitized/` is the redacted mirror of the SOURCE
+#: TREE and `scan/evidence/` holds routine source fragments; neither may ever
+#: reach a documentation agent, both are large, and hashing them on every scan
+#: and again on every workspace build would cost more than the binding buys.
+_AGENT_ARTIFACT_EXCLUDED_PREFIXES: tuple[str, ...] = (
+    "scan/evidence/",
+    "scan/sanitized/",
+)
+
 
 def _publication_approval_path(output_dir: Path) -> Path:
     return output_dir / _PUBLICATION_APPROVAL_FILENAME
@@ -275,6 +318,50 @@ def _sha256_file(path: Path) -> str:
     with path.open("rb") as artifact:
         for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
             digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _agent_artifact_files(
+    output_dir: Path, roots: tuple[str, ...], excluded: tuple[str, ...]
+) -> dict[str, str]:
+    """`{relative posix path: sha256}` for every agent-eligible artifact.
+
+    Symlinks are skipped.  The scanner writes this tree itself and creates
+    none; following one would let `rglob` recurse forever, and a symlink added
+    afterwards still cannot be staged -- every consumer copy either routes
+    through the approved manifest with a containment check or names a fixed
+    file.  The consumer applies the same skip, so the two sides agree.
+    """
+
+    files: dict[str, str] = {}
+    for root in roots:
+        base = output_dir / root
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*")):
+            if path.is_symlink() or not path.is_file():
+                continue
+            relative = path.relative_to(output_dir).as_posix()
+            if any(relative.startswith(prefix) for prefix in excluded):
+                continue
+            files[relative] = _sha256_file(path)
+    return dict(sorted(files.items()))
+
+
+def _approval_tree_digest(files: dict[str, str]) -> str:
+    """Digest over `relpath + sha256` pairs in sorted order.
+
+    Byte-stable by construction: sorted keys, and an explicit separator
+    between the path and its digest so `a/b` + `c` cannot collide with `a` +
+    `b/c`.
+    """
+
+    digest = hashlib.sha256()
+    for relative in sorted(files):
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(files[relative].encode("utf-8"))
+        digest.update(b"\n")
     return f"sha256:{digest.hexdigest()}"
 
 
@@ -289,7 +376,11 @@ def _save_publication_approval(
 
     The receipt is intentionally written only after every published artifact
     exists and its final verification passed.  It binds that authorization to
-    the exact bytes Runtime's publisher is allowed to consume.
+    the exact bytes Runtime's publisher is allowed to consume -- both the four
+    named aggregates and, through `tree`, every other artifact a downstream
+    workspace may stage.  This function must stay the LAST thing `scan` does:
+    the tree is a snapshot, and anything written under `scan/` afterwards
+    would read to a consumer as post-approval tampering.
     """
 
     verification_by_artifact = {
@@ -308,11 +399,32 @@ def _save_publication_approval(
             raise RuntimeError(f"publication approval artifact is missing: {relative_path}")
         artifact_hashes[relative_path] = _sha256_file(path)
 
+    tree_files = _agent_artifact_files(
+        output_dir, _AGENT_ARTIFACT_ROOTS, _AGENT_ARTIFACT_EXCLUDED_PREFIXES
+    )
+    if not tree_files:
+        raise RuntimeError(
+            "publication approval found no agent-eligible artifacts under "
+            f"{'/, '.join(_AGENT_ARTIFACT_ROOTS)}/; the scan output is incomplete"
+        )
+
+    # schema_version 2 adds `tree`.  A consumer that stages per-design shards
+    # must REFUSE a version-1 receipt rather than fall back to the four
+    # aggregate hashes: "older scan" and "someone removed the binding" are the
+    # same file on disk, and only one of them is safe.
     receipt = {
-        "schema_version": 1,
+        "schema_version": 2,
         "approved": True,
         "allow_redaction_failures": False,
         "artifacts": artifact_hashes,
+        "tree": {
+            "algorithm": _APPROVAL_TREE_ALGORITHM,
+            "roots": list(_AGENT_ARTIFACT_ROOTS),
+            "excluded_prefixes": list(_AGENT_ARTIFACT_EXCLUDED_PREFIXES),
+            "file_count": len(tree_files),
+            "digest": _approval_tree_digest(tree_files),
+            "files": tree_files,
+        },
         "verifications": {
             path: {"passed": result["passed"]}
             for path, result in verification_by_artifact.items()
@@ -331,8 +443,15 @@ def _save_publication_approval(
     return target
 
 
-def _save_scan_result(scan_result, output_dir: Path) -> None:
-    """Save scan result as monolithic JSON + segmented files."""
+def _save_scan_result(scan_result, output_dir: Path, cred_filter) -> None:
+    """Save scan result as monolithic JSON + segmented files.
+
+    `cred_filter` is required, not optional: the sanitized workspace is
+    written from the ORIGINAL sources and is only safe when it is redacted
+    by the same filter instance (same level, same custom rules) that
+    produced the scan. A default filter here would silently under-redact a
+    strict/paranoid scan.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Monolithic file (backward compat).  It is written after segmented jobs
@@ -342,6 +461,20 @@ def _save_scan_result(scan_result, output_dir: Path) -> None:
     # ── Segmented output ─────────────────────────────────────────
     scan_dir = output_dir / "scan"
     scan_dir.mkdir(parents=True, exist_ok=True)
+    from intodoc.scanner.evidence_store import (
+        write_evidence_package,
+        write_sanitized_workspace,
+    )
+
+    write_evidence_package(scan_result, scan_dir)
+    # Must precede the manifest/monolith writes below: it sets
+    # manifest.sanitized_workspace, and both persisted representations have
+    # to carry the same manifest.
+    sanitized = write_sanitized_workspace(scan_result, scan_dir, cred_filter)
+    console.print(
+        f"  Sanitized workspace: {len(sanitized['files'])} files, "
+        f"{len(sanitized['excluded'])} excluded"
+    )
 
     # meta.json
     (scan_dir / "meta.json").write_text(json.dumps({
@@ -349,6 +482,8 @@ def _save_scan_result(scan_result, output_dir: Path) -> None:
         "repo_root": scan_result.repo_root,
         "scanned_at": str(scan_result.scanned_at),
         "stats": scan_result.stats,
+        "warnings": [warning.model_dump() for warning in scan_result.warnings],
+        "source_inventory": scan_result.source_inventory,
     }, indent=2, default=str), encoding="utf-8")
 
     # connections.json
@@ -362,6 +497,27 @@ def _save_scan_result(scan_result, output_dir: Path) -> None:
         [c.model_dump() for c in scan_result.context_groups],
         indent=2, default=str,
     ), encoding="utf-8")
+
+    (scan_dir / "tdm_maps.json").write_text(json.dumps(
+        [mapping.model_dump() for mapping in scan_result.tdm_maps], indent=2,
+    ), encoding="utf-8")
+
+    # Enterprise artifact collections + the two deterministic derived
+    # ledgers. Segmented so a consumer can read the mapping coverage of a
+    # 400-job project without loading scan_result.json.
+    for filename, payload in (
+        ("structures.json", [s.model_dump() for s in scan_result.structures]),
+        ("xslt.json", [t.model_dump() for t in scan_result.xslt_transforms]),
+        ("services.json", [x.model_dump() for x in scan_result.services]),
+        ("mapping_accounting.json",
+         [record.model_dump() for record in scan_result.mapping_accounting]),
+        ("capability_ledger.json",
+         scan_result.capability_ledger.model_dump()
+         if scan_result.capability_ledger is not None else None),
+    ):
+        (scan_dir / filename).write_text(
+            json.dumps(payload, indent=2, default=str), encoding="utf-8",
+        )
 
     # routines.json (non-system only)
     (scan_dir / "routines.json").write_text(json.dumps(

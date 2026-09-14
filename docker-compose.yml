@@ -326,7 +326,10 @@ services:
       MCP_PROJECT_ROOT: /app/workspace
       MCP_HINDSIGHT_ENABLED: "true"
       MCP_HINDSIGHT_URL: http://hindsight:8888
-      MCP_LIVING_DOC_PATCHING_ENABLED: ${MCP_LIVING_DOC_PATCHING_ENABLED:-true}
+      # Keep automatic candidate patching opt-in until a project has completed
+      # its baseline and recovery drill.  A missing environment variable must
+      # never enable a paid/document-mutating production path by itself.
+      MCP_LIVING_DOC_PATCHING_ENABLED: ${MCP_LIVING_DOC_PATCHING_ENABLED:-false}
       MCP_LIVING_DOC_ROLLOUT_STAGE: ${MCP_LIVING_DOC_ROLLOUT_STAGE:-approval_only}
       MCP_IMPACT_ROUTING_ENABLED: ${MCP_IMPACT_ROUTING_ENABLED:-false}
       MCP_LOG_LEVEL: ${MCP_LOG_LEVEL:-INFO}
@@ -338,6 +341,9 @@ services:
       MCP_APP_ENV: ${MCP_APP_ENV:-${APP_ENV:-production}}
       MCP_GITHUB_WEBHOOK_SECRET: ${MCP_GITHUB_WEBHOOK_SECRET:-}
       MCP_PIPELINE_DEBUG: "1"
+      # Per-unit dossiers (10_UNIT_REFERENCE). Off by default upstream; on here so a
+      # Talend run produces a per-job document instead of only the 10 thematic docs.
+      MCP_DOCGEN_UNIT_DOCS_ENABLED: ${MCP_DOCGEN_UNIT_DOCS_ENABLED:-true}
       MCP_MAX_UPLOAD_ZIP_BYTES: ${MCP_MAX_UPLOAD_ZIP_BYTES:-3221225472}
       MCP_MAX_UPLOAD_ZIP_UNCOMPRESSED_BYTES: ${MCP_MAX_UPLOAD_ZIP_UNCOMPRESSED_BYTES:-6442450944}
       MCP_MAX_UPLOAD_ZIP_ENTRIES: ${MCP_MAX_UPLOAD_ZIP_ENTRIES:-300000}

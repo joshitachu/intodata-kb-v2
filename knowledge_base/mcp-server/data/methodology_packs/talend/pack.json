@@ -1,0 +1,11 @@
+{
+  "id": "talend",
+  "version": "1",
+  "concepts": ["Talend job", "route", "joblet", "tMap", "tXMLMap", "TDM", "XSLT", "context", "routine"],
+  "questions": ["Follow tRunJob and route references across projects.", "Compare offered, mapped and written fields without conflating their denominators."],
+  "evidence_hints": ["Talend .item and .properties pairs", "resources", "repository metadata"],
+  "outputs": [],
+  "sufficiency": ["dynamic and unresolved references remain explicit"],
+  "client_readiness": [],
+  "required_parser_capabilities": ["talend_designs", "talend_mappings"]
+}

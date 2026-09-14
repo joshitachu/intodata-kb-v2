@@ -7,6 +7,11 @@ import type {
   ProjectLandscapeResponse,
 } from "@/types/landscape";
 import { landscapeEntityLabel, type TopologyEdge } from "@/lib/landscapeTransform";
+import {
+  TRANSFORMATION_KIND_LABEL,
+  type ReachesTarget,
+  type TransformationKind,
+} from "@/lib/architectureViewModel";
 
 export interface IntegrationDetail {
   edge: TopologyEdge;
@@ -24,7 +29,30 @@ export interface ImplementingDesignMapping {
   target: string;
   mappingType: "direct" | "value" | "derived" | "constant" | "unknown";
   origin: "business_topology" | "scanner_lineage";
+  /**
+   * The heading this row is filed under. Grouped by transformation KIND first
+   * (a value table and a field mapping are different kinds of fact, so the same
+   * heading for both is what makes a status table read as a business decision);
+   * the transformation's own name is kept separately in `transformationName`.
+   */
   group: string;
+  transformationId: string;
+  transformationName: string;
+  transformationKind: TransformationKind;
+  /** The target field a `value_domain` transformation defines the values of. */
+  targetField: string;
+  /** Verbatim rule when it differs from the short `source` identity. */
+  expression: string;
+  /**
+   * The component the row was read in, for scanner lineage. This is the answer
+   * to "where does this come from", it is populated on every lineage record,
+   * and it was previously dropped -- leaving rows like `row5/WONUM` with no way
+   * to tell which step of the job produced them.
+   */
+  component: string;
+  category: string;
+  reachesTarget: ReachesTarget;
+  note: string;
 }
 
 export interface ImplementingDesignDetail {
@@ -49,6 +77,19 @@ export interface ImplementingDesignDetail {
   mappingComponents: string[];
   mappings: ImplementingDesignMapping[];
   mappingAttribution: "exact" | "ambiguous" | "none";
+}
+
+/**
+ * `<table>.<column>`, unless the scanner already qualified the column.
+ *
+ * Lineage columns arrive as `row5/WONUM` with `source_table: "row5"`, so a
+ * naive join printed `row5.row5/WONUM`.
+ */
+function qualifiedColumn(table: string, column: string): string {
+  if (!table) return column;
+  if (!column) return table;
+  if (column === table || column.startsWith(`${table}/`) || column.startsWith(`${table}.`)) return column;
+  return `${table}.${column}`;
 }
 
 function evidenceMatches(
@@ -116,29 +157,61 @@ export function implementingDesignDetail(
       Boolean(stream && transformation.stream_ids.includes(stream.id))
       && transformation.artifact_ids.some((artifactId) => evidenceArtifactIds.has(artifactId)),
   );
-  const mappings: ImplementingDesignMapping[] = transformations.flatMap((transformation) =>
-    transformation.mappings.map((mapping) => ({
+  const mappings: ImplementingDesignMapping[] = transformations.flatMap((transformation) => {
+    const kind: TransformationKind = transformation.kind ?? "unknown";
+    return transformation.mappings.map((mapping) => ({
       source: mapping.source,
       target: mapping.target,
-      mappingType: mapping.mapping_type,
+      mappingType: mapping.mapping_type ?? "unknown",
       origin: "business_topology" as const,
-      group: transformation.name || "Known transformation",
-    })),
-  );
+      // An unclassified transformation keeps its old name-based heading; there
+      // is nothing else honest to file it under.
+      group: kind === "unknown"
+        ? transformation.name || "Known transformation"
+        : TRANSFORMATION_KIND_LABEL[kind],
+      transformationId: transformation.id,
+      transformationName: transformation.name,
+      transformationKind: kind,
+      targetField: transformation.target_field ?? "",
+      expression: mapping.expression ?? "",
+      category: mapping.category ?? "",
+      reachesTarget: mapping.reaches_target ?? "unknown",
+      note: mapping.note ?? "",
+      component: "",
+    }));
+  });
   if (ambiguousLineageJobs.size < lineageJobs.size) {
     for (const lineage of landscape.topology_evidence?.lineage ?? []) {
       if (!lineageJobs.has(lineage.job_name) || ambiguousLineageJobs.has(lineage.job_name) || !lineage.source_column || !lineage.target_column) continue;
       mappings.push({
-        source: [lineage.source_table, lineage.source_column].filter(Boolean).join("."),
-        target: [lineage.target_table, lineage.target_column].filter(Boolean).join("."),
+        source: qualifiedColumn(lineage.source_table, lineage.source_column),
+        target: qualifiedColumn(lineage.target_table, lineage.target_column),
         mappingType: "direct",
         origin: "scanner_lineage",
         group: lineage.job_name === record.artifact_id ? "Scanner field lineage" : `Invoked job · ${lineage.job_name}`,
+        transformationId: lineage.id,
+        transformationName: lineage.job_name,
+        transformationKind: "unknown",
+        targetField: lineage.target_column,
+        expression: "",
+        category: "",
+        reachesTarget: "unknown",
+        note: "",
+        // Both ends are recorded; name the writing step, falling back to the
+        // reading one, so a row always says where in the job it happens.
+        component: lineage.target_component || lineage.source_component,
       });
     }
   }
+  // The key carries the kind and the expression as well as the endpoints: two
+  // rows that differ only in which KIND of fact they are, or in the verbatim
+  // rule, are two rows -- collapsing them would let a value table swallow the
+  // field mapping of the same field.
   const deduplicatedMappings = [...new Map(
-    mappings.map((mapping) => [`${mapping.source}\u0000${mapping.target}\u0000${mapping.mappingType}`, mapping]),
+    mappings.map((mapping) => [
+      [mapping.source, mapping.target, mapping.mappingType, mapping.transformationKind, mapping.expression].join("\u0000"),
+      mapping,
+    ]),
   ).values()];
   const annotations = (topology?.artifact_annotations ?? []).filter((annotation) =>
     evidenceArtifactIds.has(annotation.artifact_id),

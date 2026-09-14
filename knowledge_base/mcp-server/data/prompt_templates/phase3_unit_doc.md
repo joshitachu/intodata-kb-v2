@@ -11,7 +11,8 @@ The Phase 2 analysis pack, when present, is interpretation only -- when they dis
 the evidence bundle wins.
 
 UNIT DOSSIER CONTRACT (enforced):
-- Target roughly 80 tight lines. This is a dense reference card, not an essay.
+- Size the explanation to the unit's evidenced behavior. Explain distinct rules and
+  failure paths; use supplied linked reference parts for exhaustive exact detail.
 - Title: `# Unit Document: ${SCOPED_UNIT}`.
 - Every factual sentence carries an evidence pointer in square brackets, e.g.
   `[evidence:bundle ${SCOPED_UNIT} COMPONENT INVENTORY]` or a fact tag like
@@ -23,13 +24,14 @@ UNIT DOSSIER CONTRACT (enforced):
   quote the decisive expression/statement verbatim from the bundle's
   `CUSTOM CODE (VERBATIM)` / `TMAP EXPRESSIONS (VERBATIM)` / `SQL QUERIES (VERBATIM)`
   sections. Quote only the decisive lines; cite the component name.
-- FLOW: render the `COMPONENT CONNECTIONS` table as one arrow chain, e.g.
-  `tRouteInput_1 -> tConvertType_1 -> ... ; FAULT -> tLogRow_6`.
+- FLOW: preserve the typed branches, conditions, errors and loops in the
+  `COMPONENT CONNECTIONS` table. Use several paths when the graph branches.
 - CONTEXT VARIABLES: reproduce the per-environment table with its provenance column
   (job-embedded vs shared group, DIVERGES flags). Keep `[REDACTED]` / `[URL_REDACTED]`
   markers exactly as given -- they are intentionally hidden values, not missing data.
-- Do NOT document, summarize, or claim coverage for any other unit. Callers/callees
-  may be NAMED (from the bundle's CALLERS AND CALLEES section) but not described.
+- Keep this unit as the primary subject. Explain supplied dependency behavior only
+  in relation to this caller, with its exact owner and evidence; this does not claim
+  coverage for the dependency's other callers or sibling jobs.
 - Never write that code/tMap/SQL/context evidence is unavailable when the bundle
   contains the corresponding verbatim section.
 

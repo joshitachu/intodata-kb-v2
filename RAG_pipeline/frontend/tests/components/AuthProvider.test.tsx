@@ -108,6 +108,13 @@ describe("AuthProvider redirect gating", () => {
     );
   });
 
+  it("keeps the product guide public after client hydration", async () => {
+    pathname = "/guide";
+    render(<AuthProvider><div>guide</div></AuthProvider>);
+
+    await waitFor(() => expect(replace).not.toHaveBeenCalled());
+  });
+
   it("does not redirect while the backend is unreachable", async () => {
     authState.status = "unavailable";
     authState.isDegraded = true;

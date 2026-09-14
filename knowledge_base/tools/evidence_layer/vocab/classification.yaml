@@ -1,0 +1,139 @@
+# Rule classification signals -- business vs technical vs workaround.
+#
+# Answers "which artifacts contain business-level mappings?" for every
+# artifact, deterministically. Every verdict carries the signals that produced
+# it, so a reviewer disagrees with a rule rather than with a black box.
+#
+# Precedence, highest first:
+#   workaround  -- a historical accident. Say so loudly; do not rebuild it.
+#   business    -- a domain decision is encoded here. It belongs in the domain,
+#                  not in the integration layer.
+#   technical   -- format, unit, encoding, envelope, transport. Legitimately
+#                  belongs in an integration layer.
+#   none        -- nothing to classify (a plain declaration or direct copy).
+#
+# A signal is a regex over the transformation expression. `weight` breaks ties
+# when several classes match: the highest total weight wins, and on an exact
+# tie the precedence order above decides.
+
+version: 1
+
+classes:
+
+  workaround:
+    precedence: 3
+    signals:
+      - id: commented_out_mapping
+        pattern: '(<!--\s*<xsl:|/\*\s*output_row\.|//\s*output_row\.|<!--.*value-of)'
+        weight: 3
+        rationale: A mapping is present but disabled. Intent and behaviour disagree.
+      - id: sentinel_default
+        pattern: "(when\\s+test=\"[^\"]*=''\">\\s*0\\s*<|:\\s*[\"']0[\"']\\s*$|otherwise>\\s*0\\s*<)"
+        weight: 2
+        rationale: A numeric sentinel stands in for an absent value. Downstream cannot distinguish absent from zero.
+      - id: concat_into_one_field
+        pattern: '(\+\s*"\s*\+\s*"\s*\+|xsl:text>\s*\+\s*<|concat\([^)]*,[^)]*,[^)]*,)'
+        weight: 3
+        rationale: Several structured values folded irreversibly into one free-text field.
+      - id: hardcoded_environment
+        pattern: '(localhost|127\.0\.0\.1|_test\b|Test/|/Test\b|_TST\b|\bdev\b.*workspace|C:/|D:/)'
+        weight: 3
+        rationale: An environment-specific address or path is baked into a mapping.
+      - id: delimiter_encoded_key
+        pattern: "(tokenize\\([^,]+,\\s*['\"][_\\-|;][\"']|split\\([^,]+,\\s*[\"'][_\\-|;])"
+        weight: 3
+        rationale: A composite key encoded in a delimited string. Several meanings in one identifier.
+      - id: prefix_as_type_discriminator
+        pattern: "(starts-with\\([^,]+,\\s*[\"'][A-Z]{2,}[\"']\\)|startsWith\\([^,]+,\\s*[\"'][A-Z]{2,}|tokenize[^\\]]*\\]\\s*(!?=)\\s*['\"][A-Z]{2,}['\"]|\\$\\w+\\[\\d+\\]\\s*(!?=)\\s*['\"][A-Z]{2,}['\"])"
+        weight: 2
+        rationale: Record type inferred from a positional slice of the key rather than from a type field.
+      - id: substring_success_check
+        pattern: '(contains\(.*Response|indexOf\(\s*"<)'
+        weight: 2
+        rationale: Success determined by string-matching the reply. A format change silently misclassifies.
+      - id: duplicate_target_same_source
+        pattern: '__DUPLICATE_TARGET__'
+        weight: 3
+        rationale: Two target fields fed from one source with no distinguishing transform. Set by the assembler, not by regex.
+
+  business:
+    precedence: 2
+    signals:
+      - id: status_vocabulary
+        pattern: '(Arrays\.asList\(|List<String>\s+\w*[Ss]tatus|when\s+test="[^"]*STATUS\s*=|when\s+test="[^"]*status\s*=)'
+        weight: 3
+        rationale: An explicit domain value vocabulary. Changing it changes business meaning.
+      - id: value_whitelist
+        pattern: "(\\(\\s*\\$?\\w+\\s*=\\s*'[A-Z]{2,}'\\s*\\)(\\s*or\\s*\\(\\s*\\$?\\w+\\s*=\\s*'[A-Z]{2,}'\\s*\\)){2,})"
+        weight: 3
+        rationale: A whitelist of domain codes decides the outcome. Governance question, not a technical one.
+      - id: fallback_chain
+        pattern: '(!=\s*null\s*&&\s*!\w+\.equals\(""\)\s*\)\s*\{[^}]*\}\s*else\s+if|else\s+if\s*\([^)]*equals\(""\))'
+        weight: 2
+        rationale: An else-chain choosing between candidate sources. Encodes which source is authoritative.
+      - id: derived_state_constant
+        pattern: '(<STATUS>[A-Z]{3,}</STATUS>|<status>[A-Z]{3,}</status>)'
+        weight: 3
+        rationale: A state is assigned as a constant rather than carried. The integration layer decides lifecycle.
+      # The general rule, and the one that carries most of the weight:
+      # comparing a field against a NON-EMPTY literal is a decision about
+      # domain content. Comparing it against '' or null is a guard, and that
+      # is what the technical.null_guard signal is for. Distinguishing those
+      # two is most of the difference between business logic and plumbing.
+      - id: conditional_on_domain_value
+        pattern: "((!?=|\\beq\\b|\\bne\\b)\\s*['\"][^'\"]{1,40}['\"]|\\.equals(IgnoreCase)?\\(\\s*['\"][^'\"]{1,40}['\"]\\s*\\)|\\bcontains\\([^,]+,\\s*['\"][^'\"]{1,40}['\"]\\))"
+        weight: 2
+        rationale: Branches on a specific domain value. Changing the value changes business behaviour.
+      - id: multi_branch_decision
+        pattern: "(xsl:when[\\s\\S]*xsl:when[\\s\\S]*xsl:when|\\?[^?:]{1,80}:[^?:]{1,80}\\?[^?:]{1,80}:)"
+        weight: 2
+        rationale: A three-or-more-way decision. Too much branching to be a format concern.
+      - id: business_unit_arithmetic
+        pattern: '(div\s*8\b|/\s*8\s*\)|\*\s*8\b|round\([^)]*/\s*(8|40)\s*\))'
+        weight: 2
+        rationale: An arithmetic constant standing for a business convention such as the length of a working day.
+      - id: authority_selection
+        pattern: '(ADJUSTED\w+|adjusted\w+)'
+        weight: 2
+        rationale: Choosing an adjusted commitment over a baseline one. A contractual decision.
+
+  technical:
+    precedence: 1
+    signals:
+      - id: unit_conversion
+        pattern: '(\*\s*60\b|div\s*60\b|/\s*60\b|\*\s*1000\b|/\s*1024)'
+        weight: 2
+        rationale: Unit conversion between two representations of the same quantity.
+      - id: date_format
+        pattern: '(format-dateTime|format-number|TalendDate\.(format|parse)Date|SimpleDateFormat|toISOString|strftime)'
+        weight: 2
+        rationale: Representation change on a date, time or number.
+      - id: encoding
+        pattern: '(Base64|URLEncod|escapeXml|unescape|replace\(\s*"\\\\+"|getBytes|charset|UTF-8|ISO-8859)'
+        weight: 2
+        rationale: Character or transport encoding.
+      - id: padding_or_trim
+        pattern: '(substring\(|padLeft|padStart|lpad|rpad|trim\(|normalize-space)'
+        weight: 1
+        rationale: Length or whitespace normalisation to fit a target field.
+      - id: type_cast
+        pattern: '(\(String\)|\(Integer\)|parseInt|parseFloat|Number\(|xs:(string|int|dateTime|decimal)\()'
+        weight: 1
+        rationale: Type coercion.
+      - id: punctuation_normalisation
+        pattern: "(translate\\([^,]+,\\s*['\"],['\"]\\s*,\\s*['\"]\\.['\"]|replace\\([^,]+,\\s*[\"'],[\"'])"
+        weight: 2
+        rationale: Decimal or thousands separator normalisation.
+      - id: envelope_or_transport
+        pattern: '(globalMap\.(get|put)|context\.|soap:Envelope|CDATA|xsl:text disable-output-escaping|setHeader|exchange\.getIn)'
+        weight: 1
+        rationale: Envelope, header or transport plumbing rather than content.
+      # Comparison against emptiness or null -- a presence test, not a
+      # decision about content. Deliberately matches the empty literal
+      # anywhere in the expression rather than only at the end: the earlier
+      # end-anchored form missed 1,848 real guards on this landscape because
+      # the guarded value follows the test in the captured expression.
+      - id: null_guard
+        pattern: "(==\\s*null|!=\\s*null|\\bis\\s+null\\b|xsi:nil|\\bnot\\s*\\(|(!?=)\\s*''|(!?=)\\s*\"\"|string\\([^)]*\\)\\s*(!?=)\\s*(''|\"\")|\\.isEmpty\\(\\)|\\.equals\\(\\s*(''|\"\")\\s*\\))"
+        weight: 2
+        rationale: Presence or null guard, with no branch on domain content.

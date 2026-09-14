@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fastapiFetch } from "@/lib/fastapi";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 
 export async function GET(request: NextRequest) {
   try {
@@ -12,10 +13,6 @@ export async function GET(request: NextRequest) {
     );
     return NextResponse.json(data);
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Failed to fetch recent captures";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("admin/memory/recent GET", error, "Failed to fetch recent captures");
   }
 }

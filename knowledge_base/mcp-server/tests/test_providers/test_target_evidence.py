@@ -161,6 +161,19 @@ def scan_output(tmp_path: Path) -> Path:
     (scan_output / "scan" / "contexts.json").write_text(
         json.dumps(_shared_contexts()), encoding="utf-8"
     )
+    (scan_output / "scan" / "manifest.json").write_text(json.dumps({
+        "job_routine_links": {"Job_GetThing": [{
+            "routine_id": "root::Rules", "name": "Rules", "source_root": "root",
+            "resolution": "same_root",
+        }]},
+    }), encoding="utf-8")
+    (scan_output / "scan_result.json").write_text(json.dumps({
+        "jobs": [_job_getthing(), _job_main()],
+        "routines": [{"routine_id": "root::Rules", "name": "Rules",
+                      "source_root": "root", "path": "code/routines/Rules.item",
+                      "source_complete": True,
+                      "source_code": "public static void apply() { decisive_tail_rule(); }"}],
+    }), encoding="utf-8")
     return scan_output
 
 
@@ -186,6 +199,8 @@ def test_bundle_contains_verbatim_evidence(scan_output, staging):
     assert evidence.categories == {"code", "tmap", "sql", "context"}
     # Commented-out import placeholders must not masquerade as code.
     assert "//import java.util.List;" not in text
+    assert "## REFERENCED ROUTINE IMPLEMENTATIONS" in text
+    assert "decisive_tail_rule" in text
 
 
 def test_bundle_prefers_top_level_code_field(scan_output, staging):

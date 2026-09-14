@@ -144,6 +144,32 @@ def persist_nexus_execution_receipt(
         receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
 
 
+def persist_generation_profile(staging_dir: Path, profile: dict | None, *, resume: bool) -> None:
+    """Bind resume artifacts to their original contract, including legacy NULL."""
+    from mcp_server.services.generation_profile import (
+        assert_profile_matches, normalize_profile, profile_digest,
+    )
+
+    current = read_json_file(manifest_path(staging_dir)) or {}
+    receipt_path = staging_dir / "_audit" / "generation_profile.json"
+    receipt = read_json_file(receipt_path)
+    if resume:
+        # Old staging without a profile is legacy, never implicitly upgraded.
+        assert_profile_matches(current.get("generation_profile"), profile)
+        if receipt is not None:
+            assert_profile_matches(receipt.get("generation_profile"), profile)
+            if receipt.get("digest") != profile_digest(profile):
+                raise GenerationReceiptError("Generation profile receipt digest mismatch")
+    normalized = normalize_profile(profile)
+    current["generation_profile"] = normalized
+    current["generation_profile_digest"] = profile_digest(normalized)
+    manifest_path(staging_dir).write_text(json.dumps(current, indent=2), encoding="utf-8")
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.write_text(json.dumps({
+        "generation_profile": normalized, "digest": profile_digest(normalized),
+    }, indent=2), encoding="utf-8")
+
+
 def record_manifest_chunks(
     staging_dir: Path,
     *,

@@ -34,6 +34,7 @@ from intodoc.models import (
     TRunJobRef,
 )
 from intodoc.platforms.base_parser import BaseParser
+from intodoc.scanner.fswalk import walk_files
 from intodoc.scanner.walker import walk_repo
 
 if TYPE_CHECKING:
@@ -201,7 +202,9 @@ class LobsterParser(BaseParser):
     def _find_profiles(self, repo_root: Path) -> list[Path]:
         """Find all XML files with <datawizardprofile> root element."""
         profiles: list[Path] = []
-        for xml_path in repo_root.rglob("*.xml"):
+        for xml_path in walk_files(
+            repo_root, patterns=("*.xml",), on_error=self._walk_error
+        ):
             try:
                 if self._is_lobster_profile_xml(xml_path):
                     profiles.append(xml_path)

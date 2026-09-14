@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import rawWerkorderTopology from "../fixtures/werkorder_org_business_topology.json";
 import { BusinessTopologySchema } from "@/types/landscape";
 
 /** Mirrors `BusinessTopology.model_dump()` including inherited claim fields. */
@@ -30,5 +31,142 @@ describe("BusinessTopologySchema", () => {
     expect(topology.delivery_paths[0].segments[0].resource).toBe("/workorders");
     expect(topology.transformations[0].mappings[0].mapping_type).toBe("value");
     expect(topology.unknowns[0].question).toContain("owns");
+  });
+  /**
+   * The schema objects are `.strict()`. A slot the backend serializes but this
+   * contract omits rejects the WHOLE topology, which blanks the canvas rather
+   * than degrading one section -- so every structured slot on the Python model
+   * has to be accepted here, with its enum members intact.
+   */
+  it("accepts and round-trips every additive structured slot", () => {
+    const claim = { name: "Claim", description: "", status: "observed", confidence: 0.9, evidence_ids: ["evidence:1"] };
+    const topology = BusinessTopologySchema.parse({
+      schema_version: "business-topology-v1",
+      scan_fingerprint: "scan:abc",
+      metadata: { project_id: "project", scan_fingerprint: "scan:abc", generated_by: "agent", model_name: "" },
+      systems: [],
+      integration_solutions: [],
+      business_objects: [],
+      data_streams: [{
+        ...claim,
+        id: "stream:1",
+        source_system_id: "system:1",
+        destination_system_id: "system:2",
+        business_summary: "Moves work orders.",
+        mechanism: "tRunJob child",
+        generation: "Talend 7.3",
+        direction_pattern: "hybrid",
+        lifecycle: "duplicate",
+        contract_width: { offered: 412, mapped: 27, written: 12, note: "12 of 412 attributes persist." },
+        conditions: [
+          { kind: "trigger", statement: "Only when status is GEREED.", evidence_note: "tJava_2" },
+          { kind: "ordering", statement: "Runs after the cost-centre load.", evidence_note: "" },
+        ],
+        deployment: { supplied_version: "1.4", deployed_version: "1.3", built_at: "2026-01-05", agreement: "supplied_ahead", note: "Analysed definition is newer." },
+        key_form: "WO number",
+        verdict: "Active, duplicated by the ESB route.",
+        document_refs: ["03_INTEGRATION_CATALOG.md#workorders"],
+      }],
+      delivery_paths: [],
+      transformations: [{
+        ...claim,
+        id: "transformation:1",
+        kind: "value_domain",
+        target_field: "serviceOrders.status",
+        mappings: [{
+          source: "GGK",
+          target: "In Process",
+          mapping_type: "value",
+          expression: "substring(DESCRIPTION, 1, 50)",
+          category: "status",
+          reaches_target: "partial",
+          note: "Truncated at 50 characters.",
+        }],
+      }],
+      business_rules: [{
+        ...claim,
+        id: "rule:1",
+        kind: "precedence",
+        statement: "The 4PS value wins over the Maximo value.",
+        inputs: ["WORKORDER.STATUS", "serviceOrders.status"],
+        output: "serviceOrders.status",
+        stream_ids: ["stream:1"],
+        transformation_ids: ["transformation:1"],
+        owner: "Service desk",
+        owner_question: "Should 4PS keep overriding the Maximo status?",
+      }],
+      controls: [],
+      risks: [],
+      unknowns: [],
+      runtime_observations: [{
+        ...claim,
+        id: "runtime:1",
+        stream_ids: ["stream:1"],
+        observed_behavior: "Runs every 30 minutes.",
+        observation_window: "90 days",
+        kind: "cadence",
+        source: "TMC",
+        metrics: [{ label: "Runs", value: "2122", unit: "runs", window: "90 days", source: "TMC PROD", note: "" }],
+      }],
+      conflicts: [],
+      artifact_annotations: [],
+      component_annotations: [],
+      lineage_annotations: [],
+      coverage: { total_artifacts: 1, cited_artifacts: 1, total_evidence: 1, cited_evidence: 1, coverage_ratio: 1, notes: [] },
+    });
+
+    const stream = topology.data_streams[0];
+    expect(stream.mechanism).toBe("tRunJob child");
+    expect(stream.generation).toBe("Talend 7.3");
+    expect(stream.direction_pattern).toBe("hybrid");
+    expect(stream.lifecycle).toBe("duplicate");
+    expect(stream.contract_width).toEqual({ offered: 412, mapped: 27, written: 12, note: "12 of 412 attributes persist." });
+    expect(stream.conditions?.map((condition) => condition.kind)).toEqual(["trigger", "ordering"]);
+    expect(stream.deployment?.agreement).toBe("supplied_ahead");
+    expect(stream.key_form).toBe("WO number");
+    expect(stream.verdict).toContain("duplicated");
+    expect(stream.document_refs).toEqual(["03_INTEGRATION_CATALOG.md#workorders"]);
+
+    expect(topology.transformations[0].kind).toBe("value_domain");
+    expect(topology.transformations[0].target_field).toBe("serviceOrders.status");
+    expect(topology.transformations[0].mappings[0]).toMatchObject({
+      expression: "substring(DESCRIPTION, 1, 50)",
+      category: "status",
+      reaches_target: "partial",
+      note: "Truncated at 50 characters.",
+    });
+
+    expect(topology.business_rules?.[0]).toMatchObject({
+      kind: "precedence",
+      owner: "Service desk",
+      owner_question: "Should 4PS keep overriding the Maximo status?",
+      inputs: ["WORKORDER.STATUS", "serviceOrders.status"],
+      output: "serviceOrders.status",
+    });
+
+    expect(topology.runtime_observations?.[0].kind).toBe("cadence");
+    expect(topology.runtime_observations?.[0].source).toBe("TMC");
+    expect(topology.runtime_observations?.[0].metrics?.[0]).toMatchObject({ label: "Runs", value: "2122", window: "90 days" });
+  });
+
+  /**
+   * Published topology files predate every slot above. Adding them must not
+   * make one of those files unparseable, and must not invent a value for a fact
+   * its producer never asserted.
+   */
+  it("still accepts a topology published before the additive slots existed", () => {
+    const topology = BusinessTopologySchema.parse(rawWerkorderTopology);
+
+    expect(topology.data_streams.length).toBeGreaterThan(0);
+    const stream = topology.data_streams[0];
+    expect(stream.mechanism).toBeUndefined();
+    expect(stream.direction_pattern).toBeUndefined();
+    expect(stream.lifecycle).toBeUndefined();
+    expect(stream.contract_width).toBeUndefined();
+    expect(stream.conditions).toBeUndefined();
+    expect(stream.deployment).toBeUndefined();
+    expect(stream.verdict).toBeUndefined();
+    expect(stream.document_refs).toBeUndefined();
+    expect(topology.business_rules).toBeUndefined();
   });
 });

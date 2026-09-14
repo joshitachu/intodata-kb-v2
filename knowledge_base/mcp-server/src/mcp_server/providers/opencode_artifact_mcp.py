@@ -22,6 +22,7 @@ from mcp.server import Server
 from mcp.types import TextContent, Tool
 
 _MAX_ARTIFACT_CHARS = 200_000
+_HARD_MAX_ARTIFACT_CHARS = 10_000_000
 
 
 class ArtifactContract(Protocol):
@@ -46,6 +47,15 @@ class ArtifactSubmissionFacade:
         self.phase = phase
         self.step = step
         self.contracts = {contract.output_artifact: contract for contract in contracts}
+        self.max_artifact_chars = min(
+            _HARD_MAX_ARTIFACT_CHARS,
+            max(
+                [_MAX_ARTIFACT_CHARS, *(
+                    int(getattr(contract, "metadata", {}).get("max_artifact_chars") or 0)
+                    for contract in contracts
+                )]
+            ),
+        )
         self.token = secrets.token_urlsafe(32)
 
     def list_tools(self) -> list[Tool]:
@@ -68,7 +78,7 @@ class ArtifactSubmissionFacade:
                         "content": {
                             "type": "string",
                             "minLength": 1,
-                            "maxLength": _MAX_ARTIFACT_CHARS,
+                            "maxLength": self.max_artifact_chars,
                         },
                     },
                     "required": ["output_artifact", "content"],
@@ -103,10 +113,10 @@ class ArtifactSubmissionFacade:
         return contract, output
 
     @staticmethod
-    def _validate_content(output: Path, content: Any) -> str:
+    def _validate_content(output: Path, content: Any, *, max_chars: int = _MAX_ARTIFACT_CHARS) -> str:
         if not isinstance(content, str) or not content.strip():
             raise ValueError("content must be a non-empty string")
-        if len(content) > _MAX_ARTIFACT_CHARS:
+        if len(content) > max_chars:
             raise ValueError("content exceeds the artifact character budget")
         if "\x00" in content:
             raise ValueError("content contains a null byte")
@@ -147,7 +157,35 @@ class ArtifactSubmissionFacade:
             if unknown:
                 raise ValueError("unsupported artifact submission input")
             contract, output = self._resolve_contract(output_artifact)
-            content = self._validate_content(output, arguments.get("content"))
+            content = self._validate_content(
+                output, arguments.get("content"), max_chars=self.max_artifact_chars,
+            )
+            metadata = getattr(contract, "metadata", {})
+            if metadata.get("knowledge_task"):
+                from mcp_server.providers.opencode_landscape import submit_landscape_claims
+
+                # Typed submissions retain independently grounded claims even
+                # when a sibling claim fails. The feedback names unresolved
+                # requirements so the agent can repair only those obligations.
+                result = submit_landscape_claims(self.staging_dir, metadata, content)
+                self._audit({"status": "accepted" if result["ok"] else "partial", **result})
+                return result
+            if metadata.get("enterprise_phase"):
+                from mcp_server.providers.custom.enterprise.phase_runner import submit_enterprise_artifact
+
+                # Enterprise phases accumulate typed entries in a durable ledger;
+                # the declared output path is the contract key, not a file the
+                # model writes. Feedback names rejected entries and what remains.
+                result = submit_enterprise_artifact(self.staging_dir, metadata, content)
+                self._audit({
+                    "status": "accepted" if result.get("ok") else "partial",
+                    "phase": metadata.get("enterprise_phase"),
+                    "accepted_count": result.get("accepted_count"),
+                    "rejected_count": len(result.get("rejected") or []),
+                    "remaining_count": result.get("remaining_count"),
+                    "error": result.get("error"),
+                })
+                return result
             self._atomic_write(output, content)
             digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
             result = {

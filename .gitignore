@@ -155,3 +155,14 @@ docs/screenshots/
 
 # Completed plan pipelines. The active set stays tracked at .plans/*.md.
 .plans/archive/
+
+# Per-session cost log written by the track-cost hook (machine-local)
+.claude/cost-log.json
+
+# Agent session transcripts dumped at the repo root. One of these was a
+# 100k-line dialogue log -- raw conversation, not source, and not reviewable.
+/codex-session-*.md
+
+# intodoc deterministic-parse cache. Keyed by content hash and regenerated on
+# demand; 150 single-line JSON blobs that say nothing about the source.
+knowledge_base/intodoc/.intodoc_cache/

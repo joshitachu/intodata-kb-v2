@@ -67,8 +67,10 @@ class TestJobOperationalInsights:
 
         assert resp.status_code == 200
         body = resp.json()
-        assert body["total"] == 2
-        assert len(body["insights"]) == 2
+        # Four jobs: the two long-standing seeded jobs plus the misfired and
+        # timed-out ones added so the widened capture states are demoable.
+        assert body["total"] == 4
+        assert len(body["insights"]) == 4
         insight = next(
             item for item in body["insights"] if item["job_name"] == "esb_order_sync_route"
         )

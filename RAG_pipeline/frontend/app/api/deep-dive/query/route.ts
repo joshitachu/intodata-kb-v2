@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { DeepDiveRequestSchema } from "@/types";
+import { badRequestOrUpstreamResponse } from "@/lib/backendProxy";
 
 const KB_API_URL = process.env.KB_API_URL || "http://localhost:8002";
 
@@ -42,10 +43,9 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Deep dive failed";
-    return new Response(JSON.stringify({ error: message }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+    // One try covers request validation AND the upstream call, which are not
+    // the same answer: a bad body is 400, an unreachable scanner is 503, and
+    // neither should ship the raw `connect ECONNREFUSED …` text to the browser.
+    return badRequestOrUpstreamResponse("deep-dive/query POST", error, "Deep dive failed");
   }
 }

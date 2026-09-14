@@ -118,4 +118,179 @@ describe("normalizeArchitectureL1", () => {
     );
     expect(flows.every((flow) => flow.evidenceIds.length > 0)).toBe(true);
   });
+  /**
+   * A field mapping, a value domain, a derived rule and a constant set are four
+   * different kinds of fact. Flat-listed they are indistinguishable, which is
+   * how a status value table ends up reading as a business decision, so the
+   * projection -- not the renderer -- owns the partition.
+   */
+  it("splits a stream's transformations by kind and resolves its rules and runtime by id", () => {
+    const claim = { name: "", description: "", status: "observed" as const, confidence: 0.9, evidence_ids: ["ev:1"] };
+    const transformation = (id: string, kind: string, extra: Record<string, unknown> = {}) => ({
+      ...claim, id, name: id, kind, stream_ids: ["ds-wo"], integration_solution_ids: [], artifact_ids: [], ...extra,
+    });
+    const topology = BusinessTopologySchema.parse({
+      ...rawTopology,
+      systems: [
+        { ...claim, id: "sys-maximo", name: "Maximo", kind: "software_system", aliases: [] },
+        { ...claim, id: "sys-4ps", name: "4PS", kind: "software_system", aliases: [] },
+      ],
+      integration_solutions: [],
+      business_objects: [{ ...claim, id: "obj-wo", name: "WorkOrder", aliases: [] }],
+      data_streams: [{
+        ...claim,
+        id: "ds-wo",
+        source_system_id: "sys-maximo",
+        destination_system_id: "sys-4ps",
+        name: "Werkorders",
+        business_object_ids: ["obj-wo"],
+        business_summary: "Maximo levert werkorders aan 4PS.",
+        integration_solution_ids: [],
+        protocols: ["JMS"],
+        artifact_ids: [],
+        control_ids: [], risk_ids: [], unknown_ids: [], conflict_ids: [],
+        runtime_observation_ids: ["ro-cadence"],
+        lifecycle: "active",
+        direction_pattern: "push",
+        contract_width: { offered: 412, mapped: 27, written: 12, note: "" },
+        conditions: [{ kind: "trigger", statement: "Alleen bij status GEREED.", evidence_note: "" }],
+        verdict: "Actief.",
+        document_refs: ["03_INTEGRATION_CATALOG.md"],
+      }],
+      delivery_paths: [],
+      transformations: [
+        transformation("tr-fields", "field_mapping", {
+          mappings: [
+            { source: "WORKORDER.WONUM", target: "serviceOrders.orderNo", mapping_type: "direct", reaches_target: "yes" },
+            { source: "WORKORDER.DESCRIPTION", target: "serviceOrders.description", mapping_type: "derived", expression: "substring(DESCRIPTION, 1, 50)", reaches_target: "partial" },
+          ],
+        }),
+        transformation("tr-status", "value_domain", { target_field: "serviceOrders.status", mappings: [{ source: "GGK", target: "In Process", mapping_type: "value" }] }),
+        transformation("tr-priority", "value_domain", { target_field: "serviceOrders.status", mappings: [{ source: "AFG", target: "Closed", mapping_type: "value" }] }),
+        transformation("tr-derived", "derived_rule", { mappings: [{ source: "WORKORDER.SITEID", target: "serviceOrders.site", mapping_type: "derived", expression: "lookup(SITEID)" }] }),
+        transformation("tr-constant", "constant_set", { mappings: [{ source: "\"MAXIMO\"", target: "serviceOrders.origin", mapping_type: "constant" }] }),
+        transformation("tr-legacy", "unknown", { mappings: [{ source: "A", target: "B" }] }),
+      ],
+      business_rules: [
+        { ...claim, id: "br-status", name: "Statusvertaling", kind: "value_mapping", statement: "GGK wordt In Process.", inputs: [], output: "", stream_ids: [], transformation_ids: ["tr-status"], owner: "Servicedesk", owner_question: "Klopt dit?" },
+        { ...claim, id: "br-other", name: "Andere stroom", kind: "selection", statement: "Niet van deze stroom.", inputs: [], output: "", stream_ids: ["ds-other"], transformation_ids: [], owner: "", owner_question: "" },
+      ],
+      controls: [], risks: [], unknowns: [], conflicts: [],
+      runtime_observations: [{
+        ...claim, id: "ro-cadence", stream_ids: [], delivery_path_ids: [], observed_behavior: "Draait elk half uur.",
+        observation_window: "90 dagen", kind: "cadence", source: "TMC",
+        metrics: [{ label: "Runs", value: "2122", unit: "runs", window: "90 dagen", source: "TMC PROD", note: "" }],
+      }],
+      artifact_annotations: [], component_annotations: [], lineage_annotations: [],
+    });
+
+    const model = normalizeArchitectureL1(topology);
+    const pair = architectureRelationshipPairs(model)[0];
+    const [flow] = architectureFlowsForPair(topology, pair);
+
+    expect(flow.fieldMappings.map((item) => item.id)).toEqual(["tr-fields"]);
+    expect(flow.valueDomains.map((item) => item.id)).toEqual(["tr-status", "tr-priority"]);
+    expect(flow.derivedRules.map((item) => item.id)).toEqual(["tr-derived"]);
+    expect(flow.constantSets.map((item) => item.id)).toEqual(["tr-constant"]);
+    // An unclassified transformation is NOT promoted into a classified bucket.
+    expect(flow.unclassifiedTransformations.map((item) => item.id)).toEqual(["tr-legacy"]);
+    expect(flow.transformations).toHaveLength(6);
+
+    // Field rows are the mapping-level view: value domains are deliberately
+    // absent from them and grouped under the field they constrain instead.
+    expect(flow.fieldRows.map((row) => [row.index, row.targetField, row.sourceOrExpression])).toEqual([
+      [1, "serviceOrders.orderNo", "WORKORDER.WONUM"],
+      [2, "serviceOrders.description", "substring(DESCRIPTION, 1, 50)"],
+      [3, "serviceOrders.site", "lookup(SITEID)"],
+      [4, "serviceOrders.origin", "\"MAXIMO\""],
+    ]);
+    expect(flow.fieldRows.map((row) => row.reachesTarget)).toEqual(["yes", "partial", "unknown", "unknown"]);
+    expect(flow.valueDomainGroups).toHaveLength(1);
+    expect(flow.valueDomainGroups[0].targetField).toBe("serviceOrders.status");
+    expect(flow.valueDomainGroups[0].transformations.map((item) => item.id)).toEqual(["tr-status", "tr-priority"]);
+
+    // Rules reach a stream either directly or through one of its transformations.
+    expect(flow.businessRules.map((rule) => rule.id)).toEqual(["br-status"]);
+    expect(flow.runtimeObservations.map((item) => item.id)).toEqual(["ro-cadence"]);
+    expect(flow.runtimeMetrics.map((metric) => [metric.label, metric.value, metric.window])).toEqual([
+      ["Runs", "2122", "90 dagen"],
+    ]);
+
+    expect(flow.lifecycle).toBe("active");
+    expect(flow.directionPattern).toBe("push");
+    expect(flow.contractWidth).toMatchObject({ offered: 412, mapped: 27, written: 12 });
+    expect(flow.conditions.map((condition) => condition.statement)).toEqual(["Alleen bij status GEREED."]);
+    expect(flow.documentRefs).toEqual(["03_INTEGRATION_CATALOG.md"]);
+  });
+
+  /** An older payload resolves to definite "not established" values, never undefined. */
+  it("resolves absent structured slots without inventing a value", () => {
+    const model = normalizeArchitectureL1(topology);
+    const pair = architectureRelationshipPairs(model).find((item) =>
+      item.streamIds.some((streamId) => streamId.includes("maximo--4ps")),
+    )!;
+    const [flow] = architectureFlowsForPair(topology, pair);
+
+    expect(flow.lifecycle).toBe("unknown");
+    expect(flow.directionPattern).toBe("unknown");
+    expect(flow.contractWidth).toBeNull();
+    expect(flow.deployment).toBeNull();
+    expect(flow.mechanism).toBe("");
+    expect(flow.verdict).toBe("");
+    expect(flow.conditions).toEqual([]);
+    expect(flow.documentRefs).toEqual([]);
+    expect(flow.fieldRows).toEqual([]);
+    expect(flow.valueDomainGroups).toEqual([]);
+    expect(flow.businessRules).toEqual([]);
+    expect(flow.runtimeMetrics).toEqual([]);
+  });
+});
+
+describe("relationship cap", () => {
+  const claim = {
+    aliases: [], kind: "software_system" as const, description: "", purpose: "", owner: "",
+    status: "confirmed" as const, confidence: 0.9, evidence_ids: [],
+  };
+  const stream = (id: string, source: string, destination: string) => ({
+    id, source_system_id: source, destination_system_id: destination, name: id, description: "",
+    business_object_ids: [], business_summary: id, integration_solution_ids: [], protocols: [],
+    requiredness: "not_established" as const, delivery_path_id: null, status: "confirmed" as const,
+    confidence: 0.9, control_ids: [], risk_ids: [], unknown_ids: [], runtime_observation_ids: [],
+    conflict_ids: [], artifact_ids: [], evidence_ids: [],
+  });
+  // 21 systems fanning out of one hub = 20 relationships, above the default 18.
+  const hub = BusinessTopologySchema.parse({
+    ...rawTopology,
+    metadata: { ...rawTopology.metadata, project_id: "wide-estate" },
+    systems: [
+      { ...claim, id: "sys-hub", name: "Hub" },
+      ...Array.from({ length: 20 }, (_, index) => ({
+        ...claim, id: `sys-leaf-${index}`, name: `Leaf ${index}`,
+      })),
+    ],
+    integration_solutions: [], business_objects: [], delivery_paths: [], transformations: [],
+    controls: [], risks: [], unknowns: [], artifact_annotations: [], component_annotations: [],
+    lineage_annotations: [],
+    data_streams: Array.from({ length: 20 }, (_, index) =>
+      stream(`ds-${index}`, "sys-hub", `sys-leaf-${index}`)),
+  });
+
+  it("hides the overflow by default and reports exactly what it hid", () => {
+    const model = normalizeArchitectureL1(hub);
+    expect(model.relationships).toHaveLength(18);
+    expect(model.hiddenRelationshipIds).toHaveLength(2);
+    // The omission is only acceptable because it is reported: nothing else on
+    // the model tells a renderer that two relationships exist off-screen.
+    expect(new Set([...model.relationships.map((item) => item.id), ...model.hiddenRelationshipIds]).size).toBe(20);
+  });
+
+  it("draws every relationship when the caller lifts the cap", () => {
+    const model = normalizeArchitectureL1(hub, { maxVisibleRelationships: Number.MAX_SAFE_INTEGER });
+    expect(model.relationships).toHaveLength(20);
+    expect(model.hiddenRelationshipIds).toEqual([]);
+  });
+
+  it("keeps the default when no cap is supplied", () => {
+    expect(normalizeArchitectureL1(hub, {}).relationships).toHaveLength(18);
+  });
 });

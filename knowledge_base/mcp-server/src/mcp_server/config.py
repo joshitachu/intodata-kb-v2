@@ -418,6 +418,29 @@ class MCPServerConfig(BaseSettings):
     runtime_evidence_scope_mismatch_min_orphans: int = 5  # MCP_RUNTIME_EVIDENCE_SCOPE_MISMATCH_MIN_ORPHANS
     # A matched unit with no execution in this many days is reported as silent.
     runtime_evidence_silent_days: int = 30  # MCP_RUNTIME_EVIDENCE_SILENT_DAYS
+    # Log-estate (Elastic/ESB) runtime authority. TMC reports what the control
+    # plane scheduled and executed; a log estate reports what actually flowed --
+    # message volumes, error volumes and end-to-end correlation latency, which
+    # TMC cannot produce at all. `providers/custom/elastic_evidence.py` fetches
+    # the normalised `elastic-aggregates-1` body from the RAG backend and
+    # `runtime_authority.fuse_runtime_authorities` places it beside the TMC
+    # figures with its own provenance (never merged into them).
+    # Best-effort in every case: unconfigured, unreachable or malformed leaves
+    # the Elastic authority `unavailable` with a stated limitation, and never
+    # fails a documentation run.
+    elastic_evidence_enabled: bool = True  # MCP_ELASTIC_EVIDENCE_ENABLED
+    # Read-only JSON endpoint on the RAG backend, under the runtime API prefix.
+    # A config value and not a module constant so a backend route rename is an
+    # env change rather than a release; clearing it disables the lane outright.
+    elastic_evidence_path: str = (  # MCP_ELASTIC_EVIDENCE_PATH
+        "/api/v1/runtime/elastic-aggregates"
+    )
+    elastic_evidence_timeout_s: float = 20.0  # MCP_ELASTIC_EVIDENCE_TIMEOUT_S
+    # 0 inherits `runtime_evidence_window_days` so both authorities describe the
+    # same period by default. Widening it is legitimate -- a log estate commonly
+    # retains months more than the TMC mirror -- and stays honest because every
+    # fused record carries its own `provenance.window_days`.
+    elastic_evidence_window_days: int = 0  # MCP_ELASTIC_EVIDENCE_WINDOW_DAYS
     # A token present in more than this fraction of scanned units is treated as
     # non-distinctive (project-wide boilerplate) and is dropped from non-code
     # association, so ubiquitous identifiers do not attach an item to every unit.

@@ -2,14 +2,31 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { DocSource } from "../types";
 
+/**
+ * Polling rates in this file are per-query and deliberate. There is no global
+ * `refetchInterval` (see `main.tsx`): a query polls only while something is
+ * actually in flight server-side, and anything that changes at a known event is
+ * invalidated at that event instead.
+ *
+ * `CATALOGUE_STALE_MS` is for data an operator changes by doing something --
+ * installing a pack, editing a prompt. It is never polled; the mutation that
+ * changes it invalidates it.
+ */
+const CATALOGUE_STALE_MS = 5 * 60_000;
+/** Data derived from a completed run: invalidated by the run-completion effect in `App.tsx`. */
+const RUN_ARTIFACT_STALE_MS = 60_000;
+
 export function useProjects() {
   return useQuery({
     queryKey: ["projects"],
     queryFn: api.listProjects,
+    // The list is the progress indicator for a scan or generation, so it polls
+    // only while one of those is running -- and stops the moment none is.
     refetchInterval: (query) => {
       const projects = query.state.data?.projects ?? [];
       return projects.some((p) => p.status === "scanning" || p.status === "generating") ? 10_000 : false;
     },
+    staleTime: 10_000,
   });
 }
 
@@ -50,6 +67,7 @@ export function useGenerate() {
       model?: string | null;
       writeModel?: string | null;
       generationMethod?: "custom" | "opencode-cli" | null;
+      generationProfile?: Record<string, unknown> | null;
       liveEvidence?: boolean;
     }): Promise<import("../types").StatusResponse> =>
       api.generate({ ...options, resume: options.resume ?? true }),
@@ -103,11 +121,21 @@ export function useGenerateRuns(projectId: string | null) {
   });
 }
 
+/**
+ * Historical log files for a project.
+ *
+ * NOT polled. A new file appears when a run finishes, and the log stream's
+ * `done` event already invalidates this key in `App.tsx` -- which is exact,
+ * unlike the blanket 5s poll it replaces (measured: 343 calls to
+ * `/mcp/logs/{project}` in ~2h, because the log panel is mounted the whole
+ * time an operator is on the Projects page).
+ */
 export function useLogFiles(projectId: string | null) {
   return useQuery({
     queryKey: ["log-files", projectId],
     queryFn: () => api.listLogFiles(projectId!),
     enabled: !!projectId,
+    staleTime: RUN_ARTIFACT_STALE_MS,
   });
 }
 
@@ -115,7 +143,9 @@ export function usePluginPacks() {
   return useQuery({
     queryKey: ["plugin-packs"],
     queryFn: api.listPluginPacks,
-    staleTime: 30_000,
+    // Catalogue. Register/pull/upload/delete all invalidate this key, so a poll
+    // adds nothing but load (measured: 334 calls to `/mcp/plugins` in ~2h).
+    staleTime: CATALOGUE_STALE_MS,
   });
 }
 
@@ -123,7 +153,7 @@ export function useStarterPack() {
   return useQuery({
     queryKey: ["starter-pack"],
     queryFn: api.getStarterPack,
-    staleTime: 60_000,
+    staleTime: CATALOGUE_STALE_MS,
   });
 }
 
@@ -264,11 +294,20 @@ export function useScanStatus(projectId: string | null) {
   });
 }
 
+/**
+ * The document list, including each document's sub-project.
+ *
+ * NOT polled: the set of published documents changes only when a generation run
+ * swaps `docs_staging/` into `docs/`, and the run-completion effect in `App.tsx`
+ * invalidates this key. Staging is the one case an operator might watch mid-run,
+ * and the run itself is already visibly polled through `useProjects`.
+ */
 export function useDocs(projectId: string | null, source: DocSource = "published", enabled = true) {
   return useQuery({
     queryKey: ["docs", projectId, source],
     queryFn: () => api.listDocs(projectId!, source),
     enabled: !!projectId && enabled,
+    staleTime: RUN_ARTIFACT_STALE_MS,
   });
 }
 
@@ -281,35 +320,43 @@ export function useUpdateProject() {
   });
 }
 
+/** Token/cost totals. Only a finished run moves these; invalidated on `done`. */
 export function useProjectUsage(projectId: string | null) {
   return useQuery({
     queryKey: ["project-usage", projectId],
     queryFn: () => api.getProjectUsage(projectId!),
     enabled: !!projectId,
+    staleTime: RUN_ARTIFACT_STALE_MS,
   });
 }
 
+/** One row per completed run; invalidated on `done`. */
 export function useQualityHistory(projectId: string | null) {
   return useQuery({
     queryKey: ["quality-history", projectId],
     queryFn: () => api.getQualityHistory(projectId!),
     enabled: !!projectId,
+    staleTime: RUN_ARTIFACT_STALE_MS,
   });
 }
 
+/** Immutable once its run exists -- it is that run's questionnaire. */
 export function useQuestionnaire(projectId: string | null, runId: number | null) {
   return useQuery({
     queryKey: ["questionnaire", projectId, runId],
     queryFn: () => api.getQuestionnaire(projectId!, runId!),
     enabled: !!projectId && runId != null,
+    staleTime: CATALOGUE_STALE_MS,
   });
 }
 
+/** Changes only when a human submits one, and `useSubmitReview` invalidates it. */
 export function useReviews(projectId: string | null, runId?: number | null) {
   return useQuery({
     queryKey: ["reviews", projectId, runId ?? null],
     queryFn: () => api.getReviews(projectId!, runId),
     enabled: !!projectId,
+    staleTime: RUN_ARTIFACT_STALE_MS,
   });
 }
 
@@ -329,10 +376,12 @@ export function useSubmitReview() {
   });
 }
 
+/** Instance-level metadata: changes on deploy, not during a session. */
 export function useInstructionPack() {
   return useQuery({
     queryKey: ["instruction-pack"],
     queryFn: api.getInstructionPack,
+    staleTime: CATALOGUE_STALE_MS,
   });
 }
 

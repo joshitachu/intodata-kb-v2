@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fastapiFetch } from "@/lib/fastapi";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 
 export async function POST(request: NextRequest) {
   try {
@@ -10,14 +11,15 @@ export async function POST(request: NextRequest) {
     });
     return NextResponse.json(data, { status: 201 });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to create project";
-    const status = message.includes("409")
-      ? 409
-      : message.includes("403")
-        ? 403
-        : message.includes("400")
-          ? 400
-          : 500;
-    return NextResponse.json({ error: message }, { status });
+    return upstreamErrorResponse("admin/projects POST", error, "Failed to create project");
+  }
+}
+
+export async function GET() {
+  try {
+    const data = await fastapiFetch("/api/v1/admin/projects");
+    return NextResponse.json(data);
+  } catch (error) {
+    return upstreamErrorResponse("admin/projects GET", error, "Failed to load projects");
   }
 }

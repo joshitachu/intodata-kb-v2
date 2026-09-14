@@ -69,6 +69,13 @@ async def poll_git_projects_once(log_mgr: LogManager) -> None:
         try:
             await _fetch_remote(project.local_path, provider_for_project(project))
             remote_sha = await _remote_head_sha(project.local_path)
+            if config.living_doc_patching_enabled:
+                from mcp_server.services.living_docs.drift_audit import audit_document_drift
+                try:
+                    await audit_document_drift(config.project_root / "output" / project.id,
+                                               project.local_path, remote_sha)
+                except Exception:
+                    logger.warning("Document drift audit failed for %s", project.id, exc_info=True)
             if remote_sha == project.last_ingested_commit_sha:
                 async with async_session_factory() as db:
                     registry = ProjectRegistry(db)

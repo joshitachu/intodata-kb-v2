@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fastapiFetch } from "@/lib/fastapi";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -13,7 +14,6 @@ export async function DELETE(_request: NextRequest, { params }: RouteParams) {
     });
     return NextResponse.json(data);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to unassign project";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("admin/project-assignments/[id] DELETE", error, "Failed to unassign project");
   }
 }

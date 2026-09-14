@@ -24,3 +24,4 @@
 ## Decisions (ADRs)
 - `decisions/001-platform-explicit.md` — Why platform-explicit over auto-detect
 - `decisions/002-credential-filter-first.md` — Why credential filtering runs before parsing
+- `decisions/003-enterprise-artifact-fidelity.md` — Structures/XSLT/services parsing, the two deterministic ledgers, identity-first design references, and the sanitized workspace

@@ -34,6 +34,19 @@ class BaseParser:
             ScanWarning(kind=kind, file=rel, message=message, phase=phase)
         )
 
+    def _walk_error(self, directory: Path, exc: OSError) -> None:
+        """Record a directory that could not be enumerated, and keep scanning.
+
+        Passed as ``on_error`` to every :mod:`intodoc.scanner.fswalk` traversal.
+        A single unreadable directory used to abort the whole scan, because
+        ``Path.rglob`` has no error hook and propagates the ``OSError`` out of
+        the generator. Its files are genuinely missing from this scan, so the
+        gap is named rather than swallowed.
+        """
+        from intodoc.scanner.fswalk import warn_handler
+
+        warn_handler(self._warn, "discovery")(directory, exc)
+
     def _read_filtered(self, path: Path) -> str:
         """Read a file and apply credential filtering."""
         text = path.read_text(encoding="utf-8", errors="replace")

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 import { proxyMcpJson, proxyMcpJsonSanitized, safeProjectId } from "../../_proxy";
 
 export const dynamic = "force-dynamic";
@@ -21,8 +22,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       body: JSON.stringify(body),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Project update failed";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("source/projects/[projectId] PATCH", error, "Project update failed");
   }
 }
 

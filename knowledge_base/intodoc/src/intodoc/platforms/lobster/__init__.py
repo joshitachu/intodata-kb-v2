@@ -38,7 +38,9 @@ class LobsterPlugin(GenericPlugin):
             return FileType.UNKNOWN
         return super().classify_file(path)
 
-    def parse_project(self, repo_root: Path, cred_filter: CredentialFilter) -> ScanResult:
+    def parse_project(
+        self, repo_root: Path, cred_filter: CredentialFilter, *, cache_dir: Path | None = None,
+    ) -> ScanResult:
         """Parse using the Lobster-specific XML parser."""
         from intodoc.platforms.lobster.parser import LobsterParser
 

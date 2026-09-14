@@ -3,6 +3,7 @@
 import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { apiErrorMessage } from "@/lib/apiError";
+import { authedFetch } from "@/lib/authedFetch";
 
 /**
  * Shared data layer for the Organization admin dashboard.
@@ -90,8 +91,14 @@ export const adminKeys = {
     ["admin", "assignments", userId, projectId] as const,
 };
 
+// `authedFetch` rather than bare `fetch`: the Organization dashboard fires
+// every tile at once, so on a cold load inside the stale-access-token window
+// each read independently discovered a 401 and had no way to recover from it.
+// `authedFetch` rotates the session once for all of them and replays. It is
+// used instead of `fetchJson` because both helpers here inspect the payload
+// themselves (`error` then `detail`) to build the panel's alert message.
 async function getJson<T>(url: string, fallback: string): Promise<T> {
-  const res = await fetch(url, { credentials: "include" });
+  const res = await authedFetch(url, { credentials: "include" });
   const payload = await res.json().catch(() => null);
   if (!res.ok) {
     throw new Error(
@@ -111,7 +118,7 @@ export async function adminMutate<T = unknown>(
   init: { method: "POST" | "PUT" | "DELETE"; body?: unknown },
   fallback: string,
 ): Promise<T> {
-  const res = await fetch(url, {
+  const res = await authedFetch(url, {
     method: init.method,
     credentials: "include",
     ...(init.body === undefined
@@ -191,7 +198,7 @@ export function useAdminProjects(enabled = true): UseQueryResult<AdminProject[],
     queryKey: adminKeys.projects,
     enabled,
     queryFn: async () =>
-      (await getJson<{ projects: AdminProject[] }>("/api/projects", "Failed to load projects"))
+      (await getJson<{ projects: AdminProject[] }>("/api/admin/projects", "Failed to load projects"))
         .projects,
   });
 }

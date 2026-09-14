@@ -572,6 +572,9 @@ function emptyPoint(bucket_start: string, isPartial: boolean): TrendDisplayPoint
     failed_runs: 0,
     running_runs: 0,
     unknown_runs: 0,
+    misfired_runs: 0,
+    terminated_runs: 0,
+    timed_out_runs: 0,
     failure_rate: 0,
     p50_duration_ms: null,
     p95_duration_ms: null,
@@ -726,6 +729,9 @@ function TrendSummary({
     ) ? point : current,
     null,
   );
+  const misfired = captured.reduce((sum, point) => sum + point.misfired_runs, 0);
+  const timedOut = captured.reduce((sum, point) => sum + point.timed_out_runs, 0);
+  const terminated = captured.reduce((sum, point) => sum + point.terminated_runs, 0);
 
   const items = [
     {
@@ -750,10 +756,17 @@ function TrendSummary({
       value: slowest ? formatDuration(slowest.p95_duration_ms) : "—",
       hint: slowest ? `${bucketDateLabel(slowest.bucket_start, bucket)}${slowest.is_partial ? " · partial" : ""}` : "No duration data",
     },
+    // A misfire never started -- it must stay visible at this summary layer
+    // instead of hiding inside the failure rate above.
+    {
+      label: "Misfired",
+      value: formatCompact(misfired),
+      hint: `${formatCompact(timedOut)} timed out · ${formatCompact(terminated)} terminated`,
+    },
   ];
 
   return (
-    <dl className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+    <dl className="grid grid-cols-2 gap-2 lg:grid-cols-5">
       {items.map((item) => (
         <div key={item.label} className="min-w-0 rounded-lg border border-border/70 bg-muted/20 px-3 py-2.5">
           <dt className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -797,6 +810,24 @@ function TrendTooltip({
           <dd className="text-right tabular-nums text-foreground">
             {point.failed_runs.toLocaleString()} ({formatRate(point.failure_rate)})
           </dd>
+          {point.misfired_runs > 0 && (
+            <>
+              <dt>Misfired</dt>
+              <dd className="text-right tabular-nums text-foreground">{point.misfired_runs.toLocaleString()}</dd>
+            </>
+          )}
+          {point.timed_out_runs > 0 && (
+            <>
+              <dt>Timed out</dt>
+              <dd className="text-right tabular-nums text-foreground">{point.timed_out_runs.toLocaleString()}</dd>
+            </>
+          )}
+          {point.terminated_runs > 0 && (
+            <>
+              <dt>Terminated</dt>
+              <dd className="text-right tabular-nums text-foreground">{point.terminated_runs.toLocaleString()}</dd>
+            </>
+          )}
           {point.p50_duration_ms != null && (
             <>
               <dt>p50</dt>
@@ -824,21 +855,23 @@ function TrendTable({
 }) {
   return (
     <EntityTable
-      headers={[BUCKET_NOUN[bucket], "Capture", "Runs", "Failed", "Failure rate", "p50", "p95"]}
+      headers={[BUCKET_NOUN[bucket], "Capture", "Runs", "Failed", "Misfired", "Failure rate", "p50", "p95"]}
       rows={points}
       rowKey={(point) => point.bucket_start}
-      numeric={[2, 3, 4, 5, 6]}
+      numeric={[2, 3, 4, 5, 6, 7]}
       cells={(point) => point.has_captured_records ? [
         `${bucketDateLabel(point.bucket_start, bucket)}${point.is_partial ? " · Partial" : ""}`,
         "Captured records",
         point.total_runs.toLocaleString(),
         point.failed_runs.toLocaleString(),
+        point.misfired_runs > 0 ? point.misfired_runs.toLocaleString() : "-",
         formatRate(point.failure_rate),
         formatDuration(point.p50_duration_ms),
         formatDuration(point.p95_duration_ms),
       ] : [
         `${bucketDateLabel(point.bucket_start, bucket)}${point.is_partial ? " · Partial" : ""}`,
         "No captured records",
+        "—",
         "—",
         "—",
         "—",

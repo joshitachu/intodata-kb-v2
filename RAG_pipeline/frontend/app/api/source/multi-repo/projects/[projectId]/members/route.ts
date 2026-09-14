@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { CreateMultiRepoProjectSchema } from "@/types";
 import { proxyMcpJsonSanitized, safeProjectId } from "../../../../_proxy";
+import { badRequestOrUpstreamResponse } from "@/lib/backendProxy";
 
 export const dynamic = "force-dynamic";
 // Adding members clones them, so this shares the create route's ceiling.
@@ -52,7 +53,6 @@ export async function POST(
       },
     );
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Invalid members payload";
-    return NextResponse.json({ error: message }, { status: 400 });
+    return badRequestOrUpstreamResponse("source/multi-repo/projects/[projectId]/members POST", error, "Invalid members payload");
   }
 }

@@ -216,6 +216,27 @@ class BusinessObject(BaseModel):
     evidence_ids: list[str] = Field(default_factory=list)
 
 
+class BusinessContractWidth(BaseModel):
+    offered: int | None = None
+    mapped: int | None = None
+    written: int | None = None
+    note: str = ""
+
+
+class BusinessStreamCondition(BaseModel):
+    kind: str = "unknown"
+    statement: str = ""
+    evidence_note: str = ""
+
+
+class BusinessDeploymentAgreement(BaseModel):
+    supplied_version: str = ""
+    deployed_version: str = ""
+    built_at: str = ""
+    agreement: str = "unknown"
+    note: str = ""
+
+
 class BusinessDataStream(BaseModel):
     id: str
     source_system_id: str = ""
@@ -234,6 +255,20 @@ class BusinessDataStream(BaseModel):
     unknown_ids: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
     artifact_ids: list[str] = Field(default_factory=list)
+    # Additive structured facts. This mirror is lenient, so an absent field is
+    # not an error -- but a field the publisher fills and this model omits is
+    # invisible to every answer, which reads as "not established" and is
+    # therefore worse than a rejection.
+    mechanism: str = ""
+    generation: str = ""
+    direction_pattern: str = "unknown"
+    lifecycle: str = "unknown"
+    contract_width: BusinessContractWidth | None = None
+    conditions: list[BusinessStreamCondition] = Field(default_factory=list)
+    deployment: BusinessDeploymentAgreement | None = None
+    key_form: str = ""
+    verdict: str = ""
+    document_refs: list[str] = Field(default_factory=list)
 
 
 class BusinessClaim(BaseModel):
@@ -246,6 +281,44 @@ class BusinessClaim(BaseModel):
     confidence: float | None = None
     stream_ids: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
+
+
+class BusinessTransformationMapping(BaseModel):
+    source: str = ""
+    target: str = ""
+    mapping_type: str = "unknown"
+    expression: str = ""
+    category: str = ""
+    reaches_target: str = "unknown"
+    note: str = ""
+
+
+class BusinessTransformation(BusinessClaim):
+    """How a value is carried across one exchange.
+
+    Distinct from :class:`BusinessRule`, which says which of several outcomes
+    the business gets. Typing this as a bare claim dropped `mappings` entirely,
+    so every answer about field mappings had to fall back to scanner lineage
+    and could not see an analyst-curated table at all.
+    """
+
+    kind: str = "unknown"
+    target_field: str = ""
+    integration_solution_ids: list[str] = Field(default_factory=list)
+    artifact_ids: list[str] = Field(default_factory=list)
+    mappings: list[BusinessTransformationMapping] = Field(default_factory=list)
+
+
+class BusinessRule(BusinessClaim):
+    """A decision the integration layer takes on behalf of the business."""
+
+    kind: str = "unknown"
+    statement: str = ""
+    inputs: list[str] = Field(default_factory=list)
+    output: str = ""
+    transformation_ids: list[str] = Field(default_factory=list)
+    owner: str = ""
+    owner_question: str = ""
 
 
 class BusinessRisk(BusinessClaim):
@@ -281,7 +354,8 @@ class BusinessTopology(BaseModel):
     integration_solutions: list[BusinessIntegrationSolution] = Field(default_factory=list)
     business_objects: list[BusinessObject] = Field(default_factory=list)
     data_streams: list[BusinessDataStream] = Field(default_factory=list)
-    transformations: list[BusinessClaim] = Field(default_factory=list)
+    transformations: list[BusinessTransformation] = Field(default_factory=list)
+    business_rules: list[BusinessRule] = Field(default_factory=list)
     controls: list[BusinessClaim] = Field(default_factory=list)
     risks: list[BusinessRisk] = Field(default_factory=list)
     unknowns: list[BusinessUnknown] = Field(default_factory=list)

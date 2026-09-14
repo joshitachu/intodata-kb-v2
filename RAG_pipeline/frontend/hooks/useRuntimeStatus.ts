@@ -1,14 +1,16 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { fetchJson } from "@/lib/authedFetch";
 import { RuntimeStatusResponse, RuntimeStatusResponseSchema } from "@/types";
 
 async function fetchRuntimeStatus(): Promise<RuntimeStatusResponse> {
-  const res = await fetch("/api/runtime/status", { cache: "no-store" });
-  if (!res.ok) {
-    throw new Error("Failed to fetch runtime status");
-  }
-  return RuntimeStatusResponseSchema.parse(await res.json());
+  return RuntimeStatusResponseSchema.parse(
+    await fetchJson<unknown>("/api/runtime/status", {
+      cache: "no-store",
+      fallbackError: "Failed to fetch runtime status",
+    }),
+  );
 }
 
 export function useRuntimeStatus() {

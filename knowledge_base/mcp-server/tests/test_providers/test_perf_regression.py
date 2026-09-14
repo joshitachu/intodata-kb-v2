@@ -218,7 +218,15 @@ def _make_staging(tmp_path: Path, project_id: str, jobs: list[dict], platform: s
     groups = sorted({j["group"] for j in jobs})
     for group in groups:
         group_jobs = [j["name"] for j in jobs if j["group"] == group]
-        (staging / "_preprocess" / f"{group}.md").write_text("\n".join(group_jobs), encoding="utf-8")
+        # This fixture measures model-call concurrency. A names-only packet is
+        # intentionally classified as packet-limited and no longer dispatched,
+        # so provide enough concrete content to exercise the code under test.
+        body = "\n".join(
+            f"## Artifact: {name}\ncomponent: WorkatoRecipe_1\n"
+            + "source-backed step and mapping detail\n" * 12
+            for name in group_jobs
+        )
+        (staging / "_preprocess" / f"{group}.md").write_text(body, encoding="utf-8")
 
     (staging / "_preprocess" / "_analysis_guide.md").write_text("Workato analysis guide", encoding="utf-8")
     (staging / "_preprocess" / "_phase3_guide.md").write_text("Workato phase 3 guide", encoding="utf-8")

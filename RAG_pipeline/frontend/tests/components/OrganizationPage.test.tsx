@@ -104,6 +104,19 @@ describe("OrganizationPage", () => {
     expect(screen.getByText("roles-panel")).toBeInTheDocument();
   });
 
+  it("shows project administration to an admin with assignment permission", () => {
+    permissions = {
+      ...permissions,
+      canManageUsers: false,
+      canCreateProjects: false,
+      canAssignProjects: true,
+    };
+    searchParams = new URLSearchParams("tab=projects");
+    render(<OrganizationPage />);
+
+    expect(screen.getByText("projects-panel")).toBeInTheDocument();
+  });
+
   it("explains the denial when no section is reachable", () => {
     permissions = { ...permissions, canManageUsers: false, canCreateProjects: false };
     render(<OrganizationPage />);

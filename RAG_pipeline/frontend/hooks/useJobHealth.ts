@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { fetchJson } from "@/lib/authedFetch";
 import {
   RuntimeJobHealthResponseSchema,
   type RuntimeJobHealthResponse,
@@ -16,13 +17,12 @@ const REFETCH_MS = 45 * 1000;
 
 async function fetchJobHealth(projectId: string): Promise<RuntimeJobHealthResponse> {
   const params = new URLSearchParams({ project_id: projectId, limit: "500" });
-  const res = await fetch(`/api/runtime/job-health?${params.toString()}`, {
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    throw new Error(`Failed to fetch runtime job health (${res.status})`);
-  }
-  return RuntimeJobHealthResponseSchema.parse(await res.json());
+  return RuntimeJobHealthResponseSchema.parse(
+    await fetchJson<unknown>(`/api/runtime/job-health?${params.toString()}`, {
+      cache: "no-store",
+      fallbackError: "Failed to fetch runtime job health",
+    }),
+  );
 }
 
 /**

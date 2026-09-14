@@ -131,24 +131,19 @@ async def test_auto_doc_update_skip_advances_commit_and_persists_summary(
     assert not repo.sidecar_path.exists()
 
 
-async def test_enabled_opencode_path_primes_baseline_and_reconciles_from_last_ingested_sha(
+async def test_enabled_living_docs_uses_deterministic_router_not_opencode(
     session_factory,
     monkeypatch,
     tmp_path,
     log_manager,
 ):
-    """A queued webhook cannot skip an earlier un-ingested source revision."""
+    """The living-doc flag changes publication, never impact routing."""
 
     import mcp_server.services.auto_doc_update as auto_doc_update
     from mcp_server.config import config
-    from mcp_server.services.living_docs.rag_revisions import InMemoryRevisionedRagStore
-    from mcp_server.services.rag_bridge import RagBridge as RealRagBridge
-    from mcp_server.services.true_patch_executor import PatchResult
 
     monkeypatch.setattr(auto_doc_update, "async_session_factory", session_factory)
     monkeypatch.setattr(config, "project_root", tmp_path)
-    monkeypatch.setattr(config, "data_dir", tmp_path / "data")
-    monkeypatch.setattr(config, "intodoc_output_dir", tmp_path / "intodoc-output")
     monkeypatch.setattr(config, "living_doc_patching_enabled", True)
     monkeypatch.setattr(config, "living_doc_rollout_stage", "auto_scoped")
 
@@ -169,42 +164,18 @@ async def test_enabled_opencode_path_primes_baseline_and_reconciles_from_last_in
         return ""
 
     monkeypatch.setattr(auto_doc_update, "_git", git_stub)
-    rag_store = InMemoryRevisionedRagStore()
-
-    class _Bridge(RealRagBridge):
-        def http_revisioned_adapter(self):
-            return rag_store
-
-    monkeypatch.setattr(auto_doc_update, "RagBridge", _Bridge)
-
-    class _AgentPatch:
-        async def run(self, **kwargs):
-            doc = kwargs["output_dir"] / "docs" / "01_ARCHITECTURE_MAP.md"
-            doc.write_text("# Architecture\n\nnew = 2\n", encoding="utf-8")
-            return PatchResult(
-                action="true_patch",
-                patched_groups=[],
-                patched_docs=["01_ARCHITECTURE_MAP.md"],
-                summary={
-                    "reason_code": "opencode_patch_succeeded",
-                    "patch_plan_producer": "opencode",
-                    "input_tokens": 10,
-                    "output_tokens": 5,
-                    "elapsed_ms": 20,
-                    "files_read": ["test_demo.py"],
-                    "updated_docs": ["01_ARCHITECTURE_MAP.md"],
-                },
-                advance_commit=True,
+    class _Router:
+        def decide(self, **kwargs):
+            return RoutingDecision(
+                strategy="held",
+                affected_docs=[],
+                changed_groups=[],
+                reason="test hold",
+                reason_code="traceability_required",
             )
 
-    monkeypatch.setattr(auto_doc_update, "OpenCodeReingestionExecutor", _AgentPatch)
-
-    class _RouterMustNotRun:
-        def decide(self, **kwargs):
-            raise AssertionError("enabled OpenCode reingestion must bypass path/group routing")
-
         async def expand(self, *args, **kwargs):
-            raise AssertionError("enabled OpenCode reingestion must bypass semantic expansion")
+            return args[0]
 
     async with session_factory() as session:
         registry = ProjectRegistry(session)
@@ -217,22 +188,9 @@ async def test_enabled_opencode_path_primes_baseline_and_reconciles_from_last_in
         project.last_ingested_commit_sha = before_active
         await session.commit()
 
-    output = tmp_path / "output" / "poly-test"
-    docs = output / "docs"
-    support = docs / "_rag_support" / "phase2_analysis"
-    cache = output / "analysis_cache"
-    support.mkdir(parents=True)
-    cache.mkdir(parents=True)
-    (docs / "01_ARCHITECTURE_MAP.md").write_text(
-        "# Architecture\n\nold = 1\n", encoding="utf-8"
-    )
-    (support / "root.md").write_text("# root analysis\n", encoding="utf-8")
-    (cache / "root.md").write_text("# root analysis\n", encoding="utf-8")
-    (support.parent / "_doc_pack_manifest.json").write_text("{}", encoding="utf-8")
-
     ok = await auto_doc_update.AutoDocUpdateService(
         log_mgr=log_manager,
-        router=_RouterMustNotRun(),
+        router=_Router(),
     ).run(
         project_id="poly-test",
         before_sha=webhook_before,
@@ -240,20 +198,13 @@ async def test_enabled_opencode_path_primes_baseline_and_reconciles_from_last_in
         trigger="webhook",
     )
 
-    assert ok is True
-    assert (docs / "01_ARCHITECTURE_MAP.md").read_text() == "# Architecture\n\nnew = 2\n"
-    assert await rag_store.active_revision("poly-test") is not None
+    assert ok is False
     async with session_factory() as session:
         project = await ProjectRegistry(session).get_project("poly-test")
         assert project is not None
-        assert project.last_ingested_commit_sha == after
+        assert project.last_ingested_commit_sha == before_active
         assert project.git_update_summary["before"] == before_active
-        assert project.git_update_summary["mode"] == "opencode_reingestion"
-        assert project.git_update_summary["reason_code"] == "opencode_patch_succeeded"
-    audit_path = tmp_path / "data" / "living_docs" / "audit" / "poly-test.jsonl"
-    audit = json.loads(audit_path.read_text().splitlines()[-1])
-    assert audit["usage"]["provider_calls"] == 1
-    assert audit["metadata"]["before_sha"] == before_active
+        assert project.git_update_summary["reason_code"] == "traceability_required"
 
 
 async def test_auto_doc_update_true_patch_success(

@@ -46,19 +46,19 @@ export default function OrganizationPage() {
 function OrganizationDashboard() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { isOwner, canManageUsers, canCreateProjects } = usePermissions();
+  const { isOwner, canManageUsers, canAssignProjects, canCreateProjects } = usePermissions();
 
-  const canManageProjects = isOwner || canCreateProjects;
+  const canManageProjects = isOwner || canAssignProjects || canCreateProjects;
 
   const tabs = useMemo<TabDef[]>(() => {
     const all: (TabDef & { visible: boolean })[] = [
       { id: "members", label: "Members", icon: Users, render: () => <UsersPanel />, visible: canManageUsers },
       { id: "access", label: "Access requests", icon: UserPlus, render: () => <AccessPanel />, visible: canManageUsers },
       { id: "roles", label: "Roles", icon: KeyRound, render: () => <RolesPanel />, visible: isOwner },
-      { id: "projects", label: "Projects", icon: FolderKanban, render: () => <ProjectsPanel />, visible: canManageProjects },
+      { id: "projects", label: "Projects", icon: FolderKanban, render: () => <ProjectsPanel canCreateProjects={canCreateProjects} />, visible: canManageProjects },
     ];
     return all.filter((tab) => tab.visible);
-  }, [canManageUsers, isOwner, canManageProjects]);
+  }, [canCreateProjects, canManageUsers, isOwner, canManageProjects]);
 
   const requested = searchParams.get("tab") as TabId | null;
   const active = tabs.find((tab) => tab.id === requested)?.id ?? tabs[0]?.id;

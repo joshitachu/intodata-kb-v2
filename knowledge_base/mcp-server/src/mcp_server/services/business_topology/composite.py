@@ -46,6 +46,7 @@ from typing import Any
 from mcp_server.services.business_topology.models import (
     BusinessDataStream,
     BusinessObject,
+    BusinessRule,
     BusinessSystem,
     BusinessTopology,
     BusinessTopologyCoverage,
@@ -279,6 +280,7 @@ def build_composite_org_topology(
     objects: dict[str, BusinessObject] = {}
     paths: dict[str, DeliveryPath] = {}
     transformations: list[BusinessTransformation] = []
+    business_rules: list[BusinessRule] = []
     solution_artifacts: dict[str, list[str]] = {}
     total_artifacts = cited_artifacts = total_evidence = cited_evidence = 0
     contributing_logical: set[str] = set()
@@ -441,6 +443,7 @@ def build_composite_org_topology(
                         paths[merged_path.id] = merged_path
                     existing.delivery_path_id = merged_path.id
 
+        local_transformation_ids: dict[str, str] = {}
         for raw in topology.get("transformations") or []:
             if not isinstance(raw, dict):
                 continue
@@ -451,9 +454,12 @@ def build_composite_org_topology(
             ]
             if not org_stream_ids:
                 continue
+            transformation_id = f"transform-{_slug(logical_name)}-{len(transformations) + 1}"
+            if raw.get("id"):
+                local_transformation_ids[str(raw["id"])] = transformation_id
             transformations.append(
                 BusinessTransformation(
-                    id=f"transform-{_slug(logical_name)}-{len(transformations) + 1}",
+                    id=transformation_id,
                     name=str(raw.get("name") or "Transformation"),
                     description=str(raw.get("description") or ""),
                     status=str(raw.get("status") or "inferred"),
@@ -462,16 +468,62 @@ def build_composite_org_topology(
                     stream_ids=list(dict.fromkeys(org_stream_ids)),
                     integration_solution_ids=[f"int-sol-{_slug(logical_name)}"],
                     artifact_ids=[str(a) for a in raw.get("artifact_ids") or []],
+                    kind=str(raw.get("kind") or "unknown"),
+                    target_field=str(raw.get("target_field") or ""),
                     mappings=[
                         TransformationMapping(
                             source=str(mapping.get("source") or ""),
                             target=str(mapping.get("target") or ""),
                             mapping_type=str(mapping.get("mapping_type") or "unknown"),
+                            expression=str(mapping.get("expression") or ""),
+                            category=str(mapping.get("category") or ""),
+                            reaches_target=str(
+                                mapping.get("reaches_target") or "unknown"
+                            ),
+                            note=str(mapping.get("note") or ""),
                         )
                         for mapping in raw.get("mappings") or []
                         if isinstance(mapping, dict)
                         and (mapping.get("source") or mapping.get("target"))
                     ],
+                )
+            )
+
+        # Business rules travel to the org level like transformations do: a
+        # rule is what the business must confirm or retire, so dropping it in
+        # the merge would make the org view look decision-free while every
+        # sub-project view showed decisions.
+        for raw in topology.get("business_rules") or []:
+            if not isinstance(raw, dict):
+                continue
+            statement = str(raw.get("statement") or "").strip()
+            if not statement:
+                continue
+            org_stream_ids = [
+                local_stream_to_org[str(ref)]
+                for ref in raw.get("stream_ids") or []
+                if str(ref) in local_stream_to_org
+            ]
+            business_rules.append(
+                BusinessRule(
+                    id=f"rule-{_slug(logical_name)}-{len(business_rules) + 1}",
+                    name=str(raw.get("name") or "Business rule"),
+                    description=str(raw.get("description") or ""),
+                    status=str(raw.get("status") or "inferred"),
+                    confidence=float(raw.get("confidence") or 0.6),
+                    evidence_ids=[str(e) for e in raw.get("evidence_ids") or []],
+                    kind=str(raw.get("kind") or "unknown"),
+                    statement=statement,
+                    inputs=[str(item) for item in raw.get("inputs") or []],
+                    output=str(raw.get("output") or ""),
+                    stream_ids=list(dict.fromkeys(org_stream_ids)),
+                    transformation_ids=[
+                        local_transformation_ids[str(ref)]
+                        for ref in raw.get("transformation_ids") or []
+                        if str(ref) in local_transformation_ids
+                    ],
+                    owner=str(raw.get("owner") or ""),
+                    owner_question=str(raw.get("owner_question") or ""),
                 )
             )
 
@@ -602,6 +654,7 @@ def build_composite_org_topology(
         data_streams=list(streams.values()),
         delivery_paths=list(paths.values()),
         transformations=transformations,
+        business_rules=business_rules,
         unknowns=unknowns,
         coverage=BusinessTopologyCoverage(
             total_artifacts=total_artifacts,

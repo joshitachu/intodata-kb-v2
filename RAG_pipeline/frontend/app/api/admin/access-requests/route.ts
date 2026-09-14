@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fastapiFetch } from "@/lib/fastapi";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 
 export async function GET(request: NextRequest) {
   try {
@@ -8,8 +9,6 @@ export async function GET(request: NextRequest) {
     const data = await fastapiFetch(`/api/v1/admin/access-requests${qs}`);
     return NextResponse.json(data);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to fetch access requests";
-    const status = message.includes("403") ? 403 : message.includes("401") ? 401 : 500;
-    return NextResponse.json({ error: message }, { status });
+    return upstreamErrorResponse("admin/access-requests GET", error, "Failed to fetch access requests");
   }
 }

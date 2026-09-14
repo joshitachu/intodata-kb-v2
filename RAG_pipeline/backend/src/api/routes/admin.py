@@ -24,8 +24,6 @@ from src.api.dependencies import (
 )
 from src.rbac.permissions import (
     ASSIGN_PROJECTS,
-    can_manage_project,
-    get_owned_project_ids,
     has_permission,
 )
 from src.api.routes.auth import limiter
@@ -708,6 +706,33 @@ class AuditLogResponse(BaseModel):
     created_at: str
 
 
+@router.get("/projects", summary="List projects available for assignment")
+async def list_assignable_projects(manager: ProjectManager, db: DBSession):
+    """List every registered project for an assignment manager.
+
+    This is intentionally separate from the user project-selector endpoint:
+    ``assign_projects`` grants organization-wide assignment administration, not
+    organization-wide document access.
+    """
+    rows = await db.execute(
+        text("""
+            SELECT p.id, p.display_name, p.platform
+            FROM projects p
+            ORDER BY p.display_name
+        """)
+    )
+    return {
+        "projects": [
+            {
+                "id": row[0],
+                "display_name": row[1] or row[0],
+                "platform": row[2] or "unknown",
+            }
+            for row in rows.fetchall()
+        ]
+    }
+
+
 @router.post("/projects", status_code=201, summary="Create/claim a project (owned by the creator)")
 async def create_project(
     request: Request,
@@ -831,16 +856,12 @@ async def assign_project(
     manager: ProjectManager,
     db: DBSession,
 ):
-    """Assign a project to a user.
+    """Assign any project to a user.
 
-    Non-superadmins may only assign projects they own (``can_manage_project``).
+    The ``ProjectManager`` dependency already requires ``assign_projects``.
+    Assignment administration is organization-wide and therefore does not use
+    the separate project-owner gate used by operational project actions.
     """
-    # Ownership gate: an admin can only grant access to projects they own.
-    if not await can_manage_project(manager, db, body.project_id):
-        raise HTTPException(
-            status_code=403,
-            detail="You can only assign projects you own",
-        )
 
     # Check user exists
     user_result = await db.execute(select(User).where(User.id == body.user_id))
@@ -911,13 +932,6 @@ async def unassign_project(
             status_code=400, detail="Cannot remove the project owner assignment"
         )
 
-    # Ownership gate: an admin can only manage assignments for projects they own.
-    if not await can_manage_project(manager, db, assignment.project_id):
-        raise HTTPException(
-            status_code=403,
-            detail="You can only manage assignments for projects you own",
-        )
-
     audit = AuditService(db)
     await audit.log(
         user_id=manager.id,
@@ -942,20 +956,12 @@ async def list_project_assignments(
     user_id: int | None = None,
     project_id: str | None = None,
 ):
-    """List project assignments, optionally filtered.
-
-    Non-superadmins only see assignments for projects they own.
-    """
+    """List project assignments, optionally filtered."""
     query = select(ProjectAssignment)
     if user_id is not None:
         query = query.where(ProjectAssignment.user_id == user_id)
     if project_id is not None:
         query = query.where(ProjectAssignment.project_id == project_id)
-
-    # Owner-scope for non-superadmins.
-    if not manager.is_superadmin:
-        owned = await get_owned_project_ids(manager, db)
-        query = query.where(ProjectAssignment.project_id.in_(owned))
 
     result = await db.execute(query)
     assignments = result.scalars().all()
@@ -984,14 +990,8 @@ async def list_project_assignments(
 
 @router.get("/users/{user_id}/projects", summary="Get projects assigned to a user")
 async def get_user_projects(user_id: int, manager: ProjectManager, db: DBSession):
-    """Get projects assigned to a specific user.
-
-    Non-superadmins only see the target user's assignments for projects they own.
-    """
+    """Get projects assigned to a specific user."""
     query = select(ProjectAssignment).where(ProjectAssignment.user_id == user_id)
-    if not manager.is_superadmin:
-        owned = await get_owned_project_ids(manager, db)
-        query = query.where(ProjectAssignment.project_id.in_(owned))
 
     result = await db.execute(query)
     assignments = result.scalars().all()

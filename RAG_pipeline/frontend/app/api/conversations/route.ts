@@ -4,6 +4,7 @@ import {
   ConversationListResponseSchema,
   ConversationResponseSchema,
 } from "@/types";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 
 export async function GET(request: NextRequest) {
   try {
@@ -18,9 +19,7 @@ export async function GET(request: NextRequest) {
     const validated = ConversationListResponseSchema.parse(data);
     return NextResponse.json(validated);
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Failed to fetch conversations";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("conversations GET", error, "Failed to fetch conversations");
   }
 }
 
@@ -36,8 +35,6 @@ export async function POST(request: NextRequest) {
     const validated = ConversationResponseSchema.parse(data);
     return NextResponse.json(validated, { status: 201 });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Failed to create conversation";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("conversations POST", error, "Failed to create conversation");
   }
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { SourceProjectsResponseSchema } from "@/types";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 import { KB_API_URL, stripSourceSecrets } from "../_proxy";
 
 export const dynamic = "force-dynamic";
@@ -26,7 +27,6 @@ export async function GET(request: NextRequest) {
     const validated = SourceProjectsResponseSchema.parse(data);
     return NextResponse.json(validated);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to fetch sources";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("source/projects GET", error, "Failed to fetch sources");
   }
 }

@@ -216,6 +216,7 @@ class TargetEvidenceBuilder:
         self._jobs: list[dict[str, Any]] | None = None
         self._shared: list[dict[str, Any]] | None = None
         self._job_index: dict[str, dict[str, Any]] | None = None
+        self._dependency_repository = None
 
     # ── lazy caches ──────────────────────────────────────────────────
 
@@ -554,6 +555,25 @@ class TargetEvidenceBuilder:
             *rows,
         ])
 
+    def _render_routines(self, unit_name: str) -> str:
+        """Render scanner-resolved, full sanitized routine dependencies."""
+        if self._dependency_repository is None:
+            from mcp_server.providers.custom.dependency_evidence import DependencyEvidenceRepository
+            try:
+                self._dependency_repository = DependencyEvidenceRepository.from_directory(
+                    self.scan_output_dir
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
+                logger.warning("target_evidence: routine dependency evidence unavailable", exc_info=True)
+                self._dependency_repository = False
+        if self._dependency_repository is False:
+            return ""
+        try:
+            return self._dependency_repository.render_routines(unit_name)
+        except ValueError:
+            # Older split-only fixtures/scans have no canonical routine index.
+            return ""
+
     # ── assembly ─────────────────────────────────────────────────────
 
     def build(self, doc_name: str, unit_name: str) -> TargetEvidence | None:
@@ -570,6 +590,7 @@ class TargetEvidenceBuilder:
         connections_md = self._render_connections(job)
         inventory_md = self._render_inventory(job, include_params=True)
         header_md = self._render_header(unit_name, job)
+        routines_md = self._render_routines(unit_name)
         noncode_md = ""
         if self._noncode_plan is not None and self._noncode_section_bytes > 0:
             noncode_md = self._noncode_plan.unit_section(
@@ -589,7 +610,7 @@ class TargetEvidenceBuilder:
             inventory: str, connections: str, noncode: str, runtime: str = ""
         ) -> str:
             parts = [
-                header_md, callers_md, inventory, code_md, tmap_md, sql_md,
+                header_md, callers_md, inventory, code_md, routines_md, tmap_md, sql_md,
                 context_md, connections, noncode, runtime,
             ]
             return "\n\n".join(p for p in parts if p) + "\n"
@@ -644,6 +665,8 @@ class TargetEvidenceBuilder:
 
         categories = set()
         if code_md:
+            categories.add(CATEGORY_CODE)
+        if routines_md:
             categories.add(CATEGORY_CODE)
         if tmap_md:
             categories.add(CATEGORY_TMAP)

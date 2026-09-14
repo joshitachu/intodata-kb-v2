@@ -303,6 +303,82 @@ async def test_composite_orchestration_runs_each_partition_and_publishes(orchest
     assert all(o.success for o in outcomes)
 
 
+async def test_failing_client_readiness_verdict_holds_one_subproject_only(orchestration_env):
+    """A partitioned project reaches publication here, not through the single-run path.
+
+    Without this gate the enterprise contract's fail-closed rule silently did
+    not apply to composite uploads: `swap_docs` ran on any successful run.
+    """
+    import json as _json
+
+    tmp_path = orchestration_env
+    facts = _composite_facts("proj")
+    plan = pp.plan_partitions(facts)
+    output_root = tmp_path / "output" / "proj"
+
+    class _VerdictCoordinator(_FakeCoordinator):
+        """Alpha's staged product fails client-readiness; Beta's passes."""
+
+        async def generate_docs(self, project_id, *, resume=True, run_id=None,
+                                partition=None, **kwargs):
+            result = await super().generate_docs(
+                project_id, resume=resume, run_id=run_id, partition=partition, **kwargs
+            )
+            subdir = pp.partition_output_subdir(partition.name) or partition.name
+            staging = self.output_root / subdir / "docs_staging"
+            assessment = staging / "_assessment"
+            assessment.mkdir(parents=True, exist_ok=True)
+            failing = partition.name == "Alpha"
+            (assessment / "publication_verdict.json").write_text(_json.dumps({
+                "schema_version": "enterprise-publication-verdict-1",
+                "ok": not failing,
+                "contract": "talend-enterprise-v1",
+                "checks": {"mapping_depth": not failing},
+                "blocking": (
+                    ["INTEGRATION__x: exact mapping table abc not embedded"] if failing else []
+                ),
+                "warnings": [],
+                "draft_label": "draft: held by client-readiness policy" if failing else "",
+                "evaluated_at": 0,
+            }), encoding="utf-8")
+            return result
+
+    # Give Beta a previously published document, to prove a held sibling does
+    # not disturb what is already live.
+    (output_root / "Beta" / "docs").mkdir(parents=True)
+    (output_root / "Beta" / "docs" / "old.md").write_text("# previous", encoding="utf-8")
+
+    log_mgr = _FakeLogMgr()
+    outcomes = await po.run_partitioned_generation(
+        "proj", 1, log_mgr, _VerdictCoordinator(output_root), plan=plan, facts=facts, resume=True,
+    )
+
+    by_name = {o.partition: o for o in outcomes}
+    # Alpha: held. No swap, no RAG push, draft preserved, nothing published.
+    assert by_name["Alpha"].success is False
+    assert by_name["Alpha"].error.startswith("manual_review:")
+    assert "mapping table abc not embedded" in by_name["Alpha"].error
+    assert (output_root / "Alpha" / "docs_staging" / "00_AGENT_BRIEF.md").exists()
+    assert not (output_root / "Alpha" / "docs").exists()
+    assert not any(d["filename"].startswith("Alpha/") for d in _FakeBridge.pushed)
+
+    # Beta: unaffected and published over its previous documents.
+    assert by_name["Beta"].success is True
+    assert (output_root / "Beta" / "docs" / "00_AGENT_BRIEF.md").exists()
+    assert any(d["filename"].startswith("Beta/") for d in _FakeBridge.pushed)
+
+    # The held sub-project is reported, and its child run says why.
+    assert any(
+        level == "error" and "client-readiness policy" in message
+        for level, message in log_mgr.messages
+    )
+    completes = [c for c in _FakeRegistry.calls if c[0] == "complete_run"]
+    held = [c for c in completes if c[3].get("run_verdict") == "held_client_readiness"]
+    assert len(held) == 1
+    orch = next(c for c in completes if c[1] == 1)
+    assert orch[2] == "failed", "the parent run must not report a clean publication"
+
+
 async def test_partition_failure_is_isolated_and_reported(orchestration_env):
     tmp_path = orchestration_env
     facts = _composite_facts("proj")

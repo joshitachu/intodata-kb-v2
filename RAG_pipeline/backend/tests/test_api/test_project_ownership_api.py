@@ -1,8 +1,8 @@
-"""Slice 2: ownership-scoped project endpoints, exercised against a real DB.
+"""Project creation and assignment endpoints, exercised against a real DB.
 
 The existing admin tests use a mocked DB, which cannot exercise the ownership
-queries. These use the in-memory SQLite ``db_session`` so ``can_manage_project``
-runs for real.
+queries. These use the in-memory SQLite ``db_session`` so project ownership and
+assignment authorization run for real.
 """
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -185,7 +185,7 @@ async def test_superadmin_can_adopt_preexisting_project(db_session: AsyncSession
         app.dependency_overrides.clear()
 
 
-async def test_admin_cannot_assign_project_they_dont_own(db_session: AsyncSession) -> None:
+async def test_admin_can_assign_project_they_dont_own(db_session: AsyncSession) -> None:
     admin = await _seed_user(db_session, "admin_c", perms=("assign_projects",))
     target = await _seed_user(db_session, "dev_c")
     _override(db_session, admin)
@@ -198,7 +198,8 @@ async def test_admin_cannot_assign_project_they_dont_own(db_session: AsyncSessio
                     json={"user_id": target.id, "project_id": "not-mine"},
                     headers=CSRF,
                 )
-        assert resp.status_code == 403
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["is_owner"] is False
     finally:
         app.dependency_overrides.clear()
 

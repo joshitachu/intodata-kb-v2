@@ -81,6 +81,30 @@ def _ready_output(root: Path) -> Path:
     return output
 
 
+@pytest.mark.asyncio
+async def test_automatic_recovery_requires_activation_intent(tmp_path):
+    from mcp_server.services.living_docs.git_recovery import recover_git_activations
+    from mcp_server.services.living_docs.run_journal import atomic_json
+
+    store = FileCandidateStore((tmp_path / "store").resolve())
+    rag = RagBridge(revisioned_rag=InMemoryRevisionedRagStore())
+    publisher = CandidatePublisher(store=store, rag=rag)
+    candidate = store.create(_candidate("pending", None))
+    docs = _workspace_docs(store, candidate, "# Recovered docs")
+    output = tmp_path / "active"
+    await publisher.prepare(candidate, candidate_docs_dir=docs, active_docs_dir=output / "docs")
+    # Prepared alone is not authorization: approval-only drafts stay private.
+    assert await recover_git_activations(store=store, rag=rag, output=output, source_baseline=None) == []
+    assert not (output / "docs").exists()
+    # Simulate a crash after RAG activation but before the document swap.
+    atomic_json(store.candidate_root(candidate.id) / "activation_intent.json", {"candidate_id": candidate.id})
+    await rag.activate_revision("project-a", candidate.knowledge_revision_id)
+    receipts = await recover_git_activations(store=store, rag=rag, output=output, source_baseline=None)
+    assert receipts[0]["after"] == "pending"
+    assert (output / "docs/01_ARCHITECTURE.md").read_text() == "# Recovered docs"
+    assert store.status(candidate.id).state is CandidateState.ACTIVE
+
+
 def test_readiness_and_staged_activation_policy(tmp_path: Path) -> None:
     output = _ready_output(tmp_path)
     readiness = inspect_project_patch_readiness(

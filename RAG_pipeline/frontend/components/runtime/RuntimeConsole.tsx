@@ -8,6 +8,7 @@ import {
   Activity,
   AlertTriangle,
   ArrowRight,
+  CalendarX,
   CheckCircle2,
   CircleAlert,
   Clock,
@@ -38,8 +39,10 @@ import {
   useRuntimeIncidents,
   useRuntimeJobInsights,
   useRuntimeJobReliability,
+  useRuntimeJobRuns,
   useRuntimeJobs,
   useRuntimeOverview,
+  useRuntimePlanRuns,
   useRuntimePlans,
   useRuntimeSources,
   useRuntimeTrend,
@@ -56,12 +59,19 @@ import type {
   RuntimeJob,
   RuntimeJobInsight,
   RuntimeJobReliability,
+  RuntimeJobRun,
   RuntimePlan,
+  RuntimePlanRun,
   RuntimeSource,
 } from "@/types";
 import { RuntimeInsightPanel } from "./RuntimeInsightPanel";
 import { RuntimeLogViewer } from "./RuntimeLogViewer";
 import { RuntimeOutcomeTrend } from "./RuntimeOutcomeTrend";
+import {
+  ExecutionTypeBadge,
+  RuntimeOutcomeBadge,
+  RuntimeOutcomeFilter,
+} from "./RuntimeOutcomeFilter";
 import {
   RuntimeHotspotsPanel,
   RuntimeReliabilityPanel,
@@ -188,6 +198,8 @@ function useSyncFreshness(scope?: string): SyncFreshness | null {
 
 type Detail =
   | { kind: "execution"; item: RuntimeExecution }
+  | { kind: "job_run"; item: RuntimeJobRun }
+  | { kind: "plan_run"; item: RuntimePlanRun }
   | { kind: "deployment"; item: RuntimeDeployment }
   | { kind: "incident"; item: RuntimeIncidentInsight }
   | { kind: "job"; item: RuntimeJob }
@@ -465,16 +477,32 @@ function Hub({
     (acc, point) => ({
       runs: acc.runs + point.total_runs,
       failed: acc.failed + point.failed_runs,
+      // A misfire never started; a timeout or termination stopped mid-flight.
+      // None of the three were ever "unknown" -- a job that never ran is the
+      // failure mode that used to hide completely, so it gets its own tile
+      // below instead of vanishing into the failure rate.
+      misfired: acc.misfired + point.misfired_runs,
+      timedOut: acc.timedOut + point.timed_out_runs,
+      terminated: acc.terminated + point.terminated_runs,
     }),
-    { runs: 0, failed: 0 },
+    { runs: 0, failed: 0, misfired: 0, timedOut: 0, terminated: 0 },
   );
   const failureRate = totals.runs > 0 ? totals.failed / totals.runs : 0;
   const unfinished = jobs.reduce((sum, job) => sum + job.unfinished_runs, 0);
 
   // The API is authoritative, but keep the display safe if an older backend
   // responds during a rolling deploy or a cached response is replayed.
+  // TERMINATED is deliberately excluded here too, mirroring the backend's
+  // _ATTENTION_STATES: a termination is an operator action, so somebody has
+  // already looked (see RuntimeStoreRepository._needs_attention).
   const attention = currentAttentionJobs
-    .filter((job) => job.latest_state === "failed" || job.latest_unfinished)
+    .filter(
+      (job) =>
+        job.latest_state === "failed" ||
+        job.latest_state === "misfired" ||
+        job.latest_state === "timed_out" ||
+        job.latest_unfinished,
+    )
     .slice(0, 5);
 
   const windowLabel = resolveWindow(windowKey).label.toLowerCase();
@@ -491,7 +519,7 @@ function Hub({
         attentionInsights,
         runs,
       ]}>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" data-tour="runtime-kpis">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5" data-tour="runtime-kpis">
           <Kpi
             icon={Activity}
             label="Runs"
@@ -504,6 +532,13 @@ function Hub({
             value={formatPercent(failureRate)}
             hint={`${formatCompact(totals.failed)} failed`}
             tone={totals.failed > 0 ? "danger" : "good"}
+          />
+          <Kpi
+            icon={CalendarX}
+            label="Misfired"
+            value={formatCompact(totals.misfired)}
+            hint={`${formatCompact(totals.timedOut)} timed out · ${formatCompact(totals.terminated)} terminated`}
+            tone={totals.misfired > 0 ? "warning" : "good"}
           />
           <Kpi
             icon={TimerOff}
@@ -720,7 +755,15 @@ function AttentionRow({
   if (job.latest_state === "failed") {
     parts.push("Latest run failed");
     if (job.current_failure_streak > 1) parts.push(`${job.current_failure_streak} failures in a row`);
+  } else if (job.latest_state === "misfired") {
+    // Never started, not a failure -- the schedule fired and the run never
+    // began. This is the case that used to hide completely as "unknown".
+    parts.push("Latest run never started");
+  } else if (job.latest_state === "timed_out") {
+    parts.push("Latest run timed out");
   }
+  // TERMINATED is not a reason to appear here at all (see the `attention`
+  // filter above) -- an operator stopped it deliberately.
   if (job.latest_unfinished) parts.push("Latest run never finished");
 
   return (
@@ -785,14 +828,6 @@ function AttentionRow({
   );
 }
 
-const STATE_OPTIONS: Array<{ value: "" | RuntimeExecutionState; label: string }> = [
-  { value: "", label: "All outcomes" },
-  { value: "failed", label: "Failed" },
-  { value: "success", label: "Succeeded" },
-  { value: "running", label: "Running" },
-  { value: "unknown", label: "Unknown" },
-];
-
 const DURATION_OPTIONS: Array<{ value: number; label: string }> = [
   { value: 0, label: "Any duration" },
   { value: 60_000, label: "Longer than 1m" },
@@ -827,18 +862,7 @@ function Executions({ scope, since, onDetail }: ViewProps) {
         description="One row per execution. Job-run mirrors are intentionally not shown."
         action={
           <div className="flex flex-wrap items-center gap-2">
-            <SelectMenu
-              value={state}
-              onChange={(value) => setState(value as "" | RuntimeExecutionState)}
-              options={STATE_OPTIONS.map((option) => ({
-                value: option.value,
-                label: option.label,
-              }))}
-              placeholder="All outcomes"
-              ariaLabel="Outcome"
-              variant="field"
-              align="end"
-            />
+            <RuntimeOutcomeFilter value={state} onChange={setState} />
             <SelectMenu
               value={String(minDurationMs)}
               onChange={(value) => setMinDurationMs(Number(value))}
@@ -888,6 +912,7 @@ function Jobs({ scope, since, onDetail }: ViewProps) {
   return (
     <div className="flex flex-col gap-6">
       <RuntimeReliabilityPanel scope={scope} since={since} />
+      <JobRunsPanel scope={scope} since={since} onDetail={onDetail} />
       <QueryState queries={[query]}>
         <Panel
           title="Job inventory"
@@ -921,14 +946,85 @@ function Jobs({ scope, since, onDetail }: ViewProps) {
   );
 }
 
+/**
+ * Per-run listing for jobs, filterable by outcome. `/runtime/job-runs` already
+ * accepts `state` server-side (ListRuntimeJobRunsInput.state), so the filter
+ * narrows this paginated query directly instead of hiding rows from an
+ * already-fetched page -- which would silently lie about `total`.
+ */
+function JobRunsPanel({ scope, since, onDetail }: Pick<ViewProps, "scope" | "since" | "onDetail">) {
+  const [page, setPage] = useState(0);
+  const [state, setState] = useState<"" | RuntimeExecutionState>("");
+  useEffect(() => setPage(0), [scope, since, state]);
+  const query = useRuntimeJobRuns({
+    projectId: scope,
+    since,
+    state: state || undefined,
+    limit: PAGE_SIZE,
+    offset: page * PAGE_SIZE,
+  });
+
+  return (
+    <QueryState queries={[query]}>
+      <Panel
+        title="Job runs"
+        icon={ScrollText}
+        description="Every observed run for jobs in this scope and window, newest first."
+        action={<RuntimeOutcomeFilter value={state} onChange={setState} />}
+        flush
+      >
+        <PaginatedTable
+          rows={query.data?.runs ?? []}
+          total={query.data?.total ?? 0}
+          page={page}
+          onPage={setPage}
+          render={(rows) => (
+            <EntityTable
+              headers={["Run", "Job", "Outcome", "Type", "Engine", "Started", "Duration"]}
+              rows={rows}
+              rowKey={(run) => run.run_id}
+              onClick={(run) => onDetail({ kind: "job_run", item: run })}
+              mono={[0]}
+              emptyLabel="No job runs were recorded for this scope and window."
+              cells={(run) => [
+                run.run_id,
+                run.job_name,
+                <RuntimeOutcomeBadge
+                  key="state"
+                  state={run.state}
+                  hasEnded={Boolean(run.ended_at)}
+                  misfireReason={run.misfire_reason}
+                />,
+                <ExecutionTypeBadge key="type" value={run.execution_type} />,
+                run.engine_name ?? "-",
+                <RelativeTime key="started" value={run.started_at} />,
+                run.ended_at ? formatDuration(run.duration_ms) : "never finished",
+              ]}
+            />
+          )}
+        />
+      </Panel>
+    </QueryState>
+  );
+}
+
+/** Legible label for every state value, whether the deployment is still open or not. */
+const DEPLOYMENT_OUTCOME_LABELS: Partial<Record<RuntimeExecutionState, string>> = {
+  failed: "failed",
+  misfired: "never started",
+  timed_out: "timed out",
+  terminated: "terminated",
+};
+
 function deploymentState(deployment: RuntimeDeployment): string {
   if (!deployment.deployment_id || !deployment.state || !deployment.started_at) {
     return "never deployed";
   }
+  const label = DEPLOYMENT_OUTCOME_LABELS[deployment.state];
   if (!deployment.ended_at) {
-    return deployment.state === "failed" ? "failed to deploy" : "deployed";
+    return label ? `${label === "failed" ? "failed to deploy" : label}` : "deployed";
   }
-  return deployment.state === "failed" ? "failed" : "undeployed";
+  return label ?? "undeployed";
 }
 
 function Deployments({
@@ -937,10 +1033,15 @@ function Deployments({
   onDetail,
 }: ViewProps & { kind: "route" | "data_service" }) {
   const [page, setPage] = useState(0);
-  useEffect(() => setPage(0), [scope, kind]);
+  const [state, setState] = useState<"" | RuntimeExecutionState>("");
+  useEffect(() => setPage(0), [scope, kind, state]);
+  // `/runtime/deployments` already accepts `state` server-side
+  // (ListRuntimeDeploymentsInput.state), so this filters the same paginated
+  // query rather than post-filtering a page client-side.
   const query = useRuntimeDeployments({
     projectId: scope,
     executableKind: kind,
+    state: state || undefined,
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
   });
@@ -952,6 +1053,7 @@ function Deployments({
         title={`${noun} deployments`}
         icon={kind === "route" ? Activity : Server}
         description={`Latest deployment lifecycle and ${kind === "route" ? "Camel exchange" : "service"} telemetry. An open deployment is healthy long-running work, not a job that never finished.`}
+        action={<RuntimeOutcomeFilter value={state} onChange={setState} />}
         flush
       >
         <PaginatedTable
@@ -1005,35 +1107,99 @@ function Deployments({
   );
 }
 
-function Plans({ scope, onDetail }: ViewProps) {
+function Plans({ scope, since, onDetail }: ViewProps) {
   const [page, setPage] = useState(0);
   useEffect(() => setPage(0), [scope]);
   const query = useRuntimePlans({ projectId: scope, limit: PAGE_SIZE, offset: page * PAGE_SIZE });
 
   return (
+    <div className="flex flex-col gap-6">
+      <PlanRunsPanel scope={scope} since={since} onDetail={onDetail} />
+      <QueryState queries={[query]}>
+        <Panel
+          title="Plans"
+          icon={ListTree}
+          description="Orchestrations that chain jobs into a sequence of steps."
+          flush
+        >
+          <PaginatedTable
+            rows={query.data?.plans ?? []}
+            total={query.data?.total ?? 0}
+            page={page}
+            onPage={setPage}
+            render={(rows) => (
+              <EntityTable
+                headers={["Plan", "Environment", "Steps", "Status"]}
+                rows={rows}
+                rowKey={(plan) => plan.plan_id}
+                onClick={(plan) => onDetail({ kind: "plan", item: plan })}
+                cells={(plan) => [
+                  plan.display_name ?? plan.name,
+                  plan.environment_name ?? "-",
+                  String(plan.step_count ?? plan.steps.length),
+                  plan.status ?? "unknown",
+                ]}
+              />
+            )}
+          />
+        </Panel>
+      </QueryState>
+    </div>
+  );
+}
+
+/**
+ * Per-run listing for plans, filterable by outcome. `/runtime/plan-runs`
+ * already accepts `state` server-side (ListRuntimePlanRunsInput.state). A
+ * plan run has no single execution (it fans out into `step_results`), so
+ * clicking a row opens the generic field list rather than a log viewer.
+ */
+function PlanRunsPanel({ scope, since, onDetail }: Pick<ViewProps, "scope" | "since" | "onDetail">) {
+  const [page, setPage] = useState(0);
+  const [state, setState] = useState<"" | RuntimeExecutionState>("");
+  useEffect(() => setPage(0), [scope, since, state]);
+  const query = useRuntimePlanRuns({
+    projectId: scope,
+    since,
+    state: state || undefined,
+    limit: PAGE_SIZE,
+    offset: page * PAGE_SIZE,
+  });
+
+  return (
     <QueryState queries={[query]}>
       <Panel
-        title="Plans"
-        icon={ListTree}
-        description="Orchestrations that chain jobs into a sequence of steps."
+        title="Plan runs"
+        icon={ScrollText}
+        description="Every observed run for plans in this scope and window, newest first."
+        action={<RuntimeOutcomeFilter value={state} onChange={setState} />}
         flush
       >
         <PaginatedTable
-          rows={query.data?.plans ?? []}
+          rows={query.data?.runs ?? []}
           total={query.data?.total ?? 0}
           page={page}
           onPage={setPage}
           render={(rows) => (
             <EntityTable
-              headers={["Plan", "Environment", "Steps", "Status"]}
+              headers={["Run", "Plan", "Outcome", "Type", "Started", "Duration"]}
               rows={rows}
-              rowKey={(plan) => plan.plan_id}
-              onClick={(plan) => onDetail({ kind: "plan", item: plan })}
-              cells={(plan) => [
-                plan.display_name ?? plan.name,
-                plan.environment_name ?? "-",
-                String(plan.step_count ?? plan.steps.length),
-                plan.status ?? "unknown",
+              rowKey={(run) => run.run_id}
+              onClick={(run) => onDetail({ kind: "plan_run", item: run })}
+              mono={[0]}
+              emptyLabel="No plan runs were recorded for this scope and window."
+              cells={(run) => [
+                run.run_id,
+                run.plan_name,
+                <RuntimeOutcomeBadge
+                  key="state"
+                  state={run.state}
+                  hasEnded={Boolean(run.ended_at)}
+                  misfireReason={run.misfire_reason}
+                />,
+                <ExecutionTypeBadge key="type" value={run.execution_type} />,
+                <RelativeTime key="started" value={run.started_at} />,
+                run.ended_at ? formatDuration(run.duration_ms) : "never finished",
               ]}
             />
           )}
@@ -1043,6 +1209,14 @@ function Plans({ scope, onDetail }: ViewProps) {
   );
 }
 
+// GAP: `/runtime/incidents` has no `state`/outcome query parameter today
+// (only project_id, since, until, limit, offset -- see
+// backend/src/api/routes/runtime.py::list_incidents). An incident already
+// carries a `state` field, but filtering it here would mean fetching one
+// server-paginated page and hiding rows from it client-side, which would
+// silently misreport `total`. No outcome filter is mounted on this view
+// until the backend accepts one; do not add client-side filtering as a
+// workaround.
 function Incidents({ scope, since, onDetail }: ViewProps) {
   const [page, setPage] = useState(0);
   useEffect(() => setPage(0), [scope, since]);
@@ -1223,14 +1397,19 @@ function DetailDrawer({ detail, onClose }: { detail: Detail | null; onClose: () 
 
   // Runs/incidents use per-execution diagnostics. Deployments expose only the
   // captured shared-engine log because it is not safe to derive a Route cause.
+  // A job run mirrors one execution 1:1, so it resolves the same way; a plan
+  // run has no single execution (it fans out into `step_results`), so it
+  // falls through to `null` and the generic field list is all it shows.
   const executionId =
     detail.kind === "execution"
       ? detail.item.execution_id
-      : detail.kind === "incident"
-        ? detail.item.execution_id
-        : detail.kind === "deployment"
-          ? detail.item.deployment_id ?? null
-          : null;
+      : detail.kind === "job_run"
+        ? detail.item.execution_id ?? null
+        : detail.kind === "incident"
+          ? detail.item.execution_id
+          : detail.kind === "deployment"
+            ? detail.item.deployment_id ?? null
+            : null;
 
   return (
     <div
@@ -1248,7 +1427,7 @@ function DetailDrawer({ detail, onClose }: { detail: Detail | null; onClose: () 
         <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
           <div className="min-w-0">
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              {detail.kind}
+              {humanize(detail.kind)}
             </p>
             <h2 className="mt-0.5 truncate font-mono text-sm font-semibold text-foreground">
               {detailTitle(detail, item as Record<string, unknown>)}
@@ -1287,8 +1466,32 @@ function DetailFields({ item }: { item: Record<string, unknown> }) {
     ([, value]) => typeof value === "object" && !isEmptyStructure(value),
   );
 
+  // A curated read of `state` up front -- "misfired" must not register as a
+  // failure at a glance -- while every raw field (state, raw_state,
+  // misfire_reason, execution_type) still appears verbatim in the grid below.
+  const state = typeof item.state === "string" ? item.state : null;
+
   return (
     <div className="flex min-w-0 flex-col gap-5">
+      {state && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-muted/20 px-4 py-3">
+          <div>
+            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Outcome</p>
+            <div className="mt-1">
+              <RuntimeOutcomeBadge
+                state={state}
+                hasEnded={Boolean(item.ended_at)}
+                misfireReason={typeof item.misfire_reason === "string" ? item.misfire_reason : null}
+              />
+            </div>
+          </div>
+          {typeof item.raw_state === "string" && item.raw_state !== state && (
+            <p className="text-xs text-muted-foreground">
+              Reported by source as <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{item.raw_state}</code>
+            </p>
+          )}
+        </div>
+      )}
       <dl className="grid gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2">
         {scalars.map(([key, value]) => (
           <div key={key} className="bg-card px-3 py-2.5">
@@ -1397,7 +1600,7 @@ function RunTable({
       headers={
         compact
           ? ["Job", "Outcome", "Started"]
-          : ["Run", "Job", "Outcome", "Started", "Duration"]
+          : ["Run", "Job", "Outcome", "Type", "Started", "Duration"]
       }
       rows={rows}
       rowKey={(run) => run.execution_id}
@@ -1416,6 +1619,7 @@ function RunTable({
               run.execution_id,
               run.job_name,
               <StateCell key="state" run={run} />,
+              <ExecutionTypeBadge key="type" value={run.execution_type} />,
               <RelativeTime key="started" value={run.started_at} />,
               run.ended_at ? formatDuration(run.duration_ms) : "never finished",
             ]
@@ -1426,37 +1630,19 @@ function RunTable({
 
 /** Outcome is state: icon + label, so it never rests on colour alone. */
 function StateCell({ run }: { run: RuntimeExecution }) {
-  const unfinished = !run.ended_at && run.state !== "running";
-  if (run.state === "failed") {
-    return (
-      <span className="inline-flex items-center gap-1 text-destructive">
-        <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-        failed
-      </span>
-    );
-  }
-  if (unfinished) {
-    return (
-      <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
-        <TimerOff className="h-3.5 w-3.5 shrink-0" />
-        {run.state} · no end
-      </span>
-    );
-  }
-  if (run.state === "success") {
-    return (
-      <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
-        <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-        success
-      </span>
-    );
-  }
-  return <span className="text-muted-foreground">{run.state}</span>;
+  return (
+    <RuntimeOutcomeBadge
+      state={run.state}
+      hasEnded={Boolean(run.ended_at)}
+      misfireReason={run.misfire_reason}
+    />
+  );
 }
 
 function detailTitle(detail: Detail, item: Record<string, unknown>) {
   return String(
       item.execution_id ??
+      item.run_id ??
       item.deployment_id ??
       item.executable_id ??
       item.incident_id ??

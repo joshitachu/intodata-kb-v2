@@ -230,6 +230,14 @@ class ReingestionRouter:
         # produce an exact target set, unresolved paths and empty maps fail
         # closed rather than becoming an all-documents operation.
         if not changed_groups or not affected:
+            if config.living_doc_patching_enabled:
+                # Exact-commit analysis can establish a section-level target
+                # set even for new modules absent from the old folder map.
+                return self._scoped.build(
+                    affected_docs=affected, changed_groups=changed_groups,
+                    structural=structural, manifest_present=True,
+                    reason="Source is not mapped; require evidence-bound semantic impact analysis",
+                )
             return self._held.build(
                 affected_docs=affected,
                 changed_groups=changed_groups,

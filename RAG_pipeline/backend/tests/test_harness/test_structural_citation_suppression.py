@@ -105,6 +105,58 @@ class TestWhatMustSurvive:
         assert result == "The **VQ_Quintiq2MX** job maps it."
 
 
+class TestTheLabelIsOnlyACitationInsideBrackets:
+    """The four words are an ordinary noun phrase as well as a citation.
+
+    The pattern used to delete "the project topology" anywhere it appeared, with
+    an OPTIONAL lead-in, so it matched the phrase as a sentence subject and as an
+    object of an ordinary preposition. Every sentence below is one a model would
+    reasonably write -- the guidance actively asks for the first, since "that is
+    not described at this level" is a correct answer -- and every one of them came
+    out broken.
+
+    A bracket is the signal that distinguishes a citation from a sentence: prose
+    the model parenthesised is prose it considered detachable. Outside one, a
+    redundant mention costs four words; deleting it costs the sentence.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # Subject deleted: "does not describe this stream at the landscape level."
+            "The project topology does not describe this stream at the landscape level.",
+            # Sentence beheaded: ", three designs implement it."
+            "From the project topology, three designs implement it.",
+            # Words joined: "The flow is confirmedand in the runtime records."
+            "The flow is confirmed in the project topology and in the runtime records.",
+            # Words joined: "This is notat all."
+            "This is not in the project topology at all.",
+        ],
+    )
+    def test_the_label_survives_in_running_prose(self, text: str) -> None:
+        assert suppressed(text) == text
+
+    def test_the_label_is_still_removed_inside_a_bracket(self) -> None:
+        assert suppressed("Maximo sends work orders to 4PS (from the project topology).") == (
+            "Maximo sends work orders to 4PS."
+        )
+
+    def test_a_machine_id_is_still_removed_from_running_prose(self) -> None:
+        """Ids are never legitimate prose, so the bracket rule does not apply.
+
+        The lead-in goes with them -- "Read via read_topology_structure for the
+        detail" must not become "Readfor the detail", which is what taking the
+        whitespace from both sides of the match produced.
+        """
+
+        assert suppressed("Read via read_topology_structure for the detail.") == (
+            "Read for the detail."
+        )
+        assert suppressed(
+            "Confirmed *from topology node landscape-system:sysmaximo* in the scan."
+        ) == "Confirmed in the scan."
+
+
 class TestSurfaceScoping:
     """Off the canvas the label is the only thing separating structure from docs."""
 

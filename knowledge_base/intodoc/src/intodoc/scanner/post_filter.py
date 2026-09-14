@@ -7,13 +7,10 @@ just pattern matching.
 
 from __future__ import annotations
 
-from enum import Enum
-
-from pydantic import BaseModel
-
 from intodoc.config import RedactionLevel
 from intodoc.models import (
     ComponentParam,
+    ComponentSchema,
     ContextGroup,
     ContextVariable,
     MetadataConnection,
@@ -47,37 +44,8 @@ def filter_scan_result(
     # while parsing and attach a descriptor; this final recursive sweep covers
     # tMap/tXMLMap expressions, context values, metadata and any future model
     # field that carries a larger string around a marker.
-    _normalize_internal_descriptor_tokens(result, cred_filter)
+    cred_filter.normalize_model_tokens(result)
     return result
-
-
-def _normalize_internal_descriptor_tokens(value: object, cred_filter: CredentialFilter) -> object:
-    """Mutate a Pydantic/list/dict tree so no internal URI token can persist."""
-    # Str-backed enums (for example FileType) satisfy isinstance(value, str).
-    # Preserve their model type instead of turning them into plain strings.
-    if isinstance(value, Enum):
-        return value
-    if isinstance(value, str):
-        return cred_filter.normalize_redaction_tokens(value)
-    if isinstance(value, BaseModel):
-        for field_name in type(value).model_fields:
-            setattr(
-                value,
-                field_name,
-                _normalize_internal_descriptor_tokens(
-                    getattr(value, field_name), cred_filter,
-                ),
-            )
-        return value
-    if isinstance(value, list):
-        for index, item in enumerate(value):
-            value[index] = _normalize_internal_descriptor_tokens(item, cred_filter)
-        return value
-    if isinstance(value, dict):
-        for key, item in list(value.items()):
-            value[key] = _normalize_internal_descriptor_tokens(item, cred_filter)
-        return value
-    return value
 
 
 def _filter_metadata_connection(
@@ -196,15 +164,73 @@ def _filter_job(
     # Component parameters: re-run text filter as catch-all
     for comp in job.components:
         _filter_component_params(comp.params, cred_filter)
+        # A schema column's defaultValue is a value like any other, and a
+        # column named "Password" with a literal default is exactly the
+        # shape the name-semantics rule exists for.
+        for schema in comp.schemas:
+            _filter_schema_columns(schema, cred_filter)
         # Top-level code mirrors code-bearing params; must be redacted too
         if comp.code:
             filtered = cred_filter.filter_text(comp.code)
             if filtered != comp.code:
                 comp.code = filtered
 
-    # tRunJob context params
+    # Child-design context overrides (tRunJob and cTalendJob both hand a
+    # parent's values to a child, and both must be filtered).
     for ref in job.trunjob_refs:
         _filter_component_params(ref.context_params, cred_filter)
+    for artifact_ref in job.artifact_refs:
+        _filter_component_params(artifact_ref.context_params, cred_filter)
+
+
+def _filter_schema_columns(
+    schema: ComponentSchema,
+    cred_filter: CredentialFilter,
+) -> None:
+    """Redact a schema column default by column name, then text patterns."""
+    for column in schema.columns:
+        if not column.default_value:
+            continue
+        if (
+            column.type.strip().lower() in ("id_password", "password")
+            or cred_filter.is_sensitive_var_name(column.name)
+        ):
+            cred_filter._record_redaction("schema_column_default", column.default_value)
+            column.default_value = "[REDACTED]"
+            continue
+        filtered = cred_filter.filter_text(column.default_value)
+        if filtered != column.default_value:
+            column.default_value = filtered
+
+
+def _filter_table_rows(
+    param: ComponentParam,
+    cred_filter: CredentialFilter,
+) -> None:
+    """Redact a TABLE parameter's rows.
+
+    A table row carries its own name/value semantics: a tRunJob
+    CONTEXTPARAMS row is ``{PARAM_NAME_COLUMN: "MaximoPassword",
+    PARAM_VALUE_COLUMN: "<secret>"}``. The sensitivity is stated by the
+    row's NAME cell, not by the parameter name or the elementRef keys, so
+    the parameter-level check above cannot see it and this layer must apply
+    the same rule one level down.
+    """
+    for row in param.rows:
+        name_key = ComponentParam.row_column_key(row, "NAME")
+        sensitive = bool(row.get(name_key)) and cred_filter.is_sensitive_var_name(
+            row[name_key],
+        )
+        for key, value in list(row.items()):
+            if not value or key == name_key:
+                continue
+            if sensitive:
+                cred_filter._record_redaction("component_param_row_sensitive", value)
+                row[key] = "[REDACTED]"
+                continue
+            filtered = cred_filter.filter_text(value)
+            if filtered != value:
+                row[key] = filtered
 
 
 def _filter_component_params(
@@ -213,6 +239,8 @@ def _filter_component_params(
 ) -> None:
     """Redact component parameter values by name semantics then text patterns."""
     for param in params:
+        if param.rows:
+            _filter_table_rows(param, cred_filter)
         if not param.value:
             continue
         if cred_filter.is_sensitive_var_name(param.name):

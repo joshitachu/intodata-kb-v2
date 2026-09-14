@@ -62,6 +62,9 @@ from mcp_server.providers.custom.partition_planner import (
     upload_topology_dir,
 )
 from mcp_server.providers.custom.validators import build_facts_manifest
+from mcp_server.providers.custom.enterprise.publication_policy import (
+    load_publication_verdict,
+)
 from mcp_server.services.atomic_swap import swap_docs
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.rag_bridge import RagBridge
@@ -538,7 +541,12 @@ async def run_partitioned_generation(
         part_fingerprint = partition_fingerprints.get(part.name, "")
         decision = decisions.decision_for(part.name)
 
-        if decision is not None and decision.reuse:
+        from mcp_server.services.generation_profile import profile_digest
+        from mcp_server.services.generation_run_state import read_json_file
+
+        prior_profile = read_json_file(part_output / "docs" / "_audit" / "generation_profile.json") or {}
+        profile_matches = profile_digest(prior_profile.get("generation_profile")) == profile_digest(generate_kwargs.get("generation_profile"))
+        if decision is not None and decision.reuse and profile_matches:
             outcome.skipped = True
             outcome.success = True
             outcome.doc_count = _count_public_docs(part_output / "docs")
@@ -555,7 +563,13 @@ async def run_partitioned_generation(
             )
             continue
 
-        child_run_id = await _create_child_run(project_id, part.name)
+        if generate_kwargs.get("generation_profile") is not None:
+            child_run_id = await _create_child_run(
+                project_id, part.name, generation_profile=generate_kwargs["generation_profile"],
+                parent_run_id=run_id,
+            )
+        else:
+            child_run_id = await _create_child_run(project_id, part.name)
         outcome.run_id = child_run_id
         await log_mgr.emit(
             project_id,
@@ -590,6 +604,35 @@ async def run_partitioned_generation(
         staging_dir = part_output / "docs_staging"
         success = bool(result.get("success"))
         doc_count = _count_public_docs(staging_dir)
+
+        # Client-readiness is decided over the FINAL staged product, so it is
+        # checked here rather than inside the provider. The single-run path in
+        # api/routes/projects.py applies the same rule; a partitioned project
+        # reaches publication through this function instead and would otherwise
+        # swap unconditionally -- which is exactly the "failed gate did not
+        # block publication" defect the enterprise contract exists to fix.
+        verdict = load_publication_verdict(staging_dir) if success and doc_count > 0 else None
+        if verdict is not None and not verdict.ok:
+            blocking = "; ".join(verdict.blocking[:3])
+            if len(verdict.blocking) > 3:
+                blocking += f" (+{len(verdict.blocking) - 3} more)"
+            outcome.error = f"manual_review: client-readiness policy blocked publication: {blocking}"
+            await log_mgr.emit(
+                project_id,
+                f"[{part.name}] publication held by the client-readiness policy: {blocking}. "
+                f"Nothing was swapped or pushed; the previous documents for this sub-project "
+                f"stay published and the draft is preserved in {staging_dir.name}/.",
+                level="error",
+            )
+            await _complete_child_run(
+                child_run_id,
+                status="failed",
+                doc_count=0,
+                result=result,
+                error=outcome.error,
+                run_verdict="held_client_readiness",
+            )
+            continue
 
         if success and doc_count > 0:
             try:
@@ -1227,7 +1270,10 @@ async def _reconcile_adopted_rag_docs(
         )
 
 
-async def _create_child_run(project_id: str, partition_name: str) -> int | None:
+async def _create_child_run(
+    project_id: str, partition_name: str, *,
+    generation_profile: dict | None = None, parent_run_id: int | None = None,
+) -> int | None:
     try:
         async with async_session_factory() as db:
             registry = ProjectRegistry(db)
@@ -1236,9 +1282,14 @@ async def _create_child_run(project_id: str, partition_name: str) -> int | None:
             run = await registry.create_generate_run(
                 project_id, triggered_by="composite", partition_name=partition_name
             )
+            run.generation_profile = generation_profile
+            run.parent_run_id = parent_run_id
             await db.commit()
             return run.id
     except Exception:  # noqa: BLE001 - run records are observability, not control flow
+        if generation_profile is not None:
+            # V2 receipts are control-plane state, not optional telemetry.
+            raise
         logger.warning(
             "Could not create child GenerateRun for %s/%s",
             project_id,

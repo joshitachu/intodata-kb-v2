@@ -126,11 +126,12 @@ def _chat_denied_capability_ids(
     Takes the registry rather than a static list so the narrowing applies to
     pack-contributed capabilities too, and takes no query: exposure is a
     property of the surface, not of how the question happens to be worded.
+
+    Whole definitions are forwarded, not ids: the canvas keep-set is derived
+    from each capability's declared risk tier (see ``surface_policy``).
     """
 
-    return surface_denied_capability_ids(
-        (capability.id for capability in registry.list()), page_scope
-    )
+    return surface_denied_capability_ids(registry.list(), page_scope)
 
 
 logger = logging.getLogger(__name__)

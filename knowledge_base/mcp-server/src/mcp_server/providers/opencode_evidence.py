@@ -225,9 +225,14 @@ def _atomic_write_json(path: Path, value: BaseModel | Mapping[str, object]) -> N
 class OpenCodeEvidenceStore:
     """Canonical, resumable store for Gather v2 evidence scopes."""
 
-    def __init__(self, staging_dir: Path, facts: FactsManifest) -> None:
+    def __init__(
+        self, staging_dir: Path, facts: FactsManifest, *, strict_grounding: bool = False
+    ) -> None:
         self.staging_dir = staging_dir.resolve()
         self.facts = facts
+        self.strict_grounding = strict_grounding
+        if strict_grounding and len({unit.name for unit in facts.units}) != len(facts.units):
+            raise EvidenceValidationError("Ambiguous canonical unit identities in landscape evidence")
         self.root = self.staging_dir / "_evidence"
         self.scopes_root = self.root / "scopes"
         self._ensure_directory(self.root)
@@ -278,6 +283,9 @@ class OpenCodeEvidenceStore:
             if errors or len(accepted) != len(request.evidence):
                 reason = "; ".join(errors) or "evidence submission was not fully accepted"
                 raise EvidenceValidationError(reason)
+            if self.strict_grounding:
+                for item in accepted:
+                    self._validate_grounding(item)
 
             known = {self._evidence_key(item) for item in state.evidence}
             new_items: list[InvestigationEvidence] = []
@@ -302,6 +310,29 @@ class OpenCodeEvidenceStore:
                 accepted_count=len(new_items),
                 duplicate_count=len(accepted) - len(new_items),
             )
+
+    def _validate_grounding(self, item: InvestigationEvidence) -> None:
+        """Check exact sanitized text, without claiming semantic entailment.
+
+        Legacy reports remain readable. Landscape submissions must quote the
+        cited source rather than merely name an existing file. A provided line
+        range narrows the search and must be a valid one-based inclusive span.
+        """
+        import re
+
+        source = self.toolbox.resolve_inside_staging(item.source_file)
+        text = source.read_text(encoding="utf-8", errors="strict")
+        if item.line_range:
+            span = re.fullmatch(r"(?:L)?([1-9][0-9]*)(?:\s*[-:]\s*(?:L)?([1-9][0-9]*))?", item.line_range)
+            if span is None:
+                raise EvidenceValidationError("Evidence line_range must be a one-based line or inclusive range")
+            start, end = int(span.group(1)), int(span.group(2) or span.group(1))
+            lines = text.splitlines(keepends=True)
+            if end < start or end > len(lines):
+                raise EvidenceValidationError("Evidence line_range is outside the cited source")
+            text = "".join(lines[start - 1:end])
+        if (item.snippet or "").strip() not in text:
+            raise EvidenceValidationError("Evidence snippet does not occur in the cited sanitized source span")
 
     def report_gap(self, request: ReportGapRequest) -> EvidenceProgress:
         """Resolve one unit with a durable, explicit no-evidence reason."""
@@ -364,6 +395,9 @@ class OpenCodeEvidenceStore:
             state = self._read_state(request.scope_id)
             if state.status == "complete":
                 report = self._read_report(scope.scope_id)
+                if self.strict_grounding:
+                    for item in report.evidence:
+                        self._validate_grounding(item)
                 progress = self._progress(scope, state)
                 assert state.report_artifact is not None
                 return FinishScopeResult(
@@ -373,6 +407,9 @@ class OpenCodeEvidenceStore:
                 )
 
             progress = self._progress(scope, state)
+            if self.strict_grounding:
+                for item in state.evidence:
+                    self._validate_grounding(item)
             if progress.remaining_units:
                 raise EvidenceIncompleteError(
                     f"scope {scope.scope_id!r} has unresolved units: "

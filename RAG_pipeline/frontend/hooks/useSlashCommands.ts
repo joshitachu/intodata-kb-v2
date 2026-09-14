@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { authedFetch } from "@/lib/authedFetch";
 import { SlashCommandListResponseSchema, type SlashCommand } from "@/types";
 
 export function filterSlashCommands(commands: SlashCommand[], query: string) {
@@ -21,7 +22,9 @@ export function useSlashCommands() {
 
   useEffect(() => {
     const controller = new AbortController();
-    void fetch("/api/conversations/commands", { signal: controller.signal })
+    // `authedFetch` forwards `init` untouched, so the abort signal still
+    // cancels both the first attempt and a post-refresh replay.
+    void authedFetch("/api/conversations/commands", { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) throw new Error("Command discovery is unavailable");
         return SlashCommandListResponseSchema.parse(await response.json());

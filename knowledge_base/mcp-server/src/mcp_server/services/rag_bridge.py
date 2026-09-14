@@ -536,6 +536,11 @@ class RagBridge:
         manual re-push) keep pushing exactly what they push today, support
         artifacts included; the parameter is now an additive superset rather
         than the only way a pack doc can be seen.
+
+        Visible SUBDIRECTORIES are read too (see
+        :meth:`_read_nested_md_files`), keyed by relative path. That addition
+        is inert for every existing lane and is what lets an agent-chosen
+        document structure reach RAG at all.
         """
         docs: list[dict] = []
         base = Path(output_dir)
@@ -564,6 +569,47 @@ class RagBridge:
                 "content": content,
             })
 
+        docs.extend(self._read_nested_md_files(base))
+        return docs
+
+    @staticmethod
+    def _read_nested_md_files(base: Path) -> list[dict]:
+        """Read ``*.md`` from visible SUBDIRECTORIES, keyed by relative path.
+
+        Additive: no docs tree produced by the legacy or composite lanes has a
+        subdirectory whose name does not start with ``_`` (verified across
+        every ``output/*/docs`` and ``output/*/*/docs`` in the repository), so
+        this returns nothing for them and their push is byte-identical.
+
+        It exists for ``agent-workspace-v1``, where the agent chooses the
+        document structure and may write ``output/integrations/orders.md``.
+        Without it that document reaches ``docs/integrations/orders.md`` on
+        disk and is silently absent from RAG.
+
+        The support-artifact half of ``is_published_doc_filename`` is
+        deliberately NOT applied to a nested file. That rule exists to keep
+        ``engineering_facts.md`` and friends out of the corpus, and those only
+        ever live at the docs root; applying it below the root would drop an
+        agent-written ``integrations/order_flow.md`` for having a lowercase
+        name. The underscore/dot rule still applies, to every path segment.
+        """
+
+        docs: list[dict] = []
+        for md_file in sorted(base.rglob("*.md")):
+            relative = md_file.relative_to(base)
+            if len(relative.parts) == 1:
+                continue  # already handled by the top-level pass
+            if any(part.startswith(("_", ".")) for part in relative.parts):
+                continue
+            try:
+                content = md_file.read_text(encoding="utf-8")
+            except (OSError, ValueError) as e:
+                logger.error("Failed to read %s: %s", md_file, e)
+                continue
+            docs.append({
+                "filename": relative.as_posix(),
+                "content": content,
+            })
         return docs
 
 

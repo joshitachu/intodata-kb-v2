@@ -34,19 +34,11 @@ job artifacts and the manifest, so a landscape change is always accompanied by a
 job-artifact change that the per-unit hashes already catch.
 
 The unattributable digest -- an honest limitation
-------------------------------------------------
-``Routine`` (intodoc ``models.py``) carries ``name``, ``source_code`` and
-``is_system`` -- no ``source_root``. Talend routines are project-level shared
-code, and a composite scan merges every source root's routines into one
-``scan/routines.json`` with no provenance. A changed shared routine therefore
-CANNOT be attributed to one repo, so its digest is mixed into EVERY partition's
-fingerprint and a routine edit correctly invalidates all of them.
-
-That is over-invalidation, and it is the safe direction: under-invalidating
-would publish documentation that describes code that no longer exists. Making
-routine changes repo-scoped requires ``source_root`` on ``Routine`` in the
-scanner -- a scanner change, not a change here. :data:`UNATTRIBUTABLE_ARTIFACTS`
-is the single list to shrink when that lands.
+-------------------------------------------------
+Current scans qualify routines by ``source_root`` and hash them only into their
+own partition. Historical routines without that field remain in the shared
+digest and invalidate every partition. That over-invalidation is safe; silently
+reusing a document after an unowned routine changed is not.
 """
 
 from __future__ import annotations
@@ -68,7 +60,7 @@ logger = logging.getLogger(__name__)
 
 # Bump when the fingerprint INPUTS or layout change, so every partition is
 # treated as dirty once after a deploy rather than skipped on a stale digest.
-FINGERPRINT_VERSION = "1"
+FINGERPRINT_VERSION = "2"
 
 # Scan artifacts that carry no source_root and so cannot be attributed to one
 # sub-project. Their digest enters every partition's fingerprint. Shrink this
@@ -93,6 +85,8 @@ def _unattributable_digest(scan_dir: Path) -> str:
     for relative in UNATTRIBUTABLE_ARTIFACTS:
         path = scan_dir / relative
         payload = _load_json(path)
+        if relative == "routines.json" and isinstance(payload, list):
+            payload = [entry for entry in payload if not isinstance(entry, dict) or not entry.get("source_root")]
         digest.update(relative.encode())
         digest.update(b"\0")
         # A missing artifact hashes distinctly from an empty one, so deleting
@@ -100,6 +94,21 @@ def _unattributable_digest(scan_dir: Path) -> str:
         digest.update(b"\x01" if payload is None else _canonical(payload))
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def _routines_by_partition(scan_dir: Path) -> dict[str, list[Any]]:
+    payload = _load_json(scan_dir / "routines.json")
+    grouped: dict[str, list[Any]] = {}
+    if not isinstance(payload, list):
+        return grouped
+    for entry in payload:
+        if not isinstance(entry, dict) or not entry.get("source_root"):
+            continue
+        key = subproject_key(str(entry["source_root"])) or WHOLE_PROJECT_PARTITION
+        grouped.setdefault(key, []).append(entry)
+    for entries in grouped.values():
+        entries.sort(key=_canonical)
+    return grouped
 
 
 def unattributable_digest(scan_output_dir: Path) -> str:
@@ -160,6 +169,7 @@ def compute_partition_fingerprints(
 
     unattributable = _unattributable_digest(scan_dir)
     contexts = _contexts_by_partition(scan_dir)
+    routines = _routines_by_partition(scan_dir)
     # Units are looked up by canonical id; display name is the scanner's own
     # fallback when job_id is empty (validators sets UnitFact.name the same way).
     display_by_name = {u.name: (u.display_name or u.name) for u in facts.units}
@@ -174,6 +184,8 @@ def compute_partition_fingerprints(
         digest.update(unattributable.encode())
         digest.update(b"\0")
         digest.update(_canonical(contexts.get(part.name, [])))
+        digest.update(b"\0")
+        digest.update(_canonical(routines.get(part.name, [])))
         digest.update(b"\0")
 
         indeterminate = False

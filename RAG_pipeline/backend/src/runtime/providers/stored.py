@@ -433,6 +433,10 @@ class StoredRuntimeProvider(NoScopeSelectionMixin, SingleTenantIdentityMixin):
             project_id=params.project_id,
             limit=params.limit,
         )
+        # `attention_only` is the repository's own predicate over run states.
+        # Filtering here instead -- on the health model's `failed_runs`, which
+        # counts FAILED and nothing else by design -- would drop every misfired
+        # and timed-out run from the surface whose entire job is to surface them.
         engine_health = await repo.list_engine_health(
             scope,
             ListRuntimeEnginesInput(
@@ -440,6 +444,7 @@ class StoredRuntimeProvider(NoScopeSelectionMixin, SingleTenantIdentityMixin):
                 project_id=params.project_id,
                 limit=params.limit,
             ),
+            attention_only=True,
         )
         job_health = await repo.list_job_health(
             scope,
@@ -448,6 +453,7 @@ class StoredRuntimeProvider(NoScopeSelectionMixin, SingleTenantIdentityMixin):
                 project_id=params.project_id,
                 limit=params.limit,
             ),
+            attention_only=True,
         )
         plan_health = await repo.list_plan_health(
             scope,
@@ -456,22 +462,14 @@ class StoredRuntimeProvider(NoScopeSelectionMixin, SingleTenantIdentityMixin):
                 project_id=params.project_id,
                 limit=params.limit,
             ),
+            attention_only=True,
         )
         return RuntimeUnhealthySummary(
             overview=overview,
             sources=sources,
-            unhealthy_engines=[
-                item for item in engine_health
-                if item.failed_runs > 0 or item.current_failure_streak > 0
-            ][: params.limit],
-            unhealthy_jobs=[
-                item for item in job_health
-                if item.failed_runs > 0 or item.current_failure_streak > 0
-            ][: params.limit],
-            unhealthy_plans=[
-                item for item in plan_health
-                if item.failed_runs > 0 or item.current_failure_streak > 0
-            ][: params.limit],
+            unhealthy_engines=engine_health[: params.limit],
+            unhealthy_jobs=job_health[: params.limit],
+            unhealthy_plans=plan_health[: params.limit],
         )
 
 

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useDocs } from "../hooks/useProjects";
 import { api } from "../api/client";
+import { parseApiError } from "../lib/errors";
 import type { DocFile, DocSource } from "../types";
 
 interface Props {
@@ -14,14 +15,42 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function DocContentPanel({ projectId, filename, source }: { projectId: string; filename: string; source: DocSource }) {
+/** A document's identity within a project. `name` alone is ambiguous. */
+interface DocRef {
+  name: string;
+  subproject: string | null;
+}
+
+function docRefKey(ref: DocRef): string {
+  return `${ref.subproject ?? ""}/${ref.name}`;
+}
+
+function DocContentPanel({
+  projectId,
+  doc,
+  source,
+}: {
+  projectId: string;
+  doc: DocRef;
+  source: DocSource;
+}) {
   const { data, isLoading, error } = useQuery({
-    queryKey: ["doc-content", projectId, filename, source],
-    queryFn: () => api.getDocContent(projectId, filename, source),
+    // The sub-project is part of the cache key for the same reason it is part
+    // of the request: two partitions publish the same filename with different
+    // bytes, and keying on the name alone serves one partition's document
+    // under another's label.
+    queryKey: ["doc-content", projectId, doc.subproject, doc.name, source],
+    queryFn: () => api.getDocContent(projectId, doc.name, source, doc.subproject),
+    // Bytes on disk do not change while an operator reads them, and a 404 for
+    // a specific document is a permanent answer (the global retry policy in
+    // `main.tsx` already declines to retry a 4xx). Nothing here should be
+    // re-requested without an explicit reason.
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
   });
 
   if (isLoading) return <div className="p-6 text-sm text-slate-500">Loading...</div>;
-  if (error) return <div className="p-6 text-sm text-red-400">Failed to load document.</div>;
+  if (error) return <div className="p-6 text-sm text-red-400">{parseApiError(error)}</div>;
 
   return (
     <div className="p-4 overflow-y-auto max-h-[500px]">
@@ -36,7 +65,7 @@ export default function DocPreview({ projectId }: Props) {
   const [source, setSource] = useState<DocSource>("published");
   const { data, isLoading, isError } = useDocs(projectId, source);
   const { data: stagingData } = useDocs(projectId, "staging", source === "staging");
-  const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
+  const [selectedDoc, setSelectedDoc] = useState<DocRef | null>(null);
 
   const generateAssessment = useMutation({
     mutationFn: () => api.generateAssessment(projectId!),
@@ -50,6 +79,22 @@ export default function DocPreview({ projectId }: Props) {
   const docs: DocFile[] = data?.docs ?? [];
   const hasDocs = docs.length > 0;
   const stagingCount = stagingData?.docs?.length ?? 0;
+  // Non-empty only for a partitioned project. The server owns the display
+  // order; a sub-project that somehow appears on a doc without appearing here
+  // is still rendered (under its own heading) rather than dropped.
+  const orderedSubprojects = Array.from(
+    new Set([
+      ...(data?.subprojects ?? []),
+      ...docs.map((doc) => doc.subproject).filter((name): name is string => !!name),
+    ]),
+  );
+  const groups: { subproject: string | null; docs: DocFile[] }[] =
+    orderedSubprojects.length > 0
+      ? orderedSubprojects.map((name) => ({
+          subproject: name as string | null,
+          docs: docs.filter((doc) => doc.subproject === name),
+        }))
+      : [{ subproject: null, docs }];
 
   return (
     <div className="card-dark">
@@ -105,31 +150,45 @@ export default function DocPreview({ projectId }: Props) {
         </div>
       ) : (
         <div className="flex flex-col lg:flex-row">
-          {/* File list */}
+          {/* File list, grouped by sub-project for a partitioned project */}
           <div className="lg:w-64 border-b lg:border-b-0 lg:border-r border-white/[0.05]">
-            <ul className="divide-y divide-white/[0.04]">
-              {docs.map((doc) => (
-                <li key={doc.name}>
-                  <button
-                    className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${
-                      selectedDoc === doc.name
-                        ? "bg-accent-primary/10 text-accent-primary"
-                        : "text-slate-400 hover:bg-white/[0.02]"
-                    }`}
-                    onClick={() => setSelectedDoc(selectedDoc === doc.name ? null : doc.name)}
-                  >
-                    <div className="font-medium truncate">{doc.name}</div>
-                    <div className="text-xs text-slate-600">{formatSize(doc.size_bytes)}</div>
-                  </button>
-                </li>
-              ))}
-            </ul>
+            {groups.map((group) => (
+              <div key={group.subproject ?? "__flat__"}>
+                {group.subproject && (
+                  <div className="px-4 py-1.5 bg-white/[0.02] border-b border-white/[0.05] text-xs font-mono text-slate-500 truncate">
+                    {group.subproject}
+                  </div>
+                )}
+                <ul className="divide-y divide-white/[0.04]">
+                  {group.docs.map((doc) => {
+                    const ref: DocRef = { name: doc.name, subproject: doc.subproject };
+                    const isSelected =
+                      selectedDoc !== null && docRefKey(selectedDoc) === docRefKey(ref);
+                    return (
+                      <li key={docRefKey(ref)}>
+                        <button
+                          className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${
+                            isSelected
+                              ? "bg-accent-primary/10 text-accent-primary"
+                              : "text-slate-400 hover:bg-white/[0.02]"
+                          }`}
+                          onClick={() => setSelectedDoc(isSelected ? null : ref)}
+                        >
+                          <div className="font-medium truncate">{doc.name}</div>
+                          <div className="text-xs text-slate-600">{formatSize(doc.size_bytes)}</div>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ))}
           </div>
 
           {/* Content preview */}
           <div className="flex-1 min-h-[200px]">
             {selectedDoc ? (
-              <DocContentPanel projectId={projectId} filename={selectedDoc} source={source} />
+              <DocContentPanel projectId={projectId} doc={selectedDoc} source={source} />
             ) : (
               <div className="p-6 text-sm text-slate-500 font-mono">
                 Select a document to preview.

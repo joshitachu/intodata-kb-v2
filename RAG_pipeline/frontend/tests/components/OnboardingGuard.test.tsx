@@ -136,4 +136,67 @@ describe("OnboardingGuard", () => {
     renderGuard();
     expect(screen.getByText("APP")).toBeInTheDocument();
   });
+
+  /**
+   * The guard used to `return null` while the onboarding status was in flight,
+   * unmounting the entire application for the duration of a flag lookup.
+   *
+   * On a cold load /auth/me and /onboarding/status race: the instant `user`
+   * landed with the status still pending, the whole tree blanked and then
+   * remounted — which discards page-local state (app/docs/page.tsx resets
+   * `selectedDoc` to null). If the status request failed, `isLoading` stayed
+   * true across the retry backoff (1+2+4s) and the app was blank for ~7
+   * seconds before the isError branch let it through.
+   */
+  describe("while the onboarding status is still unknown", () => {
+    it("renders the app instead of blanking the screen", () => {
+      statusLoading = true;
+      status = null;
+      renderGuard();
+
+      expect(screen.getByText("APP")).toBeInTheDocument();
+      expect(screen.queryByText("MEMBER WALKTHROUGH")).not.toBeInTheDocument();
+      expect(screen.queryByText("PROVISIONING WIZARD")).not.toBeInTheDocument();
+    });
+
+    it("renders the app for a superadmin too, without guessing a wizard", () => {
+      // The reason a blank screen was chosen in the first place: deciding
+      // early is worse. `companyDone` defaults to false while unknown, so a
+      // superadmin would be latched into the provisioning wizard — and
+      // `sessionStarted` is a ref, so that decision would stick for the whole
+      // session even on an already-configured deployment. The decision waits;
+      // the app does not.
+      user = { is_superadmin: true, onboarding_completed: false };
+      statusLoading = true;
+      status = null;
+      renderGuard();
+
+      expect(screen.getByText("APP")).toBeInTheDocument();
+      expect(screen.queryByText("PROVISIONING WIZARD")).not.toBeInTheDocument();
+    });
+
+    it("shows the right wizard once the flags arrive, over the mounted app", () => {
+      user = { is_superadmin: true, onboarding_completed: false };
+      statusLoading = true;
+      status = null;
+      const { rerender } = renderGuard();
+
+      expect(screen.getByText("APP")).toBeInTheDocument();
+
+      // Status lands: the deployment is already provisioned, so this owner
+      // gets the member walkthrough — not the setup flow an early latch would
+      // have pinned.
+      statusLoading = false;
+      status = statusFor("owner", { companyDone: true, userDone: false });
+      rerender(
+        <OnboardingGuard>
+          <div>APP</div>
+        </OnboardingGuard>,
+      );
+
+      expect(screen.getByText("APP")).toBeInTheDocument();
+      expect(screen.getByText("MEMBER WALKTHROUGH")).toBeInTheDocument();
+      expect(screen.queryByText("PROVISIONING WIZARD")).not.toBeInTheDocument();
+    });
+  });
 });

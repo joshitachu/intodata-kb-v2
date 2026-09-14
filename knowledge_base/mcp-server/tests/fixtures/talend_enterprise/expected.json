@@ -1,0 +1,16 @@
+{
+  "exact_mapping_rows": ["row1.order_id", "\"NEW\"", "lookup.customer_name", "TalendDate.getCurrentDate()", "row1.ignored_flag"],
+  "connected_journeys": [{"journey_id": "orders-intake", "units": ["Inbound_Orders_Route", "Orders_Load", "Orders_To_Warehouse"]}],
+  "required_docs": ["INTEGRATION_CATALOGUE", "INTEGRATION__rest-orders-orders-database-warehouse-drop-folder"],
+  "questions": [
+    {"question_id": "dev.depends.Orders_Load", "status": "answered", "contains": ["Orders_To_Warehouse"]},
+    {"question_id": "dev.mappings.Orders_Load", "status": "answered", "contains": ["lookup"]},
+    {"question_id": "ops.trigger_failure.Orders_Load", "status": "answered", "contains": ["tDie"]},
+    {"question_id": "ops.runtime.Orders_Load", "status": "unknown", "contains": ["unavailable"]},
+    {"question_id": "arch.systems.orders-intake", "status": "answered", "contains": ["ORDERS database"]},
+    {"question_id": "arch.blast_radius.Orders_To_Warehouse", "status": "answered", "contains": ["Orders_Load"]},
+    {"question_id": "biz.purpose.orders-intake", "status": "answered", "contains": ["Inferred"]},
+    {"question_id": "biz.owner.Orders_Load", "status": "unknown", "contains": ["not in the export"]}
+  ],
+  "publication_ok": true
+}

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { CreateMultiRepoProjectSchema } from "@/types";
 import { proxyMcpJsonSanitized } from "../../_proxy";
+import { badRequestOrUpstreamResponse } from "@/lib/backendProxy";
 
 export const dynamic = "force-dynamic";
 // Cloning N repositories is the slow part of this request. The single-repo route
@@ -29,7 +30,6 @@ export async function POST(request: NextRequest) {
       }),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Invalid multi-repo project";
-    return NextResponse.json({ error: message }, { status: 400 });
+    return badRequestOrUpstreamResponse("source/multi-repo/projects POST", error, "Invalid multi-repo project");
   }
 }

@@ -404,6 +404,21 @@ def test_publish_gate_passes_for_complete_coverage(tmp_path):
     assert report.coverage_count == 2
 
 
+def test_publish_gate_accounts_for_skipped_unit_without_counting_it_covered(tmp_path):
+    _write_scan(tmp_path / "scan", platform="talend", jobs=[_job("a"), _job("b")])
+    facts = build_facts_manifest("proj", tmp_path / "scan")
+    analysis_dir = tmp_path / "analysis"
+    analysis_dir.mkdir()
+    (analysis_dir / "A.md").write_text(
+        "## Coverage\n\n- COVERED: a\n- SKIPPED: b -- preprocessing packet omitted required detail\n",
+        encoding="utf-8",
+    )
+    report = validate_analysis_coverage(analysis_dir, facts)
+    assert report.coverage_count == 1
+    assert report.expected_count == 2
+    assert "b" in report.skipped_units
+
+
 def test_plugin_phase2_coverage_uses_structured_sidecar_not_markers(tmp_path):
     _write_scan(tmp_path / "scan", platform="generic", jobs=[_job("README", "root"), _job("package", "root")])
     facts = build_facts_manifest("proj", tmp_path / "scan")
@@ -2852,7 +2867,7 @@ def test_final_doc_content_only_adds_unit_inventory_to_component_inventory():
     assert "Unit A" not in brief
 
 
-def test_final_doc_content_adds_scanner_limited_contract_marker_once():
+def test_final_doc_content_does_not_relabel_generic_unknown_as_scanner_failure():
     facts = build_facts_manifest_from_units("proj", ["Unit A"])
     harness = CustomHarnessProvider(
         OpenAICompatibleProvider(
@@ -2867,11 +2882,8 @@ def test_final_doc_content_adds_scanner_limited_contract_marker_once():
     )
 
     first = harness._final_doc_content(state, "03_DATA_FLOWS_AND_LINEAGE", body)
-    second = harness._final_doc_content(state, "03_DATA_FLOWS_AND_LINEAGE", first)
-
-    assert first.count("## Scanner-Limited Evidence") == 1
-    assert "must not be inferred" in first
-    assert second == first
+    assert "## Scanner-Limited Evidence" not in first
+    assert "Field-level lineage is not established" in first
 
 
 def test_final_doc_content_strips_llm_preamble():
@@ -4715,8 +4727,8 @@ async def test_custom_harness_generates_valid_staging(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_direct_path_scanner_limited_stub_passes_depth_gate(tmp_path, monkeypatch):
-    """Stub analysis for scanner-limited groups must pass validate_analysis_depth without LLM calls."""
+async def test_direct_path_packet_limited_stub_passes_depth_gate(tmp_path, monkeypatch):
+    """A thin packet is reported as packet-limited without blaming the scanner."""
     from mcp_server.config import config
     from mcp_server.providers.custom.validators import validate_analysis_depth
 
@@ -4774,7 +4786,7 @@ async def test_direct_path_scanner_limited_stub_passes_depth_gate(tmp_path, monk
 
     # No LLM calls — stub written directly
     assert provider.calls == []
-    assert any("scanner-limited stub" in message for _, message, _ in logs)
+    assert any("evidence-packet-limited stub" in message for _, message, _ in logs)
     assert (analysis_dir / "TinyGroup.md").exists()
 
     # Depth gate must not fire for scanner-limited groups (preprocess < min_investigation_content_bytes)

@@ -567,6 +567,99 @@ describe("EP-000 dashboard panels", () => {
     });
   });
 
+  it("opts a Talend OpenCode run into the v2 generation contract", async () => {
+    const openCodeProject = {
+      ...workspaceProject,
+      doc_generation_provider: "opencode-cli",
+    };
+    vi.mocked(api.listModels).mockResolvedValue({
+      models: [{
+        id: "openai/gpt-5.6-sol",
+        provider: "openai",
+        label: "OpenAI GPT-5.6 Sol",
+        supports_analysis: true,
+        supports_writing: true,
+        is_default_analysis: false,
+        is_default_investigation: false,
+        is_default_writing: false,
+        is_local: false,
+        available: true,
+        unavailable_reason: null,
+        rag_capable: true,
+      }],
+    });
+    vi.mocked(api.generate).mockResolvedValue({ status: "started", message: "ok" });
+
+    renderWithClient(<GenerateDialog project={openCodeProject} open onClose={vi.fn()} />);
+
+    // The two experimental contracts (landscape v2, goal-driven) were removed
+    // in favour of one agentic lane. Leaving the box unticked must send NO
+    // profile at all, because a profile of `{}` used to mean landscape v2 --
+    // an empty object here would silently select a contract that is gone.
+    await screen.findByLabelText("Use agentic documentation");
+    expect(screen.queryByLabelText("Use Talend landscape v2 (experimental)")).toBeNull();
+    expect(
+      screen.queryByLabelText("Use goal-driven integration intelligence (experimental)"),
+    ).toBeNull();
+    fireEvent.change(screen.getByLabelText("Select OpenCode session model (required)"), {
+      target: { value: "openai/gpt-5.6-sol" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+
+    await waitFor(() => {
+      expect(api.generate).toHaveBeenCalled();
+    });
+    expect(vi.mocked(api.generate).mock.calls[0][0]).not.toHaveProperty("generationProfile");
+  });
+
+  it("sends the requested goal with the agentic contract", async () => {
+    const openCodeProject = {
+      ...workspaceProject,
+      doc_generation_provider: "opencode-cli",
+    };
+    vi.mocked(api.listModels).mockResolvedValue({
+      models: [{
+        id: "openai/gpt-5.6-sol",
+        provider: "openai",
+        label: "OpenAI GPT-5.6 Sol",
+        supports_analysis: true,
+        supports_writing: true,
+        is_default_analysis: false,
+        is_default_investigation: false,
+        is_default_writing: false,
+        is_local: false,
+        available: true,
+        unavailable_reason: null,
+        rag_capable: true,
+      }],
+    });
+    vi.mocked(api.generate).mockResolvedValue({ status: "started", message: "ok" });
+
+    renderWithClient(<GenerateDialog project={openCodeProject} open onClose={vi.fn()} />);
+
+    fireEvent.click(await screen.findByLabelText("Use agentic documentation"));
+    // The estate goes to one agent as one workspace. The partition preview
+    // describes work this lane never does, so it must not be on screen.
+    expect(screen.queryByText(/sub-project.? will regenerate/)).toBeNull();
+    fireEvent.change(screen.getByLabelText("Investigation goal"), {
+      target: { value: "Where does OrderStatus come from?" },
+    });
+    fireEvent.change(screen.getByLabelText("Select OpenCode session model (required)"), {
+      target: { value: "openai/gpt-5.6-sol" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+
+    await waitFor(() => {
+      expect(api.generate).toHaveBeenCalledWith(expect.objectContaining({
+        generationMethod: "opencode-cli",
+        generationProfile: {
+          contract: "agent-workspace-v1",
+          agent_workspace: { goal: "Where does OrderStatus come from?" },
+        },
+      }));
+    });
+  });
+
   // THE GUARD. Two providers, neither of them one this build ships, rendered
   // from the catalogue alone. Each must appear with its OWN name and its OWN
   // type, and each must state which engine reads it -- all derived from

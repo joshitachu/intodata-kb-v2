@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 from typing import Iterable
 
+from mcp_server.providers.custom.dependency_evidence import DependencyEvidenceRepository
 from mcp_server.providers.custom.models import FactsManifest
 
 
@@ -57,6 +58,7 @@ def build_phase2_context_packet(
     scoped_evidence: Path | None,
     max_bytes: int,
     max_scoped_artifact_bytes: int,
+    scan_output_dir: Path | None = None,
     artifact_names: frozenset[str] | None = None,
     include_prompt_pack: bool = True,
     include_investigation: bool = True,
@@ -109,7 +111,6 @@ def build_phase2_context_packet(
         ),
         encoding="utf-8",
     )
-
     terms = _scope_terms(group, selected_units)
     candidates: list[tuple[int, Path]] = []
     omitted: list[str] = []
@@ -172,6 +173,17 @@ def build_phase2_context_packet(
     if task_evidence != compact_facts:
         selected.append(task_evidence)
         used_bytes += task_evidence.stat().st_size
+    dependency_evidence = _write_dependency_evidence(
+        scan_output_dir=scan_output_dir,
+        destination=packet_root / "ROUTINE_DEPENDENCIES.md",
+        unit_names=unit_names,
+    )
+    if dependency_evidence is not None:
+        # Resolved routine bodies are source truth for the assigned callers.
+        # Keep them alongside task evidence even when that makes the packet
+        # honestly over budget; optional maps are the only budget casualties.
+        selected.append(dependency_evidence)
+        used_bytes += dependency_evidence.stat().st_size
     for _, path in sorted(candidates, key=lambda item: (item[0], item[1].name)):
         if path in selected:
             continue
@@ -239,6 +251,7 @@ def build_phase2_context_packet(
                 "artifact_allowlist": sorted(artifact_names) if artifact_names is not None else None,
                 "includes_prompt_pack": include_prompt_pack,
                 "includes_investigation": include_investigation,
+                "includes_resolved_routine_dependencies": dependency_evidence is not None,
             },
             indent=2,
         ),
@@ -251,6 +264,40 @@ def build_phase2_context_packet(
         omitted=tuple(sorted(set(omitted))),
         shared_prefix_bytes=shared_prefix_bytes,
     )
+
+
+def _write_dependency_evidence(
+    *,
+    scan_output_dir: Path | None,
+    destination: Path,
+    unit_names: list[str],
+) -> Path | None:
+    """Materialize full scanner-resolved routine source for assigned callers.
+
+    This uses the same canonical/root-aware repository as Phase 3 and OpenCode.
+    Old scans without qualified routine metadata remain compatible and simply
+    contribute no dependency file instead of guessing by routine name.
+    """
+
+    if scan_output_dir is None:
+        return None
+    try:
+        repository = DependencyEvidenceRepository.from_directory(scan_output_dir)
+        sections = [repository.render_routines(unit_name) for unit_name in unit_names]
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    content = "\n\n".join(section for section in sections if section.strip()).strip()
+    if not content:
+        return None
+    destination.write_text(
+        "# Canonical caller dependency evidence\n\n"
+        "The following full sanitized implementations were linked by the scanner "
+        "to callers in this task. Explain invoked behavior without transferring "
+        "routine ownership to the caller.\n\n"
+        f"{content}\n",
+        encoding="utf-8",
+    )
+    return destination
 
 
 def _write_scoped_artifact(

@@ -1083,7 +1083,10 @@ class TestRebuildRuntimeInsights:
         await seed_rich_runtime_data(db_session, project_id=_PROJECT, synced_at=_SYNCED_AT)
         # No insights built yet — rebuild from raw store.
         rebuilt = await rebuild_runtime_insights(db_session, project_id=_PROJECT)
-        assert rebuilt == 3  # failed order sync + success order sync + success billing export
+        # failed order sync + success order sync + success billing export,
+        # plus the misfired and timed-out runs the seed now carries so the
+        # non-failed capture states are exercised end to end.
+        assert rebuilt == 5
 
         incident = await _get_incident(db_session, _PROJECT, _RICH_FAILED_EXEC)
         assert incident is not None

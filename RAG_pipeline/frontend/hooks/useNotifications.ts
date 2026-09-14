@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { fetchJson } from "@/lib/authedFetch";
 import {
   NotificationList,
   NotificationListSchema,
@@ -9,35 +10,35 @@ import {
 } from "@/types/onboarding";
 
 async function fetchList(): Promise<NotificationList> {
-  const res = await fetch("/api/notifications", { cache: "no-store" });
-  if (!res.ok) {
-    throw new Error("Failed to fetch notifications");
-  }
-  return NotificationListSchema.parse(await res.json());
+  return NotificationListSchema.parse(
+    await fetchJson<unknown>("/api/notifications", {
+      cache: "no-store",
+      fallbackError: "Failed to fetch notifications",
+    }),
+  );
 }
 
 async function fetchUnreadCount(): Promise<UnreadCount> {
-  const res = await fetch("/api/notifications/unread-count", {
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    throw new Error("Failed to fetch unread count");
-  }
-  return UnreadCountSchema.parse(await res.json());
+  return UnreadCountSchema.parse(
+    await fetchJson<unknown>("/api/notifications/unread-count", {
+      cache: "no-store",
+      fallbackError: "Failed to fetch unread count",
+    }),
+  );
 }
 
 async function markRead(id: number): Promise<void> {
-  const res = await fetch(`/api/notifications/${id}/read`, { method: "PUT" });
-  if (!res.ok) {
-    throw new Error("Failed to mark as read");
-  }
+  await fetchJson<unknown>(`/api/notifications/${id}/read`, {
+    method: "PUT",
+    fallbackError: "Failed to mark as read",
+  });
 }
 
 async function markAllRead(): Promise<void> {
-  const res = await fetch("/api/notifications/read-all", { method: "PUT" });
-  if (!res.ok) {
-    throw new Error("Failed to mark all as read");
-  }
+  await fetchJson<unknown>("/api/notifications/read-all", {
+    method: "PUT",
+    fallbackError: "Failed to mark all as read",
+  });
 }
 
 export function useNotifications() {

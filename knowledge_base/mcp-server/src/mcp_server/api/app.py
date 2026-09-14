@@ -101,6 +101,11 @@ def _apply_column_migrations(sync_conn: Any) -> None:
     timestamp_type = (
         "TIMESTAMP WITH TIME ZONE" if dialect == "postgresql" else "TIMESTAMP"
     )
+    if "generation_profile" not in gen_columns:
+        profile_type = "JSONB" if dialect == "postgresql" else "JSON"
+        sync_conn.execute(sa_text(
+            f"ALTER TABLE generate_runs ADD COLUMN generation_profile {profile_type}"
+        ))
     for column_name, ddl_type in _GENERATE_RUN_PACK_AUDIT_COLUMNS:
         if column_name in gen_columns:
             continue

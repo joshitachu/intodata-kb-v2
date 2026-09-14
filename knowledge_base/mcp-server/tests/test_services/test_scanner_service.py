@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -46,25 +47,24 @@ async def test_run_scan_success(scanner, monkeypatch, tmp_path):
     repo.mkdir()
     out_dir = tmp_path / "output"
     out_dir.mkdir()
-    scan_result = out_dir / "scan_result.json"
-    scan_result.write_text(json.dumps({
-        "jobs": [{"name": "j1", "artifact_kind": "job"}, {"name": "r1", "artifact_kind": "route"}],
-        "stats": {"total_artifacts": 2, "job_count": 1, "route_count": 1},
-    }))
-
     mock_proc = MagicMock()
     mock_proc.stdout.readline = MagicMock(return_value="")
     mock_proc.stderr.readline = MagicMock(return_value="")
-    def _wait_success():
-        scan_result.write_text(json.dumps({
+    def _popen(command, **_kwargs):
+        candidate = command[command.index("--output-dir") + 1]
+        def _wait_success():
+            scan_result = Path(candidate) / "scan_result.json"
+            scan_result.parent.mkdir(parents=True, exist_ok=True)
+            scan_result.write_text(json.dumps({
             "jobs": [{"name": "j1", "artifact_kind": "job"}, {"name": "r1", "artifact_kind": "route"}],
             "stats": {"total_artifacts": 2, "job_count": 1, "route_count": 1},
-        }))
-        return 0
-    mock_proc.wait.side_effect = _wait_success
+            }))
+            return 0
+        mock_proc.wait.side_effect = _wait_success
+        return mock_proc
 
     with patch("shutil.which", return_value="/usr/bin/intodoc"), \
-         patch("subprocess.Popen", return_value=mock_proc):
+         patch("subprocess.Popen", side_effect=_popen):
         result = await scanner.run_scan("proj", str(repo), output_dir=str(out_dir))
 
     assert result["success"] is True
@@ -85,21 +85,25 @@ async def test_run_scan_rejects_zero_job_talend_result(scanner, monkeypatch, tmp
     mock_proc = MagicMock()
     mock_proc.stdout.readline = MagicMock(return_value="")
     mock_proc.stderr.readline = MagicMock(return_value="")
-    def _write_zero_result():
-        (out_dir / "scan_result.json").write_text(
-            json.dumps({"jobs": [], "warnings": [{"message": "No Talend project structure found"}]})
-        )
-        return 0
-    mock_proc.wait.side_effect = _write_zero_result
+    def _popen(command, **_kwargs):
+        candidate = Path(command[command.index("--output-dir") + 1])
+        def _write_zero_result():
+            candidate.mkdir(parents=True, exist_ok=True)
+            (candidate / "scan_result.json").write_text(
+                json.dumps({"jobs": [], "warnings": [{"message": "No Talend project structure found"}]})
+            )
+            return 0
+        mock_proc.wait.side_effect = _write_zero_result
+        return mock_proc
 
-    with patch("shutil.which", return_value="/usr/bin/intodoc"), patch("subprocess.Popen", return_value=mock_proc):
+    with patch("shutil.which", return_value="/usr/bin/intodoc"), patch("subprocess.Popen", side_effect=_popen):
         result = await scanner.run_scan("proj", str(repo), platform="talend", output_dir=str(out_dir))
 
     assert result["success"] is False
     assert "zero jobs" in result["error"]
 
 
-async def test_run_scan_clears_stale_scan_and_fails_when_new_output_missing(scanner, monkeypatch, tmp_path):
+async def test_failed_scan_preserves_previous_complete_snapshot(scanner, monkeypatch, tmp_path):
     from mcp_server.config import config
     monkeypatch.setattr(config, "project_root", tmp_path)
 
@@ -121,7 +125,8 @@ async def test_run_scan_clears_stale_scan_and_fails_when_new_output_missing(scan
 
     assert result["success"] is False
     assert "did not produce" in result["error"]
-    assert not (out_dir / "publication_approval.json").exists()
+    assert json.loads((out_dir / "scan_result.json").read_text())["jobs"][0]["name"] == "stale"
+    assert (out_dir / "publication_approval.json").exists()
 
 
 async def test_run_scan_nonzero_exit(scanner, monkeypatch, tmp_path):

@@ -890,9 +890,9 @@ async def test_reset_status_cancels_live_generation_task(client, session_factory
         saved_run = (await session.execute(select(GenerateRun).where(GenerateRun.id == run.id))).scalar_one()
         assert project.status == "error"
         assert project.error_message == "Generation cancelled by user"
-        assert saved_run.status == "failed"
+        assert saved_run.status == "cancelled"
         assert saved_run.error_message == "Generation cancelled by user"
-        assert saved_run.run_verdict == "failed"
+        assert saved_run.run_verdict == "cancelled"
 
     task.cancel()
     try:
@@ -1290,7 +1290,7 @@ async def test_run_generate_background_gate_fail_skips_swap_and_holds(
     client, session_factory, tmp_path, monkeypatch
 ):
     """A failed pre-swap gate must not swap docs and must mark error+manual_review."""
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import MagicMock
 
     import mcp_server.api.routes.projects as projects_mod
     from mcp_server.config import config

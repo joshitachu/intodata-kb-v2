@@ -1,24 +1,8 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { fetchJson } from "@/lib/authedFetch";
 import type { DocumentListResponse, DocumentRole, IngestResponse } from "@/types";
-
-async function fetchDocuments(): Promise<DocumentListResponse> {
-  const res = await fetch("/api/documents");
-  if (!res.ok) {
-    const data = await res.json();
-    throw new Error(data.error || "Failed to fetch documents");
-  }
-  return res.json();
-}
-
-async function deleteDocument(id: number): Promise<void> {
-  const res = await fetch(`/api/documents?id=${id}`, { method: "DELETE" });
-  if (!res.ok && res.status !== 204) {
-    const data = await res.json();
-    throw new Error(data.error || "Delete failed");
-  }
-}
 
 async function uploadDocument({
   file,
@@ -34,30 +18,31 @@ async function uploadDocument({
   formData.append("project_id", project_id);
   formData.append("document_role", document_role);
 
-  const res = await fetch("/api/ingest", {
+  return fetchJson<IngestResponse>("/api/ingest", {
     method: "POST",
     body: formData,
+    fallbackError: "Upload failed",
   });
-
-  if (!res.ok) {
-    const data = await res.json();
-    throw new Error(data.error || "Upload failed");
-  }
-
-  return res.json();
 }
 
 export function useDocuments() {
   return useQuery({
     queryKey: ["documents"],
-    queryFn: fetchDocuments,
+    queryFn: () =>
+      fetchJson<DocumentListResponse>("/api/documents", {
+        fallbackError: "Failed to fetch documents",
+      }),
   });
 }
 
 export function useDeleteDocument() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: deleteDocument,
+    mutationFn: (id: number) =>
+      fetchJson<void>(`/api/documents?id=${id}`, {
+        method: "DELETE",
+        fallbackError: "Delete failed",
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["documents"] });
     },

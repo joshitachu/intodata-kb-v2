@@ -16,7 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from intodoc.models import Landscape, LineageMatrix, ScanResult
+from intodoc.models import ComponentParam, Landscape, LineageMatrix, ScanResult
 from intodoc.scanner.credential_filter import CredentialFilter
 
 
@@ -58,6 +58,31 @@ def _check_named_value(
         findings.append(_finding("unredacted_password_type", location, name, value))
     elif cred_filter.is_sensitive_var_name(name):
         findings.append(_finding("unredacted_sensitive_name", location, name, value))
+
+
+def _check_table_row(
+    findings: list[dict[str, str]],
+    cred_filter: CredentialFilter,
+    location: str,
+    row: dict[str, str],
+) -> int:
+    """Check a TABLE row's cells against the name its NAME cell states.
+
+    Returns the number of values checked. Uses the same
+    `ComponentParam.row_column_key` rule as the parser and the structural
+    filter, so all three agree on which cell names which.
+    """
+    name_key = ComponentParam.row_column_key(row, "NAME")
+    name = row.get(name_key, "")
+    if not name:
+        return 0
+    checked = 0
+    for key, value in row.items():
+        if key == name_key:
+            continue
+        checked += 1
+        _check_named_value(findings, cred_filter, f"{location}/{key}", name, value)
+    return checked
 
 
 # Structural identifier fields: filesystem/schema locations the scanner
@@ -136,11 +161,17 @@ def verify_scan_result(
     """Verify a filtered ScanResult carries no residual secrets.
 
     Checks:
-    1. No context variable / component param whose NAME is sensitive (per
-       the token-aware matcher) still carries a non-placeholder value.
+    1. No context variable / component param / TABLE row cell / schema
+       column default whose NAME is sensitive (per the token-aware matcher)
+       still carries a non-placeholder value.
     2. No id_Password-typed value survives unredacted.
     3. Leaf-string sweep with the same detectors the filter uses: anything
-       detected now, by construction, escaped the filter.
+       detected now, by construction, escaped the filter. The sweep walks
+       `model_dump`, so every additive collection on `ScanResult`
+       (structures, xslt_transforms, services, mapping_accounting,
+       capability_ledger) is covered without being named here -- which is
+       exactly why they must stay fields of `ScanResult` and not be written
+       to disk from somewhere the gate cannot see.
 
     Returns a report dict with `passed`, `findings`, and
     `residual_pattern_counts`. Raw values never appear in the report.
@@ -175,6 +206,42 @@ def verify_scan_result(
                 _check_named_value(
                     findings, cred_filter,
                     f"jobs/{job.name}/components/{comp.unique_name}/{p.name}",
+                    p.name, p.value,
+                )
+                # A TABLE row states its own sensitivity in its NAME cell
+                # (tRunJob CONTEXTPARAMS: {PARAM_NAME_COLUMN: "DbPassword",
+                # PARAM_VALUE_COLUMN: ...}), which the parameter-name check
+                # above cannot see -- the parameter is called CONTEXTPARAMS.
+                for index, row in enumerate(p.rows):
+                    checked_values += _check_table_row(
+                        findings, cred_filter,
+                        f"jobs/{job.name}/components/{comp.unique_name}"
+                        f"/{p.name}/rows/{index}",
+                        row,
+                    )
+            for schema in comp.schemas:
+                for column in schema.columns:
+                    checked_values += 1
+                    _check_named_value(
+                        findings, cred_filter,
+                        f"jobs/{job.name}/components/{comp.unique_name}"
+                        f"/schemas/{schema.connector}/{column.name}",
+                        column.name, column.default_value, column.type,
+                    )
+        for ref in job.trunjob_refs:
+            for p in ref.context_params:
+                checked_values += 1
+                _check_named_value(
+                    findings, cred_filter,
+                    f"jobs/{job.name}/trunjob/{ref.child_job}/{p.name}",
+                    p.name, p.value,
+                )
+        for artifact_ref in job.artifact_refs:
+            for p in artifact_ref.context_params:
+                checked_values += 1
+                _check_named_value(
+                    findings, cred_filter,
+                    f"jobs/{job.name}/artifact_ref/{artifact_ref.target_name}/{p.name}",
                     p.name, p.value,
                 )
 

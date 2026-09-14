@@ -53,6 +53,21 @@ describe("deriveStatus", () => {
     expect(deriveStatus({ latestState: "unknown", failureRate: 0, currentFailureStreak: 0 })).toBe("unknown");
   });
 
+  // A misfired run never started and a timed-out run was killed mid-flight.
+  // Both used to fall through to "unknown", which is how a job whose schedule
+  // silently stopped firing still read as fine on the topology overlay.
+  it("maps a misfired latest run to down even with a clean failure rate", () => {
+    expect(deriveStatus({ latestState: "misfired", failureRate: 0, currentFailureStreak: 0 })).toBe("down");
+  });
+
+  it("maps a timed-out latest run to down even with a clean failure rate", () => {
+    expect(deriveStatus({ latestState: "timed_out", failureRate: 0, currentFailureStreak: 0 })).toBe("down");
+  });
+
+  it("maps a terminated latest run to degraded, never healthy or unknown", () => {
+    expect(deriveStatus({ latestState: "terminated", failureRate: 0, currentFailureStreak: 0 })).toBe("degraded");
+  });
+
   it("threshold boundary: exactly 0.3 is degraded", () => {
     expect(deriveStatusFromHealth(health({ job_name: "j", failure_rate: 0.3 }))).toBe("degraded");
   });

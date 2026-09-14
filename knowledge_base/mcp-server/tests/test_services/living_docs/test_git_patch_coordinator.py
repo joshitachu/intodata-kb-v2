@@ -9,6 +9,7 @@ import pytest
 
 from mcp_server.services.living_docs.candidate_publisher import CandidatePublisher
 from mcp_server.services.living_docs.candidate_store import FileCandidateStore
+from mcp_server.services.living_docs.contracts import CandidateState
 from mcp_server.services.living_docs.git_patch_coordinator import GitPatchCoordinator
 from mcp_server.services.living_docs.rag_revisions import InMemoryRevisionedRagStore
 from mcp_server.services.rag_bridge import RagBridge
@@ -130,3 +131,62 @@ async def test_git_candidate_holds_instead_of_falling_back_to_generation(tmp_pat
     assert outcome.reason_code == "patch_validation_failed"
     assert (active_output / "docs" / "01_ARCHITECTURE_MAP.md").read_text() == "old database host"
     assert await rag_store.retrieve("project-a") == []
+
+
+@pytest.mark.asyncio
+async def test_held_candidate_is_not_rerun_and_repair_gets_a_new_candidate(tmp_path: Path) -> None:
+    active_output = _active_output(tmp_path)
+    store = FileCandidateStore((tmp_path / "candidate-store").resolve())
+
+    class _NeverRun:
+        async def run(self, **kwargs: object) -> PatchResult:
+            raise AssertionError("terminal candidate must not invoke the executor")
+
+    executor = _NeverRun()
+    coordinator = GitPatchCoordinator(
+        store=store,
+        publisher=CandidatePublisher(
+            store=store, rag=RagBridge(revisioned_rag=InMemoryRevisionedRagStore())
+        ),
+        executor=executor,
+    )
+    candidate = coordinator.create_candidate(
+        project_id="project-a",
+        source_identity="owner/repo",
+        before_sha="a" * 40,
+        after_sha="d" * 40,
+        changed_groups=["payments"],
+        active_docs_dir=active_output / "docs",
+        base_knowledge_revision_id=None,
+    )
+    store.transition(
+        candidate.id,
+        expected_version=0,
+        target=CandidateState.HELD,
+        reason_code="provider_unavailable",
+    )
+    replay = await coordinator.run(
+        candidate,
+        active_output_dir=active_output,
+        candidate_scan_output_dir=tmp_path / "candidate-scan",
+        changed_groups=["payments"],
+        platform="talend",
+        log_mgr=MagicMock(emit=AsyncMock()),
+        before_sha="a" * 40,
+        after_sha="d" * 40,
+        active_source_revision_key=candidate.change_set.source_revision.key,
+    )
+    assert replay.action == "held"
+    assert replay.reason_code == "provider_unavailable"
+    repair = coordinator.create_candidate(
+        project_id="project-a",
+        source_identity="owner/repo",
+        before_sha="a" * 40,
+        after_sha="d" * 40,
+        changed_groups=["payments"],
+        active_docs_dir=active_output / "docs",
+        base_knowledge_revision_id=None,
+        repair_attempt_id="operator-1",
+    )
+    assert repair.id != candidate.id
+    assert store.status(candidate.id).state is CandidateState.HELD

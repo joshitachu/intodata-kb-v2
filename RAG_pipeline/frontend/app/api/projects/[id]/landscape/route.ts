@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { upstreamErrorResponse } from "@/lib/backendProxy";
 
 const KB_API_URL = process.env.KB_API_URL || "http://localhost:8002";
 
@@ -26,7 +27,6 @@ export async function GET(
     }
     return NextResponse.json(await response.json());
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to fetch landscape data";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return upstreamErrorResponse("projects/[id]/landscape GET", error, "Failed to fetch landscape data");
   }
 }

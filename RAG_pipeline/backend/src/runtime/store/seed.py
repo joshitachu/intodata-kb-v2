@@ -133,15 +133,6 @@ async def seed_mock_runtime_data(
         synced_at=synced_at,
     )
 
-    for execution in executions:
-        shifted = execution.model_copy(
-            update={
-                "started_at": _shift(execution.started_at, delta),
-                "ended_at": _shift(execution.ended_at, delta),
-            }
-        )
-        await repo.upsert_execution(project_id, shifted, source_key, synced_at)
-
     shifted_executions = [
         execution.model_copy(
             update={
@@ -151,6 +142,15 @@ async def seed_mock_runtime_data(
         )
         for execution in executions
     ]
+    # Already anchored to `synced_at`, so they are appended after the shift.
+    # The mock fixtures cannot supply these states (the fixture set predates
+    # them and lives in a file this seed only reads), and without them the
+    # default demo path shows no misfire and no timeout at all.
+    shifted_executions.extend(_demo_capture_state_executions(synced_at))
+
+    for execution in shifted_executions:
+        await repo.upsert_execution(project_id, execution, source_key, synced_at)
+
     await seed_demo_jobs(
         repo,
         project_id=project_id,
@@ -189,7 +189,7 @@ async def seed_mock_runtime_data(
     return SeedSummary(
         project_id=project_id,
         source_key=source_key,
-        executions=len(executions),
+        executions=len(shifted_executions),
         failures=len(failures),
         log_events=len(logs),
         last_synced_at=synced_at,
@@ -234,6 +234,57 @@ _RICH_SUCCESS_LOG_LINES: list[tuple[int, RuntimeLogSeverity, str]] = [
     (28, _INFO, "[esb_order_sync_route] Route completed: 184 messages processed in 28.013s"),
 ]
 
+# --- Runs that produce no logs and no failure row --------------------------
+#
+# A misfire and a timeout are the two outcomes that are invisible in every
+# log-driven surface: the misfire never started, so there is nothing to log,
+# and the timeout is killed by the scheduler rather than raising. Both used to
+# arrive as `unknown` and were dropped. Seeding them is the only way a demo can
+# show the states at all -- and the only way a regression that re-flattens them
+# is noticed before a customer sees it.
+#
+# Values are the ones the live TMC API actually returns.
+_MISFIRED_JOB = "esb_inventory_sync_task"
+_MISFIRED_EXEC = "esbmain-task-4417"
+_TIMED_OUT_JOB = "esb_nightly_reconcile_batch"
+_TIMED_OUT_EXEC = "esbmain-batch-5501"
+_TIMED_OUT_SECONDS = 3600
+
+
+def _demo_capture_state_executions(
+    synced_at: datetime.datetime,
+) -> list[RuntimeExecution]:
+    """One misfired and one timed-out run, anchored to `synced_at`."""
+    misfired_start = synced_at - datetime.timedelta(minutes=45)
+    timed_out_start = synced_at - datetime.timedelta(hours=6)
+    return [
+        RuntimeExecution(
+            execution_id=_MISFIRED_EXEC,
+            job_name=_MISFIRED_JOB,
+            project_name="esb_main",
+            state=RuntimeExecutionState.MISFIRED,
+            raw_state="EXECUTION_MISFIRED",
+            misfire_reason="PARALLEL_EXECUTION_FORBIDDEN",
+            execution_type="SCHEDULED",
+            started_at=misfired_start,
+            # A misfire never ran, so it has no end and no duration. Anything
+            # that treats a missing end as "hung" must exclude this state.
+            ended_at=None,
+            duration_ms=None,
+        ),
+        RuntimeExecution(
+            execution_id=_TIMED_OUT_EXEC,
+            job_name=_TIMED_OUT_JOB,
+            project_name="esb_main",
+            state=RuntimeExecutionState.TIMED_OUT,
+            raw_state="EXECUTION_TIMEOUT",
+            execution_type="SCHEDULED",
+            started_at=timed_out_start,
+            ended_at=timed_out_start + datetime.timedelta(seconds=_TIMED_OUT_SECONDS),
+            duration_ms=_TIMED_OUT_SECONDS * 1000,
+        ),
+    ]
+
 
 async def seed_rich_runtime_data(
     session: AsyncSession,
@@ -261,54 +312,18 @@ async def seed_rich_runtime_data(
         synced_at=synced_at,
     )
 
-    await repo.upsert_execution(
-        project_id,
-        RuntimeExecution(
-            execution_id=_RICH_FAILED_EXEC,
-            job_name=_RICH_JOB,
-            project_name="esb_main",
-            state=RuntimeExecutionState.FAILED,
-            started_at=failed_start,
-            ended_at=synced_at,
-            duration_ms=_RICH_RUN_SECONDS * 1000,
-        ),
-        source_key,
-        synced_at,
-    )
-    await repo.upsert_execution(
-        project_id,
-        RuntimeExecution(
-            execution_id=_RICH_SUCCESS_EXEC,
-            job_name=_RICH_JOB,
-            project_name="esb_main",
-            state=RuntimeExecutionState.SUCCESS,
-            started_at=success_start,
-            ended_at=success_start + datetime.timedelta(seconds=28),
-            duration_ms=28_013,
-        ),
-        source_key,
-        synced_at,
-    )
-    await repo.upsert_execution(
-        project_id,
-        RuntimeExecution(
-            execution_id="billing-route-2190",
-            job_name="esb_billing_export_route",
-            project_name="esb_main",
-            state=RuntimeExecutionState.SUCCESS,
-            started_at=synced_at - datetime.timedelta(hours=4),
-            ended_at=synced_at - datetime.timedelta(hours=4) + datetime.timedelta(seconds=44),
-            duration_ms=44_210,
-        ),
-        source_key,
-        synced_at,
-    )
+    # Built once and then written, rather than declared twice: the previous
+    # shape upserted three executions and separately rebuilt the same three for
+    # the job/plan seeds, so the two lists could -- and did -- drift from the
+    # reported summary count.
     rich_executions = [
         RuntimeExecution(
             execution_id=_RICH_FAILED_EXEC,
             job_name=_RICH_JOB,
             project_name="esb_main",
             state=RuntimeExecutionState.FAILED,
+            raw_state="EXECUTION_FAILED",
+            execution_type="SCHEDULED",
             started_at=failed_start,
             ended_at=synced_at,
             duration_ms=_RICH_RUN_SECONDS * 1000,
@@ -318,6 +333,8 @@ async def seed_rich_runtime_data(
             job_name=_RICH_JOB,
             project_name="esb_main",
             state=RuntimeExecutionState.SUCCESS,
+            raw_state="EXECUTION_SUCCESSFUL",
+            execution_type="SCHEDULED",
             started_at=success_start,
             ended_at=success_start + datetime.timedelta(seconds=28),
             duration_ms=28_013,
@@ -327,11 +344,16 @@ async def seed_rich_runtime_data(
             job_name="esb_billing_export_route",
             project_name="esb_main",
             state=RuntimeExecutionState.SUCCESS,
+            raw_state="EXECUTION_SUCCESSFUL",
+            execution_type="MANUAL",
             started_at=synced_at - datetime.timedelta(hours=4),
             ended_at=synced_at - datetime.timedelta(hours=4) + datetime.timedelta(seconds=44),
             duration_ms=44_210,
         ),
+        *_demo_capture_state_executions(synced_at),
     ]
+    for execution in rich_executions:
+        await repo.upsert_execution(project_id, execution, source_key, synced_at)
     await seed_demo_jobs(
         repo,
         project_id=project_id,
@@ -392,7 +414,7 @@ async def seed_rich_runtime_data(
     return SeedSummary(
         project_id=project_id,
         source_key=source_key,
-        executions=2,
+        executions=len(rich_executions),
         failures=1,
         log_events=log_count,
         last_synced_at=synced_at,
@@ -604,6 +626,12 @@ async def seed_demo_jobs(
                 job_name=execution.job_name,
                 execution_id=execution.execution_id,
                 state=execution.state,
+                # Carried, not re-derived: the job-run mirror is what the
+                # operations surfaces read, so dropping the evidence here would
+                # leave the demo showing a bare state with no reason.
+                raw_state=execution.raw_state,
+                misfire_reason=execution.misfire_reason,
+                execution_type=execution.execution_type,
                 environment_id="env-prod",
                 environment_name="Production",
                 workspace_id="ws-esb-main",

@@ -36,14 +36,23 @@ export interface DeriveStatusInput {
  * Coarse status from a runtime health aggregate. Order matters and mirrors
  * the plan's evaluation order: down > degraded > running > healthy > unknown.
  */
+// Latest-run states that mean a human still needs to look. Mirrors the
+// backend's `_ATTENTION_STATES`: a misfire never ran at all and a timeout was
+// killed mid-flight, so both are outages even though neither is `failed`.
+// `terminated` is excluded there on the grounds that an operator already
+// intervened -- but its last run still did not complete, so it must not reach
+// the `healthy` branch either.
+const DOWN_STATES: ReadonlySet<string> = new Set(["failed", "misfired", "timed_out"]);
+
 export function deriveStatus(input: DeriveStatusInput): JobStatus {
   const { latestState, failureRate, currentFailureStreak } = input;
-  if (latestState === "failed") return "down";
-  // latestState is now guaranteed non-failed.
+  if (latestState && DOWN_STATES.has(latestState)) return "down";
+  // latestState is now guaranteed to be none of the DOWN_STATES.
   if (failureRate >= DEGRADED_FAILURE_RATE_THRESHOLD || currentFailureStreak > 0) {
     return "degraded";
   }
   if (latestState === "running") return "running";
+  if (latestState === "terminated") return "degraded";
   if (latestState === "success") return "healthy";
   return "unknown";
 }

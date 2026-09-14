@@ -61,8 +61,8 @@ function selectOption(triggerName: string, optionName: string | RegExp) {
 const TREND = {
   bucket: "day",
   points: [
-    { bucket_start: "2026-08-14T00:00:00Z", total_runs: 70, success_runs: 70, failed_runs: 0, running_runs: 0, unknown_runs: 0, failure_rate: 0, p50_duration_ms: 9000, p95_duration_ms: 29800 },
-    { bucket_start: "2026-08-15T00:00:00Z", total_runs: 72, success_runs: 68, failed_runs: 4, running_runs: 0, unknown_runs: 0, failure_rate: 0.0556, p50_duration_ms: 10600, p95_duration_ms: 43500 },
+    { bucket_start: "2026-08-14T00:00:00Z", total_runs: 70, success_runs: 70, failed_runs: 0, running_runs: 0, unknown_runs: 0, misfired_runs: 0, terminated_runs: 0, timed_out_runs: 0, failure_rate: 0, p50_duration_ms: 9000, p95_duration_ms: 29800 },
+    { bucket_start: "2026-08-15T00:00:00Z", total_runs: 72, success_runs: 68, failed_runs: 4, running_runs: 0, unknown_runs: 0, misfired_runs: 0, terminated_runs: 0, timed_out_runs: 0, failure_rate: 0.0556, p50_duration_ms: 10600, p95_duration_ms: 43500 },
   ],
   total: 2,
   coverage: {

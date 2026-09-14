@@ -1298,19 +1298,35 @@ _VISIBLE_EVIDENCE_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 
-#: Every way a structural reference reaches the prose. Both halves matter: the
-#: raw evidence key, AND the friendly label the humanizer would otherwise
-#: substitute for it. In observed output the friendly form dominated -- five of
-#: eight answers said "(from the project topology)" and only two leaked a raw id --
-#: so suppressing keys alone would have missed the actual defect. The reader's
-#: opaque node ids and the tool's own semantic name are included for the same
-#: reason: relabelling them here would just reintroduce the phrase being removed.
-_STRUCTURAL_REF = (
+#: A MACHINE reference: an evidence key, an opaque reader node id, or the tool's
+#: own semantic name. None of these is ever legitimate prose, so they are removed
+#: wherever they appear. The semantic name is included because relabelling it
+#: would reintroduce the phrase being removed.
+_STRUCTURAL_ID = (
     r"(?:topology:[a-z0-9_.:-]+"
     r"|landscape-(?:application|system|group):[a-z0-9]+"
-    r"|read_topology_structure"
-    r"|the\s+project\s+topology)"
+    r"|read_topology_structure)"
 )
+
+#: The HUMAN label the humanizer would otherwise substitute for an id. In
+#: observed output this form dominated -- five of eight answers said "(from the
+#: project topology)" and only two leaked a raw id -- so it has to be suppressed
+#: too, but ONLY inside a bracketed aside.
+#:
+#: It is deliberately absent from `_STRUCTURAL_REFERENCE_RE`. These four words
+#: are an ordinary noun phrase as well as a citation, and deleting them from
+#: running prose destroyed the sentence around them:
+#:
+#:     "The project topology does not describe this stream."
+#:         -> "does not describe this stream."          (subject deleted)
+#:     "The flow is confirmed in the project topology and in the runtime records."
+#:         -> "The flow is confirmedand in the runtime records."
+#:
+#: A bracket is what distinguishes a citation from a sentence: prose the model
+#: parenthesised is prose it considered detachable. Outside one, leaving a
+#: redundant "the project topology" in a sentence costs four words; removing it
+#: costs the sentence.
+_STRUCTURAL_LABEL = r"(?:the\s+project\s+topology)"
 
 #: Wording models put in front of a reference. "topology node" and "node" are
 #: here because the observed leak was "*from topology node landscape-...*", where
@@ -1320,6 +1336,8 @@ _STRUCTURAL_LEADIN = (
     r"(?:\s+topology\s+node|\s+node)?\s*:?\s*)?"
 )
 
+_BRACKETED_REF = f"(?:{_STRUCTURAL_ID}|{_STRUCTURAL_LABEL})"
+
 #: A whole bracketed aside whose only content is structural references. Deleting
 #: just the reference would leave "(from )", which reads worse than the citation.
 #: Anything else inside the brackets means real prose is in there too, and only
@@ -1327,18 +1345,24 @@ _STRUCTURAL_LEADIN = (
 _STRUCTURAL_CITATION_PAREN_RE = re.compile(
     r"\s*[(\[]\s*[*_]{0,2}\s*"
     + _STRUCTURAL_LEADIN
-    + _STRUCTURAL_REF
+    + _BRACKETED_REF
     + r"(?:\s*(?:[,;/&]|and)\s*"
-    + _STRUCTURAL_REF
+    + _BRACKETED_REF
     + r")*"
     + r"\s*[*_]{0,2}\s*[)\]]",
     re.IGNORECASE,
 )
 
-#: The same reference sitting in running prose or a table cell rather than in
-#: brackets, with its lead-in.
+#: A machine reference sitting in running prose or a table cell rather than in
+#: brackets, with its lead-in. Ids only -- see `_STRUCTURAL_LABEL` for why the
+#: human label is not matched here.
+#:
+#: Whitespace is consumed on the LEFT only. Taking it from both sides joined the
+#: surrounding words -- "Read via read_topology_structure for the detail" became
+#: "Readfor the detail" -- and no cleanup below can repair that, because by then
+#: there is no boundary left to tell the two words apart.
 _STRUCTURAL_REFERENCE_RE = re.compile(
-    r"[*_]{0,2}\s*" + _STRUCTURAL_LEADIN + _STRUCTURAL_REF + r"\s*[*_]{0,2}",
+    r"\s*[*_]{0,2}\s*" + _STRUCTURAL_LEADIN + _STRUCTURAL_ID + r"[*_]{0,2}",
     re.IGNORECASE,
 )
 
