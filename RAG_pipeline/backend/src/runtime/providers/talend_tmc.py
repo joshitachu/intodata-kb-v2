@@ -103,6 +103,24 @@ _DEFAULT_FETCH_LIMIT = 1000
 _DEFAULT_HISTORY_DAYS = 90
 _RUNS_PER_EXECUTABLE_LIMIT = 250
 _EXECUTION_WINDOW_DAYS = 10
+# How far back to hunt for a Route's CURRENT deployment when the configured
+# history window found nothing.
+#
+# A Job runs on a schedule, so `history_days` bounds it sensibly. A Route is
+# deployed once and left running for months: measured on this estate, a route
+# still `executing` today was deployed on 2026-06-30, eighty-three days before
+# a source configured with `history_days = 30` ever looked. TMC does serve that
+# deployment -- but only to a query whose date window spans the day it started,
+# and the no-window "latest page" probe returns nothing for it. The result was
+# 46 of 49 routes with no deployment row at all, so no logs, no throughput, and
+# an empty panel that looked like a capture failure.
+#
+# `history_days` cannot absorb this: it is validated to 1..90, and a route
+# deployed a year ago needs more than ninety. So the deep walk is separate,
+# runs ONLY for a route/data service the normal window missed, and stops at the
+# first window that returns anything -- the newest deployment is the one whose
+# log is worth having.
+_DEPLOYMENT_HISTORY_DAYS = 400
 # Fallback ceilings used when settings supply none. The operative values come
 # from settings (talend_tmc_failed_log_run_limit /
 # talend_tmc_component_metric_run_limit /
@@ -934,10 +952,19 @@ class TalendTmcRuntimeProvider:
             settings.talend_tmc_runs_per_executable_limit or _RUNS_PER_EXECUTABLE_LIMIT
         )
 
-        async def fetch_execution_history(path: str) -> list[dict[str, Any]]:
+        async def fetch_execution_history(
+            path: str,
+            *,
+            ending_at: datetime | None = None,
+            history_days: int | None = None,
+            stop_on_first_hit: bool = False,
+        ) -> list[dict[str, Any]]:
             collected: list[dict[str, Any]] = []
             seen_execution_ids: set[str] = set()
-            for window_start, window_end in _execution_windows(synced_at, self._history_days):
+            windows = _execution_windows(
+                ending_at or synced_at, history_days or self._history_days
+            )
+            for window_start, window_end in windows:
                 remaining = runs_per_executable - len(collected)
                 if remaining <= 0:
                     break
@@ -956,6 +983,11 @@ class TalendTmcRuntimeProvider:
                     if execution_id is not None:
                         seen_execution_ids.add(execution_id)
                     collected.append(item)
+                # The deep deployment hunt wants the newest deployment, not the
+                # whole year. Windows are walked newest-first, so the first one
+                # that answers already holds it.
+                if stop_on_first_hit and collected:
+                    break
             return collected
 
         async def fetch_task_runs(job: RuntimeJob) -> list[dict[str, Any]]:
@@ -978,6 +1010,34 @@ class TalendTmcRuntimeProvider:
                             job.job_id,
                         )
                 history = await fetch_execution_history(path)
+
+                is_deployment = job.executable_kind in {
+                    RuntimeExecutableKind.ROUTE,
+                    RuntimeExecutableKind.DATA_SERVICE,
+                }
+                if is_deployment and not current and not history:
+                    # Neither the no-window probe nor the configured window saw
+                    # this route, and a route with no deployment row can never
+                    # show a log line. Keep walking back past `history_days` --
+                    # picking up where that walk stopped, so no window is asked
+                    # twice -- until TMC names the deployment it is running.
+                    deep_days = _DEPLOYMENT_HISTORY_DAYS - self._history_days
+                    if deep_days > 0:
+                        history = await fetch_execution_history(
+                            path,
+                            ending_at=synced_at - timedelta(days=self._history_days),
+                            history_days=deep_days,
+                            stop_on_first_hit=True,
+                        )
+                        if history:
+                            logger.info(
+                                "TMC deep deployment hunt found %d deployment(s) for %s "
+                                "beyond the %d-day history window",
+                                len(history),
+                                job.name or job.job_id,
+                                self._history_days,
+                            )
+
                 merged: dict[str, dict[str, Any]] = {}
                 for index, item in enumerate(current + history):
                     execution_id = _str_field(item, "executionId", "execution_id", "id")
