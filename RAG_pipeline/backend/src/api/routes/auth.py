@@ -119,6 +119,20 @@ def _unauthorized_clearing_cookies(message: str) -> JSONResponse:
     return response
 
 
+def _unauthorized_keeping_cookies(message: str) -> JSONResponse:
+    """401 that deliberately leaves the auth cookies in place.
+
+    A failed rotation is not the same claim as "you are logged out". When the
+    refresh cookie never arrived, or carries a value this deployment has no row
+    for, the access token is usually still valid for the rest of its hour and
+    the refresh row is still unrevoked. Deleting all three cookies there turned
+    a recoverable hiccup into a forced re-login with OTP and MFA, every ten
+    minutes. Callers that can prove the session is over use
+    `_unauthorized_clearing_cookies` instead.
+    """
+    return JSONResponse(status_code=401, content={"detail": message})
+
+
 class LoginRequest(BaseModel):
     identifier: str | None = Field(default=None, min_length=1)
     username: str | None = Field(default=None, min_length=1)
@@ -1002,12 +1016,14 @@ async def refresh(request: Request, db: DBSession, response: Response):
     """Exchange a valid refresh token cookie for a new access + refresh token pair."""
     refresh_token = request.cookies.get("refresh_token")
     if not refresh_token:
-        return _unauthorized_clearing_cookies("No refresh token")
+        return _unauthorized_keeping_cookies("No refresh token")
 
     svc = AuthService(db)
     result = await svc.rotate_refresh_token(refresh_token)
     if result is None:
-        return _unauthorized_clearing_cookies("Invalid or expired refresh token")
+        if await svc.refresh_token_is_dead(refresh_token):
+            return _unauthorized_clearing_cookies("Invalid or expired refresh token")
+        return _unauthorized_keeping_cookies("Refresh token could not be rotated")
 
     access, new_refresh, user = result
     _set_auth_cookies(response, access, new_refresh)

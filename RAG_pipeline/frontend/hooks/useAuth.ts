@@ -40,7 +40,13 @@ interface AuthUser {
  */
 export type AuthStatus = "loading" | "authenticated" | "unauthenticated" | "unavailable";
 
-const REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+/**
+ * Well inside the 60-minute access token, but not so eager that a deployment
+ * with an unreliable rotation path retries every ten minutes. A rejected
+ * rotation no longer ends the session (see the periodic effect below), so this
+ * interval governs noise, not safety.
+ */
+const REFRESH_INTERVAL_MS = 45 * 60 * 1000;
 /** Backoff schedule used while the backend is unreachable. */
 const RETRY_BACKOFF_MS = [2_000, 5_000, 10_000, 20_000, 30_000];
 /** Don't revalidate on tab focus more than once per minute. */
@@ -179,7 +185,14 @@ export function useAuth(): UseAuthReturn {
   useEffect(() => onSessionRevalidationNeeded(() => void fetchUser()), [fetchUser]);
 
   // Periodic token refresh, well before the 60-minute access token expiry.
-  // A failure here must not end the session: only an explicit 401 does.
+  // A failure here must not end the session, and a 401 from the rotation
+  // endpoint is NOT the proof it looks like: the access token is good for the
+  // rest of its hour and the refresh row may still be unrevoked in the
+  // database. Trusting that 401 directly is what logged people out every ten
+  // minutes and sent them back through OTP and MFA. `/api/auth/me` is the only
+  // authoritative source, so ask it before declaring the session over --
+  // `fetchUser` keeps the user on `unavailable`, and only ends the session
+  // when `me` itself says 401 after a rotation attempt.
   useEffect(() => {
     if (status !== "authenticated") return;
 
@@ -187,7 +200,7 @@ export function useAuth(): UseAuthReturn {
       void (async () => {
         const outcome = await refreshSession();
         if (outcome === "unauthenticated") {
-          applyUser(null, "unauthenticated");
+          await fetchUser();
         } else if (outcome === "unavailable") {
           setStatus("unavailable");
         }
@@ -195,7 +208,7 @@ export function useAuth(): UseAuthReturn {
     }, REFRESH_INTERVAL_MS);
 
     return () => clearInterval(interval);
-  }, [status, applyUser]);
+  }, [status, fetchUser]);
 
   // While the backend is unreachable, retry on a capped backoff instead of
   // treating the outage as a logout.
