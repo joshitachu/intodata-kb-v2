@@ -333,9 +333,15 @@ async def test_published_docs_never_create_an_external_symlink(
     docs_link = workspace / "docs"
     assert not docs_link.exists()
     assert not docs_link.is_symlink()
-    assert "There is NO `docs/` directory" in (workspace / "AGENTS.md").read_text(
-        encoding="utf-8"
-    )
+    # The workspace holding no documentation files must NOT be stated as the
+    # project having no documentation. That conflation shipped once: with the
+    # mount retired the old sentence fired for every project, and the agent
+    # answered "there is no published documentation bound to this project" on a
+    # project whose index held 15 documents.
+    agents_md = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+    assert "no documentation FILES in this workspace" in agents_md
+    assert "says nothing about what is documented" in agents_md
+    assert "no published documentation" not in agents_md
 
 
 @pytest.mark.usefixtures("docs_root")
@@ -344,9 +350,15 @@ async def test_no_docs_symlink_when_the_project_has_none():
 
     assert not (workspace / "docs").exists()
     assert not (workspace / "docs").is_symlink()
-    assert "There is NO `docs/` directory" in (workspace / "AGENTS.md").read_text(
-        encoding="utf-8"
-    )
+    # The workspace holding no documentation files must NOT be stated as the
+    # project having no documentation. That conflation shipped once: with the
+    # mount retired the old sentence fired for every project, and the agent
+    # answered "there is no published documentation bound to this project" on a
+    # project whose index held 15 documents.
+    agents_md = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+    assert "no documentation FILES in this workspace" in agents_md
+    assert "says nothing about what is documented" in agents_md
+    assert "no published documentation" not in agents_md
 
 
 async def test_legacy_docs_symlink_is_dropped_on_workspace_refresh(docs_root: Path):

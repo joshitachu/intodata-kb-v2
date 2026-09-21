@@ -350,7 +350,11 @@ def test_docs_mounted_changes_only_agents_md() -> None:
     absent = {file.path: file.content for file in project(docs_mounted=False)}
 
     assert mounted.keys() == absent.keys()
-    assert "There is NO `docs/` directory" in absent["AGENTS.md"]
+    # The unmounted wording must describe the WORKSPACE, never the project: the
+    # mount is retired, so this branch is the only one taken in production, and
+    # the sentence it replaced told the model every project was undocumented.
+    assert "no documentation FILES in this workspace" in absent["AGENTS.md"]
+    assert "no published documentation" not in absent["AGENTS.md"]
     assert "- `docs/`" in mounted["AGENTS.md"]
     assert {k: v for k, v in mounted.items() if k != "AGENTS.md"} == {
         k: v for k, v in absent.items() if k != "AGENTS.md"

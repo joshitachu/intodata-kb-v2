@@ -1243,11 +1243,28 @@ def _render_agents_md(
             "empty, re-run it with the path set before you conclude anything from it."
         )
     else:
+        # This branch is now the only one taken: the `docs/` mount was retired,
+        # so `docs_mounted` is always False.
+        #
+        # The text it replaces said "the project has no published documentation,
+        # or none is bound to this conversation", which was true only while the
+        # mount was the way documentation reached the workspace. Once the mount
+        # went, that sentence fired for EVERY project and told the model, on
+        # every turn, that nothing was documented. Measured on pluripharm: the
+        # agent answered "there is no published documentation bound to this
+        # project" and stopped, while the index held 15 documents and roughly
+        # 1,540 passages that answered the question outright.
+        #
+        # The workspace not holding documentation files and the project not
+        # having documentation are different facts. Only the first is true, and
+        # only the tools can establish the second.
         docs_line = (
-            "There is NO `docs/` directory here: the project has no published "
-            "documentation, or none is bound to this conversation. Never claim to have "
-            "read a documentation file; use the `nexus_*` tools, or say plainly that the "
-            "documentation is unavailable."
+            "There are no documentation FILES in this workspace, and their absence "
+            "says nothing about what is documented. The indexed documentation is "
+            "reached through the `nexus_*` tools and nowhere else, so never treat an "
+            "empty workspace, or a `grep`/`glob`/`read` that found nothing, as evidence "
+            "that a project is undocumented. Search with `search_documentation` before "
+            "you make any claim about what the documentation does or does not record."
         )
 
     # Ordered most-specific first: the two levels that answer a question the
