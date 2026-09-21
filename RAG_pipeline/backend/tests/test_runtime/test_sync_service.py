@@ -87,6 +87,97 @@ def _log(message: str, execution_id: str = "exec-1") -> RuntimeLogEvent:
     )
 
 
+def _engine_log(message: str, line_ordinal: int, execution_id: str = "deploy-1") -> RuntimeLogEvent:
+    """A Route deployment-log line: engine scoped, not attribution safe."""
+    return RuntimeLogEvent(
+        execution_id=execution_id,
+        timestamp=_NOW + datetime.timedelta(seconds=line_ordinal),
+        severity=RuntimeLogSeverity.INFO,
+        message=message,
+        line_ordinal=line_ordinal,
+        scope="engine",
+        attribution_safe=False,
+    )
+
+
+async def test_engine_scope_logs_are_replaced_not_accumulated(db_session):
+    """A deployment tail is a snapshot, so re-reading it must not pile up.
+
+    `line_ordinal` is the position inside the fetched tail window, so a route
+    that emits anything between syncs shifts every retained line by one. New
+    ordinal, new fingerprint, new row -- the unique index never matches and
+    each cycle used to store another near-duplicate copy of the same log.
+    """
+    from src.db.models.runtime_data import RuntimeLogEventRow
+
+    async def engine_rows() -> list[str]:
+        rows = (
+            await db_session.execute(
+                select(RuntimeLogEventRow.message).where(
+                    RuntimeLogEventRow.project_id == _PROJECT,
+                    RuntimeLogEventRow.scope == "engine",
+                )
+            )
+        ).scalars().all()
+        return list(rows)
+
+    first = RuntimeSyncBatch(
+        log_events=[_engine_log("line A", 0), _engine_log("line B", 1)],
+        synced_at=_NOW,
+    )
+    await run_runtime_sync_cycle(
+        db_session, adapter=_BatchAdapter(first), source_key=_SOURCE,
+        project_id=_PROJECT, now=_NOW,
+    )
+    assert sorted(await engine_rows()) == ["line A", "line B"]
+
+    # The tail moved on: "line A" aged out, "line C" arrived, and the survivor
+    # shifted ordinal -- which is exactly what defeated the fingerprint.
+    later = _NOW + datetime.timedelta(minutes=10)
+    second = RuntimeSyncBatch(
+        log_events=[_engine_log("line B", 0), _engine_log("line C", 1)],
+        synced_at=later,
+    )
+    await run_runtime_sync_cycle(
+        db_session, adapter=_BatchAdapter(second), source_key=_SOURCE,
+        project_id=_PROJECT, now=later,
+    )
+
+    surviving = sorted(await engine_rows())
+    assert surviving == ["line B", "line C"], (
+        f"deployment tail should be replaced, got {surviving}"
+    )
+
+
+async def test_execution_scope_logs_still_accumulate(db_session):
+    """Per-run job logs are history, not a snapshot: they must be kept."""
+    from src.db.models.runtime_data import RuntimeLogEventRow
+
+    await run_runtime_sync_cycle(
+        db_session,
+        adapter=_BatchAdapter(RuntimeSyncBatch(log_events=[_log("run one")], synced_at=_NOW)),
+        source_key=_SOURCE, project_id=_PROJECT, now=_NOW,
+    )
+    later = _NOW + datetime.timedelta(minutes=10)
+    await run_runtime_sync_cycle(
+        db_session,
+        adapter=_BatchAdapter(
+            RuntimeSyncBatch(log_events=[_log("run two", execution_id="exec-2")], synced_at=later)
+        ),
+        source_key=_SOURCE, project_id=_PROJECT, now=later,
+    )
+
+    kept = (
+        await db_session.execute(
+            select(RuntimeLogEventRow.message).where(
+                RuntimeLogEventRow.project_id == _PROJECT,
+                RuntimeLogEventRow.scope != "engine",
+            )
+        )
+    ).scalars().all()
+    assert sorted(kept) == ["run one", "run two"]
+
+
 async def test_sync_cycle_writes_rows_and_builds_insights(db_session):
     batch = RuntimeSyncBatch(
         executions=[_failed_execution()],

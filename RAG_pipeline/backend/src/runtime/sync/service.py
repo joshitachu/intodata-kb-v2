@@ -347,6 +347,9 @@ async def _persist_source_batch_with_project_map(
     for plan_run in batch.plan_runs:
         project_id, _unmapped = await repo.resolve_project_id(source_id, _container_key(plan_run, container_key_field))
         await repo.upsert_plan_run(project_id, plan_run, source_key, synced_at)
+    await repo.clear_engine_scope_log_events(
+        default_project_id, _engine_scope_execution_ids(batch)
+    )
     for event in batch.log_events:
         await repo.upsert_log_event(default_project_id, event, source_key, synced_at)
     for metric in batch.component_metrics:
@@ -405,6 +408,22 @@ async def _persist_source_batch_with_project_map(
 def _container_key(record, field_name: str) -> str | None:
     value = getattr(record, field_name, None)
     return value if isinstance(value, str) and value else None
+
+
+def _engine_scope_execution_ids(batch) -> list[str]:
+    """Deployments whose rolling tail this batch re-read.
+
+    Only these get their previous snapshot dropped. An empty list is the
+    normal case for a provider that emits no deployment logs, and it makes
+    `clear_engine_scope_log_events` a no-op rather than a table-wide delete.
+    """
+    return list(
+        dict.fromkeys(
+            event.execution_id
+            for event in batch.log_events
+            if getattr(event, "scope", None) == "engine" and event.execution_id
+        )
+    )
 
 
 async def run_runtime_sync_cycle(
@@ -477,6 +496,7 @@ async def run_runtime_sync_cycle(
         await repo.upsert_job_run(project_id, job_run, source_key, synced_at)
     for plan_run in batch.plan_runs:
         await repo.upsert_plan_run(project_id, plan_run, source_key, synced_at)
+    await repo.clear_engine_scope_log_events(project_id, _engine_scope_execution_ids(batch))
     for event in batch.log_events:
         await repo.upsert_log_event(project_id, event, source_key, synced_at)
     await repo.prune_expired_log_events(now=cycle_at)

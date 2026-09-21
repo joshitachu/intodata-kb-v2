@@ -690,6 +690,40 @@ class RuntimeStoreRepository:
         await self._session.flush()
         return int(result.rowcount or 0)
 
+    async def clear_engine_scope_log_events(
+        self, project_id: str, execution_ids: Sequence[str]
+    ) -> int:
+        """Drop the previous deployment-log snapshot for these deployments.
+
+        An `execution` scoped row is history: one run happened once, and its
+        lines never change, so upserting on the fingerprint is idempotent. An
+        `engine` scoped row is the opposite -- a rolling tail of a Route's
+        shared OSGi log, re-read in full on every sync.
+
+        `line_ordinal` is the line's position inside that 100-line tail, so a
+        route that emitted anything between syncs shifts every retained line
+        by one. New ordinal, new fingerprint, new row: the unique index can
+        never match and each cycle stored another near-duplicate copy.
+        Measured here, one deployment held 200 rows carrying 49 distinct
+        messages after two syncs, and the table was growing by ~2.500 rows
+        every ten minutes with nothing expiring for ninety days.
+
+        So the snapshot is replaced rather than accumulated: what the panel
+        shows is then the current tail, which is what it claims to be.
+        """
+        ids = [item for item in dict.fromkeys(execution_ids) if item]
+        if not ids:
+            return 0
+        result = await self._session.execute(
+            delete(RuntimeLogEventRow).where(
+                RuntimeLogEventRow.project_id == project_id,
+                RuntimeLogEventRow.scope == "engine",
+                RuntimeLogEventRow.execution_id.in_(ids),
+            )
+        )
+        await self._session.flush()
+        return int(result.rowcount or 0)
+
     async def search_log_events(
         self, scope: ProjectScope, *, query: str, project_id: str | None = None,
         execution_id: str | None = None, since: datetime.datetime | None = None,
