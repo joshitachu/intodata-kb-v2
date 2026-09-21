@@ -1089,21 +1089,28 @@ class TestRefresh:
                 cleared.add(name)
         return cleared
 
-    async def test_refresh_without_token_clears_session_cookies(self, mock_auth_deps):
-        """Raising HTTPException used to discard the injected Response, so the
-        cookie deletions never reached the browser. Stale cookies then kept
-        middleware.ts admitting a dead session on every navigation."""
+    async def test_refresh_without_token_keeps_session_cookies(self, mock_auth_deps):
+        """A missing refresh cookie is not proof that the session is over.
+
+        This used to clear all three cookies. The access token is valid for the
+        rest of its hour and the refresh row is usually still unrevoked, so
+        clearing turned a request that simply arrived without its cookie into a
+        forced re-login with OTP and MFA. Only a token the server can show is
+        dead clears cookies -- see the two tests below.
+        """
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post("/api/v1/auth/refresh")
 
         assert resp.status_code == 401
-        assert {"access_token", "refresh_token", "csrf_token"} <= self._cleared_cookie_names(resp)
+        assert self._cleared_cookie_names(resp) == set()
 
     async def test_refresh_with_dead_token_clears_session_cookies(self, mock_auth_deps):
+        """A deliberately revoked or expired token IS proof: clear everything."""
         with patch("src.api.routes.auth.AuthService") as mock_svc_cls:
             mock_svc = MagicMock()
             mock_svc.rotate_refresh_token = AsyncMock(return_value=None)
+            mock_svc.refresh_token_is_dead = AsyncMock(return_value=True)
             mock_svc_cls.return_value = mock_svc
 
             transport = ASGITransport(app=app)
@@ -1115,3 +1122,26 @@ class TestRefresh:
 
         assert resp.status_code == 401
         assert {"access_token", "refresh_token", "csrf_token"} <= self._cleared_cookie_names(resp)
+
+    async def test_refresh_with_unrecognised_token_keeps_session_cookies(self, mock_auth_deps):
+        """Rotation failed, but nothing proves the session is gone.
+
+        A value the deployment has no row for says only that this rotation
+        cannot proceed. Evicting the user here is what produced repeated
+        logouts while their refresh token sat unrevoked in the database.
+        """
+        with patch("src.api.routes.auth.AuthService") as mock_svc_cls:
+            mock_svc = MagicMock()
+            mock_svc.rotate_refresh_token = AsyncMock(return_value=None)
+            mock_svc.refresh_token_is_dead = AsyncMock(return_value=False)
+            mock_svc_cls.return_value = mock_svc
+
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/auth/refresh",
+                    headers={"cookie": "refresh_token=unknown_tok"},
+                )
+
+        assert resp.status_code == 401
+        assert self._cleared_cookie_names(resp) == set()

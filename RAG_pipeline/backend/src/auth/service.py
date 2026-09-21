@@ -165,6 +165,27 @@ class AuthService:
         access, refresh = await self.create_tokens(user)
         return access, refresh, user
 
+    async def refresh_token_is_dead(self, old_refresh: str) -> bool:
+        """True only when the presented token proves the session is over.
+
+        A rotation can fail for reasons that say nothing about the session: a
+        cookie that never reached the backend, or a value this deployment has
+        no row for. Treating those as a logout is what evicted users whose
+        access token was still valid for the rest of its hour and whose
+        refresh row was still unrevoked. Only a deliberate revocation
+        (``rotated_at is None`` -- logout, password change, admin action) or a
+        genuinely expired row is proof, and only those may clear the cookies.
+        """
+        result = await self.db.execute(
+            select(RefreshToken).where(RefreshToken.token_hash == hash_token(old_refresh))
+        )
+        record = result.scalar_one_or_none()
+        if record is None:
+            return False
+        if _as_utc(record.expires_at) < datetime.now(timezone.utc):
+            return True
+        return bool(record.revoked and record.rotated_at is None)
+
     # Every revocation below clears `rotated_at` as well as setting `revoked`.
     # Leaving it set would let a token that happened to be rotated seconds
     # earlier still mint a new pair through the grace window in

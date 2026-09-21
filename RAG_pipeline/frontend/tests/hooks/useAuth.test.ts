@@ -224,6 +224,53 @@ describe("useAuth", () => {
 
       expect(result.current.user).toBeNull();
     });
+
+    /**
+     * The periodic rotation used to call `applyUser(null, "unauthenticated")`
+     * straight off a 401 from /auth/refresh. That 401 is not proof: the access
+     * token is valid for the rest of its hour and the refresh row may still be
+     * unrevoked server-side. Trusting it evicted a live session every time the
+     * timer fired, sending the user back through OTP and MFA.
+     */
+    it("keeps the session when the periodic refresh 401s but /auth/me is still good", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const user = mockUser();
+        const fetchSpy = vi.spyOn(global, "fetch").mockImplementation((input) => {
+          const url = String(input);
+          if (url.includes("/api/auth/refresh")) {
+            return Promise.resolve(new Response(null, { status: 401 }));
+          }
+          return Promise.resolve(
+            new Response(JSON.stringify(user), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        });
+
+        const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
+
+        await waitFor(() => {
+          expect(result.current.status).toBe("authenticated");
+        });
+
+        // Fire the periodic rotation.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(45 * 60 * 1000 + 1_000);
+        });
+
+        expect(fetchSpy).toHaveBeenCalledWith(
+          expect.stringContaining("/api/auth/refresh"),
+          expect.anything(),
+        );
+        expect(result.current.status).toBe("authenticated");
+        expect(result.current.user).not.toBeNull();
+        expect(mockPush).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   /**
