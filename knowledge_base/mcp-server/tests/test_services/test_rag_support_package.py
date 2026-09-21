@@ -238,6 +238,174 @@ def test_cache_restore_replaces_stale_cache(tmp_path: Path) -> None:
     assert sorted(p.name for p in cache_dir.iterdir()) == ["A.md"]
 
 
+# --------------------------------------------------------------------------- #
+# The per-section DIRECTORY layout (slice 2 changed what Phase 2 writes)
+# --------------------------------------------------------------------------- #
+
+def _write_directory_group(analysis: Path, group: str, sections: dict[str, str]) -> None:
+    (analysis / group).mkdir(parents=True, exist_ok=True)
+    for name, body in sections.items():
+        (analysis / group / f"{name}.md").write_text(body, encoding="utf-8")
+
+
+def test_build_packages_a_directory_layout_group_as_one_artifact(
+    tmp_path: Path,
+) -> None:
+    """The regression a glob would ship: ``_analysis/*.md`` matches nothing in
+    the directory layout, so a complete estate would publish an empty package
+    and the run would look successful."""
+    staging = tmp_path / "docs_staging"
+    analysis = staging / "_analysis"
+    analysis.mkdir(parents=True)
+    _write_directory_group(
+        analysis,
+        "fourps",
+        {
+            "COMPONENTS": "tDBOutput_1 writes SALESTABLE.",
+            "SOURCE_SQL": "SELECT 1",
+            "_summary": "one-line summary",
+        },
+    )
+
+    manifest = build_rag_support_package(
+        staging, ["fourps"], project_id="proj", platform="talend"
+    )
+
+    package_dir = staging / "_rag_support" / "phase2_analysis"
+    assert [p.name for p in package_dir.iterdir()] == ["fourps.md"]
+    assert manifest["missing_groups"] == []
+
+    entry = manifest["artifacts"][0]
+    assert entry["group"] == "fourps"
+    assert entry["layout"] == "directory"
+    assert entry["source_path"] == "_analysis/fourps/"
+    assert entry["sections"] == ["COMPONENTS", "SOURCE_SQL"]
+
+    text = (package_dir / "fourps.md").read_text(encoding="utf-8")
+    assert "### COMPONENTS" in text and "### SOURCE_SQL" in text
+    assert "tDBOutput_1 writes SALESTABLE." in text
+    # The summary is a navigation aid in both layouts and has never been part
+    # of the package; the directory layout must not smuggle it in.
+    assert "one-line summary" not in text
+
+
+def test_build_packages_both_layouts_in_one_estate(tmp_path: Path) -> None:
+    """A resumed project has flat groups from before the migration next to
+    directory groups written after it. Neither may be dropped."""
+    staging = tmp_path / "docs_staging"
+    analysis = staging / "_analysis"
+    analysis.mkdir(parents=True)
+    (analysis / "legacy.md").write_text("# legacy analysis\n", encoding="utf-8")
+    (analysis / "legacy_summary.md").write_text("summary", encoding="utf-8")
+    _write_directory_group(analysis, "migrated", {"COMPONENTS": "tMap_1"})
+
+    manifest = build_rag_support_package(
+        staging, ["legacy", "migrated"], project_id="proj", platform="talend"
+    )
+
+    package_dir = staging / "_rag_support" / "phase2_analysis"
+    assert sorted(p.name for p in package_dir.iterdir()) == [
+        "legacy.md",
+        "migrated.md",
+    ]
+    layouts = {a["group"]: a["layout"] for a in manifest["artifacts"]}
+    assert layouts == {"legacy": "flat", "migrated": "directory"}
+    # A flat slice is copied byte-for-byte: anything hashing the package
+    # against _analysis/ (readiness, the incremental cache) compares equal.
+    assert (package_dir / "legacy.md").read_bytes() == (
+        analysis / "legacy.md"
+    ).read_bytes()
+
+
+def test_build_packages_a_directory_part_ci_slice(tmp_path: Path) -> None:
+    """Case-colliding groups keep their ``_part_ci{k}`` slice name as a
+    DIRECTORY name too, and the slice->group resolution is unchanged."""
+    staging = tmp_path / "docs_staging"
+    analysis = staging / "_analysis"
+    analysis.mkdir(parents=True)
+    _write_directory_group(analysis, "Monitoring", {"COMPONENTS": "upper"})
+    _write_directory_group(analysis, "monitoring_part_ci1", {"COMPONENTS": "collider"})
+
+    manifest = build_rag_support_package(
+        staging,
+        ["Monitoring", "monitoring_part_ci1"],
+        project_id="proj",
+        platform="talend",
+    )
+
+    by_group = {a["group"]: a["path"] for a in manifest["artifacts"]}
+    assert by_group == {
+        "Monitoring": "phase2_analysis/Monitoring.md",
+        "monitoring_part_ci1": "phase2_analysis/monitoring_part_ci1.md",
+    }
+    assert manifest["missing_groups"] == []
+
+
+def test_a_group_summary_directory_file_is_not_a_group(tmp_path: Path) -> None:
+    staging = tmp_path / "docs_staging"
+    analysis = staging / "_analysis"
+    analysis.mkdir(parents=True)
+    (analysis / "A.md").write_text("# A", encoding="utf-8")
+    (analysis / "A_summary.md").write_text("summary of A", encoding="utf-8")
+
+    manifest = build_rag_support_package(
+        staging, ["A"], project_id="proj", platform="talend"
+    )
+
+    package_dir = staging / "_rag_support" / "phase2_analysis"
+    assert [p.name for p in package_dir.iterdir()] == ["A.md"]
+    assert [a["group"] for a in manifest["artifacts"]] == ["A"]
+
+
+def test_an_unreadable_group_is_contained_and_the_rest_publishes(
+    tmp_path: Path,
+) -> None:
+    """A directory holding no recognisable section raises SectionContractError
+    by design (lost evidence must be loud). Losing the other 19 groups over it
+    would be the fail-closed behaviour this lane has been removing."""
+    staging = tmp_path / "docs_staging"
+    analysis = staging / "_analysis"
+    analysis.mkdir(parents=True)
+    _write_directory_group(analysis, "good", {"COMPONENTS": "tMap_1"})
+    _write_directory_group(analysis, "broken", {"notes": "free-form, no section"})
+
+    manifest = build_rag_support_package(
+        staging, ["good", "broken"], project_id="proj", platform="talend"
+    )
+
+    package_dir = staging / "_rag_support" / "phase2_analysis"
+    assert [p.name for p in package_dir.iterdir()] == ["good.md"]
+    assert [a["group"] for a in manifest["artifacts"]] == ["good"]
+    assert [f["group"] for f in manifest["failed_slices"]] == ["broken"]
+    assert "SectionContractError" in manifest["failed_slices"][0]["error"]
+
+
+def test_the_manifest_records_internal_language_residue(tmp_path: Path) -> None:
+    staging = tmp_path / "docs_staging"
+    analysis = staging / "_analysis"
+    analysis.mkdir(parents=True)
+    (analysis / "A.md").write_text(
+        "Data source: /_preprocess/A.md\nBased on our analysis, nightly.\n",
+        encoding="utf-8",
+    )
+
+    manifest = build_rag_support_package(
+        staging, ["A"], project_id="proj", platform="talend"
+    )
+
+    entry = manifest["artifacts"][0]
+    assert entry["internal_language_findings"] == 2
+    assert entry["internal_language_redactable"] == 1
+    assert manifest["internal_language"]["findings"] == 2
+    assert manifest["internal_language"]["redactable"] == 1
+    assert manifest["internal_language"]["enforced_at"] == "collect_internal_artifacts"
+    # Diagnostics only: the bytes on disk are the incremental-regen cache and
+    # stay verbatim.
+    assert "_preprocess" in (
+        staging / "_rag_support" / "phase2_analysis" / "A.md"
+    ).read_text(encoding="utf-8")
+
+
 def test_cache_restore_removes_cache_when_no_package(tmp_path: Path) -> None:
     output_dir = tmp_path / "output" / "proj"
     cache_dir = output_dir / "analysis_cache"
@@ -458,6 +626,53 @@ def test_collect_internal_artifacts_layers_and_metadata(tmp_path: Path) -> None:
 
     names = {a["filename"] for a in artifacts}
     assert not any("01_OVERVIEW" in n for n in names), "visible docs are never internal"
+
+
+def test_collect_redacts_internal_language_out_of_the_analysis_layer(
+    tmp_path: Path,
+) -> None:
+    """Slice 8, enforced. Marking the layer internal is not enough: a rung-2
+    escalation merges these chunks as auxiliary sources that receive reference
+    numbers and are citable, so the text can be quoted back to a client."""
+    docs = tmp_path / "docs"
+    pkg = docs / "_rag_support" / "phase2_analysis"
+    pkg.mkdir(parents=True)
+    pkg.joinpath("Item.md").write_text(
+        "Risk calibration: from /_assessment/quick_scan.md (Priority 18/20).\n"
+        "tDBOutput_1 writes SALESTABLE nightly.\n",
+        encoding="utf-8",
+    )
+
+    artifact = collect_internal_artifacts(docs, project_id="proj")[0]
+
+    assert artifact["metadata"]["source_layer"] == "technical_analysis"
+    assert artifact["metadata"]["visibility"] == "internal"
+    assert artifact["metadata"]["internal_language_redactions"] == 1
+    assert "_assessment" not in artifact["content"]
+    assert "quick_scan.md" not in artifact["content"]
+    # ...and the evidence that makes this layer worth publishing survives.
+    assert "tDBOutput_1 writes SALESTABLE nightly." in artifact["content"]
+    # The file on disk is untouched: it is also the incremental-regen cache.
+    assert "_assessment" in pkg.joinpath("Item.md").read_text(encoding="utf-8")
+
+
+def test_collect_does_not_redact_the_deterministic_support_layers(
+    tmp_path: Path,
+) -> None:
+    """``_facts/engineering_facts.md`` is a Python-rendered map whose SUBJECT
+    is artifact names. Blanking them would not remove leakage, it would remove
+    the content."""
+    docs = tmp_path / "docs"
+    facts = docs / "_facts"
+    facts.mkdir(parents=True)
+    body = "Source: dependency_map.md, generated from scan_result.json\n"
+    facts.joinpath("engineering_facts.md").write_text(body, encoding="utf-8")
+
+    artifact = collect_internal_artifacts(docs, project_id="proj")[0]
+
+    assert artifact["metadata"]["source_layer"] == "support_maps"
+    assert artifact["content"] == body
+    assert "internal_language_redactions" not in artifact["metadata"]
 
 
 def test_collect_internal_artifacts_missing_layers_is_noop(tmp_path: Path) -> None:

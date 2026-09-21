@@ -36,6 +36,15 @@ interface ChatInputProps {
   disabled?: boolean;
   placeholder?: string;
   toolbarContent?: ReactNode;
+  /**
+   * Rendered directly above the input box, inside the composer's own padding.
+   *
+   * For a choice that governs the whole thread rather than the turn being
+   * typed. `toolbarContent` sits inside the box among the per-turn settings and
+   * flattens everything in it to the same weight, which is wrong for a decision
+   * that is made once and then cannot be changed.
+   */
+  headerContent?: ReactNode;
   hideImagePicker?: boolean;
   zipUploadTarget?: ZipUploadTarget;
   onZipUploaded?: (receipt: UploadedZipReceipt) => void | Promise<void>;
@@ -49,6 +58,7 @@ export function ChatInput({
   disabled,
   placeholder,
   toolbarContent,
+  headerContent,
   hideImagePicker,
   zipUploadTarget,
   onZipUploaded,
@@ -222,6 +232,11 @@ export function ChatInput({
       className="px-3 sm:px-6 pb-3 sm:pb-5 pt-2 w-full bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-t border-border/60"
       data-tour="chat-input"
     >
+      {headerContent && (
+        <div data-testid="composer-header" className="pb-2">
+          {headerContent}
+        </div>
+      )}
       <form onSubmit={handleSubmit}>
         <div
           className={cn(

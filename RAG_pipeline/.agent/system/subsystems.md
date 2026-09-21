@@ -51,7 +51,7 @@ Automatic token usage and cost tracking for all LLM interactions:
 
 ## External Usage Recording
 
-The KB MCP server posts usage records for doc generation and deep dive to the RAG backend:
+The KB MCP server posts usage records for doc generation to the RAG backend:
 
 - **Endpoint**: `POST /api/v1/usage/record` (Bearer auth via `MCP_INGEST_API_KEY`)
 - **Accepts**: `interface`, `model_name`, `provider`, `input_tokens`, `output_tokens`, `cost_usd`, `latency_ms`, `project_id`, `query_text`

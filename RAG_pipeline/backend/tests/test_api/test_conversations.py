@@ -33,7 +33,12 @@ def _mock_user(id: int = 1):
     return user
 
 
-def _mock_conversation(id: int = 1, user_id: int = 1, title: str = "Test Chat"):
+def _mock_conversation(
+    id: int = 1,
+    user_id: int = 1,
+    title: str = "Test Chat",
+    lane: str = "v1",
+):
     conv = MagicMock(spec=Conversation)
     conv.id = id
     conv.user_id = user_id
@@ -41,6 +46,9 @@ def _mock_conversation(id: int = 1, user_id: int = 1, title: str = "Test Chat"):
     conv.messages = []
     conv.origin_surface = "chat"
     conv.visible_in_chat = True
+    # A stored lane is a plain string, exactly as the driver returns it; the
+    # response model is what turns it back into the enum.
+    conv.lane = lane
     conv.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
     conv.updated_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
     return conv

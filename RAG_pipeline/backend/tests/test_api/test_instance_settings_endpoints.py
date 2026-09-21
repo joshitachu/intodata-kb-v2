@@ -85,7 +85,7 @@ class TestGet:
         row1.key = "rag_chat_model"
         row1.value = "anthropic/claude-sonnet-4-6"
         row2 = MagicMock()
-        row2.key = "deep_dive_model"
+        row2.key = "doc_gen_write_model"
         row2.value = "anthropic/claude-sonnet-4-6"
         result = MagicMock()
         result.scalars.return_value.all.return_value = [row1, row2]
@@ -96,7 +96,7 @@ class TestGet:
         assert resp.status_code == 200
         body = resp.json()
         assert body["settings"]["rag_chat_model"] == "anthropic/claude-sonnet-4-6"
-        assert body["settings"]["deep_dive_model"] == "anthropic/claude-sonnet-4-6"
+        assert body["settings"]["doc_gen_write_model"] == "anthropic/claude-sonnet-4-6"
 
 
 class TestPut:

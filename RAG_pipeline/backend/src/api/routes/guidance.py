@@ -82,6 +82,7 @@ from src.harness.packs.models import (
     StyleTone,
     TechnicalDepth,
 )
+from src.labs.generation_memory import compile_generation_memory
 from src.labs.workspace import (
     always_loaded_tokens,
     labs_docs_mounted,
@@ -891,8 +892,8 @@ async def read_project_workspace(
 
     The inputs are the ones a turn compiles, in the same order and by the same
     functions (``compile_guidance``, ``compile_project_material``,
-    ``load_material_texts``; see ``src/labs/runtime.py``). Anything less faithful
-    would make this a mock-up.
+    ``load_material_texts``, ``compile_generation_memory``; see
+    ``src/labs/runtime.py``). Anything less faithful would make this a mock-up.
 
     ``opencode.json`` is absent, and that is the security property of the
     endpoint rather than an omission: it carries the MCP bearer token. The
@@ -931,6 +932,11 @@ async def read_project_workspace(
         db, [entry.document_id for entry in material.mountable]
     )
     docs_mounted = await labs_docs_mounted(project_id)
+    # Compiled here for the same reason the material is: this route's whole
+    # claim is that it shows the real worktree, so it has to read the same
+    # inputs a turn reads. Omitting the memory would show a user a workspace
+    # missing the files their assistant is actually being pointed at.
+    memory = await compile_generation_memory(project_id)
 
     files = project_workspace_files(
         project_id=project_id,
@@ -938,6 +944,7 @@ async def read_project_workspace(
         material=material,
         material_texts=material_texts,
         docs_mounted=docs_mounted,
+        memory=memory,
     )
 
     return WorkspaceResponse(

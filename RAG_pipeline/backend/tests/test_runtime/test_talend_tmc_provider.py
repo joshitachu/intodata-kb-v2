@@ -806,6 +806,125 @@ class TestRuntimeBatchMapping:
         ) == 9
 
 
+    async def test_every_engine_of_a_cluster_gets_its_deployment_log_read(self, tmc):
+        """One Route, one task, two engines -- both must be asked.
+
+        TMC models a clustered deployment as ONE task with one execution per
+        engine, so a selection keyed on the task kept a single engine and never
+        asked the other. Verified on a live estate: 24 of 46 routes reported no
+        throughput at all, decided by which engine finished its rolling
+        redeploy last -- a margin of 23 seconds.
+        """
+        seen: list[tuple[str, str]] = []
+        list_fixtures: dict[str, list[dict]] = {
+            "/orchestration/environments": [{"id": "env-prod", "name": "PROD"}],
+            "/orchestration/workspaces": [
+                {
+                    "id": "ws-esb",
+                    "name": "ESB",
+                    "environment": {"id": "env-prod", "name": "PROD"},
+                }
+            ],
+            "/processing/runtimes/remote-engines": [
+                {"id": "eng-1", "name": "PRD_RE_01", "status": "RUNNING"},
+                {"id": "eng-2", "name": "PRD_RE_02", "status": "RUNNING"},
+            ],
+            "/orchestration/artifacts": [
+                {"id": "art-route", "name": "sender_invoices", "type": "route"}
+            ],
+            "/orchestration/connections": [],
+            "/orchestration/executables/tasks": [
+                {
+                    "executable": "task-route",
+                    "name": "sender_invoices",
+                    "artifactId": "art-route",
+                    "workspace": {
+                        "id": "ws-esb",
+                        "name": "ESB",
+                        "environment": {"id": "env-prod", "name": "PROD"},
+                    },
+                    "runtime": {"id": "eng-1"},
+                }
+            ],
+            "/orchestration/executables/plans": [],
+            "/processing/executables/tasks/task-route/executions": [
+                {
+                    "executionId": "exec-eng1",
+                    "taskId": "task-route",
+                    "status": "executing",
+                    "startTimestamp": "2026-09-17T17:13:17Z",
+                    "runtime": {"id": "eng-1"},
+                },
+                {
+                    # 23 seconds later, exactly as the live cluster redeployed.
+                    "executionId": "exec-eng2",
+                    "taskId": "task-route",
+                    "status": "executing",
+                    "startTimestamp": "2026-09-17T17:13:40Z",
+                    "runtime": {"id": "eng-2"},
+                },
+            ],
+        }
+        tellers = {"exec-eng1": 28461, "exec-eng2": 1204}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append((request.method, request.url.path))
+            for execution_id, totaal in tellers.items():
+                if request.url.path == f"/monitoring/executions/{execution_id}/logs":
+                    if request.method == "POST":
+                        return httpx.Response(500, json={"detail": "async logs unavailable"})
+                    return httpx.Response(
+                        200,
+                        json={
+                            "data": [
+                                {
+                                    "execution_id": execution_id,
+                                    "timestamp": "2026-09-21T01:01:00Z",
+                                    "level": "INFO",
+                                    "message": (
+                                        "DS RUNNER METRIC - ROUTE: "
+                                        "[RouteName:sender_invoices] "
+                                        f"[RouteExchangesTotal:{totaal}]"
+                                    ),
+                                }
+                            ],
+                            "totalSize": 1,
+                        },
+                    )
+            if request.url.path.startswith("/monitoring/observability/executions/"):
+                return httpx.Response(200, json={"metrics": {"items": [], "total": 0}})
+            if request.url.path.startswith("/orchestration/executables/tasks/"):
+                return httpx.Response(
+                    200,
+                    json={
+                        "executable": request.url.path.rsplit("/", 1)[-1],
+                        "artifact": {"id": "art-route", "version": "1.0.0"},
+                    },
+                )
+            payload = list_fixtures.get(request.url.path)
+            if payload is not None:
+                return httpx.Response(200, json=payload)
+            raise AssertionError(f"Unexpected request {request.method} {request.url.path}")
+
+        batch = await tmc.provider(handler).sync(
+            credentials={"api_token": "t", "base_url": "https://source.example"},
+            project_id="pluripharm",
+        )
+
+        opgevraagd = {
+            path for method, path in seen if method == "GET" and path.endswith("/logs")
+        }
+        assert opgevraagd == {
+            "/monitoring/executions/exec-eng1/logs",
+            "/monitoring/executions/exec-eng2/logs",
+        }, "a clustered route must have every engine's deployment log read"
+
+        per_run = {run.run_id: run.total_exchanges for run in batch.job_runs}
+        assert per_run == {"exec-eng1": 28461, "exec-eng2": 1204}, (
+            "each engine keeps its own cumulative counters"
+        )
+
+
 class TestConfigAndSecretHygiene:
     async def test_get_retries_a_transient_transport_failure(self, tmc):
         attempts = 0
@@ -1231,6 +1350,83 @@ class TestRouteThroughputAndPayloads:
         assert _apply_route_metrics([oud, nieuw], events) == 1
         assert nieuw.total_exchanges == 3109
         assert oud.total_exchanges is None
+
+    def test_two_engines_of_a_cluster_keep_their_own_counters(self):
+        """One Route, one job_id, two engines, two cumulative counters.
+
+        Verified on a live estate: every Route ran on both engines of a
+        two-engine cluster. Attributing on route name alone gave one engine's
+        totals to whichever deployment started last -- a margin of 23 seconds
+        decided it -- and published one engine's share as the route's
+        throughput.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from src.runtime.models import RuntimeLogEvent
+
+        nu = datetime(2026, 9, 21, tzinfo=timezone.utc)
+
+        def run(engine: str, gestart: datetime):
+            item = _task_execution(executionId=f"exec-{engine}", taskId="route-a")
+            return _to_job_run(item, "talend_tmc", {}, {}).model_copy(
+                update={
+                    "job_name": "route-a",
+                    "job_id": "task-1",
+                    "executable_kind": RuntimeExecutableKind.ROUTE,
+                    "engine_id": engine,
+                    "started_at": gestart,
+                }
+            )
+
+        # Engine 02 redeployed 23 seconds after engine 01, exactly as measured.
+        engine1 = run("PRD_RE_01", nu)
+        engine2 = run("PRD_RE_02", nu + timedelta(seconds=23))
+
+        def regel(execution_id: str, totaal: int):
+            return RuntimeLogEvent(
+                execution_id=execution_id,
+                timestamp=nu,
+                severity=RuntimeLogSeverity.INFO,
+                message=(
+                    "DS RUNNER METRIC - ROUTE: [RouteName:route-a] "
+                    f"[RouteExchangesTotal:{totaal}]"
+                ),
+                line_ordinal=0,
+            )
+
+        events = [regel("exec-PRD_RE_01", 28461), regel("exec-PRD_RE_02", 1204)]
+        assert _apply_route_metrics([engine1, engine2], events) == 2
+        assert engine1.total_exchanges == 28461
+        assert engine2.total_exchanges == 1204, (
+            "the later deployment must not inherit the other engine's counters"
+        )
+
+    def test_a_line_from_an_unknown_deployment_is_not_attributed(self):
+        """Without a deployment we cannot know the engine, and an engine-less
+        guess is what the per-engine key exists to prevent."""
+        from datetime import datetime, timezone
+
+        from src.runtime.models import RuntimeLogEvent
+
+        item = _task_execution(executionId="exec-1", taskId="route-a")
+        run = _to_job_run(item, "talend_tmc", {}, {}).model_copy(
+            update={
+                "job_name": "route-a",
+                "executable_kind": RuntimeExecutableKind.ROUTE,
+                "engine_id": "PRD_RE_01",
+            }
+        )
+        events = [
+            RuntimeLogEvent(
+                execution_id="exec-van-een-andere-batch",
+                timestamp=datetime(2026, 9, 21, tzinfo=timezone.utc),
+                severity=RuntimeLogSeverity.INFO,
+                message="DS RUNNER METRIC - ROUTE: [RouteName:route-a] [RouteExchangesTotal:9]",
+                line_ordinal=0,
+            )
+        ]
+        assert _apply_route_metrics([run], events) == 0
+        assert run.total_exchanges is None
 
     def test_a_deployment_keeps_the_tail_not_the_opening_day(self):
         """A Route up for 83 days starts its log on the day it was deployed."""

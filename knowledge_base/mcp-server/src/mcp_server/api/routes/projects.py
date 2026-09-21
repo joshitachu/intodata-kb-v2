@@ -26,7 +26,7 @@ _currently_generating: set[str] = set()
 _generation_tasks: dict[str, asyncio.Task] = {}
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile, File, Form
-from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from sqlalchemy import func, select, text
 
 from contextlib import nullcontext
@@ -43,7 +43,6 @@ from mcp_server.schemas import (
     ComponentGraphResponse,
     DeepDiveProject,
     DeepDiveProjectsResponse,
-    DeepDiveRequest,
     DeleteProjectResponse,
     DocFileInfo,
     DocListResponse,
@@ -112,7 +111,6 @@ from mcp_server.services.evidence_doc_revert import EvidenceDocRevertService
 from mcp_server.services.reingestion_gate import GateOutcome
 from mcp_server.services.claude_service import DocGenerationCoordinator
 from mcp_server.services.pack_governance import PackGovernanceDenied, pack_governance
-from mcp_server.services.deep_dive_service import DeepDiveService
 from mcp_server.services.auto_doc_update import AutoDocUpdateService
 from mcp_server.services.git_credentials import NullCredentialProvider, provider_for_project
 from mcp_server.utils.azure_devops_api import (
@@ -5527,68 +5525,16 @@ async def _run_summaries_background(project_id: str, platform: str) -> None:
         logger.error("Summary generation failed for %s: %s", project_id, e)
 
 
-# --- Deep Dive ---
-
-
-@router.post("/deep-dive")
-async def deep_dive_query(req: DeepDiveRequest, request: Request):
-    """Stream deep-dive analysis via the configured repo-owned engine (SSE)."""
-    await require_project_access(request, req.project_id)
-    # Validate project exists and has scan data
-    async with async_session_factory() as db:
-        registry = ProjectRegistry(db)
-        project = await registry.get_project(req.project_id)
-        if not project:
-            raise HTTPException(status_code=404, detail=f"Project not found: {req.project_id}")
-        if project.status not in ("ready", "scanned") or project.job_count == 0:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Project '{req.project_id}' has no scan data (status={project.status}, jobs={project.job_count})",
-            )
-
-    service = DeepDiveService()
-    bridge = RagBridge()
-
-    async def event_stream():
-        async for event in service.query(req.project_id, req.question, session_id=req.session_id):
-            event_type = event.get("type", "message")
-            data = event.get("data", "")
-
-            # Intercept usage events to persist token counts
-            if event_type == "usage" and isinstance(data, dict):
-                try:
-                    await bridge.post_usage(
-                        interface="deep_dive",
-                        project_id=req.project_id,
-                        input_tokens=data.get("input_tokens"),
-                        output_tokens=data.get("output_tokens"),
-                        cost_usd=data.get("cost_usd"),
-                        latency_ms=data.get("duration_ms") or data.get("latency_ms"),
-                        model_name=data.get("model", "claude"),
-                        provider=data.get("provider", "anthropic"),
-                        query_text=req.question[:500] if req.question else None,
-                    )
-                except Exception:
-                    pass  # Don't break the SSE stream
-
-            # JSON-encode all SSE payloads, including strings. Deep Dive answers
-            # often contain markdown newlines; raw multiline data breaks the
-            # frontend's line-based SSE parser.
-            yield f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
+# --- Scanned-project picker ---
 
 
 @router.get("/deep-dive/projects", response_model=DeepDiveProjectsResponse)
 async def deep_dive_projects(request: Request):
-    """List projects available for deep dive, filtered by user access."""
+    """List scanned projects the caller may read, for the project pickers.
+
+    Read-only listing. The separate deep-dive query engine this path was named
+    after is gone; the chat agent answers scan questions in its own thread.
+    """
     auth_payload = getattr(request.state, "auth_payload", None)
 
     async with async_session_factory() as db:

@@ -66,6 +66,10 @@ from mcp_server.services.project_memory import (
     stage_project_memory,
 )
 from mcp_server.services.pack_governance import PackGovernanceDenied, pack_governance
+from mcp_server.services.rag_support_package import (
+    LAYER_TECHNICAL_ANALYSIS,
+    build_rag_support_package,
+)
 from mcp_server.services.nexus_execution_contract import build_nexus_execution_receipt
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.scanner_service import ScannerService
@@ -2582,6 +2586,8 @@ Required sections:
                 memory_stage=memory_stage,
                 groups=preprocess_groups,
                 success=bool(result.get("success")),
+                project_id=project_id,
+                platform=platform,
             ):
                 await self.log_manager.emit(project_id, message, level=level)
             write_run_manifest(
@@ -2625,6 +2631,8 @@ Required sections:
                     memory_stage=memory_stage,
                     groups=preprocess_groups,
                     success=False,
+                    project_id=project_id,
+                    platform=platform,
                 ):
                     logger.log(
                         logging.WARNING if level == "warning" else logging.INFO, message
@@ -2643,6 +2651,8 @@ Required sections:
         memory_stage: MemoryStageResult | None,
         groups: list[str],
         success: bool,
+        project_id: str = "",
+        platform: str = "",
     ) -> list[tuple[str, str]]:
         """Check attribution, persist memory, guard client language, clean up.
 
@@ -2663,6 +2673,15 @@ Required sections:
         unrunnable by construction. Python removes them, after the check, and
         only on a successful run -- a failed run's staging is what resume
         reads.
+
+        For the same reason this is where the analyses are PRESERVED, in the
+        last moment they exist: ``build_rag_support_package`` packages them
+        into ``_rag_support/``, the atomic swap carries that into ``docs/``,
+        and ``RagBridge.sync_internal_layers`` publishes them as the internal
+        ``technical_analysis`` layer. That machinery is lane-agnostic and
+        already ran for every lane; only its producer was custom-lane-only
+        (``pipeline/phases/phase4_cleanup``), so on this lane the sync found
+        nothing and a completed run left no trace of what Phase 2 produced.
         """
         messages: list[tuple[str, str]] = []
 
@@ -2677,8 +2696,11 @@ Required sections:
         # Phase 3 final-check gates: it names the gap in the run log and never
         # raises. Making it BLOCKING (no swap, no RAG push) is a publication-
         # policy change and needs the plan gate, not this function.
+        # Slice names -> analysis names, once: the coverage line and the RAG
+        # evidence package below must ask for the same set of groups, and two
+        # copies of that mapping is how they drift.
+        expected = sorted({analysis_group_for_slice(name) for name in groups})
         try:
-            expected = sorted({analysis_group_for_slice(name) for name in groups})
             analysed = set(
                 DocGenerationCoordinator._analysed_groups(staging_dir / "_analysis")
             )
@@ -2771,6 +2793,15 @@ Required sections:
             logger.warning("Provenance validation failed: %s", exc, exc_info=True)
             messages.append((f"Provenance validation failed: {exc}", "warning"))
 
+        messages.extend(
+            DocGenerationCoordinator._publish_rag_evidence_layer(
+                staging_dir=staging_dir,
+                expected_groups=expected,
+                project_id=project_id or output_dir.name,
+                platform=platform,
+            )
+        )
+
         # The working evidence, removed now that the deterministic checks that
         # read it have run. `_`-prefixed, so its presence up to this point never
         # counted as a delivered document nor reached the client corpus.
@@ -2800,4 +2831,85 @@ Required sections:
                 (f"Removed working evidence: {', '.join(removed)}", "info")
             )
 
+        return messages
+
+    @staticmethod
+    def _publish_rag_evidence_layer(
+        *,
+        staging_dir: Path,
+        expected_groups: list[str],
+        project_id: str,
+        platform: str,
+    ) -> list[tuple[str, str]]:
+        """Package the Phase 2 analyses as the internal RAG evidence layer.
+
+        Measured on run 258 against the scan, the analyses are a strictly
+        stronger retrieval corpus than the nine published documents -- 97% of
+        designs named against 74%, 69% of components against 19%, 62% of
+        quoted code verbatim against ~0%, and 1.7x the bytes -- and until this
+        ran they were deleted a few lines below and never reached RAG on this
+        lane.
+
+        Advisory, like every other step in the caller: a failure here costs
+        the run nothing. It is also SKIPPED rather than run when there is
+        nothing to package, because ``build_rag_support_package`` recreates
+        ``_rag_support/phase2_analysis/`` from scratch -- on the custom lane,
+        whose Phase 4 has already built the package and deleted
+        ``_analysis/``, running it here would replace a good package with an
+        empty one.
+        """
+        analysis_dir = staging_dir / "_analysis"
+        try:
+            stored = analysis_store.list_groups(analysis_dir)
+        except OSError as exc:
+            logger.warning("RAG evidence layer: cannot list analyses: %s", exc)
+            return [(f"RAG evidence layer not built: {exc}", "warning")]
+        if not stored:
+            return []
+
+        try:
+            manifest = build_rag_support_package(
+                staging_dir,
+                expected_groups,
+                project_id=project_id,
+                platform=platform,
+            )
+        except Exception as exc:  # noqa: BLE001 - see below
+            # Broader than the narrow catches above, deliberately. This step
+            # preserves evidence; it delivers nothing. It is called from the
+            # SUCCESS path inside `generate_docs`'s try block, so any escaping
+            # exception -- including the plain-Exception SectionContractError
+            # the store raises on lost evidence -- would turn a run that
+            # produced its documents into a failed one. Preservation failing
+            # is a warning; the documents still ship.
+            logger.warning("RAG evidence layer could not be built: %s", exc, exc_info=True)
+            return [(f"RAG evidence layer could not be built: {exc}", "warning")]
+
+        artifacts = manifest["artifacts"]
+        total_bytes = sum(int(a["bytes"]) for a in artifacts)
+        messages: list[tuple[str, str]] = [(
+            f"RAG evidence layer: {len(artifacts)} group analysis artifact(s), "
+            f"{total_bytes} bytes, published as the internal "
+            f"'{LAYER_TECHNICAL_ANALYSIS}' layer.",
+            "info",
+        )]
+        if manifest["missing_groups"]:
+            messages.append((
+                "  No analysis to publish for: "
+                + ", ".join(manifest["missing_groups"]),
+                "warning",
+            ))
+        for failure in manifest["failed_slices"]:
+            messages.append((
+                f"  Unreadable analysis {failure['source_path']}: {failure['error']}",
+                "warning",
+            ))
+        residue = manifest["internal_language"]
+        if residue["findings"]:
+            messages.append((
+                f"  Internal language in the analyses: {residue['findings']} "
+                f"finding(s), {residue['redactable']} removed at the RAG "
+                "boundary; the remainder is prose and is reported only.",
+                "info",
+            ))
         return messages

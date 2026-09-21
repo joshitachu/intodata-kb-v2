@@ -18,19 +18,34 @@ import {
   useDeleteConversation,
 } from "@/hooks/useConversations";
 import { useStreamMessage } from "@/hooks/useStreamMessage";
-import { useDeepDive } from "@/hooks/useDeepDive";
 import type { StreamState } from "@/hooks/useStreamMessage";
-import type { DeepDiveState } from "@/hooks/useDeepDive";
 import type {
+  ChatLane,
   ConversationResponse,
   ConversationDetailResponse,
   ConversationMessageRequest,
+  ConversationTurnMode,
 } from "@/types";
 import type { ChatMode } from "@/components/ModeToggle";
+import {
+  DEFAULT_CHAT_LANE,
+  LANE_API_BASE,
+  laneMatchesFilter,
+  parseLane,
+  type LaneFilter,
+} from "@/components/chat/lane";
 
 interface ChatContextValue {
   // Conversation list
+  /**
+   * Every thread the user has, in both lanes. Unfiltered on purpose: callers
+   * that ask "does this id exist" (ChatLayout's URL recovery) must not be
+   * answered by the lane filter, or narrowing the list would bounce the open
+   * thread back to `/?c=new`.
+   */
   conversations: ConversationResponse[];
+  /** `conversations` narrowed by `laneFilter`. What the thread lists render. */
+  visibleConversations: ConversationResponse[];
   isLoading: boolean;
 
   // Active conversation
@@ -38,6 +53,24 @@ interface ChatContextValue {
   setActiveConversationId: (id: number | null) => void;
   activeConversation: ConversationDetailResponse | null;
   isLoadingConversation: boolean;
+
+  // Lane
+  /**
+   * The lane in force right now: the open thread's own lane, or -- with no
+   * thread open -- the lane the next new thread will be created in.
+   */
+  activeLane: ChatLane;
+  /** The lane the switch is set to for the *next* new thread. */
+  selectedLane: ChatLane;
+  setSelectedLane: (lane: ChatLane) => void;
+  /**
+   * True once a thread is open. The lane is settled at creation and no route
+   * can change it, so the switch must show the thread's lane and refuse to
+   * pretend otherwise.
+   */
+  isLaneLocked: boolean;
+  laneFilter: LaneFilter;
+  setLaneFilter: (filter: LaneFilter) => void;
 
   // Mode & project
   mode: ChatMode;
@@ -64,8 +97,6 @@ interface ChatContextValue {
    * Nothing in production chat calls it today; `/labs/chat` does.
    */
   cancelStream: () => void;
-  deepDiveState: DeepDiveState;
-  onCancelDeepDive: () => void;
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null);
@@ -82,24 +113,48 @@ export function useChatContextSafe(): ChatContextValue | null {
   return useContext(ChatContext);
 }
 
+/** The one endpoint that lists both lanes, so the one the thread list reads. */
+const LIST_API_BASE = LANE_API_BASE.v1;
+
+/** URL parameter that seeds the initial lane, written by the `/labs/chat` alias. */
+const LANE_PARAM = "lane";
+
+/**
+ * The composer toggle's vocabulary, as the turn carries it.
+ *
+ * Deep dive used to be a different endpoint (`/api/deep-dive/query` -> the MCP
+ * server's own engine). It is a mode of the same agent on the same thread now,
+ * so the toggle only decides one field of the normal chat request; the hyphen
+ * is the toggle's spelling, the underscore is the wire's.
+ */
+const TURN_MODE: Record<ChatMode, ConversationTurnMode> = {
+  chat: "chat",
+  "deep-dive": "deep_dive",
+};
+
+function requestedLaneFromLocation(): ChatLane | null {
+  if (typeof window === "undefined") return null;
+  return parseLane(new URLSearchParams(window.location.search).get(LANE_PARAM));
+}
+
 interface ChatProviderProps {
   children: ReactNode;
   /**
-   * Backend lane this provider's turns are streamed from. Defaults to the
-   * production lane, so `components/Layout.tsx` -- which mounts this provider
-   * for every page -- is unchanged.
+   * Lane a new thread starts in before the user touches the switch.
    *
-   * `/labs/chat` mounts a second provider with `apiBase="/api/labs"` to reach
-   * the experimental OpenCode lane. Only the *turn* follows the lane: the
-   * conversation record itself is still created and read through
-   * `hooks/useConversations.ts` on `/api/conversations`, so both lanes append
-   * to the same thread and the deep-dive `messages/save` call below must stay
-   * on `/api` or it would target a conversation id the labs lane never owned.
+   * There used to be an `apiBase` prop here instead, and `/labs/chat` mounted a
+   * second provider with `apiBase="/api/labs"` to reach the OpenCode lane. The
+   * lane now decides the base (`components/chat/lane.ts`), so there is one
+   * provider and one surface: a prop that could disagree with the open thread's
+   * stored lane is exactly the bug this collapse removes.
    */
-  apiBase?: string;
+  initialLane?: ChatLane;
 }
 
-export function ChatProvider({ children, apiBase = "/api" }: ChatProviderProps) {
+export function ChatProvider({
+  children,
+  initialLane = DEFAULT_CHAT_LANE,
+}: ChatProviderProps) {
   const [activeConversationId, setActiveConversationId] = useState<
     number | null
   >(null);
@@ -108,26 +163,105 @@ export function ChatProvider({ children, apiBase = "/api" }: ChatProviderProps) 
   const [pendingUserMessage, setPendingUserMessage] = useState<string | null>(
     null,
   );
+  const [selectedLane, setSelectedLane] = useState<ChatLane>(initialLane);
+  const [laneFilter, setLaneFilter] = useState<LaneFilter>("all");
+  // The lane of the thread in hand, once anything has established it: the
+  // creation call, or the loaded conversation record. The list is the
+  // authority, but it has not necessarily refetched at the moment a brand-new
+  // thread starts streaming, and it has not necessarily *arrived* when a thread
+  // is opened straight from a `?c=` URL -- and both of those turns have to go
+  // to the right lane.
+  //
+  // It is sticky on purpose. A lane read live off `activeConversation` would
+  // vanish the instant the query key changed, which is exactly when the lane
+  // had just changed it -- the base would flip back, the old cache would answer,
+  // and the two would trade places forever.
+  const [knownThreadLane, setKnownThreadLane] = useState<{
+    id: number;
+    lane: ChatLane;
+  } | null>(null);
   const justCreatedIdRef = useRef<number | null>(null);
   const failedRequestRef = useRef<ConversationMessageRequest | null>(null);
 
+  // `/labs/chat` is an alias that redirects to `/?c=new&lane=v2`. Read once, on
+  // mount, rather than during render: a lazy `useState` initialiser would make
+  // the server's markup (which has no `window`) disagree with the client's.
+  useEffect(() => {
+    const requested = requestedLaneFromLocation();
+    if (requested !== null) setSelectedLane(requested);
+  }, []);
+
   const queryClient = useQueryClient();
-  // Every conversation hook takes the lane, not just the streaming one. If only
-  // the stream were lane-aware, `/labs/chat` would create and list its
-  // conversations in the production lane and they would show up in the real
-  // sidebar -- the backend's `[labs] ` prefix and `visible_in_chat=False` are
-  // applied by the labs routes, which would never be called.
+  // The list is NOT lane-routed. `GET /api/v1/conversations` returns both lanes,
+  // each row carrying its own `lane`, which is what makes one badged sidebar
+  // possible; reading it from the active lane's base would show the user half
+  // their threads and hide the other half behind the switch.
   const { data: conversationList, isLoading: isLoadingList } =
-    useConversations(apiBase);
+    useConversations(LIST_API_BASE);
+
+  const conversations = useMemo(
+    () => conversationList?.conversations ?? [],
+    [conversationList],
+  );
+
+  // A thread's lane comes from its own record; `selectedLane` only ever answers
+  // for the thread that does not exist yet.
+  const activeThreadLane = useMemo<ChatLane | null>(() => {
+    if (activeConversationId === null) return null;
+    const listed = conversations.find((c) => c.id === activeConversationId);
+    if (listed) return listed.lane;
+    if (knownThreadLane?.id === activeConversationId) return knownThreadLane.lane;
+    return null;
+  }, [activeConversationId, conversations, knownThreadLane]);
+
+  /**
+   * A thread is open whose lane nothing has established yet -- the list is
+   * still in flight behind a `?c=` deep link. Read through the production base
+   * rather than the switch's current selection: `/api/v1/conversations/{id}`
+   * serves BOTH lanes and answers with the thread's own `lane`, so the guess
+   * corrects itself from its own response. The V2 base is lane-gated and would
+   * 404 a V1 thread instead, which corrects nothing.
+   */
+  const activeLane =
+    activeConversationId === null
+      ? selectedLane
+      : activeThreadLane ?? DEFAULT_CHAT_LANE;
+  const isLaneLocked = activeConversationId !== null;
+  const laneApiBase = LANE_API_BASE[activeLane];
+
+  const visibleConversations = useMemo(
+    () => conversations.filter((c) => laneMatchesFilter(c.lane, laneFilter)),
+    [conversations, laneFilter],
+  );
+
   const { data: activeConversation, isLoading: isLoadingConversation } =
-    useConversation(activeConversationId, apiBase);
-  const createMutation = useCreateConversation(apiBase);
-  const deleteMutation = useDeleteConversation(apiBase);
+    useConversation(activeConversationId, laneApiBase);
+  // Created in the lane the switch is set to: with no thread open, `activeLane`
+  // is `selectedLane`, and a thread is only ever created when none is open.
+  const createMutation = useCreateConversation(laneApiBase);
+  // Deleting is the one action aimed at a thread other than the open one, so it
+  // cannot borrow the active lane. Both mutations are held and the row's own
+  // lane picks between them.
+  const deleteV1Mutation = useDeleteConversation(LANE_API_BASE.v1);
+  const deleteV2Mutation = useDeleteConversation(LANE_API_BASE.v2);
 
   const { streamState, sendMessage: sendStreamMessage, reset, cancelStream } =
-    useStreamMessage(activeConversationId, apiBase);
+    useStreamMessage(activeConversationId, laneApiBase);
 
-  const deepDive = useDeepDive();
+  // Remember the lane the loaded thread reports. This is what closes the deep
+  // link case: the detail response carries `lane` whichever base served it, so
+  // one read settles the lane before the composer is reachable -- `ChatWindow`
+  // shows a spinner until this query resolves.
+  useEffect(() => {
+    if (!activeConversation || activeConversation.id !== activeConversationId) {
+      return;
+    }
+    setKnownThreadLane((prev) =>
+      prev?.id === activeConversation.id && prev.lane === activeConversation.lane
+        ? prev
+        : { id: activeConversation.id, lane: activeConversation.lane },
+    );
+  }, [activeConversation, activeConversationId]);
 
   // When streaming is done (messageId set), invalidate caches and reset
   useEffect(() => {
@@ -162,52 +296,87 @@ export function ChatProvider({ children, apiBase = "/api" }: ChatProviderProps) 
       )
     ) {
       justCreatedIdRef.current = null; // List caught up, clear the ref
+      // `knownThreadLane` is deliberately NOT cleared here. The list outranks
+      // it anyway, and dropping it is what would let the lane blink back to the
+      // default while a query key is in flight.
     }
   }, [activeConversationId, conversationList]);
 
-  // Clear pending user message when stream is done
+  // Clear pending user message when stream is done. Both modes stream through
+  // the same lane, so this is no longer gated on the mode -- gating it was what
+  // made the deep-dive path need its own bookkeeping.
   useEffect(() => {
-    if (
-      mode === "chat" &&
-      !streamState.isStreaming &&
-      streamState.messageId !== null
-    ) {
+    if (!streamState.isStreaming && streamState.messageId !== null) {
       setPendingUserMessage(null);
     }
-  }, [mode, streamState.isStreaming, streamState.messageId]);
+  }, [streamState.isStreaming, streamState.messageId]);
 
   useEffect(() => {
-    if (mode === "chat" && streamState.error) {
+    if (streamState.error) {
       setPendingUserMessage(null);
       queryClient.invalidateQueries({
         queryKey: ["conversation", activeConversationId],
       });
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
     }
-  }, [activeConversationId, mode, queryClient, streamState.error]);
+  }, [activeConversationId, queryClient, streamState.error]);
+
+  /**
+   * Create a thread in the lane the switch is set to, and open it.
+   *
+   * The lane travels in the request body as well as in the base URL: the base
+   * is what makes the OpenCode routes answer, and `lane` is what the unified
+   * `POST /api/v1/conversations` reads. Both accept the field, and sending it
+   * means the stored lane cannot disagree with the lane the user picked.
+   *
+   * Throws on failure -- the two callers report it differently.
+   */
+  const startConversation = useCallback(async () => {
+    const lane = activeLane;
+    const created = await createMutation.mutateAsync({ lane });
+    justCreatedIdRef.current = created.id;
+    setKnownThreadLane({ id: created.id, lane });
+    setActiveConversationId(created.id);
+    // The mutation only invalidates its own lane's list key. The sidebar reads
+    // the cross-lane list, so refresh by prefix or a new V2 thread would not
+    // appear until something else happened to invalidate it.
+    queryClient.invalidateQueries({ queryKey: ["conversations"] });
+    return created;
+  }, [activeLane, createMutation, queryClient]);
 
   const createConversation = useCallback(async () => {
     try {
-      const newConversation = await createMutation.mutateAsync({});
-      justCreatedIdRef.current = newConversation.id;
-      setActiveConversationId(newConversation.id);
-      return newConversation.id;
+      return (await startConversation()).id;
     } catch (error) {
       console.error("Failed to create conversation:", error);
       return null;
     }
-  }, [createMutation]);
+  }, [startConversation]);
 
   const deleteConversation = useCallback(async (id: number) => {
+    // Delete is aimed at a row, which may not be the open thread, so the lane
+    // comes from that row rather than from `activeLane`.
+    const lane =
+      conversations.find((c) => c.id === id)?.lane ??
+      (knownThreadLane?.id === id ? knownThreadLane.lane : DEFAULT_CHAT_LANE);
+    const mutation = lane === "v2" ? deleteV2Mutation : deleteV1Mutation;
     try {
-      await deleteMutation.mutateAsync(id);
+      await mutation.mutateAsync(id);
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
       if (activeConversationId === id) {
         setActiveConversationId(null);
       }
     } catch (error) {
       console.error("Failed to delete conversation:", error);
     }
-  }, [deleteMutation, activeConversationId]);
+  }, [
+    activeConversationId,
+    conversations,
+    knownThreadLane,
+    deleteV1Mutation,
+    deleteV2Mutation,
+    queryClient,
+  ]);
 
   const handleSendMessage = useCallback(async (request: ConversationMessageRequest) => {
     const stableRequest: ConversationMessageRequest = request.client_turn_id
@@ -216,10 +385,7 @@ export function ChatProvider({ children, apiBase = "/api" }: ChatProviderProps) 
     let conversationId = activeConversationId;
     if (!conversationId) {
       try {
-        const newConversation = await createMutation.mutateAsync({});
-        conversationId = newConversation.id;
-        justCreatedIdRef.current = newConversation.id;
-        setActiveConversationId(newConversation.id);
+        conversationId = (await startConversation()).id;
       } catch (error) {
         console.error("Failed to create conversation:", error);
         return;
@@ -228,51 +394,21 @@ export function ChatProvider({ children, apiBase = "/api" }: ChatProviderProps) 
 
     setPendingUserMessage(stableRequest.query);
 
-    if (mode === "deep-dive") {
-      try {
-        const result = await deepDive.query({
-          project_id: selectedProject,
-          question: request.query,
-          session_id: deepDive.state.sessionId ?? undefined,
-        });
-        if (result?.content && conversationId) {
-          try {
-            await fetch(`/api/conversations/${conversationId}/messages/save`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                user_message: request.query,
-                assistant_message: result.content,
-                latency_ms: result.latency_ms ?? null,
-              }),
-            });
-          } catch (e) {
-            console.error("Failed to save deep dive exchange:", e);
-          }
-          queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
-          queryClient.invalidateQueries({ queryKey: ["conversations"] });
-        }
-      } catch (error) {
-        console.error("Deep dive failed:", error);
-      } finally {
-        setPendingUserMessage(null);
-      }
-    } else {
-      try {
-        const streamRequest = {
-          ...stableRequest,
-          project_id: stableRequest.project_id || selectedProject || undefined,
-        };
-        failedRequestRef.current = streamRequest;
-        await sendStreamMessage(
-          streamRequest,
-          conversationId ?? undefined,
-        );
-      } catch (error) {
-        console.error("Failed to send message:", error);
-      }
+    try {
+      const streamRequest = {
+        ...stableRequest,
+        project_id: stableRequest.project_id || selectedProject || undefined,
+        mode: TURN_MODE[mode],
+      };
+      failedRequestRef.current = streamRequest;
+      await sendStreamMessage(
+        streamRequest,
+        conversationId ?? undefined,
+      );
+    } catch (error) {
+      console.error("Failed to send message:", error);
     }
-  }, [activeConversationId, createMutation, deepDive, mode, queryClient, selectedProject, sendStreamMessage]);
+  }, [activeConversationId, mode, selectedProject, sendStreamMessage, startConversation]);
 
   const retryFailedMessage = useCallback(async () => {
     const request = failedRequestRef.current;
@@ -289,21 +425,22 @@ export function ChatProvider({ children, apiBase = "/api" }: ChatProviderProps) 
 
   const setMode = useCallback((newMode: ChatMode) => {
     setModeState(newMode);
-    if (newMode !== "deep-dive") {
-      deepDive.reset();
-      setPendingUserMessage(null);
-    }
-  }, [deepDive]);
-
-  const conversations = conversationList?.conversations ?? [];
+  }, []);
 
   const contextValue = useMemo(() => ({
     conversations,
+    visibleConversations,
     isLoading: isLoadingList,
     activeConversationId,
     setActiveConversationId,
     activeConversation: activeConversation ?? null,
     isLoadingConversation,
+    activeLane,
+    selectedLane,
+    setSelectedLane,
+    isLaneLocked,
+    laneFilter,
+    setLaneFilter,
     mode,
     setMode,
     selectedProject,
@@ -317,14 +454,17 @@ export function ChatProvider({ children, apiBase = "/api" }: ChatProviderProps) 
     pendingUserMessage,
     streamState,
     cancelStream,
-    deepDiveState: deepDive.state,
-    onCancelDeepDive: deepDive.cancel,
   }), [
     conversations,
+    visibleConversations,
     isLoadingList,
     activeConversationId,
     activeConversation,
     isLoadingConversation,
+    activeLane,
+    selectedLane,
+    isLaneLocked,
+    laneFilter,
     mode,
     setMode,
     selectedProject,
@@ -337,8 +477,6 @@ export function ChatProvider({ children, apiBase = "/api" }: ChatProviderProps) 
     pendingUserMessage,
     streamState,
     cancelStream,
-    deepDive.state,
-    deepDive.cancel,
   ]);
 
   return (

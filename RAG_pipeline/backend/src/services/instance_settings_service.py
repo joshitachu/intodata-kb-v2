@@ -25,7 +25,6 @@ from src.db.models import InstanceSetting
 SETTING_KEYS: tuple[str, ...] = (
     "rag_chat_model",          # RAG chat LLM (kimi / ollama) — overrides settings.kimi_llm_model + settings.ollama_llm_model
     "rag_embed_model",         # Embedder model — overrides settings.voyage_embed_model + settings.ollama_embed_model
-    "deep_dive_model",         # MCP deep dive repo agent — overrides config.deep_dive_model
     "doc_gen_analysis_model",  # MCP doc generation analysis — overrides config.doc_generation_model
     "doc_gen_write_model",     # MCP doc generation write — overrides config.doc_generation_write_model
 )
@@ -51,11 +50,6 @@ SETTING_REGISTRY: dict[str, SettingKey] = {
         key="rag_embed_model",
         label="RAG embedding model",
         description="Embedder used for document indexing and query embedding.",
-    ),
-    "deep_dive_model": SettingKey(
-        key="deep_dive_model",
-        label="Deep dive model",
-        description="LLM used by the MCP deep-dive repo agent.",
     ),
     "doc_gen_analysis_model": SettingKey(
         key="doc_gen_analysis_model",

@@ -6,7 +6,7 @@ across both services. Every PUT is appended to the shared `audit_logs` table
 with a before/after diff per key.
 
 The validation set is built from the `metadata.models.list_models()` catalogue
-for MCP-controlled keys (deep_dive, doc gen analysis/write). The RAG-side
+for MCP-controlled keys (pack author, doc gen analysis/write). The RAG-side
 keys (rag_chat_model, rag_embed_model) are validated by the RAG endpoint
 against its own static catalogue, so MCP just stores what it receives for
 those keys.
@@ -54,7 +54,6 @@ def _valid_rag_chat_model_ids() -> set[str]:
 # Keys the MCP route validates against the doc-generation catalogue.
 MCP_VALIDATED_KEYS = {
     "pack_author_model",
-    "deep_dive_model",
     "doc_gen_analysis_model",
     "doc_gen_write_model",
 }

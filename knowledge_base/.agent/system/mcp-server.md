@@ -126,7 +126,7 @@ mcp-server/src/mcp_server/
     rag_bridge.py       -- Push docs to RAG pipeline
     claude_service.py   -- DocGenerationCoordinator; resolves models and routes generation to the active provider
     log_manager.py      -- Log file management + streaming
-    assessment_service.py, deep_dive_service.py, doc_quality_scorer.py
+    assessment_service.py, doc_quality_scorer.py
     auto_doc_update.py, git_poller.py, git_reingestion.py
     pdf_service.py, plugin_runner.py, summary_service.py
     model_pricing.py, ops_telemetry.py, validation_service.py

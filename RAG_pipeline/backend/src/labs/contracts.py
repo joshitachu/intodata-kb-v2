@@ -17,10 +17,58 @@ import hmac
 import json
 import time
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Final
 
 # Mounted under the `/api/v1` prefix in `src/api/main.py`.
 LABS_MCP_ROUTE: Final = "/labs/mcp"
+
+
+class LabsTurnMode(StrEnum):
+    """How wide the evidence menu is for ONE turn.
+
+    Defined here rather than in `src/schemas.py` because this is the module the
+    whole lane codes against and it has no imports of its own: the request
+    schema, the route, the runtime, the scope and the MCP bridge all need the
+    same two strings, and a second definition anywhere would be the thing that
+    later disagrees with the first.
+
+    * `CHAT` -- the default. Generated documentation and runtime evidence only.
+    * `DEEP_DIVE` -- the same agent, the same thread and the same model, with
+      the raw scan added to the tool menu. The scan carries the component
+      parameters, expressions, conditions and SQL that generated documentation
+      summarises away, and it is slow and expensive enough that admitting it to
+      every routine question is exactly what this mode exists to avoid.
+
+    A `StrEnum` so it serialises as its own value into the turn token and into
+    JSON without a custom encoder, and so an unknown string fails at the
+    boundary rather than silently widening anything.
+    """
+
+    CHAT = "chat"
+    DEEP_DIVE = "deep_dive"
+
+
+def _mode_or_chat(raw: object) -> LabsTurnMode:
+    """Read a mode out of untrusted-shape data, defaulting to the narrow one.
+
+    Used on the turn-token payload, where three things all mean "no mode was
+    stated": a token minted before this field existed, a token minted by a
+    build that names a mode this one does not have, and a malformed value. All
+    three resolve to `CHAT`, because the only safe reading of an unrecognised
+    breadth is the narrowest one -- the alternative is a token deciding for
+    itself which tools it may see.
+    """
+
+    if isinstance(raw, LabsTurnMode):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return LabsTurnMode(raw)
+        except ValueError:
+            return LabsTurnMode.CHAT
+    return LabsTurnMode.CHAT
+
 
 # A labs token is minted once per conversation, not once per turn: it is baked
 # into the workspace's `opencode.json` as an MCP header, and OpenCode reads that
@@ -54,6 +102,18 @@ class LabsTurnScope:
     #: boundary. Read as "remaining" only at the start of a turn, which is the
     #: one moment the two agree.
     remaining_tool_calls: int = 40
+    #: The evidence mode this scope was minted for.
+    #:
+    #: Carried so the scope stays a complete description of what the turn is
+    #: allowed to see -- the MCP bridge runs in a different request from the
+    #: turn and rebuilds everything from this object alone. It has the same
+    #: caveat as `remaining_tool_calls` and for the same reason: the token is
+    #: minted once per conversation and cached by OpenCode for 8 hours, so this
+    #: field records the mode the conversation's token was last minted under,
+    #: not necessarily the mode of the turn in flight. The live per-turn value
+    #: is `labs_turn_modes`, which resets at the turn boundary; this is the
+    #: fail-closed floor for a bridge request that arrives outside one.
+    mode: LabsTurnMode = LabsTurnMode.CHAT
 
 
 class LabsTokenRegistry:
@@ -100,6 +160,7 @@ class LabsTokenRegistry:
             "a": scope.access_token,
             "w": scope.workspace_dir,
             "t": scope.remaining_tool_calls,
+            "md": scope.mode.value,
             "exp": time.time() + (ttl_seconds or LABS_TOKEN_TTL_SECONDS),
         }
         payload = base64.urlsafe_b64encode(
@@ -144,6 +205,15 @@ class LabsTokenRegistry:
                 access_token=body.get("a"),
                 workspace_dir=str(body["w"]),
                 remaining_tool_calls=int(body.get("t", 40)),
+                # Fail closed on anything this build does not recognise. A token
+                # minted before the mode existed, or by a newer build naming a
+                # mode this one has never heard of, resolves to ordinary chat
+                # rather than to a wider tool menu. `LabsTurnMode(...)` raises
+                # `ValueError` on an unknown value, which the handler below
+                # turns into "unusable token"; that is the wrong outcome here,
+                # because the rest of the scope is perfectly valid and only the
+                # breadth is unknown.
+                mode=_mode_or_chat(body.get("md")),
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -265,6 +335,57 @@ class LabsTurnBudget:
 labs_turn_budget: Final = LabsTurnBudget()
 
 
+class LabsTurnModeRegistry:
+    """Which evidence mode the turn in flight is running under, by conversation.
+
+    This exists for precisely the reason `LabsTurnBudget` does, and the two are
+    deliberately the same shape. The MCP bearer is minted once per CONVERSATION
+    and baked into the workspace's `opencode.json`, which OpenCode reads when it
+    connects the MCP server rather than on every prompt. The mode is per TURN --
+    the same thread asks an ordinary question and then a deep one -- so it
+    cannot be authoritative from the token: `_resolve_binding` reuses a token
+    that still verifies rather than re-minting it, and even a forced re-mint
+    would not reach a client that has already cached the header. A conversation
+    whose first turn was chat would be stuck in chat for eight hours, silently.
+
+    The live value therefore lives here, set and cleared at the same turn
+    boundary as the budget (`src/labs/runtime.py::labs_turn_claim`), and read by
+    `src/labs/mcp_bridge.py` when it projects the tool menu. This is safe for
+    the same reason the claim lookup already there is safe: the bridge answers
+    `tools/list` and `tools/call` inside the turn that set the entry.
+
+    `current` falls back to the token's own mode, so a bridge request that
+    somehow arrives outside a turn boundary gets the narrow menu rather than a
+    `KeyError` or an accidental widening.
+    """
+
+    def __init__(self, max_entries: int = _MAX_TRACKED_CLAIMS) -> None:
+        self._modes: dict[int, LabsTurnMode] = {}
+        self._max_entries = max_entries
+
+    def start_turn(self, conversation_id: int, mode: LabsTurnMode) -> None:
+        if (
+            conversation_id not in self._modes
+            and len(self._modes) >= self._max_entries
+        ):
+            # Same eviction argument as the budget and the claim registry: every
+            # started turn ends in a `finally`, so an entry old enough to be
+            # evicted belongs to a turn whose in-process state is already gone.
+            self._modes.pop(next(iter(self._modes)), None)
+        self._modes[conversation_id] = mode
+
+    def end_turn(self, conversation_id: int) -> None:
+        self._modes.pop(conversation_id, None)
+
+    def current(
+        self, conversation_id: int, default: LabsTurnMode = LabsTurnMode.CHAT
+    ) -> LabsTurnMode:
+        return self._modes.get(conversation_id, default)
+
+
+labs_turn_modes: Final = LabsTurnModeRegistry()
+
+
 class LabsTurnClaimRegistry:
     """In-process `conversation_id -> LabsTurnClaim` for the turn in flight.
 
@@ -331,8 +452,11 @@ __all__ = [
     "LabsTurnBudget",
     "LabsTurnClaim",
     "LabsTurnClaimRegistry",
+    "LabsTurnMode",
+    "LabsTurnModeRegistry",
     "LabsTurnScope",
     "labs_token_registry",
     "labs_turn_budget",
     "labs_turn_claims",
+    "labs_turn_modes",
 ]

@@ -247,6 +247,12 @@ services:
     volumes:
       - labs_workspaces:/labs-workspaces
       - ./knowledge_base/output:/kb-output:ro
+      # The scan cache, read-only. `/kb-output` above is the GENERATED
+      # documentation; this is what generated it. The two are not
+      # interchangeable: generation summarises component parameters away, so a
+      # filter expression, a SQL lookup or a router condition survives only
+      # here. The deep-dive capabilities read it and never write.
+      - ./knowledge_base/intodoc-output:/intodoc-output:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -409,10 +415,6 @@ services:
       MCP_DOC_GENERATION_OPENROUTER_BASE_URL: ${MCP_DOC_GENERATION_OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
       MCP_MODEL_PRICING_JSON: ${MCP_MODEL_PRICING_JSON:-}
       MCP_AGENT_PHASE1_AGENTIC: "true"
-      MCP_DEEP_DIVE_ENGINE: ${MCP_DEEP_DIVE_ENGINE:-repo_agent}
-      MCP_DEEP_DIVE_MODEL: ${MCP_DEEP_DIVE_MODEL:-anthropic/claude-sonnet-4-6}
-      MCP_DEEP_DIVE_API_KEY: ${MCP_DEEP_DIVE_API_KEY:-}
-      MCP_DEEP_DIVE_BASE_URL: ${MCP_DEEP_DIVE_BASE_URL:-}
       MCP_OPS_CLIENT_SLUG: ${MCP_OPS_CLIENT_SLUG:-}
       MCP_OPS_ENVIRONMENT: ${MCP_OPS_ENVIRONMENT:-production}
       MCP_OPS_RELEASE_VERSION: ${MCP_OPS_RELEASE_VERSION:-}

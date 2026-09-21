@@ -27,7 +27,6 @@ SETTING_KEYS: tuple[str, ...] = (
     "rag_chat_model",
     "rag_embed_model",
     "pack_author_model",
-    "deep_dive_model",
     "doc_gen_analysis_model",
     "doc_gen_write_model",
 )
@@ -55,11 +54,6 @@ SETTING_REGISTRY: dict[str, SettingKey] = {
         key="pack_author_model",
         label="Pack author model",
         description="Dedicated model used for one compact Pack design per conversational turn.",
-    ),
-    "deep_dive_model": SettingKey(
-        key="deep_dive_model",
-        label="Deep dive model",
-        description="LLM used by the MCP deep-dive repo agent.",
     ),
     "doc_gen_analysis_model": SettingKey(
         key="doc_gen_analysis_model",

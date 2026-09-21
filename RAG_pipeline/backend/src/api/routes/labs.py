@@ -7,10 +7,16 @@ UI difference and contaminate the only thing this lane exists to measure: whethe
 the OpenCode loop can answer as well as the production harness over the same
 capability executor.
 
-Two things keep the lanes apart without a migration:
-  * stored titles are prefixed with `[labs] ` and the list endpoint filters on it;
-  * labs conversations are created with `visible_in_chat=False`, which is exactly
-    what the production list endpoint already filters on.
+What keeps the lanes apart is the `conversations.lane` column: this route creates
+`lane='v2'` and reads only `lane='v2'`. It used to be two hacks instead -- a
+`[labs] ` prefix written into the user's own title, and `visible_in_chat=False`
+so the production list would skip the row. Both are gone: the prefix broke as
+soon as a user typed it, and `visible_in_chat` belongs to the topology surface,
+where it means "the user has not promoted this thread", not "other lane".
+
+Old rows still carry the prefix in storage. It is stripped for display at the
+API boundary (`schemas.strip_legacy_lane_prefix`) rather than rewritten in the
+database, so nobody's title is edited to make a refactor tidy.
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ from sqlalchemy.orm import selectinload
 from src.api.dependencies import CurrentUser, DBSession
 from src.api.errors import api_error
 from src.db.models import Conversation, ConversationMessage
+from src.db.models.conversation import ConversationLane
 from src.harness.agent_runs import PublicAgentEvent
 from src.labs.opencode_client import OpenCodeClient, OpenCodeError
 from src.labs.runtime import (
@@ -50,13 +57,13 @@ from src.schemas import (
     ConversationMessageRequest,
     ConversationResponse,
     MessageResponse,
+    strip_legacy_lane_prefix,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/labs", tags=["labs"])
 
-LABS_TITLE_PREFIX = "[labs] "
 LABS_COHORT = "labs_opencode"
 
 #: Opt-in prefix that runs one turn on the read-only planning agent.
@@ -68,6 +75,13 @@ LABS_COHORT = "labs_opencode"
 #: product's own -- `src/harness/commands.py` publishes the discoverable command
 #: list, and those commands are likewise carried in the message text rather than
 #: in a field.
+#:
+#: `ConversationMessageRequest.mode` is the deliberate exception to that, and the
+#: difference is who has to see it. Plan mode is a thing the user TYPES, so the
+#: message text is the honest record of it. Deep dive is a toggle the client
+#: holds outside the message, per turn, and it has to survive a retry of the same
+#: text -- so it is a field. Production still ignores it; the schema documents
+#: that.
 LABS_PLAN_COMMAND: Final = "/plan"
 
 
@@ -104,10 +118,23 @@ class LabsHealthResponse(BaseModel):
 
 
 def _labs_title(raw: str | None) -> str:
-    base = (raw or "").strip()
-    if base.startswith(LABS_TITLE_PREFIX):
-        return base[:200]
-    return f"{LABS_TITLE_PREFIX}{base}"[:200]
+    """Store the title the user gave, bounded by the column width.
+
+    No lane marker is added any more -- `Conversation.lane` carries that -- so a
+    V2 title is now exactly what a V1 title is: the user's text, truncated.
+    """
+    return (raw or "").strip()[:200]
+
+
+def _display_title(conversation: Conversation) -> str:
+    """The title as the user sees it, for the lane's own title decisions.
+
+    A thread created before the `lane` column exists is stored with the retired
+    `[labs] ` prefix, so an untitled one reads as the bare prefix rather than as
+    empty. Auto-titling has to judge emptiness the way the browser displays it,
+    or one of those threads keeps a title of nothing forever.
+    """
+    return (strip_legacy_lane_prefix(conversation.title) or "").strip()
 
 
 def _select_labs_agent(query: str) -> tuple[str, str]:
@@ -142,6 +169,7 @@ def _conversation_response(conversation: Conversation, message_count: int) -> Co
         message_count=message_count,
         origin_surface=conversation.origin_surface,
         visible_in_chat=conversation.visible_in_chat,
+        lane=conversation.lane,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
     )
@@ -179,7 +207,7 @@ async def _load_labs_conversation(
         raise api_error(404, "not_found", "Conversation not found")
     if conversation.user_id != user.id:
         raise api_error(403, "forbidden", "Not authorized")
-    if not (conversation.title or "").startswith(LABS_TITLE_PREFIX):
+    if conversation.lane != ConversationLane.V2:
         # A production conversation reached through the labs path. Reported as
         # missing rather than forbidden: it does not exist in this lane.
         raise api_error(404, "not_found", "Conversation not found")
@@ -269,7 +297,7 @@ async def list_labs_conversations(
     labs_filter = (
         Conversation.user_id == user.id,
         Conversation.deleted_at.is_(None),
-        Conversation.title.startswith(LABS_TITLE_PREFIX, autoescape=True),
+        Conversation.lane == ConversationLane.V2,
     )
     total_result = await db.execute(select(func.count(Conversation.id)).where(*labs_filter))
     total = total_result.scalar_one()
@@ -306,14 +334,24 @@ async def create_labs_conversation(
 ) -> ConversationResponse:
     """Create a labs conversation.
 
-    `visible_in_chat=False` is what keeps it out of the production sidebar; the
-    `[labs] ` title prefix is what keeps production conversations out of here.
+    `lane='v2'` is the whole marker, and it is set here and never again: this
+    thread will own an OpenCode session carrying its own history, so moving it to
+    the V1 lane later would hand LangGraph a conversation it has never seen.
+
+    `origin_surface='chat'` and `visible_in_chat=True` because that is the truth
+    about this thread -- it was created on the chat surface and it belongs in the
+    one conversation list, badged with its lane. Those two fields describe where
+    a thread lives in the UI; the lane describes who answers it.
+
+    `request.lane` is ignored rather than validated: the route IS the lane, so
+    there is nothing for a client to choose here.
     """
     conversation = Conversation(
         user_id=user.id,
         title=_labs_title(request.title if request else None),
         origin_surface="chat",
-        visible_in_chat=False,
+        visible_in_chat=True,
+        lane=ConversationLane.V2,
     )
     db.add(conversation)
     await db.flush()
@@ -338,6 +376,7 @@ async def get_labs_conversation(
         messages=[_message_response(message) for message in conversation.messages],
         origin_surface=conversation.origin_surface,
         visible_in_chat=conversation.visible_in_chat,
+        lane=conversation.lane,
         agent_plan=None,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
@@ -435,11 +474,11 @@ async def send_labs_message_stream(
         )
 
     # Auto-title from the first user message, same as `/chat`. Only an untitled
-    # conversation (title is the bare lane prefix) is renamed. Titled from the
-    # stripped prompt: a title is derived text, and "[labs] /plan how does..."
-    # names the command rather than the subject.
-    if not conversation.messages and (conversation.title or "").strip() == LABS_TITLE_PREFIX.strip():
-        conversation.title = _labs_title(prompt[:80].strip())
+    # conversation is renamed -- see `_display_title` for why emptiness is judged
+    # on the displayed title. Titled from the stripped prompt: a title is derived
+    # text, and "/plan how does..." names the command rather than the subject.
+    if not conversation.messages and not _display_title(conversation):
+        conversation.title = _labs_title(prompt[:80])
 
     # Persisted verbatim, prefix included. This row is the record of what the
     # user typed, and rewriting it would show them a message they did not send
@@ -470,6 +509,11 @@ async def send_labs_message_stream(
             conversation_id=conversation_id,
             user_id=user.id,
             message_id=user_message.id,
+            # The turn boundary is also where the evidence mode is published for
+            # the MCP bridge to read. The bridge answers `tools/list` in its own
+            # request and can only see per-conversation state, so a mode passed
+            # as an argument to the turn would never reach the tool menu.
+            mode=request.mode,
         ) as claim_guard:
             queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
 
@@ -494,6 +538,11 @@ async def send_labs_message_stream(
                     # never forwarded them.
                     images=tuple(request.images or ()),
                     agent=agent,
+                    # Per turn, and deliberately not read back off the
+                    # conversation: the same thread asks an ordinary question
+                    # and then a deep one, so the toggle the user held for THIS
+                    # message is the only correct source.
+                    mode=request.mode,
                 )
             )
             sequence = 0

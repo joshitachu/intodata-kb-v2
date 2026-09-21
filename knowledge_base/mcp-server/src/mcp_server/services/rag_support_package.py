@@ -1,11 +1,13 @@
 """Hidden RAG support package for Phase 2 group analyses.
 
-Phase 4 cleanup deletes `docs_staging/_analysis/` before the atomic swap, so
-the published `docs/` tree would otherwise lose the group-level Phase 2
-analyses that later RAG layers and incremental webhook regeneration need.
+Cleanup deletes `docs_staging/_analysis/` before the atomic swap -- the custom
+lane in its own Phase 4, the claude-cli / opencode lane in
+`claude_service._finalize_memory_and_language` -- so the published `docs/` tree
+would otherwise lose the group-level Phase 2 analyses that later RAG layers and
+incremental webhook regeneration need.
 
-`build_rag_support_package()` copies an allowlist of `_analysis/{group}.md`
-files — including `{group}_part*` slices (large-group splits and
+`build_rag_support_package()` packages an allowlist of `_analysis/` group
+analyses — including `{group}_part*` slices (large-group splits and
 case-collision `_part_ci{k}` slices) resolved back to their facts-manifest
 group, never `_doc_pack_*`, `_bundle_*`, reports, or other runtime
 artifacts — into `docs_staging/_rag_support/` with a manifest. The atomic swap then carries `_rag_support/` into `docs/`.
@@ -17,6 +19,36 @@ the flat `output/{project_id}/analysis_cache/` that
 
 `_rag_support/` is internal: `RagBridge` only pushes top-level `docs/*.md`,
 and the docs routes never expose underscore-prefixed paths.
+
+TWO LAYOUTS, ONE ARTIFACT PER GROUP
+-----------------------------------
+Phase 2 stores a group either flat (`_analysis/fourps.md`) or as a directory of
+per-section files (`_analysis/fourps/COMPONENTS.md`, ...). Enumeration and
+reading go through `providers/custom/analysis_store`, never a glob, because a
+glob over the directory layout finds nothing at all and a glob over the flat
+one has already shipped the defect where `{group}_summary.md` counted as a
+group (run 260: 15 analyses reported as 30).
+
+The package keeps ONE artifact per group in BOTH layouts -- a directory is
+rendered back to one `{group}.md` by `analysis_store.read_group_analysis` --
+and that is a deliberate choice, not an accident of the old shape:
+
+* Retrieval granularity is already per section without per-section files. The
+  RAG ingester chunks with `ingestion/markdown_chunker.chunk_markdown`, which
+  is heading-aware for h1-h4, prepends the heading path to the embedded text
+  and records `section` / `unit` per chunk. The rendered `### SECTION` headings
+  therefore produce the same per-section chunks a per-section file would.
+* The package is also the incremental-regeneration cache.
+  `replace_analysis_cache_from_rag_support()` copies these filenames verbatim
+  into `analysis_cache/`, and `git_reingestion.setup_incremental_staging()`
+  copies them straight back into `docs_staging/_analysis/`. A per-section
+  filename (`fourps__COMPONENTS.md`) restored there would be read by
+  `analysis_store.list_groups` as a GROUP -- the exact confusion above, one
+  layout later.
+* Measured on run 258 (ETTM, 20 groups): one artifact per group is 20
+  artifacts / 532,573 bytes; one per section is 301 artifacts / 526,379 bytes,
+  of which 71 are under 500 bytes and 35 under 200 -- a 15x document count for
+  no extra evidence and a long tail of documents too thin to answer anything.
 """
 
 from __future__ import annotations
@@ -24,11 +56,21 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import logging
 import shutil
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from urllib.parse import quote
+
+from mcp_server.services.client_language_guard import (
+    REDACTED_CATEGORIES,
+    leakage_findings,
+    redact_internal_language,
+)
+
+logger = logging.getLogger(__name__)
 
 RAG_SUPPORT_DIRNAME = "_rag_support"
 PHASE2_ANALYSIS_SUBDIR = "phase2_analysis"
@@ -50,6 +92,20 @@ LAYER_EDITORIAL_OVERLAYS = "editorial_overlays"
 # designs, unknowns) under _rag_support/knowledge_model/ so RAG can answer
 # developer/operator/architect/business-owner questions the client prose omits.
 LAYER_KNOWLEDGE_MODEL = "knowledge_model"
+
+#: Internal layers whose content is run through
+#: ``client_language_guard.redact_internal_language`` before it is pushed to
+#: RAG (see :func:`collect_internal_artifacts`).
+#:
+#: ``technical_analysis`` only, and the boundary is deliberate. That layer is
+#: model-authored prose about the estate, where an internal path is incidental
+#: leakage. The other internal layers are deterministic Python renderings whose
+#: SUBJECT is often an artifact name -- ``support_maps`` is
+#: ``_facts/engineering_facts.md`` and friends, ``evidence_slices`` is per-doc
+#: evidence keyed by artifact -- so blanking those names would not remove
+#: leakage, it would remove the content. Extending this set to another layer is
+#: one line, and needs its own measurement first.
+REDACTED_INTERNAL_LAYERS: frozenset[str] = frozenset({LAYER_TECHNICAL_ANALYSIS})
 
 REASON_MISSING_BASELINE = "missing_baseline_commit"
 REASON_MISSING_DOCS = "missing_docs"
@@ -90,34 +146,101 @@ def analysis_stem_matches_group(stem: str, group: str) -> bool:
     return stem == group or stem.startswith(f"{group}_part")
 
 
+def _analysis_store():
+    """Import the analysis store lazily.
+
+    A module-level import would pull ``providers/custom/__init__``, which
+    imports the 7,876-line harness, into every importer of this module --
+    including ``rag_bridge``, which the API routes import at startup. It would
+    also create a latent cycle: ``pipeline/phases/phase4_cleanup`` imports this
+    module, and the harness imports that phase.
+    """
+    from mcp_server.providers.custom import analysis_store
+
+    return analysis_store
+
+
+class AnalysisSliceLayout(str, Enum):
+    """How one packaged analysis slice is stored under ``_analysis/``."""
+
+    FLAT = "flat"
+    DIRECTORY = "directory"
+
+
+@dataclass(frozen=True)
+class AnalysisSlice:
+    """One packageable analysis: its stem, its layout and its flat path."""
+
+    stem: str
+    layout: AnalysisSliceLayout
+    path: Path | None = None
+
+    @property
+    def filename(self) -> str:
+        """Name inside the package. One file per slice under either layout."""
+        return f"{self.stem}.md"
+
+    @property
+    def source_path(self) -> str:
+        """Staging-relative origin, recorded in the manifest."""
+        if self.layout is AnalysisSliceLayout.DIRECTORY:
+            return f"_analysis/{self.stem}/"
+        return f"_analysis/{self.stem}.md"
+
+
+def _analysis_slices(analysis_dir: Path) -> list[AnalysisSlice]:
+    """Every stored analysis under ``_analysis/``, sorted, whatever its layout.
+
+    Enumeration is ``analysis_store.list_groups``, which owns the exclusion
+    rule (no ``_``-prefixed artifact, no ``{group}_summary.md``) for both
+    layouts. Deliberately NOT a glob: ``glob("*.md")`` returns nothing for a
+    group stored as a directory, which is how a complete estate would publish
+    as an empty package.
+    """
+    store = _analysis_store()
+    slices: list[AnalysisSlice] = []
+    for stem in store.list_groups(analysis_dir):
+        try:
+            layout = store.layout_of(analysis_dir, stem)
+        except store.AnalysisPathError:
+            continue
+        if layout is store.AnalysisLayout.DIRECTORY:
+            slices.append(AnalysisSlice(stem, AnalysisSliceLayout.DIRECTORY))
+        elif layout is store.AnalysisLayout.FLAT:
+            slices.append(
+                AnalysisSlice(
+                    stem, AnalysisSliceLayout.FLAT, analysis_dir / f"{stem}.md"
+                )
+            )
+    return slices
+
+
 def resolve_group_analysis_files(
     analysis_dir: Path, groups: Iterable[str]
-) -> tuple[dict[str, list[Path]], list[str]]:
-    """Assign each ``_analysis/*.md`` slice file to its owning manifest group.
+) -> tuple[dict[str, list[AnalysisSlice]], list[str]]:
+    """Assign each stored ``_analysis/`` slice to its owning manifest group.
 
     Returns ``(owned, missing_groups)`` where ``owned`` maps each group with
-    at least one analysis slice to its sorted slice paths, and
-    ``missing_groups`` lists manifest groups with none. Ownership follows
+    at least one analysis slice to its sorted slices, and ``missing_groups``
+    lists manifest groups with none. Ownership follows
     :func:`analysis_stem_matches_group`; an exact stem match wins outright,
     otherwise the longest matching group owns the slice (so a slice can never
-    be claimed by a shorter prefix group). Files whose stem matches no
+    be claimed by a shorter prefix group). Slices whose stem matches no
     manifest group -- runtime artifacts (``_doc_pack_*``, ``_bundle_*``) and
     non-manifest analyses -- are never assigned.
     """
     group_set = set(groups)
-    owned: dict[str, list[Path]] = {group: [] for group in group_set}
-    if analysis_dir.is_dir():
-        for path in sorted(analysis_dir.glob("*.md")):
-            stem = path.stem
-            if stem in group_set:
-                owned[stem].append(path)
-                continue
-            candidates = [
-                group for group in group_set
-                if analysis_stem_matches_group(stem, group)
-            ]
-            if candidates:
-                owned[max(candidates, key=len)].append(path)
+    owned: dict[str, list[AnalysisSlice]] = {group: [] for group in group_set}
+    for item in _analysis_slices(analysis_dir):
+        if item.stem in group_set:
+            owned[item.stem].append(item)
+            continue
+        candidates = [
+            group for group in group_set
+            if analysis_stem_matches_group(item.stem, group)
+        ]
+        if candidates:
+            owned[max(candidates, key=len)].append(item)
     missing = sorted(group for group, files in owned.items() if not files)
     return {g: files for g, files in owned.items() if files}, missing
 
@@ -251,14 +374,22 @@ def build_rag_support_package(
     """Package Phase 2 group analyses into `staging_dir/_rag_support/`.
 
     Recreates `_rag_support/phase2_analysis/` from scratch (stale files from a
-    resumed run cannot survive) and copies every `_analysis/` slice owned by a
-    manifest group -- ``{group}.md`` plus any ``{group}_part*`` slice the
+    resumed run cannot survive) and packages every `_analysis/` slice owned by
+    a manifest group -- ``{group}`` plus any ``{group}_part*`` slice the
     pipeline produced (large-group splits, case-collision ``_part_ci{k}``
-    slices; see :func:`resolve_group_analysis_files`). Slice filenames are
+    slices; see :func:`resolve_group_analysis_files`). A FLAT slice is copied
+    byte-for-byte; a DIRECTORY slice is rendered back to one markdown file by
+    ``analysis_store.read_group_analysis`` (see the module docstring for why
+    one artifact per group rather than one per section). Slice filenames are
     kept verbatim so case-colliding groups cannot clobber each other inside
     the package on case-insensitive filesystems. Groups without any analysis
     slice are recorded in the manifest's `missing_groups`; no fallback content
     is synthesized.
+
+    A slice that cannot be read is contained, not fatal: it is recorded in
+    `failed_slices` and the rest of the estate still publishes. Losing 19
+    groups because the 20th has an unreadable directory is the fail-closed
+    behaviour this lane has been removing everywhere else.
 
     Returns the manifest dict that was written to `_rag_support/manifest.json`.
     """
@@ -270,23 +401,67 @@ def build_rag_support_package(
         shutil.rmtree(package_dir)
     package_dir.mkdir(parents=True, exist_ok=True)
 
+    store = _analysis_store()
     owned, missing_groups = resolve_group_analysis_files(analysis_dir, groups)
     artifacts: list[dict] = []
+    failed_slices: list[dict] = []
     for group in sorted(owned):
-        for source in owned[group]:
-            target = package_dir / source.name
-            shutil.copy2(source, target)
-            data = target.read_bytes()
+        for item in owned[group]:
+            target = package_dir / item.filename
+            try:
+                if item.layout is AnalysisSliceLayout.DIRECTORY:
+                    target.write_text(
+                        store.read_group_analysis(analysis_dir, item.stem),
+                        encoding="utf-8",
+                    )
+                    sections = list(store.list_sections(analysis_dir, item.stem))
+                else:
+                    shutil.copy2(item.path, target)
+                    # Empty because a flat file's sections are only knowable by
+                    # PARSING it, and the whole point of the directory layout
+                    # is that a listing replaces that parse. ``layout`` is what
+                    # distinguishes "flat, not enumerated" from "no sections".
+                    sections = []
+                data = target.read_bytes()
+            except (OSError, ValueError, store.SectionContractError) as exc:
+                target.unlink(missing_ok=True)
+                logger.warning(
+                    "RAG support package: cannot read analysis %s (%s)",
+                    item.source_path,
+                    exc,
+                )
+                failed_slices.append(
+                    {
+                        "group": group,
+                        "source_path": item.source_path,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                continue
+            # Diagnostics only. The rewrite that ENFORCES this happens at the
+            # RAG boundary in collect_internal_artifacts(), because the bytes
+            # on disk here are also restored into analysis_cache/ and back
+            # into _analysis/ on an incremental run, where internal paths are
+            # correct working evidence.
+            residue = leakage_findings(
+                data.decode("utf-8", errors="replace"), document=item.filename
+            )
             artifacts.append(
                 {
-                    "path": f"{PHASE2_ANALYSIS_SUBDIR}/{source.name}",
-                    "source_path": f"_analysis/{source.name}",
-                    "source_layer": "technical_analysis",
+                    "path": f"{PHASE2_ANALYSIS_SUBDIR}/{item.filename}",
+                    "source_path": item.source_path,
+                    "source_layer": LAYER_TECHNICAL_ANALYSIS,
                     "artifact_type": "phase2_group_analysis",
                     "visibility": "internal",
                     "group": group,
+                    "layout": item.layout.value,
+                    "sections": sections,
                     "bytes": len(data),
                     "sha256": hashlib.sha256(data).hexdigest(),
+                    "internal_language_findings": len(residue),
+                    "internal_language_redactable": sum(
+                        1 for f in residue if f.category in REDACTED_CATEGORIES
+                    ),
                 }
             )
 
@@ -296,6 +471,12 @@ def build_rag_support_package(
         "platform": platform,
         "artifacts": artifacts,
         "missing_groups": missing_groups,
+        "failed_slices": failed_slices,
+        "internal_language": {
+            "findings": sum(a["internal_language_findings"] for a in artifacts),
+            "redactable": sum(a["internal_language_redactable"] for a in artifacts),
+            "enforced_at": "collect_internal_artifacts",
+        },
     }
     (support_dir / MANIFEST_FILENAME).write_text(
         json.dumps(manifest, indent=2), encoding="utf-8"
@@ -363,6 +544,18 @@ def collect_internal_artifacts(
     ready for ``RagBridge.push_markdown``. Only markdown is collected —
     ``_facts/*.csv`` and ``*.json`` feed the entity alias table, never the
     vector corpus. Missing layers are skipped; empty files are dropped.
+
+    Content of the layers in :data:`REDACTED_INTERNAL_LAYERS` is rewritten by
+    ``client_language_guard.redact_internal_language`` on the way out. This is
+    the publication boundary and the only place the rewrite happens: the file
+    on disk stays verbatim because it is also the incremental-regeneration
+    cache. Marking the layer internal is NOT sufficient on its own -- measured
+    on the RAG backend, an internal chunk is out of the default partition but
+    rung-2 escalation retrieves it and merges it as an auxiliary source that
+    "receive[s] reference numbers and [is] citable", so its text can be quoted
+    back to a client verbatim. See the ``client_language_guard`` module
+    docstring for the full measurement and for why prose categories are
+    reported rather than rewritten.
     """
     group_by_name: dict[str, str] = {}
     manifest_path = docs_dir / RAG_SUPPORT_DIRNAME / MANIFEST_FILENAME
@@ -424,6 +617,9 @@ def collect_internal_artifacts(
             content = path.read_text(encoding="utf-8")
             if not content.strip():
                 continue
+            redactions = 0
+            if source_layer in REDACTED_INTERNAL_LAYERS:
+                content, redactions = redact_internal_language(content)
             metadata: dict = {
                 "source_layer": source_layer,
                 "artifact_type": artifact_type,
@@ -432,6 +628,8 @@ def collect_internal_artifacts(
                 "doc_name": path.stem,
                 "project_id": project_id,
             }
+            if source_layer in REDACTED_INTERNAL_LAYERS:
+                metadata["internal_language_redactions"] = redactions
             if run_id is not None:
                 metadata["run_id"] = run_id
             if group_key == "group":

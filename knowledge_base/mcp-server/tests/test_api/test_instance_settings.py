@@ -40,12 +40,12 @@ class TestGet:
 
     async def test_get_returns_existing_overrides(self, client, db_session):
         from mcp_server.db.models import InstanceSetting
-        db_session.add(InstanceSetting(key="deep_dive_model", value="anthropic/claude-sonnet-4-6"))
+        db_session.add(InstanceSetting(key="doc_gen_analysis_model", value="anthropic/claude-sonnet-4-6"))
         await db_session.commit()
         resp = await client.get("/mcp/admin/instance-settings")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["settings"]["deep_dive_model"] == "anthropic/claude-sonnet-4-6"
+        assert body["settings"]["doc_gen_analysis_model"] == "anthropic/claude-sonnet-4-6"
 
 
 class TestPut:
@@ -64,7 +64,7 @@ class TestPut:
         ):
             resp = await client.put(
                 "/mcp/admin/instance-settings",
-                json={"settings": {"deep_dive_model": "bogus/model"}},
+                json={"settings": {"doc_gen_analysis_model": "bogus/model"}},
             )
         assert resp.status_code == 400
         assert "Unknown model id" in resp.text
@@ -80,10 +80,10 @@ class TestPut:
     async def test_put_writes_and_audits(self, client, db_session):
         resp = await client.put(
             "/mcp/admin/instance-settings",
-            json={"settings": {"deep_dive_model": "anthropic/claude-sonnet-4-6"}},
+            json={"settings": {"doc_gen_analysis_model": "anthropic/claude-sonnet-4-6"}},
         )
         assert resp.status_code == 200
-        assert resp.json()["settings"]["deep_dive_model"] == "anthropic/claude-sonnet-4-6"
+        assert resp.json()["settings"]["doc_gen_analysis_model"] == "anthropic/claude-sonnet-4-6"
 
         result = await db_session.execute(
             text("SELECT action, details FROM audit_logs WHERE action = 'update_instance_settings'")
@@ -97,16 +97,16 @@ class TestPut:
             details = json.loads(details_raw.decode("utf-8"))
         else:
             details = details_raw
-        assert "deep_dive_model" in details["diff"], f"details={details!r}"
-        assert details["diff"]["deep_dive_model"]["after"] == "anthropic/claude-sonnet-4-6"
+        assert "doc_gen_analysis_model" in details["diff"], f"details={details!r}"
+        assert details["diff"]["doc_gen_analysis_model"]["after"] == "anthropic/claude-sonnet-4-6"
 
     async def test_put_empty_string_clears(self, client, db_session):
         from mcp_server.db.models import InstanceSetting
-        db_session.add(InstanceSetting(key="deep_dive_model", value="anthropic/claude-sonnet-4-6"))
+        db_session.add(InstanceSetting(key="doc_gen_analysis_model", value="anthropic/claude-sonnet-4-6"))
         await db_session.commit()
         resp = await client.put(
             "/mcp/admin/instance-settings",
-            json={"settings": {"deep_dive_model": ""}},
+            json={"settings": {"doc_gen_analysis_model": ""}},
         )
         assert resp.status_code == 200
         assert resp.json()["settings"] == {}

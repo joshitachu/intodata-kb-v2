@@ -81,7 +81,12 @@ _DEPLOYMENT_LOG_CAPTURE_LIMIT = 100
 # ten that the failed-job log ceiling allows. Sharing that ceiling is why 40 of
 # 46 routes showed "Not supplied": not because TMC withheld anything, but
 # because we never asked those forty.
-_DEPLOYMENT_COUNTER_RUN_LIMIT = 100
+# The unit is one deployment per (route, ENGINE), not per route -- see
+# `latest_deployment_runs` below. A clustered estate multiplies the count:
+# measured on a live mirror, 47 routes occupy 75 route/engine pairs. An engine
+# that returns nothing costs one cheap call (the total comes back 0 and the
+# paginated reader stops), and that call is how a silent engine stays visible.
+_DEPLOYMENT_COUNTER_RUN_LIMIT = 200
 # Log pages are bulk reads. The 10s that suits a list call is not enough for a
 # page out of a multi-hundred-thousand-line log, and a timeout here reads
 # downstream as "this run had no logs".
@@ -1035,15 +1040,31 @@ class TalendTmcRuntimeProvider:
                 log_ceiling,
             )
         # A Route/Data Service execution represents a deployment lifecycle, not
-        # a batch failure. Capture the latest deployment's shared OSGi log even
-        # while it is running so operators can actually inspect route activity.
-        latest_deployment_runs: dict[tuple[str, str], RuntimeJobRun] = {}
+        # a batch failure. Capture the latest deployment's log even while it is
+        # running so operators can actually inspect route activity.
+        # How much of the engine that export contains is tenant-dependent, so
+        # neither assumption is safe to build on: on one estate the captured
+        # metric lines named ONLY the downloaded deployment's own route, which
+        # is why a per-engine sample cannot stand in for a per-route fetch;
+        # `_route_metrics_from_log` still attributes on the name IN the line,
+        # which stays correct if a tenant does export the shared engine log.
+        # A clustered estate deploys one Route to several remote engines, and TMC
+        # models that as ONE task with one execution per engine. Keying on
+        # `job_id` alone therefore kept a single engine's execution and never
+        # asked the others -- and which engine won was decided by whichever
+        # finished its rolling redeploy last. Verified on a live estate: every
+        # Route had 1 job_id and 2 engine executions, the margin was as little
+        # as 23 seconds, and 24 of 46 routes consequently reported no
+        # throughput at all. `engine_id` is what distinguishes a deployment.
+        latest_deployment_runs: dict[tuple[str, str, str], RuntimeJobRun] = {}
         for run in runs_by_recency:
             if run.executable_kind in {
                 RuntimeExecutableKind.ROUTE,
                 RuntimeExecutableKind.DATA_SERVICE,
             }:
-                latest_deployment_runs.setdefault((run.source_key, run.job_id), run)
+                latest_deployment_runs.setdefault(
+                    (run.source_key, run.job_id, run.engine_id or ""), run
+                )
         deployment_ceiling = (
             settings.talend_tmc_deployment_counter_run_limit
             or _DEPLOYMENT_COUNTER_RUN_LIMIT
@@ -1129,6 +1150,42 @@ class TalendTmcRuntimeProvider:
         )
         log_result_count = len(log_runs)
         log_events = [item for result in detail_results[:log_result_count] for item in result]
+        # An engine that answers every log request with an empty body is
+        # indistinguishable, downstream, from a set of routes that processed
+        # nothing. Verified on a live two-engine cluster: one engine returned
+        # content for 12 of 14 deployments while the other returned it for 0 of
+        # 14 -- including ten failed deployments of a payment-file route, whose
+        # diagnosis is therefore not available to us at all. Report the split
+        # per engine so the gap is attributed to the engine and not to the
+        # routes running on it.
+        dekking: dict[str, list[int]] = {}
+        for run, resultaat in zip(log_runs, detail_results[:log_result_count], strict=False):
+            if run.executable_kind not in {
+                RuntimeExecutableKind.ROUTE,
+                RuntimeExecutableKind.DATA_SERVICE,
+            }:
+                continue
+            engine = run.engine_name or run.engine_id or "(unknown engine)"
+            telling = dekking.setdefault(engine, [0, 0])
+            telling[1] += 1
+            if resultaat:
+                telling[0] += 1
+        for engine, (met_regels, totaal) in sorted(dekking.items()):
+            if met_regels:
+                logger.info(
+                    "TMC deployment logs: engine %s returned lines for %d of %d deployments",
+                    engine,
+                    met_regels,
+                    totaal,
+                )
+            else:
+                logger.warning(
+                    "TMC deployment logs: engine %s returned no lines for any of its %d "
+                    "deployments; route throughput and failure diagnosis are unavailable "
+                    "for that part of the cluster",
+                    engine,
+                    totaal,
+                )
         # The exchange counters live in the log text, not in the API payload.
         # Read them back onto the runs they describe before the batch is built.
         gevuld = _apply_route_metrics(job_runs, log_events)
@@ -1769,33 +1826,50 @@ def _apply_route_metrics(
     life of the deployment, so an earlier line is a strictly worse answer to
     the same question. Matching is on route name against `job_name`; a name we
     do not recognise is skipped rather than guessed at.
+
+    Counters are per (ENGINE, route). A clustered estate runs the same Route on
+    several engines at once, each with its own cumulative counters, so writing
+    an engine's numbers onto the route's newest run regardless of engine hands
+    one engine's totals to the other's deployment -- and publishes one engine's
+    share as the route's estate-wide throughput. The engine of a line is the
+    engine of the deployment whose log carried it; the route is the name IN the
+    line, because the export can be the shared engine log and a sibling route's
+    line is normal there.
     """
-    laatste: dict[str, dict[str, int]] = {}
+    engine_van_run = {run.run_id: (run.engine_id or "") for run in runs}
+    laatste: dict[tuple[str, str], dict[str, int]] = {}
     for event in sorted(events, key=lambda item: (item.timestamp, item.line_ordinal)):
         gelezen = _route_metrics_from_log(event.message)
-        if gelezen:
-            laatste[gelezen[0]] = gelezen[1]
+        if not gelezen:
+            continue
+        engine = engine_van_run.get(event.execution_id)
+        if engine is None:
+            # A line whose deployment is not in this batch cannot be attributed
+            # to an engine, and an engine-less guess is what this key exists to
+            # prevent.
+            continue
+        laatste[(engine, gelezen[0])] = gelezen[1]
     if not laatste:
         return 0
     # The counters are cumulative for the RUNNING deployment, so they belong to
-    # the newest run of that route and to no other. Writing them onto every run
-    # of the same route would hand a deployment that ended in July the totals of
-    # the one running today.
-    nieuwste: dict[str, RuntimeJobRun] = {}
+    # the newest run of that route ON THAT ENGINE and to no other. Writing them
+    # onto every run of the same route would hand a deployment that ended in
+    # July the totals of the one running today.
+    nieuwste: dict[tuple[str, str], RuntimeJobRun] = {}
     for run in runs:
         if run.executable_kind not in {
             RuntimeExecutableKind.ROUTE,
             RuntimeExecutableKind.DATA_SERVICE,
         }:
             continue
-        naam = run.job_name or ""
-        huidig = nieuwste.get(naam)
+        sleutel = (run.engine_id or "", run.job_name or "")
+        huidig = nieuwste.get(sleutel)
         if huidig is None or run.started_at > huidig.started_at:
-            nieuwste[naam] = run
+            nieuwste[sleutel] = run
 
     gevuld = 0
-    for naam, run in nieuwste.items():
-        tellers = laatste.get(naam)
+    for sleutel, run in nieuwste.items():
+        tellers = laatste.get(sleutel)
         if not tellers:
             continue
         run.completed_exchanges = tellers.get("RouteExchangesCompleted")

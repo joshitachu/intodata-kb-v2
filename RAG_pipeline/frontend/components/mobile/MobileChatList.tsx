@@ -6,6 +6,9 @@ import { Plus, Loader2, MessageSquare, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useChatContextSafe } from "@/contexts/ChatContext";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { LaneBadge } from "@/components/chat/LaneBadge";
+import { LaneFilterControl } from "@/components/chat/LaneFilterControl";
+import { LANE_FILTER_LABEL } from "@/components/chat/lane";
 import type { ConversationResponse } from "@/types";
 
 export function MobileChatList() {
@@ -13,14 +16,20 @@ export function MobileChatList() {
   const router = useRouter();
   const [deleteTarget, setDeleteTarget] = useState<ConversationResponse | null>(null);
 
+  // Same lane filter as the desktop sidebar, over the same provider state, so
+  // narrowing on one surface is not silently undone by the other.
   const sorted = useMemo(() => {
     if (!chat) return [];
-    return [...chat.conversations].sort((a, b) => {
+    return [...chat.visibleConversations].sort((a, b) => {
       const at = a.updated_at ?? a.created_at;
       const bt = b.updated_at ?? b.created_at;
       return bt.localeCompare(at);
     });
-  }, [chat?.conversations]);
+  }, [chat?.visibleConversations]);
+  const hasHiddenByFilter =
+    chat !== null &&
+    chat.laneFilter !== "all" &&
+    chat.conversations.length > sorted.length;
 
   function open(id: number) {
     router.push(`/?c=${id}`);
@@ -48,6 +57,11 @@ export function MobileChatList() {
           <Plus className="h-4 w-4" />
           New Chat
         </button>
+        <LaneFilterControl
+          value={chat.laneFilter}
+          onChange={chat.setLaneFilter}
+          className="mt-2 flex w-full"
+        />
       </div>
 
       <div className="flex-1 overflow-y-auto">
@@ -58,8 +72,19 @@ export function MobileChatList() {
         ) : sorted.length === 0 ? (
           <div className="px-6 py-12 text-center text-sm text-muted-foreground">
             <MessageSquare className="h-10 w-10 mx-auto mb-3 opacity-40" />
-            <p>No conversations yet.</p>
-            <p className="mt-1 text-xs">Tap "New Chat" to start one.</p>
+            {hasHiddenByFilter ? (
+              <>
+                <p>No {LANE_FILTER_LABEL[chat.laneFilter]} conversations.</p>
+                <p className="mt-1 text-xs">
+                  Other lanes are hidden by the filter above.
+                </p>
+              </>
+            ) : (
+              <>
+                <p>No conversations yet.</p>
+                <p className="mt-1 text-xs">Tap "New Chat" to start one.</p>
+              </>
+            )}
           </div>
         ) : (
           <ul className="divide-y divide-border/60">
@@ -73,8 +98,11 @@ export function MobileChatList() {
                     <div className="text-sm font-medium truncate text-foreground">
                       {conv.title || "New Chat"}
                     </div>
-                    <div className="text-xs text-muted-foreground mt-0.5">
-                      {formatDate(conv.updated_at ?? conv.created_at)}
+                    <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <LaneBadge lane={conv.lane} />
+                      <span className="truncate">
+                        {formatDate(conv.updated_at ?? conv.created_at)}
+                      </span>
                     </div>
                   </button>
                   <button

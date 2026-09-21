@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
@@ -11,6 +12,25 @@ from src.db.base import Base
 
 if TYPE_CHECKING:
     from src.db.models.user import User
+
+
+class ConversationLane(StrEnum):
+    """Which reasoning runtime owns a conversation's turns.
+
+    `StrEnum` rather than loose strings because these values are written to the
+    database, compared in SQL filters, and returned on the wire; the lane was
+    previously encoded as a `[labs] ` prefix on the user's own title, which broke
+    the moment a user typed that prefix themselves, could not be indexed, and
+    forced string surgery into every read path.
+
+    The member values ARE the stored and published values, so renaming one is a
+    breaking change for existing rows and for clients alike.
+    """
+
+    #: The production LangGraph harness (`/api/v1/conversations`).
+    V1 = "v1"
+    #: The OpenCode lane (`/api/v1/labs/*`).
+    V2 = "v2"
 
 
 class Conversation(Base):
@@ -30,6 +50,31 @@ class Conversation(Base):
     )
     visible_in_chat: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default="true"
+    )
+    # Which reasoning runtime answers this thread's turns (`ConversationLane`).
+    #
+    # Orthogonal to the two fields above and deliberately not merged with them:
+    # `origin_surface` records the UI surface a thread was born on and
+    # `visible_in_chat` whether the user wants it listed, while the lane records
+    # who answers. A V2 thread is an ordinary chat-surface thread that happens to
+    # be answered by OpenCode.
+    #
+    # Fixed for the life of the thread, and no route updates it. A V2 thread owns
+    # an OpenCode session holding its own history (`opencode_session_id` below)
+    # and a V1 thread owns LangGraph conversation state; switching lanes mid
+    # thread would hand the other runtime a conversation it has never seen, and
+    # the user would get a confident answer built on none of what was said.
+    #
+    # Indexed because the unified conversation list can be narrowed to one lane.
+    # Two distinct values make the index worth little on its own today; it is
+    # cheap, and the alternative -- adding it later, under load, on the table the
+    # sidebar reads on every page load -- is not.
+    lane: Mapped[str] = mapped_column(
+        String(16),
+        default=ConversationLane.V1,
+        server_default=ConversationLane.V1.value,
+        index=True,
+        nullable=False,
     )
     # The OpenCode session this conversation's labs turns run in, when it has
     # one. NULL for every conversation on the production `/chat` path, which has

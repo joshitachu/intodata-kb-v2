@@ -646,18 +646,6 @@ class MCPServerConfig(BaseSettings):
     docgen_adaptive_concurrency: bool = True  # MCP_DOCGEN_ADAPTIVE_CONCURRENCY
     phase_cost_warning_input_tokens: int = 500_000  # MCP_PHASE_COST_WARNING_INPUT_TOKENS
 
-    # Deep Dive repo-agent runtime
-    deep_dive_engine: str = "repo_agent"  # MCP_DEEP_DIVE_ENGINE: repo_agent | claude_cli
-    deep_dive_model: str = "anthropic/claude-sonnet-4-6"  # MCP_DEEP_DIVE_MODEL
-    deep_dive_api_key: str | None = None  # MCP_DEEP_DIVE_API_KEY
-    deep_dive_base_url: str | None = None  # MCP_DEEP_DIVE_BASE_URL
-    deep_dive_max_tool_calls: int = 40  # MCP_DEEP_DIVE_MAX_TOOL_CALLS
-    deep_dive_max_file_bytes: int = 120_000  # MCP_DEEP_DIVE_MAX_FILE_BYTES
-    deep_dive_max_search_results: int = 50  # MCP_DEEP_DIVE_MAX_SEARCH_RESULTS
-    deep_dive_timeout_s: float = 300.0  # MCP_DEEP_DIVE_TIMEOUT_S
-    deep_dive_allow_claude_cli_fallback: bool = False  # MCP_DEEP_DIVE_ALLOW_CLAUDE_CLI_FALLBACK
-    deep_dive_max_answer_tokens: int = 8_000  # MCP_DEEP_DIVE_MAX_ANSWER_TOKENS
-
     # Instruction pack directory (relative to project_root) — US-106
     instruction_pack_dir: str = "packs/default"  # MCP_INSTRUCTION_PACK_DIR
 

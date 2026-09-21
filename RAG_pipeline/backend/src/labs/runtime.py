@@ -36,6 +36,21 @@ have to be thrown away. The `todos` array is there for the same reason: this
 agent's plan exists only as the argument of a tool call, and without a structured
 frame to carry it the only route it has to the user is the answer body -- which
 is where it used to end up, as thirteen paragraphs of narration above the answer.
+
+What a turn cost, in the same table as the production lane
+-----------------------------------------------------------
+Every turn stages one `query_usage` row under the interface
+:data:`LABS_USAGE_INTERFACE`, so this lane's spend can be charted next to the
+production harness's (`conversation_agent`) with one `GROUP BY`. Before that row
+existed, thirty-eight measured turns left no trace of their cost anywhere but the
+OpenCode process's own memory.
+
+The numbers come off the **bus**, not off the reply, and that is the load-bearing
+part. `send_message` returns the last assistant message alone, so its `info.cost`
+is a single step of a turn that routinely runs four or five -- 37% and 69% of the
+true total on the two live conversations this was measured against. The bus
+announces every step, the turn is already subscribed to it, and the reply is kept
+only as the fallback for a turn whose subscription never went live.
 """
 
 from __future__ import annotations
@@ -61,6 +76,7 @@ from src.db.models.harness import (
     HarnessConversationStateRow,
     HarnessConversationTurnClaimRow,
 )
+from src.db.models.query_usage import QueryUsage
 from src.harness.conversation_state import (
     ConversationStateConflict,
     ConversationStateDenied,
@@ -76,16 +92,20 @@ from src.harness.guidance.models import ResolvedGuidance
 from src.labs.contracts import (
     LabsToolCallRecord,
     LabsTurnClaim,
+    LabsTurnMode,
     LabsTurnScope,
     labs_token_registry,
     labs_turn_budget,
     labs_turn_claims,
+    labs_turn_modes,
 )
+from src.labs.generation_memory import GenerationMemory, compile_generation_memory
 from src.labs.mcp_bridge import drain_tool_calls
 from src.labs.opencode_client import (
     BUS_PART_REASONING,
     BUS_PART_TEXT,
     Attachment,
+    BusStepUsage,
     ModelRef,
     OpenCodeClient,
     OpenCodeError,
@@ -94,6 +114,7 @@ from src.labs.opencode_client import (
     bus_event_delta_part_id,
     bus_event_is_idle,
     bus_event_part_kind,
+    bus_event_step_usage,
     bus_event_text_delta,
     bus_event_tool_input,
     bus_event_tool_label,
@@ -185,6 +206,33 @@ STREAM_REASONING: Final = _env_flag("LABS_STREAM_REASONING", default=True)
 HARD_DEADLINE_SECONDS = float(os.environ.get("LABS_TURN_DEADLINE_SECONDS", "") or 120.0)
 
 LABS_MODEL: Final = ModelRef(id=LABS_MODEL_ID, provider_id=LABS_PROVIDER_ID)
+
+#: The `query_usage.interface` value this lane writes.
+#:
+#: A value of its own is the entire point of the row: V1 and V2 have to be
+#: separable in one `GROUP BY interface`, which is what `usage_admin` already
+#: does. The column holds `conversation_agent` (the production harness),
+#: `conversation`, `rag_query`, `deep_dive` and `doc_generation`; this collides
+#: with none of them, and it is the same lane name the turn already publishes as
+#: the `cohort` on `run.started` and writes into the claim receipt as `lane`, so
+#: the log, the stream and the cost table all say one thing.
+LABS_USAGE_INTERFACE: Final = "labs_opencode"
+
+#: `query_usage.model_name`, spelled the way the production lane spells it.
+#:
+#: `agent_chat_runtime` stores the provider-qualified name (`kimi/kimi-k2.6`) and
+#: the bare provider beside it. Matching that is not cosmetic: `usage_admin`
+#: groups by (`model_name`, `provider`), so a bare `deepseek-flash` would sit in
+#: its own bucket instead of alongside every model the other lane reports.
+LABS_USAGE_MODEL_NAME: Final = f"{LABS_PROVIDER_ID}/{LABS_MODEL_ID}"
+
+# `query_usage` column widths. Values are cut to these before the row is staged
+# because the row rides on the ROUTE's commit -- the one that persists the
+# answer -- so an oversize string here would cost the user their answer rather
+# than just its cost record. See `_stage_turn_usage`.
+_USAGE_MODEL_NAME_MAX_CHARS: Final = 100
+_USAGE_PROVIDER_MAX_CHARS: Final = 50
+_USAGE_PROJECT_ID_MAX_CHARS: Final = 255
 
 # How long to wait for the bus subscription to prove itself live before sending
 # the prompt anyway. `server.connected` arrives on connect, so this is a
@@ -409,6 +457,7 @@ async def labs_turn_claim(
     conversation_id: int,
     user_id: int,
     message_id: int,
+    mode: LabsTurnMode = LabsTurnMode.CHAT,
 ) -> AsyncIterator[LabsClaimGuard]:
     """Hold the Conversation State claim for the duration of one labs turn.
 
@@ -426,9 +475,17 @@ async def labs_turn_claim(
     not depend on its outcome. `bind` still resets as well, which is harmless:
     `start_turn` is idempotent within one boundary and the second call sets the
     same zero.
+
+    `mode` is published here for the same reason and with the same lifetime: the
+    MCP bridge builds the tool menu in a DIFFERENT request from this one and can
+    only read per-conversation state, while the mode is a property of one turn.
+    Published unconditionally, ahead of the claim, so a turn that loses the claim
+    race still runs under the mode the user asked for rather than under whatever
+    the previous turn left behind.
     """
 
     labs_turn_budget.start_turn(conversation_id)
+    labs_turn_modes.start_turn(conversation_id, mode)
     guard = LabsClaimGuard(
         claim=await _acquire_labs_claim(
             db=db,
@@ -455,6 +512,11 @@ async def labs_turn_claim(
         # it out keeps the pair visible in one function instead of depending on
         # two objects sharing an instance. `end_turn` is idempotent.
         labs_turn_budget.end_turn(conversation_id)
+        # And the mode, cleared on the same boundary. Leaving a deep-dive entry
+        # behind would hand the NEXT turn in this conversation the wide tool
+        # menu without anyone asking for it, which is the one failure this
+        # registry exists to prevent.
+        labs_turn_modes.end_turn(conversation_id)
         if claim is not None:
             # Settling is shielded for the same reason the route shields the
             # turn task -- an unsettled claim locks the conversation until its
@@ -473,6 +535,7 @@ def _build_scope(
     permissions: frozenset[str] | set[str],
     access_token: str | None,
     workspace_dir: str,
+    mode: LabsTurnMode = LabsTurnMode.CHAT,
 ) -> LabsTurnScope:
     return LabsTurnScope(
         user_id=user_id,
@@ -482,6 +545,7 @@ def _build_scope(
         permissions=frozenset(permissions),
         access_token=access_token,
         workspace_dir=workspace_dir,
+        mode=mode,
     )
 
 
@@ -902,12 +966,31 @@ class _BusStream:
     #: The last plan published, so the repeated frames of one `todowrite` call
     #: do not publish the same step list three times.
     _plan_signature: str | None = None
+    #: What each model step of this turn cost, keyed by its `step-finish` part.
+    #:
+    #: Keyed rather than appended because the bus re-emits a part's frame on
+    #: every state change, and a turn that counted one step twice would report
+    #: double its cost. A later frame for the same part replaces the earlier one:
+    #: the part is terminal, so the server's last word on it is the right one.
+    _step_usage: dict[str, BusStepUsage] = field(default_factory=dict)
 
     @property
     def tool_counts(self) -> collections.Counter[str]:
         """Every tool this turn ran, by name. A copy: callers must not mutate."""
 
         return collections.Counter(self._tool_counts)
+
+    @property
+    def step_usage(self) -> list[BusStepUsage]:
+        """Every model step this turn finished, in the order the bus closed them.
+
+        The complete turn, which is the point. The blocking `send_message` hands
+        back the last assistant message only, so pricing a turn off its reply
+        charges for one step of four or five -- 37% and 69% of the real total on
+        the two live conversations this was measured against.
+        """
+
+        return list(self._step_usage.values())
 
     @property
     def text(self) -> str:
@@ -932,6 +1015,7 @@ class _BusStream:
                 self._text_parts.append(part_id)
             await self._maybe_announce_tool(event, part_id)
             await self._maybe_publish_plan(event)
+            self._record_step_usage(event)
             return
 
         delta = bus_event_text_delta(event)
@@ -995,6 +1079,19 @@ class _BusStream:
                 "summary": title[:200],
             },
         )
+
+    def _record_step_usage(self, event: dict[str, Any]) -> None:
+        """Remember what a finished model step consumed.
+
+        Nothing is published to the client from this. A turn's cost is an
+        operator concern and the production event contract has no frame for it;
+        it leaves the process as a `query_usage` row and a log line.
+        """
+
+        usage = bus_event_step_usage(event)
+        if usage is None:
+            return
+        self._step_usage[usage.part_id] = usage
 
     async def _maybe_publish_plan(self, event: dict[str, Any]) -> None:
         """Publish the agent's step list on `plan.updated` when it changes.
@@ -1148,6 +1245,212 @@ def _sniff_image_mime(payload: str) -> str:
     return "image/png"
 
 
+# --- What the turn cost -----------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class LabsTurnUsage:
+    """One turn's spend, already folded into the columns `query_usage` has.
+
+    Every token field is `None` when nothing reported it, and that is not the
+    same as zero. A row of zeroes reads as a turn that was free, which is a
+    worse record than no row at all -- see :attr:`observed`.
+    """
+
+    cost_usd: float | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    #: Not columns. `query_usage` has no cache fields, so the split that
+    #: `input_tokens` folds in is kept here for the turn log -- the cached share
+    #: is the difference between a turn that cost cents and one that cost dollars,
+    #: and it should not be invisible just because the table cannot hold it.
+    cached_input_tokens: int = 0
+    cache_write_tokens: int = 0
+    #: How many model steps this was summed from. One on the reply fallback.
+    steps: int = 0
+
+    @property
+    def observed(self) -> bool:
+        """True when at least one step actually reported spend.
+
+        All-zero counts read as unobserved on purpose: OpenCode announces an
+        assistant message with a zeroed usage block before the model has
+        produced anything, and a row built from that would assert a free turn.
+        """
+
+        return bool(self.cost_usd) or bool(self.input_tokens) or bool(self.output_tokens)
+
+
+def _usage_int(value: Any) -> int | None:
+    """A token count, or None when the field was absent or not a number."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return max(0, int(value))
+
+
+def _turn_usage(
+    samples: Sequence[tuple[float | None, dict[str, Any] | None]],
+) -> LabsTurnUsage:
+    """Sum per-step OpenCode usage into the shape `query_usage` stores.
+
+    OpenCode reports usage **per model step**, never cumulatively -- verified by
+    replaying two live sessions, where a second turn's message cost far less than
+    the first turn's total (see `opencode_client`'s module docstring). So these
+    are summed, and nothing is diffed against a running total; diffing would
+    subtract one real turn's cost from the next one's.
+
+    Two conversions happen here, and both exist so a labs row can be added to a
+    production row without lying about either:
+
+    * **Cache tokens are folded into `input_tokens`.** OpenCode's `tokens.input`
+      is disjoint from `tokens.cache.read`, while the production lane's invariant
+      (`ModelTokenUsage`) is that `input_tokens` is the whole prompt and the
+      cache counts are a SUBSET of it. Storing `tokens.input` raw would report a
+      246-token prompt for a turn whose prompt was 11126, because a warm DeepSeek
+      session serves ~98% of it from cache -- so the cached tokens are not
+      dropped, they are counted where the other lane already counts them. The
+      read/write split cannot be recovered from the row afterwards; `query_usage`
+      has no column for it, and V1's row has exactly the same limitation (it
+      keeps the split on its separate audit row, which this lane has no
+      equivalent of). The split survives in the `labs.usage` log line.
+    * **Reasoning tokens are folded into `output_tokens`.** OpenCode counts them
+      separately; the OpenAI-shaped metadata the production lane reads counts
+      them inside `output_tokens`. They are billed at the output rate either way,
+      and dropping them would under-report a reasoning model's output by up to a
+      quarter -- 1808 of 7856 output tokens on one measured step.
+
+    `cost` is OpenCode's own figure and is summed rather than recomputed. The
+    server prices each call against the provider's rates with the cache discount
+    already applied, and a second pricing table here would be a second thing to
+    keep correct against every model change.
+    """
+
+    cost_total = 0.0
+    saw_cost = False
+    prompt_tokens = 0
+    completion_tokens = 0
+    cached = 0
+    written = 0
+    saw_tokens = False
+
+    for cost, tokens in samples:
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            cost_total += float(cost)
+            saw_cost = True
+        if not isinstance(tokens, dict):
+            continue
+        cache = tokens.get("cache")
+        cache = cache if isinstance(cache, dict) else {}
+        fields = (
+            _usage_int(tokens.get("input")),
+            _usage_int(tokens.get("output")),
+            _usage_int(tokens.get("reasoning")),
+            _usage_int(cache.get("read")),
+            _usage_int(cache.get("write")),
+        )
+        if all(field_value is None for field_value in fields):
+            # A `tokens` object carrying nothing this function understands is
+            # not evidence of a free step; leave the counts unreported.
+            continue
+        saw_tokens = True
+        step_input, step_output, step_reasoning, step_cached, step_written = (
+            field_value or 0 for field_value in fields
+        )
+        cached += step_cached
+        written += step_written
+        prompt_tokens += step_input + step_cached + step_written
+        completion_tokens += step_output + step_reasoning
+
+    return LabsTurnUsage(
+        cost_usd=cost_total if saw_cost else None,
+        input_tokens=prompt_tokens if saw_tokens else None,
+        output_tokens=completion_tokens if saw_tokens else None,
+        cached_input_tokens=cached,
+        cache_write_tokens=written,
+        steps=len(samples),
+    )
+
+
+def _stage_turn_usage(
+    *,
+    db: Any,
+    conversation_id: int,
+    user_id: int,
+    project_id: str | None,
+    usage: LabsTurnUsage,
+    latency_ms: int,
+) -> bool:
+    """Stage this turn's `query_usage` row on the route's transaction.
+
+    Staged, never committed, which is the rule `_remember_session_id` already
+    follows in this file: the route owns the turn's transaction and commits once,
+    after the assistant message. A second committer on one turn would be able to
+    persist a cost row for an answer that then failed to save.
+
+    No SAVEPOINT, deliberately. `Session.add` issues no SQL -- the INSERT is
+    emitted by the route's flush -- so there is nothing in flight for a failure
+    here to poison, and `begin_nested` would force exactly the extra round trip
+    this avoids. What that does leave is the mirror risk: a row that fails to
+    INSERT fails the commit that persists the ANSWER. Every varchar value is
+    therefore cut to its column width on the way in rather than trusted to fit.
+
+    Returns whether the row was staged, so a turn whose cost went unrecorded can
+    say so instead of being assumed to have landed.
+    """
+
+    if db is None:
+        # `db` is `Any` by this function's own signature; the route always passes
+        # a live session, and the lane's turn tests drive the whole path without
+        # one. Having nowhere to stage the row is not a reason to fail a turn
+        # that already answered -- the same trade this file makes everywhere else
+        # for bookkeeping.
+        logger.warning(
+            "labs.usage_unrecorded conversation_id=%s: no database session was "
+            "supplied, so this turn's cost is not in query_usage",
+            conversation_id,
+        )
+        return False
+
+    row = QueryUsage(
+        user_id=user_id,
+        interface=LABS_USAGE_INTERFACE,
+        # Deliberately not the prompt, matching the production lane's row. The
+        # question is already persisted verbatim as the conversation's user
+        # message; a second copy on a cost table widens the personal-data
+        # surface for nothing a cost query needs.
+        query_text=None,
+        model_name=LABS_USAGE_MODEL_NAME[:_USAGE_MODEL_NAME_MAX_CHARS],
+        provider=LABS_PROVIDER_ID[:_USAGE_PROVIDER_MAX_CHARS],
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cost_usd=usage.cost_usd,
+        latency_ms=latency_ms,
+        conversation_id=conversation_id,
+        # The production lane leaves this null on every row it has ever written,
+        # which is why the table cannot answer "what does project X cost". This
+        # lane knows the answer whenever the turn ran against exactly one
+        # project; an ambiguous scope stays null rather than being attributed to
+        # whichever project happened to be first.
+        project_id=project_id[:_USAGE_PROJECT_ID_MAX_CHARS] if project_id else None,
+        # `embedding_tokens`, `embedding_ms`, `search_ms` and `llm_ms` stay null.
+        # The production lane can split its turn because it owns each phase; here
+        # the whole turn happens inside OpenCode and the only honest split is
+        # none at all.
+    )
+    try:
+        db.add(row)
+    except SQLAlchemyError:
+        logger.error(
+            "labs.usage_unrecorded conversation_id=%s: the turn's cost row could "
+            "not be staged, so this turn is invisible to every cost query",
+            conversation_id,
+            exc_info=True,
+        )
+        return False
+    return True
+
+
 async def execute_labs_turn(
     *,
     db: Any,
@@ -1161,6 +1464,7 @@ async def execute_labs_turn(
     emit: EmitCallback,
     images: Sequence[str] = (),
     agent: str = LABS_AGENT,
+    mode: LabsTurnMode = LabsTurnMode.CHAT,
 ) -> LabsTurnResult:
     """Run one labs turn end to end and report what happened.
 
@@ -1178,6 +1482,15 @@ async def execute_labs_turn(
     session is always *created* on the default agent, because a session outlives
     the turn and its creation agent would otherwise be decided by whichever mode
     the conversation happened to open in.
+
+    `mode` is the evidence breadth for THIS turn, and it reaches the model twice
+    because the two halves have different lifetimes. It goes on the scope, which
+    is what the MCP bridge rebuilds the tool menu from; and it selects the system
+    prompt written into the workspace's `opencode.json`, which
+    `ensure_labs_workspace` rewrites on every turn. Nothing about it is persisted
+    on the conversation: the same thread may ask an ordinary question and then a
+    deep one, and a stored mode would make the second answer depend on the first
+    turn's toggle.
     """
 
     started = time.monotonic()
@@ -1195,6 +1508,7 @@ async def execute_labs_turn(
             permissions=permissions,
             access_token=access_token,
             workspace_dir=workspace_dir,
+            mode=mode,
         ),
     )
 
@@ -1253,6 +1567,14 @@ async def execute_labs_turn(
         material = None
         material_texts = {}
 
+    # What the documentation run recorded about this project: its vocabulary,
+    # what the scan could not see, where a person corrected it, and what it
+    # could not settle. `compile_generation_memory` absorbs its own failures
+    # and returns None, which the workspace treats exactly as "no memory" --
+    # the same resolution as `material=None`, because an extract of a record
+    # this process does not own must read as absent when it cannot be trusted.
+    memory: GenerationMemory | None = await compile_generation_memory(project_id)
+
     workspace_dir = await ensure_labs_workspace(
         conversation_id=conversation_id,
         project_id=project_id,
@@ -1260,6 +1582,8 @@ async def execute_labs_turn(
         guidance=guidance,
         material=material,
         material_texts=material_texts,
+        memory=memory,
+        mode=mode,
     )
 
     answer_text = ""
@@ -1281,6 +1605,14 @@ async def execute_labs_turn(
     #: live, which is itself worth seeing in the log rather than reading as
     #: "this turn ran no tools".
     tool_counts: collections.Counter[str] = collections.Counter()
+    #: Per-step spend off the bus. Populated in the same `finally` as
+    #: `tool_counts`, so a turn that hit the hard deadline still accounts for the
+    #: steps it had already paid for.
+    step_usage: list[BusStepUsage] = []
+    #: The reply's own `(cost, tokens)`, kept only as the fallback for a turn
+    #: whose bus subscription never went live. It covers the LAST assistant
+    #: message alone, so it is a floor on what the turn cost, not the total.
+    reply_usage: tuple[float | None, dict[str, Any] | None] | None = None
     finish_reason: str | None = None
     stop_reason = "answered"
     turn_error: str | None = None
@@ -1388,6 +1720,7 @@ async def execute_labs_turn(
                     answer_text = reply.text.strip()
                     finish_reason = reply.finish
                     turn_error = _turn_failure(reply)
+                    reply_usage = (reply.cost, reply.tokens)
                     # The blocking call can return a moment before the bus has
                     # flushed its last deltas and `session.idle`. Bounded, so a
                     # mute bus costs a fixed two seconds rather than the turn.
@@ -1399,6 +1732,7 @@ async def execute_labs_turn(
                 await _stop_subscriber(subscriber)
                 streamed_text = stream.text.strip()
                 tool_counts = stream.tool_counts
+                step_usage = stream.step_usage
 
     except OpenCodeUnavailable as exc:
         logger.error(
@@ -1477,6 +1811,66 @@ async def execute_labs_turn(
         finish_reason or "-",
     )
 
+    usage = _turn_usage([(step.cost, step.tokens) for step in step_usage])
+    usage_source = "bus"
+    if not usage.observed and reply_usage is not None:
+        # The bus is best effort by construction (`_subscribe_to_bus` swallows
+        # its own failures so a cosmetic problem cannot kill a running turn), so
+        # a turn that answered over a dead subscription still has the reply's
+        # numbers. They are a floor rather than the total -- the reply is the
+        # last step of the turn -- and the source is recorded so an
+        # under-reported row can be recognised instead of read as a cheap turn.
+        usage = _turn_usage([reply_usage])
+        usage_source = "reply"
+
+    if usage.observed:
+        # Recorded whenever the turn demonstrably spent money, including when it
+        # then failed. The rule is "no row for a turn that produced nothing",
+        # and its reason is that a zero row reads as a free turn; a turn that
+        # burned four steps before the hard deadline cut it off did not produce
+        # nothing, and dropping its cost would put the lane back where it
+        # started -- spend with no record. A turn that reported no usage at all
+        # still writes no row.
+        recorded = _stage_turn_usage(
+            db=db,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            project_id=project_id,
+            usage=usage,
+            latency_ms=latency_ms,
+        )
+        # `cached_input_tokens` and `cache_write_tokens` have no column, so this
+        # line is the only place the cache split survives. The cached share is
+        # the difference between a turn that cost cents and one that cost
+        # dollars, and it should not vanish just because the table cannot hold it.
+        logger.info(
+            "labs.usage conversation_id=%s source=%s steps=%s cost_usd=%s "
+            "input_tokens=%s output_tokens=%s cached_input_tokens=%s "
+            "cache_write_tokens=%s project_id=%s recorded=%s",
+            conversation_id,
+            usage_source,
+            usage.steps,
+            usage.cost_usd,
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cached_input_tokens,
+            usage.cache_write_tokens,
+            project_id or "-",
+            recorded,
+        )
+    elif answer_text:
+        # An answer with no usage behind it means the bus reported no step and
+        # the reply carried no numbers either. The turn was not free, so this is
+        # a gap in the cost record and is worth saying out loud rather than
+        # leaving as a silently missing row.
+        logger.warning(
+            "labs.usage_missing conversation_id=%s session=%s: the turn answered "
+            "but neither the event bus nor the reply reported any spend, so it "
+            "is absent from query_usage",
+            conversation_id,
+            session_id or "-",
+        )
+
     if turn_error:
         await emit("runtime.update", {"status": "degraded", "phase": stop_reason,
                                       "summary": turn_error[:200]})
@@ -1500,10 +1894,13 @@ __all__ = [
     "LABS_AGENT",
     "LABS_MODEL",
     "LABS_PLAN_AGENT",
+    "LABS_USAGE_INTERFACE",
+    "LABS_USAGE_MODEL_NAME",
     "STREAM_REASONING",
     "LabsClaimGuard",
     "LabsRuntimeUnavailable",
     "LabsTurnResult",
+    "LabsTurnUsage",
     "execute_labs_turn",
     "labs_turn_claim",
     "new_labs_run_id",

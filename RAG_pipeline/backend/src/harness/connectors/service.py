@@ -55,6 +55,9 @@ class ConnectorService:
         config = provider.validate_config(data.config)
         return await self.repository.create_instance(data, config)
 
+    async def list(self):
+        return await self.repository.list_instances()
+
     async def update(self, instance_id: int, data: ConnectorInstanceUpdate):
         row = await self.repository.get_instance(instance_id)
         config = self.providers.get(row.provider_key).validate_config(data.config) if data.config is not None else None
@@ -66,6 +69,17 @@ class ConnectorService:
         if data.capability_id not in manifest.capability_ids:
             raise ConnectorPolicyError("Capability is not provided by this connector")
         return await self.repository.add_binding(instance_id, data)
+
+    async def list_bindings(self, instance_id: int):
+        row = await self.repository.get_instance(instance_id, bindings=True)
+        return list(row.capability_bindings)
+
+    async def delete(self, instance_id: int) -> None:
+        row = await self.repository.get_instance(instance_id)
+        await self.repository.delete_instance(row)
+
+    async def unbind(self, instance_id: int, binding_id: int) -> None:
+        await self.repository.delete_binding(instance_id, binding_id)
 
     async def check_health(self, instance_id: int) -> ConnectorHealthResult:
         row = await self.repository.get_instance(instance_id)

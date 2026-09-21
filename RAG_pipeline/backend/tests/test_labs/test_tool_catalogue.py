@@ -16,6 +16,7 @@ from src.harness.registry import (
     base_capability_registry,
     default_capability_registry,
 )
+from src.harness.models import CapabilityDefinition, HarnessProviderType, HarnessRiskTier
 from src.labs.mcp_bridge import (
     _DEFAULT_ALLOWLIST,
     _LABS_EXCLUDED_CAPABILITY_IDS,
@@ -90,6 +91,34 @@ def test_the_wildcard_override_cannot_restore_topology(
     assert "topology.landscape.read_structure" not in {
         capability.id for capability in visible
     }
+
+
+def test_healthy_project_bound_connector_capabilities_do_not_need_static_ids() -> None:
+    capability = CapabilityDefinition(
+        id="connector.instance_42.connector_http_elastic_search",
+        label="Search customer index",
+        semantic_name="search_customer_index_connector_42",
+        provider_type=HarnessProviderType.SOURCE,
+        provider_id="nexus.connector",
+        action="read_connector_evidence",
+        input_schema={"type": "object", "properties": {}},
+        output_type="evidence_items",
+        risk_tier=HarnessRiskTier.READ_ONLY,
+    )
+    runtime = SimpleNamespace(
+        registry=SimpleNamespace(list=lambda enabled_only=True: [capability])
+    )
+    scope = LabsTurnScope(
+        user_id=1,
+        conversation_id=1,
+        user_groups=[],
+        project_scope=["acme"],
+        permissions=frozenset(),
+        access_token=None,
+        workspace_dir="/tmp/labs",
+    )
+
+    assert _visible_capabilities(runtime, scope) == [capability]
 
 
 def test_the_within_document_search_no_longer_calls_itself_a_read() -> None:

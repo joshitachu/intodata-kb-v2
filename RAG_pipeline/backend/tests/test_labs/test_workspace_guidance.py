@@ -303,13 +303,13 @@ async def test_pointer_section_names_only_files_that_exist():
     assert "- `docs/`" not in agents_md
 
 
-async def test_pointer_section_names_the_docs_mount_once_it_exists(docs_root: Path):
+async def test_published_docs_are_not_mounted_into_the_shared_workspace(docs_root: Path):
     publish_docs(docs_root, PROJECT)
 
     workspace = await ensure(guidance=populated_guidance())
 
     agents_md = (workspace / "AGENTS.md").read_text(encoding="utf-8")
-    assert "- `docs/`" in agents_md
+    assert "- `docs/`" not in agents_md
     assert "- `.nexus/project/RULES.md`" in agents_md
     assert "- `.nexus/user/PREFERENCES.md`" in agents_md
 
@@ -323,18 +323,17 @@ async def test_agents_md_does_not_restate_the_invariants():
         assert agents_md.count(invariant) == 1
 
 
-async def test_docs_symlink_is_mounted_when_the_project_has_published_docs(
+async def test_published_docs_never_create_an_external_symlink(
     docs_root: Path,
 ):
-    published = publish_docs(docs_root, PROJECT)
+    publish_docs(docs_root, PROJECT)
 
     workspace = await ensure(guidance=populated_guidance())
 
     docs_link = workspace / "docs"
-    assert docs_link.is_symlink()
-    assert docs_link.resolve() == published.resolve()
-    assert (docs_link / "OVERVIEW.md").is_file()
-    assert "it is the FALLBACK" in (workspace / "AGENTS.md").read_text(
+    assert not docs_link.exists()
+    assert not docs_link.is_symlink()
+    assert "There is NO `docs/` directory" in (workspace / "AGENTS.md").read_text(
         encoding="utf-8"
     )
 
@@ -350,12 +349,14 @@ async def test_no_docs_symlink_when_the_project_has_none():
     )
 
 
-async def test_docs_symlink_is_dropped_when_the_project_unbinds(docs_root: Path):
+async def test_legacy_docs_symlink_is_dropped_on_workspace_refresh(docs_root: Path):
     publish_docs(docs_root, PROJECT)
-    workspace = await ensure(guidance=populated_guidance())
+    workspace = Path(labs_workspace_path(CONVERSATION_ID))
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "docs").symlink_to(docs_root / PROJECT / "docs", target_is_directory=True)
     assert (workspace / "docs").is_symlink()
 
-    await ensure(project_id=None, guidance=None)
+    await ensure(project_id=PROJECT, guidance=populated_guidance())
 
     assert not (workspace / "docs").is_symlink()
     assert (workspace / ".nexus" / "org" / "RULES.md").is_file()

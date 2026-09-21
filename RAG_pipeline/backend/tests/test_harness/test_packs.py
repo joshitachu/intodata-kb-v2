@@ -41,6 +41,12 @@ ALLOWED_REFERENCES = PackReferenceSets(
             "rag.docs.read_document_text",
             "nexus.metadata.query",
             "nexus.conversations.read_summary_facts",
+            # The raw scan, read in deep-dive mode only. Documentation
+            # generation summarises component parameters away, so a filter
+            # expression or a routing condition survives only in the scan --
+            # which is why the documentation pack governs reading it.
+            "intodoc.source.search",
+            "intodoc.source.read_component",
             "mcp.docs.update_from_evidence",
             "mcp.docs.revert_evidence_update",
             "nexus.workflow.operational_investigation",

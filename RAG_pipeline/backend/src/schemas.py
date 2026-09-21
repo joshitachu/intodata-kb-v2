@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from src.db.models.conversation import ConversationLane
 from src.harness.workflow_projection import WorkflowCard
+from src.labs.contracts import LabsTurnMode
 
 from src.document_roles import DEFAULT_DOCUMENT_ROLE, DocumentRole
 
@@ -401,6 +403,18 @@ class ConversationMessageRequest(BaseModel):
             "authorization input or a retrieval filter."
         ),
     )
+    mode: LabsTurnMode = Field(
+        default=LabsTurnMode.CHAT,
+        description=(
+            "How wide the evidence menu is for THIS turn. 'chat' is documentation "
+            "and runtime evidence; 'deep_dive' adds the raw scan, which carries the "
+            "component parameters, expressions and SQL that generated documentation "
+            "summarises away. Per turn, never per conversation: a thread may ask an "
+            "ordinary question and then a deep one. Honoured by the V2/OpenCode lane; "
+            "the production harness has no second evidence menu to honour it with and "
+            "ignores it."
+        ),
+    )
 
 
 class SlashCommandResponse(BaseModel):
@@ -494,11 +508,50 @@ class MessageResponse(BaseModel):
         return value
 
 
-class ConversationResponse(BaseModel):
+#: How the V2 lane marked its threads before `conversations.lane` existed.
+#: Read-only history: nothing writes it any more, and migration 104 deliberately
+#: left it in the stored titles rather than rewriting user-visible text.
+LEGACY_LABS_TITLE_PREFIX: Final = "[labs] "
+
+
+def strip_legacy_lane_prefix(title: str | None) -> str | None:
+    """Return a stored V2 title as the user should see it.
+
+    The prefix is display noise left over from the retired lane marker, so it is
+    removed on the way out instead of in the database: the row keeps the title
+    the user actually gave it, and the decision is one function call to undo.
+    """
+    if title is not None and title.startswith(LEGACY_LABS_TITLE_PREFIX):
+        return title[len(LEGACY_LABS_TITLE_PREFIX):]
+    return title
+
+
+class LaneTitledConversation(BaseModel):
+    """The two fields every conversation projection shares, and their one rule.
+
+    Both response models below carry a lane and a title, and both must hide the
+    retired `[labs] ` marker. Declaring that once is not tidiness: the marker is
+    stripped only for V2 threads, so a V1 thread the user genuinely named
+    "[labs] retry" keeps its name. Two hand-written copies of a conditional that
+    specific drift apart.
+    """
+
+    title: str | None = None
+    #: Defaulted rather than required so a caller that predates the column (or a
+    #: test fixture) still projects as the production lane.
+    lane: ConversationLane = ConversationLane.V1
+
+    @model_validator(mode="after")
+    def _hide_retired_lane_marker(self) -> LaneTitledConversation:
+        if self.lane == ConversationLane.V2:
+            self.title = strip_legacy_lane_prefix(self.title)
+        return self
+
+
+class ConversationResponse(LaneTitledConversation):
     """Summary of a conversation (for list view)."""
 
     id: int
-    title: str | None = None
     message_count: int
     origin_surface: Literal["chat", "topology"] = "chat"
     visible_in_chat: bool = True
@@ -506,11 +559,10 @@ class ConversationResponse(BaseModel):
     updated_at: datetime.datetime
 
 
-class ConversationDetailResponse(BaseModel):
+class ConversationDetailResponse(LaneTitledConversation):
     """Full conversation with all messages."""
 
     id: int
-    title: str | None = None
     messages: list[MessageResponse]
     origin_surface: Literal["chat", "topology"] = "chat"
     visible_in_chat: bool = True
@@ -562,10 +614,23 @@ class ConversationCreateRequest(BaseModel):
 
     title: str | None = Field(default=None, max_length=200)
     surface: Literal["chat", "topology"] = "chat"
+    lane: ConversationLane = Field(
+        default=ConversationLane.V1,
+        description=(
+            "Which reasoning runtime answers this thread. Chosen once, at "
+            "creation, and fixed for the life of the thread."
+        ),
+    )
 
 
 class ConversationUpdateRequest(BaseModel):
-    """Request to update a conversation."""
+    """Request to update a conversation.
+
+    `lane` is absent on purpose and there is no endpoint that sets it: a V2
+    thread owns an OpenCode session carrying its own history and a V1 thread owns
+    LangGraph conversation state, so a lane swap would silently hand the model a
+    conversation it has never seen.
+    """
 
     title: str | None = Field(default=None, min_length=1, max_length=200)
     visible_in_chat: bool | None = None

@@ -757,7 +757,6 @@ The model defaults are **hosted** models, and no key ships with the stack:
 | `MCP_DOC_GENERATION_MODEL` / `_WRITE_MODEL` | `anthropic/claude-sonnet-4-6` |
 | `MCP_DOC_GENERATION_INVESTIGATION_MODEL` | `google/gemini-2.5-flash` |
 | `MCP_DOC_GENERATION_FALLBACK_MODEL` | `openai/gpt-5.4` |
-| `MCP_DEEP_DIVE_ENGINE` / `_MODEL` | `repo_agent` / `anthropic/claude-sonnet-4-6` |
 | `MCP_DOC_GENERATION_API_KEY` | empty (falls back to `LLM_API_KEY`) |
 
 So a stack deployed with defaults and no key will start and pass health checks,

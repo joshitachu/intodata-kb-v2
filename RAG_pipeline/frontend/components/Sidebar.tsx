@@ -24,6 +24,7 @@ import {
   Radio,
   User,
   Waypoints,
+  PlugZap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/components/AuthProvider";
@@ -32,6 +33,9 @@ import { useChatContext } from "@/contexts/ChatContext";
 import { useOnboardingContext } from "@/contexts/OnboardingContext";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
+import { LaneBadge } from "@/components/chat/LaneBadge";
+import { LaneFilterControl } from "@/components/chat/LaneFilterControl";
+import { LANE_FILTER_LABEL } from "@/components/chat/lane";
 import type { ConversationResponse } from "@/types";
 
 const SIDEBAR_KEY = "sidebar-expanded";
@@ -82,6 +86,7 @@ interface AdminSubLink {
 
 const adminSubLinks: AdminSubLink[] = [
   { href: "/settings/sources", label: "Sources", icon: Database, perm: "manage_projects" },
+  { href: "/admin/connectors", label: "Agent Connectors", icon: PlugZap, ownerOnly: true },
   // Users, access requests, roles and project assignments are one dashboard.
   { href: "/admin/organization", label: "Organization", icon: Users, anyPerm: ["manage_users", "create_projects"] },
   { href: "/admin/usage", label: "Usage", icon: BarChart3, perm: "view_audit_logs" },
@@ -112,7 +117,11 @@ export function Sidebar() {
     return false;
   });
 
-  const conversations = chat.conversations;
+  // The list is one list across both lanes; the filter narrows what is drawn,
+  // never what the provider holds.
+  const conversations = chat.visibleConversations;
+  const hasHiddenByFilter =
+    chat.laneFilter !== "all" && chat.conversations.length > conversations.length;
 
   function handleSelectConversation(id: number) {
     router.push(`/?c=${id}`);
@@ -323,14 +332,27 @@ export function Sidebar() {
 
       <div className="mx-3 my-2 border-t" />
 
+      <div className="px-2 pb-1.5">
+        <LaneFilterControl
+          value={chat.laneFilter}
+          onChange={chat.setLaneFilter}
+          className="flex w-full"
+        />
+      </div>
+
       <div className="flex-1 overflow-y-auto px-2">
         {chat.isLoading ? (
           <div className="flex items-center justify-center py-6">
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
           </div>
         ) : conversations.length === 0 ? (
+          // Two different empty states. "Nothing here" and "nothing here
+          // because you narrowed the list" are not the same message, and
+          // conflating them is how a filter gets mistaken for data loss.
           <div className="text-center py-6 text-xs text-muted-foreground">
-            No conversations yet.
+            {hasHiddenByFilter
+              ? `No ${LANE_FILTER_LABEL[chat.laneFilter]} conversations.`
+              : "No conversations yet."}
           </div>
         ) : (
           conversations.map((conv) => (
@@ -431,6 +453,7 @@ function ConversationRow({
       onClick={onSelect}
     >
       <span className="flex-1 truncate">{title}</span>
+      <LaneBadge lane={conversation.lane} />
       <button
         onClick={(e) => {
           e.stopPropagation();

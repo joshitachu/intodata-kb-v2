@@ -188,6 +188,10 @@ def base_capability_registry() -> CapabilityRegistry:
         topology_capabilities,
         topology_capability_handlers,
     )
+    from src.harness.source_evidence import (
+        source_evidence_capabilities,
+        source_evidence_capability_handlers,
+    )
     capabilities = [
         DOCUMENT_SEARCH_CAPABILITY,
         DOCUMENTATION_ANSWER_CAPABILITY,
@@ -228,6 +232,11 @@ def base_capability_registry() -> CapabilityRegistry:
         # is registered unconditionally: it stays available on deployments with the
         # live runtime provider switched off.
         *topology_capabilities(),
+        # The scan capabilities read a mounted read-only artifact and are likewise
+        # registered unconditionally. A deployment without the mount does not need
+        # them hidden: each call reports that nothing was searched, which is what a
+        # model has to be told, rather than the tool silently not existing.
+        *source_evidence_capabilities(),
     ]
     from src.harness.capability_handlers import migrated_capability_handlers
     from src.harness.agent_plans import AgentPlanCapabilityHandler
@@ -235,7 +244,7 @@ def base_capability_registry() -> CapabilityRegistry:
 
     return CapabilityRegistry(
         capabilities,
-        handlers=(*migrated_capability_handlers(), *(AgentPlanCapabilityHandler(item) for item in agent_plan_capabilities()), *(ConversationTaskControlHandler(item) for item in conversation_task_control_capabilities()), *topology_capability_handlers()),
+        handlers=(*migrated_capability_handlers(), *(AgentPlanCapabilityHandler(item) for item in agent_plan_capabilities()), *(ConversationTaskControlHandler(item) for item in conversation_task_control_capabilities()), *topology_capability_handlers(), *source_evidence_capability_handlers()),
     )
 
 

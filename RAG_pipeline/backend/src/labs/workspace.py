@@ -39,6 +39,15 @@ Which means they must also disappear the moment they stop being true -- a mounte
 policy that was deleted, re-roled or grown past the ceiling is worse than no
 policy, because the agent will read it and cite it with full confidence.
 
+`.nexus/project/generation/` carries the same idea applied to a second source:
+the documentation pipeline's own memory for this project -- its vocabulary, its
+known limitations, the corrections a person made and the questions it could not
+settle. Same route, same rules, same sweep; the classification and the
+staleness policy are :mod:`src.labs.generation_memory`, and the reason it is
+mounted rather than written back is the paragraph above. It is an extract, so
+it disappears by the identical mechanism: a file that was emptied, deleted or
+grown past the ceiling stops being projected and is removed.
+
 The layout itself -- which files exist and what is in each -- is
 :func:`project_workspace_files`, a pure projection with no filesystem in it.
 :func:`ensure_labs_workspace` writes that projection and sweeps anything outside
@@ -71,13 +80,16 @@ from src.harness.guidance.models import GuidanceLayer, ResolvedGuidance, estimat
 from src.harness.guidance.renderer import render_guidance, render_layer, render_manifest
 from src.harness.models import HarnessRiskTier
 from src.harness.registry import base_capability_registry
+from src.labs.contracts import LabsTurnMode
+from src.labs.generation_memory import (
+    MEMORY_DIRNAME,
+    GenerationMemory,
+    render_memory_section,
+)
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_WORKSPACE_ROOT: Final = "/tmp/nexus-labs-workspaces"
-_DEFAULT_DOCS_ROOT: Final = (
-    "/Users/joshuakabel/Documents/repos/nexus/intodata-kb-v2/knowledge_base/output"
-)
 # Local dev default. The backend and the OpenCode server run on the same host in
 # the spike, so 127.0.0.1 is what actually resolves. When OpenCode runs inside a
 # container it cannot reach the host loopback: set
@@ -165,8 +177,6 @@ _OUTPUT_DIR: Final = "output"
 #: the config of the runtime it is running inside.
 _SKILLS: Final = ("estate-review", "onboarding", "pack-building", "runtime-investigation")
 
-_SAFE_PROJECT_ID_RE: Final = re.compile(r"^[A-Za-z0-9._-]+$")
-
 #: How the MCP bridge's server key prefixes every Nexus tool name the model sees.
 _MCP_SERVER_KEY: Final = "nexus"
 
@@ -237,6 +247,10 @@ _AGENTS_FILE: Final = "AGENTS.md"
 #: * ``thread``         -- the thread level, which has no content of its own.
 #: * ``manifest``       -- the list of what the project holds.
 #: * ``document:<id>``  -- an extracted copy of one uploaded document.
+#: * ``generation:<file>`` -- an extract of the documentation run's own memory.
+#:   Distinct from ``document:`` because the provenance is genuinely different
+#:   and a user auditing their workspace has to be able to tell "someone at
+#:   this client uploaded this" from "our pipeline wrote this about them".
 ORIGIN_ASSEMBLED: Final = "assembled"
 ORIGIN_ORG_LAYER: Final = "org_layer"
 ORIGIN_PROJECT_LAYER: Final = "project_layer"
@@ -244,6 +258,7 @@ ORIGIN_PERSON_LAYER: Final = "person_layer"
 ORIGIN_THREAD: Final = "thread"
 ORIGIN_MANIFEST: Final = "manifest"
 ORIGIN_DOCUMENT_PREFIX: Final = "document:"
+ORIGIN_GENERATION_PREFIX: Final = "generation:"
 
 #: Where each level of the guidance stack lands under `.nexus/`, and what to
 #: call its origin.
@@ -290,21 +305,6 @@ def labs_workspace_path(conversation_id: int) -> str:
     return str((root / f"conversation-{int(conversation_id)}").resolve())
 
 
-def _project_docs_source(project_id: str | None) -> Path | None:
-    """Resolve the published docs directory for a project, if it exists.
-
-    `project_id` reaches here from RBAC-derived scope, never raw user input, but
-    it is still validated: it is about to become a path segment.
-    """
-
-    if not project_id or not _SAFE_PROJECT_ID_RE.match(project_id):
-        if project_id:
-            logger.warning("Refusing unsafe labs project_id %r for docs mount", project_id)
-        return None
-    candidate = Path(_env("LABS_DOCS_ROOT", _DEFAULT_DOCS_ROOT)) / project_id / "docs"
-    return candidate if candidate.is_dir() else None
-
-
 def _base_permission() -> dict[str, Any]:
     """The policy every agent in this workspace starts from.
 
@@ -332,12 +332,24 @@ def _base_permission() -> dict[str, Any]:
     # Broad rule first, narrow rules after: OpenCode evaluates the LAST matching
     # rule, so the order of this dict is the policy, not a formatting choice.
     permission["skill"] = {"*": "deny", **{name: "allow" for name in _SKILLS}}
-    permission["external_directory"] = "allow"
+    # Every conversation shares the OpenCode container. Arbitrary external
+    # reads would let one workspace inspect a sibling workspace (including its
+    # MCP bearer) or another project's generated output. Project evidence is
+    # available through the scoped Nexus bridge instead.
+    permission["external_directory"] = "deny"
     return permission
 
 
-def _build_opencode_config(*, mcp_token: str, workspace: Path) -> dict[str, Any]:
+def _build_opencode_config(
+    *, mcp_token: str, workspace: Path, mode: LabsTurnMode = LabsTurnMode.CHAT
+) -> dict[str, Any]:
     """Build the workspace's `opencode.json`.
+
+    `mode` selects the `nexus` agent's system prompt only. It changes nothing
+    about the permission blocks: what the agent may DO is identical in both
+    modes, and what it may SEE is decided by the MCP bridge against the same
+    mode. This file is rewritten on every turn by `ensure_labs_workspace`, which
+    is what makes a per-turn mode expressible here at all.
 
     The `permission` block is the policy layer
     (https://opencode.ai/docs/permissions/: every tool key takes
@@ -362,10 +374,10 @@ def _build_opencode_config(*, mcp_token: str, workspace: Path) -> dict[str, Any]
       everything off -- so a catch-all here would deny every `nexus_*` call, the
       one thing this lane exists to exercise. Escape-hatch keys are denied by
       name instead.
-    * `external_directory` is allowed. The published docs are mounted as a
-      symlink OUT of the workspace, so denying out-of-project paths would break
-      the documentation lane. What bounds the agent is the read-only tool set
-      plus the path-scoped `edit` rule, not the directory boundary.
+    * `external_directory` is denied. Published documents are reached through
+      Nexus's scoped RAG/MCP tools instead of a symlink into the shared output
+      tree, so one conversation cannot read another conversation's workspace,
+      bearer-bearing config, or another project's generated files.
     * Writes are path-scoped rather than denied outright, so the agent can
       actually hand a user a file. See `_edit_permission`.
     """
@@ -438,8 +450,8 @@ def _build_opencode_config(*, mcp_token: str, workspace: Path) -> dict[str, Any]
                 # primary agent runs on OpenCode's built-in generic prompt and
                 # every Nexus instruction arrives as `AGENTS.md` project
                 # context -- material to take into account rather than what the
-                # model is. See `_NEXUS_SYSTEM_PROMPT`.
-                "prompt": _NEXUS_SYSTEM_PROMPT,
+                # model is. See `nexus_system_prompt`.
+                "prompt": nexus_system_prompt(mode),
             },
             _PLAN_AGENT_NAME: _plan_agent(),
             _VERIFY_AGENT_NAME: _verify_agent(),
@@ -727,6 +739,18 @@ def _material_roots() -> tuple[str, ...]:
 #: asserts at import: a layout change should break the build, not a turn.
 _MATERIAL_ROOTS: Final[tuple[str, ...]] = _material_roots()
 
+# The generation memory owns its own directory under `project/` rather than
+# sharing `references/` with the uploaded documents, and the sweep below owns
+# both. A collision would put two writers in one swept root: whichever ran
+# second would delete the other's files as "not projected". Checked at import
+# for the same reason `_material_roots` raises there -- a layout change should
+# break the build, not a turn.
+if MEMORY_DIRNAME in _MATERIAL_ROOTS:  # pragma: no cover - import-time guard
+    raise RuntimeError(
+        f"generation memory directory {MEMORY_DIRNAME!r} collides with a material "
+        f"root {_MATERIAL_ROOTS!r}; the workspace sweep cannot own both"
+    )
+
 #: Workspace-relative paths the projection may stop emitting from one turn to
 #: the next, and which therefore have to be removed when it does.
 #:
@@ -739,8 +763,16 @@ _SWEPT_FILES: Final[tuple[str, ...]] = (
 )
 
 #: Workspace-relative directories whose entire contents the projection owns.
+#:
+#: The generation memory is in here for the reason its own module gives: an
+#: extract of a record that has since been emptied, deleted or grown past the
+#: ceiling stops being projected, and a stale extract the agent reads with full
+#: confidence is worse than no extract at all. Deletion, emptying and growth
+#: all present here identically -- as a path that stopped being projected -- so
+#: none of them needs a special case.
 _SWEPT_ROOTS: Final[tuple[str, ...]] = tuple(
-    f"{_NEXUS_DIR}/{_PROJECT_DIR}/{name}" for name in _MATERIAL_ROOTS
+    f"{_NEXUS_DIR}/{_PROJECT_DIR}/{name}"
+    for name in (*_MATERIAL_ROOTS, MEMORY_DIRNAME)
 )
 
 
@@ -773,7 +805,10 @@ _SWEPT_ROOTS: Final[tuple[str, ...]] = tuple(
 #: Nothing is in both. A duplicated instruction is paid for twice on every call
 #: and drifts the day one copy is edited, which is the failure the guidance
 #: renderer already documents at length.
-_NEXUS_SYSTEM_PROMPT: Final = """You are Nexus, an evidence-grounded project knowledge assistant. You help \
+#: The mode-invariant head: who the agent is, how it spends a turn, and which
+#: source answers which kind of question. Ends on the last of the source
+#: bullets, because that is where the scan is inserted in deep-dive mode.
+_PROMPT_HEAD: Final = """You are Nexus, an evidence-grounded project knowledge assistant. You help \
 consultants and clients understand everything supported by their authorized \
 project documentation and operational evidence: business processes, systems, \
 data, architecture, controls, operations, integrations, and implementation.
@@ -826,8 +861,43 @@ boundaries:
   synchronization, and logs. Do not use them for documented design questions.
 - Pack tools manage reusable documentation instructions. A Pack is configuration, \
   not evidence about a project.
+"""
 
-For an exact list, count, mapping, procedure, rule, filter, or expression, read \
+#: Deep dive only: the raw scan joins the source list, and the economy rules are
+#: restated against it.
+#:
+#: The restatement is not padding. "More sources" reads to a model as permission
+#: to gather, and the measured cost of gathering on this lane was a turn that
+#: spent 34 tool calls before it answered anything. The mode widens the menu;
+#: the per-turn budget above is unchanged, and this says so at the point the
+#: wider menu is introduced rather than leaving it to be inferred from a section
+#: the model read several thousand tokens earlier.
+_PROMPT_SCAN_SOURCE: Final = """- `search_source` and `read_component` read the SCANNED SOURCE of the project \
+rather than the documentation written from it. Deep dive is on for this turn, so \
+both are available to you. They carry what a summary drops: component \
+parameters, filter and mapping expressions, conditions, routing rules, and the \
+literal SQL a job runs. `search_source` finds where a term, column, or \
+identifier actually appears; `read_component` returns one named component's \
+configured parameters in full.
+- The scanned source is the authority when it and the documentation disagree. \
+Documentation is written from a scan and can be stale, partial, or summarised; \
+the scan is the configuration itself. When the two differ, give the scanned \
+value, say the documentation records something else, and never settle it by \
+picking the more convenient reading.
+
+Deep dive widens the sources, not the budget. Everything under "Work \
+efficiently" still applies. Start on the documentation path, reach for the scan \
+for the specific parameter, expression, condition, or query the documentation \
+does not carry, and stop there. One source search and one component read on top \
+of the ordinary path is the normal shape of a deep-dive answer. Do not sweep \
+the scan to see what is in it, and do not read in source what you have already \
+read in documentation.
+"""
+
+#: The mode-invariant middle: completeness discipline, the per-turn call budget,
+#: and the head of the absence rules. Ends on the "Required instead" bullet,
+#: because what the next step IS depends on which sources this turn can reach.
+_PROMPT_EVIDENCE_DISCIPLINE: Final = """For an exact list, count, mapping, procedure, rule, filter, or expression, read \
 the complete relevant section. Never reconstruct completeness from ranked \
 fragments. Never invent or infer a missing configured expression.
 
@@ -856,8 +926,56 @@ result.
 exists", "nothing records that".
 - Required instead: "I did not find X in <what you actually searched>", \
 followed by the next step that would settle it.
+"""
 
-When a call returns nothing, read the `scope` it came back with and say what \
+#: Chat mode's half of the absence rules, and the higher-value half of this
+#: whole change.
+#:
+#: The measured failure it answers: asked which orders go through a particular
+#: partner, the agent searched the generated documentation, found no filter, and
+#: published "I did not find any filter ... confirm with the functional owner".
+#: The scan answers the question outright -- the condition is a literal
+#: `ABCLASS01 = 'FMD'` in one component's parameters -- and none of those terms
+#: appears anywhere in the documentation, because summarising them away is what
+#: documentation IS. The old text made that reply compliant: it did not assert
+#: non-existence, it named what it searched, and it offered a next step. The
+#: next step was just the wrong one, and it moved the work to the client.
+#:
+#: So the rule is not "never say you did not find it". It is "an absence in the
+#: documentation is an absence in the summary", and the next step that settles
+#: it is a mode this product already has.
+_PROMPT_ABSENCE_CHAT: Final = """The indexed documentation is a SUMMARY of a scan of the client's estate, and a \
+summary drops exactly the things people ask about: component parameters, filter \
+expressions, join conditions, and the SQL a job actually runs. The scanned \
+source behind it is not in this turn's tool menu. So "the documentation does \
+not record it" is a statement about the summary, and never about the system.
+
+When the question asks for a configured detail -- which records are selected, \
+what a filter tests, how a field is mapped, what a query returns -- and the \
+documentation does not carry it, do not close on the absence and refer the user \
+to the functional owner. Say what the documentation does record, say that it \
+does not record that detail, say that the scanned source behind it may well \
+carry it, and offer to continue in Deep Dive. That is the next step that would \
+settle it, and offering it is your job rather than theirs.
+"""
+
+#: Deep dive's half of the same rules. The escalation the chat text offers is
+#: already spent, so absence has to be earned against the source before it may
+#: be reported at all.
+_PROMPT_ABSENCE_DEEP_DIVE: Final = """Deep dive is on, so the scanned source is already available to you. Before \
+reporting that you did not find a configured detail -- a filter, a condition, a \
+mapping expression, a query -- search the source for it. Reporting an absence \
+with the source tools untouched is reporting on a search you chose not to run.
+
+When the source does not carry it either, say so precisely: name what you \
+searched in the documentation AND in the source, and say that the detail is not \
+configured where you looked. That is still not the same claim as "it does not \
+exist", and you still may not make that one.
+"""
+
+#: The mode-invariant tail: what an empty result means, verification, the hard
+#: rules, and how to write the answer.
+_PROMPT_TAIL: Final = """When a call returns nothing, read the `scope` it came back with and say what \
 was covered -- the project, how many documents, which roles, which time \
 window. Then either take the next step yourself or name it for the user. An \
 empty result is a fact about your search. It is never a fact about the client.
@@ -941,6 +1059,48 @@ inventory or a deep dive gets whatever it takes to name every part. Never drop \
 a concrete name to save words -- padding is the thing to cut, detail is not.
 """
 
+
+def nexus_system_prompt(mode: LabsTurnMode = LabsTurnMode.CHAT) -> str:
+    """The `nexus` agent's system role for one turn, in the given evidence mode.
+
+    Assembled from chunks rather than stored twice. The two modes share the role,
+    the economy rules, the completeness discipline, the writing rules and the
+    hard rules verbatim -- they differ in exactly two places, and holding two
+    full copies would mean every future edit to the shared 95 percent has to be
+    made twice or silently drifts. That is the same argument the module already
+    makes for keeping `AGENTS.md` and this prompt disjoint.
+
+    Joined on a blank line: every chunk ends with a newline and none starts with
+    one, so `"\\n".join` reproduces the paragraph spacing the single-string
+    version had, and a chunk omitted for a mode leaves no gap behind.
+
+    Default is `CHAT`. A caller that forgets to state a mode gets the narrow
+    prompt, which matches the tool menu a caller that forgets gets from
+    `src/labs/mcp_bridge.py`.
+    """
+
+    absence = (
+        _PROMPT_ABSENCE_DEEP_DIVE
+        if mode is LabsTurnMode.DEEP_DIVE
+        else _PROMPT_ABSENCE_CHAT
+    )
+    sources = _PROMPT_HEAD
+    if mode is LabsTurnMode.DEEP_DIVE:
+        # Concatenated with no blank line between them, unlike every other join
+        # here: the scan entries are more bullets in the source list that the
+        # head ends on, and a blank line would start a second list under the
+        # same heading -- which reads as a second, separate class of source.
+        sources += _PROMPT_SCAN_SOURCE
+    return "\n".join([sources, _PROMPT_EVIDENCE_DISCIPLINE, absence, _PROMPT_TAIL])
+
+
+#: The chat-mode role, kept as a module constant because it is the default and
+#: because it is what every caller that has no turn in hand -- the workspace
+#: projection the user reads, the tests that pin the wording -- should see.
+#: Deep dive is reached through `nexus_system_prompt`, never through a second
+#: constant.
+_NEXUS_SYSTEM_PROMPT: Final = nexus_system_prompt(LabsTurnMode.CHAT)
+
 #: Where the system prompt is written inside the workspace, for the user's sake.
 #:
 #: The prompt reaches the model through `opencode.json`, which is deliberately
@@ -985,6 +1145,19 @@ def _material_document(entry: MaterialEntry, text: str) -> str:
     )
 
 
+def _memory_document(document_body: str) -> str:
+    """One mounted memory extract.
+
+    A pass-through today, and named anyway: `_material_document` is the shape
+    this mirrors, and the provenance header for a memory extract is built in
+    :mod:`src.labs.generation_memory` because it has to state entry counts and
+    what was omitted -- facts this module does not hold. Having the seam here
+    is what keeps a later change from putting a second header on the file.
+    """
+
+    return document_body
+
+
 def _render_agents_md(
     *,
     project_id: str | None,
@@ -993,6 +1166,7 @@ def _render_agents_md(
     nexus_layers: tuple[GuidanceLayer, ...],
     material: ProjectMaterial | None,
     manifest_available: bool,
+    memory: GenerationMemory | None,
 ) -> str:
     """Assemble `AGENTS.md`: the guidance stack, then what varies per turn.
 
@@ -1032,6 +1206,15 @@ def _render_agents_md(
     `material` is handed to `render_guidance`, which places the manifest inside
     the guidance block. Rendering it a second time here would put two copies of
     the same list in the always-on prefix.
+
+    `memory` renders BELOW the guidance block rather than inside it, and that
+    placement is the same caching decision as everything else down here: the
+    guidance head is byte-identical for every user on a project and is what a
+    provider prefix cache holds, while the memory section moves whenever a
+    documentation run appends an entry. It is also not guidance -- nothing in
+    it is a rule anyone authored for the agent to follow -- so putting it in
+    the stack would give a run's working notes the standing of an org or
+    project rule.
     """
 
     project_line = (
@@ -1096,6 +1279,13 @@ def _render_agents_md(
         )
     pointer_lines = "\n".join(pointers)
 
+    # Only sections with something to say. An empty heading tells the model the
+    # project has no memory worth honouring, which is a stronger and less true
+    # statement than saying nothing -- the renderer makes the same argument
+    # about an empty guidance level.
+    memory_section = render_memory_section(memory)
+    memory_block = f"\n{memory_section}\n" if memory_section else ""
+
     return f"""{render_guidance(guidance, material=material)}
 
 # This conversation
@@ -1109,7 +1299,7 @@ of THIS conversation.
 ## Published documentation on disk
 
 {docs_line}
-
+{memory_block}
 ## Where to look when you need more
 
 {pointer_lines}
@@ -1148,8 +1338,16 @@ def project_workspace_files(
     material: ProjectMaterial | None,
     material_texts: Mapping[int, str] | None,
     docs_mounted: bool,
+    memory: GenerationMemory | None = None,
+    mode: LabsTurnMode = LabsTurnMode.CHAT,
 ) -> tuple[WorkspaceFile, ...]:
     """The complete workspace layout for one turn: every file, and its content.
+
+    `mode` affects exactly one file: the projected copy of the system prompt.
+    It has to, because that copy exists to show a user what their assistant was
+    actually told, and a deep-dive turn is told something different. It defaults
+    to chat so the read-only workspace endpoint -- which has no turn in hand and
+    is describing the conversation at rest -- keeps showing the standing role.
 
     Pure. No `Path`, no environment, no clock, no I/O, and the same inputs always
     produce the same tuple in the same order -- which is what lets a read-only API
@@ -1157,10 +1355,14 @@ def project_workspace_files(
     disagree about nothing.
 
     Ordering is the system prompt, `AGENTS.md`, the guidance levels in stack
-    order, the thread note, the manifest, then mounted material by path. It is
-    the order a person reads the workspace in, and it is also the order of
-    authority: the role first, then the project context, then what the context
-    was assembled from, then what the agent may go and fetch.
+    order, the thread note, the manifest, mounted material by path, then the
+    generation-memory extracts by path. It is the order a person reads the
+    workspace in, and it is also the order of authority: the role first, then
+    the project context, then what the context was assembled from, then what
+    the agent may go and fetch. The memory comes last of all because it is the
+    only tier nobody authored for the agent -- it is one pipeline's working
+    notes about the estate, useful precisely because it records doubt, and it
+    outranks nothing above it.
 
     `opencode.json` is deliberately NOT part of this projection, and must never
     be added to it. It carries the MCP bearer token, this tuple is returned
@@ -1181,6 +1383,13 @@ def project_workspace_files(
     way and projects nothing: there is no safe default text for a client policy,
     so an agent that sees nothing and says so beats one reading a copy whose
     source may have been withdrawn.
+
+    `memory=None` resolves like `material=None`, and for a stronger version of
+    the same reason: the generation memory is an extract of a record this
+    process does not own, so "the compile failed" and "the record is gone" have
+    to produce the same workspace. Defaulted rather than required only because
+    it is additive -- a caller that has not been taught to compile it gets
+    exactly the workspace it got before.
     """
 
     resolved = ResolvedGuidance() if guidance is None else guidance
@@ -1248,6 +1457,23 @@ def project_workspace_files(
             ),
         )
 
+    memory_files: list[WorkspaceFile] = []
+    if memory is not None:
+        for document in memory.documents:
+            memory_files.append(
+                WorkspaceFile(
+                    path=f"{_NEXUS_DIR}/{_PROJECT_DIR}/{document.relpath}",
+                    content=_memory_document(document.body),
+                    origin=f"{ORIGIN_GENERATION_PREFIX}{document.filename}",
+                    # The same asymmetry the mounted documents have: the line
+                    # naming this file is always loaded, the file is not. It is
+                    # how a 30 KB question list stays reachable for the price of
+                    # one sentence per turn.
+                    always_loaded=False,
+                )
+            )
+    memory_files.sort(key=lambda file: file.path)
+
     agents_md = WorkspaceFile(
         path=_AGENTS_FILE,
         content=_render_agents_md(
@@ -1257,6 +1483,7 @@ def project_workspace_files(
             nexus_layers=tuple(written_layers),
             material=material,
             manifest_available=bool(manifest),
+            memory=memory,
         ),
         origin=ORIGIN_ASSEMBLED,
         always_loaded=True,
@@ -1273,7 +1500,7 @@ def project_workspace_files(
 
     system_prompt = WorkspaceFile(
         path=_SYSTEM_PROMPT_FILE,
-        content=_NEXUS_SYSTEM_PROMPT,
+        content=nexus_system_prompt(mode),
         origin=ORIGIN_SYSTEM_PROMPT,
         # True, and the strongest case of it in the projection: this is the
         # system role, so it precedes every message in the conversation rather
@@ -1292,6 +1519,7 @@ def project_workspace_files(
         thread_readme,
         *manifest_files,
         *material_files,
+        *memory_files,
     )
 
 
@@ -1389,14 +1617,16 @@ def _write_projection(workspace: Path, files: Sequence[WorkspaceFile]) -> None:
     than in one hop per file.
 
     The sweep is bounded to paths the projection owns -- the three guidance
-    levels, the manifest, and the two material directories. `.nexus/project/`
-    also holds `RULES.md`, and the workspace holds a symlink out to the client's
-    published documentation; a sweep that reasoned about "files I did not write"
-    over a wider root would eventually reach one of them.
+    levels, the manifest, the two material directories and the generation
+    memory's. `.nexus/project/` also holds `RULES.md`, and the workspace holds a
+    symlink out to the client's published documentation; a sweep that reasoned
+    about "files I did not write" over a wider root would eventually reach one of
+    them.
 
-    Deleting a document, re-roling it, or growing it past the size ceiling all
-    present identically from here -- as a path that stopped being projected -- so
-    one comparison covers all three and none of them needs a special case.
+    Deleting a document, re-roling it, growing it past the size ceiling, or a
+    memory file losing its last entry all present identically from here -- as a
+    path that stopped being projected -- so one comparison covers all of them and
+    none needs a special case.
     """
 
     projected = frozenset(file.path for file in files)
@@ -1435,15 +1665,10 @@ def _write_projection(workspace: Path, files: Sequence[WorkspaceFile]) -> None:
 
 
 async def labs_docs_mounted(project_id: str | None) -> bool:
-    """Whether this project's published docs would be mounted, without mounting them.
+    """Published docs are reached through scoped Nexus tools, never a shared mount."""
 
-    Exists so the read-only workspace API can project the same `AGENTS.md` a turn
-    would assemble. It probes the filesystem -- `is_dir()` -- and writes nothing,
-    which is the property that route depends on.
-    """
-
-    source = await asyncio.to_thread(_project_docs_source, project_id)
-    return source is not None
+    del project_id
+    return False
 
 
 async def ensure_labs_workspace(
@@ -1454,14 +1679,24 @@ async def ensure_labs_workspace(
     guidance: ResolvedGuidance | None = None,
     material: ProjectMaterial | None = None,
     material_texts: dict[int, str] | None = None,
+    memory: GenerationMemory | None = None,
+    mode: LabsTurnMode = LabsTurnMode.CHAT,
 ) -> str:
     """Create or refresh the workspace for one labs conversation.
 
+    `mode` is the turn's evidence breadth, and this function is the only thing
+    that makes it expressible in a prompt at all: it runs on every turn and
+    rewrites `opencode.json` in place, so the `nexus` agent's system role can
+    differ between two turns of the same conversation even though the file
+    itself is per conversation. It is written into both copies of the role --
+    the one in `opencode.json` that reaches the model, and the projected
+    `.nexus/SYSTEM_PROMPT.md` the user can read -- so the two cannot disagree
+    about what this turn was told.
+
     Idempotent: a second call updates `opencode.json` (the MCP bearer may have
     been re-minted), `AGENTS.md` and the `.nexus/` tree in place, re-points the
-    `docs` symlink if the project binding changed, and brings the mounted
-    material back in line with what the project holds now. It never deletes the
-    directory.
+    removes any legacy `docs` symlink, and brings the mounted material back in
+    line with what the project holds now. It never deletes the directory.
 
     `guidance=None` is not "no rules". The organization invariants are code-owned
     constants in the renderer, so an empty `ResolvedGuidance` still renders
@@ -1480,6 +1715,13 @@ async def ensure_labs_workspace(
     `material_texts` is keyed by document id and only consulted for entries in
     `material.mountable`; an id it does not carry is simply not written.
 
+    `memory=None` behaves exactly as `material=None`: last turn's extracts of
+    the documentation run's memory are removed. Compiling it is the caller's
+    job (`generation_memory.compile_generation_memory`) for the same reason the
+    material compile is -- it is a read this function has no session or scope
+    for, and folding it in here would make the writer responsible for deciding
+    what the workspace may contain.
+
     What the directory contains is not decided here. `project_workspace_files`
     owns that, and this function writes what it is handed -- which is what keeps
     the workspace a user is shown and the workspace an agent is given the same
@@ -1487,8 +1729,9 @@ async def ensure_labs_workspace(
     """
 
     workspace = Path(labs_workspace_path(conversation_id))
-    docs_source = await asyncio.to_thread(_project_docs_source, project_id)
-    config = _build_opencode_config(mcp_token=mcp_token, workspace=workspace)
+    config = _build_opencode_config(
+        mcp_token=mcp_token, workspace=workspace, mode=mode
+    )
 
     def _write() -> tuple[bool, tuple[WorkspaceFile, ...]]:
         workspace.mkdir(parents=True, exist_ok=True)
@@ -1501,17 +1744,19 @@ async def ensure_labs_workspace(
         # so the agent never has to reason about whether the path exists.
         (workspace / _OUTPUT_DIR).mkdir(exist_ok=True)
 
-        # Before the projection, because the projection is handed the outcome:
-        # `AGENTS.md` tells the agent either where the published documentation is
-        # or that there is none, and only the mount attempt knows which.
-        linked = _mount_docs(workspace, docs_source)
+        # Remove the retired shared-output mount. Documentation is available
+        # through the project-scoped MCP/RAG tools; a symlink outside this
+        # conversation would require broad external-directory read access.
+        linked = _mount_docs(workspace, None)
 
         # Written here and never projected. This is the file that carries the MCP
         # bearer, and `project_workspace_files` documents why it must stay out of
         # anything a UI can read.
-        (workspace / "opencode.json").write_text(
-            json.dumps(config, indent=2) + "\n", encoding="utf-8"
-        )
+        config_path = workspace / "opencode.json"
+        config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+        # This file contains the conversation-scoped MCP bearer. Do not rely on
+        # the process umask inside a volume shared by every conversation.
+        config_path.chmod(0o600)
 
         files = project_workspace_files(
             project_id=project_id,
@@ -1519,6 +1764,8 @@ async def ensure_labs_workspace(
             material=material,
             material_texts=material_texts,
             docs_mounted=linked,
+            memory=memory,
+            mode=mode,
         )
         _write_projection(workspace, files)
         return linked, files
@@ -1547,16 +1794,25 @@ async def ensure_labs_workspace(
     material_files = sum(
         1 for file in written if file.origin.startswith(ORIGIN_DOCUMENT_PREFIX)
     )
+    memory_files = sum(
+        1 for file in written if file.origin.startswith(ORIGIN_GENERATION_PREFIX)
+    )
 
     logger.info(
         "labs.workspace conversation_id=%s dir=%s project_id=%s docs_mounted=%s "
-        "guidance_layers=%s material_files=%s",
+        "guidance_layers=%s material_files=%s memory_files=%s memory_flagged=%s "
+        "memory_key=%s",
         conversation_id,
         workspace,
         project_id or "-",
         docs_linked,
         ",".join(guidance_layers),
         material_files,
+        memory_files,
+        memory.flagged_count if memory is not None else 0,
+        # The cache key is the one value that answers "did the memory change
+        # between these two turns" without diffing the files.
+        (memory.cache_key[:12] if memory is not None else "-") or "-",
     )
     return str(workspace)
 
@@ -1564,6 +1820,7 @@ async def ensure_labs_workspace(
 __all__ = [
     "ORIGIN_ASSEMBLED",
     "ORIGIN_DOCUMENT_PREFIX",
+    "ORIGIN_GENERATION_PREFIX",
     "ORIGIN_MANIFEST",
     "ORIGIN_ORG_LAYER",
     "ORIGIN_PERSON_LAYER",

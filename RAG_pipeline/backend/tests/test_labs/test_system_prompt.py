@@ -16,19 +16,29 @@ client-facing failure or product boundary:
 * Indexed evidence, generated artifacts, runtime data, and Packs remain distinct.
 * Absence discipline: the agent may report what it did not find, never what does
   not exist.
+
+`_NEXUS_SYSTEM_PROMPT` is now the CHAT-mode role specifically -- the role is
+assembled per turn by `nexus_system_prompt`, because deep dive is told two
+things chat is not. Everything asserted in this file is mode-invariant and is
+asserted against the chat build; what differs between the modes is pinned in
+`test_deep_dive_mode.py`, which also asserts that the invariants below survive
+both.
 """
 
 from __future__ import annotations
 
 import json
+import stat
 from pathlib import Path
 
 import pytest
 
+from src.labs.contracts import LabsTurnMode
 from src.labs.workspace import (
     _NEXUS_SYSTEM_PROMPT,
     ORIGIN_SYSTEM_PROMPT,
     ensure_labs_workspace,
+    nexus_system_prompt,
     project_workspace_files,
 )
 
@@ -58,6 +68,17 @@ async def test_the_nexus_agent_is_configured_with_a_prompt() -> None:
 
     assert config["agent"]["nexus"]["prompt"] == _NEXUS_SYSTEM_PROMPT
     assert config["agent"]["plan"]["prompt"]
+    assert config["permission"]["external_directory"] == "deny"
+    assert stat.S_IMODE((workspace / "opencode.json").stat().st_mode) == 0o600
+
+
+def test_the_constant_is_the_chat_mode_build_of_the_role() -> None:
+    # A default argument and a module constant are two statements of the same
+    # thing, so they are pinned to each other rather than maintained apart. A
+    # workspace written with no mode, and every test below, must be asserting
+    # against the role an ordinary turn is actually given.
+    assert _NEXUS_SYSTEM_PROMPT == nexus_system_prompt(LabsTurnMode.CHAT)
+    assert _NEXUS_SYSTEM_PROMPT == nexus_system_prompt()
 
 
 def test_the_role_states_who_the_agent_is_and_where_its_knowledge_comes_from() -> None:

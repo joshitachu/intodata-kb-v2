@@ -99,8 +99,17 @@ export type AgentStep = z.infer<typeof AgentStepSchema>;
 
 // --- Conversations ---
 
+/**
+ * Which agent behaviour the turn asks for. `deep_dive` widens the tool menu to
+ * the raw scan; it is the same agent, thread and endpoint either way.
+ */
+export const ConversationTurnModeSchema = z.enum(["chat", "deep_dive"]);
+
+export type ConversationTurnMode = z.infer<typeof ConversationTurnModeSchema>;
+
 export const ConversationMessageRequestSchema = z.object({
   query: z.string().min(1),
+  mode: ConversationTurnModeSchema.optional(),
   top_k: z.number().int().min(1).max(50).optional().default(10),
   threshold: z.number().min(0).max(1).optional().default(0.5),
   project_id: z.string().optional(),
@@ -318,12 +327,31 @@ export const MessageResponseSchema = z.object({
 
 export type MessageResponse = z.infer<typeof MessageResponseSchema>;
 
+/**
+ * Which reasoning runtime answers a thread's turns.
+ *
+ * Settled once, when the thread is created, and never changed: a `v2` thread
+ * owns an OpenCode session carrying its own history while a `v1` thread owns
+ * LangGraph state, so swapping the lane mid-thread would hand the model a
+ * conversation it has never seen. Mirrors `ConversationLane` in
+ * `backend/src/db/models/conversation.py` -- the member values ARE the stored
+ * and published values.
+ *
+ * Defaulted rather than required everywhere it is read, so a backend that
+ * predates the column still projects as the production lane instead of failing
+ * validation and blanking the conversation list.
+ */
+export const ChatLaneSchema = z.enum(["v1", "v2"]);
+
+export type ChatLane = z.infer<typeof ChatLaneSchema>;
+
 export const ConversationResponseSchema = z.object({
   id: z.number(),
   title: z.string().nullable(),
   message_count: z.number(),
   origin_surface: z.enum(["chat", "topology"]).optional().default("chat"),
   visible_in_chat: z.boolean().optional().default(true),
+  lane: ChatLaneSchema.optional().default("v1"),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -336,6 +364,7 @@ export const ConversationDetailResponseSchema = z.object({
   messages: z.array(MessageResponseSchema),
   origin_surface: z.enum(["chat", "topology"]).optional().default("chat"),
   visible_in_chat: z.boolean().optional().default(true),
+  lane: ChatLaneSchema.optional().default("v1"),
   agent_plan: z.object({
     plan_id: z.string(), goal: z.string(), success_criteria: z.array(z.string()),
     constraints: z.array(z.string()), scoped_entities: z.array(z.string()),
@@ -363,6 +392,9 @@ export type ConversationListResponse = z.infer<
 export const ConversationCreateRequestSchema = z.object({
   title: z.string().max(200).optional(),
   surface: z.enum(["chat", "topology"]).optional().default("chat"),
+  // Creation is the only moment the lane can be chosen; there is deliberately
+  // no counterpart on `ConversationUpdateRequestSchema`.
+  lane: ChatLaneSchema.optional(),
 });
 
 export type ConversationCreateRequest = z.input<
@@ -702,15 +734,7 @@ export const UserProjectsResponseSchema = z.object({
 
 export type UserProjectsResponse = z.infer<typeof UserProjectsResponseSchema>;
 
-// --- Deep Dive ---
-
-export const DeepDiveRequestSchema = z.object({
-  project_id: z.string().min(1),
-  question: z.string().min(3),
-  session_id: z.string().optional(),
-});
-
-export type DeepDiveRequest = z.infer<typeof DeepDiveRequestSchema>;
+// --- Scanned projects (deep-dive project picker, topology picker) ---
 
 export const DeepDiveProjectSchema = z.object({
   id: z.string(),

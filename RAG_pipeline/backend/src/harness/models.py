@@ -1855,3 +1855,207 @@ DOCUMENT_REVERT_EVIDENCE_UPDATE_CAPABILITY = CapabilityDefinition(
         "runtime_hidden": True,
     },
 )
+
+
+# ---------------------------------------------------------------------------
+# Scanner source evidence
+# ---------------------------------------------------------------------------
+#
+# Generation summarises component parameters away; the scan keeps them. Asked
+# "what orders go through FMD?", an agent answered "I did not find any filter --
+# confirm with the functional owner", while the scan held the predicate
+# verbatim: a `cMessagingEndpoint` labelled `determineFMD` whose `URI` parameter
+# is `"sql:SELECT COUNT(ABAN8) FROM " + context.jdeTableF0101 + " WHERE ... AND
+# ABCLASS01 = 'FMD'?dataSource=..."`. None of `ABCLASS01`, `determineFMD`,
+# `checkIfFMDNeeded` or `No FMD Customer` appears anywhere in the generated
+# documentation. The two capabilities below exist so that a question the code
+# answers unambiguously does not come back as a hedge.
+#
+# Both are deliberately structural rather than file-shaped. A filesystem mount
+# with grep and read was considered and rejected: the scan is minified, one file
+# is one line, so grep returns a 4 MB line as a single "match", and a whole job
+# is up to 102 components. Neither is readable. See
+# `src.harness.source_evidence` for the layout, the redaction position and the
+# measured timings.
+
+SOURCE_SEARCH_CAPABILITY = CapabilityDefinition(
+    id="intodoc.source.search",
+    label="Search the scanned source of one project",
+    semantic_name="search_source",
+    purpose=(
+        "Find a term anywhere in a project's scanned integration source -- component "
+        "parameters, SQL and expressions inside them, component names and labels, "
+        "context variables, connection names -- and get back the structure around each "
+        "hit: which job, which component, which parameter, and the parameter's value. "
+        "This is the scan, not the documentation: it holds the literal predicates, "
+        "table names, queues and endpoints that generated prose summarises away. Use it "
+        "when a question is about what the code actually does and the documentation "
+        "answered vaguely or not at all."
+    ),
+    preconditions=[
+        "An authorized project identifier whose scan is mounted, and a literal term to "
+        "look for."
+    ],
+    failure_recovery=_STANDARD_FAILURE_RECOVERY,
+    provider_type=HarnessProviderType.SOURCE,
+    provider_id="intodoc.scan",
+    action="search_source",
+    input_schema={
+        "type": "object",
+        "required": ["project_id", "query"],
+        "properties": {
+            "project_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "query": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 200,
+                "description": (
+                    "One literal term, matched case-insensitively as a substring. Not a "
+                    "regular expression and not a sentence: send the identifier you are "
+                    "actually looking for -- a column such as 'ABCLASS01', a label such "
+                    "as 'determineFMD', a queue, a table, a context variable. A natural "
+                    "language question matches nothing here."
+                ),
+            },
+            "job": {
+                "type": "string",
+                "maxLength": 500,
+                "description": (
+                    "Restrict the search to one job, by the 'job' name or the 'job_ref' "
+                    "reported on an earlier hit. Omit it to search the whole project."
+                ),
+            },
+            "component_type": {
+                "type": "string",
+                "maxLength": 120,
+                "description": (
+                    "Restrict the search to components of one type, matched case-"
+                    "insensitively as a substring -- 'tMap', 'cMessagingEndpoint', "
+                    "'tOracleInput'. Job-level hits are excluded when this is set."
+                ),
+            },
+            "max_results": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 25,
+                "description": (
+                    "How many hits to return. Every matching file is examined either "
+                    "way, so the result always reports the true total and says how many "
+                    "were withheld; raise this only when the total says it is worth it."
+                ),
+            },
+        },
+        "additionalProperties": False,
+    },
+    output_type="evidence_items",
+    risk_tier=HarnessRiskTier.READ_ONLY,
+    packs=["core", "documentation"],
+    use_when=[
+        "The documentation does not answer a question about behaviour -- a filter, a "
+        "condition, a routing rule, a field mapping -- and the answer would be in the "
+        "code.",
+        "You need the literal text of a query, expression or endpoint rather than a "
+        "summary of it.",
+        "A term appeared in one document (a table, a column, a queue, a job name) and "
+        "you need every place in the source that touches it.",
+        "You are about to report that something does not exist: the scan is where to "
+        "check before saying so.",
+    ],
+    do_not_use_when=[
+        "The question is answered by the generated documentation; read that first, it "
+        "is written for a reader and this is not.",
+        "You do not have a literal term yet -- search or read documentation to find the "
+        "identifier, then come back with it.",
+        "You already have a hit and want the rest of that component: use read_component "
+        "instead of searching again.",
+    ],
+    task_types=["document_answer", "operational_investigation"],
+    # `EvidenceSource` names four kinds and none of them is a code scan. Labelling
+    # this `indexed_documentation` would let evidence ranking treat a raw component
+    # parameter as a written document, which is the confusion this capability
+    # exists to end; the field is rendered into the manifest and nothing else, so
+    # leaving it empty costs nothing and claims nothing false.
+    evidence_sources=[],
+    output_contracts=["grounded_answer", "inventory"],
+    metadata={
+        "execution_surface": "intodoc_scan_filesystem",
+        "evidence_output": True,
+        "bounded_loop_only": True,
+    },
+)
+
+SOURCE_COMPONENT_READ_CAPABILITY = CapabilityDefinition(
+    id="intodoc.source.read_component",
+    label="Read one scanned component whole",
+    semantic_name="read_component",
+    purpose=(
+        "Return one component of one job complete: its type, its unique name, every "
+        "parameter with its full value, the row schemas declared on it, and the "
+        "connections into and out of it. One component, never a whole job -- a job "
+        "reaches 102 components and reading one whole is what search_source truncates."
+    ),
+    preconditions=[
+        "An authorized project, a job (by name or by the 'job_ref' from a search hit), "
+        "and the component's unique name."
+    ],
+    failure_recovery=_STANDARD_FAILURE_RECOVERY,
+    provider_type=HarnessProviderType.SOURCE,
+    provider_id="intodoc.scan",
+    action="read_component",
+    input_schema={
+        "type": "object",
+        "required": ["project_id", "job", "component"],
+        "properties": {
+            "project_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "job": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+                "description": (
+                    "The job holding the component. Pass the 'job_ref' reported by a "
+                    "search_source hit and it resolves directly; a job name also works "
+                    "and is matched case-insensitively. Job names repeat across "
+                    "repositories, so an ambiguous name fails and lists every candidate "
+                    "'job_ref' rather than guessing which one you meant."
+                ),
+            },
+            "component": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "description": (
+                    "The component's unique name within that job, such as "
+                    "'cMessagingEndpoint_15' or 'tMap_3'. This is the 'component' field "
+                    "of a search hit. A name that does not exist fails and lists the "
+                    "names that do."
+                ),
+            },
+        },
+        "additionalProperties": False,
+    },
+    output_type="evidence_items",
+    risk_tier=HarnessRiskTier.READ_ONLY,
+    packs=["core", "documentation"],
+    use_when=[
+        "A search_source hit reported a truncated value and you need the whole of it.",
+        "You need every parameter of one component, not only the one that matched.",
+        "You need to know what a component is wired to -- which components feed it and "
+        "which it feeds -- to follow a flow through a job.",
+        "You need the row schema (column names and types) a component declares.",
+    ],
+    do_not_use_when=[
+        "You do not know which component yet: search_source first.",
+        "You want the whole job. There is no whole-job read on purpose; ask for the "
+        "components you actually need.",
+    ],
+    task_types=["document_answer", "operational_investigation"],
+    # Empty for the same reason as the search capability above.
+    evidence_sources=[],
+    output_contracts=["grounded_answer", "inventory"],
+    metadata={
+        "execution_surface": "intodoc_scan_filesystem",
+        "evidence_output": True,
+        "bounded_loop_only": True,
+    },
+)

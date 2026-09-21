@@ -4,12 +4,10 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { AlertTriangle, ArrowDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MessageBubble } from "./MessageBubble";
-import { DeepDiveChatBubble } from "./DeepDiveChatBubble";
 import { SUGGESTIONS } from "@/lib/constants";
 import { STREAM_REVEAL_KEY, messageRevealKey } from "@/lib/answerReveal";
 import type { MessageResponse } from "@/types";
 import type { StreamState } from "@/hooks/useStreamMessage";
-import type { DeepDiveState } from "@/hooks/useDeepDive";
 
 interface MessageListProps {
   messages: MessageResponse[];
@@ -17,8 +15,6 @@ interface MessageListProps {
   streamingMessage?: StreamState | null;
   onRetryMessage?: () => void;
   pendingUserMessage?: string | null;
-  deepDiveState?: DeepDiveState | null;
-  onCancelDeepDive?: () => void;
   onSuggestionClick?: (suggestion: string) => void;
   /**
    * Render topology targets as links to `/topology` (see `MessageBubble`).
@@ -44,8 +40,6 @@ export function MessageList({
   streamingMessage,
   onRetryMessage,
   pendingUserMessage,
-  deepDiveState,
-  onCancelDeepDive,
   onSuggestionClick,
   showTopologyLinks,
   topologyProjectId,
@@ -74,8 +68,6 @@ export function MessageList({
     // Revealed text grows after the last delta has landed, so the thread has to
     // follow the reveal, not just the buffer.
     revealedAnswer?.text,
-    deepDiveState?.content,
-    deepDiveState?.thinking,
     scrollToBottom,
   ]);
 
@@ -95,24 +87,13 @@ export function MessageList({
     return () => container.removeEventListener("scroll", handleScroll);
   }, []);
 
-  const hasDeepDiveContent =
-    deepDiveState &&
-    (deepDiveState.isStreaming ||
-      deepDiveState.content ||
-      deepDiveState.thinking ||
-      deepDiveState.error);
   const latestMessage = messages.at(-1);
   const liveErrorHasPersistedMessage =
     Boolean(streamingMessage?.error) && latestMessage?.status === "failed";
   const persistedStreamMessageId = streamingMessage?.messageId ?? null;
 
   // Empty conversation state
-  if (
-    messages.length === 0 &&
-    !pendingUserMessage &&
-    !hasDeepDiveContent &&
-    !streamingMessage
-  ) {
+  if (messages.length === 0 && !pendingUserMessage && !streamingMessage) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center px-6 py-12">
         <div className="max-w-md text-center space-y-4">
@@ -180,13 +161,13 @@ export function MessageList({
           />
         ))}
 
-        {/* Optimistic user message: prefer pendingUserMessage, fall back to stored deep dive question */}
-        {(pendingUserMessage || (hasDeepDiveContent && deepDiveState?.question)) && (
+        {/* Optimistic user message, shown until the turn's own record lands */}
+        {pendingUserMessage && (
           <MessageBubble
             message={{
               id: -1,
               role: "user",
-              content: pendingUserMessage ?? deepDiveState!.question!,
+              content: pendingUserMessage,
               sources: null,
               latency_ms: null,
               status: "completed",
@@ -195,17 +176,8 @@ export function MessageList({
           />
         )}
 
-        {/* Deep dive response */}
-        {hasDeepDiveContent && onCancelDeepDive && (
-          <DeepDiveChatBubble
-            state={deepDiveState}
-            onCancel={onCancelDeepDive}
-          />
-        )}
-
-        {/* Streaming assistant message (normal chat mode) */}
-        {!hasDeepDiveContent &&
-          streamingMessage &&
+        {/* Streaming assistant message */}
+        {streamingMessage &&
           !liveErrorHasPersistedMessage &&
           (streamingMessage.isStreaming ||
             streamingMessage.content ||

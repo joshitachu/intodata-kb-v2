@@ -7,6 +7,7 @@ import { MessageList } from "./MessageList";
 import { AgentPlanCard } from "./AgentPlanCard";
 import { ChatInput } from "./ChatInput";
 import { ModeToggle } from "./ModeToggle";
+import { ComposerLaneControls } from "./chat/LaneSwitch";
 import { ProjectSelector } from "./ProjectSelector";
 import { RagProjectSelector } from "./RagProjectSelector";
 import { RuntimeStatusIndicator } from "./RuntimeStatusIndicator";
@@ -23,7 +24,6 @@ import type {
   ConversationMessageRequest,
 } from "@/types";
 import type { StreamState } from "@/hooks/useStreamMessage";
-import type { DeepDiveState } from "@/hooks/useDeepDive";
 
 // Capability categories shown on the empty-state chat. These are NOT
 // pre-baked questions -- they describe what each chat mode is for, and
@@ -46,8 +46,6 @@ interface ChatWindowProps {
   mode: ChatMode;
   onModeChange: (mode: ChatMode) => void;
   selectedProject: string;
-  deepDiveState?: DeepDiveState | null;
-  onCancelDeepDive?: () => void;
   onWorkflowChanged?: () => void;
 }
 
@@ -62,8 +60,6 @@ export function ChatWindow({
   mode,
   onModeChange,
   selectedProject,
-  deepDiveState,
-  onCancelDeepDive,
   onWorkflowChanged,
 }: ChatWindowProps) {
   const isDeepDive = mode === "deep-dive";
@@ -92,25 +88,16 @@ export function ChatWindow({
     ? userProjectsData?.projects.find((project) => project.id === selectedProject)?.display_name
     : undefined;
 
-  // Deep dive content exists independently of whether a conversation record loaded
-  const hasDeepDiveContent =
-    isDeepDive &&
-    deepDiveState &&
-    (deepDiveState.isStreaming ||
-      deepDiveState.content ||
-      deepDiveState.thinking ||
-      deepDiveState.error);
-
   // Same progressive reveal as the docked copilot, over the same components
-  // (`useProgressiveReveal`). Deep dive is excluded: it streams real tokens
-  // through `DeepDiveChatBubble`, so it needs no pacing.
+  // (`useProgressiveReveal`). Both modes stream through the same lane, so the
+  // pacing is the same in both.
   const revealSource = useMemo(
     () =>
       answerRevealSource({
-        streamState: isDeepDive ? null : streamingMessage ?? null,
+        streamState: streamingMessage ?? null,
         messages: conversation?.messages ?? [],
       }),
-    [isDeepDive, streamingMessage, conversation?.messages],
+    [streamingMessage, conversation?.messages],
   );
   const reveal = useProgressiveReveal({
     text: revealSource?.text ?? "",
@@ -215,8 +202,15 @@ export function ChatWindow({
     </>
   );
 
-  // Welcome screen - no conversation selected, and no active deep dive to show
-  if (!conversation && !isLoading && !hasDeepDiveContent) {
+  // Above the composer, not in its toolbar. The lane is a property of the
+  // thread rather than of the turn, and it is immutable once the thread exists,
+  // so it is presented once, plainly, where the user is about to commit to it.
+  // Rendered in both modes for the same reason: a control that disappeared on
+  // toggling to deep dive would be hiding a fact about the thread they are in.
+  const composerHeader = <ComposerLaneControls />;
+
+  // Welcome screen - no conversation selected
+  if (!conversation && !isLoading) {
     return (
       <div className="flex-1 flex flex-col h-full relative overflow-hidden">
         {/* Ambient brand glow */}
@@ -259,6 +253,7 @@ export function ChatWindow({
                 disabled={inputDisabled}
                 hideImagePicker={isDeepDive}
                 toolbarContent={toolbarContent}
+                headerContent={composerHeader}
                 slashCommands={slashCommands}
                 onSlashCommand={handleSlashCommand}
                 zipUploadTarget={zipUploadTarget}
@@ -322,8 +317,8 @@ export function ChatWindow({
     );
   }
 
-  // Loading state - but not when deep dive content should be shown
-  if ((isLoading || !conversation) && !hasDeepDiveContent) {
+  // Loading state
+  if (isLoading || !conversation) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="h-6 w-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
@@ -346,11 +341,9 @@ export function ChatWindow({
         <MessageList
           messages={conversation?.messages ?? []}
           conversationId={conversation?.id ?? null}
-          streamingMessage={isDeepDive ? null : streamingMessage}
-          onRetryMessage={isDeepDive ? undefined : onRetryMessage}
+          streamingMessage={streamingMessage}
+          onRetryMessage={onRetryMessage}
           pendingUserMessage={pendingUserMessage}
-          deepDiveState={isDeepDive ? deepDiveState : null}
-          onCancelDeepDive={onCancelDeepDive}
           onSuggestionClick={handleSuggestionClick}
           revealedAnswer={revealedAnswer}
         />
@@ -369,10 +362,11 @@ export function ChatWindow({
         )}
         <ChatInput
           onSend={handleSend}
-          isLoading={isSending || (deepDiveState?.isStreaming ?? false)}
+          isLoading={isSending}
           disabled={inputDisabled}
           hideImagePicker={isDeepDive}
           toolbarContent={toolbarContent}
+          headerContent={composerHeader}
           slashCommands={slashCommands}
           onSlashCommand={handleSlashCommand}
           zipUploadTarget={zipUploadTarget}

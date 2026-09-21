@@ -47,10 +47,9 @@ def test_route33_and_deepseek_keep_their_dedicated_settings(monkeypatch):
 )
 def test_every_call_site_delegates_to_the_shared_helper(model_id, monkeypatch):
     """One resolver, several surfaces — guards against the copies coming back."""
-    from mcp_server.services import deep_dive_service, git_diff_patcher, reingestion_router
+    from mcp_server.services import git_diff_patcher, reingestion_router
 
     monkeypatch.setattr(config, "doc_generation_openrouter_api_key", "or-test", raising=False)
     expected = provider_connection_config(model_id)
-    assert deep_dive_service._provider_config(model_id) == expected
     assert git_diff_patcher._provider_config(model_id) == expected
     assert reingestion_router._expander_provider_config(model_id) == expected

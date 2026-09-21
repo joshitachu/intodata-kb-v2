@@ -329,5 +329,12 @@ async def test_the_sweep_leaves_the_guidance_layer_and_the_docs_mount_alone(
 
     assert (project_dir(workspace) / "RULES.md").is_file()
     assert not (project_dir(workspace) / "references").exists()
-    assert (workspace / "docs").is_symlink()
-    assert (workspace / "docs" / "OVERVIEW.md").is_file()
+    # `docs` used to be a symlink out to the published documentation and this
+    # test pinned that it survived the sweep. The mount has since been retired
+    # -- documentation is reached through the project-scoped MCP tools, and a
+    # symlink out of the conversation would need broad external-directory read
+    # access. So the property worth pinning is the opposite one: the sweep runs
+    # in a workspace root that no longer holds a mount, and must not invent one
+    # or leave a dangling link behind.
+    assert not (workspace / "docs").exists()
+    assert not (workspace / "docs").is_symlink()

@@ -51,10 +51,12 @@ from src.harness.models import CapabilityDefinition, HarnessRiskTier
 from src.labs.contracts import (
     LABS_MCP_ROUTE,
     LabsToolCallRecord,
+    LabsTurnMode,
     LabsTurnScope,
     labs_token_registry,
     labs_turn_budget,
     labs_turn_claims,
+    labs_turn_modes,
 )
 
 logger = logging.getLogger(__name__)
@@ -302,16 +304,87 @@ _LABS_EXCLUDED_CAPABILITY_IDS: Final = frozenset(
     {"topology.landscape.read_structure"}
 )
 
+# The raw scan. Advertised only in `LabsTurnMode.DEEP_DIVE`.
+#
+# These read the scanner's own output rather than the generated documentation,
+# so they carry what the documentation summarises away -- component parameters,
+# expressions, conditions and the literal SQL. That is the whole reason the mode
+# exists, and also the whole reason they are gated: the scan is large, the reads
+# are slow, and an ungated scan tool makes every routine "what does this job do"
+# question pay for a source search it never needed.
+#
+# Held apart from `_DEFAULT_ALLOWLIST` rather than added to it, for two reasons:
+# the allowlist is the CHAT menu and these are deliberately not in it, and
+# `_DEFAULT_ALLOWLIST` is asserted to be a subset of the live registry, which
+# these ids only become once the capabilities themselves are registered.
+_DEEP_DIVE_CAPABILITY_IDS: Final = frozenset(
+    {
+        # Advertised as `search_source`.
+        "intodoc.source.search",
+        # Advertised as `read_component`.
+        "intodoc.source.read_component",
+    }
+)
 
-def _allowlist() -> frozenset[str] | None:
-    """The configured allowlist, or None when every capability is allowed."""
+
+def _allowlist(mode: LabsTurnMode = LabsTurnMode.CHAT) -> frozenset[str] | None:
+    """The configured allowlist for this mode, or None when everything is allowed.
+
+    The mode widens the set; it never narrows it. `LABS_CAPABILITY_ALLOWLIST="*"`
+    still means "advertise everything the tier and permission filters already
+    allow", and the deep-dive ids are kept out of chat mode by
+    `_excluded_capability_ids` rather than here, so the wildcard cannot restore
+    them either -- the same treatment topology already gets.
+
+    Defaults to the narrow mode: a caller that forgets to state one gets the
+    chat menu, not the wide one.
+    """
 
     raw = os.environ.get("LABS_CAPABILITY_ALLOWLIST", "").strip()
-    if not raw:
-        return _DEFAULT_ALLOWLIST
     if raw == "*":
         return None
-    return frozenset(item.strip() for item in raw.split(",") if item.strip())
+    configured = (
+        _DEFAULT_ALLOWLIST
+        if not raw
+        else frozenset(item.strip() for item in raw.split(",") if item.strip())
+    )
+    if mode is LabsTurnMode.DEEP_DIVE:
+        return configured | _DEEP_DIVE_CAPABILITY_IDS
+    return configured
+
+
+def _excluded_capability_ids(mode: LabsTurnMode) -> frozenset[str]:
+    """Ids this mode must never advertise, whatever the allowlist says.
+
+    Modelled on `_LABS_EXCLUDED_CAPABILITY_IDS`, and merged with it, because the
+    argument is the same one: an operator setting `LABS_CAPABILITY_ALLOWLIST="*"`
+    must not be able to put the scan back into ordinary chat by accident. The
+    allowlist decides what a mode MAY see; this decides what it may not.
+    """
+
+    if mode is LabsTurnMode.DEEP_DIVE:
+        return _LABS_EXCLUDED_CAPABILITY_IDS
+    return _LABS_EXCLUDED_CAPABILITY_IDS | _DEEP_DIVE_CAPABILITY_IDS
+
+
+def _turn_mode(scope: LabsTurnScope) -> LabsTurnMode:
+    """The evidence mode of the turn this request belongs to.
+
+    Two sources, and the order matters. `labs_turn_modes` holds the live value,
+    set at the turn boundary in the request that is running the turn; the
+    scope's own `mode` is what the conversation's token was minted under. The
+    live value wins because the token is minted once per conversation and cached
+    by OpenCode for eight hours, so a thread whose first turn was chat would
+    otherwise never be able to run a deep one.
+
+    This is the same resolution `_remaining_tool_calls` already performs for the
+    per-turn allowance, and it is safe for the same reason the claim lookup
+    below it is: the bridge answers `tools/list` and `tools/call` inside the
+    turn that set the entry. Outside one -- which should not happen -- the
+    token's own mode is the floor, and that defaults to chat.
+    """
+
+    return labs_turn_modes.current(scope.conversation_id, scope.mode)
 
 
 def _requires_unavailable_precondition(
@@ -347,17 +420,33 @@ def _visible_capabilities(
     This is a projection, not the authority: the executor re-checks permissions,
     risk, schema and project scope on every call. Filtering here keeps the model
     from being offered tools it would only be denied.
+
+    The turn's `LabsTurnMode` is one of the inputs. It does not change what may
+    be EXECUTED -- an unadvertised capability is still permission-checked and
+    still runnable by id -- it changes what is offered, which is the only lever
+    that keeps an ordinary question from paying for the scan.
     """
 
     permissions = set(scope.permissions)
-    allowed = _allowlist()
+    mode = _turn_mode(scope)
+    allowed = _allowlist(mode)
+    excluded = _excluded_capability_ids(mode)
     turn_claim_bound = labs_turn_claims.get(scope.conversation_id) is not None
     return [
         capability
         for capability in runtime.registry.list(enabled_only=True)
         if capability.risk_tier in _ADVERTISED_TIERS
-        and capability.id not in _LABS_EXCLUDED_CAPABILITY_IDS
-        and (allowed is None or capability.id in allowed)
+        and capability.id not in excluded
+        and (
+            allowed is None
+            or capability.id in allowed
+            # Connector ids are created from healthy, project-scoped bindings
+            # at request time, so they cannot appear in the static allowlist.
+            # Admitting this governed provider family keeps every other dynamic
+            # capability closed and does not bypass the executor's scope,
+            # permission, schema, or risk checks.
+            or capability.provider_id == "nexus.connector"
+        )
         and not _requires_unavailable_precondition(
             capability, turn_claim_bound=turn_claim_bound
         )

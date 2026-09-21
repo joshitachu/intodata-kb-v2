@@ -59,6 +59,44 @@ Advisory by convention
 The four Phase 3 final-check gates in this codebase warn and ship rather than
 raise. This guard follows that convention: it writes a report and returns it.
 Nothing here raises on a finding.
+
+The one place it is NOT advisory: the RAG evidence layer
+--------------------------------------------------------
+:func:`redact_internal_language` is an enforcement path, not a report, and it
+exists for exactly one consumer: the Phase 2 group analyses published as the
+internal ``technical_analysis`` layer
+(``services/rag_support_package.collect_internal_artifacts``).
+
+The reason it has to enforce is that "internal" does not mean "unquotable"
+downstream. Measured in the RAG backend: an internal chunk is excluded from the
+default corpus partition (``settings.default_source_layers ==
+["canonical_docs"]``) and has its own delete lifecycle
+(``ingest.INTERNAL_DOC_PREFIX``), but ``technical_analysis`` is in
+``settings.deep_layer_source_layers``, so rung-2 escalation retrieves it, and
+``generation/rag_chain._execute_role_aware_search`` merges those hits as
+AUXILIARY sources which -- in its own words -- "receive reference numbers and
+are citable". The chunk text reaches the model verbatim and
+``search.friendly_display_name`` gives it a presentable citation label
+("Technical Analysis: fourps"). So marking the layer internal controls WHERE it
+is retrieved from and WHETHER it can be deleted; it does not control what an
+answer may repeat out of it.
+
+Scope of the rewrite, and why it stops where it does:
+
+* Redacted: ``internal_path``, ``internal_file``, ``internal_id``. Every marker
+  in those three categories names this platform's own machinery and cannot be
+  a customer artifact, so a mechanical substitution cannot destroy evidence.
+* NOT redacted, reported only: ``self_reference`` (rewriting a sentence is
+  outside this module's contract -- see :func:`strip_internal_markers` -- and a
+  sentence that cites our method needs a rewrite, not a search-and-replace) and
+  ``absolute_path`` (measured false positive: run 258's ``fourps`` analysis
+  reports ``C:\\Users\\...\\Documents`` twice as the VALUE of the client's own
+  ``fourps_subscriptionsBasePath`` context variable; redacting it would assert
+  that a client configuration value is ours).
+* The rewrite is applied to the COPY that is pushed to RAG, never to
+  ``_rag_support/phase2_analysis/`` on disk: that same package is restored into
+  ``analysis_cache/`` and back into ``docs_staging/_analysis/`` on an
+  incremental run, where the internal paths are correct working evidence.
 """
 
 from __future__ import annotations
@@ -621,6 +659,94 @@ def strip_internal_markers(text: str) -> str:
     text = _HTML_COMMENT_RE.sub("", text)
     text = _TABLE_ID_CELL.sub("the exact mapping table below", text)
     return re.sub(r"\n{3,}", "\n\n", text)
+
+
+#: What a redacted span is replaced with. ASCII, self-describing, and the same
+#: string every time so a redacted artifact is byte-stable across processes
+#: (this repo has shipped a prompt-cache-voiding non-deterministic artifact
+#: before; see ``phase3_context._bounded_values``).
+REDACTION_PLACEHOLDER = "[internal reference removed]"
+
+#: The categories :func:`redact_internal_language` rewrites. The other two
+#: (``self_reference``, ``absolute_path``) are counted and reported, never
+#: rewritten -- see the module docstring for the measurement behind that split.
+REDACTED_CATEGORIES: frozenset[str] = frozenset(
+    {"internal_path", "internal_file", "internal_id"}
+)
+
+#: Characters that continue a path-ish token. A marker match is widened to the
+#: whole token before it is replaced, so ``/_preprocess/alertErrorsEmail.md``
+#: becomes one placeholder instead of ``/[...]/alertErrorsEmail.md``, which
+#: would leak the shape of the tree it was trying to hide. ``|``, whitespace,
+#: backticks, quotes and brackets all terminate a token, so a markdown table
+#: cell or an inline code span is never swallowed past its own boundary.
+_PATH_TOKEN_CHAR = re.compile(r"[A-Za-z0-9_./\\~-]")
+
+_REDACTABLE_PATH_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    _TOKEN_PATTERNS + _PREFIX_PATTERNS + _FILENAME_PATTERNS
+)
+
+
+def _expand_to_path_token(text: str, start: int, end: int) -> tuple[int, int]:
+    match_end = end
+    while start > 0 and _PATH_TOKEN_CHAR.match(text[start - 1]):
+        start -= 1
+    while end < len(text) and _PATH_TOKEN_CHAR.match(text[end]):
+        end += 1
+    # A trailing '.' or '-' is sentence punctuation far more often than it is
+    # part of a path, and eating the full stop after "... scorecard.md." makes
+    # the redacted sentence unreadable. Bounded by the marker match itself, so
+    # trimming can never leave part of a marker behind.
+    while end > match_end and text[end - 1] in ".-":
+        end -= 1
+    return start, end
+
+
+def redact_internal_language(text: str) -> tuple[str, int]:
+    """Replace mechanical internal references; return ``(text, redactions)``.
+
+    Deterministic and idempotent-in-effect: the placeholder contains no
+    character that any redactable pattern matches, so redacting twice is the
+    same as redacting once. Overlapping matches (a filename inside a path
+    inside a prefix marker) are merged into one span, so the count is the
+    number of distinct references removed, not the number of pattern hits.
+
+    Applies everywhere in the text, INCLUDING inside fenced code blocks. A
+    fence is not a safe harbour: an internal path quoted as evidence is still
+    an internal path in a chat answer, and no marker in
+    :data:`REDACTED_CATEGORIES` can occur in a customer's Talend code by
+    coincidence (the token rule already keeps ``engineering_facts`` and
+    ``tDBOutput_1`` out of it).
+    """
+    spans: list[tuple[int, int]] = []
+    for _marker, pattern in _REDACTABLE_PATH_PATTERNS:
+        for match in pattern.finditer(text):
+            spans.append(_expand_to_path_token(text, match.start(), match.end()))
+    for _marker, pattern in _INTERNAL_ID_PATTERNS:
+        # Ids and HTML comments carry their own delimiters; widening them to a
+        # path token would eat the word after ``-->``.
+        for match in pattern.finditer(text):
+            spans.append((match.start(), match.end()))
+
+    if not spans:
+        return text, 0
+
+    spans.sort()
+    merged: list[list[int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    pieces: list[str] = []
+    cursor = 0
+    for start, end in merged:
+        pieces.append(text[cursor:start])
+        pieces.append(REDACTION_PLACEHOLDER)
+        cursor = end
+    pieces.append(text[cursor:])
+    return "".join(pieces), len(merged)
 
 
 def discover_client_docs(staging_dir: Path) -> list[str]:

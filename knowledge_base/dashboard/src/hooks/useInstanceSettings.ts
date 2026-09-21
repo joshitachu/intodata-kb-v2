@@ -5,7 +5,6 @@ export const INSTANCE_SETTINGS_KEYS = [
   "rag_chat_model",
   "rag_embed_model",
   "pack_author_model",
-  "deep_dive_model",
   "doc_gen_analysis_model",
   "doc_gen_write_model",
 ] as const;
@@ -36,12 +35,6 @@ export const SETTING_SLOTS: SettingSlot[] = [
     key: "pack_author_model",
     label: "Pack author model",
     description: "Dedicated model used for one compact Pack design per conversational turn.",
-    endpoint: "mcp",
-  },
-  {
-    key: "deep_dive_model",
-    label: "Deep dive model",
-    description: "LLM used by the MCP deep-dive repo agent.",
     endpoint: "mcp",
   },
   {

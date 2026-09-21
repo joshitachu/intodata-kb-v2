@@ -2,7 +2,7 @@
   "schema_version": 2,
   "id": "nexus.documentation",
   "name": "Documentation",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "pack_type": "documentation",
   "governance": {
     "phase": "foundation",
@@ -47,7 +47,9 @@
         "nexus.docs.list_documentation_packs",
         "nexus.workflows.cancel",
         "rag.docs.search_evidence",
-        "rag.docs.answer_question"
+        "rag.docs.answer_question",
+        "intodoc.source.search",
+        "intodoc.source.read_component"
       ],
       "entity_type_ids": ["documentation.document"],
       "connector_requirement_ids": [],

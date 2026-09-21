@@ -37,6 +37,7 @@ from src.api.routes import runtime_audit as runtime_audit_routes
 from src.api.routes import harness as harness_routes
 from src.api.routes import agent_traces as agent_trace_routes
 from src.api.routes import guidance as guidance_routes
+from src.api.routes import connectors as connector_routes
 
 # Experimental labs lane (OpenCode chat brain). Guarded so a failure inside the
 # spike can never take the production app down with it.
@@ -295,6 +296,7 @@ app.include_router(runtime_audit_routes.router, prefix="/api/v1")
 app.include_router(harness_routes.router, prefix="/api/v1")
 app.include_router(agent_trace_routes.router, prefix="/api/v1")
 app.include_router(guidance_routes.router, prefix="/api/v1")
+app.include_router(connector_routes.router, prefix="/api/v1")
 if labs_routes is not None and labs_mcp is not None:
     app.include_router(labs_routes.router, prefix="/api/v1")
     app.include_router(labs_mcp.router, prefix="/api/v1")

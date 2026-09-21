@@ -25,10 +25,13 @@ import pytest
 
 from mcp_server.services.client_language_guard import (
     PROVENANCE_DIRNAME,
+    REDACTED_CATEGORIES,
+    REDACTION_PLACEHOLDER,
     count_code_blocks,
     discover_client_docs,
     leakage_findings,
     read_provenance_sidecar,
+    redact_internal_language,
     sidecar_path,
     sidecar_stays_internal,
     strip_internal_markers,
@@ -290,6 +293,104 @@ def test_strip_internal_markers_removes_comments_and_table_ids_only() -> None:
     assert "the exact mapping table below" in stripped
     # Prose is never rewritten: a leaking sentence needs a rewrite, not a sub.
     assert "Based on our analysis" in stripped
+
+
+# --------------------------------------------------------------------------- #
+# redact_internal_language -- the one ENFORCING path (the RAG evidence layer)
+# --------------------------------------------------------------------------- #
+
+def test_redaction_removes_the_whole_internal_path_not_just_the_marker() -> None:
+    """Leaving the surrounding path behind publishes the shape of the tree
+    the redaction was trying to hide."""
+    text = "*Data source: Pre-processed scan from /_preprocess/alertErrorsEmail.md*\n"
+
+    redacted, count = redact_internal_language(text)
+
+    assert count == 1
+    assert "_preprocess" not in redacted
+    assert "alertErrorsEmail.md" not in redacted
+    assert REDACTION_PLACEHOLDER in redacted
+    assert redacted.startswith("*Data source: Pre-processed scan from ")
+
+
+def test_redaction_leaves_the_sentence_and_the_evidence_around_it() -> None:
+    text = (
+        "The job writes to SALESTABLE via tDBOutput_1, which the "
+        "engineering_facts rollup counts once per run.\n"
+    )
+    redacted, count = redact_internal_language(text)
+
+    assert (redacted, count) == (text, 0)
+
+
+def test_redaction_does_not_rewrite_prose_or_client_owned_paths() -> None:
+    """The split that makes the rewrite safe: only categories that can only be
+    ours are substituted. ``C:\\Users\\...`` is a measured false positive -- it
+    is the VALUE of run 258's ``fourps_subscriptionsBasePath`` context
+    variable, i.e. the client's own configuration."""
+    text = (
+        "**Generated:** Phase 2 Analysis\n"
+        "| fourps_subscriptionsBasePath | C:\\Users\\jdoe\\Documents | local |\n"
+    )
+    redacted, count = redact_internal_language(text)
+
+    assert count == 0
+    assert redacted == text
+    # ...and the guard still REPORTS both, so the residue is never silent.
+    categories = {f.category for f in leakage_findings(text)}
+    assert categories == {"self_reference", "absolute_path"}
+
+
+def test_redaction_is_deterministic_and_stable_under_a_second_pass() -> None:
+    text = "See _analysis/fourps.md and docs_staging/_assessment/scorecard.md.\n"
+
+    once, first = redact_internal_language(text)
+    twice, second = redact_internal_language(once)
+
+    # Two references, not four markers: one path is one reference.
+    assert first == 2
+    assert second == 0, "the placeholder must not itself be redactable"
+    assert twice == once
+    assert redact_internal_language(text) == (once, first)
+    # The sentence still ends in a full stop.
+    assert once.endswith(f"{REDACTION_PLACEHOLDER}.\n")
+
+
+def test_redaction_merges_overlapping_markers_into_one_reference() -> None:
+    """``_doc_pack`` (prefix), ``_analysis`` (token) and the path token all hit
+    the same span; the count is references removed, not pattern hits."""
+    text = "Bundle: _analysis/_doc_pack_01_ARCHITECTURE_MAP.md\n"
+
+    redacted, count = redact_internal_language(text)
+
+    assert count == 1
+    assert redacted == f"Bundle: {REDACTION_PLACEHOLDER}\n"
+
+
+def test_redaction_removes_html_comments_without_eating_the_next_word() -> None:
+    text = "Intro <!-- internal note --> continues here.\n"
+
+    redacted, count = redact_internal_language(text)
+
+    assert count == 1
+    assert "internal note" not in redacted
+    assert redacted.endswith(" continues here.\n")
+
+
+def test_every_redactable_category_is_actually_removed() -> None:
+    """The contract between the report and the rewrite: anything the guard
+    classifies into REDACTED_CATEGORIES must be gone afterwards."""
+    text = (
+        "Path: docs_staging/_analysis/x.md\n"
+        "File: scan_result.json\n"
+        "Id: ev-0123456789abcdef01234567\n"
+    )
+    redacted, _count = redact_internal_language(text)
+
+    remaining = {
+        f.category for f in leakage_findings(redacted)
+    } & REDACTED_CATEGORIES
+    assert remaining == set()
 
 
 # --------------------------------------------------------------------------- #

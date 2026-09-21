@@ -1435,13 +1435,7 @@ class AssessmentGenerateResponse(BaseModel):
     error: str | None = None
 
 
-# --- Deep Dive ---
-
-class DeepDiveRequest(BaseModel):
-    project_id: StrippedStr = Field(..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN)
-    question: str = Field(..., min_length=3)
-    session_id: str | None = None
-
+# --- Scanned-project picker ---
 
 class DeepDiveProject(BaseModel):
     id: str

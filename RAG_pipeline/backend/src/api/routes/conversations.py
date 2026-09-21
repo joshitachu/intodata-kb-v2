@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from src.api.dependencies import CurrentUser, DBSession, QdrantClient
 from src.db.models import Conversation, ConversationMessage
+from src.db.models.conversation import ConversationLane
 from src.harness.commands import list_slash_commands
 from src.harness import HarnessRunNotFoundError, HarnessWorkflowRepository
 from src.harness.workflow_projection import AuthoritativeWorkflowCardProjector
@@ -114,27 +115,42 @@ async def list_conversations(
     user: CurrentUser,
     skip: int = 0,
     limit: int = Query(default=50, ge=1, le=100),
+    lane: ConversationLane | None = Query(
+        default=None,
+        description="Optional: return only threads answered by this lane.",
+    ),
 ) -> ConversationListResponse:
-    """List user's conversations, sorted by most recently updated."""
+    """List the user's conversations across both lanes, most recently updated first.
+
+    One list, one sidebar: V1 and V2 threads come back together, each carrying
+    its own `lane` so the client can badge it, and `lane=` narrows to one of them
+    when a caller wants a single lane.
+
+    `visible_in_chat` still gates the list, and still means only what it meant
+    before -- "the user wants this thread in the chat list". It is not a lane
+    test: topology threads are created hidden (`origin_surface='topology'`) until
+    the user promotes one, and that is the behaviour this filter protects. V2
+    threads are created visible because they ARE chat threads; the lane hack that
+    once created them hidden was undone by migration 104.
+    """
+    filters = [
+        Conversation.user_id == user.id,
+        Conversation.deleted_at.is_(None),
+        Conversation.visible_in_chat.is_(True),
+    ]
+    if lane is not None:
+        filters.append(Conversation.lane == lane)
+
     # Count total
     total_result = await db.execute(
-        select(func.count(Conversation.id))
-        .where(
-            Conversation.user_id == user.id,
-            Conversation.deleted_at.is_(None),
-            Conversation.visible_in_chat.is_(True),
-        )
+        select(func.count(Conversation.id)).where(*filters)
     )
     total = total_result.scalar_one()
 
     # Get conversations with message counts
     result = await db.execute(
         select(Conversation)
-        .where(
-            Conversation.user_id == user.id,
-            Conversation.deleted_at.is_(None),
-            Conversation.visible_in_chat.is_(True),
-        )
+        .where(*filters)
         .order_by(Conversation.updated_at.desc())
         .offset(skip)
         .limit(limit)
@@ -150,6 +166,7 @@ async def list_conversations(
                 message_count=len(c.messages),
                 origin_surface=c.origin_surface,
                 visible_in_chat=c.visible_in_chat,
+                lane=c.lane,
                 created_at=c.created_at,
                 updated_at=c.updated_at,
             )
@@ -165,14 +182,22 @@ async def create_conversation(
     user: CurrentUser,
     request: ConversationCreateRequest | None = None,
 ) -> ConversationResponse:
-    """Create a new conversation."""
+    """Create a new conversation.
+
+    The lane is settled here and nowhere else. No route changes it afterwards:
+    a V2 thread owns an OpenCode session carrying its own history and a V1 thread
+    owns LangGraph conversation state, so a lane swap would silently hand the
+    model a conversation it has never seen.
+    """
     title = request.title if request else None
     surface = request.surface if request else "chat"
+    lane = request.lane if request else ConversationLane.V1
     conversation = Conversation(
         user_id=user.id,
         title=title,
         origin_surface=surface,
         visible_in_chat=surface == "chat",
+        lane=lane,
     )
     db.add(conversation)
     await db.flush()
@@ -183,6 +208,7 @@ async def create_conversation(
         message_count=0,
         origin_surface=conversation.origin_surface,
         visible_in_chat=conversation.visible_in_chat,
+        lane=conversation.lane,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
     )
@@ -403,6 +429,7 @@ async def get_conversation(
         messages=messages,
         origin_surface=conversation.origin_surface,
         visible_in_chat=conversation.visible_in_chat,
+        lane=conversation.lane,
         agent_plan=(AgentPlanProjectionResponse(**agent_plan.model_dump()) if agent_plan else None),
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
@@ -633,7 +660,12 @@ async def update_conversation(
     db: DBSession,
     user: CurrentUser,
 ) -> ConversationResponse:
-    """Update user-controlled conversation presentation state."""
+    """Update user-controlled conversation presentation state.
+
+    Presentation only. The lane is not updatable here or anywhere else (see
+    `create_conversation`), which is why `ConversationUpdateRequest` has no such
+    field to read.
+    """
     result = await db.execute(
         select(Conversation)
         .where(Conversation.id == conversation_id, Conversation.deleted_at.is_(None))
@@ -658,6 +690,7 @@ async def update_conversation(
         message_count=len(conversation.messages),
         origin_surface=conversation.origin_surface,
         visible_in_chat=conversation.visible_in_chat,
+        lane=conversation.lane,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
     )

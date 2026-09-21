@@ -21,6 +21,7 @@ import {
   ScrollText,
   User,
   Waypoints,
+  PlugZap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/components/AuthProvider";
@@ -61,6 +62,7 @@ interface AdminSubLink {
 
 const adminSubLinks: AdminSubLink[] = [
   { href: "/settings/sources", label: "Sources", icon: Database, perm: "manage_projects" },
+  { href: "/admin/connectors", label: "Agent Connectors", icon: PlugZap, ownerOnly: true },
   // Users, access requests, roles and project assignments are one dashboard.
   { href: "/admin/organization", label: "Organization", icon: Users, anyPerm: ["manage_users", "create_projects"] },
   { href: "/admin/usage", label: "Usage", icon: BarChart3, perm: "view_audit_logs" },

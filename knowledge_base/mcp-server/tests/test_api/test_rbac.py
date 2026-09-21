@@ -118,7 +118,6 @@ _ROUTES = [
     ("PATCH", "/mcp/projects/p1/plugin", {"plugin_pack_id": None},                           "project_plugin"),
     ("POST", "/mcp/push-to-rag",  {"project_id": "p1"},                                    "push_to_rag"),
     ("POST", "/mcp/reset-status", {"project_id": "p1"},                                    "reset_status"),
-    ("POST", "/mcp/deep-dive",    {"project_id": "p1", "question": "What does this do?"},  "deep_dive"),
 ]
 
 _IDS = [r[3] for r in _ROUTES]

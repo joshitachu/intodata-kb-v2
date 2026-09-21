@@ -88,6 +88,40 @@ carry it. A caller that needs the complete turn must either read the bus or
 re-read the session history; treating the reply as "the answer" silently drops
 the earlier blocks of a multi-step turn.
 
+What a turn costs -- per step, never cumulative
+-----------------------------------------------
+``info.cost`` and ``info.tokens`` are **that assistant message's own** usage.
+They do not accumulate: nothing has to be diffed against a running total, and
+diffing would be wrong. Verified on 2026-09-21 by replaying two live labs
+sessions off ``GET /session/{id}/message``. One of them holds two turns, and the
+second turn's single assistant message cost ``$0.00114675`` -- far *below* the
+first turn's ``$0.014148``, which a cumulative figure could not be.
+
+``tokens`` is additive and disjoint, not nested::
+
+    total == input + output + reasoning + cache.read + cache.write
+
+verified on every one of the seven assistant messages measured. Two consequences
+for anyone converting these numbers into a cost record:
+
+* ``input`` **excludes** the cached prefix. One message reported ``input: 246``
+  against ``cache.read: 10880`` -- a prompt of 11126 tokens, 98% of it served
+  from cache. Reading ``input`` as "the prompt" under-reports it by that ratio.
+* ``output`` **excludes** ``reasoning``. One step reported ``output: 6048`` and
+  ``reasoning: 1808``; both are billed at the output rate.
+
+``tokens.total`` rises across a session, which makes it *look* cumulative. It is
+not -- it rises because ``cache.read`` grows with the conversation's context.
+
+The trap is the opposite of accumulation: because the reply carries only the
+**last** assistant message, ``reply.cost`` is one step of a turn that routinely
+runs four or five. Measured against those same two sessions, the reply carried
+**37%** and **69%** of what the turn actually cost. The whole turn is obtainable
+without a second request only from the bus, whose ``step-finish`` parts report
+each step as it completes -- exactly one per assistant message in every session
+measured, and equal to that message's ``info.cost``. See
+:func:`bus_event_step_usage`.
+
 The live event bus -- `GET /event`, and it *requires* `directory`
 ------------------------------------------------------------------
 A v1 turn is synchronous, but the server narrates it on a server-sent-event bus
@@ -131,6 +165,10 @@ so filtering on it is not optional.
   ``pending`` / ``running`` / ``completed`` / ``error`` plus ``input``,
   ``output``, ``metadata`` and, once completed, ``title``.
   **Tool activity is visible here and nowhere else on the bus.**
+  ``step-finish`` parts add ``properties.part.{cost, tokens}`` -- the same two
+  values ``info.cost`` and ``info.tokens`` carry on the assistant message the
+  step belongs to. **A turn's full spend is visible here and nowhere else
+  without a second HTTP call**; see "What a turn costs" below.
 * ``message.updated`` -- ``properties.info.{id, role, ...}``; ``role`` separates
   the echoed user message from the assistant's.
 * ``session.status`` -- ``properties.status.type`` in ``busy`` / ``idle``.
@@ -239,6 +277,10 @@ BUS_EVENT_SESSION_IDLE: Final = "session.idle"
 BUS_PART_TEXT: Final = "text"
 BUS_PART_TOOL: Final = "tool"
 BUS_PART_REASONING: Final = "reasoning"
+
+# The terminal part of one model step, and the only frame on the bus that carries
+# what that step cost. One per assistant message in every session measured.
+BUS_PART_STEP_FINISH: Final = "step-finish"
 
 _ENVELOPE_KEY: Final = "data"
 _V2_PREFIX: Final = "/api"
@@ -377,6 +419,26 @@ class OpenCodeReply:
             return None
         message = self.error.get("message") or self.error.get("type") or ""
         return str(message)[:500] or "unknown OpenCode error"
+
+
+@dataclass(frozen=True, slots=True)
+class BusStepUsage:
+    """What one finished model step consumed, as the bus reported it.
+
+    `tokens` is passed through in OpenCode's own shape rather than normalised
+    here, because the normalisation a caller needs depends on what it is
+    comparing against -- see the module docstring for the two ways that shape
+    differs from the OpenAI-style one (cache is disjoint from `input`, reasoning
+    is disjoint from `output`).
+
+    `part_id` is carried so a caller can count a step once. The bus re-emits a
+    part's frame on every state change, and a turn that counted one step twice
+    would report double what it cost.
+    """
+
+    part_id: str
+    cost: float | None
+    tokens: dict[str, Any] | None
 
 
 # ----------------------------------------------------------------------------
@@ -568,6 +630,34 @@ def bus_event_tool_input(event: dict[str, Any]) -> dict[str, Any] | None:
         return None
     arguments = state.get("input")
     return arguments if isinstance(arguments, dict) else None
+
+
+def bus_event_step_usage(event: dict[str, Any]) -> BusStepUsage | None:
+    """What a finished model step cost, else None.
+
+    # NOTE: `message.part.updated` with `properties.part.type == "step-finish"`
+    # -> `properties.part.{cost, tokens}`. Both are optional here: a caller must
+    # treat an absent field as "not reported", never as zero.
+    #
+    # This is the only route to a turn's FULL spend that costs no extra request.
+    # `send_message` returns the last assistant message alone, so its `info.cost`
+    # is one step of a turn that commonly runs four or five -- measured against
+    # two live labs conversations, 37% and 69% of the real total. The bus
+    # announces every step, and a caller streaming the turn is already
+    # subscribed to it.
+    """
+
+    kind = bus_event_part_kind(event)
+    if kind is None or kind[1] != BUS_PART_STEP_FINISH:
+        return None
+    part = _bus_part(event)
+    cost = part.get("cost")
+    tokens = part.get("tokens")
+    return BusStepUsage(
+        part_id=kind[0],
+        cost=float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
+        tokens=tokens if isinstance(tokens, dict) else None,
+    )
 
 
 def _reply_text(parts: list[dict[str, Any]]) -> str:
@@ -1079,11 +1169,13 @@ __all__ = [
     "BUS_EVENT_PART_UPDATED",
     "BUS_EVENT_SESSION_IDLE",
     "BUS_PART_REASONING",
+    "BUS_PART_STEP_FINISH",
     "BUS_PART_TEXT",
     "BUS_PART_TOOL",
     "DEFAULT_BASE_URL",
     "DEFAULT_SERVER_USERNAME",
     "TURN_READ_TIMEOUT_SECONDS",
+    "BusStepUsage",
     "ModelRef",
     "OpenCodeClient",
     "OpenCodeError",
@@ -1094,6 +1186,7 @@ __all__ = [
     "bus_event_is_idle",
     "bus_event_part_kind",
     "bus_event_session_id",
+    "bus_event_step_usage",
     "bus_event_text_delta",
     "bus_event_tool_input",
     "bus_event_tool_label",

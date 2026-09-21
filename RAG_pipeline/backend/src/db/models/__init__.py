@@ -13,7 +13,11 @@ from src.db.models.document_text import DocumentTextRow
 from src.db.models.knowledge_revision import ActiveRagKnowledgeRevision, RagKnowledgeRevision
 from src.db.models.query_log import QueryLog
 from src.db.models.ingestion_job import IngestionJob
-from src.db.models.conversation import Conversation, ConversationMessage
+from src.db.models.conversation import (
+    Conversation,
+    ConversationLane,
+    ConversationMessage,
+)
 from src.db.models.query_usage import QueryUsage
 from src.db.models.benchmark import BenchmarkRun
 from src.db.models.onboarding import UserOnboarding, Notification
@@ -99,6 +103,7 @@ __all__ = [
     "QueryLog",
     "IngestionJob",
     "Conversation",
+    "ConversationLane",
     "ConversationMessage",
     "QueryUsage",
     "BenchmarkRun",

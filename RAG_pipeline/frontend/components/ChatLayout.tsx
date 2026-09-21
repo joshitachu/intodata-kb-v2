@@ -11,10 +11,18 @@ import { MobileTopBar } from "./mobile/MobileTopBar";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, Package, X } from "lucide-react";
 import { PackWorkbench } from "./packs/PackWorkbench";
+import { LabsTurnPanel } from "./labs/LabsTurnPanel";
+import { useLabsTurnRecord } from "./labs/useLabsTurnRecord";
 import { closePackWorkbenchHref } from "@/lib/packs";
 
 export function ChatLayout() {
   const chat = useChatContext();
+  // The V2 turn instrument -- plan, reasoning, tool calls, usage -- which used
+  // to live on `/labs/chat`. It survives that page's removal because none of it
+  // is rendered by the chat bubble, and it stays *outside* `ChatWindow` for the
+  // reason it always did: the answer body is the unforked production renderer,
+  // so a difference in the answer is a difference in the agent, not the UI.
+  const labsTurn = useLabsTurnRecord(chat.streamState);
   const { isMobile } = useViewport();
   const urlState = useUrlConversationId();
   const router = useRouter();
@@ -118,7 +126,10 @@ export function ChatLayout() {
             : undefined
         }
       >
-        <div className="min-w-0 flex-1">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          {chat.activeLane === "v2" && (
+            <LabsTurnPanel record={labsTurn} onStop={chat.cancelStream} />
+          )}
           {!isMobile || !packWorkspaceOpen ? <ChatWindow
             conversation={chat.activeConversation}
             isLoading={chat.isLoadingConversation}
@@ -135,8 +146,6 @@ export function ChatLayout() {
             mode={chat.mode}
             onModeChange={chat.setMode}
             selectedProject={chat.selectedProject}
-            deepDiveState={chat.deepDiveState}
-            onCancelDeepDive={chat.onCancelDeepDive}
           /> : null}
         </div>
         {packWorkspaceOpen && (
