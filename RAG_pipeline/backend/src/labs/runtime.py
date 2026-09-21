@@ -1796,12 +1796,19 @@ async def execute_labs_turn(
     # and `read` spends evidence the capability count cannot see. `tool_breakdown`
     # names which, so "12 calls" can be read as "4 searches and 8 file reads"
     # without reconstructing it from the OpenCode session afterwards.
+    # `mode` is logged because without it a turn's tool menu cannot be explained
+    # after the fact. A deep-dive turn that used no scan tool and a chat turn
+    # that could not have used one produce the SAME breakdown, and the only way
+    # anyone could tell them apart was to guess from what the answer said. That
+    # guess was wrong at least once.
     logger.info(
-        "labs.turn conversation_id=%s session=%s agent=%s latency_ms=%s tool_calls=%s "
-        "all_tool_calls=%s tool_breakdown=%s streamed_chars=%s stop_reason=%s finish=%s",
+        "labs.turn conversation_id=%s session=%s agent=%s mode=%s latency_ms=%s "
+        "tool_calls=%s all_tool_calls=%s tool_breakdown=%s streamed_chars=%s "
+        "stop_reason=%s finish=%s",
         conversation_id,
         session_id or "-",
         agent,
+        mode.value if hasattr(mode, "value") else mode,
         latency_ms,
         len(tool_calls),
         sum(tool_counts.values()),
