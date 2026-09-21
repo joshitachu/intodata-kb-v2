@@ -104,7 +104,7 @@ def test_targeted_corrected_matrices_have_exact_non_overlapping_scope() -> None:
     assert not {item.scenario_id for item in action}.intersection(
         item.scenario_id for item in no_action
     )
-    assert ["list_project_documents", "search_documentation"] in fixture[
+    assert ["list_generated_documents", "search_documentation"] in fixture[
         "family_allowed_tool_sequences"
     ]["documentation_rag"]
     assert ["get_documentation_generation_status"] in fixture[

@@ -29,6 +29,8 @@ from src.topology.models import (
 from src.topology.tools import (
     MAX_JOB_COMPONENTS,
     MAX_MAPPING_EXPRESSIONS,
+    MAX_PARAM_TABLE_ROWS,
+    MAX_PARAM_TABLES,
     MAX_TARGETS,
     find_topology_node,
     get_component_detail,
@@ -38,8 +40,11 @@ from src.topology.tools import (
     list_topology_dependencies,
 )
 from tests.test_topology.conftest import (
+    COLLECTOR_JOB,
+    COLLECTOR_ROUTING_COMPONENT,
     MAPPING_COMPONENT,
     MAPPING_JOB,
+    PLURIPHARM_PROJECT,
     QUINTIQ_JOB,
     QUINTIQ_SOURCE_ROOT,
     RICHEST_JOB,
@@ -414,6 +419,355 @@ class TestCapsOnTheRichestRealArtifacts:
         assert listed == result.content["component_count"]
         assert result.content["connection_count"] == 201
         assert result.truncated is True
+
+
+class TestComponentSettingsAreReadable:
+    """The measured failure: 41 tool calls, 15 of them one component at a time.
+
+    An agent asked which criterion routes a shipment to the Mediq or the
+    Distrimed flow. It opened `cSetHeader_5` -- the component that defines the
+    routing variable -- got nothing usable back, and swept on. The criterion is
+    a ROW of that component's VALUES table, and rows reached neither the MCP
+    node nor this projection, so the whole answer was invisible while the
+    component that held it had already been read.
+    """
+
+    async def test_the_routing_criterion_comes_back_from_one_component_call(
+        self, pluripharm_provider
+    ) -> None:
+        _transport, provider = pluripharm_provider
+
+        result = await get_component_detail(
+            GetComponentDetailInput(
+                project_id=PLURIPHARM_PROJECT,
+                job=COLLECTOR_JOB,
+                component=COLLECTOR_ROUTING_COMPONENT,
+            ),
+            provider=provider,
+            access_token=None,
+        )
+        rows = result.content["component"]["parameter_tables"]["VALUES"]
+
+        assert result.content["resolved"] is True
+        # The name of the routing variable and the field it is read from, which
+        # is what makes the answer nameable rather than "undeterminable".
+        assert any("AN8_CHECK" in row and "SZAN8" in row for row in rows), rows
+
+    async def test_a_component_whose_whole_config_is_rows_is_not_reported_as_empty(
+        self, pluripharm_provider
+    ) -> None:
+        """`cSetHeader_5` has an EMPTY param_summary: all of it is in rows.
+
+        Testing the scalar half alone reports exactly the components that hold
+        the answer as having nothing configured.
+        """
+        _transport, provider = pluripharm_provider
+
+        result = await get_component_detail(
+            GetComponentDetailInput(
+                project_id=PLURIPHARM_PROJECT,
+                job=COLLECTOR_JOB,
+                component=COLLECTOR_ROUTING_COMPONENT,
+            ),
+            provider=provider,
+            access_token=None,
+        )
+        component = result.content["component"]
+
+        assert component["parameters"] == {}
+        assert component["has_settings"] is True
+        assert component["parameter_tables"]
+
+    async def test_one_batched_page_replaces_a_component_by_component_sweep(
+        self, pluripharm_provider
+    ) -> None:
+        """Four paged calls cover all 41 components' settings, not 41 calls."""
+        _transport, provider = pluripharm_provider
+
+        offset: int | None = 0
+        pages = 0
+        settings_by_component: dict[str, dict] = {}
+        while offset is not None:
+            page = await get_job_detail(
+                GetJobDetailInput(
+                    project_id=PLURIPHARM_PROJECT,
+                    name_or_id=COLLECTOR_JOB,
+                    include_parameters=True,
+                    offset=offset,
+                ),
+                provider=provider,
+                access_token=None,
+            )
+            pages += 1
+            for item in page.content["components"]:
+                if "parameter_tables" in item or item.get("parameters"):
+                    settings_by_component[item["name"]] = item
+            offset = page.content["components_next_offset"]
+            assert pages < 10, "paging did not terminate"
+
+        assert pages == 4, f"{pages} pages for 41 components"
+        rows = settings_by_component[COLLECTOR_ROUTING_COMPONENT]["parameter_tables"]["VALUES"]
+        assert any("AN8_CHECK" in row for row in rows)
+        # And the SQL and JMS destinations of the same design came along for
+        # free, which is the other half of the sweep the agent paid for.
+        assert "cSQL_1" in settings_by_component
+        assert "cJMS_1" in settings_by_component
+
+    async def test_a_plain_listing_points_at_the_batch_instead_of_a_sweep(
+        self, pluripharm_provider
+    ) -> None:
+        _transport, provider = pluripharm_provider
+
+        result = await get_job_detail(
+            GetJobDetailInput(project_id=PLURIPHARM_PROJECT, name_or_id=COLLECTOR_JOB),
+            provider=provider,
+            access_token=None,
+        )
+
+        assert result.content["component_settings_included"] is False
+        assert "include_parameters=true" in result.content["component_settings_note"]
+        # And the listing says WHICH components are worth opening at all.
+        assert any(item["has_settings"] for item in result.content["components"])
+
+    async def test_every_batched_page_of_the_richest_designs_fits_the_ceiling(
+        self, werkorder_provider, pluripharm_provider
+    ) -> None:
+        """Overrunning is not a soft failure: the backstop drops every list."""
+        _transport, werkorder = werkorder_provider
+        _pluri_transport, pluripharm = pluripharm_provider
+        calls = [
+            (werkorder, "werkorder", RICHEST_JOB),
+            (werkorder, "werkorder", QUINTIQ_JOB),
+            (pluripharm, PLURIPHARM_PROJECT, COLLECTOR_JOB),
+        ]
+
+        for provider, project_id, job_name in calls:
+            for offset in (0, 12, 24):
+                result = await get_job_detail(
+                    GetJobDetailInput(
+                        project_id=project_id,
+                        name_or_id=job_name,
+                        include_parameters=True,
+                        offset=offset,
+                    ),
+                    provider=provider,
+                    access_token=None,
+                )
+                size = payload_size(result)
+                assert size < settings.runtime_tool_result_max_chars, (
+                    f"{job_name} offset {offset}: {size} chars"
+                )
+
+    async def test_settings_that_do_not_fit_are_counted_not_dropped(
+        self, pluripharm_graph, collector_job_graph
+    ) -> None:
+        """Forty rows on every component of a 41-component design."""
+        rows = [
+            {
+                "NAME": f'"VAR_{index}"',
+                "LANGUAGE": "xpath",
+                "EXPRESSION": f'xpath("/A/B/{"segment" * 10}/{index}/text()",String.class)',
+            }
+            for index in range(40)
+        ]
+        overloaded = {
+            **collector_job_graph,
+            "nodes": [
+                {
+                    **node,
+                    "param_tables": [
+                        {
+                            "name": "VALUES",
+                            "columns": ["NAME", "LANGUAGE", "EXPRESSION"],
+                            "rows": rows,
+                            "row_count": len(rows),
+                        }
+                    ],
+                }
+                for node in collector_job_graph["nodes"]
+            ],
+        }
+        provider = make_provider(
+            werkorder_routes(
+                landscape={},
+                project_graph=pluripharm_graph,
+                job_graphs={COLLECTOR_JOB: overloaded},
+                project_id=PLURIPHARM_PROJECT,
+            )
+        )
+
+        result = await get_job_detail(
+            GetJobDetailInput(
+                project_id=PLURIPHARM_PROJECT, name_or_id=COLLECTOR_JOB, include_parameters=True
+            ),
+            provider=provider,
+            access_token=None,
+        )
+        shown = [item for item in result.content["components"] if "parameter_tables" in item]
+
+        assert payload_size(result) < settings.runtime_tool_result_max_chars
+        # Every component on the page is still listed; only the settings gave way.
+        assert len(result.content["components"]) == MAX_JOB_COMPONENTS
+        assert result.content["component_settings_omitted"] == MAX_JOB_COMPONENTS - len(shown)
+        assert "get_component_detail" in result.content["component_settings_omitted_note"]
+        for item in shown:
+            note = item["parameter_table_notes"]["VALUES"]
+            assert note.endswith("of 40 rows shown"), note
+
+    async def test_a_truncated_table_says_so_rather_than_reading_as_a_short_one(
+        self, pluripharm_graph, collector_job_graph
+    ) -> None:
+        rows = [{"NAME": f'"VAR_{index}"', "VALUE": f'"v{index}"'} for index in range(40)]
+        node = {
+            **collector_job_graph["nodes"][0],
+            "param_tables": [
+                {
+                    "name": "VALUES",
+                    "columns": ["NAME", "VALUE"],
+                    "rows": rows[:12],
+                    "row_count": 40,
+                    "rows_omitted": 26,
+                    "rows_redacted": 2,
+                }
+            ],
+        }
+        provider = make_provider(
+            werkorder_routes(
+                landscape={},
+                project_graph=pluripharm_graph,
+                job_graphs={COLLECTOR_JOB: {**collector_job_graph, "nodes": [node]}},
+                project_id=PLURIPHARM_PROJECT,
+            )
+        )
+
+        result = await get_component_detail(
+            GetComponentDetailInput(
+                project_id=PLURIPHARM_PROJECT,
+                job=COLLECTOR_JOB,
+                component=node["unique_name"],
+            ),
+            provider=provider,
+            access_token=None,
+        )
+        component = result.content["component"]
+
+        assert len(component["parameter_tables"]["VALUES"]) == MAX_PARAM_TABLE_ROWS
+        # Both counts are against the SCAN's 40 rows, never against what upstream
+        # already trimmed: a filtered table that reports its own length is
+        # indistinguishable from a complete short one.
+        assert component["parameter_table_notes"]["VALUES"] == (
+            f"{MAX_PARAM_TABLE_ROWS} of 40 rows shown; "
+            "2 withheld by the credential filter"
+        )
+
+    async def test_the_richest_mapping_component_with_tables_fits_the_ceiling(
+        self, werkorder, werkorder_graph, mapping_job_graph, richest_component_graph
+    ) -> None:
+        """Worst case for the single-component read: 27 KB of mapping + tables."""
+        rows = [
+            {
+                "NAME": f'"VAR_{index}"',
+                "LANGUAGE": "xpath",
+                "EXPRESSION": f'xpath("/A/{"segment" * 20}/{index}/text()",String.class)',
+            }
+            for index in range(60)
+        ]
+        overloaded = {
+            **mapping_job_graph,
+            "nodes": [
+                {
+                    **node,
+                    "param_tables": [
+                        {
+                            "name": f"TABLE_{table}",
+                            "columns": ["NAME", "LANGUAGE", "EXPRESSION"],
+                            "rows": rows,
+                            "row_count": len(rows),
+                        }
+                        for table in range(5)
+                    ],
+                }
+                for node in mapping_job_graph["nodes"]
+            ],
+        }
+        provider = make_provider(
+            werkorder_routes(
+                landscape=werkorder,
+                project_graph=werkorder_graph,
+                job_graphs={MAPPING_JOB: overloaded},
+                component_graphs={(MAPPING_JOB, MAPPING_COMPONENT): richest_component_graph},
+            )
+        )
+
+        result = await get_component_detail(
+            GetComponentDetailInput(
+                project_id="werkorder", job=MAPPING_JOB, component=MAPPING_COMPONENT
+            ),
+            provider=provider,
+            access_token=None,
+        )
+        component = result.content["component"]
+
+        assert payload_size(result) < settings.runtime_tool_result_max_chars
+        assert len(component["parameter_tables"]) <= MAX_PARAM_TABLES
+        assert component["parameter_tables_omitted"] >= 1
+        assert result.content["mapping_available"] is True
+
+    async def test_rows_survive_the_envelope_depth_limit_in_a_batched_page(
+        self, pluripharm_provider
+    ) -> None:
+        """The deepest shape this package produces, through the real sanitizer.
+
+        `data -> content -> components -> component -> parameter_tables -> rows`
+        puts a row exactly at the envelope's last usable level. Nesting a row's
+        own columns one level deeper -- the obvious shape -- would put every cell
+        past the limit and replace the answer with a depth marker, silently.
+        """
+        from src.harness.semantic_tools import _sanitize_value
+
+        _transport, provider = pluripharm_provider
+        result = await get_job_detail(
+            GetJobDetailInput(
+                project_id=PLURIPHARM_PROJECT,
+                name_or_id=COLLECTOR_JOB,
+                include_parameters=True,
+                # The page `_component_order` puts cSetHeader_5 on (index 32).
+                offset=24,
+            ),
+            provider=provider,
+            access_token=None,
+        )
+
+        sanitized = _sanitize_value(result.as_data(), depth=0)
+        matched = [
+            item
+            for item in sanitized["content"]["components"]
+            if item["name"] == COLLECTOR_ROUTING_COMPONENT
+        ]
+        assert matched, [item["name"] for item in sanitized["content"]["components"]]
+        rows = matched[0]["parameter_tables"]["VALUES"]
+
+        assert all(isinstance(row, str) for row in rows), rows
+        assert any("AN8_CHECK" in row and "SZAN8" in row for row in rows), rows
+
+    async def test_a_design_whose_scan_predates_the_field_still_answers(
+        self, werkorder_provider
+    ) -> None:
+        """MCP may publish no `param_tables` at all; that is not an error."""
+        _transport, provider = werkorder_provider
+
+        result = await get_job_detail(
+            GetJobDetailInput(
+                project_id="werkorder", name_or_id=QUINTIQ_JOB, include_parameters=True
+            ),
+            provider=provider,
+            access_token=None,
+        )
+        listed = result.content["components"]
+
+        assert result.content["component_settings_included"] is True
+        assert any(item.get("parameters") for item in listed)
+        assert all("parameter_tables" not in item for item in listed)
 
 
 class TestAmbiguityAcrossEntityKinds:

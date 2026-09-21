@@ -581,7 +581,7 @@ class RagBridge:
         every ``output/*/docs`` and ``output/*/*/docs`` in the repository), so
         this returns nothing for them and their push is byte-identical.
 
-        It exists for ``agent-workspace-v1``, where the agent chooses the
+        It supports historical nested document trees, where the producer chose the
         document structure and may write ``output/integrations/orders.md``.
         Without it that document reaches ``docs/integrations/orders.md`` on
         disk and is silently absent from RAG.

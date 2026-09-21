@@ -8,6 +8,8 @@ from mcp_server.providers.custom.debug_artifacts import debug_dir, debug_write
 from mcp_server.providers.custom.pipeline.phase import Phase, PhaseEstimate, PhaseResult
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from mcp_server.providers.base import DocGenContext, LogCallback
     from mcp_server.providers.custom.models import ExecutionPlan, HarnessRunState
     from mcp_server.providers.custom.pipeline.helpers import HarnessHelpersImpl
@@ -168,6 +170,34 @@ class Phase3Docs(Phase):
         else:
             await log_cb(ctx.project_id, "[custom] Phase 3 depth gate passed", "info")
 
+        # ASCII-only publication gate. Generated Markdown is read on Windows
+        # (cp1252) and must stay ASCII -- see knowledge_base/CLAUDE.md rule 4.
+        # Run 258 shipped CJK inside client prose ("BTW number<CJK>") and 144
+        # em-dashes in ASCII diagrams. Advisory like every other Phase 3 final
+        # check: report file, line and codepoint; the operator decides.
+        ascii_report = _scan_non_ascii(ctx.staging_dir)
+        (ctx.staging_dir / "_assessment" / "non_ascii_report.json").write_text(
+            json.dumps(ascii_report, indent=2, ensure_ascii=True), encoding="utf-8"
+        )
+        if not ascii_report["ok"]:
+            summary = (
+                f"{ascii_report['finding_count']} non-ASCII occurrence(s) in "
+                f"{len(ascii_report['files'])} doc(s): "
+                + "; ".join(_format_ascii_finding(f) for f in ascii_report["findings"][:3])
+            )
+            await log_cb(ctx.project_id, f"[custom] Phase 3 ASCII gate: {summary}", "warning")
+        else:
+            await log_cb(ctx.project_id, "[custom] Phase 3 ASCII gate passed", "info")
+
+        if execution_plan is not None:
+            self._helpers.record_dag_node_result(
+                ctx,
+                "validate_ascii",
+                "passed" if ascii_report["ok"] else "advisory",
+                artifacts=["_assessment/non_ascii_report.json"],
+                validation="validate_ascii",
+            )
+
         provenance: CoverageReport | None = None
         if ctx.enterprise_mode and self._helpers.pack_contract_mode:
             provenance = CoverageReport(
@@ -278,6 +308,78 @@ def _thin_bundle_notice(thin_groups: list[str]) -> str:
         f"thin or absent: {groups_str}. "
         "Sections that depend on these groups may contain less detail than expected. "
         "Re-scan the project or inspect the scanner output to improve coverage."
+    )
+
+
+#: Cap the per-file finding list so one badly-encoded document cannot bloat the
+#: report. The census counts every occurrence regardless.
+_ASCII_FINDINGS_PER_FILE = 25
+
+
+def _scan_non_ascii(staging_dir: "Path") -> dict:
+    """Locate non-ASCII codepoints in the documents this run would publish.
+
+    Only top-level ``*.md`` files are scanned: those are exactly what the atomic
+    swap moves into ``docs/`` and what ``RagBridge`` pushes. Internal artifacts
+    under ``_analysis/``, ``_assessment/`` and friends are never published and
+    are legitimately free to carry whatever the model wrote.
+    """
+    findings: list[dict] = []
+    census: dict[str, int] = {}
+    files: list[str] = []
+    for path in sorted(staging_dir.glob("*.md")):
+        if path.name.startswith("_"):
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        file_hits = 0
+        reported_for_file = 0
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            offenders = [(col, ch) for col, ch in enumerate(line, start=1) if ord(ch) > 127]
+            if not offenders:
+                continue
+            file_hits += len(offenders)
+            for _col, ch in offenders:
+                key = f"U+{ord(ch):04X}"
+                census[key] = census.get(key, 0) + 1
+            if reported_for_file < _ASCII_FINDINGS_PER_FILE:
+                reported_for_file += 1
+                col, _ch = offenders[0]
+                findings.append(
+                    {
+                        "file": path.name,
+                        "line": lineno,
+                        "column": col,
+                        "codepoints": sorted({f"U+{ord(ch):04X}" for _c, ch in offenders}),
+                        "names": sorted({_codepoint_name(ch) for _c, ch in offenders}),
+                        "excerpt": _ascii_excerpt(line),
+                    }
+                )
+        if file_hits:
+            files.append(path.name)
+    return {
+        "ok": not findings,
+        "finding_count": sum(census.values()),
+        "files": files,
+        "codepoint_census": dict(sorted(census.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "findings": findings,
+    }
+
+
+def _codepoint_name(ch: str) -> str:
+    import unicodedata
+    return unicodedata.name(ch, f"UNNAMED U+{ord(ch):04X}")
+
+
+def _ascii_excerpt(line: str, limit: int = 120) -> str:
+    """ASCII-safe excerpt: non-ASCII characters are shown as escapes."""
+    trimmed = line.strip()[:limit]
+    return "".join(ch if ord(ch) <= 127 else f"\\u{ord(ch):04x}" for ch in trimmed)
+
+
+def _format_ascii_finding(finding: dict) -> str:
+    return (
+        f"{finding['file']}:{finding['line']} "
+        f"{','.join(finding['codepoints'])} ({finding['excerpt'][:60]})"
     )
 
 

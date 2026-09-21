@@ -154,6 +154,8 @@ export interface StreamStructuredFacts {
   constantSets: BusinessTransformation[];
   unclassifiedTransformations: BusinessTransformation[];
   fieldRows: StreamFieldRow[];
+  /** Header/body/code steps of a message route: not field mappings. */
+  messageRows: StreamFieldRow[];
   valueDomainGroups: StreamValueDomainGroup[];
   businessRules: BusinessRule[];
   runtimeObservations: RuntimeObservation[];
@@ -237,11 +239,19 @@ export const REACHES_TARGET_LABEL: Record<ReachesTarget, string> = {
 };
 
 /** Field rows are emitted in this kind order so numbering is deterministic. */
-const FIELD_ROW_KIND_ORDER: TransformationKind[] = ["field_mapping", "derived_rule", "constant_set"];
+// A field mapping and a message-construction step are not the same claim, and a
+// reader cannot tell them apart once they share a heading. A Camel route has no
+// tMap: it sets message headers, fills the body and runs its own code. Counting
+// those as "Velden" reports 48 field mappings for a design that has none.
+const FIELD_ROW_KIND_ORDER: TransformationKind[] = ["field_mapping", "constant_set"];
+const MESSAGE_ROW_KIND_ORDER: TransformationKind[] = ["derived_rule"];
 
-function fieldRowsFor(byKind: Map<TransformationKind, BusinessTransformation[]>): StreamFieldRow[] {
+function fieldRowsFor(
+  byKind: Map<TransformationKind, BusinessTransformation[]>,
+  order: TransformationKind[] = FIELD_ROW_KIND_ORDER,
+): StreamFieldRow[] {
   const rows: StreamFieldRow[] = [];
-  for (const kind of FIELD_ROW_KIND_ORDER) {
+  for (const kind of order) {
     for (const transformation of byKind.get(kind) ?? []) {
       for (const mapping of transformation.mappings) {
         rows.push({
@@ -252,7 +262,11 @@ function fieldRowsFor(byKind: Map<TransformationKind, BusinessTransformation[]>)
           targetField: mapping.target || transformation.target_field || "",
           source: mapping.source,
           expression: mapping.expression ?? "",
-          sourceOrExpression: mapping.expression || mapping.source,
+          // The producer's plain-language explanation wins over the verbatim
+          // expression. Both are published; only one fits on a 390px row, and a
+          // reader who needs `SELECT count(*) AS elements ${exchangeProperty.from}`
+          // needs it as evidence under the sentence, not instead of it.
+          sourceOrExpression: mapping.note || mapping.expression || mapping.source,
           mappingType: mapping.mapping_type ?? "unknown",
           category: mapping.category ?? "",
           reachesTarget: mapping.reaches_target ?? "unknown",
@@ -329,6 +343,7 @@ export function streamStructuredFacts(
     constantSets: byKind.get("constant_set") ?? [],
     unclassifiedTransformations: byKind.get("unknown") ?? [],
     fieldRows: fieldRowsFor(byKind),
+    messageRows: fieldRowsFor(byKind, MESSAGE_ROW_KIND_ORDER),
     valueDomainGroups: valueDomainGroupsFor(valueDomains),
     businessRules,
     runtimeObservations,

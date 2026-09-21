@@ -41,54 +41,27 @@ class MCPServerConfig(BaseSettings):
     opencode_model: str = ""
     opencode_primary_agent: str = "build"
     opencode_version: str = "1.18.7"
-    # The backend dispatches each phase step once. OpenCode/provider transport
-    # retry behavior remains owned by the configured OpenCode provider.
     opencode_auto_approve: bool = True
+    #: Startup + fixed-cost allowance for a run. NOT the whole budget: the real
+    #: timeout scales with the estate (see opencode_timeout_per_group_seconds).
+    #: A flat 1800 gave a 4-job project and a 1345-job project the same 30
+    #: minutes, and ETTM (20 groups) was cancelled 56s short of dying on it with
+    #: 5 groups and all of Phase 3 still to run.
     opencode_timeout_seconds: int = 1800
-    # A reingestion patch is a single, small contract. It gets a shorter hard
-    # ceiling than a full documentation run and emits liveness updates while a
-    # provider is reasoning without streaming events.
-    opencode_reingestion_timeout_seconds: int = 900
-    opencode_reingestion_progress_interval_seconds: int = 60
-    # Gather and Analyze contracts are packed into adaptive, fresh-session
-    # batches under this estimated input-token target. The provider clamps
-    # non-positive values at use time. MCP_OPENCODE_BATCH_TARGET_INPUT_TOKENS.
-    opencode_batch_target_input_tokens: int = 80_000
-    # Independent provider-capacity ceilings for concurrently running adaptive
-    # batch sessions. These do not determine how many batches are planned.
-    opencode_gather_concurrency: int = 3  # MCP_OPENCODE_GATHER_CONCURRENCY
-    opencode_analyze_concurrency: int = 3  # MCP_OPENCODE_ANALYZE_CONCURRENCY
-    opencode_produce_concurrency: int = 2  # MCP_OPENCODE_PRODUCE_CONCURRENCY
-    # Tool-driven Gather is the primary runtime. Set "contracts" to retain the
-    # bounded contract-batch path. MCP_OPENCODE_GATHER_MODE.
-    opencode_gather_mode: str = "tools"
-    # Adaptive logical scopes preserve partition/group affinity while applying
-    # hard count ceilings. Non-positive ceilings clamp to one at use time.
-    opencode_scope_max_units: int = 40  # MCP_OPENCODE_SCOPE_MAX_UNITS
-    opencode_scope_max_groups: int = 6  # MCP_OPENCODE_SCOPE_MAX_GROUPS
-    # Scope sessions run independently and may receive a bounded fresh recovery
-    # session after partial progress. MCP_OPENCODE_SCOPE_CONCURRENCY and
-    # MCP_OPENCODE_SCOPE_MAX_FOLLOWUPS.
-    opencode_scope_concurrency: int = 3
-    opencode_scope_max_followups: int = 1
-    # Analyze/Produce sessions may finish after writing only part of a batch.
-    # Nexus checkpoints those files and retries only missing contracts in fresh,
-    # focused sessions. This is the bounded number of such follow-up rounds.
-    # MCP_OPENCODE_PHASE_MAX_FOLLOWUPS.
-    opencode_phase_max_followups: int = 1
+    #: Added per scanned group. Measured on ETTM run 259: 15 group analyses took
+    #: ~20 minutes wall-clock (~80 s/group) because OpenCode runs sub-agents
+    #: 3-4 at a time, not the 20-wide fan-out the prompt asks for. 180 s/group
+    #: covers that plus the Phase 3 share.
+    opencode_timeout_per_group_seconds: int = 180
+    #: Absolute ceiling, so a very large estate cannot wedge a worker forever.
+    #: VW_FULL_LANDSCAPE (178 groups) would otherwise compute to ~9.4 hours.
+    opencode_timeout_max_seconds: int = 21600
     # OpenCode treats Ollama as a custom OpenAI-compatible provider. This URL
     # is reachable from the Docker service and can be overridden by operators.
     opencode_ollama_base_url: str = "http://host.docker.internal:11434/v1"
     # OpenCode Go subscription key. Nexus materializes this as an isolated,
     # per-phase OpenCode credential file rather than sharing a user's auth store.
     opencode_go_api_key: str = ""
-    # JSON object: {"server-id": ["read_tool", ...]}. Empty is deny-all.
-    # It is never passed to the subprocess argv or persisted in run receipts.
-    opencode_mcp_read_allowlist_json: str = "{}"
-    # Global kill switch for governed live evidence.  It is deliberately off by
-    # default so connector tables/configuration cannot affect legacy or normal
-    # OpenCode runs until the full Gather-only path is enabled.
-    opencode_connectors_enabled: bool = False
 
     # Base data directory for logs, uploads, repos
     data_dir: Path = Path(__file__).resolve().parent.parent.parent / "data"
@@ -321,6 +294,16 @@ class MCPServerConfig(BaseSettings):
     max_prompt_bundle_bytes: int = 200_000  # MCP_MAX_PROMPT_BUNDLE_BYTES
     max_ref_bundle_bytes: int = 80_000  # MCP_MAX_REF_BUNDLE_BYTES
     max_param_val_chars: int = 16_000  # MCP_MAX_PARAM_VAL_CHARS (was 400; raised 2026-06-10 to stop truncating Lobster field_wiring past 14 of 123 arrows)
+
+    # Phase 2 batching in the claude-cli / opencode-cli lane
+    # (services/claude_service.py::plan_phase2_workers). Sub-agents dispatch
+    # 3-4 at a time whatever they are asked for, so one worker covers several
+    # groups. This is the ATTRIBUTION-SAFETY bound on that batching, not a
+    # performance knob: it caps how many groups' evidence sit in one context
+    # and therefore how far a component misattributed from one group to
+    # another can travel. Lower it if
+    # _assessment/group_attribution.json starts reporting findings.
+    phase2_max_groups_per_worker: int = 6  # MCP_PHASE2_MAX_GROUPS_PER_WORKER
 
     # Quick scan anti-pattern thresholds (job/component counts)
     qs_god_profile_threshold: int = 15  # MCP_QS_GOD_PROFILE_THRESHOLD

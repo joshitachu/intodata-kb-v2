@@ -64,7 +64,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from mcp_server.config import config
 
@@ -73,6 +73,10 @@ if TYPE_CHECKING:
 from mcp_server.providers.custom.analysis_parser import (
     PHASE2_SECTION_NAMES,
     parse_phase2_sections,
+)
+from mcp_server.providers.custom.section_parser import (
+    iter_lines_outside_fences,
+    known_section_at_any_level,
 )
 from mcp_server.providers.custom.models import ModelOptions
 from mcp_server.providers.custom.prompt_renderer import PromptRenderer
@@ -250,18 +254,52 @@ def _compute_field_diff(
 # ---------------------------------------------------------------------------
 
 
+class _Boundary(NamedTuple):
+    """The offset at which the first known section heading begins."""
+
+    offset: int
+
+    def start(self) -> int:
+        return self.offset
+
+
+def _first_known_section_match(
+    text: str, section_names: frozenset[str]
+) -> _Boundary | None:
+    """Offset of the first heading naming a known section, at any level.
+
+    Fence-aware, so a heading inside a fenced code sample is never the boundary.
+    """
+    offset = 0
+    for line, in_fence in iter_lines_outside_fences(text):
+        if not in_fence and known_section_at_any_level(line, section_names):
+            return _Boundary(offset)
+        offset += len(line) + 1
+    return None
+
+
 def _split_analysis(
     text: str, contract: "PackContract | None" = None
 ) -> tuple[str, dict[str, str]]:
     """Split a Phase 2 analysis text into (preamble, sections).
 
-    ``preamble`` is everything before the first ``### SECTION_NAME`` heading
-    (i.e. the ``# Phase 2 Analysis:`` header, ``## Coverage`` block, and
-    ``## Model Analysis`` wrapper opening line).
+    ``preamble`` is everything before the first section heading (i.e. the
+    ``# Phase 2 Analysis:`` header, ``## Coverage`` block, and ``## Model
+    Analysis`` wrapper opening line).
     ``sections`` maps section_name -> content (heading line excluded).
+
+    The boundary is the first heading NAMING A KNOWN SECTION, at any level.
+    This used to search for ``^### [A-Z]``, which meant a Phase 2 analysis
+    written with ``## COMPONENTS`` (verified real: every group in run 258) found
+    no match, took the ``body = ""`` branch, and returned zero sections while
+    reporting the whole document as preamble -- the same silent total loss that
+    produced fabricated documentation in the generation lane, reproduced here in
+    the living-docs patch lane against the very same input.
     """
-    h3_re = re.compile(r"^### [A-Z]", re.MULTILINE)
-    m = h3_re.search(text)
+    section_names = frozenset(
+        contract.ordered_names if contract is not None else PHASE2_SECTION_NAMES
+    )
+    m = _first_known_section_match(text, section_names)
     if m:
         preamble = text[: m.start()].rstrip()
         body = text[m.start():]

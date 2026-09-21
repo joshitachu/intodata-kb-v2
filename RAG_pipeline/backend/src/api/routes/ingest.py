@@ -20,7 +20,7 @@ from src.retrieval.knowledge_revisions import (
     prepare_knowledge_revision,
     rollback_knowledge_revision,
 )
-from src.rbac.permissions import get_user_project_ids
+from src.rbac.permissions import MANAGE_PROJECTS, get_user_project_ids, has_permission
 from src.retrieval.vector_store import delete_document_points
 from src.retrieval.vector_store import clone_revision_artifact_points
 from src.schemas import (
@@ -47,6 +47,18 @@ from src.runtime.topology.repository import (
 # prefix separates them from canonical docs ("{project_id}/NN_*.md") so the
 # internal lifecycle (full delete-and-repush) can never touch user-facing docs.
 INTERNAL_DOC_PREFIX = "_internal/"
+
+# The one document role that is pure evidence: it is cited, never obeyed, so
+# uploading it changes nothing about how the project is answered. Every other
+# role becomes a method or a rule the assistant follows for everyone on the
+# project, which makes uploading one a management act rather than a
+# contribution.
+#
+# Deliberately written as its own constant rather than reusing
+# DEFAULT_DOCUMENT_ROLE: "what the form defaults to" and "what needs no
+# privilege" are different facts that happen to coincide today, and tying the
+# authorization gate to the default would invert it the day the default moves.
+UNPRIVILEGED_DOCUMENT_ROLE: DocumentRole = "source"
 
 logger = logging.getLogger(__name__)
 
@@ -344,6 +356,26 @@ async def ingest(
     user_project_ids = await get_user_project_ids(user, db)
     if user_project_ids is not None and project_id not in user_project_ids:
         raise HTTPException(status_code=403, detail="No access to this project")
+
+    # Project access grants the right to add evidence, not the right to change
+    # how the project is answered. A reference, guidance, standard, template or
+    # policy document becomes a method or rule the assistant applies for every
+    # member, so labelling a file "policy" would otherwise be an escalation path
+    # open to any uploader. Written as "not the unprivileged role" so a role
+    # added later is gated until someone decides otherwise.
+    if document_role != UNPRIVILEGED_DOCUMENT_ROLE and not has_permission(
+        user, MANAGE_PROJECTS
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Uploading a '{document_role}' document requires the "
+                f"'{MANAGE_PROJECTS}' permission, because non-source documents become "
+                "guidance the assistant follows for everyone on this project. "
+                f"Uploading with document_role '{UNPRIVILEGED_DOCUMENT_ROLE}' is "
+                "unaffected."
+            ),
+        )
 
     try:
         doc, job = await ingest_document(

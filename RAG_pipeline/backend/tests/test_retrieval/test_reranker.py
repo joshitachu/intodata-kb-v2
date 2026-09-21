@@ -1,9 +1,32 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
-from src.retrieval.reranker import rerank
+from src.retrieval import reranker as reranker_module
+from src.retrieval.reranker import (
+    RerankerHealth,
+    RerankerMisconfigured,
+    record_rerank_failure,
+    rerank,
+    reranker_health,
+    warmup,
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_health(monkeypatch):
+    """Give each test its own health record.
+
+    The real one is process-global on purpose (a standing degradation outlives
+    any single turn), which also means one test's failure would otherwise be
+    another test's starting state.
+    """
+
+    health = RerankerHealth()
+    monkeypatch.setattr(reranker_module, "_HEALTH", health)
+    return health
 
 
 def _voyage_response(results: list[dict]) -> httpx.Response:
@@ -212,3 +235,104 @@ async def test_rerank_min_score_boundary(mock_settings):
     # Score exactly at min_score (0.05 >= 0.05) should pass
     assert len(result) == 1
     assert result[0] == (0, 0.05)
+
+
+# --- Configuration and degradation visibility ---
+#
+# The defect these cover: `reranker_enabled=True` with a blank `voyage_api_key`
+# made every call fail and fall back to raw fusion order, so a deployment could
+# serve permanently un-reranked results and look completely healthy doing it.
+
+
+def test_warmup_refuses_enabled_reranker_without_a_key(monkeypatch, _isolated_health):
+    monkeypatch.setattr(
+        reranker_module,
+        "settings",
+        SimpleNamespace(reranker_enabled=True, voyage_api_key=""),
+    )
+
+    with pytest.raises(RerankerMisconfigured) as excinfo:
+        warmup()
+
+    # The message has to name both the contradiction and the way out of it.
+    assert "VOYAGE_API_KEY" in str(excinfo.value)
+    assert "RERANKER_ENABLED=false" in str(excinfo.value)
+    assert _isolated_health.misconfigured is True
+    assert _isolated_health.as_dict()["degraded"] is True
+
+
+def test_warmup_refuses_a_whitespace_only_key(monkeypatch):
+    monkeypatch.setattr(
+        reranker_module,
+        "settings",
+        SimpleNamespace(reranker_enabled=True, voyage_api_key="   \n"),
+    )
+
+    with pytest.raises(RerankerMisconfigured):
+        warmup()
+
+
+def test_warmup_is_silent_when_configured(monkeypatch, _isolated_health):
+    monkeypatch.setattr(
+        reranker_module,
+        "settings",
+        SimpleNamespace(reranker_enabled=True, voyage_api_key="a-real-key"),
+    )
+
+    warmup()
+
+    assert _isolated_health.misconfigured is False
+    assert _isolated_health.as_dict()["degraded"] is False
+
+
+def test_warmup_allows_a_deliberately_disabled_reranker(monkeypatch, _isolated_health):
+    """Disabling it is the supported way to run without one, key or no key."""
+
+    monkeypatch.setattr(
+        reranker_module,
+        "settings",
+        SimpleNamespace(reranker_enabled=False, voyage_api_key=""),
+    )
+
+    warmup()
+
+    assert _isolated_health.misconfigured is False
+
+
+def test_record_rerank_failure_logs_at_error_and_counts(caplog, _isolated_health):
+    with caplog.at_level("ERROR", logger="src.retrieval.reranker"):
+        record_rerank_failure(httpx.ConnectError("voyage unreachable"))
+
+    assert _isolated_health.failures == 1
+    assert _isolated_health.consecutive_failures == 1
+    assert "ConnectError" in (_isolated_health.last_error or "")
+    assert _isolated_health.as_dict()["degraded"] is True
+    # ERROR, not WARNING: an un-reranked result set is indistinguishable from a
+    # reranked one downstream, so this is the only signal there is.
+    assert any(record.levelname == "ERROR" for record in caplog.records)
+    assert "RERANKER DEGRADED" in caplog.text
+
+
+def test_consecutive_failures_reset_on_a_successful_rerank(_isolated_health):
+    record_rerank_failure(RuntimeError("boom"))
+    record_rerank_failure(RuntimeError("boom"))
+    assert _isolated_health.consecutive_failures == 2
+
+    _isolated_health.record_success()
+
+    assert _isolated_health.consecutive_failures == 0
+    assert _isolated_health.failures == 2  # the total is history, not state
+    assert _isolated_health.as_dict()["degraded"] is False
+
+
+def test_distinct_failure_reasons_are_kept_and_bounded(_isolated_health):
+    for index in range(25):
+        record_rerank_failure(RuntimeError(f"reason-{index}"))
+
+    reasons = _isolated_health.as_dict()["recent_reasons"]
+    assert len(reasons) == 10  # bounded; this record lives for the process
+    assert "reason-24" in reasons[-1]
+
+
+def test_reranker_health_returns_the_live_record(_isolated_health):
+    assert reranker_health() is _isolated_health

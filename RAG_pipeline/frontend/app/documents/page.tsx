@@ -4,6 +4,7 @@ import { useState } from "react";
 import { FileText, Trash2, Loader2, ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { DocumentUpload } from "@/components/DocumentUpload";
+import { ProjectStructurePanel } from "@/components/guidance/ProjectStructurePanel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { MobileTopBar } from "@/components/mobile/MobileTopBar";
 import { useDocuments, useDeleteDocument } from "@/hooks/useDocuments";
@@ -36,15 +37,26 @@ export default function DocumentsPage() {
   return (
     <>
       {titleBar}
-      <div className="max-w-4xl mx-auto py-6 sm:py-8 px-3 sm:px-0" data-tour="documents-page">
+      <div
+        className="max-w-4xl xl:max-w-7xl mx-auto py-6 sm:py-8 px-3 sm:px-0"
+        data-tour="documents-page"
+      >
         <h1 className="hidden sm:block text-2xl font-bold mb-6">Documents</h1>
 
-        <div className="mb-6 sm:mb-8">
-          <h2 className="text-lg font-medium mb-3 sm:mb-4">Upload New Document</h2>
-          <DocumentUpload />
+        {/*
+          Two panels, deliberately side by side on a wide screen: dropping a file
+          and stating a rule are the two ways to tell this project how to answer,
+          and separating them onto different pages would hide the second one.
+        */}
+        <div className="mb-6 sm:mb-8 grid gap-6 xl:grid-cols-2 xl:items-start">
+          <div>
+            <h2 className="text-lg font-medium mb-3 sm:mb-4">Upload New Document</h2>
+            <DocumentUpload />
+          </div>
+          <ProjectStructurePanel />
         </div>
 
-        <div>
+        <div className="max-w-4xl">
           <h2 className="text-lg font-medium mb-3 sm:mb-4">
             My Documents
             {data && <span className="text-muted-foreground font-normal"> ({data.total})</span>}

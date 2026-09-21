@@ -15,9 +15,21 @@ from src.generation.llm_client import (
     generate_document_answer_stream,
     get_last_usage,
 )
+from src.generation.citation_audit import (
+    append_citation_repair_notice,
+    audit_citations,
+    cited_documents,
+    log_citation_audit,
+)
 from src.generation.usage import TRUNCATION_NOTICE, mark_if_truncated
 from src.harness.trusted_answer import ANSWER_DELTA_CHARS
+from src.retrieval.coverage import build_retrieval_coverage, entity_coverage
 from src.retrieval.embedder import get_last_embed_tokens
+from src.retrieval.entity_matcher import (
+    EntityMatchResult,
+    match_query_entities,
+    matched_unit_names,
+)
 from src.generation.prompt_builder import (
     build_messages,
     build_no_results_messages,
@@ -28,6 +40,7 @@ from src.config import settings
 from src.turn_progress import report_phase
 from src.turn_timings import measure_model
 from src.retrieval.search import (
+    fetch_unit_chunks,
     merge_sources_by_document,
     search_and_rerank,
     search_layered,
@@ -107,6 +120,79 @@ async def _execute_search(
     )
 
 
+_NO_ENTITY_MATCHES = EntityMatchResult(matches=[], alias_rows_present=False)
+
+
+async def _resolve_named_entities(
+    db: AsyncSession,
+    query: str,
+    project_ids: list[str] | None,
+) -> EntityMatchResult:
+    """Detect which known project entities the question names.
+
+    Fail-soft, and logged at ERROR when it fails. This is a retrieval-quality
+    guarantee, not a formatting nicety: losing it means an entity the user named
+    by hand is back in the ranking contest, which is precisely the failure the
+    alias table exists to prevent. Degrading to semantic-only is still better than
+    failing the turn, so the exception is swallowed -- but it must never be
+    swallowed quietly.
+    """
+
+    if not settings.entity_exact_match_enabled:
+        return _NO_ENTITY_MATCHES
+    try:
+        return await match_query_entities(db, query, project_ids)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Entity matching failed; exact-name retrieval is disabled for this "
+            "turn: %s",
+            exc,
+            exc_info=True,
+        )
+        return _NO_ENTITY_MATCHES
+
+
+async def _fetch_named_entity_chunks(
+    qdrant: AsyncQdrantClient,
+    user_groups: list[str],
+    matched_units: list[str],
+    project_ids: list[str] | None,
+    knowledge_revisions: Mapping[str, str] | None,
+) -> list[Source]:
+    """Rung 1's exact-name safety net: the named units' chunks, by payload filter.
+
+    Runs against the DEFAULT canonical partition (``source_layers=None``) and the
+    source role, so it returns the published documents a user naming a job expects
+    to be shown -- not the internal analysis partitions rung 2 searches.
+
+    Swallows its own failure for the same reason ``search_layered`` does, at the
+    same log level: the semantic result is already in hand and an answer without
+    the guarantee beats no answer at all.
+    """
+
+    if not matched_units:
+        return []
+    try:
+        return await fetch_unit_chunks(
+            qdrant,
+            user_groups,
+            matched_units,
+            source_layers=None,
+            project_ids=project_ids,
+            document_roles=["source"],
+            limit=settings.entity_exact_match_limit,
+            knowledge_revisions=knowledge_revisions,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Exact-name unit fetch failed for units=%s: %s",
+            matched_units,
+            exc,
+            exc_info=True,
+        )
+        return []
+
+
 async def _execute_role_aware_search(
     query: str,
     request: QueryRequest,
@@ -115,12 +201,19 @@ async def _execute_role_aware_search(
     project_ids: list[str] | None,
     knowledge_revisions: Mapping[str, str] | None = None,
     topology_hints: TopologyRetrievalHints | None = None,
+    matched_units: list[str] | None = None,
 ) -> tuple[list[Source], list[Source]]:
     """Run source-first retrieval plus bounded auxiliary/template context.
 
     The source and auxiliary searches are independent, so they run concurrently
     rather than sequentially to halve the retrieval wall-clock.
+
+    ``matched_units`` are units the question named by hand. Their chunks are
+    fetched deterministically alongside the semantic searches and placed AHEAD of
+    them: an entity the user asked for by name must not be able to lose a
+    similarity contest to a chunk that merely reads like the question.
     """
+    units = matched_units or []
     searches = [
         _execute_search(
             query,
@@ -162,13 +255,38 @@ async def _execute_role_aware_search(
                 knowledge_revisions=knowledge_revisions,
             )
         )
+    # Appended last so the two established searches keep indices 0 and 1 whether
+    # or not a topology hint added one.
+    searches.append(
+        _fetch_named_entity_chunks(
+            qdrant, user_groups, units, project_ids, knowledge_revisions
+        )
+    )
     results = await asyncio.gather(*searches)
+    entity_sources = results[-1]
     source_sources, auxiliary_sources = results[:2]
-    if len(results) == 3:
+    if len(results) == 4:
         source_sources = _merge_retrieval_sources(
             source_sources,
             results[2],
             max_items=request.top_k + min(4, request.top_k),
+        )
+    if entity_sources:
+        # Guaranteed hits lead, exactly as they do inside `search_layered`. The
+        # cap is widened by the number of guaranteed chunks rather than shared
+        # with them, so the safety net ADDS evidence instead of evicting the
+        # semantic results that were already good enough to rank.
+        source_sources = _merge_retrieval_sources(
+            entity_sources,
+            source_sources,
+            max_items=len(entity_sources) + request.top_k + min(4, request.top_k),
+        )
+        logger.info(
+            "Exact-name retrieval: units=%s -> %d guaranteed chunk(s) ahead of "
+            "%d ranked chunk(s)",
+            units,
+            len(entity_sources),
+            len(source_sources) - len(entity_sources),
         )
     deep_sources = await _execute_deep_layer_search(
         query,
@@ -178,6 +296,7 @@ async def _execute_role_aware_search(
         project_ids,
         rung1_hits=len(source_sources),
         knowledge_revisions=knowledge_revisions,
+        matched_units=units,
     )
     if deep_sources:
         # Merged as AUXILIARY, not source: an internal analysis interprets the
@@ -203,6 +322,7 @@ async def _execute_deep_layer_search(
     *,
     rung1_hits: int,
     knowledge_revisions: Mapping[str, str] | None = None,
+    matched_units: list[str] | None = None,
 ) -> list[Source]:
     """Retrieval-ladder rung 2: search the internal corpus partitions.
 
@@ -215,6 +335,11 @@ async def _execute_deep_layer_search(
     A failure here is swallowed deliberately. This rung is supplementary by
     construction, and rung 1's result is already in hand -- degrading to the
     canonical-only answer is strictly better than failing the turn.
+
+    ``matched_units`` finally populates ``search_layered``'s guaranteed-entity
+    path. That parameter shipped with the function and had no caller, so the deep
+    rung searched the internal partitions semantically only -- exactly the
+    ranking contest the parameter was written to exempt named entities from.
     """
 
     if not settings.deep_layer_escalation_enabled:
@@ -232,6 +357,7 @@ async def _execute_deep_layer_search(
             top_k=settings.deep_layer_top_k,
             threshold=request.threshold,
             project_ids=project_ids,
+            matched_units=list(matched_units) if matched_units else None,
             knowledge_revisions=knowledge_revisions,
         )
     except Exception as exc:  # noqa: BLE001
@@ -397,6 +523,11 @@ async def run_rag_query(
     # in a couple of seconds and then waits here. Reporting the two real phases is
     # what keeps the user's status line alive for the rest of the turn.
     await report_phase("searching_documents")
+    # Resolved before retrieval because both halves of the partial-coverage fix
+    # need it: the exact-name fetch needs the units, and the coverage report needs
+    # to know which named entities never showed up in what was retrieved.
+    entity_result = await _resolve_named_entities(db, request.query, project_ids)
+    matched_units = matched_unit_names(entity_result.matches)
     sources, auxiliary_sources = await _execute_role_aware_search(
         request.query,
         request,
@@ -405,12 +536,24 @@ async def run_rag_query(
         project_ids,
         knowledge_revisions,
         topology_hints,
+        matched_units=matched_units,
     )
 
     if sources or auxiliary_sources:
         logger.info("Document search returned %d source chunks", len(sources))
         document_sources = merge_sources_by_document([*sources, *auxiliary_sources])
         ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
+        coverage = build_retrieval_coverage(
+            sources=sources,
+            auxiliary_sources=auxiliary_sources,
+            referenced_documents=len(document_sources),
+            entities=entity_coverage(
+                entity_result.matches,
+                [*sources, *auxiliary_sources],
+                index_available=entity_result.alias_rows_present,
+            ),
+        )
+        logger.info("Retrieval %s", coverage.log_line())
         messages = build_messages(
             request.query,
             sources,
@@ -418,6 +561,7 @@ async def run_rag_query(
             system_knowledge=system_knowledge,
             answer_style=answer_style,
             auxiliary_sources=auxiliary_sources,
+            coverage=coverage,
         )
     else:
         logger.info("No document results passed the configured threshold")
@@ -447,10 +591,34 @@ async def run_rag_query(
     # itself because that is what every surface shows and stores.
     answer = mark_if_truncated(answer, get_last_usage())
 
+    # Bind the citations the model wrote to the references it was given. Nothing
+    # read these markers back before, so a `[7]` in an answer built from four
+    # references rendered as a citation and resolved to nothing.
+    #
+    # Repair is additive. The text is already on the user's screen by now, so the
+    # notice is appended and published as one last delta -- the same contract the
+    # truncation notice above follows, and for the same reason: the live text and
+    # the persisted text must not diverge.
+    audit = audit_citations(answer, document_sources)
+    log_citation_audit(audit, offered=len(document_sources))
+    if audit.has_dangling:
+        repaired = append_citation_repair_notice(answer, audit)
+        if repaired != answer:
+            if on_delta is not None:
+                # Exactly the text that was added, sliced from the two strings
+                # rather than re-derived. `harness/evidence.py` compares the
+                # streamed answer against the persisted one byte for byte and
+                # logs an ERROR when they differ.
+                await on_delta(repaired[len(answer):])
+            answer = repaired
+
     latency_ms = int((time.perf_counter() - start) * 1000)
 
     logger.info(f"Completed in {latency_ms}ms | {len(document_sources)} document sources returned")
 
+    # The full retrieved set is persisted: the query log is the audit record of
+    # what retrieval offered, and narrowing it would destroy the only evidence
+    # that a document was retrieved and then ignored.
     await _persist_query(
         db=db,
         user_id=user_id,
@@ -462,6 +630,11 @@ async def run_rag_query(
 
     return QueryResponse(
         answer=answer,
-        sources=document_sources,
+        # The subset the answer actually used. Returning every merged document
+        # made the sources panel assert provenance for documents no sentence in
+        # the answer rests on, which is a citation contract in appearance only.
+        # `cited_documents` returns the full list when the answer cited nothing,
+        # so a greeting or an uncited answer still shows what was retrieved.
+        sources=cited_documents(document_sources, audit),
         latency_ms=latency_ms,
     )

@@ -140,8 +140,15 @@ _TOOL_SPECS: dict[str, TopologyToolSpec] = {
                 "composite upload pass source_root to pin one partition's copy. A real "
                 "design has ~250 components, so the component and connection listings are "
                 "paged: each reports its total and its next_offset, and passing "
-                "offset=<that value> reads the next page. Says so explicitly when the "
-                "design is not in the scan; never describe a design you did not read."
+                "offset=<that value> reads the next page. Set include_parameters=true to "
+                "get the CONFIGURED SETTINGS of every component on the page in this one "
+                "call - the scalar parameters plus the row-structured tables where a "
+                "design's decision logic lives (header/variable values, filter "
+                "conditions, XML/JSON field mappings). Use that instead of calling "
+                "get_component_detail once per component when you are looking for where "
+                "something is decided and do not yet know which component decides it. "
+                "Says so explicitly when the design is not in the scan; never describe a "
+                "design you did not read."
             ),
             input_model=GetJobDetailInput,
             handler=get_job_detail,
@@ -150,11 +157,16 @@ _TOOL_SPECS: dict[str, TopologyToolSpec] = {
             name="get_component_detail",
             description=(
                 "Get ONE component inside one design: what it is, what feeds it, what it "
-                "feeds, and - for mapping components only - its column-level mapping "
-                "tables and expressions. Requires job and component names. Most components "
-                "publish no deeper mapping graph, and the result says that outright rather "
-                "than returning an empty mapping: report it as 'no column-level mapping is "
-                "published for this component', never as 'no transformations'."
+                "feeds, its configured settings (scalar parameters plus row-structured "
+                "tables such as header/variable values, filter conditions and field "
+                "mappings), and - for mapping components only - its column-level mapping "
+                "tables and expressions. Requires job and component names. To read the "
+                "settings of SEVERAL components of one design, call get_job_detail with "
+                "include_parameters=true instead of calling this once per component. Most "
+                "components publish no deeper mapping graph, and the result says that "
+                "outright rather than returning an empty mapping: report it as 'no "
+                "column-level mapping is published for this component', never as 'no "
+                "transformations'."
             ),
             input_model=GetComponentDetailInput,
             handler=get_component_detail,

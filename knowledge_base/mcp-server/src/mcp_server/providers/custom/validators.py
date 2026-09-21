@@ -25,8 +25,18 @@ _catalog = _load_catalog()
 REQUIRED_DOCS = [d.name for d in _catalog.docs if not d.per_unit]
 DOC_SECTION_REQUIREMENTS = _catalog.section_requirements
 
+# The heading LEVEL is the writing model's choice, so it is not part of the
+# contract: a doc that titles this "### Evidence Register" still has one, and
+# matching only "## " would report the register as absent (the run-258 failure
+# shape -- a zero-match parse reading as "there is nothing here").  The section
+# ends at the next heading of the SAME OR HIGHER rank, so a nested sub-heading
+# inside the register does not truncate it.
+#: ``group("body")`` is the register's content; ``group(0)`` is heading + content.
+#: Read the body by NAME -- it is not group(1), because the level is captured
+#: first so the terminator can back-reference it.
 EVIDENCE_REGISTER_SECTION_RE = re.compile(
-    r"^##\s+Evidence Register\s*$([\s\S]*?)(?=^##\s+|\Z)",
+    r"^(?P<level>#{1,6})\s+Evidence Register\s*$(?P<body>[\s\S]*?)"
+    r"(?=^(?P=level)\s+|\Z)",
     re.MULTILINE | re.IGNORECASE,
 )
 
@@ -1842,7 +1852,7 @@ def _evidence_register_errors(path: Path, major_topics: list[str]) -> tuple[list
     if not match:
         return [f"{path.name} missing required Evidence Register"], []
 
-    lines = [line for line in match.group(1).splitlines() if line.strip()]
+    lines = [line for line in match.group("body").splitlines() if line.strip()]
     table_start = next((index for index, line in enumerate(lines) if line.lstrip().startswith("|")), None)
     if table_start is None or table_start + 1 >= len(lines):
         return [f"{path.name} Evidence Register missing required provenance table"], []

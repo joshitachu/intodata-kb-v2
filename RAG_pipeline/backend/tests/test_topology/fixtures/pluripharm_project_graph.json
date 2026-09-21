@@ -1,0 +1,62 @@
+{
+ "project_id": "pluripharm",
+ "manifest": {
+  "job_groups": {
+   "collector_jde_shipping_notification_from_db_c006_mediq": "Talend8.__intodoc_repo__/TALEND8/Collectors"
+  },
+  "job_source_roots": {
+   "collector_jde_shipping_notification_from_db_c006_mediq": "Talend8.__intodoc_repo__/TALEND8"
+  },
+  "job_calls": {},
+  "job_called_by": {},
+  "job_external_systems": {
+   "collector_jde_shipping_notification_from_db_c006_mediq": [
+    "JMS Broker"
+   ]
+  },
+  "artifact_kinds": {
+   "collector_jde_shipping_notification_from_db_c006_mediq": "route"
+  },
+  "artifact_relations": [],
+  "artifact_channels": [],
+  "artifact_endpoints": [],
+  "artifact_resources": [],
+  "source_roots": []
+ },
+ "job_metadata": {
+  "collector_jde_shipping_notification_from_db_c006_mediq": {
+   "purpose": "",
+   "summary": "",
+   "direction": "",
+   "component_count": 41,
+   "component_types": [
+    "cMQConnectionFactory",
+    "cConfig",
+    "cTimer",
+    "cSetHeader",
+    "cMessageRouter",
+    "cDirect",
+    "cSplitter",
+    "cProcessor",
+    "cSetBody",
+    "cOnException",
+    "cContentEnricher",
+    "cJMS",
+    "cLog",
+    "cStop",
+    "cSQLConnection",
+    "cSQL"
+   ],
+   "external_systems": [
+    "JMS Broker"
+   ],
+   "artifact_kind": "route",
+   "artifact_role": "standalone",
+   "subgroup": "JDE",
+   "has_docs": false
+  }
+ },
+ "artifact_counts": {
+  "job_count": 1
+ }
+}

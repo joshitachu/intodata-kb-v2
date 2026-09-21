@@ -1,0 +1,1047 @@
+{
+ "project_id": "pluripharm",
+ "job_name": "collector_jde_shipping_notification_from_db_c006_mediq",
+ "group": "Talend8.__intodoc_repo__/TALEND8/Collectors",
+ "nodes": [
+  {
+   "unique_name": "cMQConnectionFactory_1",
+   "display_label": "",
+   "component_type": "cMQConnectionFactory",
+   "type_explanation": "Opens or closes a cMQConnectionFactory connection.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "AMQP_BROKER_URI": "\"localhost\"",
+    "AMQ_BROKER_URI": "context.connection_AMQbroker_pph"
+   },
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cConfig_1",
+   "display_label": "dependencies",
+   "component_type": "cConfig",
+   "type_explanation": "Processes data using the Talend cConfig component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": true,
+   "description": ""
+  },
+  {
+   "unique_name": "cTimer_1",
+   "display_label": "cTriggerRoute",
+   "component_type": "cTimer",
+   "type_explanation": "Processes data using the Talend cTimer component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cSetHeader_1",
+   "display_label": "<b>setMandatoryLogInfos</b>",
+   "component_type": "cSetHeader",
+   "type_explanation": "Processes data using the Talend cSetHeader component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [
+    {
+     "name": "VALUES",
+     "columns": [
+      "NAME",
+      "LANGUAGE",
+      "EXPRESSION"
+     ],
+     "rows": [
+      {
+       "NAME": "\"ESB_Process\"",
+       "LANGUAGE": "constant",
+       "EXPRESSION": "\"SHIPPING_NOTIFICATION_OUT\""
+      }
+     ],
+     "row_count": 1,
+     "rows_omitted": 0,
+     "rows_redacted": 0
+    }
+   ],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cMessageRouter_1",
+   "display_label": "checkForOrders",
+   "component_type": "cMessageRouter",
+   "type_explanation": "Processes data using the Talend cMessageRouter component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cDirect_1",
+   "display_label": "toExtraction",
+   "component_type": "cDirect",
+   "type_explanation": "Processes data using the Talend cDirect component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "EXIST_ENDPOINT": "cDirect_2",
+    "INPUT_ENDPOINT_NAME": "false"
+   },
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cDirect_2",
+   "display_label": "toExtraction",
+   "component_type": "cDirect",
+   "type_explanation": "Processes data using the Talend cDirect component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "INPUT_ENDPOINT_NAME": "false"
+   },
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cSplitter_1",
+   "display_label": "splitPerOrderId",
+   "component_type": "cSplitter",
+   "type_explanation": "Processes data using the Talend cSplitter component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cSetHeader_2",
+   "display_label": "extractOrderId",
+   "component_type": "cSetHeader",
+   "type_explanation": "Processes data using the Talend cSetHeader component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [
+    {
+     "name": "VALUES",
+     "columns": [
+      "NAME",
+      "LANGUAGE",
+      "EXPRESSION"
+     ],
+     "rows": [
+      {
+       "NAME": "\"COL_EDOC\"",
+       "LANGUAGE": "simple",
+       "EXPRESSION": "\"${body[SYEDOC]}\""
+      },
+      {
+       "NAME": "\"COL_EDCT\"",
+       "LANGUAGE": "simple",
+       "EXPRESSION": "\"${body[SYEDCT]}\""
+      },
+      {
+       "NAME": "\"COL_EKCO\"",
+       "LANGUAGE": "simple",
+       "EXPRESSION": "\"${body[SYEKCO]}\""
+      },
+      {
+       "NAME": "\"ESB_JDE_ORDER_NUMBER\"",
+       "LANGUAGE": "simple",
+       "EXPRESSION": "\"${body[SYDOC1]}\""
+      },
+      {
+       "NAME": "\"ESB_JDE_BATCH_NUMBER\"",
+       "LANGUAGE": "constant",
+       "EXPRESSION": "\"${body[SYEDOC]}\""
+      },
+      {
+       "NAME": "\"breadcrumbId\"",
+       "LANGUAGE": "simple",
+       "EXPRESSION": "\"${headers.breadcrumbId}-${headers.CamelSplitIndex}\""
+      },
+      {
+       "NAME": "\"camel.breadcrumbId\"",
+       "LANGUAGE": "header",
+       "EXPRESSION": "\"breadcrumbId\""
+      }
+     ],
+     "row_count": 7,
+     "rows_omitted": 0,
+     "rows_redacted": 0
+    }
+   ],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cMessageRouter_2",
+   "display_label": "",
+   "component_type": "cMessageRouter",
+   "type_explanation": "Processes data using the Talend cMessageRouter component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cProcessor_1",
+   "display_label": "setLoggingInfo",
+   "component_type": "cProcessor",
+   "type_explanation": "Processes data using the Talend cProcessor component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": true,
+   "description": ""
+  },
+  {
+   "unique_name": "cSetBody_1",
+   "display_label": "setXMLRoot",
+   "component_type": "cSetBody",
+   "type_explanation": "Processes data using the Talend cSetBody component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cDirect_3",
+   "display_label": "toQueries",
+   "component_type": "cDirect",
+   "type_explanation": "Processes data using the Talend cDirect component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "EXIST_ENDPOINT": "cDirect_4",
+    "INPUT_ENDPOINT_NAME": "false"
+   },
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cDirect_4",
+   "display_label": "toQueries",
+   "component_type": "cDirect",
+   "type_explanation": "Processes data using the Talend cDirect component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "INPUT_ENDPOINT_NAME": "false"
+   },
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cDirect_5",
+   "display_label": "toOrderHeader",
+   "component_type": "cDirect",
+   "type_explanation": "Processes data using the Talend cDirect component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "INPUT_ENDPOINT_NAME": "false"
+   },
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cDirect_6",
+   "display_label": "toOrderDetail",
+   "component_type": "cDirect",
+   "type_explanation": "Processes data using the Talend cDirect component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "INPUT_ENDPOINT_NAME": "false"
+   },
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cOnException_1",
+   "display_label": "",
+   "component_type": "cOnException",
+   "type_explanation": "Processes data using the Talend cOnException component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cContentEnricher_1",
+   "display_label": "getOrderHeader",
+   "component_type": "cContentEnricher",
+   "type_explanation": "Processes data using the Talend cContentEnricher component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "RESOURCE_URI": "\"direct:SOHeader\"",
+    "TIMEOUT_TRIGGER": "1000",
+    "TRIGGER": "false"
+   },
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cContentEnricher_2",
+   "display_label": "getOrderHeaderAdditional",
+   "component_type": "cContentEnricher",
+   "type_explanation": "Processes data using the Talend cContentEnricher component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "RESOURCE_URI": "\"direct:SODetail\"",
+    "TIMEOUT_TRIGGER": "1000",
+    "TRIGGER": "false"
+   },
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cJMS_1",
+   "display_label": "enqueueMsg",
+   "component_type": "cJMS",
+   "type_explanation": "Processes data using the Talend cJMS component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "DESTINATION": "context.connection_activemq_queueDistrimedShippingOrders"
+   },
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cSetHeader_3",
+   "display_label": "setTableInfos",
+   "component_type": "cSetHeader",
+   "type_explanation": "Processes data using the Talend cSetHeader component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [
+    {
+     "name": "VALUES",
+     "columns": [
+      "NAME",
+      "LANGUAGE",
+      "EXPRESSION"
+     ],
+     "rows": [
+      {
+       "NAME": "\"table\"",
+       "LANGUAGE": "constant",
+       "EXPRESSION": "\"F47036\""
+      },
+      {
+       "NAME": "\"table_schema\"",
+       "LANGUAGE": "constant",
+       "EXPRESSION": "context.jdeTableF47036"
+      }
+     ],
+     "row_count": 2,
+     "rows_omitted": 0,
+     "rows_redacted": 0
+    }
+   ],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cSetHeader_4",
+   "display_label": "setTableInfos",
+   "component_type": "cSetHeader",
+   "type_explanation": "Processes data using the Talend cSetHeader component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [
+    {
+     "name": "VALUES",
+     "columns": [
+      "NAME",
+      "LANGUAGE",
+      "EXPRESSION"
+     ],
+     "rows": [
+      {
+       "NAME": "\"table\"",
+       "LANGUAGE": "constant",
+       "EXPRESSION": "\"F470371\""
+      },
+      {
+       "NAME": "\"table_schema\"",
+       "LANGUAGE": "constant",
+       "EXPRESSION": "context.jdeTableF470371"
+      }
+     ],
+     "row_count": 2,
+     "rows_omitted": 0,
+     "rows_redacted": 0
+    }
+   ],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cLog_1",
+   "display_label": "",
+   "component_type": "cLog",
+   "type_explanation": "Processes data using the Talend cLog component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cStop_1",
+   "display_label": "stop",
+   "component_type": "cStop",
+   "type_explanation": "Processes data using the Talend cStop component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cLog_2",
+   "display_label": "",
+   "component_type": "cLog",
+   "type_explanation": "Processes data using the Talend cLog component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cLog_3",
+   "display_label": "",
+   "component_type": "cLog",
+   "type_explanation": "Processes data using the Talend cLog component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cLog_4",
+   "display_label": "",
+   "component_type": "cLog",
+   "type_explanation": "Processes data using the Talend cLog component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cLog_5",
+   "display_label": "",
+   "component_type": "cLog",
+   "type_explanation": "Processes data using the Talend cLog component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cLog_6",
+   "display_label": "",
+   "component_type": "cLog",
+   "type_explanation": "Processes data using the Talend cLog component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cLog_7",
+   "display_label": "",
+   "component_type": "cLog",
+   "type_explanation": "Processes data using the Talend cLog component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cJMS_2",
+   "display_label": "enqueueMsgMediq",
+   "component_type": "cJMS",
+   "type_explanation": "Processes data using the Talend cJMS component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "DESTINATION": "context.connection_activemq_queueMediqShippingOrders"
+   },
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cSetHeader_5",
+   "display_label": "setXmlVar",
+   "component_type": "cSetHeader",
+   "type_explanation": "Processes data using the Talend cSetHeader component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [
+    {
+     "name": "VALUES",
+     "columns": [
+      "NAME",
+      "LANGUAGE",
+      "EXPRESSION"
+     ],
+     "rows": [
+      {
+       "NAME": "\"AN8_CHECK\"",
+       "LANGUAGE": "none",
+       "EXPRESSION": "xpath(\"/SHIPPING_CONFIRMATION/F470371/Row/SZAN8/text()\",String.class)"
+      }
+     ],
+     "row_count": 1,
+     "rows_omitted": 0,
+     "rows_redacted": 0
+    }
+   ],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cMessageRouter_3",
+   "display_label": "checkForMediqFlow",
+   "component_type": "cMessageRouter",
+   "type_explanation": "Processes data using the Talend cMessageRouter component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cLog_8",
+   "display_label": "",
+   "component_type": "cLog",
+   "type_explanation": "Processes data using the Talend cLog component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cLog_9",
+   "display_label": "",
+   "component_type": "cLog",
+   "type_explanation": "Processes data using the Talend cLog component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cLog_10",
+   "display_label": "",
+   "component_type": "cLog",
+   "type_explanation": "Processes data using the Talend cLog component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {},
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cSQLConnection_1",
+   "display_label": "",
+   "component_type": "cSQLConnection",
+   "type_explanation": "Opens or closes a cSQLConnection connection.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "URL": "context.connection_dbJDE_jdbcUrl",
+    "USER": "context.connection_dbJDE_Username"
+   },
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cSQL_1",
+   "display_label": "__UNIQUE_NAME__<br><b>getShipping<br>OrderIds</b>",
+   "component_type": "cSQL",
+   "type_explanation": "Processes data using the Talend cSQL component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "QUERY": "\"SELECT SYEDOC,\r\nSYEDCT,\r\nSYEKCO,\r\nSYDOC1 FROM \" + context.jdeTableF47036 + \" \r\nWHERE trim(SYEDSP) = 'N' \r\nAND trim(S..."
+   },
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cSQL_2",
+   "display_label": "__UNIQUE_NAME__<br><b>setProcessing<br>Flag</b>",
+   "component_type": "cSQL",
+   "type_explanation": "Processes data using the Talend cSQL component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "QUERY": "\"UPDATE \" + context.jdeTableF47036 + \" \r\nSET SYEDSP='P' \r\nwhere SYEDOC=CAST(:#COL_EDOC AS NUMBER) \r\nAND SYEDCT=CAST(:..."
+   },
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cSQL_3",
+   "display_label": "__UNIQUE_NAME__<br><b>queryTable</b>",
+   "component_type": "cSQL",
+   "type_explanation": "Processes data using the Talend cSQL component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "QUERY": "\"SELECT * FROM \" + context.jdeTableF47036 + \" \r\nwhere SYEDOC=CAST(:#COL_EDOC AS NUMBER) \r\nAND SYEDCT=CAST(:#COL_EDCT ..."
+   },
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  },
+  {
+   "unique_name": "cSQL_4",
+   "display_label": "__UNIQUE_NAME__<br><b>queryTable</b>",
+   "component_type": "cSQL",
+   "type_explanation": "Processes data using the Talend cSQL component.",
+   "role": "transform",
+   "has_subgraph": false,
+   "subjob_target": null,
+   "connection_ref": "",
+   "param_summary": {
+    "QUERY": "\"SELECT F2.IOMMEJ,\r\nF3.IVCITM,\r\nF1.* \r\nFROM \" + context.jdeTableF470371 + \" F1 \r\nLEFT JOIN \" + context.jdeTableF4108 ..."
+   },
+   "param_tables": [],
+   "has_code": false,
+   "description": ""
+  }
+ ],
+ "edges": [
+  {
+   "name": "route1",
+   "source": "cTimer_1",
+   "target": "cSetHeader_1",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route25",
+   "source": "cSetHeader_1",
+   "target": "cLog_9",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "when2",
+   "source": "cMessageRouter_1",
+   "target": "cDirect_1",
+   "connector_name": "ROUTE_WHEN",
+   "line_style": 15,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "otherwise1",
+   "source": "cMessageRouter_1",
+   "target": "cLog_2",
+   "connector_name": "ROUTE_OTHER",
+   "line_style": 16,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route17",
+   "source": "cDirect_2",
+   "target": "cLog_3",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "split1",
+   "source": "cSplitter_1",
+   "target": "cSetHeader_2",
+   "connector_name": "SPLIT",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route2",
+   "source": "cSetHeader_2",
+   "target": "cSQL_2",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "recordSuccessfullyLocked",
+   "source": "cMessageRouter_2",
+   "target": "cProcessor_1",
+   "connector_name": "ROUTE_WHEN",
+   "line_style": 15,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "otherServerWasFaster",
+   "source": "cMessageRouter_2",
+   "target": "cLog_5",
+   "connector_name": "ROUTE_OTHER",
+   "line_style": 16,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route12",
+   "source": "cProcessor_1",
+   "target": "cLog_4",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route11",
+   "source": "cSetBody_1",
+   "target": "cDirect_3",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route13",
+   "source": "cDirect_4",
+   "target": "cContentEnricher_1",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route7",
+   "source": "cDirect_5",
+   "target": "cSetHeader_3",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route9",
+   "source": "cDirect_6",
+   "target": "cSetHeader_4",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route5",
+   "source": "cOnException_1",
+   "target": "cLog_7",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route4",
+   "source": "cContentEnricher_1",
+   "target": "cContentEnricher_2",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route6",
+   "source": "cContentEnricher_2",
+   "target": "cLog_6",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route23",
+   "source": "cJMS_1",
+   "target": "cLog_1",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route8",
+   "source": "cSetHeader_3",
+   "target": "cSQL_3",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route14",
+   "source": "cSetHeader_4",
+   "target": "cSQL_4",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route18",
+   "source": "cLog_3",
+   "target": "cSplitter_1",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route19",
+   "source": "cLog_4",
+   "target": "cSetBody_1",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route21",
+   "source": "cLog_5",
+   "target": "cStop_1",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route15",
+   "source": "cLog_6",
+   "target": "cSetHeader_5",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route20",
+   "source": "cJMS_2",
+   "target": "cLog_8",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route22",
+   "source": "cSetHeader_5",
+   "target": "cMessageRouter_3",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "when1",
+   "source": "cMessageRouter_3",
+   "target": "cJMS_2",
+   "connector_name": "ROUTE_WHEN",
+   "line_style": 15,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "otherwise2",
+   "source": "cMessageRouter_3",
+   "target": "cJMS_1",
+   "connector_name": "ROUTE_OTHER",
+   "line_style": 16,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route3",
+   "source": "cLog_9",
+   "target": "cSQL_1",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route24",
+   "source": "cLog_10",
+   "target": "cMessageRouter_1",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route10",
+   "source": "cSQL_1",
+   "target": "cLog_10",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  },
+  {
+   "name": "route16",
+   "source": "cSQL_2",
+   "target": "cMessageRouter_2",
+   "connector_name": "ROUTE",
+   "line_style": 14,
+   "is_control_flow": true,
+   "explanation": "Controls when the following component starts; carries no row data."
+  }
+ ],
+ "tmap_tables": {}
+}

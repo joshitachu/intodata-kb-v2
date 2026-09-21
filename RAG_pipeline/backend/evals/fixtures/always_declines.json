@@ -1,0 +1,104 @@
+{
+  "name": "always-declines",
+  "note": "AUTHORED BY HAND as an adversarial control. Every answer is the same refusal. A harness that reports a single 'abstention correctness' number would score this file highly, because it declines perfectly on the four unanswerable cases. Splitting abstention into recall (unanswerable) and over-abstention (answerable) is what exposes it: this file should show high abstention recall AND 100% over-abstention, and a near-zero pass rate. Run it whenever the abstention logic changes.",
+  "answers": [
+    {
+      "case_id": "vw-maximo-workorder-consumers",
+      "provenance": "handwritten_negative",
+      "notes": "uniform refusal",
+      "answer": "Dat kan ik niet vaststellen op basis van de beschikbare informatie. Er is onvoldoende bewijs om hier een uitspraak over te doen. Ik raad aan dit te verifieren bij de beheerder van het systeem.",
+      "sources": []
+    },
+    {
+      "case_id": "vw-maximo-publication-forms",
+      "provenance": "handwritten_negative",
+      "notes": "uniform refusal",
+      "answer": "Dat kan ik niet vaststellen op basis van de beschikbare informatie. Er is onvoldoende bewijs om hier een uitspraak over te doen. Ik raad aan dit te verifieren bij de beheerder van het systeem.",
+      "sources": []
+    },
+    {
+      "case_id": "vw-fo41-target-field-count",
+      "provenance": "handwritten_negative",
+      "notes": "uniform refusal",
+      "answer": "Dat kan ik niet vaststellen op basis van de beschikbare informatie. Er is onvoldoende bewijs om hier een uitspraak over te doen. Ik raad aan dit te verifieren bij de beheerder van het systeem.",
+      "sources": []
+    },
+    {
+      "case_id": "vw-assetcheck-contract-width",
+      "provenance": "handwritten_negative",
+      "notes": "uniform refusal",
+      "answer": "Dat kan ik niet vaststellen op basis van de beschikbare informatie. Er is onvoldoende bewijs om hier een uitspraak over te doen. Ik raad aan dit te verifieren bij de beheerder van het systeem.",
+      "sources": []
+    },
+    {
+      "case_id": "vw-4ps-produced-vs-arrived",
+      "provenance": "handwritten_negative",
+      "notes": "uniform refusal",
+      "answer": "Dat kan ik niet vaststellen op basis van de beschikbare informatie. Er is onvoldoende bewijs om hier een uitspraak over te doen. Ik raad aan dit te verifieren bij de beheerder van het systeem.",
+      "sources": []
+    },
+    {
+      "case_id": "vw-fo41-field-count-contradiction",
+      "provenance": "handwritten_negative",
+      "notes": "uniform refusal",
+      "answer": "Dat kan ik niet vaststellen op basis van de beschikbare informatie. Er is onvoldoende bewijs om hier een uitspraak over te doen. Ik raad aan dit te verifieren bij de beheerder van het systeem.",
+      "sources": []
+    },
+    {
+      "case_id": "vw-klantorder-source-contradiction",
+      "provenance": "handwritten_negative",
+      "notes": "uniform refusal",
+      "answer": "Dat kan ik niet vaststellen op basis van de beschikbare informatie. Er is onvoldoende bewijs om hier een uitspraak over te doen. Ik raad aan dit te verifieren bij de beheerder van het systeem.",
+      "sources": []
+    },
+    {
+      "case_id": "vw-workorder-concept-inventory",
+      "provenance": "handwritten_negative",
+      "notes": "uniform refusal",
+      "answer": "Dat kan ik niet vaststellen op basis van de beschikbare informatie. Er is onvoldoende bewijs om hier een uitspraak over te doen. Ik raad aan dit te verifieren bij de beheerder van het systeem.",
+      "sources": []
+    },
+    {
+      "case_id": "vw-ortec-worktype-lists",
+      "provenance": "handwritten_negative",
+      "notes": "uniform refusal",
+      "answer": "Dat kan ik niet vaststellen op basis van de beschikbare informatie. Er is onvoldoende bewijs om hier een uitspraak over te doen. Ik raad aan dit te verifieren bij de beheerder van het systeem.",
+      "sources": []
+    },
+    {
+      "case_id": "pp-domain-inventory",
+      "provenance": "handwritten_negative",
+      "notes": "uniform refusal",
+      "answer": "Dat kan ik niet vaststellen op basis van de beschikbare informatie. Er is onvoldoende bewijs om hier een uitspraak over te doen. Ik raad aan dit te verifieren bij de beheerder van het systeem.",
+      "sources": []
+    },
+    {
+      "case_id": "pp-fmd-customer-selection-rule",
+      "provenance": "handwritten_negative",
+      "notes": "uniform refusal",
+      "answer": "Dat kan ik niet vaststellen op basis van de beschikbare informatie. Er is onvoldoende bewijs om hier een uitspraak over te doen. Ik raad aan dit te verifieren bij de beheerder van het systeem.",
+      "sources": []
+    },
+    {
+      "case_id": "vw-source-to-common-model-field-table",
+      "provenance": "handwritten_negative",
+      "notes": "uniform refusal",
+      "answer": "Dat kan ik niet vaststellen op basis van de beschikbare informatie. Er is onvoldoende bewijs om hier een uitspraak over te doen. Ik raad aan dit te verifieren bij de beheerder van het systeem.",
+      "sources": []
+    },
+    {
+      "case_id": "pp-access-rights",
+      "provenance": "handwritten_negative",
+      "notes": "uniform refusal",
+      "answer": "Dat kan ik niet vaststellen op basis van de beschikbare informatie. Er is onvoldoende bewijs om hier een uitspraak over te doen. Ik raad aan dit te verifieren bij de beheerder van het systeem.",
+      "sources": []
+    },
+    {
+      "case_id": "pp-records-processed-per-run",
+      "provenance": "handwritten_negative",
+      "notes": "uniform refusal",
+      "answer": "Dat kan ik niet vaststellen op basis van de beschikbare informatie. Er is onvoldoende bewijs om hier een uitspraak over te doen. Ik raad aan dit te verifieren bij de beheerder van het systeem.",
+      "sources": []
+    }
+  ]
+}

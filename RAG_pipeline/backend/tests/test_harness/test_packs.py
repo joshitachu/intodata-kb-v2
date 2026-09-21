@@ -38,6 +38,7 @@ ALLOWED_REFERENCES = PackReferenceSets(
             "rag.docs.search_evidence",
             "rag.docs.answer_question",
             "rag.docs.read_document",
+            "rag.docs.read_document_text",
             "nexus.metadata.query",
             "nexus.conversations.read_summary_facts",
             "mcp.docs.update_from_evidence",

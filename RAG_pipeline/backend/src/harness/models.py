@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Final
 
 from pydantic import BaseModel, Field
 
@@ -279,6 +279,17 @@ class ActivityEvent(BaseModel):
     occurred_at: datetime
 
 
+#: How much of one evidence item's ``summary`` survives serialization.
+#:
+#: Enforced in :func:`src.harness.capability_handlers._serialized_evidence_item`,
+#: which truncates silently and leaves no marker. Named here, beside the type it
+#: bounds, because a producer that hands over larger pieces than this loses the
+#: tail of every one of them without anything saying so -- and a whole-document
+#: read that silently drops its tail is the exact failure such a read exists to
+#: remove. Producers of long text split against this constant.
+EVIDENCE_SUMMARY_MAX_CHARS: Final[int] = 4_000
+
+
 class EvidenceItem(BaseModel):
     """Normalized, sanitized evidence emitted by harness capabilities."""
 
@@ -299,6 +310,21 @@ class EvidenceQueryResult(BaseModel):
     items: list[EvidenceItem] = Field(default_factory=list)
     error_message: str | None = None
     answer_draft: str | None = Field(default=None, max_length=12_000)
+    #: What the query actually covered, stated to the caller.
+    #:
+    #: An empty ``items`` list is ambiguous without this, and the ambiguity has
+    #: already produced a wrong client-facing answer: the agent searched a prose
+    #: corpus that provably does not contain a rule, found nothing, and published
+    #: "no filter is recorded" -- absence-from-corpus reported as
+    #: absence-in-reality. Nothing in the result told it that the search had been
+    #: restricted to ``document_role="source"`` in one project, so it could not
+    #: have scoped its own negative even if it had wanted to.
+    #:
+    #: Free-form rather than a model because each capability covers a different
+    #: shape of thing (a role filter, a document, a time window). Keys are
+    #: documented at each producer, and the handler passes them through
+    #: unmodified.
+    scope: dict[str, Any] | None = None
 
 
 def _closed_object(
@@ -868,8 +894,12 @@ PUBLISH_INDEX_CAPABILITY = CapabilityDefinition(
 DOCUMENTATION_GENERATION_CAPABILITY = CapabilityDefinition(
     id="mcp.docs.generate_project_documentation",
     label="Generate project documentation",
-    semantic_name="generate_documentation",
-    purpose="Propose generation or regeneration of governed documentation for one project.",
+    semantic_name="start_documentation_generation",
+    purpose=(
+        "Start the long-running workflow that generates or regenerates governed "
+        "documentation for one project. This creates documentation; it does not "
+        "answer a question about documents that already exist."
+    ),
     preconditions=["An authorized project identifier is known."],
     failure_recovery=_STANDARD_FAILURE_RECOVERY,
     provider_type=HarnessProviderType.DOCUMENTATION,
@@ -913,7 +943,13 @@ DOCUMENTATION_GENERATION_CAPABILITY = CapabilityDefinition(
     ],
     task_types=["document_generation"],
     output_contracts=["workflow_receipt"],
-    metadata={},
+    # Its handler routes through `ConversationTaskService._claim`, which raises
+    # unless the context carries a turn claim -- exactly like the three
+    # `nexus.workflow.*` capabilities that already declare this. Without the
+    # flag the policy engine never issues a clean `turn_claim` denial, so the
+    # RuntimeError surfaced as an undiagnosable `handler_failure`, and the labs
+    # MCP bridge advertised a tool that could only ever fail.
+    metadata={"requires_turn_claim": True},
 )
 
 
@@ -1065,8 +1101,9 @@ DOCUMENT_SEARCH_CAPABILITY = CapabilityDefinition(
     label="Search indexed documentation",
     semantic_name="search_documentation",
     purpose=(
-        "Search bounded indexed project documentation for explanatory evidence about "
-        "purpose, business meaning, implementation narrative, business rules, and mappings."
+        "Primary discovery tool for ordinary questions about indexed project "
+        "documentation. Returns bounded relevance-ranked passages with document identity "
+        "and scope; it can locate evidence but cannot prove a list or count is complete."
     ),
     preconditions=["A concrete documentation question is available."],
     failure_recovery=_STANDARD_FAILURE_RECOVERY,
@@ -1087,25 +1124,20 @@ DOCUMENT_SEARCH_CAPABILITY = CapabilityDefinition(
     risk_tier=HarnessRiskTier.READ_ONLY,
     packs=["core", "documentation"],
     use_when=[
-        "You need to inspect raw indexed passages yourself, across multiple documents, "
-        "to explain what a project entity does, why it exists, how it is implemented, "
-        "or which business rules and mappings it applies.",
-        "The answer must combine documentation with topology structure, current runtime "
-        "state, logs, or actions and therefore needs evidence from several sources in one "
-        "model-authored synthesis.",
+        "Start here for a normal documentation question when the authoritative document "
+        "or section is not already known.",
+        "Use it to locate evidence about business processes, systems, data, architecture, "
+        "operations, controls, integrations, implementation, rules, and mappings.",
+        "Use it alongside runtime evidence when the question combines documented design "
+        "with current operational state.",
     ],
     do_not_use_when=[
         "The user asks only for current runtime state or incident logs.",
-        "The user asks only for a complete inventory, count, connection, or dependency "
-        "traversal; use the project topology because similarity search cannot guarantee "
-        "structural completeness.",
+        "The user asks for a complete list or exact count inside one identified document; "
+        "use read_document because ranked search cannot guarantee completeness.",
         "The user explicitly excludes documentation for this turn. Honor that exclusion; "
         "if documentation is required for the requested explanation, disclose that the "
         "explanatory portion cannot be grounded.",
-        "The user wants a normal written answer, explanation, deep dive, or summary "
-        "about project documentation for a single topic or component and nothing else "
-        "is needed; use answer_from_documentation instead. It is the default choice "
-        "for documentation questions and does not require you to write your own citations.",
     ],
     task_types=["document_answer"],
     evidence_sources=["indexed_documentation"],
@@ -1167,11 +1199,33 @@ DOCUMENTATION_ANSWER_CAPABILITY = CapabilityDefinition(
     metadata={"execution_surface": "existing_rag_answer_pipeline"},
 )
 
+#: Similarity search restricted to one document -- NOT a read of that document.
+#:
+#: The semantic name says `search_within_document` because that is what the
+#: handler does: it embeds ``query``, searches the chunks of one document, and
+#: returns the top ``max_chunks`` by similarity, each carrying a score. It was
+#: called `read_document` for a year, and the name is why an agent reported an
+#: uploaded field mapping as 30 fields when the table has 31 rows -- it had read
+#: eight similarity-ranked fragments of a table and had every reason, from the
+#: tool's own name, to believe it had read the file.
+#:
+#: The capability ID is deliberately unchanged. It is persisted in conversation
+#: history, referenced by the executor's project-canonicalization set and named
+#: in pack fixtures; renaming it would invalidate all three to fix a problem that
+#: only exists in what the MODEL sees. The MCP tool name is derived from
+#: ``semantic_name`` (``src/labs/mcp_bridge.py::_tool_name_for``), so changing
+#: that alone changes exactly the surface that was misleading.
 DOCUMENT_READ_CAPABILITY = CapabilityDefinition(
     id="rag.docs.read_document",
-    label="Read relevant passages from an indexed document",
-    semantic_name="read_document",
-    purpose="Read bounded relevant passages from one authorized indexed document.",
+    label="Search the passages of one indexed document",
+    semantic_name="search_within_document",
+    purpose=(
+        "Similarity-search the chunks of ONE authorized indexed document and return the "
+        "best-matching passages with their scores. This is a ranked search inside a "
+        "document, not a read of it: passages that do not match the query are not "
+        "returned, and nothing about the result says how much of the document was left "
+        "out. Use read_document when completeness matters."
+    ),
     preconditions=["An authorized project and positive document identifier are known."],
     failure_recovery=_STANDARD_FAILURE_RECOVERY,
     provider_type=HarnessProviderType.RETRIEVAL,
@@ -1192,9 +1246,13 @@ DOCUMENT_READ_CAPABILITY = CapabilityDefinition(
     risk_tier=HarnessRiskTier.READ_ONLY,
     packs=["core", "documentation"],
     use_when=[
-        "A prior search or document list identified a document and the answer needs its relevant passages."
+        "A prior search or document list identified a large document and you need only "
+        "the passages about one narrow topic in it.",
     ],
     do_not_use_when=[
+        "The question asks for all, every, each, the complete list or the full set of "
+        "anything -- fields, rows, columns, steps, rules. Ranked passages cannot support "
+        "a completeness claim; use read_document.",
         "No authorized project and document identity is available; search or list documents first.",
         "The inventory already answers which documents, components, or job names exist; answer directly from the inventory instead of opening every document.",
     ],
@@ -1208,11 +1266,177 @@ DOCUMENT_READ_CAPABILITY = CapabilityDefinition(
     },
 )
 
+#: The whole-document read the lane never had.
+#:
+#: Two paths existed before this and neither worked for an uploaded project.
+#: ``mcp.docs.read_project_doc`` returns a complete file but only for documents
+#: under ``output/{project_id}/docs/``, which an uploaded project does not have;
+#: ``document_texts`` held the full text but ingestion only wrote a row for small
+#: non-evidence documents, which measured 3 rows against 551 documents. Both are
+#: addressed together: ingestion now stores every document's text, and this
+#: capability is how an agent gets at it.
+#:
+#: The mode argument is the whole design. A 120 KB document is roughly 30k
+#: tokens, so an unconditional dump would spend a quarter of the context window
+#: on one call and do it silently. ``outline`` is therefore the default and is
+#: cheap -- headings and their sizes, nothing else -- so the normal shape of use
+#: is "see the structure, then ask for the part that matters". ``full`` stays
+#: available because some questions genuinely need the whole thing, and it always
+#: reports the size it is about to spend.
+#:
+#: ``sections`` -- the plural -- was added after the first measurement of that
+#: shape in use. Asked to walk through one integration, an agent read the outline
+#: and then made sixteen consecutive single-section calls; an earlier run of the
+#: same question made thirty-four calls and read 31 of 32 sections. The bytes
+#: were not the problem, the call count was: every call re-sends the
+#: conversation, which is why the 34-call run charged 933,504 cached tokens
+#: against 170,368 for the 19-call one. Choosing what to read is still the point,
+#: so the outline stays first; asking for the chosen set one piece at a time
+#: never was, so the plural argument exists and every description below names it
+#: as the normal way to read more than one section.
+DOCUMENT_FULL_TEXT_CAPABILITY = CapabilityDefinition(
+    id="rag.docs.read_document_text",
+    label="Read one document whole, or named sections of it",
+    semantic_name="read_document",
+    purpose=(
+        "Read one indexed document in document order: its outline, any number of "
+        "complete sections in a single call, or (only when small enough) the complete "
+        "document. Identify the document by 'document_id', or by 'filename' when "
+        "another document referred to a file by name and you never saw its id. Use the "
+        "outline to choose, then name every section you need in one 'sections' call; "
+        "this is the completeness tool for exact counts, complete mappings, "
+        "procedures, and rules."
+    ),
+    preconditions=[
+        "An authorized project is known, together with either the document's "
+        "identifier or its filename."
+    ],
+    failure_recovery=_STANDARD_FAILURE_RECOVERY,
+    provider_type=HarnessProviderType.RETRIEVAL,
+    provider_id="rag.document_text",
+    action="read_document_text",
+    input_schema={
+        "type": "object",
+        # Only the project is structurally required. "exactly one of document_id or
+        # filename" is enforced in the reader instead of as a schema `oneOf`,
+        # because a schema violation is reported to the caller as an opaque
+        # validation denial naming a field path. This tool exists because a model
+        # could not recover from a dead end, so its argument errors have to say
+        # what to do next, and only the reader can phrase that.
+        "required": ["project_id"],
+        "properties": {
+            "project_id": {"type": "string", "minLength": 1, "maxLength": 255},
+            "document_id": {
+                "type": "integer",
+                "minimum": 1,
+                "description": (
+                    "The document to read, by identifier. Supply exactly one of "
+                    "'document_id' or 'filename'."
+                ),
+            },
+            "filename": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+                "description": (
+                    "The document to read, by name instead of by identifier. Use this "
+                    "when another document referred to a file by name -- 'the fields "
+                    "are listed in 13_VELDINDEX.md' -- and you never saw its id, "
+                    "rather than guessing search queries for its content. Matching is "
+                    "inside this project only and case-insensitive, against the last "
+                    "part of the stored path with or without its extension: both "
+                    "'13_VELDINDEX.md' and '13_VELDINDEX' find a document stored as "
+                    "'PROJECT/13_VELDINDEX.md'. If the name fits more than one "
+                    "document the call fails and lists every candidate with its id, so "
+                    "ask again with 'document_id'. Supply exactly one of 'document_id' "
+                    "or 'filename'."
+                ),
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["outline", "section", "full"],
+                "default": "outline",
+                "description": (
+                    "Ignored when 'sections' is given. outline (default): headings and "
+                    "their sizes, so you can choose what to read. section: the full text "
+                    "of the single section named in 'section'. full: the entire document "
+                    "only when it is below the safe transport limit; otherwise this "
+                    "returns the outline."
+                ),
+            },
+            "sections": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 24,
+                "items": {"type": "string", "minLength": 1, "maxLength": 500},
+                "description": (
+                    "The normal way to read more than one section, and it overrides "
+                    "'mode'. Pass every section you need in one array -- outline ids "
+                    "such as ['s6','s9','s12'], or headings, matched exactly as "
+                    "'section' matches them. All of them come back complete and in "
+                    "document order from this one call, up to 28000 characters; ids "
+                    "that match nothing are reported without failing the call, and "
+                    "anything over the budget is named so you can ask for the "
+                    "remainder. Never call this tool repeatedly for one section at a "
+                    "time: each call re-sends the whole conversation and reads the "
+                    "same text."
+                ),
+            },
+            "section": {
+                "type": "string",
+                "maxLength": 500,
+                "description": (
+                    "One single section, for mode='section'. Pass the outline id (for "
+                    "example s3) or heading reported by the outline. Heading matching is "
+                    "case-insensitive and accepts the trailing part of a heading path. "
+                    "Use 'sections' whenever you need more than one."
+                ),
+            },
+        },
+        "additionalProperties": False,
+    },
+    output_type="evidence_items",
+    risk_tier=HarnessRiskTier.READ_ONLY,
+    packs=["core", "documentation"],
+    use_when=[
+        "The question asks for all, every, each, the complete list or the full set of "
+        "anything inside one document -- fields, rows, mappings, steps, conditions.",
+        "A count must be right: reading in document order is the only way to know that "
+        "nothing was left out.",
+        "A search identified an authoritative document and you need one complete section.",
+        "Several sections of one document bear on the question -- name them all in a "
+        "single 'sections' call rather than one call per section.",
+        "A document you have already read points at another file by name -- 'the "
+        "per-field table is in 13_VELDINDEX.md' -- and you do not have its id: pass "
+        "that name as 'filename' instead of searching for its contents.",
+    ],
+    do_not_use_when=[
+        "You do not yet know which document; search or list documents first.",
+        "The question is about one narrow topic inside a large document and a ranked "
+        "passage is sufficient; search_within_document is cheaper.",
+        "You have already outlined this document and are about to call again for the "
+        "next section: the sections you still need belong in one 'sections' call, not "
+        "in a call each.",
+    ],
+    task_types=["document_answer"],
+    evidence_sources=["indexed_documentation"],
+    output_contracts=["grounded_answer", "inventory"],
+    metadata={
+        "execution_surface": "stored_document_text",
+        "evidence_output": True,
+        "bounded_loop_only": True,
+    },
+)
+
 DOCUMENT_LIST_CAPABILITY = CapabilityDefinition(
     id="mcp.docs.list_project_docs",
     label="List generated project documentation",
-    semantic_name="list_project_documents",
-    purpose="List generated documentation records for one authorized project.",
+    semantic_name="list_generated_documents",
+    purpose=(
+        "List generated Markdown artifacts for one authorized project. This is the output "
+        "inventory of the documentation-generation workflow, not the project's indexed "
+        "document catalogue used by search_documentation."
+    ),
     preconditions=["An authorized project identifier is known."],
     failure_recovery=_STANDARD_FAILURE_RECOVERY,
     provider_type=HarnessProviderType.DOCUMENTATION,
@@ -1228,7 +1452,8 @@ DOCUMENT_LIST_CAPABILITY = CapabilityDefinition(
     risk_tier=HarnessRiskTier.READ_ONLY,
     packs=["core", "documentation"],
     use_when=[
-        "A non-conversational documentation workflow needs the generated document inventory.",
+        "The user asks which generated documentation artifacts exist for one project.",
+        "A documentation-generation workflow needs its output inventory.",
     ],
     do_not_use_when=[
         "The conversational agent needs facts from document content; use indexed documentation search.",
@@ -1244,7 +1469,10 @@ GENERATED_DOCUMENT_READ_CAPABILITY = CapabilityDefinition(
     id="mcp.docs.read_project_doc",
     label="Read generated project documentation",
     semantic_name="read_generated_document",
-    purpose="Read one named authorized generated Markdown document.",
+    purpose=(
+        "Read one generated Markdown artifact by exact filename. This reads workflow "
+        "output directly; it does not search the indexed documentation corpus."
+    ),
     preconditions=["An authorized project identifier and generated Markdown filename are known."],
     failure_recovery=_STANDARD_FAILURE_RECOVERY,
     provider_type=HarnessProviderType.DOCUMENTATION,
@@ -1268,11 +1496,12 @@ GENERATED_DOCUMENT_READ_CAPABILITY = CapabilityDefinition(
     risk_tier=HarnessRiskTier.READ_ONLY,
     packs=["core", "documentation"],
     use_when=[
-        "A non-conversational documentation workflow needs one named generated Markdown artifact."
+        "The user asks to inspect one exact generated Markdown artifact, or a generation "
+        "workflow needs to validate its output."
     ],
     do_not_use_when=[
         "The conversational agent needs facts from document content; use indexed documentation search.",
-        "No exact generated Markdown filename is known; list project documents first.",
+        "No exact generated Markdown filename is known; use list_generated_documents first.",
         "The user asks for live health, failures, or execution status.",
     ],
     task_types=["document_answer"],
@@ -1285,7 +1514,11 @@ METADATA_QUERY_CAPABILITY = CapabilityDefinition(
     id="nexus.metadata.query",
     label="Query authorized project and document metadata",
     semantic_name="query_project_metadata",
-    purpose="Query bounded metadata for authorized projects, documents, or the current profile.",
+    purpose=(
+        "Query bounded metadata for authorized projects, indexed documents, or the "
+        "current profile. Its document list describes the searchable corpus, not "
+        "generated Markdown workflow artifacts."
+    ),
     preconditions=["A supported metadata query type is known."],
     failure_recovery=_STANDARD_FAILURE_RECOVERY,
     provider_type=HarnessProviderType.RETRIEVAL,
@@ -1305,6 +1538,10 @@ METADATA_QUERY_CAPABILITY = CapabilityDefinition(
                     "system_overview",
                     "my_profile",
                 ],
+                "description": (
+                    "Metadata view to return. document_list and document_stats describe "
+                    "indexed documents; use list_generated_documents for generation outputs."
+                ),
             },
             "project_id": {"type": ["string", "null"], "maxLength": 255},
             "limit": {"type": "integer", "minimum": 1, "maximum": 50},

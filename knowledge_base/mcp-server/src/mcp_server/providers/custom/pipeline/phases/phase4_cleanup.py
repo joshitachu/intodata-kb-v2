@@ -108,6 +108,13 @@ PUBLISHED_STAGING_DIRS = frozenset(
 #: skips ``_``-prefixed siblings when enumerating sub-projects.
 DEBUG_ARCHIVE_DIRNAME = "_debug"
 
+#: The run's project memory, staged inside docs_staging so the agent can read
+#: and write it. Persisted to its durable home rather than deleted -- see
+#: Phase4Cleanup._persist_memory_directory. Kept in step with
+#: services/project_memory.STAGED_DIRNAME; the import is local to the method so
+#: this phase module stays free of a service-layer import at module scope.
+MEMORY_STAGED_DIRNAME = "_knowledge"
+
 
 class Phase4Cleanup(Phase):
     def __init__(
@@ -277,6 +284,10 @@ class Phase4Cleanup(Phase):
                 Phase4Cleanup._archive_debug_directory(entry)
                 removed.append(entry.name)
                 continue
+            if entry.name == MEMORY_STAGED_DIRNAME:
+                Phase4Cleanup._persist_memory_directory(entry)
+                removed.append(entry.name)
+                continue
             shutil.rmtree(entry, ignore_errors=True)
             removed.append(entry.name)
         if removed:
@@ -287,6 +298,44 @@ class Phase4Cleanup(Phase):
                 ", ".join(removed),
             )
         return removed
+
+    @staticmethod
+    def _persist_memory_directory(memory_dir_path: Path) -> None:
+        """Copy the run's project memory to its durable home before pruning it.
+
+        ``_knowledge/`` is what the agent learned this run: the open questions
+        it could not resolve, the terminology it worked out, the decisions it
+        made and why. It is staged INSIDE ``docs_staging/``, which this phase
+        reduces to the publishable set, so without this the custom lane would
+        delete it here -- inside ``provider.run``, before the coordinator that
+        owns the copy-back ever regains control. The claude-cli and opencode
+        lanes are unaffected because they have no Phase 4 of their own.
+
+        Same contract as ``_archive_debug_directory``: the invariant is that it
+        does not publish, and preserving it is the nice-to-have. A failure to
+        persist therefore falls back to deletion and never fails the run.
+        """
+
+        from mcp_server.services.project_memory import persist_project_memory
+
+        staging_dir = memory_dir_path.parent
+        try:
+            persist_project_memory(
+                output_dir=staging_dir.parent,
+                staging_dir=staging_dir,
+                success=True,
+            )
+            logger.info(
+                "Phase 4 cleanup: project memory persisted to %s",
+                staging_dir.parent / "knowledge",
+            )
+        except Exception as exc:  # noqa: BLE001 - never fail the run over memory
+            logger.warning(
+                "Phase 4 cleanup: could not persist project memory from %s (%s); "
+                "deleting it rather than publishing it", memory_dir_path, exc,
+            )
+        if memory_dir_path.exists():
+            shutil.rmtree(memory_dir_path, ignore_errors=True)
 
     @staticmethod
     def _archive_debug_directory(debug_dir_path: Path) -> None:

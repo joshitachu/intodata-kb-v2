@@ -12,6 +12,8 @@ import re
 import shutil
 import time
 
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from sqlalchemy import select
@@ -42,8 +44,27 @@ from mcp_server.providers.custom.source_context import (
     materialize_direct_redacted_source,
     redact_inline_credentials,
 )
+from mcp_server.services.client_language_guard import (
+    validate_client_docs,
+    validate_provenance,
+    write_leakage_report,
+    write_provenance_report,
+)
+from mcp_server.providers.custom import analysis_store
+from mcp_server.services.group_attribution_guard import (
+    analysis_group_for_slice,
+    attribution_warnings,
+    check_group_attribution,
+    evidence_files_for_group,
+    write_group_attribution_report,
+)
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.plugin_runner import build_plugin_runner
+from mcp_server.services.project_memory import (
+    MemoryStageResult,
+    persist_project_memory,
+    stage_project_memory,
+)
 from mcp_server.services.pack_governance import PackGovernanceDenied, pack_governance
 from mcp_server.services.nexus_execution_contract import build_nexus_execution_receipt
 from mcp_server.services.project_registry import ProjectRegistry
@@ -68,6 +89,497 @@ _WORKATO_DATAPILL_RE = re.compile(r"#\{_\('([^']+)'\)([^}]*)\}")
 _DESIGN_HEADING_RE = re.compile(
     r"^## (?:(?:Talend )?(?:Job|Route)|Artifact):\s*(.+?)\s*$",
 )
+
+
+# --------------------------------------------------------------------------
+# Phase 2 work plan: how many sub-agents, and which groups each one covers
+# --------------------------------------------------------------------------
+#
+# Measured, not assumed. On ETTM run 259 the orchestrator was told to spawn one
+# sub-agent per group and did -- 20 of them, all at once. The dispatcher ran
+# 3-4 at a time: analysis files landed one or two a minute from 09:29:11 to
+# 09:45:34, 15 of 20 groups took ~20 minutes and Phase 3 never started.
+# ``opencode run --help`` exposes no concurrency flag and the binary has no
+# such knob, so the fan-out itself has to change: fewer workers, each covering
+# several groups.
+#
+# Group sizes are wildly uneven and the unevenness differs per estate --
+# measured evidence-byte spread, largest group over smallest: ETTM 86x,
+# talend8 4994x -- so a constant worker count is wrong at one end or the other
+# and the split is bin-packed from the estate in front of us. Exactly two
+# numbers are not estate-derived: the dispatch concurrency below (a property of
+# the transport, used only to report wave counts) and
+# ``config.phase2_max_groups_per_worker`` (an attribution-safety bound).
+
+#: Sub-agents the OpenCode dispatcher actually runs at once, whatever it is
+#: asked for. A property of the transport, not of any estate: see run 259
+#: above. Used only to report how many dispatch waves a plan implies -- the
+#: worker count itself is derived from the estate.
+PHASE2_OBSERVED_SUBAGENT_CONCURRENCY = 4
+
+#: Talend artifact kinds that exist to be CALLED by another design rather than
+#: to run on their own. Mirrors the scanner's own rule
+#: (``intodoc/platforms/talend/parser.py``: joblet/routelet -> artifact_role
+#: "reusable"), so the documentation set and the scan agree on what a design is.
+REUSABLE_ARTIFACT_KINDS: frozenset[str] = frozenset({"joblet", "routelet"})
+
+#: Smallest group analysis that counts as done on a resume. Below it the group
+#: is PENDING, not done. The value is the Phase 2.5 gate's own rule -- the
+#: prompt tells the model to re-spawn any group whose analysis is "MISSING or
+#: under 1KB" -- so resume detection and the model's own gate agree on what
+#: finished work looks like. Move them together.
+#:
+#: It is measured over the analysis AS A WHOLE, whichever layout stores it:
+#: the file for a legacy ``_analysis/{group}.md``, the section files together
+#: for ``_analysis/{group}/{SECTION}.md``. One threshold, one question ("is
+#: there an analysis here"), asked through ``analysis_store`` so the two
+#: layouts cannot answer it differently.
+MIN_GROUP_ANALYSIS_BYTES = 1024
+
+_SEVERITIES: tuple[str, ...] = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
+
+
+@dataclass(frozen=True)
+class GroupWorkItem:
+    """One unit of Phase 2 work: a group, and everything Python knows about it.
+
+    ``name`` is the ANALYSIS name (``_analysis/{name}.md``), which is not always
+    a ``_preprocess/`` filename: a split group's two slices merge into one
+    analysis, so ``evidence_files`` may list more than one.
+    """
+
+    name: str
+    evidence_files: tuple[str, ...]
+    evidence_bytes: int
+    design_count: int
+    risk_counts: tuple[int, ...] = (0, 0, 0, 0)  # CRITICAL, HIGH, MEDIUM, LOW
+
+    @property
+    def flagged(self) -> int:
+        return sum(self.risk_counts)
+
+
+@dataclass(frozen=True)
+class Phase2WorkPlan:
+    """The suggestion the orchestrator reads. Not an instruction: it balances
+    bytes, and bytes are the only thing Python can weigh here."""
+
+    groups: tuple[GroupWorkItem, ...]
+    workers: tuple[tuple[str, ...], ...]
+    target_weight_bytes: int
+    composition: tuple[tuple[str, int], ...] = ()
+    #: (design, kind, owning group) for every reusable artifact -- a joblet or
+    #: routelet, which exists to be CALLED by another design. These drive the
+    #: shared-library pre-pass; empty means the estate has none (talend8) and
+    #: the pre-pass is skipped.
+    reusable: tuple[tuple[str, str, str], ...] = ()
+    risk_scan_available: bool = True
+
+    @property
+    def dispatch_waves(self) -> int:
+        lanes = max(PHASE2_OBSERVED_SUBAGENT_CONCURRENCY, 1)
+        return -(-len(self.workers) // lanes) if self.workers else 0
+
+    @property
+    def max_groups_in_a_worker(self) -> int:
+        return max((len(names) for names in self.workers), default=0)
+
+    @property
+    def total_evidence_bytes(self) -> int:
+        return sum(g.evidence_bytes for g in self.groups)
+
+    @property
+    def largest_group_bytes(self) -> int:
+        return max((g.evidence_bytes for g in self.groups), default=0)
+
+    @property
+    def total_designs(self) -> int:
+        """Designs in scope. The scan manifest's per-kind census is
+        authoritative; the per-group counts are the fallback for a scan that
+        has no manifest, and are zero on a resumed run that did not re-run the
+        quick scan."""
+        from_manifest = sum(count for _kind, count in self.composition)
+        return from_manifest or sum(g.design_count for g in self.groups)
+
+    def worker_load(self, index: int) -> int:
+        by_name = {g.name: g.evidence_bytes for g in self.groups}
+        return sum(by_name.get(name, 0) for name in self.workers[index])
+
+    def reusable_designs(self) -> int:
+        return sum(n for kind, n in self.composition if kind in REUSABLE_ARTIFACT_KINDS)
+
+    def standalone_designs(self) -> int:
+        return sum(
+            n for kind, n in self.composition if kind not in REUSABLE_ARTIFACT_KINDS
+        )
+
+
+def build_group_work_items(
+    preprocess_dir: Path,
+    groups: Sequence[str],
+    *,
+    findings: Mapping[str, Sequence[tuple[str, str, str]]] | None = None,
+    design_counts: Mapping[str, int] | None = None,
+) -> list[GroupWorkItem]:
+    """Fold ``_preprocess/`` slices into one work item per analysis group.
+
+    ``groups`` are slice names as ``_preprocess_scan_data`` reports them, so a
+    split group arrives as two entries and leaves as one item -- the two parts
+    merge into a single ``_analysis/{group}.md``, and a merge split across two
+    workers is a merge nobody owns.
+    """
+    findings = findings or {}
+    design_counts = design_counts or {}
+    merged: dict[str, dict] = {}
+    for slice_name in groups:
+        base = analysis_group_for_slice(slice_name)
+        entry = merged.setdefault(
+            base, {"files": [], "bytes": 0, "designs": 0, "risk": [0, 0, 0, 0]}
+        )
+        entry["files"].append(slice_name)
+        path = preprocess_dir / f"{slice_name}.md"
+        try:
+            entry["bytes"] += path.stat().st_size
+        except OSError:
+            pass
+        entry["designs"] += int(design_counts.get(slice_name, 0))
+        for severity, _flag, _detail in findings.get(slice_name, ()):
+            if severity in _SEVERITIES:
+                entry["risk"][_SEVERITIES.index(severity)] += 1
+    return [
+        GroupWorkItem(
+            name=name,
+            evidence_files=tuple(sorted(entry["files"])),
+            evidence_bytes=entry["bytes"],
+            design_count=entry["designs"],
+            risk_counts=tuple(entry["risk"]),
+        )
+        for name, entry in sorted(merged.items())
+    ]
+
+
+def plan_phase2_workers(
+    items: Sequence[GroupWorkItem],
+    *,
+    max_groups_per_worker: int | None = None,
+) -> tuple[list[list[str]], int]:
+    """Bin-pack whole groups onto workers. Returns ``(workers, target_weight)``.
+
+    Everything derives from the estate except ``max_groups_per_worker``, which
+    is an attribution-safety bound rather than a tuning knob (see
+    ``config.phase2_max_groups_per_worker``).
+
+        weight     = a group's evidence bytes (its ``_preprocess`` slices summed)
+        biggest    = the heaviest group
+        by_weight  = ceil(total / biggest)
+        by_safety  = ceil(n_groups / max_groups_per_worker)
+        workers    = min(n_groups, max(by_weight, by_safety))
+
+    ``biggest`` is the target weight because a group that size already has to
+    be analysed by one sub-agent, so that much work in one context is proven
+    workable on this estate; an oversized group then falls out as a solo worker
+    on its own. Simpler rules were measured and rejected: one worker per group
+    costs 47 dispatch waves on a 187-group estate, a constant worker count is
+    wrong at both ends of a 12x-to-3580x spread, and the target-weight rule
+    ALONE concentrates 13 groups into one context on talend8 -- which is the
+    misattribution surface this whole change has to keep small.
+
+    Packing is heaviest-group-first into the LIGHTEST worker that still has
+    group-count headroom, adding a worker when every one of them is at the cap.
+    Enforcing the cap only in the worker-count formula is not enough: greedy
+    placement still dumped 13 groups into one bin, because a bin that is light
+    in BYTES attracts every remaining small group. Deterministic: groups sort
+    on (-bytes, name) and ties break on the lowest worker index, so identical
+    input yields a byte-identical plan.
+    """
+    cap = max_groups_per_worker or config.phase2_max_groups_per_worker
+    cap = max(int(cap), 1)
+    ordered = sorted(items, key=lambda g: (-g.evidence_bytes, g.name))
+    if not ordered:
+        return [], 0
+
+    total = sum(g.evidence_bytes for g in ordered)
+    biggest = ordered[0].evidence_bytes
+    by_weight = -(-total // biggest) if biggest else 1  # ceil
+    by_safety = -(-len(ordered) // cap)  # ceil
+    count = min(len(ordered), max(by_weight, by_safety, 1))
+
+    bins: list[list[str]] = [[] for _ in range(count)]
+    loads = [0] * count
+    for item in ordered:
+        candidates = [k for k in range(len(bins)) if len(bins[k]) < cap]
+        if not candidates:
+            bins.append([])
+            loads.append(0)
+            candidates = [len(bins) - 1]
+        index = min(candidates, key=lambda k: (loads[k], k))
+        bins[index].append(item.name)
+        loads[index] += item.evidence_bytes
+    return [sorted(names) for names in bins if names], biggest
+
+
+def _scan_manifest(scan_dir: Path) -> dict:
+    try:
+        manifest = json.loads((Path(scan_dir) / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+    return manifest if isinstance(manifest, dict) else {}
+
+
+def read_reusable_artifacts(
+    scan_dir: Path, *, unit_allowlist: set[str] | None = None
+) -> tuple[tuple[str, str, str], ...]:
+    """``(design, kind, owning group)`` for every reusable artifact in the scan.
+
+    A joblet or routelet exists to be CALLED by another design, so the worker
+    that analyses the CALLER never sees it: on ETTM, ``maximoFourps`` invokes
+    ``fourpsWriter`` 20 times and its evidence contains no definition of it.
+    27 of ETTM's 142 designs are reusable and 11 of those live in one group,
+    which is why nearly everything references that group. The shared-library
+    pre-pass reads exactly these and writes one interface digest the later
+    workers share; ownership of each artifact's analysis stays with its group.
+    """
+    manifest = _scan_manifest(scan_dir)
+    kinds = manifest.get("artifact_kinds")
+    groups = manifest.get("job_groups")
+    if not isinstance(kinds, dict):
+        return ()
+    if not isinstance(groups, dict):
+        groups = {}
+    rows: list[tuple[str, str, str]] = []
+    for unit, kind in kinds.items():
+        if str(kind) not in REUSABLE_ARTIFACT_KINDS:
+            continue
+        if unit_allowlist is not None and str(unit) not in unit_allowlist:
+            continue
+        rows.append((str(unit), str(kind), str(groups.get(unit) or "Global")))
+    return tuple(sorted(rows))
+
+
+def resolve_owning_group(raw_group: str, work_item_names: Sequence[str]) -> str:
+    """Map a scan-manifest group onto the work item that carries its evidence.
+
+    ``scan/manifest.json`` stores the group as a repository path
+    (``ETTM-2/ERP_TO_THE_MAX/fourps``) while the evidence file is named for the
+    last segment (``fourps.md``), and a case-insensitive collision renames that
+    segment again (``monitoring`` -> ``monitoring_part_ci1``). Pointing a
+    worker at ``ETTM-2/ERP_TO_THE_MAX/fourps`` sends it after a file that does
+    not exist. Unresolvable names are returned as the bare segment rather than
+    dropped: a group we cannot place is still a group the orchestrator can find.
+    """
+    segment = raw_group.rsplit("/", 1)[-1] or raw_group
+    names = set(work_item_names)
+    if segment in names:
+        return segment
+    prefix = f"{segment}_part_ci"
+    collided = sorted(n for n in names if n.startswith(prefix))
+    return collided[0] if collided else segment
+
+
+def read_artifact_composition(
+    scan_dir: Path, *, unit_allowlist: set[str] | None = None
+) -> tuple[tuple[str, int], ...]:
+    """Per-kind design counts from the scan manifest (job / route / joblet / ...).
+
+    The documentation set's coverage obligation is stated over "designs", and
+    on ETTM 27 of 142 of those are reusable joblets and routelets. A writer
+    that is told only the total either drops them silently or pads a table to
+    reach the number; both are defects caused by the count not saying what it
+    contains. Returns an empty tuple when the manifest is absent (a monolithic
+    ``scan_result.json`` scan), and the plan then says so rather than guessing.
+    """
+    kinds = _scan_manifest(scan_dir).get("artifact_kinds")
+    if not isinstance(kinds, dict):
+        return ()
+    counts: dict[str, int] = {}
+    for unit, kind in kinds.items():
+        if unit_allowlist is not None and str(unit) not in unit_allowlist:
+            continue
+        key = str(kind or "unknown")
+        counts[key] = counts.get(key, 0) + 1
+    return tuple(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+def _thousands(value: int) -> str:
+    return f"{value:,}"
+
+
+#: Reusable designs named individually in the work plan before it switches to
+#: per-group counts. A 187-group estate must not produce a plan that is mostly
+#: a list of joblets.
+MAX_LISTED_REUSABLE = 60
+
+SHARED_LIBRARY_DIGEST = "_analysis/_shared_library.md"
+
+#: Where the plan is staged. Underscore-prefixed directory, so it is never
+#: published to the client corpus or counted as a delivered document.
+PHASE2_WORK_PLAN_FILENAME = "phase2_work_plan.md"
+
+
+def _render_shared_library_section(plan: Phase2WorkPlan) -> list[str]:
+    """The pre-pass section, or an explicit statement that there is no library."""
+    if not plan.reusable:
+        return [
+            "\n## Shared-library pre-pass: not needed\n\n",
+            "This estate has no reusable designs (no joblets or routelets), so every\n",
+            "design a worker analyses is defined in that worker's own evidence.\n",
+        ]
+
+    by_group: dict[str, list[tuple[str, str]]] = {}
+    for design, kind, group in plan.reusable:
+        by_group.setdefault(group, []).append((design, kind))
+
+    total = plan.total_designs
+    of_total = (
+        f"{len(plan.reusable)} of {total} designs "
+        f"({100.0 * len(plan.reusable) / total:.0f}%)"
+        if total
+        else f"{len(plan.reusable)} designs"
+    )
+    lines = [
+        "\n## Shared-library pre-pass: run this worker FIRST\n\n",
+        f"{of_total} are reusable -- joblets and routelets that exist to be\n",
+        "CALLED by other designs. A worker analysing a caller does not have the\n",
+        "callee's definition in its evidence, so today it describes an invocation it\n",
+        "has never seen: one ETTM group invokes a writer joblet 20 times with no\n",
+        "definition of that joblet anywhere in its own evidence.\n\n",
+        "One extra worker runs BEFORE the group workers. It reads only the reusable\n",
+        "designs listed below, from the evidence files named in the Groups table, and\n",
+        f"writes an interface digest to {SHARED_LIBRARY_DIGEST}: per design, what it\n",
+        "takes in, what it returns, what it expects of its caller, and the context\n",
+        "variables and connections it relies on. Every later worker reads that file.\n\n",
+        "It does NOT own any group's analysis. The group that contains a reusable\n",
+        "design still documents it in full in that group's own analysis file; this is\n",
+        "shared context, not a transfer of ownership, and the digest file is\n",
+        "underscore-prefixed so it is never mistaken for a group analysis.\n\n",
+        "| Owning group | Reusable designs |\n",
+        "|--------------|------------------|\n",
+    ]
+    listed = 0
+    for group in sorted(by_group, key=lambda g: (-len(by_group[g]), g)):
+        entries = sorted(by_group[group])
+        room = max(MAX_LISTED_REUSABLE - listed, 0)
+        shown = entries[:room]
+        listed += len(shown)
+        names = ", ".join(f"{design} ({kind})" for design, kind in shown)
+        if len(shown) < len(entries):
+            names = (names + ", " if names else "") + f"+{len(entries) - len(shown)} more"
+        lines.append(f"| {group} | {len(entries)}: {names} |\n")
+    return lines
+
+
+def render_phase2_work_plan(plan: Phase2WorkPlan) -> str:
+    """Render the plan as the ASCII markdown the orchestrator reads."""
+    total = plan.total_evidence_bytes
+    largest = plan.largest_group_bytes
+    smallest = min((g.evidence_bytes for g in plan.groups), default=0)
+    spread = f"{largest / smallest:.1f}x" if smallest else "not computable"
+    biggest = max(
+        plan.groups, key=lambda g: (g.evidence_bytes, g.name), default=None
+    )
+
+    lines: list[str] = [
+        "# Phase 2 Work Plan\n\n",
+        "Computed by the server before Phase 2 (Python only, no model call).\n",
+        "This is a SUGGESTION sized on evidence bytes -- the only thing this side\n",
+        "can weigh. Read it, then decide.\n\n",
+        "## Why batching, and not one sub-agent per group\n\n",
+        "Sub-agents do not run 20-wide. On a measured 20-group run every group was\n",
+        "requested in parallel and the dispatcher ran 3-4 at a time: analyses landed\n",
+        "one or two a minute for 16 minutes, 5 groups never received one at all and\n",
+        "the run ended before any document was written. There is no concurrency\n",
+        "setting to raise, so the fan-out itself is smaller: one worker covers\n",
+        "several groups and writes one analysis file per group it covers.\n\n",
+        "## Estate\n\n",
+        f"- Groups to analyse: {len(plan.groups)}\n",
+        f"- Scanned designs: {plan.total_designs}\n",
+    ]
+    if plan.composition:
+        composition = ", ".join(f"{kind} {count}" for kind, count in plan.composition)
+        lines.append(f"- Design composition: {composition}\n")
+        lines.append(
+            f"- Standalone designs: {plan.standalone_designs()} | reusable designs "
+            f"(joblet/routelet, called by another design): {plan.reusable_designs()}\n"
+        )
+    else:
+        lines.append(
+            "- Design composition: not available from this scan (no per-kind "
+            "manifest); treat every scanned design as in scope.\n"
+        )
+    lines += [
+        f"- Total group evidence: {_thousands(total)} bytes\n",
+        (
+            f"- Largest single group: {biggest.name} "
+            f"({_thousands(biggest.evidence_bytes)} bytes)\n"
+            if biggest is not None
+            else "- Largest single group: none\n"
+        ),
+        f"- Evidence spread, largest over smallest: {spread}\n",
+        f"- Target weight per worker (the heaviest group, which one sub-agent "
+        f"already has to carry): {_thousands(plan.target_weight_bytes)} bytes\n",
+        f"- Suggested workers: {len(plan.workers)} "
+        f"(at most {plan.max_groups_in_a_worker} groups in any one of them, "
+        f"about {plan.dispatch_waves} dispatch wave(s) at the "
+        f"{PHASE2_OBSERVED_SUBAGENT_CONCURRENCY}-wide rate observed)\n\n",
+    ]
+
+    lines += [
+        "## Groups\n\n",
+        "A group is never split across workers: its evidence files and its one\n",
+        "analysis file belong together.\n\n",
+        "| Group | Evidence file(s) | Bytes | Designs | CRITICAL | HIGH | MEDIUM | LOW |\n",
+        "|-------|------------------|-------|---------|----------|------|--------|-----|\n",
+    ]
+    for item in sorted(plan.groups, key=lambda g: (-g.evidence_bytes, g.name)):
+        files = ", ".join(f"{name}.md" for name in item.evidence_files)
+        crit, high, med, low = item.risk_counts
+        lines.append(
+            f"| {item.name} | {files} | {_thousands(item.evidence_bytes)} | "
+            f"{item.design_count} | {crit} | {high} | {med} | {low} |\n"
+        )
+    if not plan.risk_scan_available:
+        lines.append(
+            "\nRisk columns are zero because the quick scan was not re-run this\n"
+            "time (resumed run). The per-group flags are still on disk in\n"
+            "_assessment/quick_scan/<evidence file name>.md -- read them.\n"
+        )
+    else:
+        lines.append(
+            "\nThe per-group flag detail is in _assessment/quick_scan/<evidence file\n"
+            "name>.md, one file per evidence file named above.\n"
+        )
+
+    lines += _render_shared_library_section(plan)
+
+    lines += [
+        f"\n## Suggested split: {len(plan.workers)} group worker(s)\n\n",
+        "Heaviest group first into the lightest worker that still has room. No\n",
+        "worker holds more than "
+        f"{config.phase2_max_groups_per_worker} groups: that bound is what keeps a\n",
+        "misattributed component from travelling, not a performance setting.\n\n",
+        "| Worker | Groups | Evidence bytes |\n",
+        "|--------|--------|----------------|\n",
+    ]
+    for index, names in enumerate(plan.workers, 1):
+        lines.append(
+            f"| W{index} | {', '.join(names) or '(none)'} | "
+            f"{_thousands(plan.worker_load(index - 1))} |\n"
+        )
+
+    lines += [
+        "\n## Deviating from this\n\n",
+        "You can see things this side cannot: a group with CRITICAL flags may deserve\n",
+        "a worker to itself, two small related groups may be better read together,\n",
+        "and a group whose evidence is mostly one enormous design is not the same\n",
+        "work as one with fifty small ones. Deviate when you have a reason.\n\n",
+        "Whatever split you use, record it in _knowledge/decisions.md so the next run\n",
+        "can see what was tried:\n\n",
+        "    ### <UTC timestamp> | author: agent\n",
+        "    Phase 2 split: <N> workers. W1: <groups>. W2: <groups>. ...\n",
+        "    Deviated from the suggested <M>-worker split because <reason>, or:\n",
+        "    used the suggested split unchanged.\n",
+    ]
+    return "".join(lines)
 
 
 def _render_component(comp: dict, platform: str, parts: list[str]) -> None:
@@ -406,15 +918,207 @@ class DocGenerationCoordinator:
         return parts, job_count
 
     @staticmethod
+    def _expected_analyses(staging_dir: Path) -> tuple[list[str], str]:
+        """The analyses this estate OWES, and where that list came from.
+
+        Returns ``(groups, source)``. ``source`` is one of:
+
+        ``"manifest"``    -- ``docs_staging/_manifest.json`` ``groups``, written
+                             by the previous run after preprocessing. Authoritative.
+        ``"preprocess"``  -- the previous run never got as far as writing a
+                             manifest; the ``_preprocess/`` group files are the
+                             next-best checklist.
+        ``"unknown"``     -- neither is available; ``groups`` is empty and NO
+                             completeness claim may be made from it.
+
+        Slice names are folded onto the analysis that owns them
+        (``analysis_group_for_slice``): a group split over ``X_part1`` /
+        ``X_part2`` produces ONE ``_analysis/X.md`` because the prompt requires
+        the parts to be merged, so counting slices would demand an analysis
+        file that is never meant to exist.
+        """
+        manifest_path = staging_dir / "_manifest.json"
+        if manifest_path.is_file():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning("Resume: unreadable _manifest.json (%s)", exc)
+            else:
+                slices = manifest.get("groups")
+                if isinstance(slices, list) and slices:
+                    return (
+                        sorted({
+                            analysis_group_for_slice(str(s)) for s in slices
+                        }),
+                        "manifest",
+                    )
+
+        preprocess_dir = staging_dir / "_preprocess"
+        if preprocess_dir.is_dir():
+            slices = [
+                f.stem for f in preprocess_dir.glob("*.md")
+                if not f.name.startswith("_")
+            ]
+            if slices:
+                return (
+                    sorted({analysis_group_for_slice(s) for s in slices}),
+                    "preprocess",
+                )
+
+        return [], "unknown"
+
+    @staticmethod
+    def _analysis_bytes(analysis_dir: Path, group: str) -> int:
+        """Size of ``group``'s analysis, whichever layout stores it.
+
+        ``analysis_store`` answers for both: the file for the legacy flat
+        ``_analysis/{group}.md``, the section files rendered together for
+        ``_analysis/{group}/{SECTION}.md``. Measuring the rendered analysis
+        rather than ``stat()``-ing paths is what keeps ONE size rule for two
+        layouts -- a per-layout rule is a rule free to drift.
+
+        Returns 0 for anything that is not a usable analysis, which is the
+        answer that costs a re-run rather than a silent gap:
+
+        * no analysis at all (``FileNotFoundError``);
+        * a group DIRECTORY that exists but holds no file the section contract
+          names (``SectionContractError``) -- a directory of unnamed files is
+          lost evidence, not an empty analysis, and it is logged at WARNING
+          because nothing else in the run would report it;
+        * a name the store refuses to turn into a path (``AnalysisPathError``);
+        * an unreadable file (``OSError``).
+
+        The listing is the only source of group names here, so the last two are
+        defence rather than expectation -- but an exception raised inside
+        resume detection would abort the whole generation, which is a far worse
+        outcome than re-analysing one group.
+        """
+        try:
+            text = analysis_store.read_group_analysis(analysis_dir, group)
+        except FileNotFoundError:
+            return 0
+        except analysis_store.SectionContractError as exc:
+            logger.warning(
+                "Resume: %r has an analysis directory that resolves to no known "
+                "section, so it counts as NOT analysed: %s", group, exc,
+            )
+            return 0
+        except analysis_store.AnalysisPathError as exc:
+            logger.warning("Resume: unusable analysis name %r (%s)", group, exc)
+            return 0
+        except OSError as exc:
+            logger.warning("Resume: unreadable analysis for %r (%s)", group, exc)
+            return 0
+        return len(text.encode("utf-8"))
+
+    @staticmethod
+    def _analysed_groups(analysis_dir: Path) -> list[str]:
+        """Groups with a USABLE analysis, under EITHER Phase 2 layout.
+
+        ONE definition, shared by resume detection and the post-run coverage
+        line, because they are the same question asked at two moments and a
+        second copy is free to drift. ``analysis_store.list_groups`` owns the
+        exclusion rule -- no ``_``-prefixed artifact, and no
+        ``{group}_summary.md`` / ``{group}/_summary.md``, which is a navigation
+        aid the previous resume detector counted as an analysis. The size
+        filter is added here so a truncated, empty or unresolvable analysis is
+        pending work rather than a completion.
+
+        Group names come from the real directory listing so that on a
+        case-insensitive filesystem ``Monitoring`` is never read as
+        ``monitoring``'s analysis (both are real ETTM groups; preprocessing
+        renames the second collider to ``monitoring_part_ci1`` precisely so the
+        two cannot share a path -- as a file OR as a directory).
+        """
+        if not analysis_dir.is_dir():
+            return []
+        return [
+            group for group in analysis_store.list_groups(analysis_dir)
+            if DocGenerationCoordinator._analysis_bytes(analysis_dir, group)
+            >= MIN_GROUP_ANALYSIS_BYTES
+        ]
+
+    @staticmethod
+    def _apply_group_checklist(
+        state: dict,
+        staging_dir: Path,
+        expected_groups: list[str],
+        source: str,
+        analysed: list[str] | None = None,
+    ) -> dict:
+        """Fill a resume state's remainder fields from ONE group checklist.
+
+        Called twice per run and defined once: when resume is first detected
+        (from the previous run's manifest) and again after preprocessing, which
+        may have produced a different group set if the scan changed. Two copies
+        of this arithmetic would be two chances to report a remainder that is
+        not the remainder.
+
+        ``analysed`` lets a caller that has already taken the listing pass it
+        in. Reading it is no longer a ``stat()``: it opens each analysis
+        through the store, so the caller in ``_detect_resume_state`` hands its
+        own result over instead of walking the estate twice. Absent, it is
+        computed here -- the post-preprocessing call must re-take it.
+        """
+        if analysed is None:
+            analysed = DocGenerationCoordinator._analysed_groups(
+                staging_dir / "_analysis"
+            )
+        pending = [name for name in expected_groups if name not in set(analysed)]
+        # "unknown" means there is no checklist to be complete against. Claiming
+        # completeness from an empty expectation is the run-260 failure with a
+        # different cause, so it fails toward MORE work: Phase 2 is only
+        # "complete" when a real checklist says every group has an analysis.
+        complete = source != "unknown" and not pending
+        state["expected_groups"] = expected_groups
+        state["expected_groups_source"] = source
+        state["analysis_files"] = analysed
+        state["pending_groups"] = pending
+        state["analysis_complete"] = complete
+        # A bundle built before the pending analyses landed describes an estate
+        # that is missing them. Skipping Phase 2.8 on a resume that still owes
+        # work republishes exactly the gap being repaired.
+        state["bundles_stale"] = bool(state.get("bundles_exist")) and not complete
+        return state
+
+    @staticmethod
     def _detect_resume_state(staging_dir: Path) -> dict | None:
         """Inspect docs_staging/ for completed artifacts from a prior run.
 
-        Returns None (fresh run) or a dict describing what already exists:
-        - preprocess_exists: bool — _preprocess/ has group markdown files
-        - analysis_files: list[str] — non-bundle .md files in _analysis/
-        - scorecard_exists: bool — _assessment/scorecard.md exists
-        - bundles_exist: bool — _analysis/_bundle_*.md files exist
-        - completed_docs: list[str] — *.md files in staging root >500 bytes
+        Returns None (fresh run) or a dict describing both what already exists
+        AND -- the part that was missing -- what is still owed:
+
+        - preprocess_exists: bool  -- _preprocess/ has group markdown files
+        - preprocess_files: list[str]
+        - expected_groups: list[str]   -- every group this estate owes an analysis
+        - expected_groups_source: str  -- "manifest" | "preprocess" | "unknown"
+        - analysis_files: list[str]    -- groups WITH a usable analysis, under
+                                          EITHER layout: the legacy flat
+                                          ``_analysis/{group}.md`` or the
+                                          per-section ``_analysis/{group}/``
+                                          directory. A project generated before
+                                          the per-section layout resumes exactly
+                                          as it did, and a directory holding no
+                                          file the section contract names is NOT
+                                          an analysis (see ``_analysis_bytes``)
+        - pending_groups: list[str]    -- groups still to analyse (the REMAINDER)
+        - analysis_complete: bool      -- every expected group has one, and the
+                                          expectation came from a real checklist
+        - scorecard_exists: bool
+        - bundles_exist: bool
+        - bundles_stale: bool          -- bundles predate the pending analyses
+        - completed_docs: list[str]    -- *.md files in staging root >500 bytes
+
+        WHY the remainder, and not just the completions: this method used to
+        report ``f.stem for f in _analysis.glob("*.md")`` and compare it to
+        nothing. On ETTM run 260 that listed 30 entries for 15 real analyses --
+        every ``{group}_summary.md`` navigation aid counted as an analysis --
+        against a 20-group manifest, and the prompt told the model to skip
+        Phase 2 for all 30. Five groups (``Monitoring``, ``afas``,
+        ``fourpsForSuppliers``, ``fourpsMaximo``, ``utils``) were never analysed,
+        the documents shipped without a quarter of the estate, and the run
+        reported success. A list of what exists cannot detect absence; only a
+        comparison against the manifest can.
         """
         if not staging_dir.exists():
             return None
@@ -428,13 +1132,9 @@ class DocGenerationCoordinator:
             sorted(f.name for f in preprocess_dir.glob("*.md") if not f.name.startswith("_"))
             if preprocess_dir.exists() else []
         )
-        analysis_files = (
-            sorted(
-                f.stem for f in analysis_dir.glob("*.md")
-                if not f.name.startswith("_bundle_")
-            )
-            if analysis_dir.exists() else []
-        )
+
+        analysis_files = DocGenerationCoordinator._analysed_groups(analysis_dir)
+
         bundle_files = (
             list(analysis_dir.glob("_bundle_*.md"))
             if analysis_dir.exists() else []
@@ -452,15 +1152,28 @@ class DocGenerationCoordinator:
         if not preprocess_files and not analysis_files and not completed_docs:
             return None
 
-        state = {
-            "preprocess_exists": len(preprocess_files) > 0,
-            "preprocess_files": preprocess_files,
-            "analysis_files": analysis_files,
-            "scorecard_exists": scorecard_exists,
-            "bundles_exist": len(bundle_files) > 0,
-            "completed_docs": completed_docs,
-        }
-        logger.info("Resume state detected: %s", state)
+        expected_groups, expected_source = DocGenerationCoordinator._expected_analyses(
+            staging_dir
+        )
+        state = DocGenerationCoordinator._apply_group_checklist(
+            {
+                "preprocess_exists": len(preprocess_files) > 0,
+                "preprocess_files": preprocess_files,
+                "scorecard_exists": scorecard_exists,
+                "bundles_exist": len(bundle_files) > 0,
+                "completed_docs": completed_docs,
+            },
+            staging_dir,
+            expected_groups,
+            expected_source,
+            analysed=analysis_files,
+        )
+        logger.info(
+            "Resume state: %d/%d group analyses present (source=%s); pending: %s",
+            len(state["analysis_files"]), len(expected_groups), expected_source,
+            ", ".join(state["pending_groups"]) or "none",
+        )
+        logger.debug("Resume state detail: %s", state)
         return state
 
     async def _preprocess_scan_data(
@@ -798,12 +1511,19 @@ class DocGenerationCoordinator:
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _run_quick_scan(staging_dir: Path, groups: list[str]) -> None:
+    def _run_quick_scan(
+        staging_dir: Path, groups: list[str]
+    ) -> tuple[dict[str, list[tuple[str, str, str]]], dict[str, int]]:
         """Scan pre-processed markdown files for common anti-patterns.
 
         Writes _assessment/quick_scan.md with a priority-ranked list of
         findings per group.  Phase 2 agents read this to calibrate depth.
         This is intentionally fast — regex only, no model calls.
+
+        Returns ``(findings, design_counts)`` so the Phase 2 work plan can be
+        built from the same in-memory pass rather than by re-reading the
+        markdown this function just wrote — the coupling that cost run 258 its
+        evidence.
         """
         preprocess_dir = staging_dir / "_preprocess"
         assessment_dir = staging_dir / "_assessment"
@@ -835,10 +1555,15 @@ class DocGenerationCoordinator:
         env_re = PATTERNS[4][2]
 
         findings: dict[str, list[tuple[str, str, str]]] = {}  # group -> [(severity, flag, detail)]
+        design_counts: dict[str, int] = {}
 
         for group in groups:
             # Account for split groups (e.g. DEU_part1, DEU_part2 → group DEU)
-            candidate_files = list(preprocess_dir.glob(f"{group}*.md"))
+            # by EXACT slice match, never `glob(f"{group}*.md")`: that glob made
+            # forSuppliersFourps.md part of forSuppliers's scan (both are real,
+            # separate ETTM groups), so one group was handed a sibling's
+            # findings and its own slice named designs it does not contain.
+            candidate_files = evidence_files_for_group(preprocess_dir, group)
             if not candidate_files:
                 continue
 
@@ -898,6 +1623,8 @@ class DocGenerationCoordinator:
                     if env_re and env_re.search(line):
                         detail = line.strip()[:80]
                         group_flags.append(("MEDIUM", "hardcoded_env_value", detail))
+
+            design_counts[group] = len(job_component_counts)
 
             # Per-job heuristic checks
             for job, count in job_component_counts.items():
@@ -959,7 +1686,7 @@ class DocGenerationCoordinator:
         no_findings = [g for g in groups if g not in findings]
         if no_findings:
             for g in sorted(no_findings):
-                lines.append(f"| — | {g} | 0 | 0 | 0 | 0 |\n")
+                lines.append(f"| - | {g} | 0 | 0 | 0 | 0 |\n")
 
         lines.append("\n## Findings Detail\n\n")
         for _, group in group_scores:
@@ -971,13 +1698,158 @@ class DocGenerationCoordinator:
 
         output_path = assessment_dir / "quick_scan.md"
         output_path.write_text("".join(lines), encoding="utf-8")
+
+        # Per-group slices. A Phase 2 agent needs its OWN group's flags to
+        # calibrate depth; it was being handed the whole report. Measured on
+        # ETTM: 34.3 KB read by each of 20 agents (686 KB) to use ~1.6 KB.
+        # These are written from the in-memory findings, NOT by re-parsing
+        # quick_scan.md -- re-reading our own generated markdown is the class
+        # of coupling that cost run 258 its evidence.
+        rank_by_group = {group: rank for rank, (_, group) in enumerate(group_scores, 1)}
+        slice_dir = assessment_dir / "quick_scan"
+        slice_dir.mkdir(parents=True, exist_ok=True)
+        for group in groups:
+            flags = findings.get(group, [])
+            rank = rank_by_group.get(group)
+            header = [
+                f"# Quick Scan: {group}\n\n",
+                "Generated by Phase 1.5 lightweight scan (no LLM).\n",
+                f"Priority rank: {rank} of {len(group_scores)}\n"
+                if rank
+                else "Priority rank: not ranked (no findings)\n",
+                f"Findings: {len(flags)}\n\n",
+                (
+                    "The full cross-group report is _assessment/quick_scan.md; "
+                    "read it only if you need another group's flags.\n\n"
+                ),
+            ]
+            if flags:
+                header.append("## Findings\n\n")
+                for severity, flag, detail in sorted(
+                    flags, key=lambda x: -sev_score.get(x[0], 0)
+                ):
+                    header.append(f"- **{severity}** `{flag}`: {detail}\n")
+            else:
+                header.append(
+                    "## Findings\n\nNone. No anti-pattern heuristic fired for this "
+                    "group. That is a real result, not a scan failure -- analyse the "
+                    "group on its evidence, at normal depth.\n"
+                )
+            (slice_dir / f"{group}.md").write_text("".join(header), encoding="utf-8")
+
         logger.info(
-            "Quick scan complete: %d groups flagged, %d total findings — %s",
-            len(findings), sum(len(f) for f in findings.values()), output_path,
+            "Quick scan complete: %d groups flagged, %d total findings, "
+            "%d per-group slices - %s",
+            len(findings),
+            sum(len(f) for f in findings.values()),
+            len(groups),
+            output_path,
+        )
+        return findings, design_counts
+
+    # ------------------------------------------------------------------ #
+    # Phase 1.6 — the Phase 2 work plan the orchestrator batches from
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _write_phase2_work_plan(
+        staging_dir: Path,
+        groups: list[str],
+        *,
+        scan_dir: Path,
+        findings: Mapping[str, Sequence[tuple[str, str, str]]] | None,
+        design_counts: Mapping[str, int] | None,
+        unit_allowlist: set[str] | None = None,
+    ) -> Phase2WorkPlan:
+        """Build and stage ``_assessment/phase2_work_plan.md``.
+
+        Advisory input, not an instruction: the orchestrator reads it, may
+        deviate, and records what it actually did in ``_knowledge/decisions.md``.
+        """
+        preprocess_dir = staging_dir / "_preprocess"
+        items = build_group_work_items(
+            preprocess_dir,
+            groups,
+            findings=findings,
+            design_counts=design_counts,
+        )
+        workers, target = plan_phase2_workers(items)
+        item_names = [item.name for item in items]
+        reusable = tuple(
+            (design, kind, resolve_owning_group(group, item_names))
+            for design, kind, group in read_reusable_artifacts(
+                scan_dir, unit_allowlist=unit_allowlist
+            )
+        )
+        plan = Phase2WorkPlan(
+            groups=tuple(items),
+            workers=tuple(tuple(names) for names in workers),
+            target_weight_bytes=target,
+            composition=read_artifact_composition(
+                scan_dir, unit_allowlist=unit_allowlist
+            ),
+            reusable=reusable,
+            risk_scan_available=findings is not None,
+        )
+        assessment_dir = staging_dir / "_assessment"
+        assessment_dir.mkdir(parents=True, exist_ok=True)
+        (assessment_dir / PHASE2_WORK_PLAN_FILENAME).write_text(
+            render_phase2_work_plan(plan), encoding="utf-8"
+        )
+        logger.info(
+            "Phase 2 work plan: %d groups -> %d workers (max %d groups per "
+            "worker, ~%d dispatch wave(s)), %d reusable design(s)",
+            len(plan.groups),
+            len(plan.workers),
+            plan.max_groups_in_a_worker,
+            plan.dispatch_waves,
+            len(plan.reusable),
+        )
+        return plan
+
+    # ------------------------------------------------------------------ #
+    # Deterministic scorecard marker (used when the LLM scorecard is off)
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _write_omitted_scorecard_marker(
+        staging_dir: Path, groups: list[str], total_jobs: int
+    ) -> None:
+        """State, in Python, that no scores were computed for this run.
+
+        The Phase 2.6 scoring sub-agent reads EVERY group analysis (520 KB on
+        ETTM) to produce one advisory file. It is disabled by default
+        (MCP_DOCGEN_LLM_SCORECARD_ENABLED, config default False) because the
+        same phase was measured in the custom lane at ~0.8M tokens with
+        contract gaps.
+
+        Downstream documents must degrade explicitly rather than invent
+        numbers, so this marker is written unconditionally in that case.
+        Wording deliberately tracks the custom lane's marker so the two lanes
+        read the same to a doc writer.
+        """
+        assessment_dir = staging_dir / "_assessment"
+        assessment_dir.mkdir(parents=True, exist_ok=True)
+        (assessment_dir / "scorecard.md").write_text(
+            "# Assessment Scorecard\n\n"
+            f"Canonical inventory: {total_jobs} designs across "
+            f"{len(groups)} groups.\n\n"
+            "> **SCORECARD OMITTED:** no quality or risk scores were computed "
+            "for this run. There are no dimension scores, ratings or rankings "
+            "to cite.\n\n"
+            "Writers: present risk and quality findings directly from the "
+            "evidence you already have -- each group analysis's RISK_FLAGS and "
+            "ERROR_HANDLING sections, and the per-group risk flags. Where a "
+            "score would go, say that scores were not computed for this run. "
+            "Do not invent a number.\n\n"
+            "Do not copy this notice, or any part of it, into a client "
+            "document. State the absence in your own words, in client "
+            "language.\n",
+            encoding="utf-8",
         )
 
     # ------------------------------------------------------------------ #
-    # _doc_templates.md — written to _preprocess/ for Phase 3 agents
+    # _doc_templates.md -- written to _preprocess/ for Phase 3 agents
     # ------------------------------------------------------------------ #
 
     @staticmethod
@@ -1085,7 +1957,13 @@ Required sections:
 ## Naming & Formatting Rules
 - All filenames: exactly as shown above
 - Every doc MUST have a table of contents as the first section
-- Use plain ASCII tables only (no Unicode box-drawing: no ─, │, ┼)
+- EVERY character you write must be ASCII (codepoints 0-127). This file is read on
+  Windows under cp1252, where a non-ASCII character corrupts the document.
+  Named, not shown, so this instruction does not itself put the characters in your
+  context: do not use Unicode box-drawing glyphs (build tables from `|`, `-` and `+`),
+  do not use en/em dashes (write `-` or `--`), do not use curly quotes, arrows or
+  non-Latin scripts. A published run leaked CJK characters into a quoted XML
+  namespace, which turned a real identifier into a false one.
 - Business rule tags: BR-{GROUP}-NNN (e.g. BR-DEU-001)
 - Risk severity: CRITICAL / HIGH / MEDIUM / LOW (all caps)
 - Job references: always include full job name, not just partial
@@ -1139,17 +2017,9 @@ Required sections:
             WHOLE_PROJECT_PARTITION,
             partition_output_subdir,
         )
-        from mcp_server.services.generation_profile import (
-            is_agent_workspace_profile,
-            normalize_profile,
-            validate_profile_route,
-        )
+        from mcp_server.services.generation_profile import normalize_profile, validate_profile_route
 
         generation_profile = normalize_profile(generation_profile)
-        # One coherent investigation over the whole estate. Everything the
-        # legacy path does to shape work into phases, groups and partitions is
-        # skipped -- the agent decides how to read the workspace it is given.
-        agentic_run = is_agent_workspace_profile(generation_profile)
 
         output_dir = config.project_root / "output" / project_id
         unit_allowlist: set[str] | None = None
@@ -1378,7 +2248,6 @@ Required sections:
         restored_groups: list[str] | None = None
         if (
             not skip_preprocess
-            and not agentic_run
             # A scoped reingestion prepares staging deliberately (unchanged
             # groups' analyses restored, changed groups removed) — mirror the
             # fresh-staging guard above and never overwrite that.
@@ -1399,14 +2268,7 @@ Required sections:
                     logger.warning("Extraction cache restore failed: %s", exc)
                     restored_groups = None
 
-        if agentic_run:
-            await self.log_manager.emit(
-                project_id,
-                "Agentic contract selected: bypassing legacy preprocess and phase orchestration",
-                level="info",
-            )
-            preprocess_groups = []
-        elif skip_preprocess:
+        if skip_preprocess:
             await self.log_manager.emit(
                 project_id,
                 "RESUME: Skipping preprocessing (files already exist)",
@@ -1459,13 +2321,137 @@ Required sections:
 
         total_groups = len(preprocess_groups)
 
+        # Resume was detected BEFORE preprocessing, so its checklist came from
+        # the PREVIOUS run's manifest. Preprocessing has just rewritten that
+        # manifest, and a changed scan produces a different group set -- the
+        # stale-scan branch above deletes `_preprocess/` for exactly that case.
+        # Recompute the remainder against the groups this run will actually
+        # analyse, or the prompt names groups that no longer exist and omits
+        # ones that do.
+        if resume_state is not None:
+            self._apply_group_checklist(
+                resume_state,
+                staging_dir,
+                sorted({analysis_group_for_slice(name) for name in preprocess_groups}),
+                "manifest" if preprocess_groups else "unknown",
+            )
+
         # Phase 1.5 — lightweight quick scan (Python regex, no LLM)
         # Only run on fresh preprocess (not when resuming with existing scan)
         assessment_dir = staging_dir / "_assessment"
         assessment_dir.mkdir(parents=True, exist_ok=True)
         quick_scan_path = assessment_dir / "quick_scan.md"
-        if not agentic_run and (not skip_preprocess or not quick_scan_path.exists()):
-            self._run_quick_scan(staging_dir, preprocess_groups)
+        # Phase 2 sub-agents are pointed at _assessment/quick_scan/{group}.md, so
+        # the slice directory must exist too. A run resumed from a staging tree
+        # created before per-group slices were introduced has the roll-up but no
+        # slices; regenerating is cheap (regex over _preprocess, no LLM) and the
+        # alternative is 20 sub-agents reading a path that is not there.
+        slices_complete = all(
+            (assessment_dir / "quick_scan" / f"{group}.md").exists()
+            for group in preprocess_groups
+        )
+        quick_scan_findings: dict[str, list[tuple[str, str, str]]] | None = None
+        quick_scan_designs: dict[str, int] = {}
+        if not skip_preprocess or not quick_scan_path.exists() or not slices_complete:
+            quick_scan_findings, quick_scan_designs = self._run_quick_scan(
+                staging_dir, preprocess_groups
+            )
+
+        # Phase 2 work plan. Sub-agents dispatch 3-4 at a time whatever they are
+        # asked for, so one sub-agent per group serialises Phase 2 (ETTM run 259:
+        # 20 groups, 16 minutes, 5 groups never analysed, Phase 3 never started).
+        # This stages the inventory the orchestrator batches from -- per group
+        # its evidence size, design count and risk flags, plus a suggested split
+        # bin-packed from this estate's own distribution. Advisory: the
+        # orchestrator may deviate and records what it used in
+        # _knowledge/decisions.md. Cheap, deterministic, and a failure here must
+        # not cost the run its documents.
+        try:
+            work_plan = self._write_phase2_work_plan(
+                staging_dir,
+                preprocess_groups,
+                scan_dir=scan_dir,
+                findings=quick_scan_findings,
+                design_counts=quick_scan_designs,
+                unit_allowlist=unit_allowlist,
+            )
+        except (OSError, ValueError) as exc:
+            logger.warning("Phase 2 work plan could not be staged: %s", exc, exc_info=True)
+            await self.log_manager.emit(
+                project_id,
+                f"Phase 2 work plan unavailable ({exc}) -- the orchestrator will "
+                "fall back to one sub-agent per group",
+                level="warning",
+            )
+        else:
+            await self.log_manager.emit(
+                project_id,
+                f"Phase 2 work plan: {len(work_plan.groups)} group(s) -> "
+                f"{len(work_plan.workers)} worker(s), at most "
+                f"{work_plan.max_groups_in_a_worker} group(s) each, about "
+                f"{work_plan.dispatch_waves} dispatch wave(s)"
+                + (
+                    f"; shared-library pre-pass over {len(work_plan.reusable)} "
+                    "reusable design(s)"
+                    if work_plan.reusable
+                    else "; no reusable designs, so no shared-library pre-pass"
+                ),
+                level="info",
+            )
+
+        # When the LLM scorecard is disabled, write the deterministic marker NOW
+        # so every consumer that reads _assessment/scorecard.md (doc 07, the
+        # executive summary, the doc-set validator) finds an explicit statement
+        # of absence instead of a missing file it might paper over with invented
+        # scores. Mirrors the custom lane's _write_omitted_scorecard_marker.
+        if not config.docgen_llm_scorecard_enabled:
+            self._write_omitted_scorecard_marker(
+                staging_dir, preprocess_groups, total_jobs
+            )
+
+        # Project memory (services/project_memory.py). Staged from the durable
+        # home at output/{project_id}[/{subproject}]/knowledge/ into
+        # docs_staging/knowledge/ so the agent can read AND write it, and
+        # copied back by persist_project_memory in the finally below.
+        #
+        # This is also where the deterministic continuity note
+        # (knowledge/_since_last_run.md) is written: what changed in the scan
+        # since the last SUCCESSFUL run, in Python, with no model call. A run
+        # that knows which designs moved does not have to re-derive the estate.
+        #
+        # Advisory like the quick scan above: memory is an aid, so a failure to
+        # stage it degrades the run's knowledge, never its outcome.
+        memory_stage: MemoryStageResult | None = None
+        try:
+            memory_stage = stage_project_memory(
+                output_dir=output_dir,
+                staging_dir=staging_dir,
+                project_id=project_id,
+                scan_output_dir=Path(scan_output_dir),
+                platform=platform,
+                partition_name=partition.name if partition is not None else None,
+                unit_allowlist=unit_allowlist,
+                run_id=run_id,
+            )
+        except (OSError, ValueError) as exc:
+            logger.warning("Project memory could not be staged: %s", exc, exc_info=True)
+            await self.log_manager.emit(
+                project_id,
+                f"Project memory unavailable this run ({exc}) -- generation continues "
+                "without remembered context",
+                level="warning",
+            )
+        else:
+            await self.log_manager.emit(
+                project_id, memory_stage.summary_line(), level="info",
+            )
+            if memory_stage.seeded_files:
+                await self.log_manager.emit(
+                    project_id,
+                    "Project memory seeded (empty, first run for this scope): "
+                    + ", ".join(memory_stage.seeded_files),
+                    level="info",
+                )
 
         # Determine which analysis guide file sub-agents should read
         analysis_guide_file = "_analysis_guide.md"
@@ -1501,37 +2487,6 @@ Required sections:
             release_generation_lock(staging_dir, run_id=run_id)
             return {"success": False, "error": str(exc)}
 
-        connector_runtime = None
-        if (
-            model_resolution.uses_opencode_cli
-            and config.opencode_connectors_enabled
-            and run_id is not None
-            and initiating_user_id is not None
-        ):
-            # The connector service owns DB snapshotting and credentials.  The
-            # OpenCode provider receives only opaque run authority.  Any
-            # preflight failure is supplementary-evidence degradation, never a
-            # reason to switch on connectors for a legacy/non-user run.
-            try:
-                from mcp_server.connectors.service import ConnectorService
-
-                connector_runtime = await ConnectorService.create_opencode_runtime(
-                    generate_run_id=run_id,
-                    project_id=project_id,
-                    user_id=initiating_user_id,
-                    # ``resume`` is a caller preference; only an actual
-                    # recovered staging state must reuse an old snapshot.
-                    # Fresh runs commonly use resume=True by default.
-                    resume=resume_state is not None,
-                )
-            except Exception:
-                logger.warning(
-                    "Connector preflight failed for OpenCode run %s/%s; continuing without live evidence",
-                    project_id,
-                    run_id,
-                    exc_info=True,
-                )
-
         # Build DocGenContext and hand off to the configured provider
         ctx = DocGenContext(
             project_id=project_id,
@@ -1552,7 +2507,6 @@ Required sections:
             nexus_presentation=nexus_presentation,
             live_evidence=live_evidence,
             run_id=run_id,
-            connector_runtime=connector_runtime,
             generation_profile=generation_profile,
         )
 
@@ -1565,11 +2519,6 @@ Required sections:
             instruction_pack_dir=instruction_pack_dir,
             plugin_pack_dir=plugin_pack_dir,
         )
-
-        if agentic_run:
-            from mcp_server.providers.agent_workspace.runner import AgentWorkspaceProvider
-
-            provider = AgentWorkspaceProvider(model_route=effective_model)
 
         if plugin_pack_dir is not None and not model_resolution.uses_opencode_cli:
             provider = build_plugin_runner(
@@ -1594,21 +2543,14 @@ Required sections:
         main_model_name = getattr(resolved_main_model, "model_name", effective_model)
         write_model_name = getattr(resolved_write_model_obj, "model_name", effective_write_model)
         if model_resolution.uses_opencode_cli:
-            # OpenCode owns its adaptive phase sessions and uses one selected
-            # route throughout; the legacy per-phase model defaults are not
-            # consulted by this provider.
+            # The Claude-compatible OpenCode transport uses one selected route
+            # throughout its single canonical CLI session.
             investigation_model_name = effective_model
             main_model_name = effective_model
             write_model_name = effective_model
         provider_details = (
-            f"provider={resolved_provider} coherent_investigation={effective_model}"
-            if agentic_run
-            else (
-                f"provider={resolved_provider} "
-                f"phase1={investigation_model_name} "
-                f"phase2={main_model_name} "
-                f"phase3={write_model_name}"
-            )
+            f"provider={resolved_provider} phase1={investigation_model_name} "
+            f"phase2={main_model_name} phase3={write_model_name}"
         )
         await self.log_manager.emit(
             project_id,
@@ -1619,6 +2561,7 @@ Required sections:
         async def _log_cb(pid: str, message: str, level: str = "info") -> None:
             await self.log_manager.emit(pid, message, level=level)
 
+        finalized = False
         try:
             refresh_generation_lock(staging_dir, run_id=run_id)
             write_run_manifest(
@@ -1632,6 +2575,15 @@ Required sections:
             async with LockHeartbeat(staging_dir, run_id=run_id):
                 agent_result = await provider.run(ctx, _log_cb)
             result = agent_result.to_dict()
+            finalized = True
+            for message, level in self._finalize_memory_and_language(
+                output_dir=output_dir,
+                staging_dir=staging_dir,
+                memory_stage=memory_stage,
+                groups=preprocess_groups,
+                success=bool(result.get("success")),
+            ):
+                await self.log_manager.emit(project_id, message, level=level)
             write_run_manifest(
                 staging_dir,
                 run_id=run_id,
@@ -1661,4 +2613,191 @@ Required sections:
                 "write_model_name": effective_write_model,
             }
         finally:
+            # The success path already finalized (and could await log_manager
+            # while doing it). This covers the exception and cancellation
+            # paths, where what the agent learned before the failure must still
+            # be persisted; it logs through `logger` because awaiting inside a
+            # `finally` during cancellation is not safe.
+            if not finalized:
+                for message, level in self._finalize_memory_and_language(
+                    output_dir=output_dir,
+                    staging_dir=staging_dir,
+                    memory_stage=memory_stage,
+                    groups=preprocess_groups,
+                    success=False,
+                ):
+                    logger.log(
+                        logging.WARNING if level == "warning" else logging.INFO, message
+                    )
             release_generation_lock(staging_dir, run_id=run_id)
+
+    # ------------------------------------------------------------------ #
+    # Post-generation: persist memory, then check client language
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _finalize_memory_and_language(
+        *,
+        output_dir: Path,
+        staging_dir: Path,
+        memory_stage: MemoryStageResult | None,
+        groups: list[str],
+        success: bool,
+    ) -> list[tuple[str, str]]:
+        """Check attribution, persist memory, guard client language, clean up.
+
+        Synchronous on purpose: it is called from a ``finally`` block on the
+        failure path, where awaiting is not safe. It returns the lines the
+        caller should emit rather than emitting them itself.
+
+        Every step is ADVISORY and none can raise into the run. That matches
+        the four Phase 3 final-check gates, which warn and ship rather than
+        raise -- the operator decides what to do about a gap. Memory is copied
+        back on failure too: what the agent worked out before the run died is
+        still worth keeping. Only a successful run advances the continuity
+        baseline.
+
+        Evidence cleanup lives here, not in the agent's Phase 4, because a
+        model that deletes ``_analysis/`` and ``_preprocess/`` before any
+        deterministic check has seen them makes the attribution guard
+        unrunnable by construction. Python removes them, after the check, and
+        only on a successful run -- a failed run's staging is what resume
+        reads.
+        """
+        messages: list[tuple[str, str]] = []
+
+        # Coverage first, and it is NOT the attribution check below. Attribution
+        # answers "is this analysis about the group it is named for"; coverage
+        # answers "does this group have an analysis at all". Nothing in Python
+        # asked the second question, so ETTM run 260 published documents that
+        # omit five of twenty groups and reported success -- the model's own
+        # Phase 2.5 gate was the only check, and on a resume it never ran.
+        #
+        # ADVISORY, like every other step in this method and like the four
+        # Phase 3 final-check gates: it names the gap in the run log and never
+        # raises. Making it BLOCKING (no swap, no RAG push) is a publication-
+        # policy change and needs the plan gate, not this function.
+        try:
+            expected = sorted({analysis_group_for_slice(name) for name in groups})
+            analysed = set(
+                DocGenerationCoordinator._analysed_groups(staging_dir / "_analysis")
+            )
+            missing = [name for name in expected if name not in analysed]
+            if expected and missing:
+                messages.append((
+                    f"Group coverage: {len(expected) - len(missing)}/{len(expected)} "
+                    f"groups analysed. NO USABLE ANALYSIS for: {', '.join(missing)}. "
+                    "Documents from this run do not describe these groups.",
+                    "warning",
+                ))
+            elif expected:
+                messages.append((
+                    f"Group coverage: {len(expected)}/{len(expected)} groups analysed.",
+                    "info",
+                ))
+        except OSError as exc:
+            logger.warning("Group coverage check failed: %s", exc, exc_info=True)
+            messages.append((f"Group coverage check failed: {exc}", "warning"))
+
+        checked_analyses = 0
+        try:
+            report = check_group_attribution(staging_dir)
+            checked_analyses = report.analyses_checked
+            report_path = (
+                write_group_attribution_report(staging_dir, report)
+                if checked_analyses
+                else None
+            )
+            messages.extend(attribution_warnings(report, report_path=report_path))
+        except (OSError, ValueError) as exc:
+            logger.warning("Group attribution check failed: %s", exc, exc_info=True)
+            messages.append((f"Group attribution check failed: {exc}", "warning"))
+
+        try:
+            persisted = persist_project_memory(
+                output_dir=output_dir,
+                staging_dir=staging_dir,
+                snapshot=memory_stage.snapshot if memory_stage is not None else None,
+                success=success,
+            )
+            messages.append((persisted.summary_line(), "info"))
+        except (OSError, ValueError) as exc:
+            logger.warning("Project memory could not be persisted: %s", exc, exc_info=True)
+            messages.append((f"Project memory could not be persisted: {exc}", "warning"))
+
+        if not success:
+            # No published document set to check; the guard would report on a
+            # partial staging tree and mislead.
+            return messages
+
+        try:
+            leakage = validate_client_docs(staging_dir)
+            report_path = write_leakage_report(staging_dir, leakage)
+            messages.append(
+                (leakage.summary_line(), "info" if leakage.ok else "warning")
+            )
+            if not leakage.ok:
+                for finding in leakage.findings[:3]:
+                    messages.append((
+                        f"  {finding.document}:{finding.line} [{finding.category}] "
+                        f"{finding.marker}: {finding.excerpt}",
+                        "warning",
+                    ))
+                messages.append((
+                    f"  Internal language is advisory, so the documents ship as "
+                    f"written; the full report is {report_path.parent.name}/"
+                    f"{report_path.name}",
+                    "warning",
+                ))
+        except (OSError, ValueError) as exc:
+            logger.warning("Client-language guard failed: %s", exc, exc_info=True)
+            messages.append((f"Client-language guard failed: {exc}", "warning"))
+
+        try:
+            provenance = validate_provenance(
+                staging_dir,
+                known_groups=groups,
+                known_units=memory_stage.unit_names if memory_stage is not None else (),
+            )
+            write_provenance_report(staging_dir, provenance)
+            messages.append(
+                (provenance.summary_line(), "info" if provenance.ok else "warning")
+            )
+            if not provenance.ok:
+                for doc in provenance.documents:
+                    for error in doc.errors[:2]:
+                        messages.append((f"  {doc.document}: {error}", "warning"))
+        except (OSError, ValueError) as exc:
+            logger.warning("Provenance validation failed: %s", exc, exc_info=True)
+            messages.append((f"Provenance validation failed: {exc}", "warning"))
+
+        # The working evidence, removed now that the deterministic checks that
+        # read it have run. `_`-prefixed, so its presence up to this point never
+        # counted as a delivered document nor reached the client corpus.
+        #
+        # Conditional on the attribution check having had something to check:
+        # a run that published no group analyses either cleaned up itself (the
+        # custom lane deletes both directories in its own Phase 4, so this is a
+        # no-op there) or did something unexpected, and in the second case the
+        # evidence is worth more on disk than the megabytes are worth freed.
+        if checked_analyses == 0:
+            return messages
+
+        removed: list[str] = []
+        for dirname in ("_analysis", "_preprocess"):
+            target = staging_dir / dirname
+            if not target.is_dir():
+                continue
+            shutil.rmtree(target, ignore_errors=True)
+            if target.exists():
+                messages.append(
+                    (f"Could not remove working evidence {dirname}/", "warning")
+                )
+            else:
+                removed.append(dirname)
+        if removed:
+            messages.append(
+                (f"Removed working evidence: {', '.join(removed)}", "info")
+            )
+
+        return messages

@@ -9,7 +9,13 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 from src.harness.capability_runtime import CapabilityExecutionContext
 from src.harness.executor import HarnessCapabilityExecutor
-from src.harness.grounding import AnswerStatus, GroundingVerdict
+from src.harness.grounding import (
+    DISCLOSURE_NO_EVIDENCE,
+    AnswerStatus,
+    EvidenceStateRequirement,
+    GroundedAnswer,
+    GroundingVerdict,
+)
 from src.harness.manifest import ManifestScope
 from src.harness.models import (
     METADATA_QUERY_CAPABILITY,
@@ -17,14 +23,19 @@ from src.harness.models import (
     EvidenceQueryResult,
 )
 from src.harness.readonly_runtime import (
+    DISCLOSURE_GROUNDING_REASON_PREFIX,
+    DISCLOSURE_UNVERIFIED_GROUNDING,
     READ_ONLY_PRIMARY_SYSTEM_PROMPT,
+    UNVERIFIED_GROUNDING_NOTICE,
     _SAFE_FALLBACK_TEXT,
     _humanize_visible_content,
     _parse_grounded_answer,
+    append_unverified_grounding_notice,
     build_readonly_primary_chat_model,
     build_readonly_primary_runtime,
     readonly_manifest_partition,
     run_readonly_primary_turn,
+    unverified_grounding_answer,
 )
 from src.harness.registry import default_capability_registry
 from src.harness.semantic_tools import (
@@ -539,13 +550,16 @@ async def test_streaming_correction_preserves_prior_tool_evidence() -> None:
     ]
 
 
-async def test_citation_failure_shows_written_answer_without_citations() -> None:
-    """A missing/invalid self-reported citation no longer discards the answer.
+async def test_citation_failure_shows_written_answer_with_visible_disclosure() -> None:
+    """A missing/invalid self-reported citation neither discards nor hides.
 
     Only genuinely unsafe output (leaked internal ids/tool names/raw
     payloads) or a truly empty answer still falls back to the generic safe
-    message; a real answer that merely failed the citation contract is shown
-    as written, with its (unvalidated) citations/disclosures dropped.
+    message. A real answer that merely failed the citation contract is shown as
+    written -- but the failure is stated in the text the user reads and carried
+    in the persisted payload, instead of being erased. Shipping this answer with
+    ``answer_status="grounded"`` and empty citations, as this path used to, made
+    a rejected answer indistinguishable from an accepted one.
     """
     calls: list[str] = []
     registry, executor = _make_executor(calls)
@@ -571,12 +585,83 @@ async def test_citation_failure_shows_written_answer_without_citations() -> None
         max_corrections=0,
     )
     assert turn.used_fallback is True
-    assert turn.grounded.content == "You have projects."
+    # The model's own prose survives, in full and unrewritten.
+    assert turn.grounded.content.startswith("You have projects.")
+    # ...followed by a notice the reader cannot miss.
+    assert UNVERIFIED_GROUNDING_NOTICE.strip() in turn.grounded.content
+    # Unvalidated citations are still dropped -- they were never accepted.
     assert turn.grounded.citations == []
-    assert turn.grounded.disclosures == []
+    # The verdict is machine-readable on the persisted record.
+    assert DISCLOSURE_UNVERIFIED_GROUNDING in turn.grounded.disclosures
+    assert (
+        f"{DISCLOSURE_GROUNDING_REASON_PREFIX}grounded_requires_citation"
+        in turn.grounded.disclosures
+    )
+    # And the status is no longer the "grounded" the model claimed.
+    assert turn.grounded.answer_status is not AnswerStatus.GROUNDED
     # Still no internal identifiers or raw payloads reach the visible answer.
     assert "rag." not in turn.grounded.content
     assert "{" not in turn.grounded.content
+
+
+async def test_unverified_notice_is_appended_once() -> None:
+    """Idempotent, so a path that marks at two layers cannot double-append."""
+
+    marked = append_unverified_grounding_notice("An answer.")
+    assert append_unverified_grounding_notice(marked) == marked
+
+
+async def test_unverified_answer_adopts_the_forced_evidence_state() -> None:
+    """The honest state the validator derived wins over the model's claim.
+
+    The requirement is *why* the answer failed: the evidence said "nothing
+    relevant in scope" and the model said "grounded". Publishing PARTIAL there
+    would understate it, so the forced state and its disclosure are used.
+    """
+
+    written = GroundedAnswer(
+        content="Job X writes to the invoice queue.",
+        citations=[],
+        disclosures=[],
+        answer_status=AnswerStatus.GROUNDED,
+    )
+    result = unverified_grounding_answer(
+        written,
+        requirement=EvidenceStateRequirement(
+            status=AnswerStatus.NO_EVIDENCE,
+            disclosure=DISCLOSURE_NO_EVIDENCE,
+        ),
+        reason_code="answer_status_mismatch",
+    )
+
+    assert result.answer_status is AnswerStatus.NO_EVIDENCE
+    assert DISCLOSURE_NO_EVIDENCE in result.disclosures
+    assert DISCLOSURE_UNVERIFIED_GROUNDING in result.disclosures
+    assert (
+        f"{DISCLOSURE_GROUNDING_REASON_PREFIX}answer_status_mismatch"
+        in result.disclosures
+    )
+    assert result.content.startswith("Job X writes to the invoice queue.")
+    assert UNVERIFIED_GROUNDING_NOTICE.strip() in result.content
+
+
+async def test_unverified_answer_without_forced_state_is_partial() -> None:
+    """With no state forced by evidence, "unconfirmed" is the honest label."""
+
+    result = unverified_grounding_answer(
+        GroundedAnswer(
+            content="Some prose.",
+            citations=[],
+            disclosures=[],
+            answer_status=AnswerStatus.GROUNDED,
+        ),
+        requirement=None,
+        reason_code="citation_not_in_allowed_evidence",
+    )
+
+    assert result.answer_status is AnswerStatus.PARTIAL
+    assert result.citations == []
+    assert DISCLOSURE_UNVERIFIED_GROUNDING in result.disclosures
 
 
 async def test_fallback_trips_repeat_guard_when_duplicating_prior() -> None:

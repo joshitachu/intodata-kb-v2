@@ -35,6 +35,41 @@ const EPHEMERAL_EVENT_TYPES: ReadonlySet<string> = new Set([
   // the event itself describes a transition, not a fact about the finished turn,
   // so it is worth nothing to a host replaying `agentEvents`.
   "assistant.draft_reset",
+  // Reasoning deltas, for the same reason `assistant.delta` is ephemeral: they
+  // arrive token by token and are already accumulated into `reasoning`.
+  "assistant.reasoning",
+]);
+
+/**
+ * Frame types allowed to move the turn's *displayed* state -- the answer buffer,
+ * the collapsed `progress` line and the streaming flag.
+ *
+ * This is the set the dispatcher used to gate on entirely: a frame whose type
+ * was not listed here was parsed by nothing and discarded, sequence number and
+ * all. Everything that validates as a `PublicAgentEvent` is now de-duplicated,
+ * sequenced and retained regardless of type; this predicate only decides
+ * whether the frame may also relabel the turn. An event the client does not
+ * understand is not a statement about the phase, so it may not.
+ */
+function isDisplayEventType(eventType: string): boolean {
+  return (
+    eventType === "assistant.delta" ||
+    eventType === "assistant.draft_reset" ||
+    eventType === "assistant.progress" ||
+    eventType === "runtime.update" ||
+    eventType === "assistant.completed" ||
+    eventType.startsWith("tool.") ||
+    eventType.startsWith("workflow.") ||
+    eventType.startsWith("plan.") ||
+    eventType.startsWith("run.")
+  );
+}
+
+/** Terminal frames: the turn is over and nothing more will arrive. */
+const TERMINAL_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "run.completed",
+  "run.failed",
+  "run.interrupted",
 ]);
 
 export interface StreamState {
@@ -92,6 +127,20 @@ export interface StreamState {
    * diverged the display would self-correct rather than keep the provisional text.
    */
   deltaSource?: "live" | "authoritative" | null;
+  /**
+   * Accumulated `assistant.reasoning` text for the turn, oldest delta first.
+   *
+   * Kept strictly apart from `content`: reasoning is the model narrating to
+   * itself, it is not the answer, and it is not validated or persisted. Hosts
+   * that render it must keep it out of the answer body (`/labs/chat` shows it
+   * in a collapsed panel). Lanes that never emit the event leave this empty,
+   * which is why nothing downstream may treat an empty value as a failure.
+   *
+   * Optional like the other additive fields on this state, because hosts and
+   * tests construct `StreamState` literals directly; treat an absent value as
+   * an empty string.
+   */
+  reasoning?: string;
 }
 
 const INITIAL_STATE: StreamState = {
@@ -107,9 +156,22 @@ const INITIAL_STATE: StreamState = {
   lastSequence: 0,
   agentEvents: [],
   deltaSource: null,
+  reasoning: "",
 };
 
-export function useStreamMessage(conversationId: number | null) {
+/**
+ * `apiBase` selects the backend *lane* the turn is streamed from.
+ *
+ * Production is `/api` (the LangGraph harness) and is the default, so every
+ * existing call site is byte-for-byte unchanged. `/api/labs` points the same
+ * hook -- and therefore the same components, the same SSE parsing and the same
+ * `StreamState` -- at the experimental OpenCode lane, which is the only way a
+ * side-by-side comparison measures the agent rather than the renderer.
+ */
+export function useStreamMessage(
+  conversationId: number | null,
+  apiBase: string = "/api",
+) {
   const [streamState, setStreamState] = useState<StreamState>(INITIAL_STATE);
   const abortRef = useRef<AbortController | null>(null);
   const lastEventIdRef = useRef<string | null>(null);
@@ -129,6 +191,30 @@ export function useStreamMessage(conversationId: number | null) {
     clientTurnRef.current = null;
     seenEventIdsRef.current.clear();
     setStreamState(INITIAL_STATE);
+  }, []);
+
+  /**
+   * Stops *reading* the turn in progress.
+   *
+   * Aborting the fetch ends the client half of the stream, and that is all it
+   * ends: neither lane exposes a cancel endpoint, and the Next proxy does not
+   * forward the abort signal upstream, so the run may well continue and persist
+   * its answer on the server. Callers must label this honestly -- "stop showing
+   * me this", not "cancel the run".
+   *
+   * Whatever text already arrived is kept; it is what the server sent. No error
+   * is recorded either, because the user asking to stop is not a failure.
+   *
+   * Idempotent, and a no-op when nothing is in flight.
+   */
+  const cancelStream = useCallback(() => {
+    const controller = abortRef.current;
+    if (!controller || controller.signal.aborted) return;
+    controller.abort();
+    abortRef.current = null;
+    setStreamState((prev) =>
+      prev.isStreaming ? { ...prev, isStreaming: false } : prev,
+    );
   }, []);
 
   const sendMessage = useCallback(
@@ -162,6 +248,7 @@ export function useStreamMessage(conversationId: number | null) {
         progress: sameTurn ? prev.progress : null,
         progressDetail: sameTurn ? prev.progressDetail : null,
         deltaSource: sameTurn ? prev.deltaSource : null,
+        reasoning: sameTurn ? prev.reasoning : "",
         lastSequence: lastSequenceRef.current,
         // A resumed turn keeps the events already delivered (the `seenEventIds`
         // set is preserved too, so the replay cannot double-append them).
@@ -170,7 +257,7 @@ export function useStreamMessage(conversationId: number | null) {
 
       try {
         const res = await fetch(
-          `/api/conversations/${targetId}/messages/stream?after_sequence=${lastSequenceRef.current}`,
+          `${apiBase}/conversations/${targetId}/messages/stream?after_sequence=${lastSequenceRef.current}`,
           {
             method: "POST",
             headers: {
@@ -216,17 +303,19 @@ export function useStreamMessage(conversationId: number | null) {
         let currentData: string[] = [];
 
         const dispatchEvent = (eventType: string, data: string) => {
+          // Everything that is not one of the three transport frames below is a
+          // public agent event. This used to be a whitelist of known types, so a
+          // type the backend added -- `assistant.reasoning` was the first --
+          // reached no parser at all and vanished with its sequence number.
+          // Unrecognised frames now degrade instead: validated, de-duplicated
+          // and retained like any other, they simply do not move the displayed
+          // state (see `isDisplayEventType`). A frame that fails validation is
+          // still ignored, which is what keeps a malformed one from breaking the
+          // stream.
           if (
-            eventType === "assistant.delta" ||
-            eventType === "assistant.draft_reset" ||
-            eventType === "assistant.progress" ||
-            eventType === "run.started" ||
-            eventType === "runtime.update" ||
-            eventType.startsWith("tool.") ||
-            eventType.startsWith("workflow.") ||
-            eventType.startsWith("plan.") ||
-            eventType === "assistant.completed" ||
-            eventType.startsWith("run.")
+            eventType !== "agent_response" &&
+            eventType !== "error" &&
+            eventType !== "done"
           ) {
             try {
               const event = PublicAgentEventSchema.parse(JSON.parse(data));
@@ -243,6 +332,14 @@ export function useStreamMessage(conversationId: number | null) {
                 !EPHEMERAL_EVENT_TYPES.has(event.type);
               const isDelta = eventType === "assistant.delta";
               const isReset = eventType === "assistant.draft_reset";
+              // The SSE frame name and the event's own `type` are the same
+              // string in every emitter; both are checked for the two decisions
+              // that are new here, so a frame is handled on either spelling.
+              const isDisplayEvent =
+                isDisplayEventType(eventType) || isDisplayEventType(event.type);
+              const isReasoning =
+                eventType === "assistant.reasoning" ||
+                event.type === "assistant.reasoning";
               setStreamState((prev) => {
                 // The server retracting a draft it already showed: the model
                 // narrated before calling a tool, or the grounding validator
@@ -273,11 +370,19 @@ export function useStreamMessage(conversationId: number | null) {
                       : event.replayable && prev.deltaSource !== "authoritative"
                         ? String(payload.content ?? "")
                         : prev.content + String(payload.content ?? ""),
+                  // Reasoning is the model narrating to itself: accumulated
+                  // here, never appended to `content`, and never allowed to
+                  // stand in for an answer.
+                  reasoning: isReasoning
+                    ? (prev.reasoning ?? "") + String(payload.content ?? "")
+                    : prev.reasoning,
                   // Neither answer prose nor its retraction is a progress
                   // statement; both would overwrite the status line with
-                  // something that is not a phase.
+                  // something that is not a phase. Nor is a frame this client
+                  // does not recognise -- labelling the turn with a raw type
+                  // name would be the client inventing a phase.
                   progress:
-                    isDelta || isReset
+                    !isDisplayEvent || isDelta || isReset
                       ? prev.progress
                       : String(payload.summary ?? payload.status ?? eventType),
                   // A heartbeat with nothing usable in it keeps the last known
@@ -286,11 +391,13 @@ export function useStreamMessage(conversationId: number | null) {
                     eventType === "assistant.progress"
                       ? parseAgentProgress(payload) ?? prev.progressDetail ?? null
                       : prev.progressDetail,
-                  isStreaming: ![
-                    "run.completed",
-                    "run.failed",
-                    "run.interrupted",
-                  ].includes(eventType),
+                  // Only a frame this client understands may end the turn --
+                  // or, for every other display frame, confirm it is alive.
+                  // An unrecognised type says nothing either way.
+                  isStreaming: isDisplayEvent
+                    ? !TERMINAL_EVENT_TYPES.has(eventType) &&
+                      !TERMINAL_EVENT_TYPES.has(event.type)
+                    : prev.isStreaming,
                 };
               });
             } catch {
@@ -394,8 +501,8 @@ export function useStreamMessage(conversationId: number | null) {
         }));
       }
     },
-    [conversationId],
+    [apiBase, conversationId],
   );
 
-  return { streamState, sendMessage, reset };
+  return { streamState, sendMessage, reset, cancelStream };
 }

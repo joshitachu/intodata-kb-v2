@@ -56,6 +56,14 @@ interface ChatContextValue {
   // Stream state
   pendingUserMessage: string | null;
   streamState: StreamState;
+  /**
+   * Stops reading the turn in progress (`hooks/useStreamMessage.cancelStream`).
+   *
+   * Client-side only: there is no cancel endpoint on either lane, so the run
+   * may still finish on the server. Surfaces that offer this must say so.
+   * Nothing in production chat calls it today; `/labs/chat` does.
+   */
+  cancelStream: () => void;
   deepDiveState: DeepDiveState;
   onCancelDeepDive: () => void;
 }
@@ -74,7 +82,24 @@ export function useChatContextSafe(): ChatContextValue | null {
   return useContext(ChatContext);
 }
 
-export function ChatProvider({ children }: { children: ReactNode }) {
+interface ChatProviderProps {
+  children: ReactNode;
+  /**
+   * Backend lane this provider's turns are streamed from. Defaults to the
+   * production lane, so `components/Layout.tsx` -- which mounts this provider
+   * for every page -- is unchanged.
+   *
+   * `/labs/chat` mounts a second provider with `apiBase="/api/labs"` to reach
+   * the experimental OpenCode lane. Only the *turn* follows the lane: the
+   * conversation record itself is still created and read through
+   * `hooks/useConversations.ts` on `/api/conversations`, so both lanes append
+   * to the same thread and the deep-dive `messages/save` call below must stay
+   * on `/api` or it would target a conversation id the labs lane never owned.
+   */
+  apiBase?: string;
+}
+
+export function ChatProvider({ children, apiBase = "/api" }: ChatProviderProps) {
   const [activeConversationId, setActiveConversationId] = useState<
     number | null
   >(null);
@@ -87,15 +112,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const failedRequestRef = useRef<ConversationMessageRequest | null>(null);
 
   const queryClient = useQueryClient();
+  // Every conversation hook takes the lane, not just the streaming one. If only
+  // the stream were lane-aware, `/labs/chat` would create and list its
+  // conversations in the production lane and they would show up in the real
+  // sidebar -- the backend's `[labs] ` prefix and `visible_in_chat=False` are
+  // applied by the labs routes, which would never be called.
   const { data: conversationList, isLoading: isLoadingList } =
-    useConversations();
+    useConversations(apiBase);
   const { data: activeConversation, isLoading: isLoadingConversation } =
-    useConversation(activeConversationId);
-  const createMutation = useCreateConversation();
-  const deleteMutation = useDeleteConversation();
+    useConversation(activeConversationId, apiBase);
+  const createMutation = useCreateConversation(apiBase);
+  const deleteMutation = useDeleteConversation(apiBase);
 
-  const { streamState, sendMessage: sendStreamMessage, reset } =
-    useStreamMessage(activeConversationId);
+  const { streamState, sendMessage: sendStreamMessage, reset, cancelStream } =
+    useStreamMessage(activeConversationId, apiBase);
 
   const deepDive = useDeepDive();
 
@@ -286,6 +316,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     isCreating: createMutation.isPending,
     pendingUserMessage,
     streamState,
+    cancelStream,
     deepDiveState: deepDive.state,
     onCancelDeepDive: deepDive.cancel,
   }), [
@@ -305,6 +336,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     createMutation.isPending,
     pendingUserMessage,
     streamState,
+    cancelStream,
     deepDive.state,
     deepDive.cancel,
   ]);

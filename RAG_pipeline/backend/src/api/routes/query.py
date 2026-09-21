@@ -18,10 +18,21 @@ from src.generation.prompt_builder import (
     build_no_results_messages,
     should_use_code_assistant,
 )
+from src.generation.citation_audit import (
+    audit_citations,
+    citation_repair_notice,
+    log_citation_audit,
+)
 from src.retrieval.metadata_retriever import get_system_knowledge_summary
-from src.generation.rag_chain import _execute_role_aware_search, run_rag_query
+from src.generation.rag_chain import (
+    _execute_role_aware_search,
+    _resolve_named_entities,
+    run_rag_query,
+)
 from src.rbac.permissions import get_user_groups, get_user_project_ids
+from src.retrieval.coverage import build_retrieval_coverage, entity_coverage
 from src.retrieval.embedder import embed_text, get_last_embed_tokens
+from src.retrieval.entity_matcher import matched_unit_names
 from src.retrieval.search import merge_sources_by_document
 from src.retrieval.knowledge_revisions import active_knowledge_revisions
 from src.retrieval.vector_store import COLLECTION_NAME
@@ -165,13 +176,32 @@ async def query_stream(
         except Exception as e:
             logger.warning("Stream: Failed to fetch system knowledge: %s", e)
 
+    # Same two fixes as `run_rag_query`, applied here because this route is a
+    # second, independent copy of that pipeline rather than a caller of it: a
+    # named entity must not be lost to ranking, and a partial retrieval must be
+    # disclosed to the model. Fixing only one of the two paths would leave the
+    # defect live for every client that streams through /query.
+    entity_result = await _resolve_named_entities(db, body.query, project_ids)
+    matched_units = matched_unit_names(entity_result.matches)
     sources, auxiliary_sources = await _execute_role_aware_search(
         body.query, body, user_groups, qdrant, project_ids, knowledge_revisions,
+        matched_units=matched_units,
     )
 
     if sources or auxiliary_sources:
         document_sources = merge_sources_by_document([*sources, *auxiliary_sources])
         ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
+        coverage = build_retrieval_coverage(
+            sources=sources,
+            auxiliary_sources=auxiliary_sources,
+            referenced_documents=len(document_sources),
+            entities=entity_coverage(
+                entity_result.matches,
+                [*sources, *auxiliary_sources],
+                index_available=entity_result.alias_rows_present,
+            ),
+        )
+        logger.info("Retrieval %s", coverage.log_line())
         messages = build_messages(
             body.query,
             sources,
@@ -179,6 +209,7 @@ async def query_stream(
             system_knowledge=system_knowledge,
             answer_style=answer_style,
             auxiliary_sources=auxiliary_sources,
+            coverage=coverage,
         )
         sources_data = [source.model_dump() for source in document_sources]
     else:
@@ -201,6 +232,18 @@ async def query_stream(
             async for token in generate_answer_stream(messages):
                 accumulated += token
                 yield f"event: token\ndata: {json.dumps(token)}\n\n"
+
+            # The `[N]` markers can only be checked once the answer is complete,
+            # and by then it is already rendered, so the correction is published
+            # as one more token rather than by rewriting what was shown. A
+            # dangling marker is fabricated provenance: it must be visible to the
+            # reader, not only to the log.
+            audit = audit_citations(accumulated, document_sources)
+            log_citation_audit(audit, offered=len(document_sources))
+            if audit.has_dangling:
+                notice = citation_repair_notice(audit)
+                accumulated += notice
+                yield f"event: token\ndata: {json.dumps(notice)}\n\n"
 
             latency_ms = int((time.perf_counter() - start) * 1000)
 

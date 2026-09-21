@@ -60,9 +60,13 @@ build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+# `evals` holds the answer-quality eval harness. Its default tests score recorded
+# fixtures offline -- no Qdrant, no Postgres, no Ollama, no model key -- so they
+# belong in the normal test run. Live runs are opt-in via `python -m evals run --live`.
+testpaths = ["tests", "evals"]
 markers = [
     "integration: requires Docker services (Qdrant, PostgreSQL, Ollama)",
+    "eval_live: answer-quality eval that queries a running backend (opt-in)",
 ]
 
 [tool.ruff]

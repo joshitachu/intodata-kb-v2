@@ -52,7 +52,17 @@ async def test_fixture_allowlist_never_forwards_a_second_pack_stack() -> None:
             capability_id=DOCUMENTATION_GENERATION_CAPABILITY.id,
             arguments={"project_id": "runtime-style"},
         ),
-        CapabilityExecutionContext(user_id=1, project_scope=["runtime-style"], permissions={"manage_projects"}),
+        # Doc generation is ``requires_turn_claim``; the subject here is the pack
+        # payload, so the context carries a claim to get past policy to it.
+        CapabilityExecutionContext(
+            user_id=1,
+            project_scope=["runtime-style"],
+            permissions={"manage_projects"},
+            current_message_id=1,
+            conversation_state_version=1,
+            conversation_turn_claim_id=1,
+            conversation_turn_claim_token="test-claim",
+        ),
     )
 
     assert observation.succeeded

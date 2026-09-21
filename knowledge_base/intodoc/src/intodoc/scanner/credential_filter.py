@@ -54,6 +54,57 @@ class CredentialFilter:
     # Lobster-specific: only apply to .xml files (avoid false positives in non-XML text)
     _LOBSTER_BASE64_RE = re.compile(r"(<value>)([A-Za-z0-9+/]{8,}={0,2})(</value>)")
 
+    # ── Credential-file references ──────────────────────────────────────
+    #
+    # A credential PATH is a FILE path, and proving that is the whole job of
+    # these three patterns. A single pattern used to match these markers as a
+    # bare substring anywhere inside a delimiter-free token, which destroyed
+    # ordinary dataflow identifiers: verified on a real Talend estate,
+    # `row2.key` (input table `row2`, column `key`), `this.key`,
+    # `configuration.dataset.keyValuePairs` and the business table
+    # `STG.APOTHEEK_VP_CREDENTIALS` all became `[CREDENTIAL_PATH]`, taking
+    # the SQL statements and tMap expressions that referenced them with them.
+    # It also failed the post-scan verification gate outright: the scanner
+    # COMPOSES `f"{table}.{column}"` for a mapper's offered fields
+    # (`mapping_accounting`), so that token reaches the gate without ever
+    # having passed through `filter_text`, the gate re-runs these same
+    # detectors over it, and no scan output is written at all.
+    #
+    # Two independent proofs that a token is a file reference -- the same
+    # shape of rule `is_sensitive_var_name` already applies to a bare "key"
+    # name token, which is only sensitive when something qualifies it:
+    #   1. the token carries a path separator, or
+    #   2. the token is a filename whose own stem names credential material.
+    # `.pem` additionally stands on its own (third pattern): that extension
+    # exists only for certificate/key material, unlike `.key`, which is also
+    # one of the most common column names there is.
+    _CREDENTIAL_PATH_MARKER = (
+        r"(?:credentials?|gcp\.json|service_account|\.pem|\.key)"
+    )
+    # Deliberately NOT `_SECRET_TOKENS`: that vocabulary is matched per NAME
+    # TOKEN, and reusing it as a substring rule here would redact
+    # `passthrough.json` and `tokenizer.properties`.
+    _CREDENTIAL_STEM_MARKER = (
+        r"(?:credentials?|secrets?|passwords?|keystore|truststore|"
+        r"service_account|gcp|id_[rd]sa|api[_\-]?key|private[_\-]?key|oauth)"
+    )
+    # A closed vocabulary, like `_KNOWN_SCHEMES` and `_TLDS`: an open
+    # `\.[A-Za-z]{1,8}` suffix rule would read the last segment of a JSON or
+    # object path (`customer.credentials.name`) as a file extension.
+    _CREDENTIAL_FILE_EXTENSION = (
+        r"(?:pem|key|p12|pfx|jks|json|properties|ya?ml|xml|txt|cfg|conf|"
+        r"ini|csv|crt|cer|der|pub|store|enc|dat|bak)"
+    )
+    # A redaction placeholder is a token BOUNDARY, not token content. These
+    # patterns run after the ones that emit `[...]` placeholders, so without
+    # excluding brackets they read their own output: verified, the word
+    # CREDENTIAL inside `[CREDENTIAL_PARAM_REDACTED]` turned an already
+    # correctly redacted `jms://host?password=...` URI into
+    # `[CREDENTIAL_PATH]`. Treating a bracket as a boundary in the lookbehind
+    # too is what keeps `\\[HOSTNAME]\share\certs\client.pem` redactable --
+    # excluding it from the runs alone would leave that path unmatchable.
+    _PATH_TOKEN_CHAR = r"[^\s\"'<>\[\]]"
+
     # ── Compiled patterns per level ─────────────────────────────────────
     # Each entry: (regex, replacement, min_level)
     _BASE_PATTERNS: list[tuple[re.Pattern[str], str, RedactionLevel]] = [
@@ -102,20 +153,42 @@ class CredentialFilter:
             r"auth[_-]?token|passphrase|credential)\s*=\s*)RAW\([^)\n]*\)",
             re.IGNORECASE,
         ), r"\1[CREDENTIAL_PARAM_REDACTED]", RedactionLevel.STANDARD),
-        # Credential file paths (always, even at standard).
+        # Credential file paths (always, even at standard). See the marker
+        # vocabularies above for why this is three patterns and not one.
         #
-        # The leading `(?<![^\s"'<>])` anchors the match to the START of a
+        # The leading `(?<![^\s"'<>])` anchors each match to the START of a
         # delimiter-free token and is load-bearing for performance, not style.
         # Without it the two unbounded `[^\s"'<>]*` runs around the alternation
         # are retried at every position inside every token, which is quadratic
         # in token length: measured on a real Talend estate, one 16 KB metadata
         # file cost 1.08s for ZERO matches and `maximo_po_0.1.item` cost 60.3s.
-        # `filter_text` runs this pattern once per file and `detect_residual`
+        # `filter_text` runs these patterns once per file and `detect_residual`
         # twice more for XML, so a full sanitized-workspace pass over 6,768
         # files took 89.6s in this pattern alone; anchored it takes 1.62s with
         # byte-identical output on every one of those files.
+        #
+        # 1. Path-shaped: the token carries a path separator. The lookahead
+        #    proves that before the unbounded runs are entered, so a token
+        #    without one is rejected in a single linear scan.
         (re.compile(
-            r"(?<![^\s\"'<>])[^\s\"'<>]*(Credentials|gcp\.json|service_account|\.pem|\.key)[^\s\"'<>]*",
+            r"(?<!" + _PATH_TOKEN_CHAR + r")(?=" + _PATH_TOKEN_CHAR + r"*[\\/])"
+            + _PATH_TOKEN_CHAR + r"*" + _CREDENTIAL_PATH_MARKER
+            + _PATH_TOKEN_CHAR + r"*",
+            re.IGNORECASE,
+        ), "[CREDENTIAL_PATH]", RedactionLevel.STANDARD),
+        # 2. Bare filename whose stem names credential material
+        #    (`credentials.json`, `keystore.jks`, `secret.key`). The required
+        #    file extension is what keeps `STG.APOTHEEK_VP_CREDENTIALS` and
+        #    `LoadCredentialsTable` out.
+        (re.compile(
+            r"(?<!" + _PATH_TOKEN_CHAR + r")" + _PATH_TOKEN_CHAR + r"*"
+            + _CREDENTIAL_STEM_MARKER + _PATH_TOKEN_CHAR + r"*\."
+            + _CREDENTIAL_FILE_EXTENSION + r"\b",
+            re.IGNORECASE,
+        ), "[CREDENTIAL_PATH]", RedactionLevel.STANDARD),
+        # 3. `.pem` is credential material by extension alone.
+        (re.compile(
+            r"(?<!" + _PATH_TOKEN_CHAR + r")" + _PATH_TOKEN_CHAR + r"*\.pem\b",
             re.IGNORECASE,
         ), "[CREDENTIAL_PATH]", RedactionLevel.STANDARD),
         # X509 certificate blocks

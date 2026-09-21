@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 from mcp_server.providers.custom.fabrication_validators import (
     availability_claim_errors,
     component_reference_errors,
+    declared_component_reference_errors,
     job_scoped_component_reference_errors,
 )
 from mcp_server.providers.custom.harness import CustomHarnessProvider
@@ -68,6 +69,55 @@ def test_claims_capped():
     text = "\n".join("custom code unavailable here" for _ in range(10))
     errors = availability_claim_errors(text, frozenset({"code"}))
     assert len(errors) == 5
+
+
+# --- declared component references (the provenance sidecar) ------------------
+#
+# The prose version above depends on the shape of the model's writing. These
+# take the references the writer DECLARED in _provenance/{DOC}.json, so the
+# check is set membership and the document text is never read.
+
+
+def test_a_declared_reference_that_is_not_in_the_evidence_is_flagged():
+    errors = declared_component_reference_errors(
+        ["tSetGlobalVar_1", "tSetGlobalVar_3"], ALLOWED
+    )
+    assert len(errors) == 1
+    assert "tSetGlobalVar_3" in errors[0]
+    assert "tSetGlobalVar_1" not in errors[0]
+
+
+def test_a_declared_miss_is_worded_as_the_writers_own_statement():
+    """Declared and inferred misses must not read alike: the operator ranking
+    them needs to see which one the writer vouched for."""
+    declared = declared_component_reference_errors(["tGhost_9"], ALLOWED)[0]
+    inferred = component_reference_errors("mentions tGhost_9", ALLOWED)[0]
+    assert "declares that its claims rest on" in declared
+    assert declared != inferred
+
+
+def test_declared_references_that_exist_pass():
+    assert declared_component_reference_errors(["tJavaRow_1", "tRunJob_4"], ALLOWED) == []
+
+
+def test_an_empty_declaration_is_not_a_defect():
+    """A claim that rests on no single component (a count, a group-wide
+    statement) declares nothing, and that is a correct sidecar entry."""
+    assert declared_component_reference_errors([], ALLOWED) == []
+
+
+def test_an_empty_allowed_set_disables_the_declared_check_too():
+    """Same rule as the prose version: no evidence inventory means there is
+    nothing to verify against, and rejecting everything would be worse."""
+    assert declared_component_reference_errors(["tGhost_9"], frozenset()) == []
+
+
+def test_declared_misses_are_deduplicated_and_ordered():
+    errors = declared_component_reference_errors(
+        ["tZ_9", "tA_1", "tZ_9"], ALLOWED
+    )
+    assert errors[0].index("tA_1") < errors[0].index("tZ_9")
+    assert errors[0].count("tZ_9") == 1
 
 
 # --- job-scoped component-reference checks (bin-packed multi-job tasks) ------

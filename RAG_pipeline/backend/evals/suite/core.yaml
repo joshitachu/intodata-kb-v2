@@ -1,0 +1,511 @@
+name: nexus-answer-quality-core
+version: "1.0"
+description: >-
+  Seed eval set for the RAG / agent answer path. Every case is drawn from this
+  repository's own generated documentation and scan output; counts and entity
+  names are transcribed from the source files named under `evidence`, not
+  paraphrased. Four of the fourteen cases are UNANSWERABLE from the indexed
+  document corpus. That ratio is the point of the set: a suite of in-corpus
+  questions only measures how well the system answers questions it can answer,
+  which is not the failure mode that reaches customers.
+
+# ---------------------------------------------------------------------------
+# Field reference (full docs in ../README.md)
+#   answerable            false => the only correct behaviour is a scoped decline
+#   required_disclosures  list of OR-groups; each group must match somewhere
+#   must_not_claim        regexes that must NOT appear (matched on normalised text:
+#                         lowercase, accents stripped, markdown punctuation removed)
+#   expected_counts       numbers a correct answer must state (digits or words)
+#   forbidden_counts      near-misses that prove a truncated read
+#   contradiction.sides   every side must be surfaced; picking one silently fails
+# ---------------------------------------------------------------------------
+
+cases:
+
+  # =========================================================================
+  # 1. Silent partial coverage -- the originating incident
+  # =========================================================================
+  - id: vw-maximo-workorder-consumers
+    project: VW_FULL_LANDSCAPE
+    answer_type: enumeration
+    answerable: true
+    question: >-
+      Aan welke systemen publiceert Maximo de WerkOrder, en welke zijn dat precies?
+    ground_truth: >-
+      Negen afnemers. Paragraaf 1.2 "De negen afnemers" noemt: 4PS / Dynamics 365,
+      Ortec, RHM, Smartflow (via RHM), Quintiq, AssetCheck / VISE, VRONTV (inkoop),
+      Infor LN, en Flex / FlexInspect. De eerste acht staan als "actief"; Flex /
+      FlexInspect staat als "stilgevallen".
+    evidence:
+      - path: knowledge_base/output/VW_FULL_LANDSCAPE/interface_docs/VolkerWessels - Maximo WerkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md
+        locator: "1.2 De negen afnemers"
+    expected_sources: ["Bronkoppelvlak"]
+    expected_entities:
+      - {name: "4PS", aliases: ["Dynamics 365", "D365"]}
+      - {name: "Ortec"}
+      - {name: "RHM"}
+      - {name: "Smartflow"}
+      - {name: "Quintiq"}
+      - {name: "AssetCheck", aliases: ["VISE"]}
+      - {name: "VRONTV"}
+      - {name: "Infor LN"}
+      - {name: "Flex", aliases: ["FlexInspect"]}
+    min_coverage: 1.0
+    expected_counts: {consumers: 9}
+    forbidden_counts: {consumers: [5, 8]}
+    tags: [coverage, partial-coverage, incident]
+    notes: >-
+      The observed failure: five of the nine were retrieved, five were named, and
+      the answer disclosed nothing. min_coverage is 1.0 *and* the undisclosed-
+      partial-coverage check fires independently, so an answer that names five and
+      says "at least these five, the list may be incomplete" fails coverage but not
+      honesty -- the two are reported separately on purpose.
+
+  - id: vw-maximo-publication-forms
+    project: VW_FULL_LANDSCAPE
+    answer_type: enumeration
+    answerable: true
+    question: >-
+      In hoeveel en welke berichtvormen publiceert Maximo de WerkOrder?
+    ground_truth: >-
+      Vijf vormen (paragraaf 2.1 "Een object, vijf berichtvormen"): PublishVLWO
+      (VLWOSet/WORKORDER, naar 4PS), PublishACWO (ACWOSet/WORKORDER, naar
+      AssetCheck), InvokeASSIGNDETAIL (ASSIGNDETAILSet/ASSIGNMENT, naar Ortec FO
+      4.1), PublishASSIGNSTATUS (ASSIGNSTATUSSet/ASSIGNMENT, naar Ortec FO 4.6 en
+      Infor LN FO 4.7) en een platte REST JSON (RHM 13 velden, Quintiq 19 velden).
+    evidence:
+      - path: knowledge_base/output/VW_FULL_LANDSCAPE/interface_docs/VolkerWessels - Maximo WerkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md
+        locator: "2.1 Een object, vijf berichtvormen"
+    expected_sources: ["Bronkoppelvlak"]
+    expected_entities:
+      - {name: "PublishVLWO"}
+      - {name: "PublishACWO"}
+      - {name: "InvokeASSIGNDETAIL"}
+      - {name: "PublishASSIGNSTATUS"}
+      - {name: "REST JSON", aliases: ["REST", "JSON"]}
+    min_coverage: 1.0
+    expected_counts: {forms: 5}
+    tags: [coverage, enumeration]
+
+  # =========================================================================
+  # 2. Table truncation -- counts read out of a chunked table
+  # =========================================================================
+  - id: vw-fo41-target-field-count
+    project: VW_FULL_LANDSCAPE
+    answer_type: count
+    answerable: true
+    question: >-
+      Hoeveel doelvelden bouwt de transformatie FO 4.1 Maximo naar Ortec
+      (4.1_Ongeplande_directe_activiteit_Maximo2Ortec.xsl) op?
+    ground_truth: >-
+      31. De veldmappingtabel voor FO 4.1 telt 31 genummerde rijen (1 t/m 31), van
+      commandName tot Envelope/Header/To. Zes daarvan zijn constanten of
+      envelop-elementen, zodat 25 velden een gegeven uit Maximo dragen. Het
+      overzicht in 05_VELDMAPPINGS_COMPLEET.md noemt eveneens 31; het
+      interfaceregister in 01_ANTWOORDEN_OP_DE_VRAGEN.md noemt 30 -- zie de
+      contradiction-case.
+    evidence:
+      - path: knowledge_base/output/VW_FULL_LANDSCAPE/poc_werkorder/05_VELDMAPPINGS_COMPLEET.md
+        locator: "FO 4.1 Maximo -> Ortec (ongeplande werkorder), rijen 1-31"
+      - path: knowledge_base/output/VW_FULL_LANDSCAPE/poc_werkorder/17_DEMARCATIE_WERKORDER_MELDING.md
+        locator: "3.2 Wat de verhouding zegt -- 31 doelvelden, zes constanten"
+    expected_sources: ["05_VELDMAPPINGS_COMPLEET"]
+    expected_counts: {target_fields: 31}
+    forbidden_counts: {target_fields: [30, 29]}
+    tags: [truncation, count]
+    notes: >-
+      The observed failure returned 30. The document read path returns top-N
+      similarity chunks, not whole documents, so the tail of a 31-row table is
+      routinely missing from the context while the answer still sounds confident.
+
+  - id: vw-assetcheck-contract-width
+    project: VW_FULL_LANDSCAPE
+    answer_type: count
+    answerable: true
+    question: >-
+      Hoe breed is het koppelvlak Maximo naar AssetCheck, en hoeveel van die
+      elementen worden feitelijk gevuld?
+    ground_truth: >-
+      PublishACWO telt 851 bladelementen; daarvan zijn er 282 ooit gevuld. De
+      gevulde set bevat complete blokken MXFLEX* (19 velden), VR_* (45), VW_* (7),
+      PLUSC*/PLUSP* (11) en PMCHG* (9).
+    evidence:
+      - path: knowledge_base/output/VW_FULL_LANDSCAPE/interface_docs/VolkerWessels - Maximo WerkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md
+        locator: "2.1 -- PublishACWO, 851 bladelementen, 282 ooit gevuld"
+    expected_sources: ["Bronkoppelvlak"]
+    expected_counts: {leaf_elements: 851, populated: 282}
+    tags: [count, truncation]
+
+  - id: vw-4ps-produced-vs-arrived
+    project: VW_FULL_LANDSCAPE
+    answer_type: count
+    answerable: true
+    question: >-
+      Hoeveel velden produceert de werkorderkoppeling naar 4PS, en hoeveel daarvan
+      bereiken de doeltoepassing?
+    ground_truth: >-
+      De transformatie produceert 12 velden; 5 daarvan bereiken 4PS. De overige 7
+      bestaan alleen binnen de keten. Het interfaceregister noteert dit als
+      "12 gemapt / 5 geschreven".
+    evidence:
+      - path: knowledge_base/output/VW_FULL_LANDSCAPE/poc_werkorder/01_ANTWOORDEN_OP_DE_VRAGEN.md
+        locator: "B1 contractbreedtes -- Maximo -> 4PS, 12 gemapt, 5 geschreven"
+      - path: knowledge_base/output/VW_FULL_LANDSCAPE/interface_docs/VolkerWessels - Maximo WerkOrder naar Infor LN - Interface Documentation.md
+        locator: "twaalf velden, waarvan vijf de doeltoepassing bereiken"
+    expected_sources: ["01_ANTWOORDEN_OP_DE_VRAGEN"]
+    expected_counts: {produced: 12, arrived: 5}
+    tags: [count]
+
+  # =========================================================================
+  # 3. Cross-document contradiction -- the corpus disagrees with itself
+  # =========================================================================
+  - id: vw-fo41-field-count-contradiction
+    project: VW_FULL_LANDSCAPE
+    answer_type: contradiction
+    answerable: true
+    question: >-
+      Spreken de documenten elkaar tegen over het aantal velden van FO 4.1 Maximo
+      naar Ortec? Zo ja, wat zegt elk document?
+    ground_truth: >-
+      Ja. 05_VELDMAPPINGS_COMPLEET.md nummert 31 doelvelden voor FO 4.1 en de
+      index in datzelfde document noemt 31; 17_DEMARCATIE_WERKORDER_MELDING.md
+      paragraaf 3.2 zegt eveneens "31 doelvelden, waarvan zes constanten en
+      envelop-elementen". Het contractbreedte-overzicht in
+      01_ANTWOORDEN_OP_DE_VRAGEN.md zegt daarentegen "Maximo -> Ortec (FO 4.1) |
+      30 velden | 30". Dertig versus eenendertig; de genummerde tabel is de
+      controleerbare telling.
+    evidence:
+      - path: knowledge_base/output/VW_FULL_LANDSCAPE/poc_werkorder/05_VELDMAPPINGS_COMPLEET.md
+        locator: "FO 4.1 tabel, 31 genummerde rijen"
+      - path: knowledge_base/output/VW_FULL_LANDSCAPE/poc_werkorder/01_ANTWOORDEN_OP_DE_VRAGEN.md
+        locator: "B1 contractbreedtes -- 30 velden"
+    expected_sources: ["05_VELDMAPPINGS_COMPLEET", "01_ANTWOORDEN_OP_DE_VRAGEN"]
+    contradiction:
+      description: "31 numbered rows vs a register entry saying 30"
+      sides:
+        - ["\\b31\\b", "eenendertig", "thirty-one"]
+        - ["\\b30\\b", "dertig", "thirty"]
+    tags: [contradiction]
+
+  - id: vw-klantorder-source-contradiction
+    project: VW_FULL_LANDSCAPE
+    answer_type: contradiction
+    answerable: true
+    question: >-
+      Welk Maximo-bronveld vult klantorder in de Ortec-mapping, WOLO9 of WO2?
+    ground_truth: >-
+      De documenten zijn het hierover niet eens en het is een open vraag. De
+      omgevingsgebonden kopieen van 4.1_Ongeplande_directe_activiteit_Maximo2Ortec.xsl
+      voor productie, test en acceptatie lezen alle drie WORKORDER/WOLO9; WO2 komt
+      daarin niet voor. Er bestaat een tweede, niet aan een omgeving gebonden kopie
+      in de mappingverzameling die WO2 leest en vier elementen meer opbouwt
+      (bezoeknaam, melder, opmerkingen, installatietype). WO2 is over 153
+      productieberichten in geen enkel bericht gevuld, terwijl klantorder wel
+      gevuld wordt waargenomen. Welke kopie feitelijk draait is van buiten niet te
+      bepalen -- open vraag voor Maximo functioneel beheer.
+    evidence:
+      - path: knowledge_base/output/VW_FULL_LANDSCAPE/poc_werkorder/05_VELDMAPPINGS_COMPLEET.md
+        locator: "FO 4.1 rij 14 -- Let op de afwijking met doc 03"
+      - path: knowledge_base/output/VW_FULL_LANDSCAPE/poc_werkorder/12_ONTWERP_VERSUS_IMPLEMENTATIE.md
+        locator: "5.1 -- WOLO9 tegenover WO2"
+      - path: knowledge_base/output/VW_FULL_LANDSCAPE/poc_werkorder/03_INFORMATIEMODEL_WERKORDER.md
+        locator: "B1 Klantorder + aantekening"
+    expected_sources: ["05_VELDMAPPINGS_COMPLEET", "12_ONTWERP_VERSUS_IMPLEMENTATIE"]
+    contradiction:
+      description: "environment-bound copies read WOLO9; a second copy reads WO2"
+      sides:
+        - ["wolo9"]
+        - ["wo2"]
+        - ["open vraag", "niet te bepalen", "niet vastgesteld", "open question", "cannot be determined"]
+    tags: [contradiction, lookup]
+
+  # =========================================================================
+  # 4. Ordinary in-corpus questions -- the control group
+  # =========================================================================
+  - id: vw-workorder-concept-inventory
+    project: VW_FULL_LANDSCAPE
+    answer_type: count
+    answerable: true
+    question: >-
+      Hoeveel canonieke WerkOrder-begrippen zijn geinventariseerd, en hoeveel
+      daarvan hebben geen plaats in het doelmodel?
+    ground_truth: >-
+      61 begrippen over de vier segmenten B1 t/m B4 (B1 20, B2 10, B3 13, B4 18).
+      Oordeel: 3 passen (5%), 28 passen met transformatie (46%), 9 horen bij een
+      ander object (15%), 21 hebben geen plaats (34%). Eenendertig begrippen (51%)
+      hebben een plaats op het WerkOrder-object; veertig (66%) als het
+      IncidentReport wordt meegeteld.
+    evidence:
+      - path: knowledge_base/output/VW_FULL_LANDSCAPE/poc_werkorder/03_INFORMATIEMODEL_WERKORDER.md
+        locator: "B5. De telling over de vier segmenten"
+    expected_sources: ["03_INFORMATIEMODEL_WERKORDER"]
+    expected_counts: {concepts: 61, no_place: 21}
+    forbidden_counts: {concepts: [60, 62]}
+    tags: [count]
+
+  - id: vw-ortec-worktype-lists
+    project: VW_FULL_LANDSCAPE
+    answer_type: enumeration
+    answerable: true
+    question: >-
+      Welke werksoorten komen voor aan de Maximo-kant en welke aan de Ortec-kant
+      van de werkorderketen?
+    ground_truth: >-
+      Gemeten: aan de Maximo-kant INS (103), WUI (45), SO (24), VMW (5), POH (2),
+      RUS (1) en PRD (1); aan de Ortec-kant SO (104), INDIRECT (66), POH (11),
+      PRD (7) en PRK (6). INS, WUI, VMW en RUS bestaan alleen aan de bronkant;
+      INDIRECT en PRK alleen aan de Ortec-kant. Waar de vertaling zit is niet
+      vastgesteld.
+    evidence:
+      - path: knowledge_base/output/VW_FULL_LANDSCAPE/interface_docs/VolkerWessels - Maximo WerkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md
+        locator: "2.2 Geen twee afnemers zien dezelfde populatie"
+    expected_sources: ["Bronkoppelvlak"]
+    expected_entities:
+      - {name: "INS"}
+      - {name: "WUI"}
+      - {name: "SO"}
+      - {name: "VMW"}
+      - {name: "POH"}
+      - {name: "RUS"}
+      - {name: "PRD"}
+      - {name: "INDIRECT"}
+      - {name: "PRK"}
+    min_coverage: 1.0
+    tags: [coverage, enumeration]
+
+  - id: pp-domain-inventory
+    project: PLURIPHARM
+    answer_type: enumeration
+    answerable: true
+    question: >-
+      Welke domeinen onderscheidt de landschapskaart, en hoeveel onderdelen telt
+      elk domein?
+    ground_truth: >-
+      Tien benoemde domeinen plus een restgroep: Datawarehouse en rapportage (128),
+      Artikel, assortiment en Z-Index (104), Order- en verzendketen (91), Beheer,
+      raamwerk en bewaking (42), Magazijn en uitleverketen (27), Apotheekgegevens
+      (21), Klantkanalen en Mendix (20), Mailing en communicatie (16),
+      Prijsafspraken (4), Geneesmiddelenverificatie / FMD (4), en Zonder domein --
+      proef en oefening (25).
+    evidence:
+      - path: knowledge_base/output/PLURIPHARM/docs/01_LANDSCHAPSKAART.md
+        locator: "domeintabel"
+    expected_sources: ["01_LANDSCHAPSKAART"]
+    expected_entities:
+      - {name: "Datawarehouse en rapportage", aliases: ["datawarehouse"]}
+      - {name: "Artikel, assortiment en Z-Index", aliases: ["z-index", "assortiment"]}
+      - {name: "Order- en verzendketen", aliases: ["verzendketen"]}
+      - {name: "Beheer, raamwerk en bewaking", aliases: ["raamwerk en bewaking"]}
+      - {name: "Magazijn en uitleverketen", aliases: ["uitleverketen"]}
+      - {name: "Apotheekgegevens"}
+      - {name: "Klantkanalen en Mendix", aliases: ["klantkanalen"]}
+      - {name: "Mailing en communicatie", aliases: ["mailing"]}
+      - {name: "Prijsafspraken"}
+      - {name: "Geneesmiddelenverificatie", aliases: ["FMD"]}
+    min_coverage: 1.0
+    tags: [coverage, enumeration]
+
+  # =========================================================================
+  # 5. UNANSWERABLE -- absence from the corpus is not absence in reality
+  # =========================================================================
+  - id: pp-fmd-customer-selection-rule
+    project: PLURIPHARM
+    answer_type: lookup
+    answerable: false
+    question: >-
+      Op welke regel wordt bepaald of een klant meedoet aan de FMD-stroom? Zit daar
+      een filter op?
+    unanswerable_reason: >-
+      The rule exists, but not in the indexed document corpus. It lives in the
+      Talend scan JSON only. knowledge_base/output/PLURIPHARM/docs/ contains no
+      occurrence of ABCLASS01; the only mentions of "FMD" in the docs are the
+      domain name "Geneesmiddelenverificatie (FMD)" and chain names, which is
+      precisely why a similarity search returns confident-looking but irrelevant
+      context.
+    ground_truth: >-
+      There IS a filter, and it is not in the documentation. The processor
+      processor_shipping_confirmation_map_jde_to_esb_p010 (and its mediq variant)
+      carries it on component cMessagingEndpoint_15 as a SQL endpoint URI:
+      SELECT COUNT(ABAN8) FROM <jdeTableF0101> WHERE ABAN8 = CAST(:#ADDRESS_KEY AS
+      NUMBER) AND ABCLASS01 = 'FMD'. A customer participates when its JDE address
+      book record (F0101) carries address class ABCLASS01 = 'FMD'. The correct
+      answer states that the indexed documentation does not describe a selection
+      rule, names the document set as the scope of that statement, and points at
+      the scan / source as the place where the answer does exist. Reporting "no
+      filter is recorded" without that scoping is wrong.
+    evidence:
+      - path: knowledge_base/intodoc-output/pluripharm/scan/jobs/Talend8.__intodoc_repo___TALEND8__Processors-f6f64326f4da/processor_shipping_confirmation_map_jde_to_esb_p010-b3645b18ffbb.json
+        locator: "cMessagingEndpoint_15, URI param"
+        in_corpus: false
+      - path: knowledge_base/output/PLURIPHARM/docs/04_BUSINESSREGELS.md
+        locator: "3.1 De FMD-verificatiecode wordt hier samengesteld -- does NOT contain the rule"
+        in_corpus: true
+    must_not_claim:
+      - "\\ber (is|zijn) geen (filter|selectie|afbakening)"
+      - "\\bgeen filter\\b"
+      - "\\bno filter (is|was)? ?(recorded|documented|defined|present)?\\b"
+      - "\\balle klanten\\b"
+      - "\\ball customers\\b"
+      - "\\biedere klant\\b"
+    required_disclosures:
+      # (a) the answer must scope its negative statement to the document set
+      - - "documentatie"
+        - "documentset"
+        - "geindexeerde"
+        - "aangeleverde stukken"
+        - "documentation"
+        - "indexed"
+        - "document set"
+      # (b) and it must point somewhere the answer actually exists
+      - - "broncode"
+        - "source code"
+        - "scan"
+        - "talend"
+        - "job(definitie|s)?\\b"
+        - "functioneel beheer"
+    tags: [unanswerable, fabricated-absence, incident]
+    notes: >-
+      The originating incident. The system searched a corpus that provably does
+      not contain the rule, found nothing, and answered that no filter is recorded
+      and it was "worth confirming with the business". That phrasing reads as a
+      statement about the client's process, not about the search scope.
+
+  - id: vw-source-to-common-model-field-table
+    project: VW_FULL_LANDSCAPE
+    answer_type: lookup
+    answerable: false
+    question: >-
+      Geef de veld-voor-veldtabel bron naar gemeenschappelijk model voor de
+      WerkOrder: welk Maximo-veld landt op welk VWIIM-veld?
+    unanswerable_reason: >-
+      The document set states explicitly that this table was deliberately not
+      produced yet, and why: 21 of the 61 concepts have no place in either VWIIM
+      object, so roughly half the rows would have an empty destination column
+      until the kostendrager decision is made.
+    ground_truth: >-
+      This table does not exist in the corpus. The bronkoppelvlak document says so
+      in paragraph 1.3: "Wat hier nog steeds niet staat, is de veld-voor-veldtabel
+      bron -> gemeenschappelijk model", and explains that it should be produced
+      once for the whole set after a decision on the kostendragerrol (paragraph 6,
+      vraag 7). What does exist is the per-concept assessment in
+      18_AANSLUITING_OP_HET_DOELMODEL.md and the inventory in
+      03_INFORMATIEMODEL_WERKORDER.md section B. A correct answer says the table is
+      not there, says why, and points at those two documents.
+    evidence:
+      - path: knowledge_base/output/VW_FULL_LANDSCAPE/interface_docs/VolkerWessels - Maximo WerkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md
+        locator: "1.3 Wat hier wel staat, en wat nog niet"
+        in_corpus: true
+      - path: knowledge_base/output/VW_FULL_LANDSCAPE/poc_werkorder/18_AANSLUITING_OP_HET_DOELMODEL.md
+        locator: "per-concept assessment -- the nearest thing that does exist"
+        in_corpus: false
+    must_not_claim:
+      # A fabricated mapping table is the expensive failure here: it looks like a
+      # deliverable and would be acted on. Note that patterns are matched on
+      # NORMALISED text, from which markdown table pipes have been removed --
+      # detect the assertive lead-in and the completeness claim instead.
+      - "\\bhier is de (volledige |complete )?(veld|mapping)"
+      - "\\bhere is the (complete |full )?(field|mapping) table"
+      - "\\b(de |het )?volledige veld-voor-veldtabel\\b"
+      - "\\bonderstaande tabel geeft de (volledige )?afbeelding\\b"
+    required_disclosures:
+      - - "niet opgesteld"
+        - "niet aanwezig"
+        - "bestaat niet"
+        - "nog niet"
+        - "not (yet )?(produced|available|present)"
+        - "does not exist"
+      - - "18_aansluiting"
+        - "03_informatiemodel"
+        - "aansluiting op het doelmodel"
+        - "kostendrager"
+    tags: [unanswerable, scope-decline]
+
+  - id: pp-access-rights
+    project: PLURIPHARM
+    answer_type: lookup
+    answerable: false
+    question: >-
+      Wie heeft welke toegangsrechten op de Talend-omgevingen en de onderliggende
+      databases?
+    unanswerable_reason: >-
+      Declared out of evidence in the documentation itself: access rights are not
+      in the source code, so the scan cannot see them and the documentation says
+      "Niet beoordeeld".
+    ground_truth: >-
+      Not assessable from this material. 14_BEWIJSGRENZEN_EN_CORRECTIELOG.md
+      paragraph A3 lists "Toegangsrechten | Staan niet in de broncode | Niet
+      beoordeeld". The correct answer cites that evidence boundary and refers the
+      question to the platform owner; it must not conclude that access is
+      unrestricted.
+    evidence:
+      - path: knowledge_base/output/PLURIPHARM/docs/14_BEWIJSGRENZEN_EN_CORRECTIELOG.md
+        locator: "A3. Waar het bewijs ophoudt -- Toegangsrechten"
+        in_corpus: true
+      - path: knowledge_base/output/PLURIPHARM/docs/07_KWALITEIT_SECURITY_RISICO.md
+        locator: "security findings, but no access matrix"
+        in_corpus: false
+    must_not_claim:
+      - "\\biedereen heeft\\b"
+      - "\\bgeen (beperking|restrictie|autorisatie)"
+      - "\\bunrestricted\\b"
+      - "\\bno (access )?restrictions?\\b"
+      - "\\beveryone (has|can)\\b"
+    required_disclosures:
+      - - "niet beoordeeld"
+        - "niet in de broncode"
+        - "buiten"
+        - "bewijsgrens"
+        - "not assessed"
+        - "not in the source code"
+        - "outside"
+      - - "beheer"
+        - "platform"
+        - "eigenaar"
+        - "owner"
+        - "administrator"
+        - "security"
+    tags: [unanswerable, out-of-scope, security]
+
+  - id: pp-records-processed-per-run
+    project: PLURIPHARM
+    answer_type: count
+    answerable: false
+    question: >-
+      Hoeveel records verwerkt de keten per uitvoering gemiddeld?
+    unanswerable_reason: >-
+      Declared out of evidence: the throughput columns are empty for all 100 route
+      executions and the record-count registration columns stay empty, so no number
+      can be derived from the material at all.
+    ground_truth: >-
+      Not derivable. 14_BEWIJSGRENZEN_EN_CORRECTIELOG.md paragraph A3 records two
+      boundaries: "Berichtvolume per route | Alle doorvoervelden zijn leeg voor alle
+      100 route-uitvoeringen" and "Aantallen verwerkte records | De
+      registratiekolommen blijven leeg | Niet uit de eigen registratie te
+      beantwoorden". Any average is an invention. The correct answer names the
+      boundary and says what would have to be instrumented to answer it.
+    evidence:
+      - path: knowledge_base/output/PLURIPHARM/docs/14_BEWIJSGRENZEN_EN_CORRECTIELOG.md
+        locator: "A3 -- Berichtvolume per route / Aantallen verwerkte records"
+        in_corpus: true
+      - path: knowledge_base/output/PLURIPHARM/docs/12_UITVOERING_EN_PLANNING.md
+        locator: "run statistics without record counts"
+        in_corpus: false
+    must_not_claim:
+      # Any concrete average here is fabricated by construction.
+      - "\\bgemiddeld (ongeveer )?\\d"
+      - "\\b(circa|ongeveer|about|approximately) \\d+ ?(\\.\\d+)? ?(records|regels|rijen|rows)"
+      - "\\b\\d+ records per (run|uitvoering)"
+    required_disclosures:
+      - - "leeg"
+        - "niet (te )?(bepalen|beantwoorden|herleiden)"
+        - "niet vastgesteld"
+        - "niet geregistreerd"
+        - "empty"
+        - "not (recorded|available|derivable)"
+      - - "bewijsgrens"
+        - "registratie"
+        - "doorvoer"
+        - "instrument"
+        - "logging"
+        - "meten"
+    tags: [unanswerable, count, fabrication]

@@ -37,6 +37,20 @@ def _provider(seen: dict[str, object] | None = None) -> McpDocumentationProvider
     )
 
 
+#: The four server-owned fields that together prove a live conversation turn.
+#: ``DOCUMENTATION_GENERATION_CAPABILITY`` is marked ``requires_turn_claim``, so
+#: a context missing any one of them is denied by policy before the handler runs.
+#: Tests whose subject is the handler, the provider or a later policy check carry
+#: a claim so they reach it; the denial itself is pinned by
+#: ``test_executor_denies_documentation_generation_without_a_turn_claim``.
+_TURN_CLAIM: dict[str, object] = {
+    "current_message_id": 1,
+    "conversation_state_version": 1,
+    "conversation_turn_claim_id": 1,
+    "conversation_turn_claim_token": "test-claim",
+}
+
+
 async def test_executor_triggers_docs_generation_through_provider() -> None:
     seen: dict[str, object] = {}
     executor = HarnessCapabilityExecutor(
@@ -54,6 +68,7 @@ async def test_executor_triggers_docs_generation_through_provider() -> None:
             user_id=1,
             project_scope=["project-a"],
             permissions={"manage_projects"},
+            **_TURN_CLAIM,
         ),
     )
 
@@ -199,7 +214,11 @@ async def test_executor_rejects_unknown_invalid_and_out_of_scope_calls() -> None
             capability_id=DOCUMENTATION_GENERATION_CAPABILITY.id,
             arguments={"resume": True},
         ),
-        CapabilityExecutionContext(user_id=1, permissions={"manage_projects"}),
+        CapabilityExecutionContext(
+            user_id=1,
+            permissions={"manage_projects"},
+            **_TURN_CLAIM,
+        ),
     )
     assert invalid.status == "needs_input"
     assert invalid.retryable is True
@@ -215,6 +234,7 @@ async def test_executor_rejects_unknown_invalid_and_out_of_scope_calls() -> None
             user_id=1,
             project_scope=["project-a"],
             permissions={"manage_projects"},
+            **_TURN_CLAIM,
         ),
     )
     assert out_of_scope.status == "denied"
@@ -365,8 +385,53 @@ async def test_executor_sanitizes_provider_failure() -> None:
             user_id=1,
             project_scope=["project-a"],
             permissions={"manage_projects"},
+            **_TURN_CLAIM,
         ),
     )
 
     assert observation.status == "failed"
     assert "secret-value" not in (observation.error_message or "")
+
+
+async def test_executor_denies_documentation_generation_without_a_turn_claim() -> None:
+    seen: dict[str, object] = {}
+    executor = HarnessCapabilityExecutor(
+        default_capability_registry(), docs_provider=_provider(seen)
+    )
+    request = CapabilityExecutionRequest(
+        capability_id=DOCUMENTATION_GENERATION_CAPABILITY.id,
+        arguments={"project_id": "project-a"},
+    )
+    authorized = {
+        "user_id": 1,
+        "project_scope": ["project-a"],
+        "permissions": {"manage_projects"},
+    }
+
+    unclaimed = await executor.execute(
+        request,
+        CapabilityExecutionContext(**authorized),
+    )
+
+    assert unclaimed.status == "denied"
+    assert unclaimed.error_code == "turn_claim"
+    assert unclaimed.retryable is False
+    assert unclaimed.safe_details == {"reason": "turn_claim"}
+    assert "turn claim" in (unclaimed.error_message or "")
+    assert seen == {}
+
+    # All four fields are load-bearing: a partial claim is not a claim, and a
+    # handler that reaches ``ConversationTaskService._claim`` with one of them
+    # missing raises instead of being denied cleanly.
+    for omitted in _TURN_CLAIM:
+        partial = await executor.execute(
+            request,
+            CapabilityExecutionContext(
+                **authorized,
+                **{**_TURN_CLAIM, omitted: None},
+            ),
+        )
+        assert partial.status == "denied", omitted
+        assert partial.error_code == "turn_claim", omitted
+
+    assert seen == {}

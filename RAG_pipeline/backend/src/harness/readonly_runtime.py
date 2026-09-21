@@ -49,7 +49,9 @@ from src.harness.interaction_protocol import (
     TURN_ASSESSMENT_TOOL_NAME,
 )
 from src.harness.grounding import (
+    VISIBLE_EVIDENCE_KEY_RE,
     AnswerStatus,
+    EvidenceStateRequirement,
     GroundedAnswer,
     GroundingClaim,
     GroundingOutcome,
@@ -719,6 +721,86 @@ def grounding_failure_answer() -> GroundedAnswer:
     )
 
 
+#: Stable disclosure code for an answer that is shown despite failing the
+#: grounding contract. Machine-readable, persisted on the message's
+#: ``agent_response_v2_grounded`` payload, and checkable with a plain ``in``.
+DISCLOSURE_UNVERIFIED_GROUNDING = "grounding_unverified"
+
+#: Namespace prefix carrying the validator's own reason code alongside it, so a
+#: persisted record says *why* the answer was not verifiable and not merely that
+#: it was not. Parsed by prefix; the suffix is a ``GroundingOutcome.reason_code``.
+DISCLOSURE_GROUNDING_REASON_PREFIX = "grounding_reason:"
+
+UNVERIFIED_GROUNDING_NOTICE = (
+    "\n\n---\n\n"
+    "**⚠ The sources behind this answer could not be verified.** The automated "
+    "grounding check did not accept the citations for the text above, so treat "
+    "it as unconfirmed and check the named documents before relying on it."
+)
+
+
+def append_unverified_grounding_notice(answer: str) -> str:
+    """Append the visible unverified-grounding notice, once.
+
+    Same reasoning as ``append_truncation_notice``, and the same failure it
+    guards against: the answer text is the one thing every surface renders and
+    persists. ``answer_status`` and ``disclosures`` go into the structured
+    payload and are already parsed by the client, but no surface renders them
+    today, so a client-facing reader would see a confident, well-formed answer
+    with no indication that its sources did not check out.
+
+    Idempotent, so a path that marks at more than one layer cannot double-append.
+    """
+
+    if UNVERIFIED_GROUNDING_NOTICE.strip() in answer:
+        return answer
+    return answer.rstrip() + UNVERIFIED_GROUNDING_NOTICE
+
+
+def unverified_grounding_answer(
+    grounded: GroundedAnswer,
+    *,
+    requirement: EvidenceStateRequirement | None,
+    reason_code: str,
+) -> GroundedAnswer:
+    """Ship the model's own answer, with the grounding failure made visible.
+
+    The correction budget is spent and the answer is still CORRECTABLE. Three
+    things are true at once and the result has to honour all of them:
+
+    * Discarding the answer is worse than showing it. The text is not unsafe --
+      that case is ``internal_output_detected``, handled separately -- it is
+      unverified, and replacing a real answer with a generic apology costs the
+      user more than the caveat does.
+    * Its self-reported citations and disclosures were NOT accepted, so they
+      must not be published as though they had been.
+    * ``GROUNDED`` would be a lie. Previously this path shipped the model's own
+      ``answer_status`` with empty citations, so an answer that failed the check
+      was persisted as fully grounded with no citations -- indistinguishable from
+      a grounded answer that happened not to need any.
+
+    The honest status is the one the validator already derived from the observed
+    evidence (``EvidenceStateRequirement``) when it forced one; that requirement
+    is the reason the answer failed in the first place. With no forced state, the
+    truthful fallback is ``PARTIAL``: some of the answer may be supported, and
+    none of it was confirmed.
+    """
+
+    forced = requirement or EvidenceStateRequirement()
+    status = forced.status or AnswerStatus.PARTIAL
+    disclosures = [DISCLOSURE_UNVERIFIED_GROUNDING, f"{DISCLOSURE_GROUNDING_REASON_PREFIX}{reason_code}"]
+    if forced.disclosure is not None and forced.disclosure not in disclosures:
+        disclosures.insert(0, forced.disclosure)
+    return grounded.model_copy(
+        update={
+            "content": append_unverified_grounding_notice(grounded.content),
+            "citations": [],
+            "disclosures": disclosures,
+            "answer_status": status,
+        }
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ReadOnlyPrimaryRuntime:
     """An assembled read-only ``create_agent`` graph and its boundaries."""
@@ -1046,6 +1128,11 @@ async def _run_readonly_attempts(
     correction_rounds = 0
     outcome_reason_code = "not_evaluated"
     output_ceiling_hit = False
+    # The honest state the validator derived from this turn's observed evidence,
+    # kept outside the loop so the failure path below can apply it. Initialised
+    # here because the budget-stop and trusted-answer breaks leave the loop
+    # before it is ever computed.
+    requirement: EvidenceStateRequirement | None = None
 
     budget_stop: BudgetStopReason | None = None
     for attempt in range(max_corrections + 1):
@@ -1097,6 +1184,8 @@ async def _run_readonly_attempts(
             # answer; name it rather than leaving the status line stale.
             await progress.note_phase("validating_answer", force=True)
         allowed = validator.allowed_evidence(envelopes)
+        # Reassigned every round so the failure path below applies the state
+        # derived from the evidence of the round that actually produced the text.
         requirement = validator.required_state(envelopes)
         final_text = _final_assistant_text(new_messages)
         grounded = _parse_grounded_answer(final_text, requirement=requirement)
@@ -1177,6 +1266,11 @@ async def _run_readonly_attempts(
         and outcome_verdict is GroundingVerdict.UNSAFE
         and outcome_reason_code == "internal_output_detected"
     )
+    # True only when the text the user sees is NOT the model's own answer. Kept
+    # distinct from `used_fallback`, which is "the grounding check did not pass"
+    # and is also true on the path that keeps the model's text — a distinction
+    # the truncation mark below depends on.
+    answer_replaced = False
     if used_fallback or grounded is None:
         logger.warning(
             "Grounding fallback reason_code=%s correction_rounds=%s read_calls=%s",
@@ -1191,19 +1285,24 @@ async def _run_readonly_attempts(
                 disclosures=[],
                 answer_status=AnswerStatus.TOOL_FAILED,
             )
+            answer_replaced = True
         elif grounded is None or not grounded.content.strip() or unsafe_content:
             # Nothing safe to show: no answer was ever produced, or the model's
             # text itself leaked internal ids/tool names/raw payloads. This is
             # the one case still worth discarding outright.
             grounded = grounding_failure_answer()
+            answer_replaced = True
         else:
             # The model wrote a real answer but failed the self-reported
             # citation/disclosure contract (missing/invalid citations, status
-            # mismatch, etc.). Show the answer as written rather than
-            # discarding it — citations/disclosures are dropped since they
-            # were not validated, not because the answer itself is unsafe.
-            grounded = grounded.model_copy(
-                update={"citations": [], "disclosures": []}
+            # mismatch, etc.) and the correction budget is spent. The answer is
+            # still shown — discarding it is worse — but the failure is made
+            # visible in the text and machine-readable in the persisted payload
+            # instead of being erased. Shipping it with the model's own
+            # `answer_status` and empty citations, as this path used to, made a
+            # rejected answer indistinguishable from an accepted one.
+            grounded = unverified_grounding_answer(
+                grounded, requirement=requirement, reason_code=outcome_reason_code
             )
 
     if budget_controller is not None:
@@ -1220,9 +1319,11 @@ async def _run_readonly_attempts(
     )
     # Marked here, after the correction loop has settled on the answer that will
     # actually be shown, so the notice reaches the fingerprint, the streamed
-    # deltas and the persisted output as one consistent string. A fallback answer
-    # replaces the truncated text entirely, so it is not marked.
-    if output_ceiling_hit and not used_fallback:
+    # deltas and the persisted output as one consistent string. Gated on
+    # `answer_replaced`, not on `used_fallback`: a budget or safety fallback
+    # replaces the truncated text entirely and must not be marked, but an
+    # unverified answer IS the model's own truncated text and must be.
+    if output_ceiling_hit and not answer_replaced:
         grounded = grounded.model_copy(
             update={"content": append_truncation_notice(grounded.content)}
         )
@@ -1284,19 +1385,32 @@ async def _run_readonly_attempts(
     )
 
 
+#: The human source label for each read the model can name, keyed by the
+#: capability's CURRENT semantic name.
+#:
+#: These keys are a live contract with the registry, not documentation. A key
+#: that no capability answers to is dead -- it labels nothing -- and the tool it
+#: used to name silently loses its progress phase, so the status line goes
+#: generic while a real, nameable read is in flight. That is what happened when
+#: `read_document` was split into `search_within_document` and
+#: the complete document reader: the old key stayed, both new ones were absent, and two
+#: of the most common reads stopped reporting what they were doing.
 _VISIBLE_TOOL_LABELS = {
     "query_project_metadata": "project metadata",
     "search_documentation": "indexed documentation",
-    "list_project_documents": "generated document inventory",
-    "read_document": "indexed document",
+    "list_generated_documents": "generated document inventory",
+    "search_within_document": "indexed document",
+    "read_document": "ordered indexed document",
     "read_generated_document": "generated document",
     "read_topology_structure": "the project topology",
 }
-_VISIBLE_EVIDENCE_KEY_RE = re.compile(
-    r"(?:metadata:[a-z0-9_.:-]+|mcp-doc(?:-content)?:[a-z0-9_.:/-]+|doc:\d+:\d+"
-    r"|topology:[a-z0-9_.:-]+)\b",
-    re.IGNORECASE,
-)
+
+#: The scrubber and the validator must agree on what an evidence id looks like:
+#: the validator REJECTS an answer containing one, and this module REMOVES them,
+#: so a shape only one of them knows is either an unscrubbable rejection loop or
+#: a leak. One pattern, owned by `grounding`, which is the lower of the two in
+#: the import graph.
+_VISIBLE_EVIDENCE_KEY_RE = VISIBLE_EVIDENCE_KEY_RE
 
 #: A MACHINE reference: an evidence key, an opaque reader node id, or the tool's
 #: own semantic name. None of these is ever legitimate prose, so they are removed
@@ -1978,18 +2092,23 @@ def render_safe_fallback_envelope() -> str:
 
 
 __all__ = [
+    "DISCLOSURE_GROUNDING_REASON_PREFIX",
+    "DISCLOSURE_UNVERIFIED_GROUNDING",
     "MODEL_FACING_READ_EXCLUSIONS",
     "PROGRESS_INTERVAL_SECONDS",
     "READONLY_MODEL_PROFILE",
     "READONLY_PROMPT_VERSION",
     "READONLY_RUNTIME_RELEASE",
     "READ_ONLY_PRIMARY_SYSTEM_PROMPT",
+    "UNVERIFIED_GROUNDING_NOTICE",
     "ReadOnlyPrimaryRuntime",
     "ReadOnlyTurnResult",
+    "append_unverified_grounding_notice",
     "build_readonly_primary_chat_model",
     "build_readonly_primary_runtime",
     "grounding_failure_answer",
     "public_answer_chunks",
     "readonly_manifest_partition",
     "run_readonly_primary_turn",
+    "unverified_grounding_answer",
 ]

@@ -17,6 +17,7 @@ repair attempt. The final publish gates stay advisory by design.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 from mcp_server.providers.custom.target_evidence import (
     CATEGORY_CODE,
@@ -29,6 +30,7 @@ from mcp_server.providers.custom.target_evidence import (
 
 __all__ = [
     "component_reference_errors",
+    "declared_component_reference_errors",
     "job_scoped_component_reference_errors",
     "availability_claim_errors",
     "protected_fact_errors",
@@ -104,11 +106,63 @@ def component_reference_errors(
     ]
 
 
+def declared_component_reference_errors(
+    declared_refs: Iterable[str],
+    allowed_refs: frozenset[str] | set[str],
+    *,
+    source_label: str = "the evidence bundle",
+) -> list[str]:
+    """Set-membership version of :func:`component_reference_errors`.
+
+    ``component_reference_errors`` recovers component names by running a regex
+    over the model's prose, so it depends on the shape of that prose and finds
+    nothing at all if the shape changes. This takes the references the writer
+    DECLARED in a typed sidecar (``_provenance/{DOC}.json``) and never reads the
+    document text, which makes verification a set operation.
+
+    A declared miss is the harder finding of the two. "This claim rests on
+    tMSSqlOutput_1 in group X" is the writer's own statement about where the
+    claim came from; a name scraped out of prose may be a passing mention, a
+    cross-reference or a quotation of someone else's component. The wording says
+    so, because the operator reading the report has to rank the two.
+
+    ``allowed_refs`` empty disables the check, exactly as in the prose version:
+    no evidence inventory means there is nothing to verify against, and an empty
+    allowed set would otherwise reject every reference.
+    """
+    if not allowed_refs:
+        return []
+    unknown = sorted(set(declared_refs) - set(allowed_refs))
+    if not unknown:
+        return []
+    shown = ", ".join(unknown[:_MAX_REPORTED_REFS])
+    more = (
+        f" (+{len(unknown) - _MAX_REPORTED_REFS} more)"
+        if len(unknown) > _MAX_REPORTED_REFS
+        else ""
+    )
+    return [
+        (
+            f"output declares that its claims rest on components that do not "
+            f"exist in {source_label}: {shown}{more}. A declared reference is "
+            "the writer's own statement of where a claim came from, so it must "
+            "name a component the evidence actually contains; correct the "
+            "reference or withdraw the claim it supports."
+        )
+    ]
+
+
 # A model's own per-job sub-heading inside a multi-job Phase 2 task output,
-# e.g. "#### AssetCheck_GetWorkOrder" or "#### AssetCheck_GetWorkOrder - tMap_1".
-# Verified reliable in production output without any prompt change (run 51):
-# every registered section that has per-job content uses this heading shape.
-_JOB_HEADING_RE = re.compile(r"^####\s+(.+?)\s*$", re.MULTILINE)
+# e.g. "#### AssetCheck_GetWorkOrder" or "### AssetCheck_GetWorkOrder - tMap_1".
+# Run 51 produced these at h4 consistently, but the LEVEL is the model's choice
+# and pinning it is the defect that cost run 258 ~95% of its evidence: when no
+# heading matched, this returned one unattributed span and the job-scoped check
+# silently degraded to the weaker task-wide one -- which is exactly the check
+# that lets a component real for one job in the batch pass as a sibling's.
+# Any level h2-h6 is accepted; h1 is a document title, not a sub-heading.
+# A span whose heading names no known unit stays unattributed either way, so
+# widening cannot wrongly attribute -- it can only recover attribution.
+_JOB_HEADING_RE = re.compile(r"^#{2,6}\s+(.+?)\s*$", re.MULTILINE)
 
 
 def _job_attributed_spans(

@@ -20,6 +20,16 @@ from mcp.server import Server
 from mcp.types import TextContent, Tool
 
 from mcp_server.connectors.broker import BrokerDenied, CapabilityBroker
+from mcp_server.utils.stream_frames import OversizedFrameError, read_frame
+
+# The relay is a request/response pair, one newline-delimited frame each.  Both
+# ends read past the stream reader's separator limit deliberately: that limit
+# would turn a payload larger than the buffer into an unattributable transport
+# ValueError, where the protocol wants an explicit bound it can answer with.
+_MAX_REQUEST_FRAME_BYTES = 1024 * 1024
+# The response carries the broker's evidence payload, so it is bounded well
+# above the request it answers.
+_MAX_RESPONSE_FRAME_BYTES = 4 * 1024 * 1024
 
 _CAPABILITY_TO_TOOL = {
     "evidence.sources.describe": "describe_evidence_source",
@@ -195,12 +205,10 @@ class FacadeBridge:
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
-            raw = await reader.readline()
             # Artifact submissions can contain a complete Markdown document or
             # topology JSON. Keep the relay bounded while leaving room for the
             # facade's 200k-character payload plus JSON/UTF-8 overhead.
-            if len(raw) > 1024 * 1024:
-                raise FacadeInputError("facade request exceeds byte limit")
+            raw = await read_frame(reader, max_frame_bytes=_MAX_REQUEST_FRAME_BYTES)
             request = json.loads(raw.decode("utf-8"))
             if not isinstance(request, dict):
                 raise FacadeInputError("facade request must be an object")
@@ -217,7 +225,7 @@ class FacadeBridge:
                 )}
             else:
                 raise FacadeInputError("unknown facade method")
-        except (BrokerDenied, FacadeInputError, json.JSONDecodeError) as exc:
+        except (BrokerDenied, FacadeInputError, OversizedFrameError, json.JSONDecodeError) as exc:
             response = {"error": "connector_denied", "reason": str(exc)[:200]}
         except Exception:  # noqa: BLE001 - sanitize arbitrary provider failures
             # Provider failures can contain vendor URLs or response fragments;
@@ -250,10 +258,12 @@ def create_mcp_server(facade: RunScopedMcpFacade) -> Server:
 
 
 async def _bridge_request(socket_path: str, payload: Mapping[str, Any]) -> dict[str, Any]:
-    reader, writer = await asyncio.open_unix_connection(socket_path)
+    reader, writer = await asyncio.open_unix_connection(
+        socket_path, limit=_MAX_RESPONSE_FRAME_BYTES,
+    )
     writer.write(json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n")
     await writer.drain()
-    raw = await reader.readline()
+    raw = await read_frame(reader, max_frame_bytes=_MAX_RESPONSE_FRAME_BYTES)
     writer.close()
     await writer.wait_closed()
     result = json.loads(raw.decode("utf-8"))

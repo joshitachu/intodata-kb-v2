@@ -101,14 +101,8 @@ class DocGenContext:
     # False makes this a code-only run: no runtime evidence is fetched or
     # rendered. It can only ever narrow what the project already granted.
     live_evidence: bool = True
-    # Verified V3 declarations, including metadata-only reference attachments and
-    # bounded extracted text, may only be consumed by Phase 3 document rendering.
-    # Run-scoped connector authority is optional and injected only for the
-    # OpenCode provider after project-binding preflight.  Legacy providers never
-    # resolve or consume it.  It intentionally contains no provider credential.
     run_id: int | None = None
-    connector_runtime: Any | None = None
-    # Frozen by the coordinator; None denotes the historical contract.
+    # Historical metadata is retained only for clear retirement errors.
     generation_profile: dict | None = None
 
 

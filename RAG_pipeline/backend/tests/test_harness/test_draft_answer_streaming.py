@@ -139,16 +139,36 @@ async def test_evidence_keys_are_humanized_and_never_split_mid_token() -> None:
 async def test_semantic_tool_names_are_relabelled_before_display() -> None:
     recorder = _Recorder()
     streamer = _streamer(recorder)
+    # The two names the old `read_document` capability was split into. The
+    # fixture named the retired one, so this case kept passing against a label
+    # map that no longer covered either replacement.
     prose = (
-        "I used search_documentation to find the runbook, then read_document for "
-        "the section on retries, and both agree on the schedule.\n"
+        "I used search_documentation to find the runbook, then "
+        "search_within_document for the section on retries and "
+        "read_document to count them, and all agree on the schedule.\n"
     )
 
     await _feed_tokens(streamer, prose)
 
     assert "search_documentation" not in recorder.shown
+    assert "search_within_document" not in recorder.shown
     assert "read_document" not in recorder.shown
     assert "indexed documentation" in recorder.shown
+
+
+async def test_a_whole_document_evidence_id_never_reaches_the_reader() -> None:
+    """`doctext:` ids were minted by the whole-document read and scrubbed by
+    nothing: the namespace was added upstream and mirrored into neither the
+    validator's pattern nor this scrubber's."""
+
+    recorder = _Recorder()
+    streamer = _streamer(recorder)
+    prose = "The mapping carries 31 fields (doctext:44:2), not 30.\n"
+
+    await _feed_tokens(streamer, prose)
+
+    assert "doctext:" not in recorder.shown
+    assert "31 fields" in recorder.shown
 
 
 # --- The topology surface --------------------------------------------------

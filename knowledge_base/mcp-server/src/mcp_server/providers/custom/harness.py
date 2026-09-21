@@ -218,17 +218,23 @@ _BUNDLE_CATEGORY_TO_PHASE2_SECTIONS: dict[str, set[str]] = {
 
 
 def _guide_section_names(guide_path: Path) -> frozenset[str]:
-    """Return all-caps h3 section names from a plugin ANALYSIS_GUIDE not already in PHASE2_SECTION_NAMES."""
+    """Return all-caps section names from a plugin ANALYSIS_GUIDE not already in PHASE2_SECTION_NAMES.
+
+    Any heading level counts: a guide author writing ``## INJECTION_SINKS`` declares
+    the same section as ``### INJECTION_SINKS``, and the parser this feeds now
+    recognises the name at any level too.  Name extraction is the permissive side of
+    the pair (a missed name means an unrecognised section downstream), so an
+    enumerated heading such as ``## 4. INJECTION_SINKS`` is accepted here.
+    """
+    from mcp_server.providers.custom.section_parser import allcaps_heading_name
+
     if not guide_path.exists():
         return frozenset()
-    heading_re = re.compile(r"^### ([A-Z][A-Z0-9_ ]+)\s*$")
     names: set[str] = set()
     for line in guide_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        m = heading_re.match(line.strip())
-        if m:
-            candidate = re.sub(r"[^A-Z0-9_]+", "_", m.group(1).strip().upper()).strip("_")
-            if candidate not in PHASE2_SECTION_NAMES:
-                names.add(candidate)
+        candidate = allcaps_heading_name(line, allow_enumerated=True)
+        if candidate and candidate not in PHASE2_SECTION_NAMES:
+            names.add(candidate)
     return frozenset(names)
 
 
@@ -258,7 +264,7 @@ def _parse_register_rows(text: str) -> list[list[str]]:
     match = EVIDENCE_REGISTER_SECTION_RE.search(text)
     if not match:
         return []
-    lines = [line for line in match.group(1).splitlines() if line.strip()]
+    lines = [line for line in match.group("body").splitlines() if line.strip()]
     table_start = next((i for i, line in enumerate(lines) if line.lstrip().startswith("|")), None)
     if table_start is None or table_start + 2 >= len(lines):
         return []
@@ -3876,13 +3882,16 @@ Fallback plan example:
             f"Canonical inventory: {state.facts_manifest.unit_count} "
             f"{state.facts_manifest.canonical_unit_label} across "
             f"{len(state.facts_manifest.groups)} groups.\n\n"
-            "> **SCORECARD OMITTED:** the LLM quality/risk scorecard is "
-            "disabled for this run (MCP_DOCGEN_LLM_SCORECARD_ENABLED=0). "
-            "No dimension scores, ratings, or rankings were computed. "
-            "Documents must present risk and quality findings directly from "
-            "the Phase 2 evidence (RISK_FLAGS claims, engineering fact maps, "
-            "known_risks) and must mark scorecard-derived dimensions as not "
-            "computed rather than inventing scores.\n",
+            "> **SCORECARD OMITTED:** no quality or risk scores were computed "
+            "for this run. There are no dimension scores, ratings or rankings "
+            "to cite.\n\n"
+            "Writers: present risk and quality findings directly from the "
+            "evidence you already have (RISK_FLAGS claims, engineering fact "
+            "maps, known_risks) and mark scorecard-derived dimensions as not "
+            "computed rather than inventing scores.\n\n"
+            "Do not copy this notice, or any part of it, into a client "
+            "document. State the absence in your own words, in client "
+            "language.\n",
             encoding="utf-8",
         )
 

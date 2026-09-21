@@ -347,7 +347,10 @@ async def test_missing_handler_dependency_returns_safe_observation() -> None:
 
     assert observation.status == "failed"
     assert observation.error_code == "handler_failure"
-    assert observation.safe_details == {"reason": "handler_dependency_unavailable"}
+    assert observation.safe_details == {
+        "reason": "handler_dependency_unavailable",
+        "exception": "RuntimeError",
+    }
 
 
 async def test_cancellation_policy_denial_prevents_controller_call() -> None:

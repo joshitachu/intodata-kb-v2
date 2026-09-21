@@ -31,6 +31,23 @@ class Conversation(Base):
     visible_in_chat: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default="true"
     )
+    # The OpenCode session this conversation's labs turns run in, when it has
+    # one. NULL for every conversation on the production `/chat` path, which has
+    # no external reasoning session at all.
+    #
+    # Persisted because the id is the conversation's history on the OpenCode
+    # side and nothing else can reconstruct it. The labs runtime used to hold
+    # the binding only in process, so any restart -- and `uvicorn --reload` does
+    # 39 in a working session -- made the next turn open a SECOND top-level
+    # session for the same conversation. Verified on two live conversations,
+    # each left with two sessions carrying `parentID=None`: the thread was split
+    # and the model silently lost everything said before the restart.
+    #
+    # Deliberately the session id and nothing else. The MCP bearer token for the
+    # same conversation stays out of the database: it is a credential, it is
+    # re-mintable by design, and it belongs in memory and in the workspace's
+    # `opencode.json`, which only the backend writes.
+    opencode_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     deleted_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -92,6 +92,8 @@ from src.harness.conversation_state import ConversationStateConflict
 from src.harness.conversation_tasks import ConversationTaskService
 from src.harness.evidence import build_registered_read_adapters
 from src.harness.evidence_summary import EvidenceSummary
+from src.harness.guidance.compiler import compile_guidance
+from src.harness.guidance.renderer import render_guidance
 from src.harness.executor import HarnessCapabilityExecutor
 from src.harness.packs.draft_service import PackDraftService
 from src.harness.providers.mcp_docs import McpDocumentationProvider
@@ -268,18 +270,75 @@ def _authoritative_turn_context(project_scope: list[str] | None) -> str:
 def _turn_prompt_context(
     project_scope: list[str] | None,
     page_scope: dict[str, Any] | None,
+    guidance: str = "",
 ) -> str:
-    """Compose the authoritative scope projection with this turn's guidance.
+    """Compose the layered guidance stack, the scope projection and this turn's rules.
 
     ``project_scope`` is authoritative and comes from the authenticated request.
     ``page_scope`` is client-supplied and untrusted: it is rendered as a prompt
     preference only and deliberately not merged into the scope projection above,
     so it can never widen project access or become a retrieval filter.
+
+    ``guidance`` is the rendered ORG -> PROJECT -> PERSON stack, supplied by the
+    caller rather than compiled here: this function is pure and synchronous, and
+    it is reached from places that hold no database session. Compiling it at the
+    call site is what keeps prompt assembly free of I/O.
+
+    It is rendered FIRST, and that ordering is a caching decision rather than a
+    layout preference. The guidance stack is stable for the whole conversation
+    while the scope projection and the page scope move with the surface the user
+    is on; leading with the stable text keeps the cacheable prefix contiguous,
+    where leading with the volatile part would invalidate the whole prefix on
+    every turn.
+
+    Empty sections are dropped rather than joined, so a guidance stack that could
+    not be read leaves no blank block at the head of the prompt.
     """
 
     return "\n\n".join(
-        (_authoritative_turn_context(project_scope), topology_turn_guidance(page_scope))
+        section
+        for section in (
+            guidance,
+            _authoritative_turn_context(project_scope),
+            topology_turn_guidance(page_scope),
+        )
+        if section
     )
+
+
+async def _compiled_turn_guidance(
+    db: AsyncSession, *, project_scope: list[str] | None, user_id: int
+) -> str:
+    """Render the guidance stack governing this turn, or ``""`` if it cannot be read.
+
+    Only an unambiguous single-project scope resolves a project id. A broader
+    scope has no single landscape whose vocabulary and rules apply, and picking
+    one arbitrarily would govern this answer with another project's terminology.
+    Organization rules still render in that case -- they bind everywhere.
+
+    Fail-soft on purpose. ``compile_guidance`` already absorbs its own database
+    and validation failures, so anything reaching this handler is a defect
+    beneath it: worth the full traceback, and worth nothing at all to the person
+    waiting on an answer. The organization's invariants are code-owned constants
+    inside the renderer, so losing this costs a turn its tuning and never its
+    safety floor.
+    """
+
+    project_id = (
+        project_scope[0] if project_scope is not None and len(project_scope) == 1 else None
+    )
+    try:
+        resolved = await compile_guidance(db, project_id=project_id, user_id=user_id)
+        return render_guidance(resolved)
+    except Exception:  # deliberately blind: guidance must never be able to fail a turn
+        logger.error(
+            "Turn guidance compile failed (project_id=%s user_id=%s); "
+            "continuing with the code-owned invariants only",
+            project_id or "-",
+            user_id,
+            exc_info=True,
+        )
+        return ""
 
 
 async def build_production_agent_turn_runtime(
@@ -1279,6 +1338,11 @@ async def _run_readonly_primary_turn(
         current_message_id=message_id,
         denied_capability_ids=_chat_denied_capability_ids(runtime.registry, page_scope),
     )
+    # Compiled here, not inside `_turn_prompt_context`: this scope is async and
+    # already holds the session, and the composition itself stays pure.
+    turn_guidance = await _compiled_turn_guidance(
+        db, project_scope=project_scope, user_id=user_id
+    )
     readonly_runtime = build_readonly_primary_runtime(
         model=build_readonly_primary_chat_model(settings),
         registry=runtime.registry,
@@ -1294,7 +1358,7 @@ async def _run_readonly_primary_turn(
             if cohort.is_v2_direct_primary
             else None
         ),
-        system_prompt_suffix=_turn_prompt_context(project_scope, page_scope),
+        system_prompt_suffix=_turn_prompt_context(project_scope, page_scope, turn_guidance),
         budget_controller=budget_controller,
     )
     turn = await run_readonly_primary_turn(
@@ -1347,7 +1411,10 @@ async def _run_planning_primary_turn(
     await db.commit()
     plan_context = await AgentPlanService(db, runtime.registry).current(conversation_id=conversation.id, owner_user_id=user_id)
     context = CapabilityExecutionContext(user_id=user_id, conversation_id=conversation.id, project_scope=project_scope, permissions=permissions, access_token=access_token, current_message_id=message_id, conversation_state_version=state.version, conversation_turn_claim_id=claim.id, conversation_turn_claim_token=claim.lease_token, denied_capability_ids=_chat_denied_capability_ids(runtime.registry, page_scope))
-    plan_runtime = build_planning_primary_runtime(model=build_readonly_primary_chat_model(settings), registry=runtime.registry, executor=runtime.executor, context=context, plan_context=(plan_context.model_projection() if plan_context else None), turn_context=_turn_prompt_context(project_scope, page_scope), budget_controller=budget_controller)
+    # The same stack the read-only cohort gets. A cohort is a routing decision;
+    # which house rules govern an answer is not, so it must not vary with one.
+    turn_guidance = await _compiled_turn_guidance(db, project_scope=project_scope, user_id=user_id)
+    plan_runtime = build_planning_primary_runtime(model=build_readonly_primary_chat_model(settings), registry=runtime.registry, executor=runtime.executor, context=context, plan_context=(plan_context.model_projection() if plan_context else None), turn_context=_turn_prompt_context(project_scope, page_scope, turn_guidance), budget_controller=budget_controller)
     try:
         turn = await run_readonly_primary_turn(graph=plan_runtime.graph, ledger=plan_runtime.ledger, snapshot=plan_runtime.snapshot, user_message=query, conversation_seed=turn_input.conversation_history, state_version=turn_input.state_version or "", prior_response_fingerprints=set(turn_input.prior_response_fingerprints), max_corrections=settings.agent_runtime_v2_max_grounding_corrections, suppress_structural_citations=is_topology_surface(page_scope), event_callback=event_callback, heartbeat_callback=heartbeat_callback, emit_answer_deltas=False, stream_draft_answer=settings.agent_runtime_v2_draft_answer_streaming_enabled, budget_controller=budget_controller, trusted_answer_sink=runtime.trusted_answer_sink)
     except Exception:

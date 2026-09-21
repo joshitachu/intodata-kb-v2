@@ -27,6 +27,19 @@ never parse dropped. Records that remain are verbatim.
   - `werkorder_mapping_job_graph`  the design owning the richest mapping component
   - `alitalend_job_graph`          a single-root design with one tMap
 
+`pluripharm_collector_job_graph.json` is the real job graph of the Camel route
+`collector_jde_shipping_notification_from_db_c006_mediq` (41 components, 32
+connections), produced by running the MCP job-graph builder over that project's
+own scan cache. It is the artifact behind a measured agent failure: asked how a
+shipment is routed to one flow or the other, an agent opened 15 of these
+components one at a time and still reported the criterion as undeterminable,
+because the answer is a ROW of `cSetHeader_5`'s VALUES table
+(`AN8_CHECK = xpath(".../SZAN8/text()")`) and row-structured params were dropped
+before they reached the tool layer. `pluripharm_project_graph.json` is the
+matching single-design slice of `GET /projects/{id}/graph`, with the group,
+source root, external systems and component facts taken from that scan's own
+`manifest.json`.
+
 `*_component_graph.json` are real `GET .../components/{name}/graph` payloads.
 `werkorder_richest_component_graph` is the largest mapping graph in the whole
 upload at 27 KB raw, which is the cap case for `get_component_detail`.
@@ -288,6 +301,28 @@ def rhm2sf_lineage() -> dict[str, Any]:
 
 
 @pytest.fixture
+def pluripharm_graph() -> dict[str, Any]:
+    return load_fixture("pluripharm_project_graph")
+
+
+@pytest.fixture
+def collector_job_graph() -> dict[str, Any]:
+    return load_fixture("pluripharm_collector_job_graph")
+
+
+@pytest.fixture
+def pluripharm_provider(pluripharm_graph, collector_job_graph):
+    """The design manifest and job graph behind the measured routing question."""
+    transport = werkorder_routes(
+        landscape={},
+        project_graph=pluripharm_graph,
+        job_graphs={COLLECTOR_JOB: collector_job_graph},
+        project_id=PLURIPHARM_PROJECT,
+    )
+    return transport, make_provider(transport)
+
+
+@pytest.fixture
 def alitalend_graph() -> dict[str, Any]:
     return load_fixture("alitalend_project_graph")
 
@@ -320,6 +355,13 @@ MAPPING_COMPONENT = "tMap_1"
 QUINTIQ_SOURCE_ROOT = (
     "VolkerVessels_Workorder/Talend exports/VQ_Quintiq2MX.__intodoc_zip__/VQ_QUINTIQ2MX"
 )
+#: The Camel route from the measured routing failure, and the component that
+#: holds the criterion: `cSetHeader_5` ("setXmlVar") defines AN8_CHECK from the
+#: shipment's JD Edwards ship-to address-book number, which the cMessageRouter
+#: downstream of it branches on.
+PLURIPHARM_PROJECT = "pluripharm"
+COLLECTOR_JOB = "collector_jde_shipping_notification_from_db_c006_mediq"
+COLLECTOR_ROUTING_COMPONENT = "cSetHeader_5"
 
 
 def werkorder_routes(

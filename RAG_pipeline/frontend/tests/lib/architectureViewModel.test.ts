@@ -201,10 +201,18 @@ describe("normalizeArchitectureL1", () => {
     expect(flow.fieldRows.map((row) => [row.index, row.targetField, row.sourceOrExpression])).toEqual([
       [1, "serviceOrders.orderNo", "WORKORDER.WONUM"],
       [2, "serviceOrders.description", "substring(DESCRIPTION, 1, 50)"],
-      [3, "serviceOrders.site", "lookup(SITEID)"],
-      [4, "serviceOrders.origin", "\"MAXIMO\""],
+      [3, "serviceOrders.origin", "\"MAXIMO\""],
     ]);
-    expect(flow.fieldRows.map((row) => row.reachesTarget)).toEqual(["yes", "partial", "unknown", "unknown"]);
+    expect(flow.fieldRows.map((row) => row.reachesTarget)).toEqual(["yes", "partial", "unknown"]);
+    // A derived rule is NOT a field mapping. A message route builds its payload
+    // out of header/body/code steps and has no tMap at all; counting those under
+    // "Velden" reports field mappings that do not exist.
+    expect(flow.messageRows.map((row) => [row.targetField, row.sourceOrExpression])).toEqual([
+      ["serviceOrders.site", "lookup(SITEID)"],
+    ]);
+    // The verbatim rule stays on the row as evidence even when the sentence is
+    // what gets shown; dropping it would make the claim unverifiable.
+    expect(flow.messageRows[0].expression).toBe("lookup(SITEID)");
     expect(flow.valueDomainGroups).toHaveLength(1);
     expect(flow.valueDomainGroups[0].targetField).toBe("serviceOrders.status");
     expect(flow.valueDomainGroups[0].transformations.map((item) => item.id)).toEqual(["tr-status", "tr-priority"]);
@@ -292,5 +300,53 @@ describe("relationship cap", () => {
 
   it("keeps the default when no cap is supplied", () => {
     expect(normalizeArchitectureL1(hub, {}).relationships).toHaveLength(18);
+  });
+
+  it("shows the producer's explanation instead of the verbatim expression", () => {
+    // The panel has one line per mapping. An expression like
+    // `SELECT count(*) AS elements ${exchangeProperty.from}` is evidence, not a
+    // description, and it was crowding out the sentence the producer wrote for
+    // exactly this slot. Where no explanation exists nothing changes.
+    const claim = {
+      aliases: [], kind: "software_system" as const, description: "", purpose: "", owner: "",
+      status: "confirmed" as const, confidence: 0.9, evidence_ids: [],
+    };
+    const uitgelegd = BusinessTopologySchema.parse({
+      ...rawTopology,
+      systems: [
+        { ...claim, id: "sys-a", name: "A" },
+        { ...claim, id: "sys-b", name: "B" },
+      ],
+      integration_solutions: [], business_objects: [],
+      data_streams: [{
+        id: "ds-x", source_system_id: "sys-a", destination_system_id: "sys-b", name: "X",
+        description: "", business_object_ids: [], business_summary: "X",
+        integration_solution_ids: [], protocols: [], requiredness: "not_established",
+        delivery_path_id: null, status: "confirmed", confidence: 0.9, control_ids: [],
+        risk_ids: [], unknown_ids: [], runtime_observation_ids: [], conflict_ids: [],
+        artifact_ids: [], evidence_ids: [],
+      }],
+      transformations: [{
+        id: "tr-1", name: "afbeelding", description: "", status: "confirmed", confidence: 0.9,
+        evidence_ids: [], kind: "field_mapping", stream_ids: ["ds-x"],
+        integration_solution_ids: [], artifact_ids: [], target_field: "",
+        mappings: [
+          { source: "row1.gtin", target: "artikel.ean", mapping_type: "direct",
+            expression: "row1.gtin", category: "doorgifte", reaches_target: "yes",
+            note: "Neemt het artikelnummer over uit de invoer." },
+          { source: "(bericht)", target: "inhoud van het bericht", mapping_type: "derived",
+            expression: "SELECT count(*) AS elements ${exchangeProperty.from}",
+            category: "berichtinhoud", reaches_target: "yes", note: "" },
+        ],
+      }],
+      delivery_paths: [], controls: [], runtime_observations: [], conflicts: [], risks: [],
+      unknowns: [], artifact_annotations: [], component_annotations: [], lineage_annotations: [],
+    });
+    const pairs = architectureRelationshipPairs(normalizeArchitectureL1(uitgelegd), uitgelegd);
+    const flow = architectureFlowsForPair(uitgelegd, pairs[0])[0];
+    expect(flow.fieldRows[0].sourceOrExpression).toBe("Neemt het artikelnummer over uit de invoer.");
+    expect(flow.fieldRows[0].expression).toBe("row1.gtin");
+    // No explanation supplied: the expression is still better than nothing.
+    expect(flow.fieldRows[1].sourceOrExpression).toBe("SELECT count(*) AS elements ${exchangeProperty.from}");
   });
 });

@@ -66,6 +66,26 @@ logger = logging.getLogger(__name__)
 # TMC rejects log page sizes above 200 with HTTP 400.
 _LOG_PAGE_SIZE = 200
 _LOG_CAPTURE_LIMIT = 10_000
+# A Route's deployment log is the shared OSGi Runtime log: engine-scoped,
+# explicitly NOT attribution-safe, and enormous -- one verified route carried
+# 376.820 lines. Pulling 10.000 of those per route, 200 to a page, timed out
+# every single fetch and the mirror ended up with zero Route log lines at all.
+# The tail is what an operator reads; the first 9.500 lines of a deployment
+# that has been up for months are not evidence of anything.
+# Measured on a live estate: the last `DS RUNNER METRIC` line sits between 1
+# and 34 lines from the end of a deployment log. The counters are what this
+# fetch is for, so a hundred lines of tail is generous. Five hundred bought
+# nothing except bytes -- and bytes are what made the earlier fetch time out.
+_DEPLOYMENT_LOG_CAPTURE_LIMIT = 100
+# Counter recovery is cheap enough to do for EVERY deployment rather than the
+# ten that the failed-job log ceiling allows. Sharing that ceiling is why 40 of
+# 46 routes showed "Not supplied": not because TMC withheld anything, but
+# because we never asked those forty.
+_DEPLOYMENT_COUNTER_RUN_LIMIT = 100
+# Log pages are bulk reads. The 10s that suits a list call is not enough for a
+# page out of a multi-hundred-thousand-line log, and a timeout here reads
+# downstream as "this run had no logs".
+_LOG_REQUEST_TIMEOUT_SECONDS = 60.0
 # A long-running Route can exceed the capture ceiling by orders of magnitude.
 # Keeping only the first N lines preserves startup noise and loses the terminal
 # failure.  Reserve a small head for lifecycle context and spend the rest on
@@ -87,6 +107,21 @@ _FAILED_LOG_RUN_LIMIT = 10
 _COMPONENT_METRIC_RUN_LIMIT = 25
 _DETAIL_FETCH_CONCURRENCY = 5
 _TRANSPORT_MAX_ATTEMPTS = 3
+# TMC throttles. A 429 is a "come back later", not a failure of the sync, but it
+# was raised straight through: one throttled request aborted the whole cycle,
+# three cycles in a row auto-disabled the source, and the estate silently
+# stopped being mirrored. Verified on a live tenant -- 1.67M records ingested
+# over 103 cycles, then `GET .../executions returned HTTP 429` three times and
+# the source switched itself off.
+_RETRYABLE_STATUS: frozenset[int] = frozenset({429, 502, 503, 504})
+# A throttle needs its OWN budget, larger than the transport one. A dropped
+# connection is retried three times in under a second because it is a blip; a
+# 429 is a quota, and a quota window outlives three back-to-back attempts.
+# Measured on a live tenant: three attempts with 1s and 2s of backoff still
+# came back 429, and the whole cycle failed.
+_THROTTLE_MAX_ATTEMPTS = 6
+_THROTTLE_BASE_DELAY_SECONDS = 1.0
+_THROTTLE_MAX_DELAY_SECONDS = 30.0
 _TRANSPORT_RETRY_DELAY_SECONDS = 0.25
 # TMC caps page size per endpoint and does not publish the cap: /orchestration
 # /executables/tasks rejects anything above 100 with HTTP 400 while others take
@@ -231,6 +266,8 @@ class TalendTmcRuntimeProvider:
         # SSL contexts and transports; hundreds of short-lived clients caused
         # RSS to climb to the 1GiB container limit during one import.
         self._http_client: httpx.AsyncClient | None = None
+        # Learned once per sync: whether this tenant serves the bulk log export.
+        self._async_logs_unsupported = False
         # Page-size caps are per endpoint and discovered on first rejection;
         # caching them keeps the retry cost to one wasted call per path.
         self._page_size_by_path: dict[str, int] = {}
@@ -476,18 +513,31 @@ class TalendTmcRuntimeProvider:
             await self._http_client.aclose()
             self._http_client = None
 
-    async def _get(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any] | list[dict[str, Any]]:
-        for attempt in range(_TRANSPORT_MAX_ATTEMPTS):
+    async def _get(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        throttled = 0
+        for attempt in range(_TRANSPORT_MAX_ATTEMPTS + _THROTTLE_MAX_ATTEMPTS):
             try:
                 client = self._client()
                 response = await client.get(
                     path,
                     params={k: v for k, v in (params or {}).items() if v is not None},
+                    **({"timeout": timeout} if timeout is not None else {}),
                 )
                 response.raise_for_status()
                 data = response.json()
                 break
             except httpx.HTTPStatusError as e:
+                if e.response.status_code in _RETRYABLE_STATUS:
+                    throttled += 1
+                    if throttled < _THROTTLE_MAX_ATTEMPTS:
+                        await asyncio.sleep(_throttle_delay(e.response, throttled - 1))
+                        continue
                 raise RuntimeProviderError(
                     f"Talend TMC GET {path} returned HTTP {e.response.status_code}"
                 ) from e
@@ -512,7 +562,8 @@ class TalendTmcRuntimeProvider:
         raise RuntimeProviderError(f"Talend TMC GET {path} returned a non-object/non-array payload")
 
     async def _post(self, path: str, *, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
-        for attempt in range(_TRANSPORT_MAX_ATTEMPTS):
+        throttled = 0
+        for attempt in range(_TRANSPORT_MAX_ATTEMPTS + _THROTTLE_MAX_ATTEMPTS):
             try:
                 client = self._client()
                 response = await client.post(
@@ -523,6 +574,11 @@ class TalendTmcRuntimeProvider:
                 data = response.json()
                 break
             except httpx.HTTPStatusError as e:
+                if e.response.status_code in _RETRYABLE_STATUS:
+                    throttled += 1
+                    if throttled < _THROTTLE_MAX_ATTEMPTS:
+                        await asyncio.sleep(_throttle_delay(e.response, throttled - 1))
+                        continue
                 raise RuntimeProviderError(
                     f"Talend TMC POST {path} returned HTTP {e.response.status_code}"
                 ) from e
@@ -641,14 +697,19 @@ class TalendTmcRuntimeProvider:
         ]
 
     async def get_execution_logs(
-        self, params: GetExecutionLogsInput, context: RuntimeProviderContext | None = None
+        self,
+        params: GetExecutionLogsInput,
+        context: RuntimeProviderContext | None = None,
+        head_capture: int = _LOG_HEAD_CAPTURE,
     ) -> list[RuntimeLogEvent]:
         logs = await self._get_execution_logs_async(params.execution_id)
         if logs is None:
-            logs = await self._get_execution_logs_paginated(params.execution_id, params.limit)
+            logs = await self._get_execution_logs_paginated(
+                params.execution_id, params.limit, head_capture
+            )
         events = [
             _to_log_event(item, params.execution_id, ordinal)
-            for ordinal, item in _bounded_log_entries(logs, params.limit)
+            for ordinal, item in _bounded_log_entries(logs, params.limit, head_capture)
         ]
         if params.min_severity is not None:
             allowed = _severities_at_or_above(params.min_severity)
@@ -746,12 +807,16 @@ class TalendTmcRuntimeProvider:
         task_detail_semaphore = asyncio.Semaphore(_DETAIL_FETCH_CONCURRENCY)
 
         async def enrich_deployable_task(item: dict[str, Any]) -> dict[str, Any]:
+            # EVERY executable kind, not just Routes. The task detail is the only
+            # place TMC exposes `artifact.version`, and that version plus its
+            # build stamp is what answers "since when has this been running
+            # unchanged" -- up to 888 days on a verified estate. Narrowing this
+            # to Routes left every Job with an empty version column, which then
+            # read as "TMC does not expose it". Verified against a live tenant:
+            # a standard Job's task detail carries a populated artifact.version.
             artifact_id = _str_field(item, "artifactId", "artifact_id")
             artifact = all_artifacts_by_id.get(artifact_id or "")
-            if artifact is None or _executable_kind(artifact.artifact_type) not in {
-                RuntimeExecutableKind.ROUTE,
-                RuntimeExecutableKind.DATA_SERVICE,
-            }:
+            if artifact is None:
                 return item
             task_id = _str_field(item, "executable", "id")
             if task_id is None:
@@ -979,7 +1044,11 @@ class TalendTmcRuntimeProvider:
                 RuntimeExecutableKind.DATA_SERVICE,
             }:
                 latest_deployment_runs.setdefault((run.source_key, run.job_id), run)
-        deployment_log_runs = list(latest_deployment_runs.values())[:log_ceiling]
+        deployment_ceiling = (
+            settings.talend_tmc_deployment_counter_run_limit
+            or _DEPLOYMENT_COUNTER_RUN_LIMIT
+        )
+        deployment_log_runs = list(latest_deployment_runs.values())[:deployment_ceiling]
         if len(latest_deployment_runs) > len(deployment_log_runs):
             logger.warning(
                 "TMC deployment log capture ceiling reached: %d of %d latest deployments "
@@ -998,9 +1067,23 @@ class TalendTmcRuntimeProvider:
 
         async def fetch_logs(run: RuntimeJobRun) -> list[RuntimeLogEvent]:
             try:
+                deployment = run.executable_kind in {
+                    RuntimeExecutableKind.ROUTE,
+                    RuntimeExecutableKind.DATA_SERVICE,
+                }
                 async with detail_fetch_semaphore:
                     events = await self.get_execution_logs(
-                        GetExecutionLogsInput(execution_id=run.run_id, limit=_LOG_CAPTURE_LIMIT)
+                        GetExecutionLogsInput(
+                            execution_id=run.run_id,
+                            limit=(
+                                _DEPLOYMENT_LOG_CAPTURE_LIMIT
+                                if deployment
+                                else _LOG_CAPTURE_LIMIT
+                            ),
+                        ),
+                        # A deployment log opens on the day the Route went live.
+                        # Only its tail describes what the route is doing now.
+                        head_capture=0 if deployment else _LOG_HEAD_CAPTURE,
                     )
                     if run.executable_kind in {
                         RuntimeExecutableKind.ROUTE,
@@ -1019,8 +1102,16 @@ class TalendTmcRuntimeProvider:
                             for event in events
                         ]
                     return events
-            except RuntimeProviderError:
-                logger.warning("TMC log fetch failed for execution %s", run.run_id)
+            except RuntimeProviderError as exc:
+                # The REASON matters. "log fetch failed" with no cause is
+                # indistinguishable from a genuinely log-free run, and that is
+                # exactly how 376.820 available Route log lines went unnoticed.
+                logger.warning(
+                    "TMC log fetch failed for %s execution %s: %s",
+                    run.executable_kind.value if run.executable_kind else "unknown",
+                    run.run_id,
+                    exc,
+                )
                 return []
 
         async def fetch_metrics(run: RuntimeJobRun) -> list[RuntimeComponentMetric]:
@@ -1038,6 +1129,13 @@ class TalendTmcRuntimeProvider:
         )
         log_result_count = len(log_runs)
         log_events = [item for result in detail_results[:log_result_count] for item in result]
+        # The exchange counters live in the log text, not in the API payload.
+        # Read them back onto the runs they describe before the batch is built.
+        gevuld = _apply_route_metrics(job_runs, log_events)
+        if gevuld:
+            logger.info(
+                "TMC route throughput recovered from the engine log for %d deployments", gevuld
+            )
         component_metrics = [
             item for result in detail_results[log_result_count:] for item in result
         ]
@@ -1080,6 +1178,16 @@ class TalendTmcRuntimeProvider:
         )
 
     async def _get_execution_logs_async(self, execution_id: str) -> list[dict[str, Any]] | None:
+        """The bulk-export path: request an export, poll, download when READY.
+
+        Not every tenant has it. On one verified estate `/logs/status` answers
+        404 for every execution, Job and Route alike, so this path could never
+        succeed -- yet it still cost a POST plus three status polls on EVERY log
+        fetch before falling back. `_async_logs_unsupported` remembers that
+        answer for the rest of the sync instead of re-learning it per execution.
+        """
+        if self._async_logs_unsupported:
+            return None
         try:
             generated = await self._post(
                 f"/monitoring/executions/{execution_id}/logs",
@@ -1090,10 +1198,22 @@ class TalendTmcRuntimeProvider:
             for _ in range(_LOG_MAX_POLL_ATTEMPTS):
                 if _LOG_POLL_INTERVAL_SECONDS:
                     await asyncio.sleep(_LOG_POLL_INTERVAL_SECONDS)
-                status = await self._post(
-                    f"/monitoring/executions/{execution_id}/logs/status",
-                    json_body=body,
-                )
+                try:
+                    status = await self._post(
+                        f"/monitoring/executions/{execution_id}/logs/status",
+                        json_body=body,
+                    )
+                except RuntimeProviderError as exc:
+                    # A 404 is the tenant saying this endpoint does not exist.
+                    # Polling it twice more, and again for the next execution,
+                    # is pure waste against an API that already throttles us.
+                    if "HTTP 404" in str(exc):
+                        self._async_logs_unsupported = True
+                        logger.info(
+                            "TMC bulk log export is unavailable on this tenant; "
+                            "using the paginated log path for the rest of this sync"
+                        )
+                    return None
                 if status.get("status") == "READY":
                     url = status.get("downloadUrl")
                     if not isinstance(url, str) or not _is_allowed_download_url(url):
@@ -1115,14 +1235,20 @@ class TalendTmcRuntimeProvider:
         return _extract_items(data)
 
     async def _get_execution_logs_paginated(
-        self, execution_id: str, max_entries: int
+        self, execution_id: str, max_entries: int, head_capture: int = _LOG_HEAD_CAPTURE
     ) -> list[dict[str, Any]]:
         """Fetch a bounded chronological head+tail window.
 
-        The first page discovers TMC's total.  Short logs retain every line. A
-        long log keeps up to 1,000 startup lines and fills the remaining budget
-        from the terminal tail. This costs no more pages than the former
-        first-10k loop and preserves the evidence closest to failure.
+        The first page discovers TMC's total. Short logs retain every line. A
+        long log keeps up to `head_capture` startup lines and fills the
+        remaining budget from the terminal tail.
+
+        `head_capture=0` means pure tail, and that is what a DEPLOYMENT log
+        needs. Startup context is the evidence closest to a batch failure, but
+        a Route that has been up for 83 days starts its log on the day it was
+        deployed: its head is three months of nothing. Verified -- the first
+        capture of this estate returned lines from 20 August for deployments
+        that were still running in September.
         """
         path = f"/monitoring/executions/{execution_id}/logs"
 
@@ -1134,10 +1260,23 @@ class TalendTmcRuntimeProvider:
                     "startIndex": start,
                     "order": "ASC",
                 },
+                timeout=_LOG_REQUEST_TIMEOUT_SECONDS,
             )
             batch = _extract_items(payload)
             total = _page_total(payload, "totalSize", "total") or (start + len(batch))
             return batch, total
+
+        if head_capture <= 0:
+            # A pure-tail request cannot use the head-first loop below: the
+            # early return there hands back the FIRST page, which for a
+            # deployment log is the day the route went live. Probe for the
+            # total, then read one window at the end.
+            _probe, total = await page(0, 1)
+            if total <= max_entries:
+                staart, _ = await page(0, max_entries)
+                return staart[:max_entries]
+            staart, _ = await page(max(total - max_entries, 0), max_entries)
+            return staart[-max_entries:]
 
         first, total = await page(0, max_entries)
         if not first or len(first) >= max_entries:
@@ -1154,7 +1293,7 @@ class TalendTmcRuntimeProvider:
                 start += len(batch)
             return result[:max_entries]
 
-        head_target = min(_LOG_HEAD_CAPTURE, max_entries)
+        head_target = min(head_capture, max_entries)
         head = list(first)
         start = len(head)
         while start < head_target:
@@ -1544,6 +1683,146 @@ def _to_engine(item: dict[str, Any], source_key: str, synced_at: datetime) -> Ru
     )
 
 
+# The OSGi Runtime log carries a periodic metric line per Camel route:
+#   DS RUNNER METRIC - ROUTE: [RouteName:x] [RouteExchangesCompleted:n]
+#   [RouteExchangesFailed:n][RouteExchangesTotal:n][RouteLastProcessingTime:n]
+#   [RouteMeanProcessingTime:n]
+# This is the message throughput TMC does NOT put in its API response -- every
+# exchange column on a Route run is null, and that emptiness has been read as
+# "Talend does not measure Route throughput". It measures it; it prints it.
+# Verified on a live estate: 1.885 of 3.000 captured Route log lines are these,
+# and they show one route failing 11 of 83 exchanges while the API reports
+# nothing at all.
+# A Camel trace line carries the whole message. Verified on a live estate: the
+# captured Route logs held 109 XML order messages, 62 complete EDIFACT
+# invoices, 115 SOAP payloads and 53 JSON bodies, lines up to 10.011 characters
+# -- and 90 lines with an IBAN, all in the outbound invoice route. Mirroring
+# those verbatim turns an operational log store into a copy of the traffic.
+#
+# The ENVELOPE is what an operator reads: which pattern, which body type, how
+# large. Keeping that and dropping the content loses no diagnostic signal and
+# no longer copies customer payments into our database.
+_EXCHANGE_TRACE = re.compile(
+    r"^(?P<kop>Exchange\[ExchangePattern:\s*(?P<patroon>\w+),\s*"
+    r"BodyType:\s*(?P<soort>[^,]+),\s*Body:\s*)(?P<body>.*)$",
+    re.S,
+)
+_EDIFACT_LINE = re.compile(r"^\s*UN[BH]\+")
+
+
+def _strip_message_body(message: str) -> str:
+    """The trace envelope, without the payload it was carrying."""
+    text = str(message or "")
+    treffer = _EXCHANGE_TRACE.match(text)
+    if treffer:
+        body = treffer.group("body").rstrip("]").strip()
+        return (
+            f'Exchange[ExchangePattern: {treffer.group("patroon")}, '
+            f'BodyType: {treffer.group("soort").strip()}, '
+            f"Body: {len(body)} tekens, inhoud niet bewaard]"
+        )
+    if _EDIFACT_LINE.match(text):
+        segmenten = [deel.split("+", 1)[0] for deel in text.split("'") if deel.strip()]
+        uniek = list(dict.fromkeys(seg.strip() for seg in segmenten if seg.strip()))[:8]
+        return (
+            f"EDIFACT-bericht, {len(text)} tekens, segmenten "
+            + ", ".join(uniek)
+            + " -- inhoud niet bewaard"
+        )
+    return text
+
+
+_ROUTE_METRIC_LINE = re.compile(r"DS RUNNER METRIC\s*-\s*ROUTE:", re.I)
+_ROUTE_METRIC_FIELD = re.compile(r"\[\s*([A-Za-z]+)\s*:\s*([^\]]*?)\s*\]")
+
+
+def _route_metrics_from_log(message: str) -> tuple[str, dict[str, int]] | None:
+    """(route name, counters) from one metric line, or None.
+
+    The route name in the line is what the counters describe. That is NOT
+    necessarily the deployment whose log we downloaded: the export is the
+    shared engine log, so a line for a sibling route is normal and attributing
+    it to the downloaded deployment would be wrong.
+    """
+    text = str(message or "")
+    if not _ROUTE_METRIC_LINE.search(text):
+        return None
+    velden = dict(_ROUTE_METRIC_FIELD.findall(text))
+    naam = str(velden.pop("RouteName", "")).strip()
+    if not naam:
+        return None
+    tellers: dict[str, int] = {}
+    for sleutel, waarde in velden.items():
+        try:
+            tellers[sleutel] = int(float(waarde))
+        except (TypeError, ValueError):
+            continue
+    return (naam, tellers) if tellers else None
+
+
+def _apply_route_metrics(
+    runs: list[RuntimeJobRun], events: list[RuntimeLogEvent]
+) -> int:
+    """Fill the empty exchange columns on Route runs from their own log lines.
+
+    Only the LATEST line per route is used: the counters are cumulative for the
+    life of the deployment, so an earlier line is a strictly worse answer to
+    the same question. Matching is on route name against `job_name`; a name we
+    do not recognise is skipped rather than guessed at.
+    """
+    laatste: dict[str, dict[str, int]] = {}
+    for event in sorted(events, key=lambda item: (item.timestamp, item.line_ordinal)):
+        gelezen = _route_metrics_from_log(event.message)
+        if gelezen:
+            laatste[gelezen[0]] = gelezen[1]
+    if not laatste:
+        return 0
+    # The counters are cumulative for the RUNNING deployment, so they belong to
+    # the newest run of that route and to no other. Writing them onto every run
+    # of the same route would hand a deployment that ended in July the totals of
+    # the one running today.
+    nieuwste: dict[str, RuntimeJobRun] = {}
+    for run in runs:
+        if run.executable_kind not in {
+            RuntimeExecutableKind.ROUTE,
+            RuntimeExecutableKind.DATA_SERVICE,
+        }:
+            continue
+        naam = run.job_name or ""
+        huidig = nieuwste.get(naam)
+        if huidig is None or run.started_at > huidig.started_at:
+            nieuwste[naam] = run
+
+    gevuld = 0
+    for naam, run in nieuwste.items():
+        tellers = laatste.get(naam)
+        if not tellers:
+            continue
+        run.completed_exchanges = tellers.get("RouteExchangesCompleted")
+        run.failed_exchanges = tellers.get("RouteExchangesFailed")
+        run.total_exchanges = tellers.get("RouteExchangesTotal")
+        run.last_process_time_ms = tellers.get("RouteLastProcessingTime")
+        run.mean_process_time_ms = tellers.get("RouteMeanProcessingTime")
+        gevuld += 1
+    return gevuld
+
+
+def _throttle_delay(response: httpx.Response, attempt: int) -> float:
+    """How long to wait before retrying a throttled request.
+
+    `Retry-After` is the server telling us exactly when it will serve us again;
+    honour it. Without it, back off exponentially. Capped, because a sync that
+    sleeps for minutes is its own kind of failure.
+    """
+    header = response.headers.get("Retry-After", "").strip()
+    if header:
+        try:
+            return min(float(header), _THROTTLE_MAX_DELAY_SECONDS)
+        except ValueError:
+            pass
+    return min(_THROTTLE_BASE_DELAY_SECONDS * (2**attempt), _THROTTLE_MAX_DELAY_SECONDS)
+
+
 def _executable_kind(artifact_type: str | None) -> RuntimeExecutableKind:
     token = re.sub(r"[\s-]+", "_", (artifact_type or "").strip().lower())
     if token in {"standard", "job", "batch", "data_integration"}:
@@ -1926,15 +2205,22 @@ def _bounded_log_head_tail(
 
 
 def _bounded_log_entries(
-    items: list[dict[str, Any]], limit: int
+    items: list[dict[str, Any]], limit: int, head_capture: int = _LOG_HEAD_CAPTURE
 ) -> list[tuple[int, dict[str, Any]]]:
-    """Bound logs while retaining source positions for idempotent re-imports."""
+    """Bound logs while retaining source positions for idempotent re-imports.
+
+    With `head_capture` at or above `limit` this returns the HEAD, which is
+    right for a failed batch run and wrong for a long-lived deployment. Pass 0
+    to keep the tail instead.
+    """
     if limit <= 0:
         return []
     indexed = list(enumerate(items))
     if len(indexed) <= limit:
         return indexed
-    head_size = min(_LOG_HEAD_CAPTURE, limit)
+    head_size = min(head_capture, limit)
+    if head_size <= 0:
+        return indexed[-limit:]
     tail_size = limit - head_size
     if tail_size <= 0:
         return indexed[:limit]
@@ -1951,7 +2237,9 @@ def _to_log_event(item: Any, fallback_execution_id: str, line_ordinal: int = 0) 
         execution_id=_str_field(item, "executionId", "execution_id") or fallback_execution_id,
         timestamp=timestamp,
         severity=_normalize_severity(_field(item, "severity", "level", "logLevel")),
-        message=_required_str(item, "logMessage", "message", "text"),
+        message=_strip_message_body(
+            _required_str(item, "logMessage", "message", "text")
+        ),
         line_ordinal=line_ordinal,
     )
 

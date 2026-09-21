@@ -276,6 +276,26 @@ class Settings(BaseSettings):
     rung2_entity_match_limit: int = 25
     rung2_section_expansion_limit: int = 40
 
+    # Rung 1 exact-name guarantee.
+    #
+    # `search_layered(matched_units=...)` was the codebase's only "cannot lose the
+    # ranking contest" path and nothing ever populated it, so a question naming a
+    # known job could be answered from whatever the embedding happened to rank
+    # first. Wiring it to rung 2 alone would not have fixed that: rung 2 fires
+    # only when rung 1 comes back thin, and the measured failure -- a question
+    # about nine named interfaces answered from five -- had a full rung 1.
+    #
+    # So the guarantee runs at rung 1 too, against the default canonical
+    # partition, in parallel with the semantic searches. It costs one Postgres
+    # alias lookup and one Qdrant scroll, and only for questions that actually
+    # name something the project knows.
+    entity_exact_match_enabled: bool = True
+    #: Chunks the rung-1 guarantee may add. Smaller than rung 2's budget: these
+    #: chunks are pinned to score 1.0 and therefore displace ranked results from
+    #: the reference list, so the guarantee has to stay a floor and not become the
+    #: answer.
+    entity_exact_match_limit: int = 12
+
     # Rung 2 activation. `search_layered` had every knob above and no caller, so
     # the internal partitions were unreachable in production: on one measured
     # corpus 88% of the chunks (the per-group Phase 2 analyses and the
@@ -447,6 +467,11 @@ class Settings(BaseSettings):
     # continuously capturing new operational evidence. Set to 0 for the provider
     # fallback ceiling; unbounded batches are intentionally unsupported.
     talend_tmc_failed_log_run_limit: int = Field(default=10, ge=0)
+    # Route throughput lives in the deployment log, not in the API payload, and
+    # recovering it costs two small requests per route. Kept separate from the
+    # failed-job ceiling: sharing that one left 40 of 46 routes without any
+    # exchange numbers at all.
+    talend_tmc_deployment_counter_run_limit: int = Field(default=100, ge=0)
     # Per-sync ceiling on how many runs have component metrics downloaded.
     talend_tmc_component_metric_run_limit: int = Field(default=25, ge=0)
     # Per-executable ceiling on how many runs of execution HISTORY are ingested per

@@ -30,6 +30,7 @@ import {
 } from "@/lib/jobGraphTransform";
 import { collapseLinearChains, CHAIN_SUMMARY_NODE_TYPE } from "@/lib/chainCollapse";
 import type { AssistantCanvasEmphasis, AssistantFocusRequest, CopilotViewContext } from "@/types/copilot";
+import { useFitOnContainerResize } from "@/hooks/useFitOnContainerResize";
 
 interface JobGraphCanvasProps {
   projectId: string;
@@ -113,6 +114,14 @@ function JobGraphCanvasInner({
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const { fitView } = useReactFlow();
+
+  // The diagram follows the docked copilot: when that panel is widened this
+  // column narrows, and without a refit the graph slides out of view.
+  const refit = useCallback(
+    () => void fitView({ padding: 0.15, duration: 300 }),
+    [fitView],
+  );
+  const canvasRef = useFitOnContainerResize(refit);
   // Component with no deeper level, opened via double-click (D4) - an
   // overlay panel at this same level, not a navigation stack entry.
   const [inspectorComponent, setInspectorComponent] = useState<string | null>(null);
@@ -248,7 +257,7 @@ function JobGraphCanvasInner({
   }, [data, inspectorComponent]);
 
   return (
-    <div className="absolute inset-0" data-testid="job-graph-canvas">
+    <div ref={canvasRef} className="absolute inset-0" data-testid="job-graph-canvas">
       {isLoading && (
         <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-20">
           <div className="flex items-center gap-2 text-muted-foreground">

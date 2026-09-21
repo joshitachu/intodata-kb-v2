@@ -95,8 +95,20 @@ def _check_table_row(
 # actual secret; the filter passes correctly never touch these fields, so
 # the verifier must not either or it flags a false positive on every scan
 # that happens to contain such a name.
+#
+# The second group is the same rule for identifiers the SCANNER composes:
+# `mapping_accounting` and `lineage` build `f"{table}.{column}"` out of two
+# separately-parsed names, so that spelling is not text any filter pass ever
+# saw, and re-running text detectors over it judges a token the source file
+# does not contain. Verified: a mapper offering a column named `key` on input
+# table `row2` produced `row2.key`, which the credential-path pattern read as
+# a key-file path and failed the whole scan on -- and the same construction
+# would read a column named `nl` on table `customer` as an FQDN. Both halves
+# of every such pair are already swept on their own, as `ContextVariable.name`
+# / `SchemaColumn.name` leaves, so nothing is excused from checking here.
 _STRUCTURAL_LEAF_KEYS = frozenset({
     "path", "relative_path", "file_path", "unique_name", "xpath",
+    "source_refs", "dynamic_refs", "unwritten_offered",
 })
 
 

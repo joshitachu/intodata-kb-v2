@@ -39,6 +39,7 @@ import { assistantRoleShadow } from "@/lib/nodeStyles";
 import type { BusinessRule, BusinessSystem, BusinessTopology, DeploymentAgreement, ProjectLandscapeResponse, StreamCondition } from "@/types/landscape";
 import type { AssistantCanvasEmphasis, AssistantFocusRequest, CopilotViewContext } from "@/types/copilot";
 import { aggregatedRelationshipId } from "@/lib/landscapeTransform";
+import { useFitOnContainerResize } from "@/hooks/useFitOnContainerResize";
 
 interface ArchitectureNodeData extends Record<string, unknown> {
   architectureNode: ArchitectureNode;
@@ -65,6 +66,20 @@ const COLUMN_LABEL: Record<ArchitectureColumn, string> = {
   supporting: "Supporting systems",
   integration: "Integration",
 };
+
+/**
+ * Claim-status ("observed" / "inferred" / "proposed") wordt niet getoond.
+ *
+ * Reden: op een gecureerde topologie draagt vrijwel elke claim de waarde
+ * "inferred", omdat "observed" is voorbehouden aan een scanner-bewezen
+ * systeem-naar-systeem-edge. Die bestaan in dit landschap niet, dus de waarde
+ * onderscheidt niets en leest ten onrechte als giswerk voor uitspraken die
+ * rechtstreeks uit productieconfiguratie komen. Het `confidence`-getal draagt
+ * wel informatie en blijft zichtbaar.
+ *
+ * Zet op `true` om de badges terug te zetten.
+ */
+const SHOW_CLAIM_STATUS = false;
 
 function statusLabel(status: string): string {
   if (status === "confirmed") return "Confirmed";
@@ -128,9 +143,9 @@ function ArchitectureSystemNodeComponent({ data }: { data: ArchitectureNodeData 
       <p className={`mt-1 line-clamp-2 text-[10px] leading-snug ${anchor ? "text-slate-200" : "text-slate-500"}`} title={node.description}>
         {node.description}
       </p>
-      <span className={`absolute bottom-3 left-4 rounded px-1.5 py-0.5 text-[9px] font-semibold ${anchor ? "bg-white/10 text-white" : statusClasses(node.status)}`}>
+      {SHOW_CLAIM_STATUS && <span className={`absolute bottom-3 left-4 rounded px-1.5 py-0.5 text-[9px] font-semibold ${anchor ? "bg-white/10 text-white" : statusClasses(node.status)}`}>
         {statusLabel(node.status)}
-      </span>
+      </span>}
     </div>
   );
 }
@@ -241,6 +256,14 @@ export function ArchitectureTopologyCanvas({
   const [nodes, setNodes, onNodesChange] = useNodesState(baseFlow.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(baseFlow.edges);
   const [instance, setInstance] = useState<ReactFlowInstance<Node<ArchitectureNodeData>, Edge<ArchitectureEdgeData>> | null>(null);
+
+  // The diagram follows the docked copilot: widening that panel narrows this
+  // column, and without a refit the graph slides out of view on the right.
+  const refit = useCallback(
+    () => void instance?.fitView({ padding: 0.16, duration: 300, minZoom: 0.35, maxZoom: 1.2 }),
+    [instance],
+  );
+  const canvasRef = useFitOnContainerResize(refit);
   const [query, setQuery] = useState("");
   const [selectedSystemId, setSelectedSystemId] = useState<string | null>(null);
   const [selectedPairId, setSelectedPairId] = useState<string | null>(null);
@@ -370,7 +393,7 @@ export function ArchitectureTopologyCanvas({
   }, []);
 
   return (
-    <div className="absolute inset-0 overflow-hidden bg-slate-50" data-testid="architecture-topology-canvas">
+    <div ref={canvasRef} className="absolute inset-0 overflow-hidden bg-slate-50" data-testid="architecture-topology-canvas">
       <header className="absolute inset-x-0 top-0 z-30 border-b border-slate-200 bg-white/95 px-4 py-3 shadow-sm backdrop-blur">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -517,7 +540,7 @@ function ArchitectureDetailsPanel({
       <aside className="absolute bottom-0 right-0 top-[82px] z-20 w-[390px] overflow-y-auto border-l border-slate-200 bg-white shadow-xl" aria-label="Relationship details">
         <PanelHeader eyebrow="Business relationship" title={`${first?.label ?? selectedPair.first} ⇄ ${second?.label ?? selectedPair.second}`} onClose={onClose} />
         <div className="space-y-4 p-4">
-          <div className="grid grid-cols-3 gap-2"><Fact label="Flows" value={`${pairFlows.length}`} /><Fact label="Objects" value={`${selectedPair.businessObjects.length}`} /><Fact label="Status" value={statusLabel(selectedPair.status)} /></div>
+          <div className={`grid ${SHOW_CLAIM_STATUS ? "grid-cols-3" : "grid-cols-2"} gap-2`}><Fact label="Flows" value={`${pairFlows.length}`} /><Fact label="Objects" value={`${selectedPair.businessObjects.length}`} />{SHOW_CLAIM_STATUS && <Fact label="Status" value={statusLabel(selectedPair.status)} />}</div>
           <Section title="Data exchanged">
             <div className="space-y-2">
               {pairFlows.map((flow) => (
@@ -745,26 +768,18 @@ function FlowDetailsPanel({
 
           {flow.fieldRows.length > 0 && (
             <Disclosure title="Velden" count={flow.fieldRows.length}>
-              <div className="space-y-1.5">
-                {flow.fieldRows.slice(0, PANEL_FIELD_ROWS).map((row) => (
-                  <div key={`${row.transformationId}:${row.index}`} className="rounded-lg bg-slate-50 p-2">
-                    <div className="flex items-baseline justify-between gap-2">
-                      <FieldPath value={row.targetField} className="text-[10px] font-bold text-slate-800" />
-                      <span className="shrink-0 text-[9px] font-semibold uppercase text-slate-400">{row.mappingType}</span>
-                    </div>
-                    <FieldPath value={row.sourceOrExpression} className="mt-0.5 block text-[10px] text-slate-600" />
-                    <div className="mt-1 flex flex-wrap items-center gap-1">
-                      {row.reachesTarget !== "unknown" && (
-                        <span className={`rounded px-1.5 py-0.5 text-[9px] font-semibold ${reachesClasses(row.reachesTarget)}`}>{REACHES_TARGET_LABEL[row.reachesTarget]}</span>
-                      )}
-                      {row.category && <Tag>{row.category}</Tag>}
-                    </div>
-                  </div>
-                ))}
-                {flow.fieldRows.length > PANEL_FIELD_ROWS && (
-                  <p className="text-[10px] text-slate-500">+{flow.fieldRows.length - PANEL_FIELD_ROWS} meer in de volledige veldentabel.</p>
-                )}
-              </div>
+              <MappingRows rows={flow.fieldRows} />
+            </Disclosure>
+          )}
+
+          {flow.messageRows.length > 0 && (
+            <Disclosure title="Berichtopbouw" count={flow.messageRows.length}>
+              <p className="mb-2 text-[10px] leading-relaxed text-slate-500">
+                Een berichtroute heeft geen veldafbeelding zoals een verwerkingsketen die
+                heeft. Zij zet kopvelden voor routering en besturing en stelt de inhoud van
+                het bericht samen. Dat staat hieronder.
+              </p>
+              <MappingRows rows={flow.messageRows} />
             </Disclosure>
           )}
 
@@ -917,6 +932,48 @@ function FlowDetailsPanel({
 }
 
 /**
+ * One mapping per row: what it becomes, said in words, with the verbatim rule
+ * underneath as evidence.
+ *
+ * The sentence is the row and the expression is the footnote, not the other way
+ * around. A 390px row cannot carry
+ * `SELECT count(*) AS elements ${exchangeProperty.from}` AND stay readable, and
+ * a reader who only ever sees the expression has to reverse-engineer the intent
+ * the producer already wrote down.
+ */
+function MappingRows({ rows }: { rows: ArchitectureFlowProjection["fieldRows"] }) {
+  return (
+    <div className="space-y-1.5">
+      {rows.slice(0, PANEL_FIELD_ROWS).map((row) => (
+        <div key={`${row.transformationId}:${row.index}`} className="rounded-lg bg-slate-50 p-2">
+          <div className="flex items-baseline justify-between gap-2">
+            <FieldPath value={row.targetField} className="text-[10px] font-bold text-slate-800" />
+            <span className="shrink-0 text-[9px] font-semibold uppercase text-slate-400">{row.mappingType}</span>
+          </div>
+          <FieldPath value={row.sourceOrExpression} className="mt-0.5 block text-[10px] text-slate-600" />
+          {/* Only when it adds something: repeating the sentence as its own
+              footnote is noise, and an empty footnote row is worse. */}
+          {row.expression && row.expression !== row.sourceOrExpression && (
+            <p className="mt-1 truncate font-mono text-[9px] text-slate-400" title={row.expression}>
+              {row.expression}
+            </p>
+          )}
+          <div className="mt-1 flex flex-wrap items-center gap-1">
+            {row.reachesTarget !== "unknown" && (
+              <span className={`rounded px-1.5 py-0.5 text-[9px] font-semibold ${reachesClasses(row.reachesTarget)}`}>{REACHES_TARGET_LABEL[row.reachesTarget]}</span>
+            )}
+            {row.category && <Tag>{row.category}</Tag>}
+          </div>
+        </div>
+      ))}
+      {rows.length > PANEL_FIELD_ROWS && (
+        <p className="text-[10px] text-slate-500">+{rows.length - PANEL_FIELD_ROWS} meer in de volledige veldentabel.</p>
+      )}
+    </div>
+  );
+}
+
+/**
  * A collapsed, counted section. Collapsed BY DEFAULT and that is the point: an
  * enriched stream carries a dozen sections, and rendering them all expanded put
  * every measured number below the fold behind repeated prose. The count is on
@@ -996,6 +1053,7 @@ function Tag({ children }: { children: React.ReactNode }) {
 }
 
 function StatusBadge({ status }: { status: string }) {
+  if (!SHOW_CLAIM_STATUS) return null;
   return <span className={`rounded px-1.5 py-0.5 text-[9px] font-semibold ${statusClasses(status)}`}>{statusLabel(status)}</span>;
 }
 

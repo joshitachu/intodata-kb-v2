@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
 
 import tiktoken
+from src.retrieval.coverage import ContextFit, RetrievalCoverage
 from src.schemas import Source
 from src.harness.packs.models import StylePresentation
 
@@ -51,7 +53,9 @@ SYSTEM_PROMPT = (
     "1. Answer ONLY from the retrieved context. Never use general knowledge to fill gaps.\n"
     "2. Never fabricate details not present in the context.\n"
     "3. Every factual claim must cite a source [N].\n"
-    "4. If a user corrects you, accept it. Do not re-assert wrong information.\n\n"
+    "4. Use ONLY the reference numbers shown in the context. A [N] with no matching\n"
+    "   [Reference N: ...] header above is a fabricated citation, not a citation.\n"
+    "5. If a user corrects you, accept it. Do not re-assert wrong information.\n\n"
 
     "## Formatting\n"
     "- Markdown: headings, bullets, bold, code blocks.\n"
@@ -114,8 +118,10 @@ CODE_ASSISTANT_SYSTEM_PROMPT = (
     "## Critical rules\n"
     "1. Use ONLY the retrieved context, memory, and corrections. Never fill gaps with general knowledge.\n"
     "2. Every factual claim must cite a source [N]. Only cite sources you actually used.\n"
-    "3. If a user corrects you, accept it and do not re-assert the wrong information.\n"
-    "4. Never invent field names, job names, SQL, endpoints, config values, or schemas.\n\n"
+    "3. Use ONLY the reference numbers shown in the context. A [N] with no matching\n"
+    "   [Reference N: ...] header above is a fabricated citation, not a citation.\n"
+    "4. If a user corrects you, accept it and do not re-assert the wrong information.\n"
+    "5. Never invent field names, job names, SQL, endpoints, config values, or schemas.\n\n"
 
     "## Formatting\n"
     "- Concise markdown: headings, bullets, code blocks for any code/config/SQL.\n"
@@ -259,6 +265,75 @@ def build_correction_extraction_messages(
     ]
 
 
+def coverage_instruction(coverage: RetrievalCoverage | None) -> str | None:
+    """Tell the model what this turn's retrieval did NOT cover.
+
+    Returns ``None`` when nothing measurable was left out. Silence is deliberate:
+    a block that fires on every turn saying "coverage may be incomplete" teaches
+    the model to ignore it, and there is no honest way to assert the opposite --
+    top-k is still top-k even when nothing was dropped.
+
+    The instruction is conditional on the SHAPE of the question rather than
+    blanket. A lookup ("what does job X do?") answered from a partial retrieval is
+    usually still a correct answer; a completeness question ("how many interfaces
+    are there?") answered from one is the measured failure this exists for, where
+    a question about nine known interfaces retrieved five and produced a confident
+    answer about five with no disclosure.
+
+    The closing rule matters as much as the counts. The reader is a consultant,
+    not an engineer: "retrieval returned 5 of 9 chunks" is our plumbing, while
+    "the documentation I could see describes five of these, so this is not the
+    complete list" is the same fact in their terms.
+    """
+
+    if coverage is None or not coverage.has_gap:
+        return None
+
+    lines: list[str] = []
+    fit = coverage.context
+    if fit is not None and fit.dropped:
+        lines.append(
+            f"- {fit.dropped} of {fit.offered} retrieved passages did not fit and are "
+            "NOT in the context above."
+        )
+    if fit is not None and fit.truncated:
+        lines.append(
+            f"- {fit.truncated} passage(s) are present but cut off part-way; their "
+            "endings are missing."
+        )
+    if coverage.unreferenced_documents:
+        lines.append(
+            f"- {coverage.unreferenced_documents} of {coverage.retrieved_documents} "
+            "documents have no reference number, so they cannot be cited."
+        )
+    missing = coverage.entities.missing
+    if missing:
+        named = ", ".join(missing[:12])
+        lines.append(
+            f"- The question names {len(missing)} known item(s) that NO passage above "
+            f"mentions: {named}."
+        )
+
+    return (
+        "## Coverage of this question\n"
+        "These are facts about the search that produced your context, not facts about "
+        "the client's systems:\n"
+        + "\n".join(lines)
+        + "\n\n"
+        "Therefore:\n"
+        "- If the question asks for a complete set -- every, all, how many, the full "
+        "list -- you do NOT have one. Answer with what is present and state plainly "
+        "that it may not be complete.\n"
+        "- Never present a count, an inventory or an exhaustive list derived from this "
+        "context as final.\n"
+        "- A named item listed above as unmentioned is NOT absent from the client's "
+        "systems. Say you did not find it in what you could see; never say it does not "
+        "exist.\n"
+        "- Do not mention retrieval, passages, chunks, scores, context or this block. "
+        "Phrase the limitation in the reader's terms."
+    )
+
+
 def build_messages(
     query: str,
     sources: list[Source],
@@ -268,19 +343,33 @@ def build_messages(
     answer_style: str = "assistant",
     auxiliary_sources: list[Source] | None = None,
     presentation: StylePresentation | None = None,
+    coverage: RetrievalCoverage | None = None,
 ) -> list[dict[str, str]]:
-    """Build the chat messages list: system prompt + knowledge + memory context + context + user query."""
+    """Build the chat messages list: system prompt + knowledge + memory context + context + user query.
+
+    ``coverage`` carries what retrieval found versus what reached the answer. It
+    is completed here rather than by the caller because the last place material is
+    lost is the token budget below, which only this function can measure.
+    """
     if auxiliary_sources:
-        context = build_role_aware_context(
+        context, fit = build_role_aware_context(
             sources,
             auxiliary_sources,
             reference_numbers=reference_numbers,
         )
     else:
-        context = _build_context(sources, reference_numbers=reference_numbers)
+        context, fit = _build_context(sources, reference_numbers=reference_numbers)
     system_prompt = CODE_ASSISTANT_SYSTEM_PROMPT if answer_style == "code" else SYSTEM_PROMPT
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     _append_presentation_instruction(messages, presentation)
+    if coverage is not None:
+        # Replaced, not merged: the caller cannot know the token budget's verdict,
+        # so any `context` it supplied would be a guess this function can correct.
+        disclosure = coverage_instruction(
+            dataclasses.replace(coverage, context=fit)
+        )
+        if disclosure:
+            messages.append({"role": "system", "content": disclosure})
     if system_knowledge:
         messages.append({"role": "system", "content": f"System knowledge: {system_knowledge}"})
     if memory_context:
@@ -293,12 +382,17 @@ def build_messages(
 def _build_context(
     sources: list[Source],
     reference_numbers: dict[int, int] | None = None,
-) -> str:
+) -> tuple[str, ContextFit]:
     """Concatenate source texts, truncating per-source to stay within MAX_CONTEXT_TOKENS.
 
     Instead of dropping entire sources when the budget is exceeded, each source
     that would overflow is truncated to fit the remaining budget (with ``[...]``
     appended).  This ensures all retrieved sources are represented in the context.
+
+    Returns the context AND what it cost to fit. The fit used to be logged and
+    discarded, which made "12 sources used, 4 dropped" a line an operator could
+    read after the fact and the model could never read at all -- so an answer built
+    from two thirds of the evidence was written as though it had all of it.
     """
     enc = get_encoding()
     parts: list[str] = []
@@ -353,28 +447,40 @@ def _build_context(
     )
     context = "\n".join(parts)
     context += CONTEXT_FOOTER
-    return context
+    fit = ContextFit(
+        offered=len(sources), used=len(parts), truncated=truncated_sources
+    )
+    return context, fit
 
 
 def _context_body(
     sources: list[Source],
     reference_numbers: dict[int, int] | None = None,
-) -> str:
+) -> tuple[str, ContextFit]:
     """Build context without the global footer for composing multiple sections."""
-    return _build_context(sources, reference_numbers=reference_numbers).removesuffix(CONTEXT_FOOTER)
+    body, fit = _build_context(sources, reference_numbers=reference_numbers)
+    return body.removesuffix(CONTEXT_FOOTER), fit
 
 
 def build_role_aware_context(
     source_sources: list[Source],
     auxiliary_sources: list[Source],
     reference_numbers: dict[int, int] | None = None,
-) -> str:
-    """Build source-first context with non-source material in separate sections."""
+) -> tuple[str, ContextFit]:
+    """Build source-first context with non-source material in separate sections.
+
+    Returns the assembled context and the summed fit across every section, so a
+    source dropped from the auxiliary half is reported exactly like one dropped
+    from the project half -- both are evidence the model never saw.
+    """
     parts: list[str] = []
+    fit = ContextFit()
 
     if source_sources:
         parts.append("## Project Evidence")
-        parts.append(_context_body(source_sources, reference_numbers=reference_numbers))
+        body, section_fit = _context_body(source_sources, reference_numbers=reference_numbers)
+        parts.append(body)
+        fit = fit.merged_with(section_fit)
     else:
         parts.append("## Project Evidence")
         parts.append("No source project evidence was retrieved for this question.")
@@ -388,11 +494,15 @@ def build_role_aware_context(
 
     if reference_sources:
         parts.append("## Supporting Reference")
-        parts.append(_context_body(reference_sources, reference_numbers=reference_numbers))
+        body, section_fit = _context_body(reference_sources, reference_numbers=reference_numbers)
+        parts.append(body)
+        fit = fit.merged_with(section_fit)
 
     if guidance_sources:
         parts.append("## Guidance, Standards, and Policies")
-        parts.append(_context_body(guidance_sources, reference_numbers=reference_numbers))
+        body, section_fit = _context_body(guidance_sources, reference_numbers=reference_numbers)
+        parts.append(body)
+        fit = fit.merged_with(section_fit)
         parts.append(
             "Use policy material as constraints or compliance context. "
             "Use guidance and standards to shape interpretation. Do not treat this section "
@@ -401,7 +511,9 @@ def build_role_aware_context(
 
     if template_sources:
         parts.append("## Template Context")
-        parts.append(_context_body(template_sources, reference_numbers=reference_numbers))
+        body, section_fit = _context_body(template_sources, reference_numbers=reference_numbers)
+        parts.append(body)
+        fit = fit.merged_with(section_fit)
         parts.append(
             "Use Template Context only for response structure, outline, formatting, or "
             "deliverable shape. Do not use templates as factual project evidence."
@@ -415,7 +527,7 @@ def build_role_aware_context(
         "not prove project-specific facts when Project Evidence is missing. Do NOT add "
         "details beyond what is shown."
     )
-    return "\n\n".join(part for part in parts if part)
+    return "\n\n".join(part for part in parts if part), fit
 
 
 def build_no_results_messages(
@@ -491,7 +603,7 @@ def build_metadata_messages(
     parts = [f"System data:\n{metadata_context}"]
 
     if sources:
-        doc_context = _build_context(sources, reference_numbers=reference_numbers)
+        doc_context, _fit = _build_context(sources, reference_numbers=reference_numbers)
         parts.append(f"\nRetrieved document content:\n{doc_context}")
 
     parts.append(f"\nQuestion: {query}")

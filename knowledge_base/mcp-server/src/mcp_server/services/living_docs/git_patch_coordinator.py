@@ -327,7 +327,13 @@ class GitPatchCoordinator:
             )
         workspace_output = self._workspace_output(candidate.id, active_output_dir)
         self._copy_active_output(active_output_dir, workspace_output, incremental_only=evidence_bundle is not None)
-        from mcp_server.services.living_docs.opencode_reingestion import _snapshot_tree
+        def _snapshot_tree(root: Path) -> dict[str, str]:
+            if not root.exists():
+                return {}
+            return {
+                str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in root.rglob("*") if path.is_file()
+            }
         initial_docs = _snapshot_tree(active_output_dir / "docs")
         if _snapshot_tree(workspace_output / "docs") != initial_docs:
             return self._hold(candidate, "Active documents changed while taking their snapshot",

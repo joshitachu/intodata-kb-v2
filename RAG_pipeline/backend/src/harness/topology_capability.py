@@ -251,6 +251,22 @@ TOPOLOGY_STRUCTURE_CAPABILITY = CapabilityDefinition(
                     "is fixed by the tool and cannot be requested."
                 ),
             },
+            # Batch settings read for get_job_detail. Declared here because
+            # `additionalProperties: False` would otherwise make it unreachable
+            # from the harness surface -- silently, since the operation keeps
+            # working and simply keeps costing one call per component.
+            "include_parameters": {
+                "type": "boolean",
+                "description": (
+                    "get_job_detail only. When true, every component on the page comes "
+                    "back with its configured settings -- scalar parameters plus the "
+                    "row-structured tables (header/variable values, filter conditions, "
+                    "field mappings) where a design's decision logic lives. Use it when "
+                    "you are looking for WHERE something is decided inside a design and "
+                    "do not yet know which component decides it, instead of calling "
+                    "get_component_detail once per component."
+                ),
+            },
             # A composite upload carries the same design in more than one
             # partition; this pins which copy is meant. Long, because a real
             # source root is a full export path.

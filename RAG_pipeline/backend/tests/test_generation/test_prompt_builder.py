@@ -90,7 +90,8 @@ def test_build_context_includes_headers():
         _make_source("Text A", chunk_index=0),
         _make_source("Text B", chunk_index=3),
     ]
-    context = _build_context(sources)
+    context, fit = _build_context(sources)
+    assert fit.offered == fit.used == 2
     assert "[Source: test.pdf, chunk 0]" in context
     assert "[Source: test.pdf, chunk 3]" in context
     assert "Text A" in context
@@ -105,7 +106,7 @@ def test_build_context_with_reference_numbers():
     # Rename second source for clarity
     sources[1].filename = "other.pdf"
     ref_map = {1: 1, 2: 2}
-    context = _build_context(sources, reference_numbers=ref_map)
+    context, _fit = _build_context(sources, reference_numbers=ref_map)
     assert "[Reference 1: test.pdf]" in context
     assert "[Reference 2: other.pdf]" in context
     assert "[Source:" not in context
@@ -118,11 +119,14 @@ def test_build_role_aware_context_separates_source_and_auxiliary_sections():
     guidance = _make_source("Answer guidance", document_id=3)
     guidance.document_role = "guidance"
 
-    context = build_role_aware_context(
+    context, fit = build_role_aware_context(
         [source],
         [reference, guidance],
         reference_numbers={1: 1, 2: 2, 3: 3},
     )
+
+    # Summed across every rendered section, not just the project half.
+    assert (fit.offered, fit.used, fit.truncated) == (3, 3, 0)
 
     assert "## Project Evidence" in context
     assert "Project fact" in context
@@ -138,7 +142,7 @@ def test_build_role_aware_context_marks_missing_source_evidence():
     guidance = _make_source("Use this checklist", document_id=3)
     guidance.document_role = "policy"
 
-    context = build_role_aware_context([], [guidance], reference_numbers={3: 1})
+    context, _fit = build_role_aware_context([], [guidance], reference_numbers={3: 1})
 
     assert "No source project evidence was retrieved" in context
     assert "Use this checklist" in context
@@ -149,7 +153,7 @@ def test_build_role_aware_context_keeps_template_structure_only():
     template = _make_source("Template: Finding, Evidence, Next Steps", document_id=4)
     template.document_role = "template"
 
-    context = build_role_aware_context([], [template], reference_numbers={4: 1})
+    context, _fit = build_role_aware_context([], [template], reference_numbers={4: 1})
 
     assert "## Template Context" in context
     assert "Template: Finding, Evidence, Next Steps" in context
@@ -164,8 +168,11 @@ def test_build_context_truncates_per_source():
         _make_source(long_text, chunk_index=0),
         _make_source("Second source text", chunk_index=1),
     ]
-    context = _build_context(sources)
+    context, fit = _build_context(sources)
     # First source should be truncated (not dropped) with [...] marker
     assert "[...]" in context
+    # And the loss is now reported rather than only logged: one source consumed
+    # the whole budget, so the second never made it into the prompt.
+    assert (fit.offered, fit.used, fit.truncated, fit.dropped) == (2, 1, 1, 1)
     # Source header should still appear
     assert "[Source: test.pdf, chunk 0]" in context

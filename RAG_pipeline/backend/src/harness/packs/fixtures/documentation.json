@@ -41,6 +41,7 @@
         "mcp.docs.list_project_docs",
         "mcp.docs.read_project_doc",
         "rag.docs.read_document",
+        "rag.docs.read_document_text",
         "nexus.metadata.query",
         "nexus.conversations.read_summary_facts",
         "nexus.docs.list_documentation_packs",

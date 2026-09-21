@@ -37,10 +37,48 @@ _INTERNAL_NARRATION_RE = re.compile(
     r"\b(?:grounding[-_\s]+block|nexus-grounding|no\s+tool\s+calls?|tool\s+result)\b)",
     re.IGNORECASE | re.DOTALL,
 )
+#: Every machine evidence id shape the evidence builders mint.
+#:
+#: Public and defined HERE rather than in ``readonly_runtime`` because both
+#: modules need the same answer and only one of them can import the other. Two
+#: hand-maintained copies is what let ``doctext:`` -- the whole-document read's
+#: id namespace, added when ``read_document`` was split -- be absent from one of
+#: them and therefore reach prose.
+#:
+#: Written over the id NAMESPACES, not over the ids observed leaking: the failure
+#: mode is a namespace added upstream and never mirrored here. The chunk tail is
+#: ``[\d-]+`` because a merged document source mints ``doc:12:0-1-2``.
+VISIBLE_EVIDENCE_KEY_RE = re.compile(
+    r"(?:metadata:[a-z0-9_.:-]+"
+    r"|mcp-doc(?:-content)?:[a-z0-9_.:/-]+"
+    r"|doctext:\d+:[\d-]+"
+    r"|doc:\d+:[\d-]+"
+    r"|conversation:\d+:message:[a-z0-9_.:-]+"
+    r"|runtime-(?:semantic|log):[a-z0-9_.:-]+"
+    r"|topology:[a-z0-9_.:-]+)\b",
+    re.IGNORECASE,
+)
+
+#: Semantic tool names that are valid only inside the hidden grounding contract.
+#:
+#: Pinned against the live registry by
+#: ``tests/test_harness/test_grounding_visible_references.py``: a name here that
+#: no capability answers to scrubs nothing, which is how ``read_document``
+#: survived its own rename while neither ``search_within_document`` nor the
+#: complete document reader was ever added.
+_VISIBLE_TOOL_NAMES = (
+    "query_project_metadata",
+    "search_documentation",
+    "list_generated_documents",
+    "search_within_document",
+    "read_document",
+    "read_generated_document",
+    "read_topology_structure",
+)
+
 _VISIBLE_IMPLEMENTATION_RE = re.compile(
-    r"(?:\b(?:query_project_metadata|search_documentation|"
-    r"list_project_documents|read_document)\b|"
-    r"\b(?:metadata:[a-z0-9_.:-]+|mcp-doc:[a-z0-9_.:/-]+|doc:\d+:\d+)\b)",
+    r"(?:\b(?:" + "|".join(_VISIBLE_TOOL_NAMES) + r")\b|"
+    r"\b(?:" + VISIBLE_EVIDENCE_KEY_RE.pattern + r"))",
     re.IGNORECASE,
 )
 
@@ -424,6 +462,7 @@ def required_disclosure_for(status: AnswerStatus) -> str | None:
 
 
 __all__ = [
+    "VISIBLE_EVIDENCE_KEY_RE",
     "AnswerStatus",
     "DISCLOSURE_CONFLICTING",
     "DISCLOSURE_DENIED",

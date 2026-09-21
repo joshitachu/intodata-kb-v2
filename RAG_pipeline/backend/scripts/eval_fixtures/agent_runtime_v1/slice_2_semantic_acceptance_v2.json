@@ -28,7 +28,7 @@
         "query_project_metadata"
       ],
       [
-        "list_project_documents",
+        "list_generated_documents",
         "search_documentation"
       ]
     ],

@@ -164,5 +164,8 @@ docs/screenshots/
 /codex-session-*.md
 
 # intodoc deterministic-parse cache. Keyed by content hash and regenerated on
-# demand; 150 single-line JSON blobs that say nothing about the source.
-knowledge_base/intodoc/.intodoc_cache/
+# demand; single-line JSON blobs derived from client source. Matched at any
+# depth on purpose -- the old path-anchored pattern only covered
+# knowledge_base/intodoc/, so the cache the scanner actually writes to
+# knowledge_base/ (482 files, 77 MB) was never ignored.
+.intodoc_cache/

@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 import logging
 from pathlib import Path
 
 from qdrant_client import AsyncQdrantClient
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlalchemy import select
 
-from src.db.models import Document, IngestionJob
+from src.db.models import Document, DocumentTextRow, IngestionJob
+from src.db.models.document_text import (
+    DOCUMENT_TEXT_MAX_CHARS,
+    DOCUMENT_TEXT_SOURCE_PARSED,
+)
 from src.ingestion.chunker import chunk_text
 from src.ingestion.markdown_chunker import MarkdownChunk, chunk_markdown
 from src.ingestion.metadata import extract_metadata
@@ -119,6 +125,91 @@ async def _replace_existing_document(
     await db.flush()
 
 
+async def _persist_document_text(
+    document_id: int,
+    text: str,
+    role: str,
+    db: AsyncSession,
+) -> bool:
+    """Keep the parsed text of every document that produced usable content.
+
+    Role is deliberately NOT consulted. It used to be: this called
+    ``should_materialize``, which excludes the evidence roles, and the table
+    ended up holding 3 rows against 551 documents -- effectively unpopulated,
+    and empty in exactly the place it was needed. The questions that cannot be
+    answered from similarity chunks ("how many fields does this mapping have",
+    "list every step") are asked about the source corpus, which is the corpus
+    that rule excluded.
+
+    ``should_materialize`` is still the right rule for a different decision --
+    which documents are MOUNTED into the agent's workspace as always-reachable
+    files -- and still makes it, in
+    :mod:`src.harness.guidance.material_repository`. What changed is that a
+    stored row no longer implies a mounted file.
+
+    The only gate left is size, and it bounds the table rather than the agent:
+    see :data:`DOCUMENT_TEXT_MAX_CHARS`. A document over the ceiling stores
+    nothing rather than a prefix, because a prefix is indistinguishable from the
+    whole document to the caller that reads it.
+
+    Best-effort on purpose. A stored copy is an enhancement -- it lets an agent
+    read a document whole instead of retrieving fragments of it -- while the
+    chunks that make the document answerable at all are already in Qdrant by the
+    time the caller commits. Failing an upload because the readable copy could
+    not be written would trade a working ingestion for a missing one.
+
+    The write runs inside a SAVEPOINT so that "best-effort" is true rather than
+    merely intended: a failed INSERT leaves the enclosing transaction unusable,
+    so without the savepoint the caller's commit would fail anyway and the
+    swallowed error would resurface as a failed upload one step later.
+
+    Returns True when the text was stored.
+    """
+
+    char_count = len(text)
+    if char_count == 0:
+        return False
+    if char_count > DOCUMENT_TEXT_MAX_CHARS:
+        # Loud, because it is the one case where a document is searchable and
+        # not readable, and an agent asking why will get "I could not read it
+        # whole" with no way to find out that a ceiling is the reason.
+        logger.warning(
+            "Document %d is %d chars, above the %d-char store ceiling; its text is "
+            "not kept and it can only be searched",
+            document_id,
+            char_count,
+            DOCUMENT_TEXT_MAX_CHARS,
+        )
+        return False
+
+    try:
+        async with db.begin_nested():
+            db.add(
+                DocumentTextRow(
+                    document_id=document_id,
+                    text=text,
+                    char_count=char_count,
+                    sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    source=DOCUMENT_TEXT_SOURCE_PARSED,
+                )
+            )
+            await db.flush()
+    except (SQLAlchemyError, UnicodeError):
+        # UnicodeError covers the parser handing back lone surrogates, which
+        # only fail once they are encoded for the digest.
+        logger.error(
+            "Failed to store readable text for document %d (role=%s, chars=%d); "
+            "ingestion continues without it",
+            document_id,
+            role,
+            char_count,
+            exc_info=True,
+        )
+        return False
+
+    return True
+
+
 async def ingest_document(
     file_bytes: bytes,
     filename: str,
@@ -202,6 +293,13 @@ async def ingest_document(
                 default_source_layer="canonical_docs",
                 default_artifact_type="uploaded_file",
             )
+
+        # 4b. Keep the text itself, so the document can be read in document order
+        # and not only searched in relevance order. Placed after chunking so it
+        # only happens for a document that produced usable content; the old
+        # document's row went with it in step 0 (FK cascade), so a re-ingest
+        # replaces the stored text instead of accumulating copies.
+        await _persist_document_text(doc.id, text, normalized_role, db)
 
         # 5. Embed (dense)
         embeddings = await embed_texts(chunk_texts)
@@ -305,6 +403,11 @@ async def ingest_text(
             default_source_layer="canonical_docs",
             default_artifact_type="final_doc",
         )
+
+        # 3b. Same storage rule as the upload path. A generated document pushed
+        # in through the MCP server is exactly as readable-whole as an uploaded
+        # one, and the policy has no reason to know which door it came through.
+        await _persist_document_text(doc.id, text, normalized_role, db)
 
         # 4. Embed (dense)
         embeddings = await embed_texts(chunk_texts)

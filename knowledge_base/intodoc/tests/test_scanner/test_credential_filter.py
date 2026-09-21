@@ -990,3 +990,97 @@ def test_credential_marker_is_matched_at_a_token_start_after_any_delimiter():
         'a="b" /opt/gcp.json',
     ):
         assert "[CREDENTIAL_PATH]" in cred_filter.filter_text(text, filename="t.xml"), text
+
+
+# ── Credential PATH vs ordinary identifier ──────────────────────────────
+#
+# The marker used to be matched as a bare substring of any delimiter-free
+# token, so a column named `key` and a business table named `*_CREDENTIALS`
+# were redacted out of the SQL and tMap expressions that referenced them
+# (verified on a real Talend estate). A credential path now has to prove it
+# is a FILE reference.
+
+def test_dataflow_identifiers_are_not_credential_paths():
+    cred_filter = CredentialFilter()
+    for text in (
+        "row2.key",                                # column literally named "key"
+        "input_row.key",
+        "this.key",
+        "row1.keyNumber",
+        "configuration.dataset.keyValuePairs",
+        "configuration.snowflakeAuth.keyAlias",
+        "STG.APOTHEEK_VP_CREDENTIALS",             # business table name
+        "row23.apotheek_vp_credentials",           # business column name
+        "LoadCredentialsTable",
+        "service_account_id",
+    ):
+        assert cred_filter.filter_text(text, filename="t.item") == text, text
+        assert "credential_path" not in cred_filter.detect(text), text
+
+
+def test_credential_file_references_are_still_redacted():
+    cred_filter = CredentialFilter()
+    for text in (
+        "/etc/ssl/private/server.key",             # path-shaped
+        r"C:\keys\prod.key",
+        "keys/app.pem",
+        "config/service_account.json",
+        "/opt/Credentials/vault.item",
+        "server.pem",                              # .pem needs no path
+        "credentials.json",                        # stem names the material
+        "MyCredentials.properties",
+        "keystore.jks",
+        "private_key.pem",
+        "gcp.json",
+        "secret.key",
+    ):
+        cleaned = cred_filter.filter_text(text, filename="t.item")
+        assert "[CREDENTIAL_PATH]" in cleaned, text
+        assert cred_filter.detect(text).get("credential_path"), text
+
+
+def test_sql_and_expression_evidence_survives_redaction():
+    """The scan is evidence: a credential-shaped NAME is not a secret."""
+    cred_filter = CredentialFilter()
+    for text in (
+        '"SELECT id FROM STG.APOTHEEK_VP_CREDENTIALS WHERE x=1"',
+        'row2.key != null ? row2.key : ""',
+        '<column name="apotheek_vp_credentials" type="id_String"/>',
+    ):
+        assert cred_filter.filter_text(text, filename="t.item") == text, text
+
+
+def test_a_redaction_placeholder_is_a_token_boundary():
+    """Patterns must not read the output of the patterns that ran before.
+
+    `[CREDENTIAL_PARAM_REDACTED]` contains the word CREDENTIAL; swallowing it
+    turned an already correctly redacted URI into `[CREDENTIAL_PATH]`, and a
+    path with a redacted segment must stay matchable on the other side of it.
+    """
+    cred_filter = CredentialFilter()
+    assert cred_filter.filter_text(
+        "jms://broker.example.nl:61616?password=FakeNotReal42",
+    ) == "[URL_REDACTED]"
+    assert "[CREDENTIAL_PATH]" in cred_filter.filter_text(
+        r"\\srvt0156\share\certs\client.pem", filename="t.item",
+    )
+
+
+def test_credential_path_patterns_stay_linear_on_a_long_token():
+    """Splitting one pattern into three must not reintroduce the quadratic
+    scan the token-start anchor was added to kill. Times the credential-path
+    patterns only -- other patterns have their own (pre-existing) costs on a
+    pathological token, and this test is about this rule."""
+    import time
+
+    cred_filter = CredentialFilter()
+    text = '<a p="' + ("segment." * 20_000) + 'key">'
+    patterns = [
+        pattern for pattern, replacement in cred_filter._active_patterns
+        if replacement == "[CREDENTIAL_PATH]"
+    ]
+    assert len(patterns) == 3
+    started = time.monotonic()
+    for pattern in patterns:
+        assert not pattern.search(text)
+    assert time.monotonic() - started < 1.0

@@ -9,6 +9,7 @@ from src.db.models.user import (
     role_permissions,
 )
 from src.db.models.document import Document
+from src.db.models.document_text import DocumentTextRow
 from src.db.models.knowledge_revision import ActiveRagKnowledgeRevision, RagKnowledgeRevision
 from src.db.models.query_log import QueryLog
 from src.db.models.ingestion_job import IngestionJob
@@ -22,6 +23,7 @@ from src.db.models.feedback import Feedback
 from src.db.models.access import AccessRequest, EmailOTPCode, UserInvite
 from src.db.models.entity_alias import EntityAlias
 from src.db.models.doc_gap_event import DocGapEvent
+from src.db.models.guidance import GuidanceRuleRow
 from src.db.models.harness import (
     HarnessActivityEventRow,
     HarnessAgentTurnAuditRow,
@@ -91,6 +93,7 @@ __all__ = [
     "user_roles",
     "role_permissions",
     "Document",
+    "DocumentTextRow",
     "RagKnowledgeRevision",
     "ActiveRagKnowledgeRevision",
     "QueryLog",
@@ -110,6 +113,7 @@ __all__ = [
     "UserInvite",
     "EntityAlias",
     "DocGapEvent",
+    "GuidanceRuleRow",
     "HarnessWorkflowRunRow",
     "HarnessActivityEventRow",
     "HarnessAgentTurnAuditRow",

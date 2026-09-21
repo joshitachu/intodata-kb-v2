@@ -57,6 +57,28 @@ JOB_SCAN = {
                 {"name": "PASSWORD", "value": "[REDACTED]", "field_type": "PASSWORD"},
                 {"name": "API_TOKEN", "value": "super-secret", "field_type": "TEXT"},
                 {"name": "ENDPOINT_URL", "value": '"https://user:hunter2@api.example.com/v1"', "field_type": "TEXT"},
+                # Row-structured params: the value lives in `rows` and the
+                # scalar `value` is empty, so param_summary cannot carry them.
+                # VALUES is configuration; FIELD_OPTIONS is one row per schema
+                # column of scanner flags and must not be mistaken for it.
+                {
+                    "name": "VALUES",
+                    "value": "",
+                    "field_type": "TABLE",
+                    "rows": [
+                        {"NAME": '"Content-Type"', "EXPRESSION": '"text/xml"'},
+                        {"NAME": '"Authorization"', "EXPRESSION": '"Bearer leaked-bearer"'},
+                    ],
+                },
+                {
+                    "name": "FIELD_OPTIONS",
+                    "value": "",
+                    "field_type": "TABLE",
+                    "rows": [
+                        {"SCHEMA_COLUMN": "ItemId", "UPDATE_KEY": "true",
+                         "DELETE_KEY": "false", "INSERTABLE": "true", "UPDATABLE": "false"},
+                    ],
+                },
             ],
         },
         {
@@ -231,6 +253,29 @@ async def test_job_graph_param_summary_filters_credentials(client, scan_fixture)
 
     # Input node keeps its file param.
     assert by_name["tFileInputDelimited_1"]["param_summary"]["FILE_NAME"] == '"/data/in.csv"'
+
+
+async def test_job_graph_publishes_row_structured_params_without_leaking_rows(
+    client, scan_fixture
+):
+    """A TABLE param's value is its rows; param_summary structurally cannot hold it."""
+    resp = await client.get(f"/mcp/projects/{PROJECT_ID}/jobs/{JOB_NAME}/graph")
+    assert resp.status_code == 200
+    body = resp.json()
+    by_name = {n["unique_name"]: n for n in body["nodes"]}
+
+    tables = {t["name"]: t for t in by_name["tDBOutput_1"]["param_tables"]}
+    # Configuration in; the per-schema-column flag table stays out.
+    assert set(tables) == {"VALUES"}
+    assert tables["VALUES"]["rows"] == [{"NAME": '"Content-Type"', "EXPRESSION": '"text/xml"'}]
+    # The credential-bearing row is withheld and SAID to be withheld, against
+    # the scan's own row count rather than against what survived.
+    assert tables["VALUES"]["row_count"] == 2
+    assert tables["VALUES"]["rows_redacted"] == 1
+    assert "leaked-bearer" not in json.dumps(body)
+    assert "Authorization" not in json.dumps(body)
+    # Components with no row-structured param carry an empty list, not null.
+    assert by_name["tMap_1"]["param_tables"] == []
 
 
 async def test_job_graph_edges_from_connections_array(client, scan_fixture):

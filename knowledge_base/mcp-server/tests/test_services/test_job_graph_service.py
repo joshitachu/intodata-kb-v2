@@ -3,11 +3,42 @@
 from mcp_server.services.job_graph_service import (
     build_job_graph,
     build_param_summary,
+    build_param_tables,
     component_display_label,
     derive_component_role,
     explain_component_type,
     explain_connector,
 )
+
+#: Verbatim from the real pluripharm scan
+#: (`collector_jde_shipping_notification_from_db_c006_mediq`). This one
+#: component is the whole reason `param_tables` exists: an agent asked which
+#: criterion routes a shipment to the Mediq or the Distrimed flow, opened this
+#: component among 15 others, and got nothing back -- because the criterion is a
+#: ROW, and a row-shaped param has an EMPTY scalar `value`, so `param_summary`
+#: could not carry it in any form.
+SET_XML_VAR_COMPONENT = {
+    "unique_name": "cSetHeader_5",
+    "component_type": "cSetHeader",
+    "params": [
+        {
+            "name": "VALUES",
+            "value": "",
+            "field_type": "TABLE",
+            "rows": [
+                {
+                    "NAME": '"AN8_CHECK"',
+                    "LANGUAGE": "none",
+                    "EXPRESSION": (
+                        'xpath("/SHIPPING_CONFIRMATION/F470371/Row/SZAN8/text()",String.class)'
+                    ),
+                }
+            ],
+        },
+        {"name": "USE_NAMESPACES", "value": "false", "field_type": "CHECK", "rows": []},
+        {"name": "LABEL", "value": "setXmlVar", "field_type": "TEXT", "rows": []},
+    ],
+}
 
 
 def test_role_derivation_by_type_pattern():
@@ -117,6 +148,150 @@ def test_param_summary_masks_url_userinfo_and_truncates():
     assert summary["ENDPOINT_URL"] == "https://svc:***@host/api"
     assert len(summary["QUERY"]) <= 120
     assert summary["QUERY"].endswith("...")
+
+
+def test_a_row_shaped_param_reaches_the_node_that_the_scalar_summary_cannot_hold():
+    node = build_job_graph(
+        "pluripharm", "collector", "Collectors", {"components": [SET_XML_VAR_COMPONENT]}
+    ).nodes[0]
+
+    # The scalar half is genuinely empty for this component -- which is why a
+    # caller checking only `param_summary` reported it as having no settings.
+    assert build_param_summary(SET_XML_VAR_COMPONENT) == {}
+    table = node.param_tables[0]
+    assert table.name == "VALUES"
+    assert table.columns == ["NAME", "LANGUAGE", "EXPRESSION"]
+    assert table.rows[0]["NAME"] == '"AN8_CHECK"'
+    assert "SZAN8" in table.rows[0]["EXPRESSION"]
+    assert (table.row_count, table.rows_omitted, table.rows_redacted) == (1, 0, 0)
+
+
+def test_row_tables_are_screened_by_their_columns_not_by_the_component_type():
+    """The class rule: author-written semantics in, per-schema-column flags out.
+
+    Measured over the whole pluripharm scan, this keeps 5 997 of 41 388 rows.
+    The three excluded tables below are its three largest sources of noise --
+    one row per schema column, carrying nothing but scanner flags.
+    """
+    component = {
+        "unique_name": "tDBOutput_1",
+        "component_type": "tMSSqlOutput",
+        "params": [
+            # Kept: a filter's criterion, an XML field's XPath, a variable.
+            {"name": "CONDITIONS", "field_type": "TABLE", "rows": [
+                {"INPUT_COLUMN": "STATUS", "FUNCTION": "Empty", "OPERATOR": "!=", "RVALUE": "'X'"},
+            ]},
+            {"name": "MAPPING", "field_type": "TABLE", "rows": [
+                {"SCHEMA_COLUMN": "OrderId", "QUERY": '"/Order/@id"', "NODECHECK": "false"},
+            ]},
+            {"name": "VARIABLES", "field_type": "TABLE", "rows": [
+                {"KEY": '"env"', "VALUE": "context.environment"},
+            ]},
+            # Dropped: schema plumbing, one row per column of the schema.
+            {"name": "FIELD_OPTIONS", "field_type": "TABLE", "rows": [
+                {"SCHEMA_COLUMN": "OrderId", "UPDATE_KEY": "true", "DELETE_KEY": "false",
+                 "INSERTABLE": "true", "UPDATABLE": "false"},
+            ]},
+            {"name": "TRIM_COLUMN", "field_type": "TABLE", "rows": [
+                {"SCHEMA_COLUMN": "OrderId", "TRIM": "false"},
+            ]},
+            {"name": "LENGTHS", "field_type": "TABLE", "rows": [
+                {"SCHEMA_COLUMN": "OrderId", "LENGTH": "12"},
+            ]},
+            {"name": "DRIVER_JAR", "field_type": "TABLE", "rows": [{"JAR_NAME": "mssql.jar"}]},
+        ],
+    }
+
+    names = [table.name for table in build_param_tables(component)]
+
+    assert names == ["CONDITIONS", "MAPPING", "VARIABLES"]
+
+
+def test_a_credential_shaped_row_never_appears_in_a_row_structured_summary():
+    """The whole row goes, not the cell: the pair is what makes it findable.
+
+    A table row is usually a name/value pair, so the credential signal is in the
+    DATA -- `NAME="Authorization"` with the bearer token beside it -- and every
+    column name in the row is innocuous. Screening keys alone passes it through.
+    """
+    component = {
+        "unique_name": "cSetHeader_9",
+        "component_type": "cSetHeader",
+        "params": [
+            {"name": "VALUES", "field_type": "TABLE", "rows": [
+                {"NAME": '"Content-Type"', "LANGUAGE": "constant", "EXPRESSION": '"text/xml"'},
+                {"NAME": '"Authorization"', "LANGUAGE": "constant",
+                 "EXPRESSION": '"Bearer eyJhbGciOi.header-token"'},
+                {"NAME": '"client_secret"', "LANGUAGE": "constant", "EXPRESSION": '"s3cr3t"'},
+                {"NAME": '"apiKey"', "LANGUAGE": "constant", "EXPRESSION": '"ak_live_9931"'},
+                {"NAME": '"pwd"', "LANGUAGE": "constant", "EXPRESSION": '"hunter2"'},
+                {"NAME": '"endpoint"', "LANGUAGE": "constant",
+                 "EXPRESSION": '"https://svc:p4ss@host/api"'},
+            ]},
+            # A credential-named TABLE param never enters at all, whatever it holds.
+            {"name": "OAUTH_PARAMS", "field_type": "TABLE", "rows": [
+                {"NAME": '"grant_type"', "VALUE": '"client_credentials"'},
+            ]},
+        ],
+    }
+
+    tables = build_param_tables(component)
+    serialized = str([table.model_dump() for table in tables])
+
+    assert [table.name for table in tables] == ["VALUES"]
+    for secret in ("eyJhbGciOi", "s3cr3t", "ak_live_9931", "hunter2", "p4ss"):
+        assert secret not in serialized, secret
+    assert "Authorization" not in serialized
+    values = tables[0]
+    assert values.rows_redacted == 4
+    assert values.row_count == 6
+    # The surviving URL row keeps its userinfo masked, exactly as a scalar does.
+    assert values.rows[-1]["EXPRESSION"] == '"https://svc:***@host/api"'
+
+
+def test_a_table_whose_rows_were_all_withheld_still_says_so():
+    """Absence is stated. A vanished table reads as a component with no config."""
+    component = {
+        "unique_name": "cSetHeader_9",
+        "component_type": "cSetHeader",
+        "params": [
+            {"name": "VALUES", "field_type": "TABLE", "rows": [
+                {"NAME": '"password"', "VALUE": '"hunter2"'},
+            ]},
+        ],
+    }
+
+    table = build_param_tables(component)[0]
+
+    assert table.rows == []
+    assert (table.row_count, table.rows_redacted) == (1, 1)
+    assert "hunter2" not in str(table.model_dump())
+
+
+def test_param_tables_are_bounded_and_report_what_they_elided():
+    component = {
+        "unique_name": "cSetHeader_9",
+        "component_type": "cSetHeader",
+        "params": [
+            {
+                "name": f"VALUES_{index}",
+                "field_type": "TABLE",
+                "rows": [
+                    {"NAME": f'"VAR_{row}"', "EXPRESSION": "x" * 400} for row in range(40)
+                ],
+            }
+            for index in range(6)
+        ],
+    }
+
+    tables = build_param_tables(component)
+
+    assert len(tables) == 4
+    for table in tables:
+        assert len(table.rows) == 12
+        assert table.row_count == 40
+        assert table.rows_omitted == 28
+        assert all(len(value) <= 120 for row in table.rows for value in row.values())
 
 
 def test_trunjob_target_falls_back_to_positional_refs():

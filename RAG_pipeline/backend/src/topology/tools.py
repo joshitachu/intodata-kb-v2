@@ -36,10 +36,12 @@ that deep are joined into one bounded string instead.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
+from src.config import settings
 from src.topology.graph import (
     ComponentScope,
     DesignComponent,
@@ -84,6 +86,7 @@ from src.topology.models import (
     JobGraph,
     JobGraphComponent,
     JobGraphConnection,
+    JobGraphParamTable,
     LandscapeDiagnostic,
     ListTopologyDependenciesInput,
     NavigationIntent,
@@ -141,6 +144,40 @@ MAX_MAPPING_REFS = 4
 #: transformation, and ten whole expressions would consume the entire budget.
 MAX_EXPRESSION_CHARS = 180
 MAX_PARAM_ENTRIES = 6
+#: Row-structured parameters (`param_tables`). A component's decision logic
+#: lives here rather than in the scalar params -- the routing key a Camel route
+#: later branches on is a row of a cSetHeader VALUES table, not a scalar -- so
+#: these are budgeted deliberately instead of sharing the scalar cap, which a
+#: component with six scalar params would have exhausted before reaching them.
+#: Measured over the pluripharm scan, p90 is one table of seven rows per
+#: component and the worst is 74 rows, so the caps below cover the p90 whole and
+#: state the count they elided on the tail.
+MAX_PARAM_TABLES = 3
+MAX_PARAM_TABLE_ROWS = 6
+#: One rendered row (`NAME=... | LANGUAGE=... | EXPRESSION=...`). Kept well under
+#: the envelope's 500-char per-string ceiling so the harness never clips a row
+#: mid-expression -- a half-XPath reads as a whole one.
+MAX_PARAM_ROW_CHARS = 240
+#: Whole-page budget for the parameter blocks of a batched `get_job_detail`, and
+#: the ceiling any single component may take out of it. Twelve components at the
+#: per-component ceiling would exceed the 12 000-char result ceiling, and
+#: overrunning it is worse than paging: the size backstop in `client.py` drops
+#: EVERY collection in the payload, including the component list that was asked
+#: for. Real data is far below both (the whole 41-component collector design
+#: renders to ~2.3 KB of settings), so the budget only bites on the outliers.
+MAX_JOB_PARAM_CHARS = 4000
+MAX_COMPONENT_PARAM_CHARS = 900
+#: A single-component read can afford more than a component's share of a page:
+#: the richest real component detail (the 27 KB mapping artifact) serializes to
+#: 5 959 chars of the 12 000 ceiling, so this is the one call where a long
+#: routing or mapping table can be shown nearly whole.
+MAX_COMPONENT_DETAIL_PARAM_CHARS = 2400
+#: Held back from the result ceiling when sizing a batched settings read. The
+#: real page without settings already reaches 10 KB of the 12 KB ceiling on the
+#: richest designs, so the batch is sized against what is actually left rather
+#: than against the fixed budget above; this reserve covers the targets list
+#: (not yet built at that point) and the envelope's own keys.
+JOB_PARAM_BUDGET_RESERVE = 2000
 #: Aggregated system-pair views to offer from one system. Three covers a hub's
 #: main counterparts and leaves room for the per-stream edge targets.
 MAX_PAIR_TARGETS = 3
@@ -607,6 +644,12 @@ async def get_job_detail(
     against listing caps of 12, so a single fixed page turns the drill-down this
     tool exists for into a dead end. `offset` advances both listings, and every
     listing reports what it showed against what exists.
+
+    `include_parameters` turns the component listing into a batch settings read
+    (see `GetJobDetailInput.include_parameters` for why the batch lives here and
+    not on `get_component_detail`). The page size does not change, because the
+    settings themselves are small on real data; what bounds the batch is a
+    character budget across the page, and whatever it could not fit is counted.
     """
     intent = params.navigation_intent
     design = await _design_lookup(params, provider=provider, access_token=access_token)
@@ -673,11 +716,39 @@ async def get_job_detail(
         # Whole-design fact, not a page fact: the mapping components are where
         # get_field_lineage and get_component_detail lead next.
         "mapping_component_count": len(mapping_components),
+        "component_settings_included": params.include_parameters,
         "page_note": (
             "components and connections are paged together by one offset; each "
             "list reports its own total, shown count and next_offset."
         ),
     }
+    if params.include_parameters:
+        # Sized against what the rest of this payload actually left, not against
+        # a fixed allowance: the listings above already reach 10 KB of the 12 KB
+        # ceiling on the richest real designs, and overrunning it would cost the
+        # component list itself (the size backstop drops every collection).
+        listed, settings_omitted = _component_listing(
+            component_page.items, budget=_batch_param_budget(content)
+        )
+        content["components"] = listed
+        if settings_omitted:
+            content["component_settings_omitted"] = settings_omitted
+            content["component_settings_omitted_note"] = (
+                f"{settings_omitted} of the components shown had their settings "
+                "elided to keep this result inside its size budget; read those "
+                "with get_component_detail."
+            )
+    elif any(item.has_settings for item in component_page.items):
+        # Steer the caller into the batch instead of into a sweep. The measured
+        # failure was 15 single-component calls on one design, so an agent that
+        # cannot see this option costs an order of magnitude more iterations
+        # than the answer needs.
+        content["component_settings_note"] = (
+            "Component settings (configured parameters, routing/header/mapping "
+            "tables) are not in this listing. Call get_job_detail again with "
+            "include_parameters=true to read them for every component on a "
+            "page, rather than one get_component_detail call per component."
+        )
     if component_page.past_end or connection_page.past_end:
         content["page_note"] = (
             f"offset {params.offset} is past the end of one or both listings for "
@@ -1533,8 +1604,149 @@ def _component_summary(component: JobGraphComponent) -> dict[str, Any]:
         "has_mapping_graph": component.has_subgraph,
         "runs_job": component.subjob_target,
         "connection_ref": component.connection_ref,
+        # Whether the scan captured any configured setting for this component.
+        # A summary without it says what a component IS and never whether it
+        # holds a decision, which is what a caller sweeping a design is looking
+        # for; with it, one listing call says where to look next.
+        "has_settings": component.has_settings,
         "description": _clipped(component.description),
     }
+
+
+def _batch_param_budget(content: dict[str, Any]) -> int:
+    """Room left under the result ceiling for one page of component settings.
+
+    Measured in serialized characters, the same unit the ceiling is expressed
+    in, because a budget counted in anything else is not comparable to the thing
+    it is protecting: raw field lengths ignore JSON quoting and separators and
+    under-count a parameter block by roughly half.
+    """
+    used = len(json.dumps(content, default=str))
+    room = settings.runtime_tool_result_max_chars - used - JOB_PARAM_BUDGET_RESERVE
+    return max(0, min(MAX_JOB_PARAM_CHARS, room))
+
+
+def _component_listing(
+    components: Sequence[JobGraphComponent], *, budget: int
+) -> tuple[list[dict[str, Any]], int]:
+    """One page of components with their settings, and how many did not fit.
+
+    The whole page shares one budget rather than each component getting a fixed
+    slice: on real data four of five components carry no settings at all, so a
+    fixed per-component slice would either starve the rich components or reserve
+    room for the empty ones. Budget is spent in page order -- `_component_order`,
+    the same total order the paging uses -- so the result is deterministic for a
+    given page.
+
+    A component whose settings do not fit still appears with its summary and is
+    counted in the returned total. It is never dropped and never silently
+    reduced: "the settings of three components on this page were elided" is a
+    fact the caller can act on, a component that vanished is not.
+    """
+    listed: list[dict[str, Any]] = []
+    remaining = budget
+    omitted = 0
+    for item in components:
+        summary = _component_summary(item)
+        if not item.has_settings:
+            listed.append(summary)
+            continue
+        parameters = (
+            _component_parameters(item, budget=min(MAX_COMPONENT_PARAM_CHARS, remaining))
+            if remaining > 0
+            else {}
+        )
+        cost = len(json.dumps(parameters, default=str)) if parameters else 0
+        if not _has_settings_content(parameters) or cost > remaining:
+            omitted += 1
+            listed.append(summary)
+            continue
+        remaining -= cost
+        listed.append({**summary, **parameters})
+    return listed, omitted
+
+
+def _has_settings_content(parameters: dict[str, Any]) -> bool:
+    """Whether a rendered block actually carries a setting, not just its keys."""
+    return bool(parameters.get("parameters") or parameters.get("parameter_tables"))
+
+
+def _component_parameters(component: JobGraphComponent, *, budget: int) -> dict[str, Any]:
+    """A component's configured settings, scalar and row-structured, in `budget`.
+
+    Two shapes because upstream has two: scalar params come back as a name ->
+    value map, and TABLE params as rows. Both are already allow-listed and
+    credential-filtered upstream; they are re-clipped here so one long parameter
+    cannot consume the whole result budget.
+
+    The rows are rendered to one bounded STRING per row rather than nested as
+    dicts. Not cosmetic: the harness replaces any container past six levels with
+    a depth marker, and a batched read nests data -> content -> components ->
+    component -> parameter_tables -> rows, which puts a row's own fields exactly
+    one level too deep. Flattening the leaf is the same treatment
+    `mapping_tables.columns` already gets for the same reason.
+
+    `budget` is a character allowance, so a batch caller can hold a whole page
+    inside one ceiling. Elided tables and rows are always counted in the notes:
+    a table truncated in silence reads as a complete short table, and "there are
+    three more routing rules" is the difference between a partial answer and a
+    wrong one.
+    """
+    parameters = {
+        key: _clipped(str(value), limit=120)
+        for key, value in list(component.param_summary.items())[:MAX_PARAM_ENTRIES]
+    }
+    content: dict[str, Any] = {"parameters": parameters}
+    if not component.param_tables:
+        return content
+
+    spent = sum(len(key) + len(str(value)) for key, value in parameters.items())
+    tables: dict[str, list[str]] = {}
+    notes: dict[str, str] = {}
+    tables_omitted = 0
+    for table in component.param_tables:
+        if len(tables) >= MAX_PARAM_TABLES or spent >= budget:
+            tables_omitted += 1
+            continue
+        rendered: list[str] = []
+        for row in table.rows[:MAX_PARAM_TABLE_ROWS]:
+            line = _render_param_row(row)
+            if not line or spent + len(line) > budget:
+                break
+            rendered.append(line)
+            spent += len(line)
+        if not rendered and not table.rows_redacted:
+            tables_omitted += 1
+            continue
+        tables[table.name] = rendered
+        note = _param_table_note(table, shown=len(rendered))
+        if note:
+            notes[table.name] = note
+    if tables:
+        content["parameter_tables"] = tables
+    if notes:
+        # A sibling map rather than a field inside each table, for the same
+        # depth reason the rows are strings.
+        content["parameter_table_notes"] = notes
+    if tables_omitted:
+        content["parameter_tables_omitted"] = tables_omitted
+    return content
+
+
+def _render_param_row(row: dict[str, Any]) -> str:
+    """One table row as `COLUMN=value | COLUMN=value`, bounded."""
+    cells = [f"{key}={value}" for key, value in row.items() if value not in (None, "")]
+    return _clipped(" | ".join(cells), limit=MAX_PARAM_ROW_CHARS)
+
+
+def _param_table_note(table: JobGraphParamTable, *, shown: int) -> str:
+    """What this table did not show, or "" when it showed everything."""
+    if shown == table.row_count and not table.rows_redacted:
+        return ""
+    parts = [f"{shown} of {table.row_count} rows shown"]
+    if table.rows_redacted:
+        parts.append(f"{table.rows_redacted} withheld by the credential filter")
+    return "; ".join(parts)
 
 
 def _component_content(component: JobGraphComponent) -> dict[str, Any]:
@@ -1542,12 +1754,7 @@ def _component_content(component: JobGraphComponent) -> dict[str, Any]:
         **_component_summary(component),
         "type_explanation": _clipped(component.type_explanation),
         "has_custom_code": component.has_code,
-        # Already allow-listed and credential-redacted upstream; re-clipped here
-        # so one long parameter cannot consume the whole result budget.
-        "parameters": {
-            key: _clipped(str(value), limit=120)
-            for key, value in list(component.param_summary.items())[:MAX_PARAM_ENTRIES]
-        },
+        **_component_parameters(component, budget=MAX_COMPONENT_DETAIL_PARAM_CHARS),
     }
 
 

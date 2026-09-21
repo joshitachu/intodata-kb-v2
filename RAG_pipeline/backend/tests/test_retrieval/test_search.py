@@ -904,3 +904,94 @@ async def test_retrieval_outside_a_turn_scope_records_nothing_and_still_works(mo
 
     assert len(sources) == 1
     assert current_turn_timings() is None
+
+
+# --- Reranker degradation is never silent ---
+#
+# The defect: `search_and_rerank` swallowed every rerank failure into a WARNING
+# and returned raw fusion order, so a deployment could serve un-reranked results
+# indefinitely with nothing aggregating the fact.
+
+
+async def test_rerank_failure_is_recorded_and_falls_back(mock_qdrant, caplog):
+    from src.retrieval import reranker as reranker_module
+    from src.retrieval.search import search_and_rerank
+
+    candidates = [
+        Source(
+            document_id=1,
+            filename="a.md",
+            chunk_index=index,
+            score=0.9 - index / 10,
+            text=f"chunk {index}",
+        )
+        for index in range(3)
+    ]
+    health = reranker_module.RerankerHealth()
+
+    with (
+        patch("src.retrieval.search.settings") as mock_settings,
+        patch(
+            "src.retrieval.search.search_similar_hybrid", new_callable=AsyncMock
+        ) as mock_hybrid,
+        patch("src.retrieval.search.rerank", new_callable=AsyncMock) as mock_rerank,
+        patch.object(reranker_module, "_HEALTH", health),
+        caplog.at_level("ERROR", logger="src.retrieval.reranker"),
+    ):
+        mock_settings.hybrid_search_enabled = True
+        mock_settings.reranker_enabled = True
+        mock_settings.rerank_top_n = 30
+        mock_hybrid.return_value = candidates
+        mock_rerank.side_effect = RuntimeError("voyage exploded")
+
+        sources = await search_and_rerank(mock_qdrant, "test", [], top_k=2)
+
+    # The fallback itself is kept: degrading beats erroring out mid-turn.
+    assert [s.chunk_index for s in sources] == [0, 1]
+    # ...but it is now counted and logged at ERROR with the reason.
+    assert health.failures == 1
+    assert "voyage exploded" in (health.last_error or "")
+    assert health.as_dict()["degraded"] is True
+    assert "RERANKER DEGRADED" in caplog.text
+
+
+async def test_multi_query_rerank_failure_is_recorded_too(mock_qdrant, caplog):
+    """The second fallback site obeys the same contract as the first."""
+
+    from src.retrieval import reranker as reranker_module
+    from src.retrieval.search import search_multi_query
+
+    candidates = [
+        Source(
+            document_id=1,
+            filename="a.md",
+            chunk_index=index,
+            score=0.9 - index / 10,
+            text=f"chunk {index}",
+        )
+        for index in range(4)
+    ]
+    health = reranker_module.RerankerHealth()
+
+    with (
+        patch("src.retrieval.search.settings") as mock_settings,
+        patch("src.retrieval.search.expand_query", new_callable=AsyncMock) as mock_expand,
+        patch(
+            "src.retrieval.search.search_similar_hybrid", new_callable=AsyncMock
+        ) as mock_hybrid,
+        patch("src.retrieval.search.rerank", new_callable=AsyncMock) as mock_rerank,
+        patch.object(reranker_module, "_HEALTH", health),
+        caplog.at_level("ERROR", logger="src.retrieval.reranker"),
+    ):
+        mock_settings.hybrid_search_enabled = True
+        mock_settings.reranker_enabled = True
+        mock_settings.rerank_top_n = 30
+        mock_expand.return_value = ["test"]
+        mock_hybrid.return_value = candidates
+        mock_rerank.side_effect = RuntimeError("voyage exploded again")
+
+        sources = await search_multi_query(mock_qdrant, "test", [], top_k=2)
+
+    assert [s.chunk_index for s in sources] == [0, 1]
+    assert health.failures == 1
+    assert "RERANKER DEGRADED" in caplog.text

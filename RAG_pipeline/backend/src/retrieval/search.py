@@ -23,7 +23,7 @@ from src.config import settings
 from src.document_roles import DEFAULT_DOCUMENT_ROLE
 from src.retrieval.embedder import embed_text
 from src.retrieval.query_expander import expand_query
-from src.retrieval.reranker import rerank
+from src.retrieval.reranker import record_rerank_failure, rerank
 from src.retrieval.sparse_embedder import embed_text_sparse
 from src.retrieval.vector_store import COLLECTION_NAME
 from src.schemas import DocumentSource, Source
@@ -416,12 +416,15 @@ async def search_and_rerank(
     if not settings.reranker_enabled:
         return candidates[:top_k]
 
-    # Rerank (with graceful fallback to original scores on API failure)
+    # Rerank, falling back to fusion order on API failure. The fallback is kept
+    # deliberately -- degrading beats erroring out mid-turn -- but it is recorded
+    # and logged at ERROR by `record_rerank_failure`, because an un-reranked
+    # result set is indistinguishable from a reranked one at this boundary.
     texts = [s.text for s in candidates]
     try:
         reranked = await rerank(query, texts, top_k=top_k)
     except Exception as e:
-        logger.warning(f"Reranker failed ({type(e).__name__}: {e}), falling back to original scores")
+        record_rerank_failure(e)
         return candidates[:top_k]
 
     # Preserve all payload fields (including layer metadata) via model_copy.
@@ -531,8 +534,11 @@ async def expand_neighbor_chunks(
                     neighbor_score = src.score if chunk_index == src.chunk_index else src.score * 0.95
                     fetched_by_index[chunk_index] = _source_from_payload(payload, neighbor_score)
             except Exception as e:
+                # exc_info: this is a swallowed infrastructure error that silently
+                # narrows the context handed to the model, so the reason has to be
+                # fully recoverable from the log rather than summarised to one line.
                 logger.warning("Neighbor chunk expansion failed for doc=%s chunk=%s: %s",
-                               src.document_id, src.chunk_index, e)
+                               src.document_id, src.chunk_index, e, exc_info=True)
 
         for idx in wanted:
             key = (src.document_id, idx)
@@ -626,9 +632,9 @@ async def search_multi_query(
         try:
             reranked = await rerank(query, texts, top_k=top_k)
         except Exception as e:
-            logger.warning(
-                f"Reranker failed ({type(e).__name__}: {e}), falling back to original scores"
-            )
+            # Same contract as `search_and_rerank`: keep the fallback, refuse to
+            # let it be silent.
+            record_rerank_failure(e)
             unique_sources.sort(key=lambda s: s.score, reverse=True)
             return unique_sources[:top_k]
         result: list[Source] = [
@@ -690,7 +696,13 @@ def _build_unit_filter(
     document_roles: list[str] | None = None,
     knowledge_revisions: Mapping[str, str] | None = None,
 ) -> Filter:
-    """RBAC/project/layer filter plus exact `unit` payload match."""
+    """RBAC/project/layer filter plus exact `unit` payload match.
+
+    ``source_layers=None`` reaches ``_build_search_filter`` as the default
+    canonical partition with legacy tolerance, which is what rung 1 wants; rung 2
+    passes its explicit internal layers. The exact-name guarantee is orthogonal to
+    which partition it applies to, so this helper takes no position on it.
+    """
     base = _build_search_filter(
         user_groups, document_ids=None, project_ids=project_ids,
         source_layers=source_layers, document_roles=document_roles,
@@ -706,7 +718,7 @@ async def fetch_unit_chunks(
     user_groups: list[str],
     units: list[str],
     *,
-    source_layers: list[str],
+    source_layers: list[str] | None,
     project_ids: list[str] | None = None,
     document_roles: list[str] | None = None,
     limit: int | None = None,
@@ -719,6 +731,13 @@ async def fetch_unit_chunks(
     not embedding similarity — an alias-matched unit can never lose the
     ranking contest. Scores are pinned to 1.0 so merged ranking keeps these
     guaranteed hits on top.
+
+    ``source_layers`` is required but nullable, and the difference is the whole
+    point of the parameter. ``None`` is the default canonical partition (rung 1,
+    where a user's question about a named job should find the published document
+    about it); an explicit list is a deep internal partition (rung 2). It has no
+    default value because silently picking one for a caller is how this function
+    would start guaranteeing hits in the wrong corpus.
     """
     if not units:
         return []
@@ -822,7 +841,7 @@ async def expand_section_chunks(
             except Exception as e:
                 logger.warning(
                     "Section expansion failed for doc=%s section=%r: %s",
-                    src.document_id, src.section, e,
+                    src.document_id, src.section, e, exc_info=True,
                 )
 
         if not section_chunks:
@@ -915,7 +934,12 @@ async def search_layered(
                     seen.add(key)
                     unit_hits.append(s)
         except Exception as e:
-            logger.warning("Unit payload fetch failed for units=%s: %s", matched_units, e)
+            # The guaranteed-entity path quietly becoming best-effort is a
+            # retrieval-quality event, not a formatting problem: an alias-matched
+            # unit that should have been unmissable is back in the ranking contest.
+            logger.error(
+                "Unit payload fetch failed for units=%s: %s", matched_units, e, exc_info=True
+            )
 
     # Guaranteed entity hits lead; semantic candidates follow in rank order.
     merged = unit_hits + semantic

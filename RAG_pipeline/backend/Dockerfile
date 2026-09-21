@@ -1,5 +1,16 @@
 FROM python:3.11-slim
 
+# NOTE on PYTHONHASHSEED: deliberately NOT set.
+#
+# The sparse hybrid-search index used to depend on the builtin `hash()`, which
+# Python salts per process, so the index written at ingestion and the vector
+# built at query time disagreed after every restart. Pinning PYTHONHASHSEED here
+# would have papered over that while disabling hash randomisation process-wide --
+# a real, if small, DoS surface for anything that builds dicts from untrusted
+# input. The mapping was made content-addressed instead
+# (src/retrieval/sparse_embedder.py), so nothing in this image depends on the
+# seed and randomisation stays on.
+
 WORKDIR /app
 
 COPY pyproject.toml .

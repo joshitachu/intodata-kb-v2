@@ -129,6 +129,23 @@ beforeEach(() => {
 });
 
 describe("GenerateDialog generation plan preview", () => {
+  it("hides partitioning and promises one whole-estate session for OpenCode", async () => {
+    vi.mocked(api.getGenerationPlan).mockResolvedValue(COMPOSITE_PLAN);
+
+    renderWithClient(
+      <GenerateDialog
+        project={{ ...project, doc_generation_provider: "opencode-cli" }}
+        open
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Whole-estate generation")).toBeInTheDocument();
+    expect(screen.getByText(/complete scanned estate in one workspace/)).toBeInTheDocument();
+    expect(screen.queryByText("1 of 3")).not.toBeInTheDocument();
+    expect(screen.queryByText("Will generate (1)")).not.toBeInTheDocument();
+  });
+
   it("shows the generate/reuse split with a reason per sub-project", async () => {
     vi.mocked(api.getGenerationPlan).mockResolvedValue(COMPOSITE_PLAN);
 

@@ -307,55 +307,6 @@ async def test_the_executive_summary_also_receives_the_rollup(tmp_path, scan_dir
     assert SENTINEL in _text(files)
 
 
-# --- keystone: OpenCode delivers the same fact --------------------------------
-
-
-async def test_opencode_engine_delivers_the_same_runtime_fact(tmp_path, scan_dir, monkeypatch):
-    from mcp_server.providers.opencode_cli import OpenCodeCliProvider
-    from mcp_server.providers.custom.pipeline.helpers import HarnessHelpersImpl
-
-    calls = _install_fetch(monkeypatch, _data_store())
-    ctx = _ctx(tmp_path)
-    log = _Log()
-
-    provider = OpenCodeCliProvider()
-    _facts, harness, state_obj = await provider._prepare_run(ctx, log)
-    # The Phase 3 facade may ask again; the harness guard keeps this one backend
-    # query for the run, exactly like the custom engine.
-    await HarnessHelpersImpl(harness).ensure_runtime_evidence(ctx, state_obj, log)
-    harness._required_docs = [GROUP_DOC]
-    files = harness._phase3_context_files(ctx, GROUP_DOC)
-
-    assert ctx.staging_dir / RUNTIME_PROFILE_MD in files
-    assert SENTINEL in _text(files)
-    assert len(calls) == 1
-
-
-async def test_both_engines_produce_the_profile_and_the_cache(tmp_path, scan_dir, monkeypatch):
-    """The narrow, honest parity guard (A11).
-
-    Deliberately NOT a set-equality assertion over a registry of "every
-    deterministic Phase 3 artifact": parity is already broken in six other
-    places and about half of Phase 3's inputs are lazy or conditional, so such a
-    test passes on day one and proves nothing. This asserts the two artifacts
-    this package is responsible for, for the same fixture, in both engines.
-    """
-    from mcp_server.providers.opencode_cli import OpenCodeCliProvider
-
-    _install_fetch(monkeypatch, _data_store())
-    wanted = (RUNTIME_PROFILE_MD, RUNTIME_CACHE_JSON)
-
-    custom_ctx = _ctx(tmp_path, staging=tmp_path / "custom" / "docs_staging")
-    await _provider()._ensure_runtime_evidence(custom_ctx, _state(scan_dir), _Log())
-
-    opencode_ctx = _ctx(tmp_path, staging=tmp_path / "opencode" / "docs_staging")
-    await OpenCodeCliProvider()._prepare_run(opencode_ctx, _Log())
-
-    for relative in wanted:
-        assert (custom_ctx.staging_dir / relative).is_file(), relative
-        assert (opencode_ctx.staging_dir / relative).is_file(), relative
-
-
 # --- keystone: the lane runs on DEFAULT configuration -------------------------
 
 

@@ -18,6 +18,10 @@ from src.runtime.models import (
 )
 from src.runtime.providers import RuntimeProviderError
 from src.runtime.providers.talend_tmc import (
+    _THROTTLE_MAX_ATTEMPTS,
+    _apply_route_metrics,
+    _route_metrics_from_log,
+    _strip_message_body,
     TalendTmcRuntimeProvider,
     _bounded_log_entries,
     _bounded_log_head_tail,
@@ -53,6 +57,7 @@ def tmc(tmp_path):
     s.talend_tmc_api_token_file = str(token_path)
     s.talend_tmc_request_timeout = 10.0
     s.talend_tmc_failed_log_run_limit = 10
+    s.talend_tmc_deployment_counter_run_limit = 100
     s.talend_tmc_component_metric_run_limit = 25
     s.talend_tmc_runs_per_executable_limit = 250
     s.runtime_sync_source_key = "talend_tmc"
@@ -757,6 +762,19 @@ class TestRuntimeBatchMapping:
                 )
             if request.url.path.startswith("/monitoring/observability/executions/"):
                 return httpx.Response(200, json={"metrics": {"items": [], "total": 0}})
+            # The task detail is now fetched for EVERY executable kind, because
+            # it is the only place TMC exposes artifact.version -- the fact that
+            # answers "since when has this run unchanged". Narrowed to Routes,
+            # every Job carried an empty version and that read as "TMC does not
+            # expose it".
+            if request.url.path.startswith("/orchestration/executables/tasks/"):
+                return httpx.Response(
+                    200,
+                    json={
+                        "executable": request.url.path.rsplit("/", 1)[-1],
+                        "artifact": {"id": "artifact-work", "version": "2.14.0.20262701024345"},
+                    },
+                )
             payload = list_fixtures.get(request.url.path)
             if payload is not None:
                 return httpx.Response(200, json=payload)
@@ -771,6 +789,10 @@ class TestRuntimeBatchMapping:
         )
 
         assert [job.job_id for job in batch.jobs] == ["task-work"]
+        # A BATCH task now carries its deployed version. It used to be empty for
+        # every Job, because the task detail was fetched for Routes only -- and
+        # that emptiness was read as "TMC does not expose it". It does.
+        assert batch.jobs[0].artifact_version == "2.14.0.20262701024345"
         assert [artifact.artifact_id for artifact in batch.artifacts] == ["art-work"]
         assert [connection.connection_id for connection in batch.connections] == ["conn-work"]
         assert [plan.plan_id for plan in batch.plans] == ["plan-work"]
@@ -1053,3 +1075,208 @@ class TestPaginationFallback:
 
         with pytest.raises(RuntimeProviderError):
             await tmc.provider(handler)._get_all_pages("/orchestration/environments")
+
+
+class TestThrottlingAndLogPaths:
+    """Three defects verified against a live tenant, all of them ours.
+
+    The estate stopped being mirrored entirely: 1.67M records over 103 cycles,
+    then three HTTP 429s in a row and the source auto-disabled itself. A 429 is
+    "come back later", not a failure, and it was raised straight through.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_throttled_request_is_retried_instead_of_failing_the_sync(self, tmc):
+        attempts: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            attempts.append(request.url.path)
+            if len(attempts) == 1:
+                return httpx.Response(429, headers={"Retry-After": "0"}, json={})
+            return httpx.Response(200, json={"id": "task-1"})
+
+        provider = tmc.provider(handler)
+        result = await provider._get("/orchestration/executables/tasks/task-1")
+
+        assert result == {"id": "task-1"}
+        assert len(attempts) == 2, "a 429 must be retried, not raised"
+
+    @pytest.mark.asyncio
+    async def test_a_throttle_that_never_clears_still_surfaces(self, tmc):
+        """Retrying forever would hide a real outage behind a silent sync."""
+        attempts: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            attempts.append(request.url.path)
+            return httpx.Response(429, headers={"Retry-After": "0"}, json={})
+
+        provider = tmc.provider(handler)
+        with pytest.raises(RuntimeProviderError, match="HTTP 429"):
+            await provider._get("/orchestration/executables/tasks/task-1")
+        # Throttling gets its own, larger budget than a transport blip: a quota
+        # window outlives three back-to-back attempts. It is still bounded --
+        # retrying forever would hide a real outage behind a silent sync.
+        assert len(attempts) == _THROTTLE_MAX_ATTEMPTS
+
+    @pytest.mark.asyncio
+    async def test_a_404_on_logs_status_abandons_the_bulk_export_for_the_sync(self, tmc):
+        """Verified: one tenant answers 404 for every execution, Job and Route.
+
+        That path then cost a POST plus three status polls on every single log
+        fetch and never once succeeded -- against an API that throttles us.
+        """
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(f"{request.method} {request.url.path}")
+            if request.url.path.endswith("/logs/status"):
+                return httpx.Response(404, json={})
+            if request.method == "POST":
+                return httpx.Response(200, json={"token": "t", "size": 376820})
+            return httpx.Response(200, json={"data": [], "totalSize": 0})
+
+        provider = tmc.provider(handler)
+
+        assert await provider._get_execution_logs_async("exec-1") is None
+        assert provider._async_logs_unsupported is True
+        # One status poll, not three: the 404 is an answer, not a wait.
+        assert sum(1 for c in calls if c.endswith("/logs/status")) == 1
+
+        calls.clear()
+        assert await provider._get_execution_logs_async("exec-2") is None
+        assert calls == [], "a tenant without the export is not asked twice"
+
+
+class TestRouteThroughputAndPayloads:
+    """Three findings from reading 3.000 captured Route log lines.
+
+    The exchange counters TMC "does not supply" are printed in the log text;
+    the captured window was the wrong end of the log; and the lines carried
+    complete customer invoices, IBANs included.
+    """
+
+    def test_exchange_counters_are_read_back_off_the_engine_log(self):
+        line = (
+            "DS RUNNER METRIC - ROUTE: [RouteName:DAS_report_axium] "
+            "[RouteExchangesCompleted:72][RouteExchangesFailed:11]"
+            "[RouteExchangesTotal:83][RouteLastProcessingTime:746]"
+            "[RouteMeanProcessingTime:847]"
+        )
+        naam, tellers = _route_metrics_from_log(line)
+        assert naam == "DAS_report_axium"
+        # 11 of 83 exchanges failing, on a route whose API columns are all null.
+        assert tellers["RouteExchangesFailed"] == 11
+        assert tellers["RouteExchangesTotal"] == 83
+
+    def test_a_metric_line_is_attributed_to_the_route_it_names(self):
+        """The export is the SHARED engine log. A sibling route's counters must
+        not be written onto the deployment whose log we happened to download."""
+        from datetime import datetime, timezone
+
+        from src.runtime.models import RuntimeLogEvent
+
+        def run(job_name: str):
+            item = _task_execution(executionId=f"exec-{job_name}", taskId=job_name)
+            job_run = _to_job_run(item, "talend_tmc", {}, {})
+            return job_run.model_copy(
+                update={"job_name": job_name, "executable_kind": RuntimeExecutableKind.ROUTE}
+            )
+
+        runs = [run("route-a"), run("route-b")]
+        events = [
+            RuntimeLogEvent(
+                execution_id="exec-route-a",
+                timestamp=datetime(2026, 8, 20, tzinfo=timezone.utc),
+                severity=RuntimeLogSeverity.INFO,
+                message=(
+                    "DS RUNNER METRIC - ROUTE: [RouteName:route-b] "
+                    "[RouteExchangesCompleted:9][RouteExchangesTotal:9]"
+                ),
+                line_ordinal=0,
+            )
+        ]
+        assert _apply_route_metrics(runs, events) == 1
+        assert runs[0].total_exchanges is None, "route-a's log said nothing about route-a"
+        assert runs[1].total_exchanges == 9
+
+    def test_counters_land_on_the_running_deployment_only(self):
+        """They are cumulative for the deployment that is up. An earlier run of
+        the same route did not process today's traffic."""
+        from datetime import datetime, timedelta, timezone
+
+        from src.runtime.models import RuntimeLogEvent
+
+        nu = datetime(2026, 9, 21, tzinfo=timezone.utc)
+
+        def run(gestart: datetime):
+            item = _task_execution(executionId=f"exec-{gestart.day}", taskId="route-a")
+            return _to_job_run(item, "talend_tmc", {}, {}).model_copy(
+                update={
+                    "job_name": "route-a",
+                    "executable_kind": RuntimeExecutableKind.ROUTE,
+                    "started_at": gestart,
+                }
+            )
+
+        oud, nieuw = run(nu - timedelta(days=60)), run(nu)
+        events = [
+            RuntimeLogEvent(
+                execution_id="exec-21",
+                timestamp=nu,
+                severity=RuntimeLogSeverity.INFO,
+                message="DS RUNNER METRIC - ROUTE: [RouteName:route-a] [RouteExchangesTotal:3109]",
+                line_ordinal=0,
+            )
+        ]
+        assert _apply_route_metrics([oud, nieuw], events) == 1
+        assert nieuw.total_exchanges == 3109
+        assert oud.total_exchanges is None
+
+    def test_a_deployment_keeps_the_tail_not_the_opening_day(self):
+        """A Route up for 83 days starts its log on the day it was deployed."""
+        lines = [{"line": index} for index in range(5_000)]
+        tail = _bounded_log_entries(lines, 500, head_capture=0)
+        assert [item[1]["line"] for item in tail][:2] == [4_500, 4_501]
+        # A failed batch run still keeps its startup context.
+        head = _bounded_log_entries(lines, 500)
+        assert [item[1]["line"] for item in head][:2] == [0, 1]
+
+    def test_a_message_body_is_counted_not_copied(self):
+        """90 captured lines carried an IBAN. The envelope is the diagnosis."""
+        trace = (
+            "Exchange[ExchangePattern: InOnly, BodyType: String, "
+            "Body: <DISTRIMED_INVOICES><IBAN>NL02ABNA0123456789</IBAN></DISTRIMED_INVOICES>]"
+        )
+        stripped = _strip_message_body(trace)
+        assert "NL02ABNA0123456789" not in stripped
+        assert "InOnly" in stripped and "BodyType: String" in stripped
+        assert "tekens" in stripped
+
+    @pytest.mark.asyncio
+    async def test_a_tail_request_reads_the_end_not_the_first_page(self, tmc):
+        """The head-first loop returns page one, which for a deployment log is
+        the day the route went live. A tail request must probe the total and
+        read the window at the end."""
+        gezien: list[tuple[int, int]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            start = int(request.url.params.get("startIndex", 0))
+            count = int(request.url.params.get("count", 0))
+            gezien.append((start, count))
+            regels = [
+                {"logMessage": f"line {index}", "timestamp": "2026-09-21T00:00:00Z"}
+                for index in range(start, min(start + count, 5_000))
+            ]
+            return httpx.Response(200, json={"data": regels, "totalSize": 5_000})
+
+        provider = tmc.provider(handler)
+        logs = await provider._get_execution_logs_paginated("exec-1", 100, head_capture=0)
+
+        assert [item["logMessage"] for item in logs][0] == "line 4900"
+        assert [item["logMessage"] for item in logs][-1] == "line 4999"
+        # One cheap probe for the total, then one window. Not a walk.
+        assert gezien == [(0, 1), (4_900, 100)]
+
+    def test_an_ordinary_log_line_is_left_alone(self):
+        line = "Route started in 12 ms"
+        assert _strip_message_body(line) == line

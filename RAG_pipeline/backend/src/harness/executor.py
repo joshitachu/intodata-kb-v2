@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 from enum import StrEnum
 from typing import Any
@@ -35,6 +36,9 @@ from src.harness.packs.draft_service import (
 from src.harness.registry import CapabilityRegistry, CapabilityRegistryError
 from src.harness.connectors import ConnectorPolicyError, ConnectorService
 from src.harness.connectors.repository import ConnectorNotFoundError
+
+
+logger = logging.getLogger(__name__)
 
 
 class CapabilityPolicyCode(StrEnum):
@@ -275,16 +279,34 @@ class HarnessCapabilityExecutor:
                 error_code=CapabilityPolicyCode.UNKNOWN.value,
                 safe_details={"reason": CapabilityPolicyCode.UNKNOWN.value},
             )
-        except (CapabilityDisabledError, CapabilityRegistryError):
+        except (CapabilityDisabledError, CapabilityRegistryError) as exc:
+            # A disabled capability and a broken registry render identically; only
+            # the log and the class name tell an operator which one happened.
+            logger.warning(
+                "Capability unavailable: capability_id=%s exception=%s",
+                request.capability_id,
+                exc.__class__.__name__,
+                exc_info=True,
+            )
             return CapabilityObservation(
                 capability_id=request.capability_id,
                 status="denied",
                 summary="The requested capability is unavailable.",
                 error_message="The requested capability is unavailable.",
                 error_code=CapabilityPolicyCode.UNAVAILABLE.value,
-                safe_details={"reason": CapabilityPolicyCode.UNAVAILABLE.value},
+                safe_details={
+                    "reason": CapabilityPolicyCode.UNAVAILABLE.value,
+                    "exception": exc.__class__.__name__,
+                },
             )
         except McpDocumentationProviderError as exc:
+            # ``safe_message`` is already sanitized for the caller, but the
+            # chained HTTP/transport cause only survives in the log.
+            logger.error(
+                "MCP documentation provider failed: capability_id=%s",
+                request.capability_id,
+                exc_info=True,
+            )
             return CapabilityObservation(
                 capability_id=request.capability_id,
                 status="failed",
@@ -293,9 +315,14 @@ class HarnessCapabilityExecutor:
                 error_message=exc.safe_message,
                 error_code=CapabilityPolicyCode.HANDLER_FAILURE.value,
                 retryable=True,
-                safe_details={"provider": "mcp.docs"},
+                safe_details={"provider": "mcp.docs", "exception": exc.__class__.__name__},
             )
         except McpProjectsProviderError as exc:
+            logger.error(
+                "MCP projects provider failed: capability_id=%s",
+                request.capability_id,
+                exc_info=True,
+            )
             return CapabilityObservation(
                 capability_id=request.capability_id,
                 status="failed",
@@ -304,7 +331,10 @@ class HarnessCapabilityExecutor:
                 error_message=exc.safe_message,
                 error_code=CapabilityPolicyCode.HANDLER_FAILURE.value,
                 retryable=True,
-                safe_details={"provider_type": "project_source"},
+                safe_details={
+                    "provider_type": "project_source",
+                    "exception": exc.__class__.__name__,
+                },
             )
         except ConversationStateDenied as exc:
             return CapabilityObservation(
@@ -390,6 +420,14 @@ class HarnessCapabilityExecutor:
                 safe_details={"reason": "agent_plan_invalid"},
             )
         except (ConnectorPolicyError, ConnectorNotFoundError, KeyError, ValueError) as exc:
+            # KeyError/ValueError are broad enough to catch ordinary handler bugs,
+            # so the server log is the only place the real cause survives.
+            logger.error(
+                "Capability connector branch failed: capability_id=%s exception=%s",
+                request.capability_id,
+                exc.__class__.__name__,
+                exc_info=True,
+            )
             return CapabilityObservation(
                 capability_id=request.capability_id,
                 status="denied",
@@ -400,6 +438,16 @@ class HarnessCapabilityExecutor:
                 safe_details={"reason": exc.__class__.__name__},
             )
         except RuntimeError as exc:
+            # The caller-facing text stays generic because handler messages can
+            # carry internal paths and identifiers. The exception class is the
+            # most a model or user gets; the full message and traceback go to the
+            # server log, which is the only record of why this actually failed.
+            logger.error(
+                "Capability handler raised RuntimeError: capability_id=%s exception=%s",
+                request.capability_id,
+                exc.__class__.__name__,
+                exc_info=True,
+            )
             missing_read_adapter = str(exc).startswith("Read adapter is not configured for ")
             return CapabilityObservation(
                 capability_id=request.capability_id,
@@ -413,7 +461,10 @@ class HarnessCapabilityExecutor:
                     else CapabilityPolicyCode.HANDLER_FAILURE.value
                 ),
                 retryable=False,
-                safe_details={"reason": "handler_dependency_unavailable"},
+                safe_details={
+                    "reason": "handler_dependency_unavailable",
+                    "exception": exc.__class__.__name__,
+                },
             )
 
 
@@ -444,6 +495,12 @@ def _canonicalize_scoped_project_arguments(
             "rag.docs.answer_question",
             "rag.docs.search_evidence",
             "rag.docs.read_document",
+            # Same shape as the reads above -- one mandatory `project_id`
+            # pinning the call to a single project -- so it gets the same
+            # treatment. Omitting it would mean a display name copied out of
+            # conversation is tolerated by three documentation reads and denied
+            # by the fourth, for no reason a caller could discover.
+            "rag.docs.read_document_text",
             "mcp.docs.list_project_docs",
         }
     )

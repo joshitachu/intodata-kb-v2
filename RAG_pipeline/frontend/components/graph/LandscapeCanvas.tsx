@@ -22,6 +22,7 @@ import {
 } from "@/lib/landscapeTransform";
 import type { BusinessSystem, LandscapeApplication, LandscapeSystem, ProjectLandscapeResponse } from "@/types/landscape";
 import type { AssistantCanvasEmphasis, AssistantFocusRequest, CopilotViewContext } from "@/types/copilot";
+import { useFitOnContainerResize } from "@/hooks/useFitOnContainerResize";
 
 export type LandscapeSelection =
   | { kind: "application"; item: LandscapeApplication }
@@ -96,6 +97,14 @@ function TechnicalLandscapeCanvas({ landscape, onExplore, onViewDesigns, assista
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [selection, setSelection] = useState<LandscapeSelection | null>(null);
   const [instance, setInstance] = useState<ReactFlowInstance<Node<LandscapeNodeData>, Edge<LandscapeEdgeData>> | null>(null);
+
+  // The diagram follows the docked copilot: widening that panel narrows this
+  // column, and without a refit the graph slides out of view on the right.
+  const refit = useCallback(
+    () => void instance?.fitView({ padding: 0.12, duration: 300 }),
+    [instance],
+  );
+  const canvasRef = useFitOnContainerResize(refit);
   // Focus+context: which system/relationship the cursor is over. Drives the
   // highlight so a dense graph stays readable -- hover a node or line to trace
   // only what connects to it; everything else fades and labels are hidden.
@@ -221,7 +230,7 @@ function TechnicalLandscapeCanvas({ landscape, onExplore, onViewDesigns, assista
     if (data.entityType === "businessSystem" && data.system) onExplore({ kind: "businessSystem", item: data.system as BusinessSystem });
   }, [onExplore]);
   const doubleClickEdge: EdgeMouseHandler = useCallback((_event, edge) => { const next = selectionForEdge(landscape, edge.id, edge.data as LandscapeEdgeData | undefined); if (next) onExplore(next); }, [landscape, onExplore]);
-  return <div className="absolute inset-0" data-testid="landscape-canvas">
+  return <div ref={canvasRef} className="absolute inset-0" data-testid="landscape-canvas">
     <div className="absolute left-3 top-3 z-20 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white/95 p-2 shadow-sm backdrop-blur">
       <div className="flex items-center gap-1.5 px-1 text-xs font-bold text-slate-700"><Network className="h-4 w-4 text-blue-600" /> L1 Landscape</div>
       <label className="relative"><Search className="pointer-events-none absolute left-2 top-1.5 h-3.5 w-3.5 text-slate-400" /><input aria-label="Search applications and systems" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search systems" className="h-7 w-36 rounded border border-slate-200 pl-7 pr-2 text-xs outline-none focus:border-blue-400" /></label>

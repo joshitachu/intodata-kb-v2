@@ -81,11 +81,15 @@ _EXPECTED_SOURCE_PHASES = {
         "reading_indexed_documentation",
         "Reading indexed documentation",
     ),
-    "list_project_documents": (
+    "list_generated_documents": (
         "reading_generated_document_inventory",
         "Reading generated document inventory",
     ),
-    "read_document": ("reading_indexed_document", "Reading indexed document"),
+    "search_within_document": ("reading_indexed_document", "Reading indexed document"),
+    "read_document": (
+        "reading_ordered_indexed_document",
+        "Reading ordered indexed document",
+    ),
     "read_generated_document": (
         "reading_generated_document",
         "Reading generated document",
@@ -95,6 +99,46 @@ _EXPECTED_SOURCE_PHASES = {
         "Reading the project topology",
     ),
 }
+
+
+def _readonly_semantic_names() -> set[str]:
+    snapshot = build_semantic_tool_snapshot(
+        default_capability_registry(),
+        scope=ManifestScope(include_bounded_loop_only=True),
+    )
+    return {record.semantic_name for record in snapshot.tools}
+
+
+def test_every_labelled_source_is_a_capability_that_actually_exists() -> None:
+    """A label keyed on a name no capability answers to is dead weight.
+
+    This is the check the suite was missing. The expectation table above was
+    pinned against `_VISIBLE_TOOL_LABELS` and against nothing else, so the two
+    agreed with each other while both disagreed with the registry: when
+    `read_document` was split into `search_within_document` and
+    the ordered document reader, the stale key kept the test green and BOTH new tools
+    silently lost their progress phase, degrading a nameable read to the generic
+    "reading evidence" line.
+    """
+
+    registered = _readonly_semantic_names()
+    dead = set(_VISIBLE_TOOL_LABELS) - registered
+    assert not dead, f"labels key on capabilities that no longer exist: {sorted(dead)}"
+
+
+def test_two_sources_never_collapse_onto_one_phase() -> None:
+    """Phases are derived by slugifying the label, so two labels can collide.
+
+    The client keys on the phase string, so a collision makes two different reads
+    indistinguishable on the status line -- and it is invisible at the point of
+    edit, because the labels themselves still read differently.
+    """
+
+    phases = [
+        _source_read_phase(name, None).phase  # type: ignore[union-attr]
+        for name in _VISIBLE_TOOL_LABELS
+    ]
+    assert len(set(phases)) == len(phases), f"colliding phases: {sorted(phases)}"
 
 
 def test_every_humanized_source_derives_a_stable_phase_and_label() -> None:

@@ -4,37 +4,36 @@ Live state only. Session history is in `.claude/PROGRESS_LOG.md`; durable decisi
 
 ## What this sub-project is
 
-`knowledge_base/` contains the intodoc scanner, MCP/REST orchestration service and React dashboard for integration-landscape intelligence.
+`knowledge_base/` contains the intodoc scanner, MCP/REST orchestration service, and React dashboard for integration-landscape intelligence.
 
 ## Current state
 
-- `integration-intelligence-v1` is an independent goal-driven documentation pipeline. It does not call the legacy custom gather/analyse/write phases or their fixed unit/document batching.
-- Every selected upload is sanitized and deterministically parsed in full. Parser products are normalized into a canonical fact graph with explicit exact, partial, dynamic, unresolved and unsupported states.
-- A user goal creates an advisory scope seed. The coding agent may expand it as evidence reveals dependencies; whole-estate documentation exposes the complete graph without serializing a giant ID list into the prompt.
-- OpenCode is the first registered coding-agent adapter. Provider-neutral contracts and registry boundaries exist for future Codex, Claude Code or Hermes adapters; unregistered providers fail closed.
-- The goal-driven OpenCode adapter can use native delegation only when the investigation discovers genuinely independent work. The legacy OpenCode route continues to deny delegation.
-- Methodology packs guide questions, concepts, evidence hints, outputs and sufficiency. They cannot redefine parser facts, select providers, impose phases/batches, or escape the configured pack root.
-- Candidate knowledge is reconciled with immutable deterministic facts and must pass semantic, scope and client-readiness gates. Catalogue, integration dossiers, topology, RAG and provenance are deterministic projections of accepted canonical knowledge.
-- Publication is atomic. Failure/cancellation retains the previous baseline and a resumable checkpoint. Reingestion uses content hashes plus graph dependency impact so unchanged parsing and unaffected accepted knowledge can be reused.
-- Resource ceilings are circuit breakers, not evidence-reading or per-agent quotas. Usage separates input, output, cache, reasoning, tool and wall-time costs.
-- The dashboard exposes the new profile and goal/provider controls. Legacy profiles remain available as separate compatibility paths.
-- Existing composite projects, runtime evidence, topology APIs and pack infrastructure remain live.
+- OpenCode documentation generation is a transport adapter for the canonical Claude Code CLI mechanism.
+- `OpenCodeCliProvider` sends the byte-identical `ClaudeCliProvider._build_prompt` once to one `opencode run --format json` session over the complete estate.
+- `ClaudeService` owns the shared preprocessing, quick scan, resume state, staging lifecycle, validation, atomic publication, and RAG push for both CLI transports.
+- The OpenCode-specific Gather/Analyze/Produce scheduler, goal-driven pipeline, agent-workspace pipeline, connector runtime, and reingestion worker are removed.
+- OpenCode bypasses the composite partition orchestrator and publishes one root document tree; Claude CLI and custom providers still support partitioned generation.
+- Historical generation-profile JSON remains readable, but every profile is rejected for a new or resumed run. The dashboard no longer exposes profile, goal, or agentic controls.
+- OpenCode runtime differences are limited to executable arguments, pinned-version preflight, isolated HOME/XDG/auth state, provider configuration, JSON-event parsing, usage accounting, and process cleanup.
+- OpenCode Go keys use a temporary 0600 auth file. Known credentials from environment and OpenCode JSON configuration are redacted from event and stderr diagnostics.
+- Shared business-topology services and publication paths remain live; deleting `providers/agent_workspace/topology.py` removed only the retired workspace projection.
+- Newline-delimited streams are read through `utils/stream_frames.py`, never `readline()`: the OpenCode event/stderr readers and both ends of the connector-facade relay. Frame size there is model- or payload-controlled, so the stream buffer must not be the ceiling.
 
 ## Verification
 
-- Goal-driven tests: 44 passed.
-- Goal-driven plus OpenCode provider tests: 116 passed.
-- Broader affected MCP integration set: 252 passed before the final delegation-only change; the provider subset passed afterward.
-- Full intodoc suite: 669 passed, 7 skipped.
-- Dashboard: TypeScript clean; 159 Vitest tests passed.
-- Full MCP suite is not green because the existing GitHub App test fixture contains a malformed PEM (expected 200, received 502 after 88 passes).
-- The changed-file invisible-character scan is clean. The repository-wide scan still finds 46 pre-existing variation selectors under `knowledge_base/output/poly/`.
+- Routing/provider backend tests: 103 passed.
+- Backend excluding four unrelated failing fixture files: 2424 passed, 5 warnings.
+- Dashboard: TypeScript clean; 158 Vitest tests passed.
+- Python compilation and `git diff --check`: passed.
+- Installed OpenCode version: 1.18.7, matching the configured pin.
+- Full backend still has nine unrelated failures: malformed GitHub test PEM, curated VW count drift, model catalogue mismatches, and missing real component-description fixtures.
+- Repository scan finds 83 pre-existing variation selectors under generated `knowledge_base/output/` trees.
+- Stream-frame fix: `pytest tests/test_providers tests/test_utils tests/test_connectors` -> 940 passed; the regression test was confirmed to fail against the old `readline()` reader.
 
 ## Next step
 
-With explicit approval for provider spend, run focused and whole-estate ETTM pilots through `integration-intelligence-v1`; compare representative mappings, journeys, scope expansion, topology and citations directly with sanitized source before customer publication.
+Rebuild the `mcp-server` image (source is baked in, not bind-mounted) and re-run `ettm_TEST_Claude` with OpenCode -- staging from failed run 257 is preserved, so it resumes from checkpoint. Then, with explicit approval for model spend, compare one representative project through OpenCode and Claude against the same sanitized scan: all nine documents, assessment artifacts, cost, and wall time, before adding any workspace mechanism.
 
 ## Unverified
 
-- Production semantic depth, cost and wall time are not claimed until that paid estate-scale pilot and manual source comparison pass.
-- Only OpenCode has a real coding-agent adapter today; other provider contracts deliberately fail closed.
+- Production document-quality parity, model cost, and wall time. The first isolated OpenCode smoke produced no output and was terminated rather than allowed to spend or hang indefinitely.

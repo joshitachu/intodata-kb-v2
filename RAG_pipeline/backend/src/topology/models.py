@@ -522,6 +522,29 @@ class ProjectGraph(BaseModel):
 ParamValue = str | int | float | bool | None
 
 
+class JobGraphParamTable(BaseModel):
+    """One row-structured component parameter, as MCP publishes it.
+
+    The counterpart of `param_summary` for params whose value is a TABLE: their
+    scalar `value` is empty and the configuration is in `rows`, so a
+    `dict[str, ParamValue]` cannot express them. Upstream applies the same
+    credential filter to these rows as to the scalar params, and additionally
+    withholds any row whose KEY OR VALUE looks credential-bearing, because a
+    row is typically a name/value pair and only the value half is the secret.
+
+    The three counts are against the scan's own row count rather than against
+    `rows`, so a bounded or filtered table is visibly incomplete: `rows_omitted`
+    is what the upstream cap elided, `rows_redacted` what it withheld.
+    """
+
+    name: str = ""
+    columns: list[str] = Field(default_factory=list)
+    rows: list[dict[str, ParamValue]] = Field(default_factory=list)
+    row_count: int = 0
+    rows_omitted: int = 0
+    rows_redacted: int = 0
+
+
 class JobGraphComponent(BaseModel):
     unique_name: str
     display_label: str = ""
@@ -532,8 +555,22 @@ class JobGraphComponent(BaseModel):
     subjob_target: str | None = None
     connection_ref: str = ""
     param_summary: dict[str, ParamValue] = Field(default_factory=dict)
+    # Defaulted, not required: an MCP that predates the field simply publishes no
+    # tables, and a component with none is the normal case (4 of 5 components in
+    # the real corpus carry no row-structured param at all).
+    param_tables: list[JobGraphParamTable] = Field(default_factory=list)
     has_code: bool = False
     description: str = ""
+
+    @property
+    def has_settings(self) -> bool:
+        """Whether the scan captured any configuration for this component.
+
+        Both halves, always: a cSetHeader has an empty `param_summary` and its
+        whole configuration in `param_tables`, so testing `param_summary` alone
+        reports the components that hold the answer as having no settings.
+        """
+        return bool(self.param_summary or self.param_tables)
 
 
 class JobGraphConnection(BaseModel):
@@ -762,6 +799,23 @@ class GetJobDetailInput(TopologyProjectInput):
     # loop has four iterations for the whole turn, and two independent cursors
     # would cost an iteration to advance each.
     offset: int = Field(default=0, ge=0)
+    # Batch read of the shown components' configured settings.
+    #
+    # WHY HERE AND NOT AS `components: list[str]` ON get_component_detail: the
+    # measured failure is a BLIND sweep. An agent asked which criterion routes a
+    # shipment to one flow or the other, opened 15 components of one design one
+    # at a time, and never found it -- because it had no way to know which
+    # component held the setting until it had already opened it. A component
+    # list would only help an agent that already knows the names to ask for,
+    # which is precisely what the failing agent did not know; it would also add
+    # per-name resolution, partial-failure and ambiguity semantics, and
+    # get_component_detail's other half (the per-component mapping graph) is a
+    # separate upstream read per component and cannot be batched with it.
+    # A flag here reuses the existing page, the existing offset contract and the
+    # single job-graph read that already happened, and it answers the question
+    # the sweeping agent was actually asking: "show me this design's components
+    # AND their settings".
+    include_parameters: bool = False
 
 
 class GetComponentDetailInput(TopologyProjectInput):

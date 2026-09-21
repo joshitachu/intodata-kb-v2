@@ -29,7 +29,7 @@ def get_provider(
       - "google/<model>"     — custom harness + Gemini OpenAI-compatible adapter
       - "ollama/<model>"     — custom harness + Ollama-compatible adapter
       - "claude-cli"         — legacy Claude Code CLI subprocess fallback
-      - "opencode-cli"       — adaptive-session OpenCode three-phase runtime
+      - "opencode-cli"       — OpenCode transport for the canonical Claude CLI workflow
 
     investigation_model: optional override for Phase 1 investigation model.
     write_model: optional override for Phase 3 doc-writing model (must be "provider/model" format).

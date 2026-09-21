@@ -17,7 +17,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from mcp_server.services.generation_profile import GenerationProfile
 
 StrippedStr = Annotated[str, BeforeValidator(lambda v: v.strip() if isinstance(v, str) else v)]
 
@@ -985,7 +984,9 @@ class PackAuditRecord(BaseModel):
 class GenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    generation_profile: GenerationProfile | None = None
+    # Profiles belonged to retired OpenCode schedulers.  Keep this raw solely
+    # so the route can return a clear retirement error instead of a schema 422.
+    generation_profile: dict[str, Any] | None = None
 
     project_id: StrippedStr = Field(..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN)
     doc_generation_provider: Literal["custom", "opencode-cli"] | None = Field(
@@ -1664,6 +1665,29 @@ class JobDetailResponse(BaseModel):
 
 # --- Job Graph (Level 2 topology drill-down) ---
 
+class JobGraphParamTable(BaseModel):
+    """One row-structured component parameter (Talend `field_type: TABLE`).
+
+    Separate from `param_summary` because the two have different shapes, not
+    because they mean different things: a TABLE param's value is its `rows`
+    and its scalar `value` is empty, so it cannot be expressed in a
+    `dict[str, str]` at all. Together they are the component's configuration.
+
+    Every count is against the SCAN's row count, not against what is listed
+    here, so a bounded or filtered table can never read as a short one:
+    `rows_omitted` is what the cap elided and `rows_redacted` is what the
+    credential filter withheld. A table with rows == [] and rows_redacted > 0
+    is a real, deliberate statement.
+    """
+
+    name: str
+    columns: list[str] = []
+    rows: list[dict[str, str]] = []
+    row_count: int = 0      # rows in the scan, before any cap or filter
+    rows_omitted: int = 0   # elided by the per-table row cap
+    rows_redacted: int = 0  # withheld because the row looked credential-bearing
+
+
 class JobGraphNode(BaseModel):
     unique_name: str
     # Talend's author-assigned LABEL parameter. The technical UNIQUE_NAME
@@ -1676,6 +1700,10 @@ class JobGraphNode(BaseModel):
     subjob_target: str | None = None  # tRunJob child job name (portal node)
     connection_ref: str = ""          # metadata_connection_ref for system badge
     param_summary: dict[str, str] = {}  # bounded, credential-filtered high-signal params
+    # Row-structured params (field_type TABLE), which param_summary structurally
+    # cannot carry. This is where a component's decision logic usually lives --
+    # cSetHeader VALUES, tFilterRow CONDITIONS, XML MAPPING XPaths.
+    param_tables: list[JobGraphParamTable] = []
     has_code: bool = False
     # Plain-English description parsed from 02_COMPONENT_INVENTORY.md (already
     # credential-filtered docs). Empty when no doc row matches this component --

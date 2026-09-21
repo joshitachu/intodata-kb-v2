@@ -26,6 +26,7 @@ from src.harness.models import (
     ATTACH_ZIP_SOURCE_CAPABILITY,
     CONVERSATION_SUMMARY_FACTS_CAPABILITY,
     DOCUMENT_LIST_CAPABILITY,
+    DOCUMENT_FULL_TEXT_CAPABILITY,
     DOCUMENT_READ_CAPABILITY,
     DOCUMENT_SEARCH_CAPABILITY,
     DOCUMENTATION_ANSWER_CAPABILITY,
@@ -74,6 +75,7 @@ from src.runtime.insights.parser import redact_credentials
 
 _SAFE_EVIDENCE_METADATA_KEYS = frozenset(
     {
+        "char_count",
         "conversation_id",
         "document_id",
         "chunk_index",
@@ -83,11 +85,17 @@ _SAFE_EVIDENCE_METADATA_KEYS = frozenset(
         "message_id",
         "modified_at",
         "ordinal",
+        # A whole-document read hands over one item per part; without the
+        # ordering fields the model reassembles them in serializer order, which
+        # for a numbered procedure is exactly as wrong as ranked chunks.
+        "part",
+        "part_count",
         "project_id",
         "query_type",
         "record_ref",
         "role",
         "scope",
+        "section",
         "severity",
         "size_bytes",
         "source_key",
@@ -98,6 +106,9 @@ _SAFE_EVIDENCE_METADATA_KEYS = frozenset(
     }
 )
 _SAFE_URI_PREFIXES = ("/projects/", "/admin/logs/", "/admin/runtime")
+#: Cap on a list carried in an evidence result's ``scope``. Big enough for a
+#: document's section outline, which is the longest list any producer emits.
+_MAX_SCOPE_LIST_ENTRIES = 150
 _SECRET_TOKEN_RE = re.compile(
     r"\b(?:sk-[A-Za-z0-9_-]{8,}|(?:Bearer|Basic)\s+[A-Za-z0-9._+/=-]{8,})\b",
     re.IGNORECASE,
@@ -1561,6 +1572,13 @@ class RegisteredEvidenceHandler:
         result_status = str(getattr(result, "status", "succeeded"))
         error_message = getattr(result, "error_message", None)
         answer_draft = getattr(result, "answer_draft", None)
+        # What the query covered, forwarded verbatim. An empty `items` list is
+        # otherwise uninterpretable: the model cannot tell "searched 37
+        # documents and none matched" from "searched nothing", and reported the
+        # first as a fact about a client's estate. Carried on failures too --
+        # "could not read that" is only actionable alongside why.
+        scope = getattr(result, "scope", None)
+        safe_scope = _safe_scope(scope)
         if result_status not in {"succeeded", "success", "completed"}:
             safe_error = (
                 _safe_text(error_message, limit=500)
@@ -1574,9 +1592,12 @@ class RegisteredEvidenceHandler:
                 summary="The evidence source could not answer this request.",
                 error_message=safe_error,
                 retryable=True,
+                data={"scope": safe_scope} if safe_scope else {},
                 safe_details={"evidence_count": len(typed_items)},
             )
         data: dict[str, Any] = {"items": typed_items}
+        if safe_scope:
+            data["scope"] = safe_scope
         if isinstance(answer_draft, str) and answer_draft.strip():
             data["answer_draft"] = _safe_text(answer_draft, limit=12_000)
         return CapabilityObservation(
@@ -1592,6 +1613,51 @@ class RegisteredEvidenceHandler:
             evidence_refs=[_evidence_reference(item) for item in typed_items],
             safe_details={"evidence_count": len(typed_items)},
         )
+
+
+def _safe_scope(scope: Any) -> dict[str, Any] | None:
+    """Sanitize a producer's scope description without pruning its keys.
+
+    Unlike evidence metadata, this is NOT filtered against an allowlist. Scope
+    keys are written by the capability that knows what it covered, and an
+    allowlist here would silently drop the next one somebody adds -- turning a
+    missing explanation into the default, which is the state this whole field
+    exists to leave behind. The values still go through the same redaction and
+    length bounds as everything else that reaches a model.
+    """
+
+    if not isinstance(scope, dict) or not scope:
+        return None
+    safe: dict[str, Any] = {}
+    for key, raw in list(scope.items())[:30]:
+        if not isinstance(key, str):
+            continue
+        value = _safe_scope_value(raw)
+        if value is not None:
+            safe[key[:60]] = value
+    return safe or None
+
+
+def _safe_scope_value(value: Any) -> Any:
+    """Redact and bound one scope value.
+
+    Separate from :func:`_safe_metadata_value` only because of the string
+    budget. Metadata values are identifiers and 500 characters is generous for
+    one; scope values include the sentence that tells the model what its empty
+    result means, and cutting that at 500 characters would truncate the
+    explanation rather than the identifier.
+    """
+
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return _safe_text(value, limit=1_500)
+    if isinstance(value, list):
+        return [
+            safe for item in value[:_MAX_SCOPE_LIST_ENTRIES]
+            if (safe := _safe_scope_value(item)) is not None
+        ]
+    return None
 
 
 def _serialized_evidence_item(item: Any) -> dict[str, Any] | None:
@@ -1707,6 +1773,7 @@ def migrated_capability_handlers() -> tuple[object, ...]:
                 DOCUMENT_SEARCH_CAPABILITY,
                 DOCUMENTATION_ANSWER_CAPABILITY,
                 DOCUMENT_READ_CAPABILITY,
+                DOCUMENT_FULL_TEXT_CAPABILITY,
                 DOCUMENT_LIST_CAPABILITY,
                 GENERATED_DOCUMENT_READ_CAPABILITY,
                 METADATA_QUERY_CAPABILITY,

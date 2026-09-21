@@ -90,7 +90,15 @@ services:
       SMTP_FROM_NAME: ${SMTP_FROM_NAME:-IntoData Nexus}
       SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
       APP_ENV: ${APP_ENV:-production}
+      # Reranking is all-or-nothing on purpose. RERANKER_ENABLED=true with an
+      # empty VOYAGE_API_KEY is refused at startup (src/retrieval/reranker.py
+      # warmup): every rerank call would 401 and fall back to raw fusion order,
+      # so the deployment would serve permanently un-reranked results and look
+      # completely healthy doing it. To run without reranking, say so --
+      # RERANKER_ENABLED=false. RERANKER_ENABLED had no passthrough at all until
+      # now, so that choice was not even expressible from the environment.
       VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      RERANKER_ENABLED: ${RERANKER_ENABLED:-true}
       KIMI_API_KEY: ${KIMI_API_KEY:-}
       # The V2 read-only runtime builds its client from settings.kimi_llm_model
       # directly and never consults instance_settings, so the `rag_chat_model`
@@ -209,6 +217,36 @@ services:
       LANGCHAIN_TRACING_ENABLED: ${LANGCHAIN_TRACING_ENABLED:-true}
       LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-}
       LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT:-nexus-harness-dev}
+      # Labs lane (OpenCode-driven chat brain). Inert unless the `labs` compose
+      # profile is up: without the opencode-labs service these URLs simply fail
+      # to connect and /api/v1/labs/health reports the lane as down.
+      OPENCODE_SERVER_URL: ${OPENCODE_SERVER_URL:-http://opencode-labs:4096}
+      # OpenCode Zen's `big-pickle` needs no provider credential. Set these to
+      # `moonshot` / `kimi-k2.6` to run the lane on the same model as /chat,
+      # which is the only setup where an answer-quality difference isolates the
+      # runtime rather than the model.
+      # Pack building and onboarding are real generation work, not chat turns.
+      # 120s was set to cut short a model that hung; it also cuts short a pack
+      # build, which legitimately runs past two minutes.
+      # Must stay UNDER the conversation-state claim lease, which is
+      # agent_runtime_v2_hard_deadline_seconds (300) + 30 = 330s. At 420 a
+      # stateful tool call made late in a turn hit an expired lease and came
+      # back as conversation_state_denied.
+      LABS_TURN_DEADLINE_SECONDS: ${LABS_TURN_DEADLINE_SECONDS:-300}
+      MCP_DOCS_REQUEST_TIMEOUT: ${MCP_DOCS_REQUEST_TIMEOUT:-120}
+      # Streams the model's reasoning as its own `assistant.reasoning` SSE frame
+      # so the UI can show it collapsed. Never mixed into the answer text.
+      LABS_STREAM_REASONING: ${LABS_STREAM_REASONING:-true}
+      LABS_PROVIDER_ID: ${LABS_PROVIDER_ID:-deepseek}
+      LABS_MODEL_ID: ${LABS_MODEL_ID:-deepseek-flash}
+      LABS_MCP_URL: ${LABS_MCP_URL:-http://backend:8000/api/v1/labs/mcp}
+      LABS_WORKSPACE_ROOT: ${LABS_WORKSPACE_ROOT:-/labs-workspaces}
+      # Must resolve to the same path inside opencode-labs: the backend writes a
+      # `docs` symlink into the shared workspace and OpenCode dereferences it.
+      LABS_DOCS_ROOT: ${LABS_DOCS_ROOT:-/kb-output}
+    volumes:
+      - labs_workspaces:/labs-workspaces
+      - ./knowledge_base/output:/kb-output:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -316,11 +354,8 @@ services:
       MCP_OPENCODE_VERSION: ${MCP_OPENCODE_VERSION:-1.18.7}
       MCP_OPENCODE_AUTO_APPROVE: ${MCP_OPENCODE_AUTO_APPROVE:-true}
       MCP_OPENCODE_TIMEOUT_SECONDS: ${MCP_OPENCODE_TIMEOUT_SECONDS:-1800}
-      MCP_OPENCODE_PHASE_MAX_FOLLOWUPS: ${MCP_OPENCODE_PHASE_MAX_FOLLOWUPS:-1}
-      MCP_OPENCODE_PRODUCE_CONCURRENCY: ${MCP_OPENCODE_PRODUCE_CONCURRENCY:-2}
       MCP_OPENCODE_OLLAMA_BASE_URL: ${MCP_OPENCODE_OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
       MCP_OPENCODE_GO_API_KEY: ${MCP_OPENCODE_GO_API_KEY:-}
-      MCP_OPENCODE_MCP_READ_ALLOWLIST_JSON: ${MCP_OPENCODE_MCP_READ_ALLOWLIST_JSON:-{}}
       MCP_DATA_DIR: /app/data
       MCP_INTODOC_OUTPUT_DIR: /app/intodoc-output
       MCP_PROJECT_ROOT: /app/workspace
@@ -474,8 +509,56 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Experimental: the OpenCode reasoning loop behind the /labs/chat lane.
+  #
+  # Deliberately NOT part of the EP-001 seven-service health boundary. It only
+  # starts with `docker-compose --profile labs up -d`, so client deployments and
+  # `deploy/SMOKE-TEST.md` are unaffected.
+  opencode-labs:
+    profiles: ["labs"]
+    pull_policy: build
+    build:
+      context: ./labs/opencode
+      dockerfile: Dockerfile
+      args:
+        OPENCODE_VERSION: ${OPENCODE_VERSION:-1.18.7}
+    environment:
+      # Deliberately NOT named KIMI_API_KEY: OpenCode auto-detects that variable
+      # and binds it to its built-in `kimi-for-coding` provider, which targets a
+      # different API base than a Moonshot platform key is valid for. The
+      # entrypoint feeds this to the auth API instead, so the key never lands in
+      # a config file on the shared workspace volume.
+      # Same model /chat uses, so the comparison isolates the runtime.
+      MOONSHOT_API_KEY: ${KIMI_API_KEY:-}
+      # OpenCode Zen key, minted at https://opencode.ai/auth. Note the account
+      # needs credit: the `*-free` model ids do not resolve at all, and every
+      # real id returns "Insufficient balance" without one.
+      OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}
+      # DeepSeek. The key lives under the doc-generation name in .env; there is
+      # no separate DEEPSEEK_API_KEY there.
+      DEEPSEEK_API_KEY: ${MCP_DOC_GENERATION_DEEPSEEK_API_KEY:-${DEEPSEEK_API_KEY:-}}
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-}
+    volumes:
+      - labs_workspaces:/labs-workspaces
+      # Same mount path as the backend: the backend writes a `docs` symlink into
+      # the shared workspace and OpenCode has to dereference it to the same file.
+      - ./knowledge_base/output:/kb-output:ro
+      # OpenCode's auth store lives under HOME. Without this volume a
+      # `--force-recreate` wipes every provider credential, including any added
+      # interactively with `opencode auth login`, which cannot be re-added from
+      # the entrypoint because it needs a key only a human can mint.
+      - opencode_labs_home:/app/.home
+    # No published port. Only the backend talks to it, over the compose network.
+    expose:
+      - "4096"
+    mem_limit: ${OPENCODE_LABS_MEMORY_LIMIT:-1g}
+    cpus: 1.0
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   qdrant_data:
   hindsight_data:
   mission_control_snapshots:
+  labs_workspaces:
+  opencode_labs_home:

@@ -36,6 +36,7 @@ import {
 } from "@/lib/lineageHighlight";
 import type { FieldLineageQuery } from "@/types/lineage";
 import type { AssistantCanvasEmphasis, AssistantFocusRequest, CopilotViewContext } from "@/types/copilot";
+import { useFitOnContainerResize } from "@/hooks/useFitOnContainerResize";
 
 interface ComponentGraphCanvasProps {
   projectId: string;
@@ -79,6 +80,14 @@ function ComponentGraphCanvasInner({
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const { fitView } = useReactFlow();
+
+  // The diagram follows the docked copilot: when that panel is widened this
+  // column narrows, and without a refit the graph slides out of view.
+  const refit = useCallback(
+    () => void fitView({ padding: 0.2, duration: 300 }),
+    [fitView],
+  );
+  const canvasRef = useFitOnContainerResize(refit);
 
   const isFallback = error instanceof ComponentGraphFallbackError;
 
@@ -238,7 +247,7 @@ function ComponentGraphCanvasInner({
   }
 
   return (
-    <div className="absolute inset-0" data-testid="component-graph-canvas">
+    <div ref={canvasRef} className="absolute inset-0" data-testid="component-graph-canvas">
       {isLoading && (
         <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-20">
           <div className="flex items-center gap-2 text-muted-foreground">

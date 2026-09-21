@@ -36,11 +36,17 @@ _EXEMPT_PATHS = {
 }
 
 # Prefix-based exemptions -- no browser CSRF cookie exists on these paths:
-#   /api/v1/ingest/ -- server-to-server calls from mcp-server, no browser cookie
-#   /api/v1/usage/  -- server-to-server calls, no browser cookie
+#   /api/v1/ingest/   -- server-to-server calls from mcp-server, no browser cookie
+#   /api/v1/usage/    -- server-to-server calls, no browser cookie
+#   /api/v1/labs/mcp  -- the labs MCP tool bridge. Called by the opencode-labs
+#       container, authenticated solely by a per-conversation bearer token that
+#       the server minted; it accepts no cookie and derives no identity from one,
+#       so there is no cross-site request to forge. Leaving it behind CSRF made
+#       every tool call 403, which OpenCode surfaces as MCP `needs_auth`.
 _EXEMPT_PREFIXES = (
     "/api/v1/ingest/",
     "/api/v1/usage/",
+    "/api/v1/labs/mcp",
 )
 
 

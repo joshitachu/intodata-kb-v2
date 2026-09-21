@@ -211,3 +211,36 @@ def test_derive_code_from_params():
 
     empty = Component(unique_name="tMap_1", component_type="tMap", params=[])
     assert empty.derive_code_from_params() is None
+
+
+def test_scanner_composed_field_references_do_not_fail_the_gate():
+    """`mapping_accounting` and `lineage` build `f"{table}.{column}"` out of
+    two separately-parsed names, so that spelling is not text any filter pass
+    ever saw. Verified failure: a mapper offering a column named `key` on
+    input table `row2` produced `row2.key`, the credential-path pattern read
+    it as a key-file path, and the scan wrote no output at all. The same
+    construction turns a column named `nl` on table `customer` into an FQDN.
+    """
+    from intodoc.models import MappingAccounting, MappingRow
+
+    result = _scan_result(jobs=[ParsedJob(name="Job1", path="process/Job1_1.0.item")])
+    result.mapping_accounting = [
+        MappingAccounting(
+            unit_id="Job1",
+            component_name="tMap_5",
+            mapper_kind="tmap",
+            unwritten_offered=["row2.key", "customer.nl"],
+            rows=[
+                MappingRow(
+                    output_table="out",
+                    output_field="id",
+                    classification="direct_map",
+                    source_refs=["row2.key", "customer.nl"],
+                    dynamic_refs=["context.key"],
+                ),
+            ],
+        ),
+    ]
+    report = verify_scan_result(result, CredentialFilter())
+    assert report["passed"] is True, report
+    assert report["residual_pattern_counts"] == {}

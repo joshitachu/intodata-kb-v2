@@ -2382,7 +2382,7 @@ def _count_staged_docs(staging_dir: Path) -> int:
     visible. No docs tree produced by the legacy or composite lanes has a
     subdirectory that is not underscore-prefixed (``_assessment``, ``_audit``,
     ``_topology``, ``_rag_support``, ...), so their count is unchanged. The
-    nested pass exists for ``agent-workspace-v1``, where the agent chooses the
+    nested pass supports historical document trees where the producer chose the
     document structure and may write ``integrations/orders.md``.
     """
     if not staging_dir.exists():
@@ -2395,6 +2395,12 @@ def _count_staged_docs(staging_dir: Path) -> int:
             for part in path.relative_to(staging_dir).parts[:-1]
         )
     )
+
+
+def _should_partition_generation(doc_generation_provider: str | None) -> bool:
+    """Keep server-selected partitions out of the autonomous OpenCode lane."""
+    effective_provider = doc_generation_provider or config.doc_generation_provider
+    return effective_provider != "opencode-cli"
 
 
 async def _run_generate_background(
@@ -2436,7 +2442,7 @@ async def _run_generate_background(
     with a ``manual_review`` reason, and the SHA is not advanced. Manual and
     onboarding generate paths pass no hook and are unaffected.
 
-    Composite/oversized uploads: when the deterministic partition planner
+    Composite/oversized uploads: for non-OpenCode providers, when the deterministic partition planner
     resolves the scan into more than one sub-project, the full-generation path
     (no ``scoped_docs``, no reingestion gate) delegates to the partition
     orchestrator, which runs one scoped legacy generation per sub-project into
@@ -2449,20 +2455,11 @@ async def _run_generate_background(
     if current_task is not None:
         _generation_tasks[project_id] = current_task
 
-    # Goal-driven analysis owns one coherent estate-level investigation.  The
-    # legacy partition orchestrator is a document-generation scaling mechanism
-    # and must never become an analysis/session plan for this contract.
-    from mcp_server.services.generation_profile import (
-        is_agent_workspace_profile,
-        is_goal_driven_profile,
-    )
-
     if (
         scoped_docs is None
         and pre_swap_gate is None
         and not partial_rag_sync
-        and not is_goal_driven_profile(generation_profile)
-        and not is_agent_workspace_profile(generation_profile)
+        and _should_partition_generation(doc_generation_provider)
     ):
         from mcp_server.services.partition_orchestrator import (
             plan_composite_generation,

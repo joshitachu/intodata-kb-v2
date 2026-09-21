@@ -1,13 +1,30 @@
 """Hash-based sparse embedding for hybrid search.
 
-Each token deterministically maps to a fixed index via ``hash(token) % DIM``.
-This eliminates the TF-IDF vocabulary mismatch bug where a vectorizer fitted
-on ingestion documents produces different indices than one fitted on a query.
+Each token deterministically maps to a fixed index via a CONTENT hash of the
+token. This eliminates the TF-IDF vocabulary mismatch bug where a vectorizer
+fitted on ingestion documents produces different indices than one fitted on a
+query.
+
+The hash must be stable across processes, hosts and releases, because the two
+sides of hybrid search are computed in different processes at different times:
+ingestion (``src/ingestion/pipeline.py``) writes the sparse vector into Qdrant,
+and query time (``src/retrieval/search.py``) builds the query vector that has to
+land on the same indices. An earlier version used the builtin ``hash()``, which
+Python salts per process unless ``PYTHONHASHSEED`` is set -- neither the backend
+Dockerfile nor docker-compose set it, so ``hash('workorder') % 30000`` measured
+255 / 196 / 10712 across three host processes and 29571 / 19031 inside the
+backend container. Ingestion and query therefore only agreed within one process
+lifetime, and every restart silently invalidated the entire sparse index.
+
+``blake2b`` is used rather than the builtin hash for exactly that reason: it is
+a stdlib content hash with no salt, so the mapping is a pure function of the
+token bytes. No new dependency; still pure Python; still works on Windows.
 
 Pure Python, no new dependencies, works on Windows.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import re
@@ -16,6 +33,18 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 SPARSE_DIM = 30_000
+
+#: Bumped whenever the token -> index mapping changes. Any change here makes
+#: every sparse vector already stored in Qdrant stale, and the stored vectors
+#: have to be rebuilt (``python -m src.retrieval.reindex_sparse``) before hybrid
+#: search is trustworthy again. Recorded as a constant so the backfill tool and
+#: an operator can both name the version they are on.
+SPARSE_HASH_VERSION = 2
+
+#: Width of the blake2b digest consumed for the index, in bytes. 8 bytes gives a
+#: 64-bit value, which is far above SPARSE_DIM so the modulo bias is negligible,
+#: and it is cheaper to compute than the full 64-byte digest.
+_HASH_DIGEST_BYTES = 8
 
 # Simple English stop words (no external dependency)
 _STOP_WORDS: frozenset[str] = frozenset(
@@ -44,8 +73,18 @@ def _tokenize(text: str) -> list[str]:
 
 
 def _hash_index(token: str) -> int:
-    """Deterministic index for a token: same token → same index always."""
-    return hash(token) % SPARSE_DIM
+    """Stable index for a token: same token → same index in every process.
+
+    Content-addressed on purpose. The builtin ``hash()`` is randomised per
+    process (PEP 456), so it cannot be used here: the index written at ingestion
+    time and the index looked up at query time are produced by different
+    processes and must agree. See the module docstring for the measured failure.
+    """
+
+    digest = hashlib.blake2b(
+        token.encode("utf-8"), digest_size=_HASH_DIGEST_BYTES
+    ).digest()
+    return int.from_bytes(digest, "big") % SPARSE_DIM
 
 
 def _build_sparse(tokens: list[str]) -> SparseVector:

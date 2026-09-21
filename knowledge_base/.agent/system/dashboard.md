@@ -17,7 +17,9 @@ triggering scans, viewing logs, generating docs, and reviewing quality.
 - **Add project** -- Register via dialog (local path, git URL, or ZIP upload)
 - **Trigger scan** -- Start `intodoc scan` for a project
 - **Generate docs** -- Trigger doc generation via the custom harness and selected provider/model
-- **Talend v2 opt-in** -- Talend + OpenCode runs expose an explicit experimental checkbox that sends the immutable `talend-landscape-v2` generation profile; unchecked runs remain legacy
+- **CLI selection** -- Operators can select OpenCode as the Claude-compatible
+  CLI transport. It uses the normal prepared evidence, staging and nine-document
+  workflow; no goal or agent-workspace controls are exposed.
 - **Provider/model selection** -- Choose backend and model before generation
 - **View logs** -- Real-time log streaming via SSE during scan/generation
 - **Run history** -- Per-project scan and generation run history

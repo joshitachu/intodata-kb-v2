@@ -465,7 +465,7 @@ async def test_middleware_projects_argument_validation_without_raw_pydantic_text
     snapshot = build_semantic_tool_snapshot(default_capability_registry(), scope=_scope())
     ledger = SemanticEventLedger()
     middleware = SemanticToolMiddleware(snapshot, ledger)
-    call = _call("list_project_documents", {}, "invalid-args-1")
+    call = _call("list_generated_documents", {}, "invalid-args-1")
     await middleware.aafter_model({"messages": [call]}, None)
     request = SimpleNamespace(
         tool_call=call.tool_calls[0],
@@ -505,7 +505,7 @@ async def test_middleware_needs_input_forces_response_only_without_retry() -> No
     async def handler(_request):  # noqa: ANN001, ANN202
         RequiredArguments.model_validate({})
 
-    call = _call("list_project_documents", {}, "invalid-no-retry")
+    call = _call("list_generated_documents", {}, "invalid-no-retry")
     await middleware.aafter_model({"messages": [call]}, None)
     request = SimpleNamespace(tool_call=call.tool_calls[0], state={"messages": [call]})
     message = await middleware.awrap_tool_call(request, handler)
@@ -721,7 +721,7 @@ async def test_middleware_rejects_excessive_parallel_read_fanout_before_executio
     message = _calls(
         *(
             (
-                "read_document",
+                "search_within_document",
                 {"query": "job name", "project_id": "fixture-project", "document_id": index},
                 f"read-fanout-{index}",
             )
@@ -763,7 +763,7 @@ async def test_middleware_deduplicates_identical_reads_before_second_execution()
         )
 
     for call_id in ("inventory-first", "inventory-repeat"):
-        message = _call("list_project_documents", {"project_id": "fixture-project"}, call_id)
+        message = _call("list_generated_documents", {"project_id": "fixture-project"}, call_id)
         await middleware.aafter_model({"messages": [message]}, None)
         projected = await middleware.awrap_tool_call(
             SimpleNamespace(tool_call=message.tool_calls[0], state={"messages": [message]}),

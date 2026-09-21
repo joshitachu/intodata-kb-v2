@@ -22,7 +22,7 @@ from src.harness.evidence import (
     build_registered_read_adapters,
     conversation_summary_facts,
     read_generated_doc_evidence,
-    read_document_evidence,
+    search_within_document_evidence,
     search_document_evidence,
 )
 from src.harness.trusted_answer import TrustedAnswerSink
@@ -497,7 +497,7 @@ async def test_document_read_preserves_relevance_and_server_scope(monkeypatch) -
     monkeypatch.setattr(evidence_module.settings, "reranker_enabled", False)
     monkeypatch.setattr(evidence_module, "search_similar", search)
 
-    result = await read_document_evidence(
+    result = await search_within_document_evidence(
         qdrant=object(),  # type: ignore[arg-type]
         query="security control",
         user_groups=["engineering"],

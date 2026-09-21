@@ -36,6 +36,19 @@ from src.api.routes import runtime_source_readers as runtime_source_reader_route
 from src.api.routes import runtime_audit as runtime_audit_routes
 from src.api.routes import harness as harness_routes
 from src.api.routes import agent_traces as agent_trace_routes
+from src.api.routes import guidance as guidance_routes
+
+# Experimental labs lane (OpenCode chat brain). Guarded so a failure inside the
+# spike can never take the production app down with it.
+try:
+    from src.api.routes import labs as labs_routes
+    from src.labs import mcp_bridge as labs_mcp
+except ImportError:
+    labs_routes = None
+    labs_mcp = None
+    logging.getLogger(__name__).warning(
+        "Labs lane unavailable: src.labs could not be imported", exc_info=True
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -281,3 +294,7 @@ app.include_router(runtime_source_reader_routes.router, prefix="/api/v1")
 app.include_router(runtime_audit_routes.router, prefix="/api/v1")
 app.include_router(harness_routes.router, prefix="/api/v1")
 app.include_router(agent_trace_routes.router, prefix="/api/v1")
+app.include_router(guidance_routes.router, prefix="/api/v1")
+if labs_routes is not None and labs_mcp is not None:
+    app.include_router(labs_routes.router, prefix="/api/v1")
+    app.include_router(labs_mcp.router, prefix="/api/v1")

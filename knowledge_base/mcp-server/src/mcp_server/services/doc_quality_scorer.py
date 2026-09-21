@@ -57,7 +57,7 @@ def _support_artifact_keys() -> frozenset[str]:
     This used to be ``re.compile(r"^[a-z][a-z0-9_]*$")`` -- "a lowercase
     snake_case name is an engineering-fact artifact". That was a proxy for the
     real property, and the proxy is wrong for every document whose author is
-    not the legacy harness. Every ``agent-workspace-v1`` document is lowercase
+    not the legacy harness. Every nested workspace document is lowercase
     snake_case (the agent chooses its own file names), so all of them were
     classified as support artifacts and dropped: run 250 scored ``0.00/5.0``
     with eight real documents published, and the same predicate gates the
@@ -170,6 +170,89 @@ def _scaled_min_lines(doc_key: str, unit_count: int) -> int:
     scale = math.sqrt(max(1, unit_count) / _SCALE_REFERENCE_UNITS)
     scale = max(0.3, min(2.0, scale))
     return max(50, int(base * scale))
+
+
+#: Fraction of the grading floor that the GENERATION prompt states as its
+#: collapse detector.
+#:
+#: The grading table above has never been met. Measured on the two real ETTM
+#: runs (142 units, floor 14,825 lines total):
+#:
+#:     run 258 -- the best output this pipeline has produced --  8,949 lines (60%)
+#:     run 260 -- the regression this slice exists to fix     --    610 lines ( 4%)
+#:
+#: Run 258 is BELOW the grading floor on all nine documents, so shipping that
+#: table into the prompt as a target would ask every run to write ~1.7x more
+#: than the best run ever managed. The predictable result is padding, and
+#: filler is indistinguishable from content to a reader while burying the
+#: findings that are real.
+#:
+#: So the prompt gets a DETECTOR, not the grade: below observed-good output so a
+#: healthy run never trips it, far above the collapse so a run like 260 always
+#: does.
+#:
+#: The fraction is DERIVED, not chosen. Run 258 achieved these fractions of the
+#: grading floor, per document:
+#:
+#:     01_ARCHITECTURE_MAP       0.42    06_OPERATIONS...          0.69
+#:     02_COMPONENT_INVENTORY    0.42    00_AGENT_BRIEF            0.75
+#:     03_DATA_FLOWS...          0.47    07_QUALITY...             0.85
+#:     05_RUNTIME_CONFIG...      0.58    08_CHANGE_PLAYBOOK        0.87
+#:     04_BUSINESS_RULES...      0.62
+#:
+#: The floor must clear the WORST of those (0.42) or it fires on the best output
+#: this pipeline has produced. 0.35 leaves ~17% margin under it, and still sits
+#: 3-9x above every document of run 260. Note the spread itself: the grading
+#: table's SHAPE does not match reality either -- it expects 02 and 03 to be the
+#: longest documents while run 258's longest were 07 and 04 -- which is a second
+#: reason not to hand it to the model as a target.
+#:
+#: Recalibrate from measurement when a healthy run exists to measure. Do not
+#: raise it because output "should" be longer; that is how a detector becomes a
+#: quota and a quota becomes padding.
+#:
+#: This is deliberately NOT a second table. It is one table with two views, and
+#: they answer different questions: "is this as deep as we want" (grade) versus
+#: "did this run lose its evidence" (instruction).
+_COLLAPSE_FLOOR_FRACTION = 0.35
+
+
+def collapse_floor_by_doc(unit_count: int) -> dict[str, int]:
+    """Per-document line count below which a run has demonstrably lost evidence.
+
+    What the generation prompt states. See ``_COLLAPSE_FLOOR_FRACTION`` for why
+    this is not the same number the scorer grades against.
+    """
+    return {
+        doc: max(40, int(floor * _COLLAPSE_FLOOR_FRACTION))
+        for doc, floor in min_lines_by_doc(unit_count).items()
+    }
+
+
+def min_lines_by_doc(unit_count: int) -> dict[str, int]:
+    """The depth floor this scorer grades against, per document, for an estate
+    of ``unit_count`` units.
+
+    THE single source of truth for document depth. The doc-generation prompt
+    renders its depth expectation from this function rather than carrying its
+    own table: the prompt used to hold a second, independent table that named a
+    retired 12-document set while the DOCUMENT CATALOG below it forbade writing
+    any of them, so the model was handed line counts for documents it could not
+    write. Deleting that table removed the only depth signal in the prompt and
+    ``00_AGENT_BRIEF`` went from 628 lines to 76 -- with every document then
+    flagged ``below_min_lines`` by this same scorer. Two tables that disagree is
+    the defect; one table, read by both the instruction and the grade, is the
+    fix.
+
+    Insertion order follows ``_BASE_MIN_LINES_AT_50``, i.e. document order, so a
+    rendered table is stable. Scoring behaviour is untouched: this is a read-only
+    view over :func:`_scaled_min_lines`.
+    """
+    return {
+        doc_key: _scaled_min_lines(doc_key, unit_count)
+        for doc_key in _BASE_MIN_LINES_AT_50
+    }
+
 
 # Expected H2 section header keywords per doc (regex alternatives)
 _EXPECTED_SECTIONS: dict[str, list[str]] = {
@@ -555,7 +638,7 @@ def score_project(
 
     # RECURSIVE. ``glob("*.md")`` saw only the docs root, so every nested
     # document was unscorable: ``integrations/exchanges.md`` and everything
-    # under ``reference/`` in an ``agent-workspace-v1`` publication, where the
+    # under ``reference/`` in a nested publication, where the
     # agent chooses the document structure. The internal-segment rule inside
     # ``is_product_doc_filename`` is what keeps ``_assessment/`` and
     # ``_rag_support/`` out, so widening the walk admits no internal artifact.

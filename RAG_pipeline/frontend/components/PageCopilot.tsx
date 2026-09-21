@@ -15,6 +15,7 @@ import { useProgressiveReveal } from "@/hooks/useProgressiveReveal";
 import { ChatInput } from "@/components/ChatInput";
 import { MessageList } from "@/components/MessageList";
 import { HarnessActivityStatus } from "@/components/HarnessActivityStatus";
+import { ResizeHandle } from "@/components/copilot/ResizeHandle";
 import { ScopeChip } from "@/components/copilot/ScopeChip";
 import { CopilotNotices } from "@/components/copilot/CopilotNotices";
 import { TargetChips } from "@/components/copilot/TargetChips";
@@ -108,13 +109,21 @@ export interface PageCopilotProps {
 
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
-  /** Width override for the expanded column. Defaults to ~360px. */
-  widthClassName?: string;
+  /**
+   * Width of the expanded column in pixels. When given together with
+   * `onWidthChange` the panel grows a draggable left edge; when omitted it is a
+   * fixed ~360px column, which is what a host that does not care about width
+   * gets for free.
+   */
+  width?: number;
+  onWidthChange?: (width: number) => void;
+  /** Restore the default width. Bound to double-click and Home on the handle. */
+  onWidthReset?: () => void;
   className?: string;
   placeholder?: string;
 }
 
-const DEFAULT_WIDTH = "w-[360px]";
+const DEFAULT_WIDTH = 360;
 
 export function PageCopilot({
   scope,
@@ -140,7 +149,9 @@ export function PageCopilot({
   notices,
   collapsed,
   onCollapsedChange,
-  widthClassName = DEFAULT_WIDTH,
+  width,
+  onWidthChange,
+  onWidthReset,
   className,
   placeholder = "Ask about what you see...",
 }: PageCopilotProps) {
@@ -234,15 +245,30 @@ export function PageCopilot({
     );
   }
 
+  // The handle is offered only when the host owns a width to change. A panel
+  // rendered at a fixed width must not show a drag affordance that does nothing.
+  const resizable = width !== undefined && onWidthChange !== undefined;
+
   return (
-    <aside
-      aria-label={title}
-      className={cn(
-        "flex h-full shrink-0 flex-col overflow-hidden border-l bg-card",
-        widthClassName,
-        className,
+    <>
+      {resizable && (
+        <ResizeHandle
+          width={width}
+          onWidthChange={onWidthChange}
+          onReset={onWidthReset ?? (() => onWidthChange(DEFAULT_WIDTH))}
+          label={`Resize ${title}`}
+        />
       )}
-    >
+      <aside
+        aria-label={title}
+        // Inline width, not a Tailwind class: the value is continuous and
+        // user-chosen, so there is no class to name it.
+        style={{ width: width ?? DEFAULT_WIDTH }}
+        className={cn(
+          "flex h-full shrink-0 flex-col overflow-hidden border-l bg-card",
+          className,
+        )}
+      >
       <header className="flex items-start gap-2 border-b px-3 py-2.5">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 text-sm font-semibold">
@@ -363,6 +389,7 @@ export function PageCopilot({
           placeholder={placeholder}
         />
       </div>
-    </aside>
+      </aside>
+    </>
   );
 }

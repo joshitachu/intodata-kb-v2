@@ -83,6 +83,8 @@ import { useProgressiveTargets } from "@/components/copilot/useProgressiveTarget
 import { AutoNavigationBanner } from "@/components/copilot/AutoNavigationBanner";
 import { usePageCopilotChat } from "@/hooks/usePageCopilotChat";
 import { useCopilotCollapsed } from "@/hooks/useCopilotCollapsed";
+import { useFitOnContainerResize } from "@/hooks/useFitOnContainerResize";
+import { DEFAULT_COPILOT_WIDTH, useCopilotWidth } from "@/hooks/useCopilotWidth";
 import { useLoadedJobComponents } from "@/hooks/useLoadedJobComponents";
 import {
   activeIdSpace,
@@ -145,6 +147,7 @@ const FIT_MIN_ZOOM = 0.35;
 // state -- it survives navigation and reloads under this key.
 const COPILOT_COLLAPSED_KEY = "copilot:collapsed:topology";
 const COPILOT_FOLLOW_KEY = "copilot:follow:topology";
+const COPILOT_WIDTH_KEY = "copilot:width:topology";
 
 // Shared empty list for the "no events yet" case, so `useProgressiveTargets`
 // does not see a new array reference (and re-derive) on every render.
@@ -1036,6 +1039,18 @@ function TopologyContent() {
   const [copilotCollapsed, setCopilotCollapsed] = useCopilotCollapsed(
     COPILOT_COLLAPSED_KEY,
     !isDesktop,
+  );
+
+  // Read at call time rather than captured: the clamp has to reflect the window
+  // the user is resizing in, not the one the page mounted in.
+  const viewportWidth = useCallback(
+    () => (typeof window === "undefined" ? DEFAULT_COPILOT_WIDTH * 3 : window.innerWidth),
+    [],
+  );
+  const [copilotWidth, setCopilotWidth] = useCopilotWidth(COPILOT_WIDTH_KEY, viewportWidth);
+  const resetCopilotWidth = useCallback(
+    () => setCopilotWidth(DEFAULT_COPILOT_WIDTH),
+    [setCopilotWidth],
   );
 
   // The finished answer's targets come from the PERSISTED message rather than
@@ -2117,6 +2132,16 @@ function TopologyContent() {
     });
   }, [decorateNode, decorateEdge, setNodes, setEdges]);
 
+  // The diagram follows the panel: widening the copilot narrows this column, and
+  // without a refit the graph simply slides out of view on the right. Disabled
+  // in focus mode, where the framing is the user's own and a full-graph fit
+  // would throw away the neighbourhood they resized the panel to look at.
+  const refitCanvas = useCallback(
+    () => fitView({ padding: 0.1, duration: 300, minZoom: FIT_MIN_ZOOM }),
+    [fitView],
+  );
+  const canvasColumnRef = useFitOnContainerResize(refitCanvas, { enabled: !focusActive });
+
   // Callbacks
   const handleToggleDirection = useCallback(() => {
     setDirection((d) => (d === "TB" ? "LR" : "TB"));
@@ -2544,7 +2569,7 @@ function TopologyContent() {
           minimum height, and the row's definite height is what lets the
           panel's `h-full` and its internal message scroller resolve. */}
       <div className="flex flex-1 min-h-[500px] overflow-hidden">
-        <div className="relative flex-1 min-h-0 min-w-0 overflow-hidden">
+        <div ref={canvasColumnRef} className="relative flex-1 min-h-0 min-w-0 overflow-hidden">
         {/* Level 0/1 canvas: kept mounted (hidden) during drill-down so
             ascending restores the prior viewport and expand state. */}
         <div className={showLegacyCanvas ? "absolute inset-0" : "absolute inset-0 hidden"}>
@@ -2833,6 +2858,9 @@ function TopologyContent() {
           notices={copilotNotices}
           collapsed={copilotCollapsed}
           onCollapsedChange={setCopilotCollapsed}
+          width={copilotWidth}
+          onWidthChange={setCopilotWidth}
+          onWidthReset={resetCopilotWidth}
           placeholder="Ask about this diagram..."
         />
       </div>

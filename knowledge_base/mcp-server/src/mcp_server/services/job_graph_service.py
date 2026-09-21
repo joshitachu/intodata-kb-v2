@@ -20,6 +20,13 @@ Contract notes (verified against real scan output):
   value-level URL userinfo masking on top. The scanner already redacts
   credential values to "[REDACTED]"; the extra filters are defense in depth so
   passwords/secrets/tokens can never reach an API response even on old scans.
+- `param_tables` carries the params whose value lives in `rows` rather than in
+  `value` (Talend `field_type: TABLE`). `param_summary` structurally cannot
+  hold them -- it is a `dict[str, str]` keyed on a param whose scalar `value`
+  is empty for every one of them -- so before this field they were dropped
+  whole. That is where a route's decision logic actually is (see the screening
+  comment on `_HIGH_SIGNAL_ROW_COLUMNS`), so the two fields together are the
+  component's configuration; neither is complete alone.
 """
 
 from __future__ import annotations
@@ -36,6 +43,7 @@ from mcp_server.providers.custom.target_evidence import (
 from mcp_server.schemas import (
     JobGraphEdge,
     JobGraphNode,
+    JobGraphParamTable,
     JobGraphResponse,
     TMapTableSummary,
 )
@@ -61,8 +69,14 @@ _TRIGGER_CONNECTOR_PATTERN = re.compile(
 
 # Deny-pattern applied on top of the high-signal allowlist: a param whose name
 # looks credential-bearing never enters param_summary, whatever its value.
+# `AUTH` rather than `AUTHORIZATION` so it also covers AUTHENTICATION and
+# OAUTH-prefixed param paths (real scans carry
+# `configuration.dataset.datastore.authentication.oauth20.params`); matching
+# the word AUTHOR too is a harmless over-reach, since an author name is not
+# high-signal configuration in the first place.
 _CREDENTIAL_PARAM_PATTERN = re.compile(
-    r"(PASS|PWD|SECRET|TOKEN|CREDENTIAL|KEYSTORE|TRUSTSTORE|PRIVATE_?KEY|API_?KEY|AUTHORIZATION)",
+    r"(PASS|PWD|SECRET|TOKEN|CREDENTIAL|KEYSTORE|TRUSTSTORE|PRIVATE_?KEY|API_?KEY"
+    r"|AUTH|SIGNATURE)",
     re.IGNORECASE,
 )
 _REDACTED_VALUE = "[REDACTED]"
@@ -71,6 +85,44 @@ _URL_USERINFO_RE = re.compile(r"(\w+://[^/@:\s]+):[^@\s]+@")
 
 _MAX_SUMMARY_PARAMS = 8
 _MAX_SUMMARY_VALUE_LEN = 120
+
+# --- Row-structured params ---------------------------------------------------
+#
+# A Talend param of `field_type: TABLE` carries its value in `rows`, never in
+# `value`, so the scalar allowlist above cannot see it at all. That omission is
+# not cosmetic: a cSetHeader's VALUES table is where a Camel route defines the
+# variable it later routes on (`AN8_CHECK = xpath(".../SZAN8/text()")`), a
+# tFilterRow's CONDITIONS table is where a filter's criterion lives, and an XML
+# MAPPING table is where each column's XPath is. 4 754 params carry rows on the
+# pluripharm scan alone.
+#
+# Screening them by param NAME would mean an allowlist per component type, so
+# they are screened by their COLUMNS instead -- the same idea as the scalar
+# allowlist, applied one level down. A table whose columns are author-written
+# semantics (EXPRESSION / VALUE / QUERY / SQL / PATH / ...) is configuration; a
+# table whose columns are per-schema-column flags (SCHEMA_COLUMN plus TRIM /
+# LENGTH / UPDATABLE / IS_AUTO_SIZE) describes the schema, which is published
+# separately and is pure noise here. Measured over the whole pluripharm scan the
+# rule keeps 5 997 of 41 388 rows and drops exactly the schema-flag tables:
+# FIELD_OPTIONS (11 745 rows), TRIM_COLUMN (10 641), LENGTHS (6 272),
+# AUTO_SZIE_SETTING (1 898), TRIMSELECT (1 492), FORMATS, UNIQUE_KEY.
+#
+# NAME and KEY are WHOLE-column matches only. Substring-matching them would
+# readmit the schema-flag tables through `UPDATE_KEY` / `DELETE_KEY` /
+# `KEY_ATTRIBUTE` and the driver list through `JAR_NAME`.
+_HIGH_SIGNAL_ROW_COLUMNS = frozenset({"NAME", "KEY"})
+_HIGH_SIGNAL_ROW_COLUMN_PATTERN = re.compile(
+    r"(EXPRESSION|VALUE|QUERY|SQL|PATH|PATTERN|CONDITION|URI|URL|ENDPOINT|MASK|TOPIC|HEADER)",
+    re.IGNORECASE,
+)
+
+# Bounds. Measured on the same scan: p50 is 1 table and 2 rows per component,
+# p90 is 1 table and 7 rows, and the worst component carries 74 rows. The caps
+# therefore cover the p90 whole and truncate the tail with a stated count
+# rather than pretending the tail is not there.
+_MAX_SUMMARY_TABLES = 4
+_MAX_SUMMARY_TABLE_ROWS = 12
+_MAX_SUMMARY_TABLE_COLUMNS = 8
 
 _TMAP_TYPE = "tMap"
 _TRUNJOB_TYPE = "tRunJob"
@@ -202,6 +254,114 @@ def build_param_summary(component: dict[str, Any]) -> dict[str, str]:
     return summary
 
 
+def _row_params(component: dict[str, Any]) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Row-structured params in scan order, first-wins per name (as `param_map`)."""
+    seen: set[str] = set()
+    out: list[tuple[str, list[dict[str, Any]]]] = []
+    for param in component.get("params", []) or []:
+        name = str(param.get("name") or "")
+        rows = param.get("rows")
+        if not name or name in seen or not isinstance(rows, list) or not rows:
+            continue
+        seen.add(name)
+        out.append((name, [row for row in rows if isinstance(row, dict)]))
+    return out
+
+
+def _ordered_columns(rows: list[dict[str, Any]]) -> list[str]:
+    """Column names in first-appearance order across the rows (never sorted).
+
+    Scan order is the order the author sees in Talend Studio, and for a
+    NAME/LANGUAGE/EXPRESSION table that order is what makes the row readable.
+    """
+    columns: list[str] = []
+    for row in rows:
+        for key in row:
+            name = str(key)
+            if name not in columns:
+                columns.append(name)
+    return columns
+
+
+def _is_high_signal_column(column: str) -> bool:
+    # The trailing dotted segment as well as the whole name, because Talend's
+    # newer component schemas namespace their columns
+    # (`configuration.dataset.keyValuePairs[].key`).
+    leaf = column.rsplit(".", 1)[-1].removesuffix("[]").upper()
+    return (
+        column.upper() in _HIGH_SIGNAL_ROW_COLUMNS
+        or leaf in _HIGH_SIGNAL_ROW_COLUMNS
+        or bool(_HIGH_SIGNAL_ROW_COLUMN_PATTERN.search(column))
+    )
+
+
+def _row_is_credential_bearing(row: dict[str, Any]) -> bool:
+    """Whether anything in the row looks credential-bearing, key or value.
+
+    A table row is commonly a NAME/VALUE pair, so the credential signal lives in
+    the row's DATA and not in the param name or the column names: a URI_OPTIONS
+    row reading NAME="Authorization", VALUE="Bearer ..." has three innocuous
+    identifiers and one secret, and screening the keys alone passes it straight
+    through. The whole row is dropped rather than the one cell, because the key
+    half of a credential pair is what makes the value half findable, and a row
+    stripped to its key would also misrepresent the configuration.
+    """
+    return any(
+        _CREDENTIAL_PARAM_PATTERN.search(str(key))
+        or _CREDENTIAL_PARAM_PATTERN.search(str(value))
+        for key, value in row.items()
+    )
+
+
+def build_param_tables(component: dict[str, Any]) -> list[JobGraphParamTable]:
+    """Bounded, credential-filtered row-structured params for one node.
+
+    Every count is reported against the scan's own row count, so a truncated or
+    filtered table is visibly incomplete instead of reading as a short table.
+    A table whose rows were ALL withheld is still emitted (with no rows and a
+    non-zero `rows_redacted`): stating that something was withheld is the whole
+    point, and dropping the entry would make the withholding invisible.
+    """
+    tables: list[JobGraphParamTable] = []
+    for name, rows in _row_params(component):
+        if len(tables) >= _MAX_SUMMARY_TABLES:
+            break
+        if _CREDENTIAL_PARAM_PATTERN.search(name):
+            continue
+        columns = _ordered_columns(rows)
+        if not any(_is_high_signal_column(column) for column in columns):
+            continue
+
+        kept: list[dict[str, str]] = []
+        redacted = 0
+        for row in rows:
+            if _row_is_credential_bearing(row):
+                redacted += 1
+                continue
+            if len(kept) >= _MAX_SUMMARY_TABLE_ROWS:
+                # Counted in rows_omitted below rather than broken out of, so
+                # the redaction tally stays complete over the whole table.
+                continue
+            cells = {
+                str(key): _sanitize_param_value(str(value).strip())
+                for key, value in list(row.items())[:_MAX_SUMMARY_TABLE_COLUMNS]
+                if str(value).strip()
+            }
+            if cells:
+                kept.append(cells)
+        if not kept and not redacted:
+            continue
+        tables.append(JobGraphParamTable(
+            name=name,
+            columns=columns[:_MAX_SUMMARY_TABLE_COLUMNS],
+            rows=kept,
+            row_count=len(rows),
+            rows_omitted=len(rows) - redacted - len(kept),
+            rows_redacted=redacted,
+        ))
+    return tables
+
+
 def _resolve_subjob_target(
     component: dict[str, Any],
     trunjob_index: int,
@@ -248,6 +408,7 @@ def _build_nodes(
             subjob_target=subjob_target,
             connection_ref=str(comp.get("metadata_connection_ref") or ""),
             param_summary=build_param_summary(comp),
+            param_tables=build_param_tables(comp),
             has_code=bool(component_code(comp).strip()),
             # Empty when no doc row matches -- the anti-fabrication default.
             description=descriptions.get(unique_name, ""),

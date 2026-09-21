@@ -24,7 +24,10 @@ The platform operates in two modes:
 ### Mode 2: Documentation Harness (MCP + provider)
 
 - MCP server (`mcp-server/`) exposes scan data via 14 tools (`get_chunks`, `fetch_chunk`, etc.)
-- The current provider path is `custom` (API harness). `claude_cli` is a legacy unsupported code path and is not part of normal operation.
+- CLI generation has one canonical four-phase workflow. `claude-cli` and
+  `opencode-cli` receive the same prepared staging workspace and exact prompt;
+  they differ only in CLI transport and event parsing. OpenCode has no
+  scheduler, workspace contract, or goal-driven route.
 - Phase 1: Setup (load scan data via MCP)
 - Phase 2: Group Analysis (parallel per-group tasks, configurable concurrency via `MCP_AGENT_PHASE2_CONCURRENCY`)
 - Phase 3: Write Docs (parallel per-document tasks via `MCP_AGENT_PHASE3_CONCURRENCY`)

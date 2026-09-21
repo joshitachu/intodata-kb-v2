@@ -19,6 +19,19 @@ from src.harness.registry import default_capability_registry
 from src.harness.runtime import LangGraphRuntimeProvider, RuntimeTurnRequest
 
 
+#: Proof of a live conversation turn. ``DOCUMENTATION_GENERATION_CAPABILITY`` is
+#: marked ``requires_turn_claim``, so a runtime turn that is meant to reach the
+#: executor and the provider has to carry one; without it the policy engine
+#: denies before the handler runs. Turns that fail earlier -- at manifest
+#: selection or the runtime budget -- deliberately do not carry a claim.
+_TURN_CLAIM: dict[str, object] = {
+    "current_message_id": 1,
+    "conversation_state_version": 1,
+    "conversation_turn_claim_id": 1,
+    "conversation_turn_claim_token": "test-claim",
+}
+
+
 async def test_langgraph_runtime_boundary_uses_manifest_and_executor_only() -> None:
     seen: dict[str, object] = {}
 
@@ -56,6 +69,7 @@ async def test_langgraph_runtime_boundary_uses_manifest_and_executor_only() -> N
             user_id=1,
             project_scope=["project-a"],
             permissions={"manage_projects"},
+            **_TURN_CLAIM,
         ),
     )
 
@@ -139,6 +153,8 @@ async def test_langgraph_runtime_interrupts_for_missing_scope_and_resumes_same_t
         thread_id="thread-resume",
     )
 
+    # One live turn, interrupted and then resumed, so both halves carry the same
+    # claim -- the resumed half has to reach the provider.
     interrupted = await runtime.run_turn(
         request,
         executor=executor,
@@ -146,6 +162,7 @@ async def test_langgraph_runtime_interrupts_for_missing_scope_and_resumes_same_t
             user_id=1,
             project_scope=["project-a"],
             permissions={"manage_projects"},
+            **_TURN_CLAIM,
         ),
     )
 
@@ -163,6 +180,7 @@ async def test_langgraph_runtime_interrupts_for_missing_scope_and_resumes_same_t
             user_id=1,
             project_scope=["project-a"],
             permissions={"manage_projects"},
+            **_TURN_CLAIM,
         ),
     )
 

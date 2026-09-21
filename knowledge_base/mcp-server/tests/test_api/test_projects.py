@@ -13,6 +13,30 @@ import pytest
 from sqlalchemy import select
 
 
+def test_opencode_generation_bypasses_partition_orchestration(monkeypatch):
+    from mcp_server.api.routes.projects import _should_partition_generation
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "doc_generation_provider", "custom")
+    assert _should_partition_generation("opencode-cli") is False
+
+
+def test_default_non_opencode_generation_retains_partition_orchestration(monkeypatch):
+    from mcp_server.api.routes.projects import _should_partition_generation
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "doc_generation_provider", "custom")
+    assert _should_partition_generation(None) is True
+
+
+def test_default_opencode_generation_bypasses_partition_orchestration(monkeypatch):
+    from mcp_server.api.routes.projects import _should_partition_generation
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "doc_generation_provider", "opencode-cli")
+    assert _should_partition_generation(None) is False
+
+
 def test_component_flow_direction_distinguishes_route_inputs_and_outputs():
     from mcp_server.api.routes.projects import _component_flow_direction
 

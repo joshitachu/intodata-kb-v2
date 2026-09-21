@@ -49,6 +49,12 @@ cd ../RAG_pipeline/backend && python -m uvicorn src.api.main:app --port 8000
 
 ## Documentation Generation
 
+For CLI providers, `claude-cli` is the canonical four-phase generation
+mechanism. `opencode-cli` is a transport adapter for that exact prompt and the
+same coordinator-prepared evidence, staging, resume, validation and publication
+path. Do not add an OpenCode scheduler, generation profile, goal-driven path or
+agent workspace; those architectures are retired.
+
 The MCP-based 7-phase documentation workflow is documented in:
 **`.agent/system/mcp-workflow.md`**
 
@@ -754,40 +760,13 @@ Set `MCP_PIPELINE_DEBUG=1` to materialize the full forensic record under `docs_s
 
 ### OpenCode Runtime Homes and Failure Diagnostics
 
-- **Git reingestion uses OpenCode as a candidate worker, never as publisher.**
-  With `MCP_LIVING_DOC_PATCHING_ENABLED=true`, `auto_doc_update.py` reconciles
-  the exact diff from the last successfully ingested SHA, primes a missing
-  revisioned-RAG baseline from the existing doc bytes, and invokes
-  `living_docs/opencode_reingestion.py`. The session can read the redacted diff
-  and candidate docs, but can submit only one JSON patch report through the
-  artifact facade. Nexus validates and applies that report in the candidate;
-  `CandidatePublisher` alone prepares and activates docs plus RAG. Never add an
-  active-doc write, direct RAG tool, or path-to-group prerequisite to this lane.
-  Replays must resolve the active candidate before any model call. Audit receipts
-  are append-only under `data/living_docs/audit/`.
-
-- **A failed OpenCode step now leaves evidence.** `_audit/opencode_errors.json`
-  records phase, step, model route, returncode, the *raw* error events (up to 20)
-  and stderr (up to 8 KB); the short reason is appended to the raised exception
-  and the run log. Before this, `_parse_json_event` reduced an error event to a
-  bare type, stderr was counted then discarded, and `opencode_events.json` was
-  written only on success -- a failure produced the useless line "OpenCode
-  emitted an error event (details redacted)". Keep the split: the full event goes
-  to the artifact, only a bounded excerpt (`_MAX_LOG_REASON_CHARS`) reaches the
-  log, because a provider message can quote part of the request.
-- **Every route gets private XDG homes.** `_phase_config` sets `XDG_DATA_HOME`
-  and `XDG_STATE_HOME` to per-invocation 0700 dirs under the same temp root as
-  the generated config (removed by `OpenCodePhaseConfig.cleanup`). Previously
-  only `opencode-go/` redirected them -- it needed a private `auth.json` -- so
-  every other route used the service account's ambient home and inherited
-  whatever uid last wrote there. Verified failure: root-owned
-  `/app/.home/.local/share/opencode/log` made every `appuser` run die with
-  `PermissionDenied: FileSystem.open (.../opencode.log)` before reaching the
-  model. `XDG_CACHE_HOME` stays shared at `{data_dir}/opencode_cache` (it holds
-  `models.json` and the runtime binary, worth reusing) and is created by the
-  service process, so it is always owned by the service account;
-  `_preflight` write-probes it and fails with the path rather than letting
-  OpenCode die mid-stream.
+- OpenCode is a transport adapter for the canonical Claude CLI workflow. It
+  receives the same preprocessed staging workspace and byte-identical prompt in
+  one `opencode run --format json` session.
+- Every run receives private HOME/XDG data, state, and config directories. The
+  service-owned cache at `{data_dir}/opencode_cache` is shared and write-probed.
+- OpenCode Go credentials are written only to the private 0600 runtime auth file.
+  Known environment credentials are redacted from bounded stderr diagnostics.
 - **`docker compose exec` runs as root.** Anything that invokes OpenCode inside
   the container must use `-u appuser`, or it leaves root-owned state behind.
   The XDG isolation above makes a run survive that, but the ambient home is
