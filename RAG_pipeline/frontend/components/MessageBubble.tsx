@@ -9,11 +9,13 @@ import {
   ChevronDown,
   ChevronRight,
   AlertCircle,
+  Network,
   RotateCcw,
   X,
   ExternalLink,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
 import { SourceCitation } from "./SourceCitation";
 import { MarkdownContent } from "./MarkdownContent";
 import { HarnessActivityStatus } from "./HarnessActivityStatus";
@@ -43,6 +45,27 @@ function isTypedAgentResponse(
   value: MessageResponse["structured_answer"],
 ): value is TypedAgentResponse {
   return Boolean(value && "response_type" in value && value.response_type === "agent_response_v1");
+}
+
+/**
+ * Marks an answer that ran with the raw scan in the agent's tool menu.
+ *
+ * Only Deep Dive turns are marked. A matching "Chat" badge on every other
+ * answer would be noise on the overwhelming majority of a thread and would say
+ * nothing the absence of this one does not already say.
+ */
+function DeepDiveBadge() {
+  return (
+    <Badge
+      variant="muted"
+      data-testid="deep-dive-badge"
+      aria-label="Answered in Deep Dive"
+      title="This answer ran in Deep Dive: the raw scan was in the agent's tool menu."
+    >
+      <Network className="h-3 w-3 shrink-0" aria-hidden />
+      Deep Dive
+    </Badge>
+  );
 }
 
 export function currentActivityLabel(args: {
@@ -81,6 +104,12 @@ interface MessageBubbleProps {
   revealedContent?: string;
   /** True while that prefix is still growing; keeps the caret blinking. */
   isRevealing?: boolean;
+  /**
+   * This answer ran in Deep Dive. Provenance only, and only ever set from an
+   * observed fact -- never inferred from the answer's shape or its tool calls,
+   * because a badge that is wrong on a reloaded thread is worse than none.
+   */
+  ranInDeepDive?: boolean;
   /** Live phase for the waiting state, before any answer text exists. */
   streamProgress?: StreamProgress | null;
   /** The turn's agent events, summarised in the waiting state. */
@@ -102,11 +131,16 @@ export function MessageBubble({
   topologyProjectId,
   revealedContent,
   isRevealing,
+  ranInDeepDive,
   streamProgress,
   streamEvents,
   onRetry,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
+  // The mode is a property of the turn, but only the answer is worth marking:
+  // the badge says "this is what produced that", and repeating it on the
+  // question would double every Deep Dive turn's chrome for no extra fact.
+  const showDeepDiveBadge = Boolean(ranInDeepDive) && !isUser;
   const typedResponse = isTypedAgentResponse(message.structured_answer)
     ? message.structured_answer
     : null;
@@ -167,11 +201,14 @@ export function MessageBubble({
       >
         {/* Content */}
         <div className={cn("max-w-[85%] min-w-0", isUser && "flex flex-col items-end")}>
-          {/* Where this question was asked. Only present once a surface records
-              it, so history from before page-scoped chat renders unchanged. */}
-          {message.page_scope && (
-            <div className="mb-1">
-              <PageScopeChip scope={message.page_scope} />
+          {/* Provenance for this turn: where the question was asked, and --
+              on assistant turns only -- whether it ran in Deep Dive. Both are
+              absent far more often than present, so the row disappears rather
+              than reserving space. */}
+          {(message.page_scope || showDeepDiveBadge) && (
+            <div className="mb-1 flex flex-wrap items-center gap-1.5">
+              {message.page_scope && <PageScopeChip scope={message.page_scope} />}
+              {showDeepDiveBadge && <DeepDiveBadge />}
             </div>
           )}
           {isUser ? (

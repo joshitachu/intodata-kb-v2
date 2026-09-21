@@ -82,7 +82,14 @@ def test_the_constant_is_the_chat_mode_build_of_the_role() -> None:
 
 
 def test_the_role_states_who_the_agent_is_and_where_its_knowledge_comes_from() -> None:
-    assert _NEXUS_SYSTEM_PROMPT.startswith("You are Nexus")
+    # The mode banner precedes the role now. It was previously stated only where
+    # each source is introduced, which put it 3,254 characters into an 11,000
+    # character prompt -- after the point where a model has read the role and
+    # begun planning. The mode decides the tool menu, so it is the first thing
+    # said; the role follows immediately.
+    first_line, _, rest = _NEXUS_SYSTEM_PROMPT.partition("\n")
+    assert first_line.startswith("MODE: CHAT.")
+    assert rest.lstrip().startswith("You are Nexus")
     assert "project knowledge assistant" in _NEXUS_SYSTEM_PROMPT
     assert "business processes" in _NEXUS_SYSTEM_PROMPT
     assert "controls" in _NEXUS_SYSTEM_PROMPT
@@ -188,3 +195,34 @@ async def test_the_projected_role_is_the_configured_role() -> None:
     on_disk = (workspace / ".nexus" / "SYSTEM_PROMPT.md").read_text(encoding="utf-8")
 
     assert config["agent"]["nexus"]["prompt"] == on_disk
+
+
+def test_the_mode_is_the_first_thing_the_prompt_says() -> None:
+    """Both modes announce themselves before the role, and say who owns the switch.
+
+    The regression this guards: the mode used to be described only where each
+    evidence source was introduced. Measured, that put "deep dive is on" 29% of
+    the way through an 11,000-character prompt, inside a bullet list, with the
+    opening paragraphs silent about which mode was live. The agent then wrote
+    "say so and I'll take it into Deep Dive" -- promising a switch it cannot
+    perform -- and a user waited for a handoff that never came.
+    """
+
+    chat = nexus_system_prompt(LabsTurnMode.CHAT)
+    deep = nexus_system_prompt(LabsTurnMode.DEEP_DIVE)
+
+    assert chat.startswith("MODE: CHAT.")
+    assert deep.startswith("MODE: DEEP DIVE.")
+
+    # Each names its own menu and denies the other's.
+    assert "raw scanned source is NOT" in chat
+    assert "raw scanned source is in your tool menu this turn" in deep
+
+    # And both state that the agent does not own the switch. Without this the
+    # model offers to do the switching itself.
+    assert "only the user can, with the Deep Dive toggle" in chat
+    assert "you cannot change it -- the user set it for this turn" in deep
+
+    # The banner is a preface, not a replacement: the role still follows.
+    for prompt in (chat, deep):
+        assert prompt.partition("\n")[2].lstrip().startswith("You are Nexus")

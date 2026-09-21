@@ -73,8 +73,25 @@ interface ChatContextValue {
   setLaneFilter: (filter: LaneFilter) => void;
 
   // Mode & project
+  /**
+   * The mode the NEXT turn will actually run in.
+   *
+   * Clamped to `chat` whenever the lane in force cannot honour Deep Dive, so
+   * every reader -- the toggle, the composer's own deep-dive affordances, the
+   * request body -- sees the same answer. See `isDeepDiveAvailable`.
+   */
   mode: ChatMode;
   setMode: (mode: ChatMode) => void;
+  /**
+   * Whether the lane in force reads a turn's `mode` at all.
+   *
+   * False on V1: `backend/src/api/routes/conversations.py` never reads the
+   * field, so a deep-dive turn sent to it is silently answered as a chat turn.
+   * The user's raw choice is still remembered behind this, so picking V2 again
+   * on a thread that does not exist yet restores it rather than quietly
+   * resetting it.
+   */
+  isDeepDiveAvailable: boolean;
   selectedProject: string;
   setSelectedProject: (project: string) => void;
 
@@ -85,6 +102,27 @@ interface ChatContextValue {
   retryFailedMessage: () => Promise<void>;
   refreshActiveConversation: () => void;
   isCreating: boolean;
+
+  // Turn provenance
+  /**
+   * Assistant messages this session watched run in Deep Dive, by message id.
+   *
+   * Session-scoped because that is all the truth there is: nothing persists a
+   * turn's mode. There is no `mode` column on `conversation_messages`, no
+   * `mode` field on the backend's `MessageResponse`, and no SSE frame carries
+   * it (`backend/src/harness/agent_runs.py::_PUBLIC_EVENT_FIELDS` is a
+   * whitelist and lists no such field). The client knows only what it sent, so
+   * it records the pairing the `done` frame hands it -- the mode it sent, and
+   * the message id that turn produced.
+   *
+   * The consequence is deliberate and must not be papered over: after a reload
+   * this set is empty and past Deep Dive turns render unbadged. An absent badge
+   * is recoverable; a badge inferred from tool names or evidence shape would be
+   * wrong on exactly the turns that matter.
+   */
+  deepDiveMessageIds: ReadonlySet<number>;
+  /** True while the turn currently streaming is running in Deep Dive. */
+  isDeepDiveTurnInFlight: boolean;
 
   // Stream state
   pendingUserMessage: string | null;
@@ -132,6 +170,14 @@ const TURN_MODE: Record<ChatMode, ConversationTurnMode> = {
   "deep-dive": "deep_dive",
 };
 
+/**
+ * The only lane whose runtime reads a turn's `mode`.
+ *
+ * V1 accepts the field and never looks at it, so the choice has to be refused
+ * here rather than forwarded; see `isDeepDiveAvailable` on the context value.
+ */
+const DEEP_DIVE_LANE: ChatLane = "v2";
+
 function requestedLaneFromLocation(): ChatLane | null {
   if (typeof window === "undefined") return null;
   return parseLane(new URLSearchParams(window.location.search).get(LANE_PARAM));
@@ -158,13 +204,21 @@ export function ChatProvider({
   const [activeConversationId, setActiveConversationId] = useState<
     number | null
   >(null);
-  const [mode, setModeState] = useState<ChatMode>("chat");
+  const [modeState, setModeState] = useState<ChatMode>("chat");
   const [selectedProject, setSelectedProject] = useState("");
   const [pendingUserMessage, setPendingUserMessage] = useState<string | null>(
     null,
   );
   const [selectedLane, setSelectedLane] = useState<ChatLane>(initialLane);
   const [laneFilter, setLaneFilter] = useState<LaneFilter>("all");
+  // Turn provenance. `deepDiveMessageIds` is the session's record of which
+  // persisted answers ran in Deep Dive; `inFlightTurnMode` is the one turn
+  // currently streaming, which has no message id yet.
+  const [deepDiveMessageIds, setDeepDiveMessageIds] = useState<
+    ReadonlySet<number>
+  >(() => new Set<number>());
+  const [inFlightTurnMode, setInFlightTurnMode] =
+    useState<ConversationTurnMode | null>(null);
   // The lane of the thread in hand, once anything has established it: the
   // creation call, or the loaded conversation record. The list is the
   // authority, but it has not necessarily refetched at the moment a brand-new
@@ -229,6 +283,15 @@ export function ChatProvider({
   const isLaneLocked = activeConversationId !== null;
   const laneApiBase = LANE_API_BASE[activeLane];
 
+  // Clamped here rather than only in the toggle, because the toggle is not the
+  // only way `mode` moves: the welcome screen's capability cards set it too,
+  // and the lane can be switched *after* Deep Dive was picked while no thread
+  // exists. One derivation means the control, the composer's deep-dive
+  // affordances and the request body cannot drift apart. `modeState` keeps the
+  // user's raw choice so returning to V2 restores it.
+  const isDeepDiveAvailable = activeLane === DEEP_DIVE_LANE;
+  const mode: ChatMode = isDeepDiveAvailable ? modeState : "chat";
+
   const visibleConversations = useMemo(
     () => conversations.filter((c) => laneMatchesFilter(c.lane, laneFilter)),
     [conversations, laneFilter],
@@ -266,6 +329,17 @@ export function ChatProvider({
   // When streaming is done (messageId set), invalidate caches and reset
   useEffect(() => {
     if (streamState.messageId !== null) {
+      // The `done` frame is the only moment the mode the client sent and the id
+      // of the message it produced are both in hand. Record the pairing before
+      // `reset()` throws the stream state away; nothing on the server will ever
+      // be able to answer this question afterwards.
+      const messageId = streamState.messageId;
+      if (inFlightTurnMode === "deep_dive" && messageId > 0) {
+        setDeepDiveMessageIds((prev) =>
+          prev.has(messageId) ? prev : new Set(prev).add(messageId),
+        );
+      }
+      setInFlightTurnMode(null);
       failedRequestRef.current = null;
       queryClient.invalidateQueries({
         queryKey: ["conversation", activeConversationId],
@@ -273,7 +347,13 @@ export function ChatProvider({
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
       reset();
     }
-  }, [streamState.messageId, activeConversationId, queryClient, reset]);
+  }, [
+    streamState.messageId,
+    inFlightTurnMode,
+    activeConversationId,
+    queryClient,
+    reset,
+  ]);
 
   // Clear active conversation if it was deleted (skip for just-created ones)
   useEffect(() => {
@@ -313,6 +393,9 @@ export function ChatProvider({
 
   useEffect(() => {
     if (streamState.error) {
+      // A failed turn produced no message to badge, so the in-flight mode is
+      // dropped rather than carried into whatever the user sends next.
+      setInFlightTurnMode(null);
       setPendingUserMessage(null);
       queryClient.invalidateQueries({
         queryKey: ["conversation", activeConversationId],
@@ -395,10 +478,15 @@ export function ChatProvider({
     setPendingUserMessage(stableRequest.query);
 
     try {
+      // `mode` is already clamped to what the lane can honour, so this is both
+      // what is sent and what the turn will really run as -- which is what
+      // makes it safe to record against the message the turn produces.
+      const turnMode = TURN_MODE[mode];
+      setInFlightTurnMode(turnMode);
       const streamRequest = {
         ...stableRequest,
         project_id: stableRequest.project_id || selectedProject || undefined,
-        mode: TURN_MODE[mode],
+        mode: turnMode,
       };
       failedRequestRef.current = streamRequest;
       await sendStreamMessage(
@@ -443,8 +531,11 @@ export function ChatProvider({
     setLaneFilter,
     mode,
     setMode,
+    isDeepDiveAvailable,
     selectedProject,
     setSelectedProject,
+    deepDiveMessageIds,
+    isDeepDiveTurnInFlight: inFlightTurnMode === "deep_dive",
     createConversation,
     deleteConversation,
     handleSendMessage,
@@ -467,7 +558,10 @@ export function ChatProvider({
     laneFilter,
     mode,
     setMode,
+    isDeepDiveAvailable,
     selectedProject,
+    deepDiveMessageIds,
+    inFlightTurnMode,
     createConversation,
     deleteConversation,
     handleSendMessage,

@@ -32,6 +32,16 @@ interface MessageListProps {
    * means no pacing: every bubble renders its full text.
    */
   revealedAnswer?: { key: string; text: string; isRevealing: boolean } | null;
+  /**
+   * Assistant message ids known to have run in Deep Dive
+   * (`ChatContext.deepDiveMessageIds`). Absent means "nothing is known", which
+   * is not the same as "nothing ran in Deep Dive" -- a reloaded thread knows
+   * nothing, because no turn's mode is persisted anywhere. Hosts that do not
+   * offer the mode at all (the docked copilot) simply never pass it.
+   */
+  deepDiveMessageIds?: ReadonlySet<number>;
+  /** True while the turn currently streaming is running in Deep Dive. */
+  isStreamingDeepDive?: boolean;
 }
 
 export function MessageList({
@@ -44,6 +54,8 @@ export function MessageList({
   showTopologyLinks,
   topologyProjectId,
   revealedAnswer,
+  deepDiveMessageIds,
+  isStreamingDeepDive,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -148,6 +160,7 @@ export function MessageList({
                 ? revealedAnswer.isRevealing
                 : undefined
             }
+            ranInDeepDive={deepDiveMessageIds?.has(message.id) ?? false}
             harnessActivities={message.harness_activities}
             pendingAction={message.pending_action}
             workflowCards={message.workflow_cards}
@@ -196,6 +209,7 @@ export function MessageList({
                 workflow_cards: streamingMessage.typedResponse?.workflow_cards,
                 created_at: new Date().toISOString(),
               }}
+              ranInDeepDive={isStreamingDeepDive ?? false}
               isStreaming={streamingMessage.isStreaming}
               streamingStatus={streamingMessage.progress}
               streamProgress={streamingMessage.progressDetail ?? null}

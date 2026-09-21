@@ -2,12 +2,13 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FolderOpen, FileText, Network, Package } from "lucide-react";
+import { FolderOpen, FileText, Lock, Network, Package } from "lucide-react";
 import { MessageList } from "./MessageList";
 import { AgentPlanCard } from "./AgentPlanCard";
 import { ChatInput } from "./ChatInput";
-import { ModeToggle } from "./ModeToggle";
+import { ComposerModeToggle, useDeepDiveLockReason } from "./ModeToggle";
 import { ComposerLaneControls } from "./chat/LaneSwitch";
+import { useChatContext } from "@/contexts/ChatContext";
 import { ProjectSelector } from "./ProjectSelector";
 import { RagProjectSelector } from "./RagProjectSelector";
 import { RuntimeStatusIndicator } from "./RuntimeStatusIndicator";
@@ -68,6 +69,13 @@ export function ChatWindow({
   const [packCommandError, setPackCommandError] = useState<string | null>(null);
   const { commands: slashCommands } = useSlashCommands();
   const router = useRouter();
+  // Why Deep Dive cannot be chosen, when it cannot. The composer toggle shows
+  // it on itself; the welcome screen's capability card needs the same fact, and
+  // reading it from the same hook is what keeps the two from disagreeing.
+  const deepDiveLockReason = useDeepDiveLockReason();
+  // Which answers ran in Deep Dive. Session-scoped by necessity -- see
+  // `ChatContext.deepDiveMessageIds`.
+  const { deepDiveMessageIds, isDeepDiveTurnInFlight } = useChatContext();
 
   const latestPendingAction = useMemo(
     () => [...(conversation?.messages ?? [])]
@@ -140,6 +148,10 @@ export function ChatWindow({
   }
 
   function handleIntroCtaClick(targetMode: ChatMode) {
+    // The card is the second way into Deep Dive, so it has to refuse it for the
+    // same reason the toggle does. Fixing only the toggle would have left the
+    // identical silent discard one click away.
+    if (targetMode === "deep-dive" && deepDiveLockReason) return;
     onModeChange(targetMode);
   }
 
@@ -185,7 +197,7 @@ export function ChatWindow({
   const planCard = conversation?.agent_plan ? <AgentPlanCard plan={conversation.agent_plan} /> : null;
   const toolbarContent = (
     <>
-      <ModeToggle mode={mode} onModeChange={onModeChange} />
+      <ComposerModeToggle mode={mode} onModeChange={onModeChange} />
       {isDeepDive ? <ProjectSelector /> : <RagProjectSelector />}
       <RuntimeStatusIndicator />
       {!isDeepDive && (
@@ -288,24 +300,42 @@ export function ChatWindow({
               style={{ animationDelay: "0.1s" }}
             >
               {INTRO_CTAS.map((cta) => {
-                const Icon = cta.icon;
-                const isActive = mode === cta.mode;
+                const lockReason =
+                  cta.mode === "deep-dive" ? deepDiveLockReason : null;
+                const Icon = lockReason ? Lock : cta.icon;
+                const isActive = mode === cta.mode && !lockReason;
                 return (
                   <button
                     key={cta.label}
+                    type="button"
                     onClick={() => handleIntroCtaClick(cta.mode)}
-                    className={`group text-left rounded-2xl border px-5 py-4 transition-all hover:-translate-y-px hover:shadow-elevation-sm ${
-                      isActive
-                        ? "border-primary/50 bg-primary/[0.04]"
-                        : "bg-card/60 hover:bg-card/80 hover:border-primary/40"
+                    aria-disabled={lockReason ? true : undefined}
+                    title={lockReason ?? undefined}
+                    className={`group text-left rounded-2xl border px-5 py-4 transition-all ${
+                      lockReason
+                        ? "cursor-not-allowed bg-card/30 opacity-70"
+                        : `hover:-translate-y-px hover:shadow-elevation-sm ${
+                            isActive
+                              ? "border-primary/50 bg-primary/[0.04]"
+                              : "bg-card/60 hover:bg-card/80 hover:border-primary/40"
+                          }`
                     }`}
                   >
                     <div className="flex items-center gap-2 text-sm font-medium text-foreground">
-                      <Icon className="h-4 w-4 text-primary/70 transition-colors group-hover:text-primary" />
+                      <Icon
+                        className={
+                          lockReason
+                            ? "h-4 w-4 text-muted-foreground"
+                            : "h-4 w-4 text-primary/70 transition-colors group-hover:text-primary"
+                        }
+                      />
                       {cta.label}
                     </div>
+                    {/* The reason replaces the pitch rather than joining it: a
+                        card that still advertises a capability it is refusing
+                        is how the silent discard felt in the first place. */}
                     <p className="mt-1.5 text-xs text-muted-foreground leading-snug">
-                      {cta.description}
+                      {lockReason ?? cta.description}
                     </p>
                   </button>
                 );
@@ -346,6 +376,8 @@ export function ChatWindow({
           pendingUserMessage={pendingUserMessage}
           onSuggestionClick={handleSuggestionClick}
           revealedAnswer={revealedAnswer}
+          deepDiveMessageIds={deepDiveMessageIds}
+          isStreamingDeepDive={isDeepDiveTurnInFlight}
         />
       </div>
 

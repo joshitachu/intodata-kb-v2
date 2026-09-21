@@ -516,7 +516,15 @@ def test_chat_treats_a_documentary_absence_as_a_summary_gap_and_offers_deep_dive
     )
     assert "do not close on the absence and refer the user to the functional owner" in prompt
     assert "the scanned source behind it may well carry it" in prompt
-    assert "offer to continue in Deep Dive" in prompt
+    assert "point at Deep Dive" in prompt
+    # The escalation must be stated as something the USER does. The looser
+    # "offer to continue in Deep Dive" was rendered by the model as "say so and
+    # I'll take it into Deep Dive" -- a promise it cannot keep, since it cannot
+    # switch its own mode. A reader then waits for a handoff that never comes,
+    # and reads the silence as a broken toggle.
+    assert "only the user can turn it on" in prompt
+    assert "You cannot switch mode" in prompt
+    assert "turn on Deep Dive and ask me this again" in prompt
 
 
 def test_deep_dive_must_search_the_source_before_reporting_an_absence() -> None:
@@ -530,7 +538,8 @@ def test_deep_dive_must_search_the_source_before_reporting_an_absence() -> None:
     # And the offer that belongs to the other mode is absent: offering a mode
     # the user is already in is the kind of line that makes an answer look
     # automated.
-    assert "offer to continue in Deep Dive" not in prompt
+    assert "point at Deep Dive" not in prompt
+    assert "only the user can turn it on" not in prompt
 
 
 def test_chat_does_not_name_tools_it_cannot_call() -> None:
@@ -701,3 +710,44 @@ async def test_the_requested_mode_reaches_the_scope_and_the_workspace(
     rebuilt = token_registry.resolve(seen["token"])
     assert rebuilt is not None
     assert rebuilt.mode is LabsTurnMode.DEEP_DIVE
+
+
+def test_deep_dive_routes_by_question_shape_not_by_a_fixed_source_order() -> None:
+    """A component-level question must start at the source, not at the prose.
+
+    Measured on conversation 658. Asked "Check cMessagingEndpoint_15 in route
+    processor_shipping_confirmation_map_jde_to_esb_p010 and give me the SQL",
+    with `mode=deep_dive` and both scan capabilities verified present in the
+    turn's registry, the agent made five `search_documentation` calls, one
+    `search_within_document`, one `query_project_metadata`, ZERO scan calls, and
+    reported that it could not retrieve the SQL.
+
+    It was obeying the prompt. The text said "Start on the documentation path,
+    reach for the scan for the specific parameter ... the documentation does not
+    carry", which makes the scan a fallback after a failed search. For a question
+    naming a component that search was never going to succeed, so the fallback
+    framing bought a wasted round and an absence report on the one turn where the
+    answer was a single `read_component` away.
+    """
+
+    prompt = nexus_system_prompt(LabsTurnMode.DEEP_DIVE)
+
+    assert "decided by the QUESTION, not by a fixed order" in prompt
+    assert "Go to the SOURCE FIRST" in prompt
+    assert "Go to the DOCUMENTATION first" in prompt
+    # The exact shape that failed, named so a model cannot miss the mapping.
+    assert "cMessagingEndpoint_15" in prompt
+    assert "answered by `read_component`, not by searching prose" in prompt
+    # The fallback framing that caused it must not come back.
+    assert "Start on the documentation path" not in prompt
+    # And the economy rule survives: source-first is not permission to sweep.
+    assert "Do not sweep the scan to see what is in it" in prompt
+
+
+def test_chat_mode_gets_no_source_routing_rules() -> None:
+    # Chat cannot reach the scan at all, so a rule about when to prefer it would
+    # describe a choice the turn does not have.
+    prompt = nexus_system_prompt(LabsTurnMode.CHAT)
+
+    assert "Go to the SOURCE FIRST" not in prompt
+    assert "read_component" not in prompt

@@ -885,13 +885,30 @@ the scan is the configuration itself. When the two differ, give the scanned \
 value, say the documentation records something else, and never settle it by \
 picking the more convenient reading.
 
+Which source you start on is decided by the QUESTION, not by a fixed order. \
+Deep dive exists for the questions documentation cannot answer, so treating the \
+scan as a fallback after a failed documentation search is backwards and costs a \
+round of searching that was never going to succeed.
+
+Go to the SOURCE FIRST when the question names a component, a job, a parameter, \
+or a route step, or asks what something actually runs, checks, filters, maps, \
+or is configured to do -- the SQL a step executes, the condition a router tests, \
+the expression a mapping applies, the value a parameter holds. A question that \
+names `cMessagingEndpoint_15` or asks "what is the SQL check" is answered by \
+`read_component`, not by searching prose written about the job.
+
+Go to the DOCUMENTATION first when the question is about meaning, purpose, \
+ownership, business rules, or how something fits the landscape -- what a flag \
+signifies, why a chain exists, what a term means to this client. The scan holds \
+configuration; it does not hold intent.
+
+Many questions need both, and the good answer says which came from where: the \
+configured value from the source, the meaning from the documentation.
+
 Deep dive widens the sources, not the budget. Everything under "Work \
-efficiently" still applies. Start on the documentation path, reach for the scan \
-for the specific parameter, expression, condition, or query the documentation \
-does not carry, and stop there. One source search and one component read on top \
-of the ordinary path is the normal shape of a deep-dive answer. Do not sweep \
-the scan to see what is in it, and do not read in source what you have already \
-read in documentation.
+efficiently" still applies. One source search and one component read is the \
+normal shape of a source-led answer. Do not sweep the scan to see what is in \
+it, and do not read in source what you have already read in documentation.
 """
 
 #: The mode-invariant middle: completeness discipline, the per-turn call budget,
@@ -955,8 +972,16 @@ what a filter tests, how a field is mapped, what a query returns -- and the \
 documentation does not carry it, do not close on the absence and refer the user \
 to the functional owner. Say what the documentation does record, say that it \
 does not record that detail, say that the scanned source behind it may well \
-carry it, and offer to continue in Deep Dive. That is the next step that would \
-settle it, and offering it is your job rather than theirs.
+carry it, and point at Deep Dive. That is the next step that would settle it, \
+and naming it is your job rather than theirs.
+
+Deep Dive is a toggle in the composer, and only the user can turn it on. You \
+cannot switch mode, and you cannot carry this question into Deep Dive yourself. \
+So never write "say so and I'll take it into Deep Dive", "let me switch to Deep \
+Dive", or anything else that promises an action you are unable to perform -- the \
+user will wait for something that never happens. Ask them to turn Deep Dive on \
+and put the question again: "turn on Deep Dive and ask me this again, and I can \
+read the configured value out of the scanned source."
 """
 
 #: Deep dive's half of the same rules. The escalation the chat text offers is
@@ -1060,6 +1085,34 @@ a concrete name to save words -- padding is the thing to cut, detail is not.
 """
 
 
+def _mode_banner(mode: LabsTurnMode) -> str:
+    """The turn's mode, stated before anything else.
+
+    The mode was already described where each source is introduced, but that put
+    it 3,254 characters into an 11,000-character prompt, inside a bullet list,
+    with nothing in the opening paragraphs to say which mode was live. A model
+    that reads the role and starts planning has by then already decided what it
+    can reach.
+
+    It is the single most consequential fact about a turn -- it decides the tool
+    menu -- so it goes first, as a declarative line rather than a rule to be
+    applied. The detail stays where it is: this says WHICH mode, the sections
+    below say what that mode means.
+    """
+
+    if mode is LabsTurnMode.DEEP_DIVE:
+        return (
+            "MODE: DEEP DIVE. The raw scanned source is in your tool menu this turn, "
+            "alongside the documentation. You did not choose this and you cannot change "
+            "it -- the user set it for this turn.\n"
+        )
+    return (
+        "MODE: CHAT. The documentation and the runtime are in your tool menu this turn. "
+        "The raw scanned source is NOT, and you cannot reach it or switch to it -- only "
+        "the user can, with the Deep Dive toggle.\n"
+    )
+
+
 def nexus_system_prompt(mode: LabsTurnMode = LabsTurnMode.CHAT) -> str:
     """The `nexus` agent's system role for one turn, in the given evidence mode.
 
@@ -1091,7 +1144,9 @@ def nexus_system_prompt(mode: LabsTurnMode = LabsTurnMode.CHAT) -> str:
         # head ends on, and a blank line would start a second list under the
         # same heading -- which reads as a second, separate class of source.
         sources += _PROMPT_SCAN_SOURCE
-    return "\n".join([sources, _PROMPT_EVIDENCE_DISCIPLINE, absence, _PROMPT_TAIL])
+    return "\n".join(
+        [_mode_banner(mode), sources, _PROMPT_EVIDENCE_DISCIPLINE, absence, _PROMPT_TAIL]
+    )
 
 
 #: The chat-mode role, kept as a module constant because it is the default and
