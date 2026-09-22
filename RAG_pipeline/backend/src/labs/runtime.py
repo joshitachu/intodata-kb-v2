@@ -144,6 +144,7 @@ from src.labs.workspace import (
 )
 from src.labs.workspace import (
     ensure_labs_workspace,
+    labs_agent_for,
     labs_workspace_path,
 )
 
@@ -1484,18 +1485,37 @@ async def execute_labs_turn(
     the conversation happened to open in.
 
     `mode` is the evidence breadth for THIS turn, and it reaches the model twice
-    because the two halves have different lifetimes. It goes on the scope, which
-    is what the MCP bridge rebuilds the tool menu from; and it selects the system
-    prompt written into the workspace's `opencode.json`, which
-    `ensure_labs_workspace` rewrites on every turn. Nothing about it is persisted
-    on the conversation: the same thread may ask an ordinary question and then a
-    deep one, and a stored mode would make the second answer depend on the first
-    turn's toggle.
+    because the two halves have different lifetimes:
+
+    * It goes on the scope, which is what the MCP bridge enforces per
+      `tools/call`. Not per `tools/list` -- OpenCode asks for the catalogue once
+      per session and caches it, so the menu is a superset of both modes and the
+      mode is applied at call time.
+    * It selects which of the two primary agent definitions this MESSAGE runs
+      on, via `labs_agent_for`. Both are written into `opencode.json` on every
+      turn, so neither depends on the mode the thread opened in; the message
+      body's `agent` field is the one place a per-turn choice survives a session
+      that resolved its agent at create.
+
+    An explicitly requested `agent` wins over the mode's own choice. `/plan` is
+    a deliberate act by the user and must not be silently replaced because a
+    toggle was left on; the plan agent's read-only tool map admits the scan's
+    `search_*` / `read_*` names anyway, so a plan turn in deep dive still sees
+    the source.
+
+    Nothing about the mode is persisted on the conversation: the same thread may
+    ask an ordinary question and then a deep one, and a stored mode would make
+    the second answer depend on the first turn's toggle.
     """
 
     started = time.monotonic()
     conversation_id = int(conversation.id)
     project_id = _workspace_project_id(project_scope)
+
+    # The mode chooses the agent only when the caller did not. See the docstring
+    # for why an explicit `/plan` outranks the toggle.
+    if agent == LABS_AGENT:
+        agent = labs_agent_for(mode)
 
     mcp_token, session_id = await _resolve_binding(
         conversation_id=conversation_id,
@@ -1614,6 +1634,19 @@ async def execute_labs_turn(
     #: message alone, so it is a floor on what the turn cost, not the total.
     reply_usage: tuple[float | None, dict[str, Any] | None] | None = None
     finish_reason: str | None = None
+    #: `info.agent` off the reply -- the server's own statement of which agent
+    #: definition actually ran, as opposed to the one this turn asked for.
+    #:
+    #: Read here rather than modelled on `OpenCodeReply` because `info` is
+    #: already the raw assistant-message envelope and this is the only consumer.
+    #: It exists because the entire bug class being fixed here was "we intended
+    #: one mode and had no way to see that another one happened": the tool menu
+    #: was cached, the session's agent was resolved once, and the logs recorded
+    #: only what was requested. A requested/actual pair on one line is the
+    #: cheapest way to notice a silent divergence -- an agent name that does not
+    #: exist in `opencode.json`, or a release that stops honouring the per-message
+    #: field -- instead of inferring it from what the answer said.
+    ran_agent: str | None = None
     stop_reason = "answered"
     turn_error: str | None = None
 
@@ -1645,13 +1678,17 @@ async def execute_labs_turn(
                 },
             )
 
-            if agent != LABS_AGENT:
-                # Only a non-default mode is announced. The default is the lane's
-                # normal behaviour and narrating it on every turn would train the
-                # user to ignore the line that matters. Payload keys are the
-                # production `runtime.update` set exactly -- `status`, `phase`,
-                # `summary` (`_PUBLIC_EVENT_FIELDS["runtime.update"]`) -- so the
-                # existing progress renderer picks it up with no frontend change.
+            if agent == LABS_PLAN_AGENT:
+                # Named rather than tested as "not the default". The deep-dive
+                # agent is also not the default, and this text says "Plan mode":
+                # a `!=` here would have labelled every deep-dive turn as a plan
+                # turn. Deep dive needs no announcement -- the user set a visible
+                # toggle and the answer itself shows the source -- whereas `/plan`
+                # is a typed command whose effect is otherwise invisible.
+                # Payload keys are the production `runtime.update` set exactly --
+                # `status`, `phase`, `summary`
+                # (`_PUBLIC_EVENT_FIELDS["runtime.update"]`) -- so the existing
+                # progress renderer picks it up with no frontend change.
                 await emit(
                     "runtime.update",
                     {
@@ -1721,6 +1758,12 @@ async def execute_labs_turn(
                     finish_reason = reply.finish
                     turn_error = _turn_failure(reply)
                     reply_usage = (reply.cost, reply.tokens)
+                    # Defensive on type, not just on presence: the field is
+                    # optional in the protocol, and a non-string there would put
+                    # a repr into a log line rather than a name.
+                    reported_agent = reply.info.get("agent")
+                    if isinstance(reported_agent, str) and reported_agent:
+                        ran_agent = reported_agent
                     # The blocking call can return a moment before the bus has
                     # flushed its last deltas and `session.idle`. Bounded, so a
                     # mute bus costs a fixed two seconds rather than the turn.
@@ -1801,13 +1844,21 @@ async def execute_labs_turn(
     # that could not have used one produce the SAME breakdown, and the only way
     # anyone could tell them apart was to guess from what the answer said. That
     # guess was wrong at least once.
+    #
+    # `ran_agent` is the same argument taken one step further. `agent` is what
+    # this turn ASKED for; `ran_agent` is `info.agent`, the server's own report
+    # of which definition it actually used. The mode now reaches the model
+    # entirely through that choice, so the two disagreeing -- or `ran_agent`
+    # coming back `-` on a release that stopped echoing it -- is the first and
+    # only visible symptom of the mode silently not applying.
     logger.info(
-        "labs.turn conversation_id=%s session=%s agent=%s mode=%s latency_ms=%s "
-        "tool_calls=%s all_tool_calls=%s tool_breakdown=%s streamed_chars=%s "
-        "stop_reason=%s finish=%s",
+        "labs.turn conversation_id=%s session=%s agent=%s ran_agent=%s mode=%s "
+        "latency_ms=%s tool_calls=%s all_tool_calls=%s tool_breakdown=%s "
+        "streamed_chars=%s stop_reason=%s finish=%s",
         conversation_id,
         session_id or "-",
         agent,
+        ran_agent or "-",
         mode.value if hasattr(mode, "value") else mode,
         latency_ms,
         len(tool_calls),

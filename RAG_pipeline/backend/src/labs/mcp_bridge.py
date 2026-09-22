@@ -46,8 +46,9 @@ from src.harness.capability_runtime import (
     CapabilityObservation,
     CapabilityObservationStatus,
 )
-from src.harness.executor import CapabilityExecutionDenied
+from src.harness.executor import CapabilityExecutionDenied, CapabilityPolicyCode
 from src.harness.models import CapabilityDefinition, HarnessRiskTier
+from src.harness.registry import base_capability_registry
 from src.labs.contracts import (
     LABS_MCP_ROUTE,
     LabsToolCallRecord,
@@ -304,7 +305,7 @@ _LABS_EXCLUDED_CAPABILITY_IDS: Final = frozenset(
     {"topology.landscape.read_structure"}
 )
 
-# The raw scan. Advertised only in `LabsTurnMode.DEEP_DIVE`.
+# The raw scan. Executable only in `LabsTurnMode.DEEP_DIVE`.
 #
 # These read the scanner's own output rather than the generated documentation,
 # so they carry what the documentation summarises away -- component parameters,
@@ -326,18 +327,44 @@ _DEEP_DIVE_CAPABILITY_IDS: Final = frozenset(
     }
 )
 
+# What a chat turn is told when it calls a scan tool it can see but may not run.
+#
+# A bare "Denied by policy: allowlist" is what the executor's own gate produces,
+# and it reads to a model as a broken tool: it says nothing about WHY, so the
+# model either retries the same call or goes looking for the source with the
+# filesystem tools -- measured at 44 seconds of `glob` on conversation 661 for
+# an answer it never reached. This text names the reason, names the remedy, and
+# says who can apply it, which is the same thing the chat system prompt says.
+_MODE_REFUSAL_MESSAGE: Final = (
+    "This tool reads the scanned source, which is only available in Deep Dive, "
+    "and this is an ordinary chat turn. Do not retry it and do not go looking "
+    "for the source with file tools -- it is not on this filesystem. Answer "
+    "from the documentation and runtime evidence you can reach, say plainly "
+    "what the documentation does not record, and tell the user that turning on "
+    "Deep Dive and asking again would let you read the source. You cannot "
+    "switch mode yourself."
+)
 
-def _allowlist(mode: LabsTurnMode = LabsTurnMode.CHAT) -> frozenset[str] | None:
-    """The configured allowlist for this mode, or None when everything is allowed.
 
-    The mode widens the set; it never narrows it. `LABS_CAPABILITY_ALLOWLIST="*"`
-    still means "advertise everything the tier and permission filters already
-    allow", and the deep-dive ids are kept out of chat mode by
-    `_excluded_capability_ids` rather than here, so the wildcard cannot restore
-    them either -- the same treatment topology already gets.
+def _allowlist() -> frozenset[str] | None:
+    """Every capability id this lane may ADVERTISE, or None when all are allowed.
 
-    Defaults to the narrow mode: a caller that forgets to state one gets the
-    chat menu, not the wide one.
+    The turn's mode is deliberately not an input, and that is the correction.
+    OpenCode asks for `tools/list` once, when the session is created, and caches
+    the answer for the life of the session -- measured on conversation 661, one
+    `tools/list` served three turns. A mode-filtered catalogue therefore froze at
+    whatever the conversation's FIRST turn happened to be: a thread that opened
+    in chat could never be offered the scan again, and a thread that opened in
+    deep dive kept offering it forever.
+
+    So the advertised set is a superset of every mode, always. What a mode may
+    actually RUN is decided per call by `_excluded_capability_ids`, which is
+    reached through `tools/call` -- a request the client makes every single time,
+    and therefore the only place a per-turn decision can live.
+
+    `LABS_CAPABILITY_ALLOWLIST="*"` still means "advertise everything the tier
+    and permission filters already allow"; it cannot widen what a chat turn may
+    execute, because that gate is elsewhere.
     """
 
     raw = os.environ.get("LABS_CAPABILITY_ALLOWLIST", "").strip()
@@ -348,23 +375,64 @@ def _allowlist(mode: LabsTurnMode = LabsTurnMode.CHAT) -> frozenset[str] | None:
         if not raw
         else frozenset(item.strip() for item in raw.split(",") if item.strip())
     )
-    if mode is LabsTurnMode.DEEP_DIVE:
-        return configured | _DEEP_DIVE_CAPABILITY_IDS
-    return configured
+    # Unconditional: the catalogue has to carry the scan whatever mode the
+    # session was created in, or a later deep-dive turn has nothing to enable.
+    return configured | _DEEP_DIVE_CAPABILITY_IDS
 
 
 def _excluded_capability_ids(mode: LabsTurnMode) -> frozenset[str]:
-    """Ids this mode must never advertise, whatever the allowlist says.
+    """Ids this mode must never EXECUTE, whatever the catalogue advertises.
 
-    Modelled on `_LABS_EXCLUDED_CAPABILITY_IDS`, and merged with it, because the
-    argument is the same one: an operator setting `LABS_CAPABILITY_ALLOWLIST="*"`
-    must not be able to put the scan back into ordinary chat by accident. The
-    allowlist decides what a mode MAY see; this decides what it may not.
+    This is the server-side half of the mode, and since the catalogue stopped
+    filtering it is the whole of it: the agent definition in `opencode.json`
+    switches the scan tools off for the chat agent, but that is a client-side
+    hint the model's runtime applies to itself. A hint is not a boundary. This
+    function is, and it already earned its place -- on conversation 657 a
+    deep-dive-then-chat thread had the scan tools still in its cached menu, the
+    model called one, and this gate is what refused it.
+
+    Merged with `_LABS_EXCLUDED_CAPABILITY_IDS` because the argument is the same
+    one: an operator setting `LABS_CAPABILITY_ALLOWLIST="*"` must not be able to
+    put the scan into ordinary chat by accident.
     """
 
     if mode is LabsTurnMode.DEEP_DIVE:
         return _LABS_EXCLUDED_CAPABILITY_IDS
     return _LABS_EXCLUDED_CAPABILITY_IDS | _DEEP_DIVE_CAPABILITY_IDS
+
+
+def deep_dive_tool_names() -> tuple[str, ...]:
+    """The MCP tool names the scan capabilities are advertised under.
+
+    Exists so `workspace.py` can switch exactly these tools off in the chat
+    agent's `tools` map without restating the names. It must not: the map is
+    keyed by the name the MODEL sees, which is this projection of
+    `semantic_name`, not the capability id -- and a `tools` entry naming a tool
+    that does not exist is accepted silently and does nothing at all. Deriving
+    it from the same registry and the same `_tool_name_for` that `tools/list`
+    uses is what makes "wrong name" impossible rather than merely unlikely.
+
+    Returned WITHOUT the MCP server-key prefix. The prefix is `opencode.json`'s
+    own key for this server, which is workspace's to own; the bare name is the
+    part this module is authoritative about.
+
+    An id that the registry does not carry yields no name. That is the honest
+    result -- the bridge cannot advertise it either, so there is nothing for an
+    agent map to switch -- and the caller warns about it rather than this
+    function raising, because a scan provider that has not landed must not stop
+    the lane from answering documentation questions.
+    """
+
+    registered = {
+        capability.id: capability for capability in base_capability_registry().list()
+    }
+    return tuple(
+        sorted(
+            _tool_name_for(registered[capability_id])
+            for capability_id in _DEEP_DIVE_CAPABILITY_IDS
+            if capability_id in registered
+        )
+    )
 
 
 def _turn_mode(scope: LabsTurnScope) -> LabsTurnMode:
@@ -379,9 +447,13 @@ def _turn_mode(scope: LabsTurnScope) -> LabsTurnMode:
 
     This is the same resolution `_remaining_tool_calls` already performs for the
     per-turn allowance, and it is safe for the same reason the claim lookup
-    below it is: the bridge answers `tools/list` and `tools/call` inside the
-    turn that set the entry. Outside one -- which should not happen -- the
-    token's own mode is the floor, and that defaults to chat.
+    below it is: the bridge answers `tools/call` inside the turn that set the
+    entry. Outside one -- which should not happen -- the token's own mode is the
+    floor, and that defaults to chat.
+
+    `tools/list` reads it only to log it. The catalogue itself no longer depends
+    on the mode, because that request is answered once per session and cached;
+    see `_allowlist`.
     """
 
     return labs_turn_modes.current(scope.conversation_id, scope.mode)
@@ -421,16 +493,23 @@ def _visible_capabilities(
     risk, schema and project scope on every call. Filtering here keeps the model
     from being offered tools it would only be denied.
 
-    The turn's `LabsTurnMode` is one of the inputs. It does not change what may
-    be EXECUTED -- an unadvertised capability is still permission-checked and
-    still runnable by id -- it changes what is offered, which is the only lever
-    that keeps an ordinary question from paying for the scan.
+    The turn's `LabsTurnMode` is deliberately NOT one of the inputs any more. It
+    used to be, and that was the bug: this function backs `tools/list`, OpenCode
+    asks for that once per session, and a mode-filtered catalogue therefore
+    froze at the mode of the conversation's first turn. The set returned here is
+    the union of every mode, and the mode is applied per call in
+    `_handle_tools_call`, which runs every time.
+
+    The cost of the wider catalogue is two extra tool schemas in every turn's
+    prompt. That is real and it is small, and it buys the only shape in which a
+    per-turn mode works at all against a client that caches the menu.
     """
 
     permissions = set(scope.permissions)
-    mode = _turn_mode(scope)
-    allowed = _allowlist(mode)
-    excluded = _excluded_capability_ids(mode)
+    allowed = _allowlist()
+    # Only the hard exclusion. The mode's own exclusions are an EXECUTION rule,
+    # and applying them here is what froze the menu -- see the docstring.
+    excluded = _LABS_EXCLUDED_CAPABILITY_IDS
     turn_claim_bound = labs_turn_claims.get(scope.conversation_id) is not None
     return [
         capability
@@ -654,9 +733,11 @@ def _execution_context(
 ) -> CapabilityExecutionContext:
     """Server-owned context for one labs tool call.
 
-    `allowed_capability_ids` is the projection from tools/list, so the policy
-    engine denies anything the catalogue never advertised even if the name map
-    were wrong. Writes and external side effects stay off: the labs lane does
+    `allowed_capability_ids` is the advertised catalogue MINUS whatever this
+    turn's mode may not run, so the policy engine denies anything the catalogue
+    never advertised even if the name map were wrong, and denies the scan in an
+    ordinary chat turn even if the explicit mode check in `_handle_tools_call`
+    were removed. Writes and external side effects stay off: the labs lane does
     not decide on its own that an LLM may rewrite published client content.
 
     The raw bearer token is deliberately not a parameter. Everything this
@@ -835,6 +916,24 @@ async def _handle_tools_list(
         _tool_descriptor(by_id[capability_id], name)
         for name, capability_id in name_map.items()
     ]
+    # Kept, with its meaning changed. It used to be the evidence that the menu
+    # was frozen: one line per conversation rather than one per turn proved the
+    # client caches this answer, which is what made a mode gate here unworkable.
+    # The catalogue no longer depends on the mode, so `scan_offered` should now
+    # be true on EVERY line regardless of `mode`, and a false one means the scan
+    # provider did not register rather than that the mode filtered it out. The
+    # mode is still logged, as the correlation handle between this line and the
+    # `labs.turn` lines that follow it.
+    logger.info(
+        "labs.mcp tools/list conversation_id=%s mode=%s tools=%s scan_offered=%s",
+        scope.conversation_id,
+        _turn_mode(scope).value,
+        len(tools),
+        any(
+            capability_id in _DEEP_DIVE_CAPABILITY_IDS
+            for capability_id in name_map.values()
+        ),
+    )
     return {"tools": tools}
 
 
@@ -860,7 +959,60 @@ async def _handle_tools_call(
     if capability_id is None:
         raise _JsonRpcError(_INVALID_PARAMS, f"Unknown tool: {name}")
 
-    context = _execution_context(scope, set(name_map.values()))
+    # The mode gate, and the only one that is a boundary rather than a hint.
+    #
+    # It has to be here rather than on the catalogue because this is the request
+    # the client makes every time: `tools/list` is served once per session and
+    # cached, so a menu built from the mode describes whichever turn opened the
+    # thread. The agent definition in `opencode.json` switches these tools off
+    # for the chat agent too, per message and therefore correctly -- but that is
+    # the model's own runtime policing itself, and a lane that reaches a client
+    # estate does not rest on that.
+    mode = _turn_mode(scope)
+    excluded = _excluded_capability_ids(mode)
+    executable = {
+        allowed_id for allowed_id in name_map.values() if allowed_id not in excluded
+    }
+    if capability_id in excluded:
+        logger.info(
+            "labs.mcp tools/call refused by mode: conversation_id=%s mode=%s "
+            "capability_id=%s tool=%s",
+            scope.conversation_id,
+            mode.value,
+            capability_id,
+            name,
+        )
+        _record_tool_call(
+            scope.conversation_id,
+            LabsToolCallRecord(
+                capability_id=capability_id,
+                tool_name=name,
+                succeeded=False,
+                summary=f"Not available in {mode.value} mode",
+                error_code=CapabilityPolicyCode.ALLOWLIST.value,
+            ),
+        )
+        # Counted against the turn budget by `_record_tool_call` above, and that
+        # is deliberate: a refused call still cost a model round trip, and a
+        # free refusal is one a model can spend the whole turn repeating.
+        return _tool_result(
+            {
+                "capability_id": capability_id,
+                "status": "denied",
+                # The production denial vocabulary rather than a code invented
+                # here: this IS an allowlist denial, and it is the same one the
+                # executor below would raise from `executable`.
+                "error_code": CapabilityPolicyCode.ALLOWLIST.value,
+                "error_message": _MODE_REFUSAL_MESSAGE,
+                **_budget_note(scope),
+            },
+            is_error=True,
+        )
+
+    # `executable`, not the whole name map. The check above already refused this
+    # call, so this is the backstop: if a future edit lets an excluded id past
+    # the branch, the executor's own ALLOWLIST gate still denies it.
+    context = _execution_context(scope, executable)
     try:
         observation = await runtime.executor.execute(
             CapabilityExecutionRequest(
@@ -1011,6 +1163,7 @@ __all__ = [
     "MCP_PROTOCOL_VERSION",
     "LabsScopeError",
     "LabsToolNameCollision",
+    "deep_dive_tool_names",
     "drain_tool_calls",
     "router",
 ]

@@ -108,6 +108,31 @@ _MODEL_ID: Final = os.environ.get("LABS_MODEL_ID", "").strip() or "big-pickle"
 _PROVIDER_ID: Final = os.environ.get("LABS_PROVIDER_ID", "").strip() or "opencode"
 _AGENT_NAME: Final = "nexus"
 
+#: The same agent with the scanned source switched on, selected per message when
+#: the turn's mode is `LabsTurnMode.DEEP_DIVE`.
+#:
+#: A second agent DEFINITION rather than a second prompt or a second session,
+#: and that shape is the whole fix. Deep dive is a per-turn mode -- one thread
+#: asks an ordinary question and then a source question -- but the two places
+#: the mode used to be applied are both resolved once and cached:
+#:
+#:   * `tools/list`, which OpenCode requests when it creates the session and
+#:     then reuses. Measured on conversation 661: one `tools/list` served three
+#:     turns, so the menu described whichever mode the thread opened in.
+#:   * the session's agent, resolved at session create.
+#:
+#: The message body's `agent` field is the one thing that is honoured per
+#: message, and it overrides the second of those outright (verified live against
+#: 1.18.7 -- see `opencode_client`'s module docstring; `info.agent` in the reply
+#: is the server's own confirmation of which one ran). The first it works
+#: AROUND: the bridge now advertises a catalogue that is a superset of both
+#: modes, so each agent's `tools` map picks its half out of one cached menu.
+#:
+#: So the mode becomes a choice between two agent definitions that are BOTH
+#: written on every turn, and nothing about a turn depends on the mode the
+#: thread began in.
+_DEEP_DIVE_AGENT_NAME: Final = "nexus-deep-dive"
+
 #: The read-only companion agent. Named `plan` deliberately: that is the name a
 #: turn selects with `agent="plan"`, and OpenCode ships a built-in agent under
 #: the same key whose fields this definition overrides rather than shadows.
@@ -216,6 +241,55 @@ def _consequential_tool_names() -> tuple[str, ...]:
 #: Computed once, at import: a registry that fails to build should break the
 #: process, not a turn -- the same argument `_material_roots` makes below.
 _CONSEQUENTIAL_TOOLS: Final[tuple[str, ...]] = _consequential_tool_names()
+
+
+def _scan_tool_names() -> tuple[str, ...]:
+    """The MCP tool names the two scan capabilities reach the model under.
+
+    These are the ONE difference between the chat agent's tool map and the deep
+    dive agent's, so getting them wrong is the failure mode with no symptom: a
+    `tools` entry naming a tool that does not exist is accepted silently, and
+    the chat agent would keep the scan it was supposed to lose.
+
+    So they are derived rather than written down. `mcp_bridge.deep_dive_tool_names`
+    projects the gated capability ids through exactly the function that builds
+    the `tools/list` catalogue, and this prefixes the MCP server key -- the key
+    THIS module puts in `opencode.json`'s `mcp` block, which is how OpenCode
+    namespaces a remote server's tools. Neither half is a guess, and a rename on
+    either side moves both.
+
+    A missing capability is logged rather than raised. The bridge cannot
+    advertise an unregistered capability either, so there is no tool for an
+    agent map to switch off and nothing is silently lost -- and a scan provider
+    that has not landed must not stop the lane answering documentation
+    questions. The warning is what keeps "nothing to switch" from reading like
+    "switched off".
+    """
+
+    # Imported inside the function, not at module scope. `mcp_bridge` pulls in
+    # the FastAPI request stack (`src.api.dependencies`) and the production turn
+    # runtime; this module is also imported by the read-only workspace route and
+    # by the runtime, and a module-level edge would make that graph one rename
+    # away from a cycle. The call happens once, at import, so the deferral costs
+    # nothing per turn.
+    from src.labs.mcp_bridge import _DEEP_DIVE_CAPABILITY_IDS, deep_dive_tool_names
+
+    names = deep_dive_tool_names()
+    if len(names) != len(_DEEP_DIVE_CAPABILITY_IDS):
+        logger.warning(
+            "Labs scan capabilities are not all registered: expected %s, projected %s. "
+            "The chat agent's tool map cannot switch off what the bridge never "
+            "advertises; the server-side mode gate in mcp_bridge still applies.",
+            len(_DEEP_DIVE_CAPABILITY_IDS),
+            names or "none",
+        )
+    return tuple(f"{_MCP_SERVER_KEY}_{name}" for name in names)
+
+
+#: Computed once, at import, like `_CONSEQUENTIAL_TOOLS` above and for the same
+#: reason: the registry is static, and re-projecting it on every turn would
+#: spend the work to get the same answer.
+_SCAN_TOOLS: Final[tuple[str, ...]] = _scan_tool_names()
 
 _NEXUS_DIR: Final = ".nexus"
 
@@ -340,16 +414,43 @@ def _base_permission() -> dict[str, Any]:
     return permission
 
 
-def _build_opencode_config(
-    *, mcp_token: str, workspace: Path, mode: LabsTurnMode = LabsTurnMode.CHAT
-) -> dict[str, Any]:
+def labs_agent_for(mode: LabsTurnMode) -> str:
+    """The agent definition a turn in this mode runs on.
+
+    The single owner of the mode-to-agent mapping. `execute_labs_turn` reads it
+    to fill the message body's `agent` field, and the workspace projection reads
+    it to show a user the prompt the agent that actually ran was given; two
+    copies of this `if` is how those two would come to disagree.
+    """
+
+    if mode is LabsTurnMode.DEEP_DIVE:
+        return _DEEP_DIVE_AGENT_NAME
+    return _AGENT_NAME
+
+
+def _build_opencode_config(*, mcp_token: str, workspace: Path) -> dict[str, Any]:
     """Build the workspace's `opencode.json`.
 
-    `mode` selects the `nexus` agent's system prompt only. It changes nothing
-    about the permission blocks: what the agent may DO is identical in both
-    modes, and what it may SEE is decided by the MCP bridge against the same
-    mode. This file is rewritten on every turn by `ensure_labs_workspace`, which
-    is what makes a per-turn mode expressible here at all.
+    There is no `mode` parameter, and its absence is the fix rather than a
+    simplification. It used to select the `nexus` agent's system prompt, on the
+    reasoning that this file is rewritten on every turn and so a per-turn mode is
+    expressible in it. The file is -- but the SESSION is not: OpenCode resolves a
+    session's agent once, at create, and caches the MCP tool catalogue with it.
+    So a per-turn rewrite of one agent's prompt reached a session that had
+    already decided what it was.
+
+    Both agent definitions are therefore written on every turn, unconditionally,
+    and the mode picks between them per message (`labs_agent_for`). Nothing in
+    this file can depend on the mode a conversation opened in, because the mode
+    is no longer an input to it.
+
+    The two primary agents differ in `prompt`, `description` and the scan
+    entries in `tools`, and in nothing else -- identical permissions, identical
+    step ceiling, identical everything that constrains them. That is deliberate:
+    the tool map is a client-side hint, the permission block is about what the
+    agent may do to the WORKSPACE, and what it may read out of the client estate
+    is the MCP bridge's decision, enforced server-side on every `tools/call`.
+    Widening what the model may READ must not quietly widen what it may DO.
 
     The `permission` block is the policy layer
     (https://opencode.ai/docs/permissions/: every tool key takes
@@ -386,20 +487,8 @@ def _build_opencode_config(
     # The global block is the floor for every agent OpenCode also ships
     # (`build`, `general`, `explore` and the hidden title/summary agents). None
     # of them is selectable on this lane, and none of them gets a write rule:
-    # only the `nexus` agent below does.
+    # only the two `nexus` agents below do.
     permission["edit"] = "deny"
-
-    agent_tools: dict[str, bool] = {tool: True for tool in _ALLOWED_TOOLS}
-    agent_tools.update({tool: True for tool in _PLAN_TOOLS})
-    agent_tools.update({tool: False for tool in _DENIED_TOOLS})
-    # The one agent that may spawn, and only into `_VERIFY_AGENT_NAME`.
-    agent_tools[_SPAWN_TOOL] = True
-
-    nexus_permission = _base_permission()
-    nexus_permission["edit"] = _edit_permission(workspace)
-    # Broad rule first, narrow rule after -- OpenCode evaluates the LAST matching
-    # rule, so reversing these two would admit every subagent instead of one.
-    nexus_permission[_SPAWN_TOOL] = {"*": "deny", _VERIFY_AGENT_NAME: "allow"}
 
     return {
         "$schema": "https://opencode.ai/config.json",
@@ -435,28 +524,89 @@ def _build_opencode_config(
             }
         },
         "permission": permission,
+        # Both modes, every turn. A session that was created in one of them can
+        # still be sent a message naming the other, which is the only reason a
+        # per-turn mode survives a per-session tool catalogue.
         "agent": {
-            _AGENT_NAME: {
-                "mode": "primary",
-                "description": (
-                    "Nexus project knowledge assistant, grounded in authorized indexed "
-                    "documentation and current operational evidence; may manage "
-                    "documentation workflows and deliver files into output/."
-                ),
-                "tools": agent_tools,
-                "permission": nexus_permission,
-                "maxSteps": 24,
-                # The role, and the field this agent shipped without. Absent, a
-                # primary agent runs on OpenCode's built-in generic prompt and
-                # every Nexus instruction arrives as `AGENTS.md` project
-                # context -- material to take into account rather than what the
-                # model is. See `nexus_system_prompt`.
-                "prompt": nexus_system_prompt(mode),
-            },
+            _AGENT_NAME: _nexus_agent(workspace, LabsTurnMode.CHAT),
+            _DEEP_DIVE_AGENT_NAME: _nexus_agent(workspace, LabsTurnMode.DEEP_DIVE),
             _PLAN_AGENT_NAME: _plan_agent(),
             _VERIFY_AGENT_NAME: _verify_agent(),
             **_sealed_builtin_subagents(),
         },
+    }
+
+
+def _nexus_agent(workspace: Path, mode: LabsTurnMode) -> dict[str, Any]:
+    """One of the two primary agent definitions, built from the shared body.
+
+    Assembled from one template rather than written twice for the reason
+    `nexus_system_prompt` gives about the prompt itself: most of the definition
+    is shared, and two full copies means every future edit to the shared part
+    has to be made twice or silently drifts. A deep-dive agent that quietly lost
+    the spawn scoping, or the workspace write path, would be a containment
+    regression nobody would see in a diff.
+
+    `mode` decides three things and no others:
+
+    * `prompt` -- `nexus_system_prompt(mode)`, which tells the model whether the
+      scanned source is available to it and what to do when the documentation is
+      silent. A deep-dive tool map with the chat prompt would offer the scan and
+      instruct the model to refer the user to the functional owner instead.
+    * the scan entries in `tools` -- off for chat, on for deep dive.
+    * `description`, so the two are distinguishable in an agent list. Cosmetic,
+      and the only field here that is.
+
+    The tool map is a HINT and is documented as one on 1.18.7 (the agent decoder
+    folds it into permission rules the agent's own `permission` block can
+    overwrite). It is worth setting anyway: a chat agent that can see the scan
+    in its menu and is merely told not to use it WILL use it, then be refused
+    server-side, having spent a call and a round trip -- observed on
+    conversation 657. Keeping it out of the map makes the common case cheap; the
+    bridge's `_excluded_capability_ids` is what makes it safe.
+    """
+
+    tools: dict[str, bool] = {tool: True for tool in _ALLOWED_TOOLS}
+    tools.update({tool: True for tool in _PLAN_TOOLS})
+    tools.update({tool: False for tool in _DENIED_TOOLS})
+    # The one agent that may spawn, and only into `_VERIFY_AGENT_NAME`.
+    tools[_SPAWN_TOOL] = True
+    # Stated in both maps rather than omitted from the deep-dive one. There is
+    # no `"*": "deny"` catch-all here, so an absent key already means "enabled"
+    # and the `True` changes nothing -- but the pair of maps is then readable as
+    # a pair, and the one line that differs between the two agents is visible in
+    # the config a person is debugging rather than inferred from its absence.
+    tools.update({tool: mode is LabsTurnMode.DEEP_DIVE for tool in _SCAN_TOOLS})
+
+    permission = _base_permission()
+    permission["edit"] = _edit_permission(workspace)
+    # Broad rule first, narrow rule after -- OpenCode evaluates the LAST matching
+    # rule, so reversing these two would admit every subagent instead of one.
+    permission[_SPAWN_TOOL] = {"*": "deny", _VERIFY_AGENT_NAME: "allow"}
+
+    description = (
+        "Nexus project knowledge assistant, grounded in authorized indexed "
+        "documentation and current operational evidence; may manage "
+        "documentation workflows and deliver files into output/."
+    )
+    if mode is LabsTurnMode.DEEP_DIVE:
+        description = (
+            "Nexus project knowledge assistant in Deep Dive: the same assistant "
+            "with the scanned integration source available as well as the "
+            "documentation, for questions about what the code actually does."
+        )
+
+    return {
+        "mode": "primary",
+        "description": description,
+        "tools": tools,
+        "permission": permission,
+        "maxSteps": 24,
+        # The role, and the field this agent shipped without. Absent, a primary
+        # agent runs on OpenCode's built-in generic prompt and every Nexus
+        # instruction arrives as `AGENTS.md` project context -- material to take
+        # into account rather than what the model is. See `nexus_system_prompt`.
+        "prompt": nexus_system_prompt(mode),
     }
 
 
@@ -1756,14 +1906,18 @@ async def ensure_labs_workspace(
 ) -> str:
     """Create or refresh the workspace for one labs conversation.
 
-    `mode` is the turn's evidence breadth, and this function is the only thing
-    that makes it expressible in a prompt at all: it runs on every turn and
-    rewrites `opencode.json` in place, so the `nexus` agent's system role can
-    differ between two turns of the same conversation even though the file
-    itself is per conversation. It is written into both copies of the role --
-    the one in `opencode.json` that reaches the model, and the projected
-    `.nexus/SYSTEM_PROMPT.md` the user can read -- so the two cannot disagree
-    about what this turn was told.
+    `mode` is the turn's evidence breadth, and it now affects exactly one file:
+    the projected `.nexus/SYSTEM_PROMPT.md` a user can read, which shows the
+    role given to the agent this turn will actually run on.
+
+    It does NOT select what `opencode.json` contains. It used to, and that was
+    wrong in a way rewriting the file per turn could not fix: a session resolves
+    its agent and caches its MCP tool catalogue once, at create, so a per-turn
+    rewrite of one agent's prompt reached a session that had already decided
+    what it was. The config now carries BOTH roles as two agent definitions, and
+    `execute_labs_turn` names one of them in the message body -- the one field
+    OpenCode honours per message. The two copies still cannot disagree, because
+    both are derived from `nexus_system_prompt(mode)` and `labs_agent_for(mode)`.
 
     Idempotent: a second call updates `opencode.json` (the MCP bearer may have
     been re-minted), `AGENTS.md` and the `.nexus/` tree in place, re-points the
@@ -1801,9 +1955,10 @@ async def ensure_labs_workspace(
     """
 
     workspace = Path(labs_workspace_path(conversation_id))
-    config = _build_opencode_config(
-        mcp_token=mcp_token, workspace=workspace, mode=mode
-    )
+    # Deliberately not given the mode. Both agent definitions are written on
+    # every turn and the turn picks between them per message; see
+    # `_build_opencode_config`.
+    config = _build_opencode_config(mcp_token=mcp_token, workspace=workspace)
 
     def _write() -> tuple[bool, tuple[WorkspaceFile, ...]]:
         workspace.mkdir(parents=True, exist_ok=True)
@@ -1902,6 +2057,7 @@ __all__ = [
     "WorkspaceFile",
     "always_loaded_tokens",
     "ensure_labs_workspace",
+    "labs_agent_for",
     "labs_docs_mounted",
     "labs_workspace_path",
     "project_workspace_files",

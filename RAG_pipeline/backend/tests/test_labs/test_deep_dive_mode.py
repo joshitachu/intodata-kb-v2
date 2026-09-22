@@ -5,19 +5,29 @@ evidence menu is: chat sees the generated documentation and the runtime, deep
 dive additionally sees the raw scan -- which holds the component parameters,
 expressions, conditions and SQL that documentation summarises away.
 
-Three things have to hold for that to be true, and each has its own section
+Four things have to hold for that to be true, and each has its own section
 below:
 
 * The mode is carried per TURN, from the request through to the scope the MCP
   bridge rebuilds. Per turn, because the same thread asks an ordinary question
   and then a deep one; a mode stored on the conversation would make the second
   answer depend on the first turn's toggle.
-* The two scan capabilities are advertised in deep dive and in nothing else,
-  including under an operator's `LABS_CAPABILITY_ALLOWLIST="*"`.
+* The catalogue advertises the scan in BOTH modes, always. This is the
+  correction: `tools/list` is answered once per OpenCode session and cached --
+  measured on conversation 661, one catalogue served three turns -- so a menu
+  filtered by mode froze at whatever the thread's first turn was. A chat turn
+  followed by a deep-dive turn never saw the scan tools at all, and the agent
+  spent 44 seconds on `glob` trying to find the source on the filesystem.
+* `tools/call` refuses the scan in chat mode, every call, server-side. That is
+  now the whole of the mode gate, and it is the layer that already saved us: on
+  conversation 657 a deep-dive-then-chat thread still had the scan in its cached
+  menu, the model called it, and the call was refused.
 * The system prompt says what the mode means -- in deep dive, that the scan is
   the authority; in chat, that an absence in the documentation is an absence in
   a summary and Deep Dive is the next step, rather than a dead end with a
-  referral to the functional owner attached.
+  referral to the functional owner attached. The two prompts reach the model as
+  two AGENT DEFINITIONS, both written on every turn, because a session resolves
+  its agent once and only the message body's `agent` field is honoured per turn.
 
 The capability ids are asserted as strings on purpose. They are owned by the
 scan provider, not by this lane, and the gate has to be correct before that
@@ -37,12 +47,14 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from src.labs import mcp_bridge as labs_bridge
 from src.labs import runtime as labs_runtime
 from src.labs.contracts import (
     LabsTokenRegistry,
     LabsTurnMode,
     LabsTurnModeRegistry,
     LabsTurnScope,
+    labs_turn_budget,
     labs_turn_modes,
 )
 from src.labs.mcp_bridge import (
@@ -50,12 +62,22 @@ from src.labs.mcp_bridge import (
     _DEFAULT_ALLOWLIST,
     _tool_name_map,
     _visible_capabilities,
+    deep_dive_tool_names,
+    drain_tool_calls,
 )
 from src.labs.workspace import (
+    _AGENT_NAME,
+    _DEEP_DIVE_AGENT_NAME,
     _NEXUS_SYSTEM_PROMPT,
+    _SCAN_TOOLS,
     ensure_labs_workspace,
+    labs_agent_for,
     nexus_system_prompt,
     project_workspace_files,
+)
+from src.harness.capability_runtime import (
+    CapabilityObservation,
+    CapabilityObservationStatus,
 )
 from src.harness.models import (
     CapabilityDefinition,
@@ -68,6 +90,10 @@ CONVERSATION_ID = 9301
 PROJECT = "acme_landscape"
 SOURCE_SEARCH = "intodoc.source.search"
 SOURCE_READ_COMPONENT = "intodoc.source.read_component"
+#: An ordinary documentation read, in the chat allowlist. The control: it is in
+#: the menu and runnable in BOTH modes, so a test that sees the scan disappear
+#: knows the mode removed it rather than the menu being empty.
+DOCS_SEARCH = "rag.docs.search_evidence"
 
 
 # --- Helpers ---------------------------------------------------------------
@@ -95,14 +121,68 @@ def _scan_capability(capability_id: str, semantic_name: str) -> CapabilityDefini
     )
 
 
-def _runtime_with_scan() -> SimpleNamespace:
+class _RecordingExecutor:
+    """Stands in for `HarnessCapabilityExecutor` and records what it was handed.
+
+    The context matters as much as the call: `allowed_capability_ids` is the
+    backstop behind the bridge's own mode check, so a test that only asserted
+    "the call went through" would not notice that the second layer had been
+    handed the unfiltered set.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, set[str] | None]] = []
+
+    async def execute(self, request: Any, context: Any) -> CapabilityObservation:
+        self.calls.append((request.capability_id, context.allowed_capability_ids))
+        return CapabilityObservation(
+            capability_id=request.capability_id,
+            status=CapabilityObservationStatus.SUCCEEDED,
+            summary="Read the scan.",
+        )
+
+
+def _runtime_with_scan(executor: _RecordingExecutor | None = None) -> SimpleNamespace:
+    """A registry holding the two scan capabilities and one ordinary read.
+
+    The ordinary read is not decoration. It is the only capability a chat turn
+    may actually run, so it is what proves that the mode filters the scan rather
+    than emptying the menu -- and it is the call whose execution context can be
+    inspected to check that the policy engine's own allowed set was narrowed.
+    """
+
     capabilities = [
         _scan_capability(SOURCE_SEARCH, "search_source"),
         _scan_capability(SOURCE_READ_COMPONENT, "read_component"),
+        _scan_capability(DOCS_SEARCH, "search_documentation"),
     ]
     return SimpleNamespace(
-        registry=SimpleNamespace(list=lambda enabled_only=True: capabilities)
+        registry=SimpleNamespace(list=lambda enabled_only=True: capabilities),
+        executor=executor if executor is not None else _RecordingExecutor(),
     )
+
+
+async def _call_tool(
+    tool_name: str, mode: LabsTurnMode, monkeypatch: pytest.MonkeyPatch
+) -> tuple[dict[str, Any], _RecordingExecutor]:
+    """Drive the real `tools/call` handler for one tool in one mode.
+
+    The handler rather than the predicate, because the refusal is not only a
+    boolean: what a refused model is TOLD decides whether it answers from the
+    documentation or spends the turn hunting for the source on a filesystem that
+    does not have it. That text is part of the fix and is asserted here.
+    """
+
+    executor = _RecordingExecutor()
+
+    async def _runtime(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        return _runtime_with_scan(executor)
+
+    monkeypatch.setattr(labs_bridge, "_build_runtime", _runtime)
+    result = await labs_bridge._handle_tools_call(
+        None, None, _scope(mode), {"name": tool_name, "arguments": {}}
+    )
+    return result, executor
 
 
 def _scope(mode: LabsTurnMode = LabsTurnMode.CHAT) -> LabsTurnScope:
@@ -133,11 +213,20 @@ def _no_live_turn() -> Any:
     that left an entry behind would hand the next test a mode it never asked
     for -- which is exactly the leak the turn boundary's `end_turn` exists to
     prevent, and it would be invisible here without this.
+
+    The evidence ledger and the tool budget are process-wide for the same
+    reason and are cleared alongside: a refused `tools/call` is recorded and
+    counted, so a test that drove one would otherwise hand the next test a
+    partly spent allowance and a ledger entry it never made.
     """
 
     labs_turn_modes.end_turn(CONVERSATION_ID)
+    labs_turn_budget.end_turn(CONVERSATION_ID)
+    drain_tool_calls(CONVERSATION_ID)
     yield
     labs_turn_modes.end_turn(CONVERSATION_ID)
+    labs_turn_budget.end_turn(CONVERSATION_ID)
+    drain_tool_calls(CONVERSATION_ID)
 
 
 @pytest.fixture
@@ -242,20 +331,27 @@ def _reseal(registry: LabsTokenRegistry, body: dict[str, Any]) -> str:
     return f"{payload.decode()}.{registry._sign(payload)}"
 
 
-# --- The bridge gates the scan on the mode ---------------------------------
+# --- The catalogue is a superset of both modes ------------------------------
+#
+# Rewritten, not relaxed. These tests used to assert that `tools/list` hid the
+# scan in chat mode, which was a true description of the code and a false
+# description of the product: the catalogue is requested once per OpenCode
+# session and cached, so the hiding froze at the thread's first turn. The
+# assertions below state the new gate; the `tools/call` section that follows is
+# where the mode is now enforced, and those are the load-bearing tests.
 
 
-def test_chat_mode_advertises_neither_scan_capability() -> None:
-    # The whole reason for a mode. An ungated scan tool makes every routine
-    # question pay for a source search it never needed.
-    assert _visible_ids(LabsTurnMode.CHAT) == set()
+@pytest.mark.parametrize("mode", list(LabsTurnMode))
+def test_both_modes_advertise_both_scan_capabilities(mode: LabsTurnMode) -> None:
+    """The cached menu has to be a superset, or a later turn cannot widen.
 
+    Measured on conversation 661: three turns, ONE `tools/list`. A chat turn
+    followed by a deep-dive turn left the scan permanently out of the menu, and
+    the agent -- correctly reporting it could not reach the source -- fell back
+    to `glob` for 44 seconds.
+    """
 
-def test_deep_dive_mode_advertises_both_scan_capabilities() -> None:
-    assert _visible_ids(LabsTurnMode.DEEP_DIVE) == {
-        SOURCE_SEARCH,
-        SOURCE_READ_COMPONENT,
-    }
+    assert _visible_ids(mode) == {SOURCE_SEARCH, SOURCE_READ_COMPONENT, DOCS_SEARCH}
 
 
 def test_the_scan_is_not_in_the_chat_allowlist() -> None:
@@ -266,37 +362,134 @@ def test_the_scan_is_not_in_the_chat_allowlist() -> None:
     assert not (_DEEP_DIVE_CAPABILITY_IDS & _DEFAULT_ALLOWLIST)
 
 
-def test_the_wildcard_override_cannot_put_the_scan_into_ordinary_chat(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("mode", list(LabsTurnMode))
+def test_the_wildcard_override_leaves_the_catalogue_a_superset(
+    mode: LabsTurnMode, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Same treatment topology already gets, for the same reason.
+    """`LABS_CAPABILITY_ALLOWLIST="*"` cannot narrow the menu either.
 
-    `LABS_CAPABILITY_ALLOWLIST="*"` means "advertise everything the tier and
-    permission filters allow". An operator setting it to debug one thing must
-    not thereby put the scan into every routine question in the estate.
+    It means "advertise everything the tier and permission filters allow", and
+    the scan now qualifies in every mode. What it must still not do is let a
+    chat turn RUN the scan -- see
+    `test_the_wildcard_override_cannot_let_chat_run_the_scan`.
     """
 
     monkeypatch.setenv("LABS_CAPABILITY_ALLOWLIST", "*")
 
-    assert _visible_ids(LabsTurnMode.CHAT) == set()
-    assert _visible_ids(LabsTurnMode.DEEP_DIVE) == {
-        SOURCE_SEARCH,
-        SOURCE_READ_COMPONENT,
-    }
+    assert _visible_ids(mode) == {SOURCE_SEARCH, SOURCE_READ_COMPONENT, DOCS_SEARCH}
 
 
-def test_a_narrow_operator_allowlist_still_admits_the_scan_in_deep_dive(
+@pytest.mark.parametrize("mode", list(LabsTurnMode))
+def test_a_narrow_operator_allowlist_still_advertises_the_scan(
+    mode: LabsTurnMode, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The scan is added to the configured allowlist rather than replacing it,
+    # and unconditionally: an operator who narrowed the menu to debug one
+    # capability has not thereby made deep dive impossible for the rest of the
+    # session, which is what a mode-conditional union would have done.
+    monkeypatch.setenv("LABS_CAPABILITY_ALLOWLIST", DOCS_SEARCH)
+
+    assert _visible_ids(mode) == {SOURCE_SEARCH, SOURCE_READ_COMPONENT, DOCS_SEARCH}
+
+
+# --- `tools/call` is where the mode is enforced -----------------------------
+
+
+@pytest.mark.parametrize("tool_name", ["search_source", "read_component"])
+async def test_chat_mode_refuses_a_scan_call(
+    tool_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate that already saved us, now carrying the whole mode.
+
+    Observed on conversation 657: a deep-dive-then-chat thread kept the scan in
+    its cached menu, the model called it, and the call came back `status:
+    error`. The agent `tools` map in `opencode.json` is a client-side hint; this
+    is the server, and it is the authority.
+    """
+
+    result, executor = await _call_tool(tool_name, LabsTurnMode.CHAT, monkeypatch)
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["status"] == "denied"
+    assert result["structuredContent"]["error_code"] == "allowlist"
+    # The executor is never reached. A refusal that ran the capability and threw
+    # the result away would still have read the client's scan.
+    assert executor.calls == []
+
+
+async def test_a_refused_scan_call_tells_the_model_what_to_do_instead(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The mode widens the configured allowlist; it never replaces it. An
-    # operator who narrowed the menu has not thereby switched deep dive off.
-    monkeypatch.setenv("LABS_CAPABILITY_ALLOWLIST", "rag.docs.search_evidence")
+    """A bare denial code is what sent one turn hunting the filesystem.
 
-    assert _visible_ids(LabsTurnMode.CHAT) == set()
-    assert _visible_ids(LabsTurnMode.DEEP_DIVE) == {
-        SOURCE_SEARCH,
-        SOURCE_READ_COMPONENT,
-    }
+    "Denied by policy: allowlist" reads to a model as a broken tool, and the
+    measured response was 44 seconds of `glob`. The message has to name the
+    reason, the remedy, and who can apply it -- the user, with a toggle the
+    model cannot reach.
+    """
+
+    result, _executor = await _call_tool(
+        "search_source", LabsTurnMode.CHAT, monkeypatch
+    )
+    message = result["structuredContent"]["error_message"]
+
+    assert "Deep Dive" in message
+    assert "do not go looking for the source with file tools" in message
+    assert "You cannot switch mode yourself." in message
+
+
+@pytest.mark.parametrize("tool_name", ["search_source", "read_component"])
+async def test_deep_dive_runs_the_scan_call(
+    tool_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result, executor = await _call_tool(tool_name, LabsTurnMode.DEEP_DIVE, monkeypatch)
+
+    assert result["isError"] is False
+    assert [call[0] for call in executor.calls] == [
+        SOURCE_SEARCH if tool_name == "search_source" else SOURCE_READ_COMPONENT
+    ]
+
+
+async def test_an_ordinary_read_still_runs_in_chat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The control. A chat turn that could run nothing would pass every refusal
+    # assertion above for entirely the wrong reason.
+    result, executor = await _call_tool(
+        "search_documentation", LabsTurnMode.CHAT, monkeypatch
+    )
+
+    assert result["isError"] is False
+    assert [call[0] for call in executor.calls] == [DOCS_SEARCH]
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        (LabsTurnMode.CHAT, {DOCS_SEARCH}),
+        (
+            LabsTurnMode.DEEP_DIVE,
+            {DOCS_SEARCH, SOURCE_SEARCH, SOURCE_READ_COMPONENT},
+        ),
+    ],
+)
+async def test_the_executor_is_handed_the_mode_filtered_allowed_set(
+    mode: LabsTurnMode, expected: set[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two layers, and the second does not trust the first.
+
+    `CapabilityExecutionContext.allowed_capability_ids` is the policy engine's
+    own gate, and it is given the ADVERTISED catalogue minus what this mode may
+    not run -- not the whole name map. So the executor would raise an ALLOWLIST
+    denial for a scan call in chat even if the bridge's explicit refusal above
+    it were deleted. Defence in depth costs one set comprehension here.
+    """
+
+    _result, executor = await _call_tool("search_documentation", mode, monkeypatch)
+
+    assert executor.calls
+    _capability_id, allowed = executor.calls[0]
+    assert allowed == expected
 
 
 def test_the_scan_is_advertised_under_its_semantic_names() -> None:
@@ -346,30 +539,70 @@ def test_the_gated_ids_are_the_scan_provider_s_real_ids() -> None:
         assert capability.metadata.get("requires_explicit_approval") is not True
 
 
-def test_the_live_turn_mode_wins_over_the_mode_baked_into_the_token() -> None:
+async def test_the_wildcard_override_cannot_let_chat_run_the_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same treatment topology already gets, moved to the layer that decides.
+
+    `LABS_CAPABILITY_ALLOWLIST="*"` widens the CATALOGUE, and always did. What
+    it must never do is let an ordinary question run a source search, and the
+    place that still holds is `_excluded_capability_ids` -- which the wildcard
+    is not an input to.
+    """
+
+    monkeypatch.setenv("LABS_CAPABILITY_ALLOWLIST", "*")
+
+    result, executor = await _call_tool(
+        "search_source", LabsTurnMode.CHAT, monkeypatch
+    )
+
+    assert result["isError"] is True
+    assert executor.calls == []
+
+
+async def test_the_live_turn_mode_wins_over_the_mode_baked_into_the_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The defect a token-only mode would have shipped.
 
     The MCP bearer is minted once per CONVERSATION and cached by OpenCode for
     eight hours; `_resolve_binding` reuses a token that still verifies rather
     than re-minting it. So a thread whose first turn was chat would be stuck in
     chat for the life of the token, silently, however often the user toggled.
+
+    Asserted against `tools/call` rather than the catalogue. That is where the
+    mode is read now, and it is also the only place the distinction between
+    "the token's mode" and "this turn's mode" has any consequence left.
     """
 
     labs_turn_modes.start_turn(CONVERSATION_ID, LabsTurnMode.DEEP_DIVE)
 
     # The scope still says chat -- it is what the conversation's token was
     # minted under -- and the live turn is what decides.
-    assert _visible_ids(LabsTurnMode.CHAT) == {SOURCE_SEARCH, SOURCE_READ_COMPONENT}
+    result, executor = await _call_tool(
+        "search_source", LabsTurnMode.CHAT, monkeypatch
+    )
+
+    assert result["isError"] is False
+    assert [call[0] for call in executor.calls] == [SOURCE_SEARCH]
 
 
-def test_the_token_mode_is_the_floor_outside_a_turn() -> None:
+async def test_the_token_mode_is_the_floor_outside_a_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # No live turn is registered (the autouse fixture guarantees it), so the
-    # only statement of breadth is the token's own, and it is honoured.
-    assert _visible_ids(LabsTurnMode.DEEP_DIVE) == {
-        SOURCE_SEARCH,
-        SOURCE_READ_COMPONENT,
-    }
-    assert _visible_ids(LabsTurnMode.CHAT) == set()
+    # only statement of breadth is the token's own, and it is honoured -- in
+    # both directions.
+    allowed, _executor = await _call_tool(
+        "search_source", LabsTurnMode.DEEP_DIVE, monkeypatch
+    )
+    refused, refused_executor = await _call_tool(
+        "search_source", LabsTurnMode.CHAT, monkeypatch
+    )
+
+    assert allowed["isError"] is False
+    assert refused["isError"] is True
+    assert refused_executor.calls == []
 
 
 def test_an_unstarted_conversation_reads_as_chat() -> None:
@@ -554,52 +787,133 @@ def test_chat_does_not_name_tools_it_cannot_call() -> None:
 # --- The workspace carries the mode to the model ---------------------------
 
 
-@pytest.mark.usefixtures("workspace_roots")
-async def test_a_deep_dive_turn_is_given_the_deep_dive_role() -> None:
+async def _config_for(mode: LabsTurnMode) -> tuple[dict[str, Any], str]:
+    """Write the workspace for a turn in `mode` and read back what it produced.
+
+    Returns the parsed `opencode.json` and the projected `SYSTEM_PROMPT.md`.
+    """
+
     workspace = Path(
         await ensure_labs_workspace(
             conversation_id=CONVERSATION_ID,
             project_id=PROJECT,
             mcp_token="labs-deep-dive-token",
-            mode=LabsTurnMode.DEEP_DIVE,
+            mode=mode,
         )
     )
-    config = json.loads((workspace / "opencode.json").read_text(encoding="utf-8"))
-    projected = (workspace / ".nexus" / "SYSTEM_PROMPT.md").read_text(encoding="utf-8")
-
-    assert config["agent"]["nexus"]["prompt"] == nexus_system_prompt(
-        LabsTurnMode.DEEP_DIVE
+    return (
+        json.loads((workspace / "opencode.json").read_text(encoding="utf-8")),
+        (workspace / ".nexus" / "SYSTEM_PROMPT.md").read_text(encoding="utf-8"),
     )
-    # The two copies are only safe while they are provably the same text: one
-    # reaches the model, the other is what the user is shown they were told.
-    assert projected == config["agent"]["nexus"]["prompt"]
 
 
 @pytest.mark.usefixtures("workspace_roots")
-async def test_the_role_follows_the_turn_rather_than_the_conversation() -> None:
-    """`opencode.json` is per conversation; the mode is per turn.
+@pytest.mark.parametrize("mode", list(LabsTurnMode))
+async def test_both_roles_are_written_whatever_the_turn_s_mode_is(
+    mode: LabsTurnMode,
+) -> None:
+    """The fix, stated as an invariant of the file rather than of a turn.
 
-    This is what makes the second expressible in the first: the workspace is
-    rewritten on every turn, so the same conversation can run a deep turn and
-    then an ordinary one without the second inheriting the first's role.
+    This test replaces one that asserted the opposite -- that the `nexus`
+    agent's prompt FOLLOWED the turn's mode. That was true of the file and false
+    of the session: OpenCode resolves a session's agent once, at create, and
+    caches its MCP catalogue with it, so rewriting one agent's prompt per turn
+    reached a session that had already decided what it was.
+
+    Both definitions now exist in every write, so the mode can be applied by
+    naming one of them in the message body -- the only field honoured per turn.
     """
 
-    async def _turn(mode: LabsTurnMode) -> str:
-        workspace = Path(
-            await ensure_labs_workspace(
-                conversation_id=CONVERSATION_ID,
-                project_id=PROJECT,
-                mcp_token="labs-deep-dive-token",
-                mode=mode,
-            )
-        )
-        config = json.loads((workspace / "opencode.json").read_text(encoding="utf-8"))
-        return config["agent"]["nexus"]["prompt"]
+    config, _projected = await _config_for(mode)
+    agents = config["agent"]
 
-    assert await _turn(LabsTurnMode.DEEP_DIVE) == nexus_system_prompt(
+    assert agents[_AGENT_NAME]["prompt"] == nexus_system_prompt(LabsTurnMode.CHAT)
+    assert agents[_DEEP_DIVE_AGENT_NAME]["prompt"] == nexus_system_prompt(
         LabsTurnMode.DEEP_DIVE
     )
-    assert await _turn(LabsTurnMode.CHAT) == _NEXUS_SYSTEM_PROMPT
+    # Both are selectable: a subagent cannot be named in a message body.
+    assert agents[_AGENT_NAME]["mode"] == "primary"
+    assert agents[_DEEP_DIVE_AGENT_NAME]["mode"] == "primary"
+
+
+@pytest.mark.usefixtures("workspace_roots")
+@pytest.mark.parametrize("mode", list(LabsTurnMode))
+async def test_the_scan_tools_are_off_for_chat_and_on_for_deep_dive(
+    mode: LabsTurnMode,
+) -> None:
+    """The one difference between the two tool maps, and it must not be empty.
+
+    An empty `_SCAN_TOOLS` would make both maps identical and this assertion
+    vacuous, so the names are asserted first. They are derived from the
+    registry through the bridge's own projection, which is what keeps them from
+    being a guess -- a `tools` entry naming a tool that does not exist is
+    accepted silently and does nothing.
+    """
+
+    assert set(_SCAN_TOOLS) == {"nexus_search_source", "nexus_read_component"}
+
+    config, _projected = await _config_for(mode)
+    chat_tools = config["agent"][_AGENT_NAME]["tools"]
+    deep_tools = config["agent"][_DEEP_DIVE_AGENT_NAME]["tools"]
+
+    for tool in _SCAN_TOOLS:
+        assert chat_tools[tool] is False, tool
+        assert deep_tools[tool] is True, tool
+
+    # And nothing else differs. The two agents share their permissions, their
+    # step ceiling and every other tool, so a containment rule added to one is
+    # added to both.
+    assert config["agent"][_AGENT_NAME]["permission"] == (
+        config["agent"][_DEEP_DIVE_AGENT_NAME]["permission"]
+    )
+    assert config["agent"][_AGENT_NAME]["maxSteps"] == (
+        config["agent"][_DEEP_DIVE_AGENT_NAME]["maxSteps"]
+    )
+    assert {
+        name: enabled
+        for name, enabled in chat_tools.items()
+        if name not in _SCAN_TOOLS
+    } == {
+        name: enabled
+        for name, enabled in deep_tools.items()
+        if name not in _SCAN_TOOLS
+    }
+
+
+def test_the_mcp_tool_names_are_derived_from_the_bridge_s_own_projection() -> None:
+    # The bridge projects `semantic_name` and OpenCode namespaces the result
+    # under the MCP server key. Both halves are read rather than written down,
+    # so a rename on either side moves the agent tool map with it.
+    assert set(deep_dive_tool_names()) == {"search_source", "read_component"}
+    assert set(_SCAN_TOOLS) == {
+        f"nexus_{name}" for name in deep_dive_tool_names()
+    }
+
+
+@pytest.mark.usefixtures("workspace_roots")
+@pytest.mark.parametrize("mode", list(LabsTurnMode))
+async def test_the_user_is_shown_the_role_the_agent_that_runs_was_given(
+    mode: LabsTurnMode,
+) -> None:
+    """The projected copy has to track the agent, not just the mode.
+
+    `.nexus/SYSTEM_PROMPT.md` exists so a user can see what their assistant was
+    actually told. Now that there are two agent definitions, "what it was told"
+    is the prompt of the one this turn selects -- and `labs_agent_for` is the
+    single owner of that choice, so the two cannot drift apart.
+    """
+
+    config, projected = await _config_for(mode)
+
+    assert projected == config["agent"][labs_agent_for(mode)]["prompt"]
+
+
+def test_the_mode_selects_the_agent_and_chat_stays_the_default() -> None:
+    assert labs_agent_for(LabsTurnMode.CHAT) == _AGENT_NAME
+    assert labs_agent_for(LabsTurnMode.DEEP_DIVE) == _DEEP_DIVE_AGENT_NAME
+    # Distinct names, or the per-message override selects the same definition in
+    # both modes and the whole mechanism is a no-op.
+    assert _AGENT_NAME != _DEEP_DIVE_AGENT_NAME
 
 
 def test_the_workspace_a_user_reads_at_rest_shows_the_chat_role() -> None:
@@ -633,39 +947,50 @@ class _FakeSession:
     directory: str
 
 
-class _FakeOpenCodeClient:
-    """The minimum of `OpenCodeClient` one labs turn touches."""
+def _fake_client(seen: dict[str, Any], *, echo_agent: bool = True) -> type:
+    """An `OpenCodeClient` stand-in that records which agent each call named.
 
-    async def __aenter__(self) -> _FakeOpenCodeClient:
-        return self
-
-    async def __aexit__(self, *_exc: object) -> None:
-        return None
-
-    async def create_session(self, *, directory: str, agent: str) -> _FakeSession:
-        del agent
-        return _FakeSession(id="ses_deep_dive", directory=directory)
-
-    async def stream_bus_events(self, *, session_id: str, directory: str):
-        del directory
-        yield {"type": "session.idle", "properties": {"sessionID": session_id}}
-
-    async def send_message(self, session_id: str, message: str, **_kwargs: Any):
-        from src.labs.opencode_client import OpenCodeReply
-
-        del session_id, message
-        return OpenCodeReply(text="An answer.", finish="stop", error=None)
-
-
-async def test_the_requested_mode_reaches_the_scope_and_the_workspace(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """One turn, from `execute_labs_turn` to both places the mode has to land.
-
-    The scope, because it is what the MCP bridge rebuilds the tool menu from in
-    a different request; and the workspace, because that is where the role
-    explaining the mode is written.
+    `echo_agent` controls whether the reply carries `info.agent`. Both cases
+    matter: the field is optional in the protocol, and it is the ONLY evidence
+    that the agent the turn asked for is the agent that ran.
     """
+
+    class _Client:
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+        async def create_session(self, *, directory: str, agent: str) -> _FakeSession:
+            seen["session_agent"] = agent
+            return _FakeSession(id="ses_deep_dive", directory=directory)
+
+        async def stream_bus_events(self, *, session_id: str, directory: str):
+            del directory
+            yield {"type": "session.idle", "properties": {"sessionID": session_id}}
+
+        async def send_message(self, session_id: str, message: str, **kwargs: Any):
+            from src.labs.opencode_client import OpenCodeReply
+
+            del session_id, message
+            seen["message_agent"] = kwargs.get("agent")
+            info = {"agent": seen["message_agent"]} if echo_agent else {}
+            return OpenCodeReply(
+                text="An answer.", finish="stop", error=None, info=info
+            )
+
+    return _Client
+
+
+async def _run_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    mode: LabsTurnMode,
+    agent: str | None = None,
+    echo_agent: bool = True,
+) -> dict[str, Any]:
+    """Drive one `execute_labs_turn` against fakes and report what it sent."""
 
     token_registry = LabsTokenRegistry(secret="deep-dive-e2e")
     seen: dict[str, Any] = {}
@@ -682,7 +1007,9 @@ async def test_the_requested_mode_reaches_the_scope_and_the_workspace(
         return "/tmp/labs/conversation-9301"
 
     monkeypatch.setattr(labs_runtime, "labs_token_registry", token_registry)
-    monkeypatch.setattr(labs_runtime, "OpenCodeClient", _FakeOpenCodeClient)
+    monkeypatch.setattr(
+        labs_runtime, "OpenCodeClient", _fake_client(seen, echo_agent=echo_agent)
+    )
     monkeypatch.setattr(labs_runtime, "compile_guidance", _none)
     monkeypatch.setattr(labs_runtime, "compile_project_material", _none)
     monkeypatch.setattr(labs_runtime, "load_material_texts", _no_texts)
@@ -693,6 +1020,9 @@ async def test_the_requested_mode_reaches_the_scope_and_the_workspace(
     async def _emit(_event_type: str, _payload: dict[str, Any]) -> None:
         return None
 
+    kwargs: dict[str, Any] = {}
+    if agent is not None:
+        kwargs["agent"] = agent
     await labs_runtime.execute_labs_turn(
         db=None,
         conversation=_FakeConversation(CONVERSATION_ID),
@@ -703,13 +1033,94 @@ async def test_the_requested_mode_reaches_the_scope_and_the_workspace(
         access_token=None,
         message="Which orders go through FMD?",
         emit=_emit,
-        mode=LabsTurnMode.DEEP_DIVE,
+        mode=mode,
+        **kwargs,
     )
+    seen["registry"] = token_registry
+    return seen
+
+
+async def test_the_requested_mode_reaches_the_scope_and_the_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One turn, from `execute_labs_turn` to both places the mode has to land.
+
+    The scope, because it is what the MCP bridge enforces the mode against on
+    every `tools/call`; and the workspace, because that is where the role
+    explaining the mode is written.
+    """
+
+    seen = await _run_turn(monkeypatch, mode=LabsTurnMode.DEEP_DIVE)
 
     assert seen["mode"] is LabsTurnMode.DEEP_DIVE
-    rebuilt = token_registry.resolve(seen["token"])
+    rebuilt = seen["registry"].resolve(seen["token"])
     assert rebuilt is not None
     assert rebuilt.mode is LabsTurnMode.DEEP_DIVE
+
+
+@pytest.mark.parametrize("mode", list(LabsTurnMode))
+async def test_the_turn_names_the_mode_s_agent_in_the_message_body(
+    mode: LabsTurnMode, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where the mode actually reaches the model now.
+
+    The session is still CREATED on the default agent -- it outlives the turn,
+    so its creation agent must not be decided by whichever mode the thread
+    opened in -- and the per-message field overrides it. That override is the
+    only part of a turn that OpenCode resolves per message rather than per
+    session.
+    """
+
+    seen = await _run_turn(monkeypatch, mode=mode)
+
+    assert seen["session_agent"] == _AGENT_NAME
+    assert seen["message_agent"] == labs_agent_for(mode)
+
+
+async def test_an_explicit_plan_agent_outranks_the_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `/plan` is a typed command. A toggle left on from a previous question must
+    # not silently replace what the user asked for on this one.
+    seen = await _run_turn(
+        monkeypatch, mode=LabsTurnMode.DEEP_DIVE, agent=labs_runtime.LABS_PLAN_AGENT
+    )
+
+    assert seen["message_agent"] == labs_runtime.LABS_PLAN_AGENT
+
+
+@pytest.mark.parametrize("echo_agent", [True, False])
+async def test_the_turn_logs_which_agent_the_server_says_ran(
+    echo_agent: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`info.agent` is the server's confirmation, and it belongs in the log.
+
+    The whole bug class here was "we intended one mode and could not see that
+    another one happened" -- a cached tool menu and a session-resolved agent
+    both failed silently. A requested/actual pair on the `labs.turn` line is
+    what makes the next such divergence visible instead of inferred from what
+    the answer said.
+    """
+
+    with caplog.at_level("INFO", logger="src.labs.runtime"):
+        await _run_turn(
+            monkeypatch, mode=LabsTurnMode.DEEP_DIVE, echo_agent=echo_agent
+        )
+
+    line = next(
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("labs.turn ")
+    )
+
+    assert f"agent={_DEEP_DIVE_AGENT_NAME} " in line
+    assert "mode=deep_dive" in line
+    # Absent rather than assumed: a server that stops echoing the field must
+    # read as unknown, not as confirmation of what we asked for.
+    expected = _DEEP_DIVE_AGENT_NAME if echo_agent else "-"
+    assert f"ran_agent={expected} " in line
 
 
 def test_deep_dive_routes_by_question_shape_not_by_a_fixed_source_order() -> None:
