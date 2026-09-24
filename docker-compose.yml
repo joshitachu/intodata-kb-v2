@@ -47,12 +47,19 @@ services:
       HINDSIGHT_API_LLM_BASE_URL: http://host.docker.internal:11434/v1
       HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_LLM_MODEL:-gemma3:4b}
       HINDSIGHT_API_LLM_TIMEOUT: "300"
+      # Must be stable across container recreation. Left unset, hindsight falls
+      # back to the container hostname, and tasks left in 'processing' under a
+      # previous hostname are never recovered.
+      HINDSIGHT_API_WORKER_ID: hindsight
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - hindsight_data:/app/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8888/health"]
+      # The hindsight image ships no curl/wget/nc, so the probe uses the
+      # interpreter that is already on PATH. A curl-based test reports
+      # unhealthy forever even while /health returns 200.
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8888/health', timeout=5).status == 200 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3

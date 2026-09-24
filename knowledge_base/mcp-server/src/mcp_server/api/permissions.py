@@ -12,6 +12,33 @@ from sqlalchemy import text
 from mcp_server.db.session import async_session_factory
 
 
+async def require_superadmin(request: Request) -> None:
+    """Gate a whole router on the caller being a superadmin.
+
+    ``require_auth`` only proves the JWT is valid, so on its own it admits every
+    logged-in tenant user. The control plane (project registration, scans, doc
+    generation) is operator-only, which is what lets nginx publish /mcp and
+    /dashboard on the customer domain instead of returning 404.
+
+    The flag is read from the database rather than the token because the access
+    token carries only sub/username/mfa_enabled -- revoking superadmin has to
+    take effect immediately, not at the next token expiry.
+    """
+    payload = getattr(request.state, "auth_payload", None)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    async with async_session_factory() as db:
+        row = await db.execute(
+            text("SELECT is_superadmin FROM users WHERE id = :uid"),
+            {"uid": int(payload.get("sub", 0))},
+        )
+        user_row = row.fetchone()
+
+    if not (user_row and user_row[0]):
+        raise HTTPException(status_code=403, detail="Superadmin required")
+
+
 async def require_project_access(request: Request, project_id: str) -> None:
     """Check that the authenticated user can access the given project.
 

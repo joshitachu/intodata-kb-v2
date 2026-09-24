@@ -44,19 +44,67 @@ server {
         proxy_pass http://127.0.0.1:${MCP_PORT}$request_uri;
     }
 
-    # Developer/control APIs are not public on customer domains. The
-    # customer-facing Next.js app proxies the small set of required MCP actions
-    # through /api/source/* from server-side code.
+    # Operator surface, published on the customer domain but gated on superadmin.
+    #
+    # The gate is an nginx auth_request subrequest to the MCP server, which
+    # checks users.is_superadmin for the caller's JWT cookie. It is enforced at
+    # the edge deliberately: the MCP routers themselves must stay on plain
+    # require_auth, because the customer app proxies /mcp/scan, /mcp/generate,
+    # /mcp/push-to-rag and friends through /api/source/* on behalf of ordinary
+    # users. Gating those routers would break onboarding.
+    #
+    # Regular users get 403 here; the customer app is unaffected because it
+    # reaches MCP server-side over the compose network, never through this edge.
+    location = /internal/authz/superadmin {
+        internal;
+        proxy_pass http://127.0.0.1:${MCP_PORT}/internal/authz/superadmin;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header X-Original-URI $request_uri;
+    }
+
     location /mcp/ {
-        return 404;
+        auth_request /internal/authz/superadmin;
+        proxy_pass http://127.0.0.1:${MCP_PORT}$request_uri;
     }
 
     location /logs/ {
-        return 404;
+        auth_request /internal/authz/superadmin;
+        proxy_pass http://127.0.0.1:${MCP_PORT}$request_uri;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_read_timeout 600s;
     }
 
     location /dashboard/ {
-        return 404;
+        auth_request /internal/authz/superadmin;
+        proxy_pass http://127.0.0.1:${DASHBOARD_PORT}$request_uri;
+    }
+
+    # The dashboard SPA calls /auth/me and /auth/logout, and the Nexus harness
+    # routes under /nexus-api/. Both are backend paths under a different prefix;
+    # mirror the rewrites the dashboard container's own nginx does, behind the
+    # same superadmin gate. Neither prefix collides with a Next.js route.
+    location /auth/ {
+        auth_request /internal/authz/superadmin;
+        rewrite ^/auth/(.*)$ /api/v1/auth/$1 break;
+        proxy_pass http://127.0.0.1:${BACKEND_PORT};
+    }
+
+    location /nexus-api/ {
+        auth_request /internal/authz/superadmin;
+        rewrite ^/nexus-api/(.*)$ /api/v1/$1 break;
+        proxy_pass http://127.0.0.1:${BACKEND_PORT};
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 600s;
+    }
+
+    # The dashboard SPA loads its bundles from /assets/*. Same gate.
+    location /assets/ {
+        auth_request /internal/authz/superadmin;
+        proxy_pass http://127.0.0.1:${DASHBOARD_PORT}$request_uri;
     }
 
     # Next.js frontend — default catch-all

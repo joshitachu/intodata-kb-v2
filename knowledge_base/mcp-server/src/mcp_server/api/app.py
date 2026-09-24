@@ -423,7 +423,23 @@ app.add_middleware(
 )
 
 # Import and register routes
+from mcp_server.api.permissions import require_superadmin as require_superadmin_dep  # noqa: E402
 from mcp_server.api.routes import azure_devops, connectors, discovery, estimate as estimate_routes, generate_runs, health, instance_settings, logs, ops_control, plugins, projects, repo_sources as repo_sources_routes, runtime_sources, webhook  # noqa: E402
+
+@app.get("/internal/authz/superadmin", include_in_schema=False)
+async def _authz_superadmin(request: Request, _auth: dict = Depends(require_auth)) -> Response:
+    """Authorization probe for nginx ``auth_request``.
+
+    The edge publishes /dashboard, /mcp and /logs on the customer domain and
+    subrequests this first, so the operator surface is superadmin-only without
+    changing the auth on any router the customer app depends on. 204 = allow,
+    401/403 = deny, which nginx passes straight back to the caller.
+    """
+    from mcp_server.api.permissions import require_superadmin
+
+    await require_superadmin(request)
+    return Response(status_code=204)
+
 
 app.include_router(health.router)  # /health stays open
 app.include_router(ops_control.router)  # Mission Control triggers — own Bearer auth
@@ -437,10 +453,12 @@ app.include_router(
     prefix="/mcp",
     dependencies=[Depends(require_auth)],
 )
+# Operator-only: instance configuration is not reachable through the customer
+# app's /api/source/* proxy, so a superadmin gate here breaks nothing.
 app.include_router(
     instance_settings.router,
     prefix="/mcp",
-    dependencies=[Depends(require_auth)],
+    dependencies=[Depends(require_auth), Depends(require_superadmin_dep)],
 )
 app.include_router(
     generate_runs.router,
