@@ -18,7 +18,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from mcp_server.config import config
 from mcp_server.providers.custom.models import ModelOptions, ModelResult
-from mcp_server.services.token_refresh import ensure_token_fresh
+from mcp_server.services.token_refresh import (
+    apply_auth_env,
+    describe_auth,
+    ensure_token_fresh,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1517,6 +1521,20 @@ class ClaudeCliModelProvider:
         }
         start = time.monotonic()
 
+        # Unconfigured auth is a distinct failure from an expired token, and
+        # ensure_token_fresh() cannot report it: it returns True when no
+        # credentials file exists, because API-key auth is legitimate.
+        auth = describe_auth()
+        if not auth.configured:
+            return ModelResult(
+                success=False,
+                model_name=self.model_name or "claude",
+                input_tokens=estimated_tokens,
+                latency_ms=int((time.monotonic() - start) * 1000),
+                raw_error=auth.remedy,
+                metadata=metadata,
+            )
+
         if not ensure_token_fresh():
             return ModelResult(
                 success=False,
@@ -1548,6 +1566,11 @@ class ClaudeCliModelProvider:
         if self.model_name:
             cmd[3:3] = ["--model", self.model_name]
 
+        # Same lane, same rule as ClaudeCliProvider: an OAuth login must not be
+        # overridden by the harness's ANTHROPIC_API_KEY (see apply_auth_env).
+        cli_env = {**os.environ, "PYTHONUTF8": "1"}
+        apply_auth_env(cli_env)
+
         last_error: str | None = None
         for attempt in range(opts.retries + 1):
             try:
@@ -1561,7 +1584,7 @@ class ClaudeCliModelProvider:
                     stderr=subprocess.PIPE,
                     timeout=opts.timeout_s,
                     cwd=str(Path(__file__).resolve().parent.parent.parent.parent.parent),
-                    env={**os.environ, "PYTHONUTF8": "1"},
+                    env=cli_env,
                     check=False,
                 )
                 if proc.returncode != 0:
@@ -1955,139 +1978,6 @@ class AnthropicProvider:
         )
 
 
-class Route33AnthropicMessagesProvider:
-    """Route33 adapter for Anthropic-native /v1/messages models."""
-
-    supports_tools: bool = False
-
-    def __init__(
-        self,
-        model_name: str,
-        *,
-        api_key: str | None,
-        base_url: str = "https://api.route33.ai/v1",
-    ) -> None:
-        self.provider_name = "route33"
-        self.model_name = model_name
-        self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
-
-    async def complete(
-        self,
-        prompt: str,
-        context_files: list[Path] | None = None,
-        options: ModelOptions | None = None,
-    ) -> ModelResult:
-        opts = options or ModelOptions()
-        context = _read_context(context_files)
-        full_prompt = prompt + context
-        estimated_tokens = _estimate_tokens(full_prompt)
-        ctx_limit = config.context_max_tokens
-        if estimated_tokens > ctx_limit:
-            raise RuntimeError(
-                f"Context too large: ~{estimated_tokens:,} estimated tokens exceeds "
-                f"MCP_CONTEXT_MAX_TOKENS={ctx_limit:,}. Reduce engineering facts or split the group."
-            )
-        metadata = {
-            "provider": self.provider_name,
-            "endpoint": "/messages",
-            "estimated_input_tokens": estimated_tokens,
-            **_context_metadata(context_files),
-        }
-        start = time.monotonic()
-        last_error: str | None = None
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
-        for attempt in range(opts.retries + 1):
-            try:
-                messages: list[dict[str, str]] = [{"role": "user", "content": full_prompt}]
-                if opts.prefill:
-                    messages.append({"role": "assistant", "content": opts.prefill})
-                payload: dict[str, Any] = {
-                    "model": self.model_name,
-                    "max_tokens": opts.max_tokens,
-                    "messages": messages,
-                    **opts.provider_options,
-                }
-                if opts.system_prompt:
-                    payload["system"] = opts.system_prompt
-                payload = _validated_payload(AnthropicMessagePayload, payload)
-                async with httpx.AsyncClient(timeout=opts.timeout_s) as client:
-                    resp = await client.post(
-                        f"{self.base_url}/messages",
-                        json=payload,
-                        headers=headers,
-                    )
-                    resp.raise_for_status()
-                    data = _as_dict(resp.json())
-                blocks = data.get("content") or []
-                raw_text = next(
-                    (
-                        str(_as_dict(block).get("text", ""))
-                        for block in blocks
-                        if _as_dict(block).get("type") == "text"
-                    ),
-                    "",
-                )
-                text = _apply_prefill(opts.prefill, raw_text)
-                usage = _as_dict(data.get("usage"))
-                result = ModelResult(
-                    success=True,
-                    text=text,
-                    model_name=self.model_name,
-                    input_tokens=int(usage.get("input_tokens") or _estimate_tokens(full_prompt)),
-                    output_tokens=int(usage.get("output_tokens") or _estimate_tokens(text)),
-                    latency_ms=int((time.monotonic() - start) * 1000),
-                    retries=attempt,
-                    metadata=metadata,
-                )
-                _assert_contract(result, self.provider_name)
-                return result
-            except httpx.HTTPStatusError as exc:
-                body = exc.response.text.strip()
-                last_error = (
-                    f"{type(exc).__name__}: {exc.response.status_code} "
-                    f"{exc.response.reason_phrase} for {exc.request.method} {exc.request.url}"
-                )
-                if body:
-                    last_error = f"{last_error} :: {body}"
-                if attempt < opts.retries and _is_retryable_exception(exc):
-                    await _sleep_for_retry(attempt, exc.response)
-                else:
-                    break
-            except Exception as exc:
-                last_error = f"{type(exc).__name__}: {exc}"
-                if attempt < opts.retries and _is_retryable_exception(exc):
-                    await _sleep_for_retry(attempt)
-                else:
-                    break
-
-        return ModelResult(
-            success=False,
-            model_name=self.model_name,
-            input_tokens=_estimate_tokens(full_prompt),
-            latency_ms=int((time.monotonic() - start) * 1000),
-            retries=opts.retries,
-            raw_error=last_error,
-            metadata=metadata,
-        )
-
-    async def complete_with_tools(
-        self,
-        prompt: str,
-        staging_dir: Path,
-        options: ModelOptions | None = None,
-        max_turns: int = 30,
-        scoped_tools: Any | None = None,
-    ) -> ModelResult:
-        return ModelResult(
-            success=False,
-            model_name=self.model_name,
-            raw_error="route33 anthropic /messages adapter does not support tool-use",
-            metadata={"provider": self.provider_name, "endpoint": "/messages"},
-        )
 
 
 def build_model_provider(

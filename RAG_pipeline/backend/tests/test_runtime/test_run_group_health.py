@@ -616,7 +616,7 @@ class TestEstateOverview:
             await repo.upsert_source(
                 _P,
                 RuntimeSource(
-                    project_id=_P,
+                    estate_key=_P,
                     source_key=source_key,
                     source_type="mock",
                     label=source_key,

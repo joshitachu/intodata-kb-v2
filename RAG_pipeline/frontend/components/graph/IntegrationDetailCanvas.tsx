@@ -6,8 +6,13 @@ import { Background, BackgroundVariant, Controls, Handle, MiniMap, Position, Rea
 import { implementingDesignDetail, integrationDetailForEdge, type ImplementingDesignDetail, type ImplementingDesignMapping } from "@/lib/integrationDetailTransform";
 import {
   BUSINESS_RULE_KIND_LABEL,
+  CONFLICT_TYPE_LABEL,
+  DELIVERY_MODE_LABEL,
   REACHES_TARGET_LABEL,
+  RISK_SEVERITY_LABEL,
+  RUNTIME_OBSERVATION_KIND_LABEL,
   STREAM_CONDITION_KIND_LABEL,
+  streamDeliveryPath,
   streamStructuredFacts,
   type ReachesTarget,
   type StreamFieldRow,
@@ -30,33 +35,87 @@ function ArtifactNode({ data }: { data: { record: LandscapeProvenance; selected?
 }
 const nodeTypes = { integrationBoundary: memo(BoundaryNode), integrationArtifact: memo(ArtifactNode) };
 
-function findingsForStream(landscape: ProjectLandscapeResponse, edge: TopologyEdge) {
-  const stream = edge.businessStream;
-  if (!stream || !landscape.business_topology) return { controls: [], risks: [], unknowns: [], conflicts: [], runtime: [] };
-  const matches = (item: { stream_ids: string[] }) => item.stream_ids.includes(stream.id);
-  return {
-    controls: landscape.business_topology.controls.filter((item) => stream.control_ids.includes(item.id) || matches(item)),
-    risks: landscape.business_topology.risks.filter((item) => stream.risk_ids.includes(item.id) || matches(item)),
-    unknowns: landscape.business_topology.unknowns.filter((item) => stream.unknown_ids.includes(item.id) || matches(item)),
-    conflicts: (landscape.business_topology.conflicts ?? []).filter((item) => stream.conflict_ids?.includes(item.id) || item.subject_refs.includes(stream.id)),
-    runtime: (landscape.business_topology.runtime_observations ?? []).filter((item) => stream.runtime_observation_ids?.includes(item.id) || matches(item)),
-  };
-}
-
 function DeliveryPanel({ landscape, edge }: { landscape: ProjectLandscapeResponse; edge: TopologyEdge }) {
   const stream = edge.businessStream;
-  const path = stream?.delivery_path_id ? landscape.business_topology?.delivery_paths.find((item) => item.id === stream.delivery_path_id) : undefined;
+  const path = stream && landscape.business_topology ? streamDeliveryPath(landscape.business_topology, stream) : undefined;
   if (!path) return <Empty text="No ordered delivery path was established for this stream." />;
-  return <section className="mx-auto max-w-4xl p-5"><h2 className="text-sm font-bold text-slate-800">Delivery path</h2><p className="mt-1 text-xs text-slate-500">Technical mechanisms are shown in order; they do not replace the scanner graph.</p><ol className="mt-4 space-y-2">{[...path.segments].sort((a, b) => a.sequence - b.sequence).map((segment) => <li key={segment.id} className="rounded-lg border bg-white p-3 text-xs"><p className="font-semibold text-slate-800">{segment.sequence}. {landscapeEntityLabel(landscape, segment.source_ref)} → {landscapeEntityLabel(landscape, segment.destination_ref)}</p><p className="mt-1 text-slate-600">{topologyTerm(segment.mechanism)} · {topologyTerm(segment.mode)}{segment.description ? ` · ${segment.description}` : ""}</p></li>)}</ol></section>;
+  return (
+    <section className="mx-auto max-w-4xl p-5">
+      <h2 className="text-sm font-bold text-slate-800">Delivery path</h2>
+      <p className="mt-1 text-xs text-slate-500">Technical mechanisms are shown in order; they do not replace the scanner graph.</p>
+      {path.description && <p className="mt-2 text-xs text-slate-600">{path.description}</p>}
+      <ol className="mt-4 space-y-2">
+        {[...path.segments].sort((a, b) => a.sequence - b.sequence).map((segment) => (
+          <li key={segment.id} className="rounded-lg border bg-white p-3 text-xs">
+            <p className="font-semibold text-slate-800">{segment.sequence}. {landscapeEntityLabel(landscape, segment.source_ref)} → {landscapeEntityLabel(landscape, segment.destination_ref)}</p>
+            <p className="mt-1 text-slate-600">{[
+              topologyTerm(segment.mechanism),
+              segment.protocol !== "unknown" ? segment.protocol : "",
+              segment.mode !== "unknown" ? DELIVERY_MODE_LABEL[segment.mode] : "",
+              segment.component,
+            ].filter(Boolean).join(" · ")}</p>
+            {segment.description && <p className="mt-1 text-slate-500">{segment.description}</p>}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
 }
 
+/**
+ * Controls, risks, runtime, conflicts and open questions for one stream, all
+ * resolved by `streamStructuredFacts` -- the same projection the L1 panel
+ * uses. This panel used to run its own id lookup, a second copy of the rule.
+ */
 function ControlsPanel({ landscape, edge }: { landscape: ProjectLandscapeResponse; edge: TopologyEdge }) {
-  const findings = findingsForStream(landscape, edge);
   const stream = edge.businessStream;
-  const metrics = stream && landscape.business_topology
-    ? streamStructuredFacts(landscape.business_topology, stream).runtimeMetrics
-    : [];
-  return <section className="mx-auto max-w-4xl p-5"><h2 className="text-sm font-bold text-slate-800">Controls, runtime, and open questions</h2><RuntimeMetricGrid metrics={metrics} /><FindingList title="Controls" items={findings.controls} /><FindingList title="Risks" items={findings.risks} tone="amber" /><FindingList title="Runtime observations" items={findings.runtime.map((item) => ({ ...item, description: item.observed_behavior }))} tone="sky" /><FindingList title="Discrepancies" items={findings.conflicts} tone="red" /><FindingList title="Not established" items={findings.unknowns} tone="slate" /></section>;
+  const facts = stream && landscape.business_topology
+    ? streamStructuredFacts(landscape.business_topology, stream)
+    : null;
+  return (
+    <section className="mx-auto max-w-4xl p-5">
+      <h2 className="text-sm font-bold text-slate-800">Controls, runtime, and open questions</h2>
+      <RuntimeMetricGrid metrics={facts?.runtimeMetrics ?? []} />
+      <FindingList
+        title="Controls"
+        items={(facts?.controls ?? []).map((item) => ({ ...item, badge: item.control_type }))}
+      />
+      <FindingList
+        title="Risks"
+        tone="amber"
+        items={(facts?.risks ?? []).map((item) => ({ ...item, badge: item.severity !== "unknown" ? RISK_SEVERITY_LABEL[item.severity] : "" }))}
+      />
+      <FindingList
+        title="Runtime observations"
+        tone="sky"
+        items={(facts?.runtimeObservations ?? []).map((item) => ({
+          ...item,
+          description: item.observed_behavior || item.description,
+          badge: item.kind && item.kind !== "unknown" ? RUNTIME_OBSERVATION_KIND_LABEL[item.kind] : "",
+          detail: [item.observation_window, item.source].filter(Boolean).join(" · "),
+        }))}
+      />
+      <FindingList
+        title="Discrepancies"
+        tone="red"
+        items={(facts?.conflicts ?? []).map((item) => ({
+          ...item,
+          badge: CONFLICT_TYPE_LABEL[item.conflict_type],
+          detail: item.resolution ? `Resolution: ${item.resolution}` : "",
+        }))}
+      />
+      <FindingList
+        title="Not established"
+        tone="slate"
+        items={(facts?.unknowns ?? []).map((item) => ({
+          ...item,
+          // The question is the fact; the description is context for it.
+          description: item.question || item.description,
+          detail: item.question && item.description && item.description !== item.question ? item.description : "",
+        }))}
+      />
+    </section>
+  );
 }
 
 /**
@@ -76,6 +135,7 @@ function RuntimeMetricGrid({ metrics }: { metrics: StreamStructuredFacts["runtim
             <p className="mt-0.5 truncate text-sm font-bold text-slate-800">{[metric.value, metric.unit].filter(Boolean).join(" ")}</p>
             {metric.window && <p className="mt-0.5 truncate text-[10px] text-slate-500" title={metric.window}>{metric.window}</p>}
             {metric.source && <p className="truncate text-[9px] text-slate-400" title={metric.source}>{metric.source}</p>}
+            {metric.note && <p className="mt-0.5 text-[9px] leading-relaxed text-slate-500">{metric.note}</p>}
           </div>
         ))}
       </div>
@@ -83,9 +143,19 @@ function RuntimeMetricGrid({ metrics }: { metrics: StreamStructuredFacts["runtim
   );
 }
 
-function FindingList({ title, items, tone = "emerald" }: { title: string; items: Array<{ id: string; name: string; description: string; status: string }>; tone?: "emerald" | "amber" | "slate" | "sky" | "red" }) {
+interface FindingItem {
+  id: string;
+  name: string;
+  description: string;
+  /** A short classifier (control type, severity, kind); omitted when empty. */
+  badge?: string;
+  /** A secondary line (window/source, resolution); omitted when empty. */
+  detail?: string;
+}
+
+function FindingList({ title, items, tone = "emerald" }: { title: string; items: FindingItem[]; tone?: "emerald" | "amber" | "slate" | "sky" | "red" }) {
   const styles = tone === "amber" ? "border-amber-200 bg-amber-50" : tone === "slate" ? "border-slate-200 bg-slate-50" : tone === "sky" ? "border-sky-200 bg-sky-50" : tone === "red" ? "border-red-200 bg-red-50" : "border-emerald-200 bg-emerald-50";
-  return <section className="mt-5"><h3 className="text-xs font-bold text-slate-700">{title}</h3>{items.length === 0 ? <p className="mt-2 text-xs text-slate-500">None established for this stream.</p> : <div className="mt-2 space-y-2">{items.map((item) => <div key={item.id} className={`rounded-lg border p-3 text-xs ${styles}`}><p className="font-semibold text-slate-800">{item.name || "Unnamed finding"}</p>{item.description && <p className="mt-1 text-slate-700">{item.description}</p>}</div>)}</div>}</section>;
+  return <section className="mt-5"><h3 className="text-xs font-bold text-slate-700">{title}</h3>{items.length === 0 ? <p className="mt-2 text-xs text-slate-500">None established for this stream.</p> : <div className="mt-2 space-y-2">{items.map((item) => <div key={item.id} className={`rounded-lg border p-3 text-xs ${styles}`}><div className="flex items-start justify-between gap-2"><p className="font-semibold text-slate-800">{item.name || "Unnamed finding"}</p>{item.badge && <span className="shrink-0 rounded bg-white/70 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">{item.badge}</span>}</div>{item.description && <p className="mt-1 text-slate-700">{item.description}</p>}{item.detail && <p className="mt-1 text-[11px] text-slate-500">{item.detail}</p>}</div>)}</div>}</section>;
 }
 
 export type IntegrationDetailTab = "flow" | "delivery" | "velden" | "regels" | "controls" | "evidence" | "designs";
@@ -511,6 +581,22 @@ function MappingRow({ entry, commonType }: { entry: MappingRowGroup; commonType:
   );
 }
 
+/**
+ * The documents a stream's structured facts were read from. Provenance, so it
+ * lives on the evidence tab: the L1 panel omits it by request.
+ */
+function DocumentReferences({ refs }: { refs: string[] }) {
+  if (refs.length === 0) return null;
+  return (
+    <section className="mt-5">
+      <h3 className="text-xs font-bold text-slate-700">Documentation references</h3>
+      <ul className="mt-2 space-y-1">
+        {refs.map((ref) => <li key={ref} className="break-all rounded border bg-white p-2 text-[11px] text-slate-600">{ref}</li>)}
+      </ul>
+    </section>
+  );
+}
+
 function Empty({ text }: { text: string }) { return <div className="p-5 text-sm text-slate-500">{text}</div>; }
 
 function businessObjectNames(landscape: ProjectLandscapeResponse, edge: TopologyEdge): string {
@@ -682,7 +768,7 @@ export function IntegrationDetailCanvas({ landscape, edge, onBack, onOpenArtifac
     setExplanationOpen(true);
   };
   const implementations = stream?.integration_solution_ids.map((id) => landscape.business_topology?.integration_solutions.find((item) => item.id === id)?.name).filter(Boolean) ?? [];
-  const content = activeTab === "delivery" ? <DeliveryPanel landscape={landscape} edge={edge} /> : activeTab === "controls" ? <ControlsPanel landscape={landscape} edge={edge} /> : activeTab === "evidence" ? <section className="mx-auto max-w-4xl p-5"><h2 className="flex items-center gap-2 text-sm font-bold text-slate-800"><Network className="h-4 w-4" /> Technical evidence</h2><ArtifactList provenance={detail.provenance} onOpen={onOpenArtifact} /><h3 className="mt-5 text-xs font-bold text-slate-700">Channels and endpoints</h3><EndpointEvidence landscape={landscape} edge={edge} />{detail.diagnostics.map((item, index) => <p key={index} className="mt-3 rounded border border-amber-100 bg-amber-50 p-2 text-xs text-amber-900"><FileWarning className="mr-1 inline h-3.5 w-3.5" />{item.description}</p>)}</section> : activeTab === "designs" ? <section className="p-5"><h2 className="text-sm font-bold text-slate-800">Implementing designs</h2><p className="mt-1 text-xs text-slate-500">Open a design to view the scanner-authored job or route graph.</p><ArtifactList provenance={detail.provenance} onOpen={onOpenArtifact} /></section> : activeTab === "velden" && facts ? <FieldsPanel facts={facts} /> : activeTab === "regels" && facts ? <RulesPanel facts={facts} conditions={conditions} /> : null;
+  const content = activeTab === "delivery" ? <DeliveryPanel landscape={landscape} edge={edge} /> : activeTab === "controls" ? <ControlsPanel landscape={landscape} edge={edge} /> : activeTab === "evidence" ? <section className="mx-auto max-w-4xl p-5"><h2 className="flex items-center gap-2 text-sm font-bold text-slate-800"><Network className="h-4 w-4" /> Technical evidence</h2><ArtifactList provenance={detail.provenance} onOpen={onOpenArtifact} /><h3 className="mt-5 text-xs font-bold text-slate-700">Channels and endpoints</h3><EndpointEvidence landscape={landscape} edge={edge} /><DocumentReferences refs={stream?.document_refs ?? []} />{detail.diagnostics.map((item, index) => <p key={index} className="mt-3 rounded border border-amber-100 bg-amber-50 p-2 text-xs text-amber-900"><FileWarning className="mr-1 inline h-3.5 w-3.5" />{item.description}</p>)}</section> : activeTab === "designs" ? <section className="p-5"><h2 className="text-sm font-bold text-slate-800">Implementing designs</h2><p className="mt-1 text-xs text-slate-500">Open a design to view the scanner-authored job or route graph.</p><ArtifactList provenance={detail.provenance} onOpen={onOpenArtifact} /></section> : activeTab === "velden" && facts ? <FieldsPanel facts={facts} /> : activeTab === "regels" && facts ? <RulesPanel facts={facts} conditions={conditions} /> : null;
   return <div ref={canvasRef} className="absolute inset-0" data-testid="integration-detail-canvas"><div className="absolute inset-x-0 top-0 z-20 border-b border-slate-200 bg-white/95 px-4 py-2 shadow-sm backdrop-blur"><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={onBack} className="inline-flex items-center gap-1 rounded border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"><ArrowLeft className="h-3.5 w-3.5" /> Landscape</button><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-slate-800">{sourceLabel} <span className="text-slate-400">→</span> {targetLabel}</p><p className="text-[10px] text-slate-500">L2 data stream · {stream?.name || topologyTerm(edge.dependency_type)}</p></div>{tabs.map((item) => <button key={item} type="button" onClick={() => setTab(item)} className={`rounded px-2 py-1 text-[11px] font-semibold capitalize ${activeTab === item ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"}`}>{item}</button>)}{activeTab === "flow" && !explanationOpen && <button type="button" onClick={() => setExplanationOpen(true)} className="rounded border border-cyan-200 px-2 py-1 text-[11px] font-semibold text-cyan-700 hover:bg-cyan-50">Explain</button>}</div>{stream && <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 border-t border-slate-100 pt-2 text-[10px] text-slate-600"><span><b>Purpose:</b> {stream.business_summary || "Not established"}</span><span><b>Implemented by:</b> {implementations.join(", ") || "Not established"}</span></div>}</div><div className={activeTab === "flow" ? `absolute bottom-0 left-0 top-[102px] transition-[right] ${explanationOpen ? "right-[410px]" : "right-0"}` : "absolute inset-x-0 bottom-0 top-[102px] overflow-auto bg-slate-50"}>{activeTab === "flow" ? <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={onNodeClick} onNodeDoubleClick={onDoubleClick} onInit={setInstance} fitView minZoom={0.1} maxZoom={3} panActivationKeyCode={null} onlyRenderVisibleElements proOptions={{ hideAttribution: true }}><Background variant={BackgroundVariant.Dots} gap={24} size={0.8} color="#cbd5e1" className="opacity-20" /><Controls showInteractive={false} /><MiniMap /></ReactFlow> : content}</div>{activeTab === "flow" && explanationOpen && <DesignExplanationPanel designs={designs} selected={selectedDesign} sourceLabel={sourceLabel} targetLabel={targetLabel} streamSummary={stream?.business_summary || ""} onSelect={(design) => setSelectedArtifactId(design.record.qualified_artifact_id)} onClose={() => setExplanationOpen(false)} onOpen={(record) => { if (record.fact_type !== "business_topology_solution") onOpenArtifact(record); }} />}</div>;
 }
 

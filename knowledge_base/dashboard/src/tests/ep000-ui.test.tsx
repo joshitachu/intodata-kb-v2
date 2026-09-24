@@ -238,7 +238,11 @@ const MIRROR_SYNCED_AT = "2026-08-24T14:30:13Z";
 
 const mirroredSource: RuntimeSource = {
   id: 77,
-  project_id: "p1",
+  // A row stamp, not an owning project. The panel narrows its query to the
+  // project being generated, so the source's own key never reaches the screen.
+  estate_key: "p1",
+  linked_project_ids: ["p1"],
+  is_ownerless: false,
   source_type: "northwind",
   label: "Northwind prod (eu-west)",
   status: "success",
@@ -623,7 +627,7 @@ describe("EP-000 dashboard panels", () => {
 
   // "Which source am I actually using?" -- the question the old bare checkbox
   // could not answer, because it named a vendor and nothing else.
-  it("names the mirrored source, its project and its last sync", async () => {
+  it("names the mirrored source and its last sync", async () => {
     vi.mocked(api.listModels).mockResolvedValue({ models: [] });
     vi.mocked(api.listConnectorCatalog).mockResolvedValue({ providers: [mirroredProvider] });
     vi.mocked(api.listRuntimeSources).mockResolvedValue({ sources: [mirroredSource], total: 1 });
@@ -631,8 +635,10 @@ describe("EP-000 dashboard panels", () => {
     renderWithClient(<GenerateDialog project={workspaceProject} open onClose={vi.fn()} />);
 
     const line = await screen.findByRole("listitem");
+    // No project in the line: the list is already narrowed to this project, and
+    // the source's `estate_key` is a row stamp rather than a project id.
     expect(line).toHaveTextContent(
-      `Northwind prod (eu-west) · p1 · last synced ${new Date(MIRROR_SYNCED_AT).toLocaleString()}`,
+      `Northwind prod (eu-west) · last synced ${new Date(MIRROR_SYNCED_AT).toLocaleString()}`,
     );
   });
 

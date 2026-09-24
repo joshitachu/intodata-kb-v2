@@ -9,74 +9,42 @@ from mcp_server.model_strategies import (
     resolve_generation_models,
     supported_model_ids,
 )
+from mcp_server.model_strategies.catalogue import load_catalogue
 from mcp_server.model_strategies.registry import create_model_provider
 
 
-def test_model_registry_exposes_current_discovery_models():
-    assert supported_model_ids() == frozenset(
-        {
-            "openai/gpt-5.6",
-            "openai/gpt-5.6-luna",
-            "openai/gpt-5.6-sol",
-            "openai/gpt-5.6-terra",
-            "openai/gpt-5.5",
-            "openai/gpt-5.4",
-            "openai/gpt-5.4-mini",
-            "openai/gpt-5",
-            "openai/gpt-4.5",
-                "openai/gpt-4.1",
-                "openai/gpt-4o",
-                "kimi/kimi-k2.6",
-                "deepseek/deepseek-chat",
-            "deepseek/deepseek-reasoner",
-            "deepseek/deepseek-v4-pro",
-            "deepseek/deepseek-v4-flash",
-            "openrouter/stealth/ox-alpha",
-            "route33/z-ai/glm-4.7-flash",
-            "route33/z-ai/glm-5.2",
-            "route33/deepseek/deepseek-v4-flash",
-            "route33/moonshotai/kimi-k2.7-code",
-            "route33/minimax/minimax-m3",
-            "route33/mistralai/mistral-medium-3.5",
-            "route33/nvidia/nemotron-3-ultra",
-            "route33/qwen/qwen3.7-max",
-            "route33/qwen/qwen3.7-plus",
-            "route33/google/gemini-3.1-pro-preview",
-            "route33/google/gemini-3.5-flash",
-            "route33/anthropic/claude-sonnet-5",
-            "anthropic/claude-sonnet-4-6",
-            "anthropic/claude-opus-4-7",
-            "google/gemini-3.1-pro-preview",
-            "google/gemini-2.5-pro",
-            "google/gemini-2.5-flash-lite",
-            "google/gemini-2.5-flash",
-            "opencode-go/grok-4.5",
-            "opencode-go/glm-5.3",
-            "opencode-go/glm-5.2",
-            "opencode-go/glm-5.1",
-            "opencode-go/gpt-5.6-luna",
-            "opencode-go/kimi-k3",
-            "opencode-go/kimi-k2.7-code",
-            "opencode-go/kimi-k2.6",
-            "opencode-go/mimo-v2.5",
-            "opencode-go/mimo-v2.5-pro",
-            "opencode-go/minimax-m3",
-            "opencode-go/minimax-m2.7",
-            "opencode-go/qwen3.8-max",
-            "opencode-go/qwen3.7-max",
-            "opencode-go/qwen3.7-plus",
-            "opencode-go/qwen3.6-plus",
-            "opencode-go/deepseek-v4-pro",
-            "opencode-go/deepseek-v4-flash",
-            "opencode-go/hy3",
-            "ollama/gemma3:12b",
-            "ollama/gemma3:4b",
-            "ollama/qwen2.5:14b",
-            "ollama/hermes3:8b",
-            "claude-cli",
-            "opencode-cli",
-        }
-    )
+#: Mechanisms defined in code rather than in the catalogue, because they are
+#: transports rather than network models (see ClaudeCliStrategy).
+CODE_DEFINED_IDS = frozenset({"claude-cli", "opencode-cli"})
+
+#: Providers deliberately removed. Named so a re-import is caught here rather
+#: than surfacing as a model id nobody can explain.
+RETIRED_PROVIDER_PREFIXES = ("route33/",)
+
+
+def test_supported_ids_are_the_catalogue_plus_code_defined_mechanisms():
+    """The catalogue is the single source of truth; this pins that it is USED.
+
+    This used to hand-maintain a literal copy of every model id, which made it a
+    SECOND source of truth that drifted from `data/model_catalogue.json` and had
+    to be edited by hand on every model change. Deriving the expectation keeps
+    the guard (nothing appears that is not declared somewhere) without the copy.
+    """
+    catalogue_ids = {d.id for d in load_catalogue()}
+    assert catalogue_ids, "catalogue must not be empty"
+    assert supported_model_ids() == frozenset(catalogue_ids | CODE_DEFINED_IDS)
+
+
+def test_retired_providers_are_gone():
+    for model_id in supported_model_ids():
+        for prefix in RETIRED_PROVIDER_PREFIXES:
+            assert not model_id.startswith(prefix), f"{model_id} is from a retired provider"
+
+
+def test_every_supported_id_resolves_to_a_strategy():
+    """A declared id that no strategy owns is a crash at generation time."""
+    for model_id in supported_model_ids():
+        assert get_model_strategy(model_id) is not None
 
 
 @pytest.mark.parametrize(
@@ -84,13 +52,11 @@ def test_model_registry_exposes_current_discovery_models():
     [
         ("custom", "custom"),
         ("claude-cli", "claude-cli"),
-        ("deepseek/deepseek-chat", "deepseek"),
-        ("route33/z-ai/glm-4.7-flash", "route33"),
-        ("route33/anthropic/claude-sonnet-5", "route33"),
+        ("deepseek/deepseek-v4-pro", "deepseek"),
         ("openrouter/stealth/ox-alpha", "openrouter"),
-        ("google/gemini-2.5-flash", "google"),
-        ("openai/gpt-4o", "openai"),
-        ("anthropic/claude-sonnet-4-6", "anthropic"),
+        ("google/gemini-3.5-flash", "google"),
+        ("openai/gpt-6-luna", "openai"),
+        ("anthropic/claude-sonnet-5", "anthropic"),
         ("ollama/gemma3:12b", "ollama"),
     ],
 )
@@ -183,12 +149,10 @@ def test_first_party_providers_use_official_adapters(monkeypatch):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
-    openai_provider = create_model_provider("openai/gpt-5.4-mini")
-    anthropic_provider = create_model_provider("anthropic/claude-sonnet-4-6")
-    google_provider = create_model_provider("google/gemini-2.5-flash")
-    deepseek_provider = create_model_provider("deepseek/deepseek-chat")
-    route33_openai_provider = create_model_provider("route33/z-ai/glm-4.7-flash")
-    route33_anthropic_provider = create_model_provider("route33/anthropic/claude-sonnet-5")
+    openai_provider = create_model_provider("openai/gpt-6-luna")
+    anthropic_provider = create_model_provider("anthropic/claude-sonnet-5")
+    google_provider = create_model_provider("google/gemini-3.5-flash")
+    deepseek_provider = create_model_provider("deepseek/deepseek-v4-pro")
 
     assert type(openai_provider).__name__ == "OpenAIOfficialProvider"
     assert openai_provider.base_url == "https://api.openai.com/v1"
@@ -199,12 +163,6 @@ def test_first_party_providers_use_official_adapters(monkeypatch):
     assert google_provider.supports_tools is False
     assert type(deepseek_provider).__name__ == "OpenAICompatibleProvider"
     assert deepseek_provider.base_url == "https://api.deepseek.com/v1"
-    assert type(route33_openai_provider).__name__ == "OpenAICompatibleProvider"
-    assert route33_openai_provider.base_url == "https://api.route33.ai/v1"
-    assert route33_openai_provider.model_name == "z-ai/glm-4.7-flash"
-    assert type(route33_anthropic_provider).__name__ == "Route33AnthropicMessagesProvider"
-    assert route33_anthropic_provider.base_url == "https://api.route33.ai/v1"
-    assert route33_anthropic_provider.model_name == "anthropic/claude-sonnet-5"
 
 
 def test_legacy_openai_deepseek_id_normalizes_to_deepseek():

@@ -193,16 +193,16 @@ class RuntimeSourcePollingScheduler:
                     except Exception:
                         await session.rollback()
                         logger.exception(
-                            "Runtime source sync crashed for source_id=%s project=%s",
+                            "Runtime source sync crashed for source_id=%s estate=%s",
                             source.id,
-                            source.project_id,
+                            source.estate_key,
                         )
                         continue
                     results.append(result)
                     logger.info(
-                        "Runtime source sync finished source_id=%s project=%s status=%s",
+                        "Runtime source sync finished source_id=%s estate=%s status=%s",
                         source.id,
-                        source.project_id,
+                        source.estate_key,
                         result.status.value,
                     )
             return results

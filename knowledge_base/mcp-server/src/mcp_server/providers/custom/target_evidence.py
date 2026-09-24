@@ -537,21 +537,52 @@ class TargetEvidenceBuilder:
         return "\n".join(lines)
 
     @staticmethod
-    def _render_connections(job: dict[str, Any]) -> str:
+    def _connection_condition(conn: dict[str, Any]) -> str:
+        """The rule the edge itself states, verbatim, or "" when it states none.
+
+        A Talend DI edge is pure topology. A Camel route edge is not: a
+        ``ROUTE_WHEN`` connection carries the ``choice().when(...)`` predicate
+        in ``CONDITION`` and the language to read it in ``ROUTETYPE``, and a
+        rendering that drops them shows a router as an unconditional fan-out.
+        """
+        params = conn.get("params") or []
+        if not isinstance(params, list):
+            return ""
+        by_name: dict[str, str] = {}
+        for param in params:
+            if not isinstance(param, dict):
+                continue
+            name = param.get("name")
+            value = param.get("value")
+            if isinstance(name, str) and isinstance(value, str) and value:
+                by_name.setdefault(name, value)
+        condition = by_name.get("CONDITION", "")
+        if not condition:
+            return ""
+        language = by_name.get("ROUTETYPE", "")
+        # Escape the cell separator: a predicate may legitimately contain "|"
+        # (`${header.x} == 1 || ${header.y} == 2`) and would otherwise split
+        # the markdown row.
+        condition = condition.replace("|", "\\|")
+        return f"`{condition}`" + (f" ({language})" if language else "")
+
+    @classmethod
+    def _render_connections(cls, job: dict[str, Any]) -> str:
         rows = []
         for conn in job.get("connections", []) or []:
             source = str(conn.get("source") or "")
             target = str(conn.get("target") or "")
             connector = str(conn.get("connector_name") or "")
             if source and target:
-                rows.append(f"| {source} | {connector} | {target} |")
+                condition = cls._connection_condition(conn)
+                rows.append(f"| {source} | {connector} | {target} | {condition} |")
         if not rows:
             return ""
         return "\n".join([
             "## COMPONENT CONNECTIONS",
             "",
-            "| source | trigger/flow | target |",
-            "|---|---|---|",
+            "| source | trigger/flow | target | condition |",
+            "|---|---|---|---|",
             *rows,
         ])
 

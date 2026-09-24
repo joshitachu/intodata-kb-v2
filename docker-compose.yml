@@ -66,6 +66,11 @@ services:
     build:
       context: ./RAG_pipeline/backend
       dockerfile: Dockerfile
+    # Optional, backend-only connector credentials; never expose these to the
+    # frontend or the agent tool arguments.
+    env_file:
+      - path: ${NEXUS_CONNECTOR_ENV_FILE:-./deploy/connectors.env}
+        required: false
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     environment:
@@ -312,6 +317,7 @@ services:
       dockerfile: mcp-server/Dockerfile
       args:
         OPENCODE_VERSION: ${MCP_OPENCODE_VERSION:-1.18.7}
+        CLAUDE_CODE_VERSION: ${MCP_CLAUDE_CODE_VERSION:-2.1.280}
     command:
       - sh
       - -c
@@ -401,16 +407,14 @@ services:
       MCP_PACK_GOVERNANCE_TRUSTED_SOURCES_JSON: ${MCP_PACK_GOVERNANCE_TRUSTED_SOURCES_JSON:-[]}
       MCP_OLLAMA_BASE_URL: http://host.docker.internal:11434
       MCP_DOC_GENERATION_PROVIDER: ${MCP_DOC_GENERATION_PROVIDER:-custom}
-      MCP_DOC_GENERATION_MODEL: ${MCP_DOC_GENERATION_MODEL:-anthropic/claude-sonnet-4-6}
-      MCP_DOC_GENERATION_WRITE_MODEL: ${MCP_DOC_GENERATION_WRITE_MODEL:-anthropic/claude-sonnet-4-6}
-      MCP_DOC_GENERATION_INVESTIGATION_MODEL: ${MCP_DOC_GENERATION_INVESTIGATION_MODEL:-google/gemini-2.5-flash}
-      MCP_DOC_GENERATION_FALLBACK_MODEL: ${MCP_DOC_GENERATION_FALLBACK_MODEL:-openai/gpt-5.4}
+      MCP_DOC_GENERATION_MODEL: ${MCP_DOC_GENERATION_MODEL:-anthropic/claude-sonnet-5}
+      MCP_DOC_GENERATION_WRITE_MODEL: ${MCP_DOC_GENERATION_WRITE_MODEL:-anthropic/claude-sonnet-5}
+      MCP_DOC_GENERATION_INVESTIGATION_MODEL: ${MCP_DOC_GENERATION_INVESTIGATION_MODEL:-google/gemini-3.5-flash}
+      MCP_DOC_GENERATION_FALLBACK_MODEL: ${MCP_DOC_GENERATION_FALLBACK_MODEL:-openai/gpt-6-luna}
       MCP_DOC_GENERATION_API_KEY: ${MCP_DOC_GENERATION_API_KEY:-${LLM_API_KEY:-}}
       MCP_DOC_GENERATION_BASE_URL: ${MCP_DOC_GENERATION_BASE_URL:-}
       MCP_DOC_GENERATION_DEEPSEEK_API_KEY: ${MCP_DOC_GENERATION_DEEPSEEK_API_KEY:-}
       MCP_DOC_GENERATION_DEEPSEEK_BASE_URL: ${MCP_DOC_GENERATION_DEEPSEEK_BASE_URL:-}
-      MCP_DOC_GENERATION_ROUTE33_API_KEY: ${MCP_DOC_GENERATION_ROUTE33_API_KEY:-}
-      MCP_DOC_GENERATION_ROUTE33_BASE_URL: ${MCP_DOC_GENERATION_ROUTE33_BASE_URL:-https://api.route33.ai/v1}
       MCP_DOC_GENERATION_OPENROUTER_API_KEY: ${MCP_DOC_GENERATION_OPENROUTER_API_KEY:-}
       MCP_DOC_GENERATION_OPENROUTER_BASE_URL: ${MCP_DOC_GENERATION_OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
       MCP_MODEL_PRICING_JSON: ${MCP_MODEL_PRICING_JSON:-}
@@ -430,7 +434,6 @@ services:
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      ROUTE33_API_KEY: ${ROUTE33_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -439,6 +442,12 @@ services:
       - ./knowledge_base/intodoc-output:/app/intodoc-output
       - ./knowledge_base/output:/app/workspace/output
       - ./knowledge_base/packs:/app/workspace/packs
+      # Claude Code OAuth credentials. HOME is /app/.home (baked into the image),
+      # so the CLI reads ~/.claude/.credentials.json from here. It is a named
+      # volume and NOT a bind mount: an operator runs `claude login` once inside
+      # the container and the subscription token survives image rebuilds without
+      # ever being written into the repo. See deploy/RUNBOOK.md.
+      - claude_home:/app/.home/.claude
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health')\" || exit 1"]
       interval: 15s
@@ -564,3 +573,4 @@ volumes:
   mission_control_snapshots:
   labs_workspaces:
   opencode_labs_home:
+  claude_home:

@@ -230,11 +230,15 @@ export function RuntimeConsole({ view }: { view: RuntimeConsoleView }) {
   const sourceCatalog = useRuntimeSources({ limit: 100 });
   const queryClient = useQueryClient();
 
+  // A runtime source has no owning project: `linked_project_ids` is every
+  // project attached to it, and any of them can query this console. Reading a
+  // single project off the source (the old `project_id`) hid every project that
+  // reached the tenant through an attachment.
   const tmcProjectIds = useMemo(
     () => new Set(
       (sourceCatalog.data?.sources ?? [])
         .filter((source) => ["tmc", "talend_tmc"].includes(source.source_type.toLowerCase()))
-        .map((source) => source.project_id),
+        .flatMap((source) => source.linked_project_ids),
     ),
     [sourceCatalog.data?.sources],
   );
@@ -1295,7 +1299,7 @@ function Estate({ scope, onDetail }: ViewProps) {
           <EntityTable
             headers={["Source", "Type", "Status", "Last sync"]}
             rows={sources.data?.sources ?? []}
-            rowKey={(source) => `${source.project_id}:${source.source_key}`}
+            rowKey={(source) => `${source.estate_key}:${source.source_key}`}
             onClick={(source) => onDetail({ kind: "source", item: source })}
             emptyLabel="No runtime sources are registered for this scope."
             cells={(source) => [

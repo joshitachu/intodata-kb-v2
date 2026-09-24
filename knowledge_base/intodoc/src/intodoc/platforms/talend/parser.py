@@ -1239,6 +1239,59 @@ class TalendParser(BaseParser):
                 if routine_name:
                     job.raw_routines.append(routine_name)
 
+    def _parse_element_param(self, param_elem: ET.Element) -> ComponentParam | None:
+        """One ``<elementParameter>`` as a ComponentParam, or None if it carries nothing.
+
+        Talend serializes parameters identically wherever they hang -- on a
+        ``<node>``, on a ``<connection>``, inside a nested block -- so this is
+        the ONE reader for that element. It used to live inline in
+        ``_parse_node``; ``_parse_connection`` had its own two-name reader
+        (UNIQUE_NAME, ACTIVATE) and silently dropped everything else, which is
+        how every Camel ``ROUTE_WHEN`` predicate in every scan was lost. A
+        second reader is the defect; there is now one.
+
+        Callers own only their promotions (a node's UNIQUE_NAME becomes
+        ``Component.unique_name``, a connection's becomes ``Connection.name``).
+        """
+        name = param_elem.get("name", "")
+        value = param_elem.get("value", "")
+        field = param_elem.get("field", "")
+
+        # Skip UI noise (designer-only layout hints, not behaviour).
+        if name in ("COMP_DEFAULT_FILE_DIR",) or name.startswith("offsetLabel"):
+            return None
+        # A TABLE-field parameter carries its payload in <elementValue>
+        # children and leaves `value` EMPTY, so the empty-value skip below
+        # used to discard the entire table: every tRunJob CONTEXTPARAMS
+        # override in every scan was silently lost. A route's NAMESPACES
+        # table is the same shape, and an XPath predicate is uninterpretable
+        # without it.
+        rows = (
+            _parse_table_param_rows(param_elem, self.cred_filter)
+            if field.strip().upper() == "TABLE" else []
+        )
+        # Skip empty values
+        if not value and not rows:
+            return None
+        # Layer 1 may have replaced a whole URI with an opaque descriptor
+        # marker.  Recover only its safe structural descriptor, then
+        # immediately normalize the marker to the ordinary public placeholder
+        # before this parsed model can be persisted or exposed downstream.
+        descriptor = self.cred_filter.descriptor_from_redaction_token(value)
+        value = self.cred_filter.normalize_redaction_tokens(value)
+        if descriptor is None and rows:
+            # `rows` is dict[str, str] with no descriptor slot, so a row URI
+            # is only summarized when exactly one row value carried a marker
+            # -- never guessed from several conflicting ones.
+            descriptor = _single_row_descriptor(param_elem, self.cred_filter)
+        return ComponentParam(
+            name=name,
+            value=value,
+            field_type=field,
+            rows=rows,
+            redaction_descriptor=descriptor,
+        )
+
     def _parse_node(
         self, node_elem: ET.Element, job: ParsedJob, item_file: Path | None = None,
     ) -> None:
@@ -1253,48 +1306,12 @@ class TalendParser(BaseParser):
         for child in node_elem:
             tag = _local_tag(child.tag)
             if tag == "elementParameter":
-                name = child.get("name", "")
-                value = child.get("value", "")
-                field = child.get("field", "")
-
-                if name == "UNIQUE_NAME":
-                    unique_name = value
-                else:
-                    # Skip UI noise
-                    if name in ("COMP_DEFAULT_FILE_DIR",) or name.startswith("offsetLabel"):
-                        continue
-                    # A TABLE-field parameter carries its payload in
-                    # <elementValue> children and leaves `value` EMPTY, so
-                    # the empty-value skip below used to discard the entire
-                    # table: every tRunJob CONTEXTPARAMS override in every
-                    # scan was silently lost.
-                    rows = (
-                        _parse_table_param_rows(child, self.cred_filter)
-                        if field.strip().upper() == "TABLE" else []
-                    )
-                    # Skip empty values
-                    if not value and not rows:
-                        continue
-                    # Layer 1 may have replaced a whole URI with an opaque
-                    # descriptor marker.  Recover only its safe structural
-                    # descriptor, then immediately normalize the marker to
-                    # the ordinary public placeholder before this parsed
-                    # model can be persisted or exposed downstream.
-                    descriptor = self.cred_filter.descriptor_from_redaction_token(value)
-                    value = self.cred_filter.normalize_redaction_tokens(value)
-                    if descriptor is None and rows:
-                        # `rows` is dict[str, str] with no descriptor slot, so
-                        # a row URI is only summarized when exactly one row
-                        # value carried a marker -- never guessed from
-                        # several conflicting ones.
-                        descriptor = _single_row_descriptor(child, self.cred_filter)
-                    params.append(ComponentParam(
-                        name=name,
-                        value=value,
-                        field_type=field,
-                        rows=rows,
-                        redaction_descriptor=descriptor,
-                    ))
+                if child.get("name", "") == "UNIQUE_NAME":
+                    unique_name = child.get("value", "")
+                    continue
+                param = self._parse_element_param(child)
+                if param is not None:
+                    params.append(param)
 
             elif tag == "metadata":
                 # Component row schema (one <metadata> per connector:
@@ -1735,19 +1752,29 @@ class TalendParser(BaseParser):
         ))
 
     def _parse_connection(self, conn_elem: ET.Element, job: ParsedJob) -> None:
-        """Parse a <connection> element."""
+        """Parse a <connection> element, including what the edge itself declares.
+
+        A DI row link states only its name. A Camel ``ROUTE_WHEN`` edge states
+        the branch predicate (``CONDITION``), the language it is written in
+        (``ROUTETYPE``: simple / spel / xpath / constant / javaScript / groovy
+        / header), whether it terminates the choice (``ENDOFCHOICE``) and any
+        XML namespaces the predicate binds (``NAMESPACES``, a TABLE). Those
+        are ordinary element parameters and are read by the ordinary element
+        parameter reader.
+        """
         name = ""
-        active = True
+        params: list[ComponentParam] = []
         for child in conn_elem:
-            tag = _local_tag(child.tag)
-            if tag != "elementParameter":
+            if _local_tag(child.tag) != "elementParameter":
                 continue
             if child.get("name") == "UNIQUE_NAME":
+                # Promoted to `name`, exactly as a node's UNIQUE_NAME is
+                # promoted to `unique_name` and kept out of `params`.
                 name = child.get("value", "")
-            elif child.get("name") == "ACTIVATE":
-                # Same convention as components: the parameter is absent on
-                # an active link and false on a disabled one.
-                active = child.get("value", "").strip().casefold() != "false"
+                continue
+            param = self._parse_element_param(child)
+            if param is not None:
+                params.append(param)
 
         conn = Connection(
             name=name or conn_elem.get("label", ""),
@@ -1755,7 +1782,11 @@ class TalendParser(BaseParser):
             target=conn_elem.get("target", ""),
             connector_name=conn_elem.get("connectorName", ""),
             line_style=int(conn_elem.get("lineStyle", "0")),
-            active=active,
+            # ACTIVATE stays IN params and `active` is derived from it by the
+            # same helper components use: absent means active, "false" means
+            # disabled. One rule, one implementation.
+            active=_component_is_active(params),
+            params=params,
         )
         job.connections.append(conn)
 

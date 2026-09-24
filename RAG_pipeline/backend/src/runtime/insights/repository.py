@@ -763,20 +763,28 @@ class RuntimeInsightRepository:
     async def _batch_sources(
         self, project_ids: Sequence[str], source_keys: dict[tuple[str, str], str | None]
     ) -> dict[tuple[str, str], RuntimeSourceRow]:
+        """The source row behind each incident, keyed the way the incidents are.
+
+        Matched on `runtime_sources.estate_key`, because `project_ids` here are
+        row STAMPS taken off the incident rows and the estate key is the same
+        stamp on this table. For a source registered against a project the
+        estate key is that project's id, so this is the join it has always been;
+        for an ownerless estate it is the only value the two sides share.
+        """
         wanted = sorted({value for value in source_keys.values() if value})
         if not wanted:
             return {}
         stmt = (
             select(RuntimeSourceRow)
             .where(
-                RuntimeSourceRow.project_id.in_(project_ids),
+                RuntimeSourceRow.estate_key.in_(project_ids),
                 RuntimeSourceRow.source_key.in_(wanted),
             )
             .order_by(RuntimeSourceRow.id.asc())
         )
         by_key = self._first_by_key(
             (await self._session.execute(stmt)).scalars().all(),
-            lambda row: (row.project_id, row.source_key),
+            lambda row: (row.estate_key, row.source_key),
         )
         return {
             key: match

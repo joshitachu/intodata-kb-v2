@@ -138,9 +138,32 @@ export const RuntimeEngineStatusSchema = z.enum([
 ]);
 export type RuntimeEngineStatus = z.infer<typeof RuntimeEngineStatusSchema>;
 
+/**
+ * One registered runtime source (a mirrored vendor tenant).
+ *
+ * A source has NO owning project. It has an `estate_key` -- the stamp its
+ * mirrored rows carry -- and a set of ATTACHED projects that may read it.
+ * The old `project_id` field conflated the two: it was read as "the owning
+ * project" while it was really the row stamp, which is why registering a second
+ * tenant for a project was impossible. It is gone on purpose; nothing here may
+ * reintroduce it.
+ */
 export const RuntimeSourceSchema = z.object({
   id: z.number().optional(),
-  project_id: z.string(),
+  /**
+   * Internal stamp, NOT a project id. Never render it as one, and never parse
+   * it to decide whether a source has projects -- `is_ownerless` answers that.
+   */
+  estate_key: z.string(),
+  /** Attached projects, sorted. `[]` is a real state, not a missing value. */
+  linked_project_ids: z.array(z.string()),
+  /**
+   * True when no project has ever been attached. Declared (and required) rather
+   * than derived: a source registered before any project is a normal state that
+   * the UI has to name, and inferring it from `estate_key` is exactly the
+   * string-sniffing this field exists to replace.
+   */
+  is_ownerless: z.boolean(),
   source_key: z.string(),
   source_type: z.string(),
   label: z.string(),
@@ -939,4 +962,59 @@ export const RuntimeErrorSignatureResponseSchema = z.object({
 });
 export type RuntimeErrorSignatureResponse = z.infer<
   typeof RuntimeErrorSignatureResponseSchema
+>;
+
+// --- Runtime source attachments (which projects may read one mirrored tenant) ---
+
+/**
+ * One project ATTACHED to a runtime source.
+ *
+ * A vendor tenant is registered once (`physical_identity` is globally unique)
+ * and mirrored once, however many projects attach to it. There is no owner:
+ * every project that may read the source has one of these rows, including the
+ * project named at registration. Mirrors `RuntimeSourceReadGrant` in
+ * `backend/src/runtime/models.py`.
+ *
+ * Every field the backend returns is declared here on purpose. A field left out
+ * of a proxy schema is stripped by Zod and is then permanently `undefined` in
+ * the browser with no error anywhere -- and `exposes_project_ids` is the one
+ * field whose entire job is to warn the operator, so losing it silently is the
+ * worst outcome this contract can produce.
+ */
+export const RuntimeSourceReadGrantSchema = z.object({
+  id: z.number(),
+  source_id: z.number(),
+  /** The attached project. */
+  project_id: z.string(),
+  /**
+   * The source's estate key -- its internal row stamp, not a project. Renamed
+   * from `source_project_id` when sources stopped having an owning project.
+   */
+  source_estate_key: z.string(),
+  source_label: z.string(),
+  /** `null` means every mirrored environment; `[]` is a deliberate "nothing". */
+  environment_ids: z.array(z.string()).nullable(),
+  window_days: z.number().nullable(),
+  /**
+   * Every row stamp this attachment exposes: the source's own estate key plus
+   * any project its workspace map re-points rows to. More than one entry means
+   * the attachment reaches further than the source and the project named on it.
+   */
+  exposes_project_ids: z.array(z.string()),
+  created_at: z.string(),
+  created_by: z.string().nullable(),
+});
+export type RuntimeSourceReadGrant = z.infer<typeof RuntimeSourceReadGrantSchema>;
+
+export const RuntimeSourceReadGrantListSchema = z.object({
+  grants: z.array(RuntimeSourceReadGrantSchema),
+  total: z.number(),
+});
+export type RuntimeSourceReadGrantList = z.infer<typeof RuntimeSourceReadGrantListSchema>;
+
+export const RuntimeSourceReadGrantResponseSchema = z.object({
+  grant: RuntimeSourceReadGrantSchema,
+});
+export type RuntimeSourceReadGrantResponse = z.infer<
+  typeof RuntimeSourceReadGrantResponseSchema
 >;

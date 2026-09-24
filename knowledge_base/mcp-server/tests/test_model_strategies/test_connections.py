@@ -9,7 +9,7 @@ from mcp_server.model_strategies import provider_connection_config
 
 @pytest.mark.parametrize(
     "model_id",
-    ["openai/gpt-4o", "anthropic/claude-sonnet-4-6", "google/gemini-2.5-flash"],
+    ["openai/gpt-4o", "anthropic/claude-sonnet-5", "google/gemini-2.5-flash"],
 )
 def test_sdk_managed_providers_get_no_explicit_connection(model_id):
     assert provider_connection_config(model_id) == {"api_key": None, "base_url": None}
@@ -28,20 +28,17 @@ def test_openrouter_falls_back_to_the_generic_doc_generation_key(monkeypatch):
     assert provider_connection_config("openrouter/stealth/ox-alpha")["api_key"] == "generic"
 
 
-def test_route33_and_deepseek_keep_their_dedicated_settings(monkeypatch):
-    monkeypatch.setattr(config, "doc_generation_route33_api_key", "r33", raising=False)
+def test_deepseek_keeps_its_dedicated_settings(monkeypatch):
     monkeypatch.setattr(config, "doc_generation_deepseek_api_key", "ds", raising=False)
-    assert provider_connection_config("route33/z-ai/glm-5.2")["api_key"] == "r33"
-    assert provider_connection_config("deepseek/deepseek-chat")["api_key"] == "ds"
+    assert provider_connection_config("deepseek/deepseek-v4-pro")["api_key"] == "ds"
 
 
 @pytest.mark.parametrize(
     "model_id",
     [
         "openrouter/stealth/ox-alpha",
-        "route33/z-ai/glm-5.2",
-        "deepseek/deepseek-chat",
-        "anthropic/claude-sonnet-4-6",
+        "deepseek/deepseek-v4-pro",
+        "anthropic/claude-sonnet-5",
         "ollama/gemma3:12b",
     ],
 )

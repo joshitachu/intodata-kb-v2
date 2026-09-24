@@ -1,5 +1,6 @@
 import type {
   BusinessConflict,
+  BusinessControl,
   BusinessDataStream,
   BusinessIntegrationSolution,
   BusinessObject,
@@ -160,6 +161,7 @@ export interface StreamStructuredFacts {
   businessRules: BusinessRule[];
   runtimeObservations: RuntimeObservation[];
   runtimeMetrics: StreamRuntimeMetricRow[];
+  controls: BusinessControl[];
   risks: BusinessRisk[];
   unknowns: BusinessUnknown[];
   conflicts: BusinessConflict[];
@@ -171,10 +173,13 @@ export interface ArchitectureFlowProjection extends StreamStructuredFacts {
   destinationSystemId: string;
   name: string;
   summary: string;
+  /** The stream's own `description`, only when it says more than `summary`. */
+  description: string;
   businessObjects: string[];
   integrationSolutions: string[];
   protocols: string[];
   status: ArchitectureRelationshipStatus;
+  requiredness: BusinessDataStream["requiredness"];
   artifactIds: string[];
   evidenceIds: string[];
   deliveryPath?: BusinessDeliveryPath;
@@ -236,6 +241,62 @@ export const REACHES_TARGET_LABEL: Record<ReachesTarget, string> = {
   partial: "Deels",
   disabled: "Uitgeschakeld",
   unknown: "Niet vastgesteld",
+};
+
+export type StreamRequiredness = BusinessDataStream["requiredness"];
+export type RiskSeverity = BusinessRisk["severity"];
+export type ConflictType = BusinessConflict["conflict_type"];
+export type DeliveryMode = BusinessDeliveryPath["segments"][number]["mode"];
+export type RuntimeObservationKind = NonNullable<RuntimeObservation["kind"]>;
+
+/**
+ * Client-facing (Dutch) vocabularies for the remaining enum slots. Each map
+ * omits nothing: a renderer checks for the "not established" value itself and
+ * renders nothing for it, so a label for it would only ever be dead text.
+ */
+export const REQUIREDNESS_LABEL: Record<StreamRequiredness, string> = {
+  required: "Verplicht",
+  optional: "Optioneel",
+  conditional: "Voorwaardelijk",
+  not_established: "Niet vastgesteld",
+};
+
+export const RISK_SEVERITY_LABEL: Record<RiskSeverity, string> = {
+  low: "Laag",
+  medium: "Middel",
+  high: "Hoog",
+  critical: "Kritiek",
+  unknown: "Niet vastgesteld",
+};
+
+export const CONFLICT_TYPE_LABEL: Record<ConflictType, string> = {
+  supporting_vs_implementation: "Documentatie wijkt af van implementatie",
+  runtime_vs_implementation: "Productie wijkt af van implementatie",
+  supporting_sources_disagree: "Bronnen spreken elkaar tegen",
+  unresolved: "Onopgelost",
+};
+
+export const DELIVERY_MODE_LABEL: Record<DeliveryMode, string> = {
+  direct: "Direct",
+  buffered: "Gebufferd",
+  batch: "Batch",
+  scheduled: "Gepland",
+  event_driven: "Event-gedreven",
+  file_transfer: "Bestandsoverdracht",
+  database: "Database",
+  unknown: "Niet vastgesteld",
+};
+
+export const RUNTIME_OBSERVATION_KIND_LABEL: Record<RuntimeObservationKind, string> = {
+  volume: "Volume",
+  reliability: "Betrouwbaarheid",
+  latency: "Latentie",
+  cadence: "Frequentie",
+  throughput: "Doorvoer",
+  deployment: "Uitrol",
+  coverage: "Dekking",
+  absence: "Afwezigheid",
+  unknown: "Niet geclassificeerd",
 };
 
 /** Field rows are emitted in this kind order so numbering is deterministic. */
@@ -307,6 +368,24 @@ function runtimeMetricRows(observations: RuntimeObservation[]): StreamRuntimeMet
 }
 
 /**
+ * The ONE resolver for a stream's delivery path.
+ *
+ * The contract links the two in both directions (`stream.delivery_path_id`
+ * and `path.stream_id`). The L1 panel previously read only the second and the
+ * L2 tabs only the first, so a producer that filled just one of them showed a
+ * path on one surface and "no path" on the other.
+ */
+export function streamDeliveryPath(
+  topology: BusinessTopology,
+  stream: BusinessDataStream,
+): BusinessDeliveryPath | undefined {
+  const paths = topology.delivery_paths ?? [];
+  return (stream.delivery_path_id
+    ? paths.find((path) => path.id === stream.delivery_path_id)
+    : undefined) ?? paths.find((path) => path.stream_id === stream.id);
+}
+
+/**
  * Resolves every structured fact attached to one stream. The single resolution
  * point for both the L1 flow panel and the L2 detail tabs: two lookups of the
  * same relationship are two rules free to drift apart.
@@ -332,6 +411,7 @@ export function streamStructuredFacts(
   const runtimeObservations = (topology.runtime_observations ?? []).filter((observation) =>
     observationIds.has(observation.id) || observation.stream_ids.includes(stream.id),
   );
+  const controlIds = new Set(stream.control_ids);
   const riskIds = new Set(stream.risk_ids);
   const unknownIds = new Set(stream.unknown_ids);
   const conflictIds = new Set(stream.conflict_ids ?? []);
@@ -348,6 +428,9 @@ export function streamStructuredFacts(
     businessRules,
     runtimeObservations,
     runtimeMetrics: runtimeMetricRows(runtimeObservations),
+    controls: (topology.controls ?? []).filter((control) =>
+      controlIds.has(control.id) || control.stream_ids.includes(stream.id),
+    ),
     risks: topology.risks.filter((risk) => riskIds.has(risk.id) || risk.stream_ids.includes(stream.id)),
     unknowns: topology.unknowns.filter((unknown) => unknownIds.has(unknown.id) || unknown.stream_ids.includes(stream.id)),
     conflicts: (topology.conflicts ?? []).filter((conflict) =>
@@ -773,7 +856,6 @@ export function architectureFlowsForPair(
 ): ArchitectureFlowProjection[] {
   const objectById = new Map(topology.business_objects.map((object) => [object.id, object.name]));
   const solutionById = new Map(topology.integration_solutions.map((solution) => [solution.id, solution.name]));
-  const pathByStreamId = new Map(topology.delivery_paths.map((path) => [path.stream_id, path]));
   return pair.streamIds
     .map((streamId) => topology.data_streams.find((stream) => stream.id === streamId))
     .filter((stream): stream is BusinessDataStream => Boolean(stream))
@@ -783,13 +865,15 @@ export function architectureFlowsForPair(
       destinationSystemId: stream.destination_system_id,
       name: stream.name,
       summary: stream.business_summary || stream.description,
+      description: stream.business_summary && stream.description !== stream.business_summary ? stream.description : "",
       businessObjects: stream.business_object_ids.map((id) => objectById.get(id) ?? id),
       integrationSolutions: stream.integration_solution_ids.map((id) => solutionById.get(id) ?? id),
       protocols: streamProtocols(stream),
       status: relationshipStatus([stream.status]),
+      requiredness: stream.requiredness,
       artifactIds: stream.artifact_ids,
       evidenceIds: stream.evidence_ids,
-      deliveryPath: pathByStreamId.get(stream.id),
+      deliveryPath: streamDeliveryPath(topology, stream),
       transformations: topology.transformations.filter((transformation) => transformation.stream_ids.includes(stream.id)),
       mechanism: stream.mechanism ?? "",
       generation: stream.generation ?? "",

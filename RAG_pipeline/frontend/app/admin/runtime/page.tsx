@@ -17,7 +17,14 @@ import {
   Trash2,
 } from "lucide-react";
 import { useUserProjects } from "@/hooks/useUserProjects";
+import { usePermissions } from "@/hooks/usePermissions";
 import { apiErrorMessage } from "@/lib/apiError";
+import {
+  AttachedProjectsCell,
+  SourceAttachmentsDialog,
+  fetchAttachedProjects,
+} from "@/app/admin/runtime/SourceSharingPanel";
+import type { RuntimeSourceReadGrant } from "@/types/runtime";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
@@ -80,9 +87,20 @@ type SourceHealth = {
   total_records_ingested?: number;
 };
 
+/**
+ * A registered runtime source.
+ *
+ * It has no owning project. `estate_key` is the internal stamp its mirrored
+ * rows carry -- never a project id and never rendered as one -- and
+ * `linked_project_ids` is the set of projects attached to it. `is_ownerless`
+ * says whether any project has ever been attached; never infer that from the
+ * shape of `estate_key`.
+ */
 type RuntimeSource = {
   id: number;
-  project_id: string;
+  estate_key: string;
+  linked_project_ids: string[];
+  is_ownerless: boolean;
   source_key: string;
   source_type: string;
   label: string;
@@ -153,6 +171,11 @@ async function failureMessage(res: Response, fallback: string): Promise<string> 
 
 export default function AdminRuntimePage() {
   const projects = useUserProjects();
+  // Same gate the backend applies to every write on this page
+  // (`RuntimeSourceWriter` -> `runtime_sources:write`). Read access is what got
+  // the user past `app/admin/layout.tsx`; it does not carry the right to change
+  // who reads a mirror.
+  const { canWriteRuntimeSources } = usePermissions();
   // Stable identity: `?? []` inside JSX would hand every child a new array on
   // each render and defeat their dependency arrays.
   const projectOptions = useMemo(() => projects.data?.projects ?? [], [projects.data]);
@@ -168,6 +191,16 @@ export default function AdminRuntimePage() {
   const [scopeFor, setScopeFor] = useState<RuntimeSource | null>(null);
   const [syncing, setSyncing] = useState<Record<number, SyncProgress>>({});
   const [deleteTarget, setDeleteTarget] = useState<RuntimeSource | null>(null);
+  const [attachFor, setAttachFor] = useState<RuntimeSource | null>(null);
+  // Which projects are attached to each source, per source id. Loaded for the
+  // whole table rather than on demand: the attachment state has to be legible
+  // in the row before anything is clicked, which is the entire point of putting
+  // it here.
+  const [attachments, setAttachments] = useState<Record<number, RuntimeSourceReadGrant[]>>({});
+  const [attachmentsLoading, setAttachmentsLoading] = useState(true);
+  // Per source, not global: one source failing must not make every other row
+  // claim its attachment state is unknown.
+  const [attachmentErrors, setAttachmentErrors] = useState<Record<number, string>>({});
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -239,6 +272,61 @@ export default function AdminRuntimePage() {
     if (runningCount === 0) void refresh();
   }, [runningCount, refresh]);
 
+  // Keyed on the ids rather than the array so a refresh that returns the same
+  // sources does not re-read every reader list.
+  const sourceIdKey = useMemo(
+    () =>
+      sources
+        .map((source) => source.id)
+        .sort((a, b) => a - b)
+        .join(","),
+    [sources],
+  );
+
+  /**
+   * Which projects are attached to each source.
+   *
+   * One request per source, like the sync poll above. Failures are recorded
+   * against the source that failed and nothing else: a blank cell reads as
+   * "no projects attached", and wrongly telling an operator a shared tenant
+   * reaches nobody is the worst thing this column can do.
+   */
+  const refreshAttachments = useCallback(async () => {
+    const ids = sourceIdKey === "" ? [] : sourceIdKey.split(",").map(Number);
+    if (ids.length === 0) {
+      setAttachments({});
+      setAttachmentErrors({});
+      setAttachmentsLoading(false);
+      return;
+    }
+    setAttachmentsLoading(true);
+    const entries = await Promise.all(
+      ids.map(async (id) => {
+        try {
+          return [id, await fetchAttachedProjects(id)] as const;
+        } catch (err) {
+          return [
+            id,
+            err instanceof Error ? err.message : "Attachments could not be read",
+          ] as const;
+        }
+      }),
+    );
+    const grants: Record<number, RuntimeSourceReadGrant[]> = {};
+    const failures: Record<number, string> = {};
+    for (const [id, value] of entries) {
+      if (typeof value === "string") failures[id] = value;
+      else grants[id] = value;
+    }
+    setAttachments(grants);
+    setAttachmentErrors(failures);
+    setAttachmentsLoading(false);
+  }, [sourceIdKey]);
+
+  useEffect(() => {
+    void refreshAttachments();
+  }, [refreshAttachments]);
+
   const filteredSources = useMemo(
     () =>
       statusFilter === "all"
@@ -309,7 +397,8 @@ export default function AdminRuntimePage() {
           <h1 className="text-xl font-semibold tracking-tight text-foreground">Runtime sources</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Where imported runtime data comes from — polling schedule, credential rotation,
-            container mapping and sync health.
+            container mapping, sync health, and which projects are attached to each source.
+            A tenant is mirrored once and polled once, however many projects attach to it.
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
@@ -430,7 +519,7 @@ export default function AdminRuntimePage() {
           flush
         >
           <EntityTable
-            headers={["Source", "Project", "Status", "Last success", "Every", "Actions"]}
+            headers={["Source", "Projects", "Status", "Last success", "Every", "Actions"]}
             rows={filteredSources}
             rowKey={(source) => String(source.id)}
             onClick={(source) => setSelected(source)}
@@ -448,9 +537,22 @@ export default function AdminRuntimePage() {
                   {source.source_type}
                 </span>
               </span>,
-              source.project_id,
+              // The attachment state sits in the row, unclicked, and is the only
+              // project relationship a source has. There is no owning-project
+              // column any more: `estate_key` is an internal stamp, and showing
+              // it here would read as a project that does not exist.
+              <span key="attached" onClick={(event) => event.stopPropagation()}>
+                <AttachedProjectsCell
+                  grants={attachments[source.id]}
+                  loading={attachmentsLoading}
+                  error={attachmentErrors[source.id] ?? null}
+                  canManage={canWriteRuntimeSources}
+                  onOpen={() => setAttachFor(source)}
+                />
+              </span>,
               syncing[source.id] ? (
                 <span key="status" className="flex items-center gap-1.5 text-xs text-primary">
+
                   <RefreshCw className="h-3 w-3 animate-spin" aria-hidden />
                   Importing
                 </span>
@@ -526,7 +628,6 @@ export default function AdminRuntimePage() {
       <SourceDialog
         open={addOpen}
         projects={projectOptions}
-        sources={sources}
         sourceTypes={sourceTypes}
         onClose={() => setAddOpen(false)}
         onSaved={async () => {
@@ -557,6 +658,20 @@ export default function AdminRuntimePage() {
           setScopeFor(null);
           await refresh();
         }}
+      />
+
+      {/*
+        Attaching is a sibling of the container-mapping control in the detail
+        panel, never merged with it. A container map SPLITS this source's rows
+        between projects at write time; an attachment gives a project read
+        access to the same rows.
+      */}
+      <SourceAttachmentsDialog
+        source={attachFor}
+        projects={projectOptions}
+        canManage={canWriteRuntimeSources}
+        onClose={() => setAttachFor(null)}
+        onChanged={() => void refreshAttachments()}
       />
 
       <Modal
@@ -728,23 +843,38 @@ function CredentialInput({
   );
 }
 
+/** Sentinel for "register the tenant, attach no project yet". */
+const ATTACH_NOTHING = "";
+
+/**
+ * Register a runtime source.
+ *
+ * The project is OPTIONAL and is never preselected. A source is a vendor tenant,
+ * not a project's property: it can be registered on its own and have projects
+ * attached afterwards, and one project may hold several tenants.
+ *
+ * This dialog used to filter out every project that already had a TMC source
+ * and then refuse to save when none were left, telling the operator to widen
+ * the existing source's ingest scope instead. That advice was wrong -- another
+ * Talend account's environments cannot be reached through a source holding a
+ * different credential -- and the filter made registering a second tenant
+ * impossible. Both are gone; do not reintroduce either.
+ */
 function SourceDialog({
   open,
   projects,
-  sources,
   sourceTypes,
   onClose,
   onSaved,
 }: {
   open: boolean;
   projects: { id: string; display_name: string }[];
-  sources: RuntimeSource[];
   sourceTypes: SourceType[];
   onClose: () => void;
   onSaved: () => void;
 }) {
   const [providerKey, setProviderKey] = useState("");
-  const [projectId, setProjectId] = useState("");
+  const [projectId, setProjectId] = useState(ATTACH_NOTHING);
   const [label, setLabel] = useState("");
   const [intervalSeconds, setIntervalSeconds] = useState(60);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
@@ -754,35 +884,30 @@ function SourceDialog({
   const [scopes, setScopes] = useState<ScopeOption[] | null>(null);
   const [selectedScopes, setSelectedScopes] = useState<string[]>([]);
 
-  const connectedTmcProjects = useMemo(
-    () => new Set(sources.filter((source) => source.source_type === "tmc").map((source) => source.project_id)),
-    [sources],
+  // Every project the operator can see is offered. A project may hold several
+  // tenants, so nothing is filtered out on the grounds that it already has one.
+  const attachOptions = useMemo(
+    () => [
+      {
+        value: ATTACH_NOTHING,
+        label: "Don't attach yet",
+        hint: "Register the tenant now, attach projects to it later",
+      },
+      ...projects.map((project) => ({ value: project.id, label: project.display_name })),
+    ],
+    [projects],
   );
-  const availableProjects = useMemo(
-    () =>
-      providerKey === "tmc"
-        ? projects.filter((project) => !connectedTmcProjects.has(project.id))
-        : projects,
-    [providerKey, projects, connectedTmcProjects],
-  );
-  const tmcUnavailable = providerKey === "tmc" && availableProjects.length === 0;
 
   // Defaults are applied when the dialog opens, not at first mount: the options
   // arrive from two async queries and were previously read once, while empty.
+  // The project resets to "no attachment" every time: preselecting whichever
+  // project happened to load first attaches a tenant to it by accident.
   useEffect(() => {
     if (!open) return;
     setProviderKey(sourceTypes[0]?.provider_key ?? "");
+    setProjectId(ATTACH_NOTHING);
     setError("");
   }, [open, sourceTypes]);
-
-  useEffect(() => {
-    if (!open) return;
-    setProjectId((current) =>
-      availableProjects.some((project) => project.id === current)
-        ? current
-        : availableProjects[0]?.id ?? "",
-    );
-  }, [open, availableProjects]);
 
   const selectedType = sourceTypes.find((type) => type.provider_key === providerKey);
   const selection = selectedType?.scope_selection ?? null;
@@ -844,7 +969,9 @@ function SourceDialog({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          project_id: projectId,
+          // Omitted, not sent as null or "": the field is optional, and leaving
+          // it out is what registers the tenant with no project attached.
+          ...(projectId === ATTACH_NOTHING ? {} : { project_id: projectId }),
           provider_key: providerKey,
           label: label || selectedType?.provider_label || providerKey,
           sync_interval_seconds: intervalSeconds,
@@ -861,6 +988,7 @@ function SourceDialog({
       setLabel("");
       setScopes(null);
       setSelectedScopes([]);
+      setProjectId(ATTACH_NOTHING);
       onSaved();
     } catch {
       setError("Network error while creating the source");
@@ -886,9 +1014,10 @@ function SourceDialog({
             form="add-source-form"
             type="submit"
             isLoading={busy}
-            // Saving before the scope is chosen would register a whole-source
-            // poll, which is exactly what the selection exists to prevent.
-            disabled={tmcUnavailable || (Boolean(selection?.required) && selectedScopes.length === 0)}
+            // The ingest scope is the only thing that can block a save. Not
+            // choosing a project is a valid registration, not an incomplete
+            // form.
+            disabled={Boolean(selection?.required) && selectedScopes.length === 0}
           >
             Save source
           </Button>
@@ -914,27 +1043,25 @@ function SourceDialog({
             />
           </div>
           <div className="space-y-1.5">
-            <p className="text-xs font-medium text-muted-foreground">Project</p>
+            <p className="text-xs font-medium text-muted-foreground">
+              Attach to a project (optional)
+            </p>
             <SelectMenu
               value={projectId}
               onChange={setProjectId}
-              options={availableProjects.map((project) => ({
-                value: project.id,
-                label: project.display_name,
-              }))}
-              placeholder="Select a project"
-              ariaLabel="Project"
+              options={attachOptions}
+              placeholder="Don't attach yet"
+              ariaLabel="Attach to a project"
               variant="field"
               size="md"
               className="w-full max-w-none"
             />
           </div>
         </div>
-        {tmcUnavailable && (
-          <p role="status" className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-            Every permitted project already has a TMC source. Use Edit ingest scope on that source to add environments.
-          </p>
-        )}
+        <p className="text-xs text-muted-foreground">
+          The tenant is mirrored once and polled once, however many projects attach to it. You
+          can attach and detach projects at any time from the Projects column.
+        </p>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="space-y-1.5 text-xs font-medium text-muted-foreground">
             Name
@@ -971,7 +1098,6 @@ function SourceDialog({
                 size="sm"
                 onClick={testConnection}
                 isLoading={testing}
-                disabled={tmcUnavailable}
               >
                 Test connection
               </Button>
@@ -1346,6 +1472,20 @@ function SourceDetail({
             {health.last_failure_sanitized}
           </p>
         )}
+        {/*
+          Diagnostic position, and labelled as internal. The estate key is the
+          stamp this source's mirrored rows carry -- it is not a project, and
+          putting it anywhere a project id is expected is what made the old
+          model unreadable. `is_ownerless` is read from the API rather than
+          guessed from the key's shape.
+        */}
+        <p className="mt-3 text-xs text-muted-foreground">
+          Internal estate id:{" "}
+          <span className="font-mono break-all">{source.estate_key}</span>
+          {source.is_ownerless
+            ? " — not a project; no project is attached to this source yet."
+            : " — not a project."}
+        </p>
       </Panel>
 
       <Panel

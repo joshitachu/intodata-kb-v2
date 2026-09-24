@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -62,12 +61,12 @@ from src.harness.packs.draft_service import (
     DraftNotFoundError,
     DraftRecord,
     DraftServiceError,
-    DraftValidationError,
     PackDraftService,
 )
 from src.harness.packs.builder_workflow import PackBuilderWorkflow
 from src.harness.providers.mcp_packs import McpPackProvider, McpPackProviderError
 from src.harness.connectors.models import ConnectorQuery
+from src.harness.connectors.service import ConnectorPolicyError
 from src.harness.providers.mcp_docs import McpDocumentationProvider
 from src.harness.providers.mcp_projects import McpProjectsProvider
 from src.runtime.insights.parser import redact_credentials
@@ -471,15 +470,24 @@ class BoundConnectorEvidenceHandler:
         ):
             raise ValueError("Connector capability metadata is invalid")
         project_id = request.arguments.get("project_id")
+        if project_id is None and context.project_scope and len(context.project_scope) == 1:
+            project_id = context.project_scope[0]
+        if not isinstance(project_id, str) or not project_id:
+            raise ConnectorPolicyError("Connector call requires a project")
+        # Recheck at the execution boundary: provider-side project filters must
+        # never be populated from an untrusted tool argument alone.
+        if context.project_scope is not None and project_id not in context.project_scope:
+            raise ConnectorPolicyError("Connector is outside project scope")
         result = await services.connector_service.read(
             self._instance_id,
             self._connector_capability_id,
-            str(project_id) if project_id is not None else None,
+            project_id,
             context.domain,
             ConnectorQuery(
                 query=str(request.arguments["query"]),
                 limit=int(request.arguments.get("limit", 10)),
             ),
+            access_token=context.access_token,
         )
         items: list[dict[str, Any]] = []
         references: list[dict[str, Any]] = []

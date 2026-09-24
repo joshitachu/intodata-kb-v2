@@ -1,10 +1,54 @@
 [
   {
+    "provider_key": "mcp_elastic",
+    "display_name": "Existing Elastic Stack",
+    "description": "Search logs through the Elastic connection already managed by Nexus.",
+    "adapter_ref": "src.harness.connectors.mcp_elastic.ExistingElasticConnector",
+    "auth_modes": ["none"],
+    "capabilities": [
+      {
+        "id": "connector.mcp_elastic.search",
+        "label": "Search approved Elastic logs",
+        "action": "read_connector_evidence",
+        "input_schema": {
+          "type": "object",
+          "required": ["query"],
+          "properties": {
+            "query": {"type": "string", "minLength": 1, "maxLength": 500},
+            "project_id": {"type": ["string", "null"], "maxLength": 255},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 10}
+          },
+          "additionalProperties": false
+        },
+        "output_type": "evidence_items",
+        "risk_tier": "read_only",
+        "packs": ["connectors"],
+        "activity_label": "Searching approved Elastic logs",
+        "semantic_name": "search_existing_elastic_logs",
+        "purpose": "Search a small set of project-approved runtime log sources using the existing Nexus Elastic connection.",
+        "use_when": ["The user asks about recent runtime activity, errors, or monitoring evidence in Elastic."],
+        "do_not_use_when": ["The user asks for design documentation, field mappings, or business rules; search project documentation instead."],
+        "preconditions": ["The existing Elastic connection is healthy and the project has an explicit source grant."],
+        "failure_recovery": {
+          "unavailable": "Explain that Elastic is not enabled for this project and direct the owner to Connectors.",
+          "failed": "Report the safe failure and do not repeat an identical search."
+        },
+        "shadow_safe": false
+      }
+    ],
+    "config_schema": {
+      "connector_id": "existing Nexus connector ID",
+      "source_ids": "approved source IDs",
+      "max_results": "integer",
+      "time_window_days": "integer"
+    }
+  },
+  {
     "provider_key": "fixture_knowledge",
     "display_name": "Fixture knowledge",
     "description": "Deterministic read-only knowledge records.",
     "adapter_ref": "src.harness.connectors.fixture.FixtureKnowledgeConnector",
-    "auth_modes": ["none", "credential_reference"],
+    "auth_modes": ["none"],
     "capabilities": [
       {
         "id": "connector.fixture.search",
@@ -82,8 +126,113 @@
       "base_url": "https URL",
       "allowed_hosts": "hostname array",
       "index": "string",
+      "project_field": "exact-match project keyword field",
       "search_path": "path template",
       "health_path": "path",
+      "timeout_seconds": "number",
+      "max_response_bytes": "integer",
+      "max_results": "integer"
+    }
+  },
+  {
+    "provider_key": "postgres_readonly",
+    "display_name": "PostgreSQL read-only",
+    "description": "Search an approved PostgreSQL view with enforced project filtering.",
+    "adapter_ref": "src.harness.connectors.postgres_readonly.PostgresReadOnlyConnector",
+    "auth_modes": ["credential_reference"],
+    "capabilities": [
+      {
+        "id": "connector.postgres.search",
+        "label": "Search approved database view",
+        "action": "read_connector_evidence",
+        "input_schema": {
+          "type": "object",
+          "required": ["query"],
+          "properties": {
+            "query": {"type": "string", "minLength": 1, "maxLength": 500},
+            "project_id": {"type": ["string", "null"], "maxLength": 255},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50}
+          },
+          "additionalProperties": false
+        },
+        "output_type": "evidence_items",
+        "risk_tier": "read_only",
+        "packs": ["connectors"],
+        "activity_label": "Searching approved database view",
+        "semantic_name": "search_approved_database_view",
+        "purpose": "Search one owner-approved PostgreSQL view scoped to the bound Nexus project.",
+        "use_when": ["The user asks for live data held by the configured PostgreSQL view."],
+        "do_not_use_when": ["The answer is available in Nexus documentation or runtime evidence."],
+        "preconditions": ["The connector is healthy and bound to the selected project."],
+        "failure_recovery": {
+          "unavailable": "Report that the database connector is unavailable.",
+          "failed": "Report the safe failure without inventing rows."
+        },
+        "shadow_safe": false
+      }
+    ],
+    "config_schema": {
+      "host": "hostname",
+      "port": "integer",
+      "database": "string",
+      "username": "string",
+      "view_name": "approved view exposing project_id, searchable_text, title, excerpt, source_ref",
+      "timeout_seconds": "number",
+      "max_results": "integer"
+    }
+  },
+  {
+    "provider_key": "openapi_readonly",
+    "display_name": "Reviewed OpenAPI search",
+    "description": "Read one owner-reviewed, project-scoped HTTPS GET operation from an OpenAPI 3 contract.",
+    "adapter_ref": "src.harness.connectors.openapi_readonly.OpenApiReadOnlyConnector",
+    "auth_modes": ["none", "credential_reference"],
+    "capabilities": [
+      {
+        "id": "connector.openapi.search",
+        "label": "Search reviewed API",
+        "action": "read_connector_evidence",
+        "input_schema": {
+          "type": "object",
+          "required": ["query"],
+          "properties": {
+            "query": {"type": "string", "minLength": 1, "maxLength": 500},
+            "project_id": {"type": ["string", "null"], "maxLength": 255},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50}
+          },
+          "additionalProperties": false
+        },
+        "output_type": "evidence_items",
+        "risk_tier": "read_only",
+        "packs": ["connectors"],
+        "activity_label": "Searching reviewed API",
+        "semantic_name": "search_reviewed_api",
+        "purpose": "Search one reviewed OpenAPI GET operation scoped to the bound Nexus project.",
+        "use_when": ["The user asks for live data held by this configured API."],
+        "do_not_use_when": ["The answer is available in Nexus documentation or runtime evidence."],
+        "preconditions": ["The connector is healthy and bound to the selected project."],
+        "failure_recovery": {
+          "unavailable": "Report that the API connector is unavailable.",
+          "failed": "Report the safe failure without inventing results."
+        },
+        "shadow_safe": false
+      }
+    ],
+    "config_schema": {
+      "base_url": "https URL",
+      "allowed_hosts": "hostname array",
+      "openapi_spec": "OpenAPI 3 JSON document",
+      "operation_id": "string",
+      "operation_path": "fixed absolute path",
+      "health_project_id": "string",
+      "query_parameter": "string",
+      "project_parameter": "string",
+      "limit_parameter": "string",
+      "items_field": "string",
+      "title_field": "string",
+      "excerpt_field": "string",
+      "source_ref_field": "string",
+      "result_project_field": "string",
       "timeout_seconds": "number",
       "max_response_bytes": "integer",
       "max_results": "integer"

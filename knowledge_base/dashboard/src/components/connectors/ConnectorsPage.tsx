@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { parseApiError } from "../../lib/errors";
 // Shared with the Generate dialog's live-data panel: one vocabulary for a
@@ -31,7 +31,8 @@ import { useProjects } from "../../hooks/useProjects";
 // Scope discovery is a one-shot probe, not cached state: it is called straight
 // off the client rather than through a hook so a stale result can never be
 // replayed against edited credentials.
-import { api } from "../../api/client";
+import { api, runtimeSourceRegistrationConflict } from "../../api/client";
+import type { RuntimeSourceConflict } from "../../api/schemas";
 import type {
   ConnectorInstance,
   ConnectorProvider,
@@ -41,6 +42,43 @@ import type {
 } from "../../types";
 
 type Filter = "all" | "connected" | "not_connected";
+
+/**
+ * A refused registration, carried from the connect dialog to the control that
+ * resolves it.
+ *
+ * A vendor tenant is registered once and attached to thereafter, so "already
+ * registered" is not a failure to report -- it is a redirection to the
+ * attachment control on the source that already mirrors that tenant. This
+ * carries the operator there instead of leaving them to find it, which is the
+ * whole difference between a signpost and a dead end.
+ */
+interface AttachRequest {
+  /** Which connector row holds the source, so the page can expand it. */
+  providerId: string;
+  /** The source that already mirrors the tenant. */
+  sourceId: number;
+  /**
+   * The project whose registration was refused; preselected in the picker.
+   *
+   * Empty when the operator was registering the tenant with nothing attached --
+   * a supported path now, so the jump still happens and the picker simply opens
+   * with no preselection.
+   */
+  projectId: string;
+}
+
+/**
+ * An attach request as the PAGE holds it, with an identity of its own.
+ *
+ * The `serial` exists because the attachment control is opened by being
+ * remounted (see the `key` at its call site), and the request's own fields are
+ * not a usable identity: `projectId` is legitimately empty when the operator
+ * registered a tenant with nothing attached, which made the key byte-identical
+ * to the no-request key and silently skipped the remount. A counter cannot
+ * collide with itself, so every request reopens the control.
+ */
+type PendingAttach = AttachRequest & { serial: number };
 
 interface Props {
   canManage: boolean;
@@ -68,6 +106,14 @@ export interface ConnectorDialogProps {
   provider: ConnectorProvider;
   connector: ConnectorInstance | null;
   onClose: () => void;
+  /**
+   * Hand the operator to the existing tenant's attachment control.
+   *
+   * On the props shared by every dialog, not only the TMC one, because the
+   * single-registration rule is a property of runtime-managed providers in
+   * general: any dialog that can earn a duplicate 409 needs the same exit.
+   */
+  onRequestAttach: (request: AttachRequest) => void;
 }
 
 export type ConnectorDialogComponent = (props: ConnectorDialogProps) => React.ReactElement | null;
@@ -180,6 +226,11 @@ export default function ConnectorsPage({ canManage }: Props) {
   // Keyed on the ROW, not on a connector instance id: a runtime-managed row has
   // no ConnectorInstance behind it but still expands to show its coverage.
   const [expandedRowKey, setExpandedRowKey] = useState<string | null>(null);
+  // Set when a registration was refused because the tenant is already mirrored.
+  // Lives on the page rather than in the dialog because the control that
+  // resolves it (`SourceAttachments`) is on a row, and the dialog is a portal.
+  const [attachRequest, setAttachRequest] = useState<PendingAttach | null>(null);
+  const attachSerial = useRef(0);
 
   const rows = useMemo<ConnectorListRow[]>(() => {
     const providers = catalog.data?.providers ?? [];
@@ -232,6 +283,25 @@ export default function ConnectorsPage({ canManage }: Props) {
         .includes(normalizedQuery);
     });
   }, [catalog.data?.providers, connectors.data?.connectors, filter, query]);
+
+  /**
+   * Close the connect dialog and open the attachment control on the source that
+   * already mirrors the tenant.
+   *
+   * Deliberately reuses `expandedRowKey` and `SourceAttachments` rather than
+   * rendering a second attach form inside the dialog: two controls for one
+   * relationship is how an operator ends up editing the wrong one, and the
+   * existing control already shows which projects use the source today.
+   */
+  function requestAttach(request: AttachRequest) {
+    const row = rows.find((item) => item.provider.provider_id === request.providerId);
+    setEditing(null);
+    // A row filtered out of the current view cannot be expanded; the operator
+    // still gets the request's message when they clear the filter.
+    if (row) setExpandedRowKey(row.key);
+    attachSerial.current += 1;
+    setAttachRequest({ ...request, serial: attachSerial.current });
+  }
 
   return (
     <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-[#121821] shadow-2xl">
@@ -304,6 +374,9 @@ export default function ConnectorsPage({ canManage }: Props) {
             onConnect={() => setEditing({ provider: row.provider, connector: null })}
             onEdit={() => row.connector && setEditing({ provider: row.provider, connector: row.connector })}
             onDiscover={() => row.connector && setDiscoveryConnector(row.connector)}
+            attachRequest={
+              attachRequest?.providerId === row.provider.provider_id ? attachRequest : null
+            }
           />
         ))}
       </div>
@@ -316,7 +389,11 @@ export default function ConnectorsPage({ canManage }: Props) {
         />
       )}
       {editing && (
-        <ConnectorDialogHost editing={editing} onClose={() => setEditing(null)} />
+        <ConnectorDialogHost
+          editing={editing}
+          onClose={() => setEditing(null)}
+          onRequestAttach={requestAttach}
+        />
       )}
       {discoveryConnector && (
         <DiscoveryDialog connector={discoveryConnector} onClose={() => setDiscoveryConnector(null)} />
@@ -325,7 +402,7 @@ export default function ConnectorsPage({ canManage }: Props) {
   );
 }
 
-function ConnectorRow({ row, canManage, expanded, onToggle, onConnect, onEdit, onDiscover }: {
+function ConnectorRow({ row, canManage, expanded, onToggle, onConnect, onEdit, onDiscover, attachRequest }: {
   row: ConnectorListRow;
   canManage: boolean;
   expanded: boolean;
@@ -333,6 +410,8 @@ function ConnectorRow({ row, canManage, expanded, onToggle, onConnect, onEdit, o
   onConnect: () => void;
   onEdit: () => void;
   onDiscover: () => void;
+  /** Non-null when a registration for THIS provider was refused as a duplicate. */
+  attachRequest: PendingAttach | null;
 }) {
   const { connector, provider } = row;
   const test = useTestConnector();
@@ -355,9 +434,10 @@ function ConnectorRow({ row, canManage, expanded, onToggle, onConnect, onEdit, o
           <span className="min-w-0">
             <span className="block truncate text-base font-medium text-slate-100">{connector?.display_name ?? provider.label}</span>
             {connector && connector.display_name !== provider.label && <span className="mt-0.5 block truncate text-xs text-slate-500">{provider.label}</span>}
-            {/* Which projects are actually covered. A runtime source is bound to
-                exactly one project, so a bare "Connected" would imply coverage
-                the mirror does not have. */}
+            {/* Which projects are actually covered. Projects ATTACH to a
+                tenant, so a bare "Connected" would imply coverage the mirror
+                may not have -- including the normal case of a tenant that is
+                registered with nothing attached yet. */}
             {runtimeManaged && runtimeSources.length > 0 && (
               <span className="mt-0.5 block truncate text-xs text-slate-500">
                 {describeRuntimeCoverage(runtimeSources)}
@@ -403,6 +483,7 @@ function ConnectorRow({ row, canManage, expanded, onToggle, onConnect, onEdit, o
           sources={runtimeSources}
           canManage={canManage}
           onConnect={onConnect}
+          attachRequest={attachRequest}
         />
       )}
       {!runtimeManaged && connector && expanded && (
@@ -439,17 +520,35 @@ function ConnectorRow({ row, canManage, expanded, onToggle, onConnect, onEdit, o
 }
 
 /**
- * Row subtitle for a runtime-managed provider: which projects are covered.
+ * Every project attached to any of these sources, de-duplicated and sorted.
  *
- * A runtime source is bound to exactly ONE project, so "Connected" on its own
- * would imply blanket coverage the mirror does not have. Naming the projects (up
- * to a couple, then a count) keeps the row honest about a partial rollout.
+ * Read off `linked_project_ids` and nothing else. `estate_key` is an internal
+ * row stamp that frequently equals the id of whichever project the tenant was
+ * first registered against, so treating it as an attachment would invent a
+ * relationship that no longer exists.
+ */
+function attachedProjects(sources: RuntimeSource[]): string[] {
+  const projects = new Set<string>();
+  for (const source of sources) {
+    for (const projectId of source.linked_project_ids) projects.add(projectId);
+  }
+  return Array.from(projects).sort();
+}
+
+/**
+ * Row subtitle for a runtime-managed provider: which projects use it.
+ *
+ * "Connected" on its own would imply blanket coverage the mirror does not have.
+ * A registered tenant with nothing attached is a NORMAL state, not a fault, and
+ * saying so here is what makes the next step obvious instead of alarming.
  */
 function describeRuntimeCoverage(sources: RuntimeSource[]): string {
-  const projects = Array.from(new Set(sources.map((source) => source.project_id)));
-  if (projects.length === 0) return "No projects connected";
-  if (projects.length <= 2) return `Mirroring ${projects.join(", ")}`;
-  return `Mirroring ${projects.length} projects`;
+  if (sources.length === 0) return "No tenant registered";
+  const projects = attachedProjects(sources);
+  const tenants = `${sources.length} tenant${sources.length === 1 ? "" : "s"}`;
+  if (projects.length === 0) return `${tenants} registered - no projects attached yet`;
+  if (projects.length <= 2) return `Used by ${projects.join(", ")}`;
+  return `Used by ${projects.length} projects`;
 }
 
 /** Newest successful mirror across a provider's sources, or null if none synced. */
@@ -498,16 +597,18 @@ function RuntimeStatusCell({ query, sources, canManage, supported, expanded, onT
 }
 
 /**
- * Expanded detail for a runtime-managed provider: one line per project.
+ * Expanded detail for a runtime-managed provider: one block per TENANT.
  *
  * Per-source rather than per-provider because that is the real shape of the
- * data -- one credential, one project, its own sync clock and its own failures.
+ * data -- one credential, one mirror, its own sync clock and its own failures --
+ * and each source then states which projects are attached to it.
  */
-function RuntimeSourcePanel({ provider, sources, canManage, onConnect }: {
+function RuntimeSourcePanel({ provider, sources, canManage, onConnect, attachRequest }: {
   provider: ConnectorProvider;
   sources: RuntimeSource[];
   canManage: boolean;
   onConnect: () => void;
+  attachRequest: PendingAttach | null;
 }) {
   const sync = useSyncRuntimeSource();
   const remove = useDeleteRuntimeSource();
@@ -523,7 +624,9 @@ function RuntimeSourcePanel({ provider, sources, canManage, onConnect }: {
           </div>
         </div>
         {canManage && (
-          <button className="btn-ghost" onClick={onConnect}>Connect another project</button>
+          /* A second tenant, not a second project: attaching another project to
+             a tenant already here is done below and needs no credential. */
+          <button className="btn-ghost" onClick={onConnect}>Register another tenant</button>
         )}
       </div>
 
@@ -531,9 +634,18 @@ function RuntimeSourcePanel({ provider, sources, canManage, onConnect }: {
         {sources.map((source) => (
           <div key={source.id} className="flex flex-wrap items-center gap-3 rounded border border-white/[0.08] px-3 py-2">
             <div className="min-w-0 flex-1">
-              <div className="truncate text-sm text-slate-200">{source.project_id}</div>
+              {/* The tenant's own name. `estate_key` is a row stamp and is
+                  carried as a tooltip only -- rendered as a heading it would be
+                  read as the owning project, which is exactly the model that
+                  was removed. */}
+              <div
+                className="truncate text-sm text-slate-200"
+                title={source.estate_key ? `Internal row stamp: ${source.estate_key}` : undefined}
+              >
+                {source.label || provider.label}
+              </div>
               <div className="mt-0.5 truncate text-xs text-slate-500">
-                {source.label || provider.label} · {source.enabled ? source.status : "disabled"} · every {source.sync_interval_seconds}s
+                {source.enabled ? source.status : "disabled"} · every {source.sync_interval_seconds}s
               </div>
               {source.disabled_reason && (
                 <div className="mt-0.5 text-xs text-amber-400 break-words">{source.disabled_reason}</div>
@@ -553,16 +665,31 @@ function RuntimeSourcePanel({ provider, sources, canManage, onConnect }: {
                   className="text-xs text-red-400 hover:text-red-300 disabled:opacity-50"
                   disabled={remove.isPending}
                   onClick={() => {
-                    if (window.confirm(`Disconnect ${provider.label} from ${source.project_id}? Mirrored history is kept; new executions stop arriving.`)) {
+                    if (window.confirm(`Remove ${source.label || provider.label}? Every attached project loses it, mirrored history is kept, and new executions stop arriving.`)) {
                       remove.mutate(source.id);
                     }
                   }}
                 >
-                  Disconnect
+                  Remove tenant
                 </button>
               </>
             )}
-            <SourceReaders source={source} canManage={canManage} />
+            {/* Remounted when a new attach request arrives, which is what opens
+                the control and preselects the refused project. A key beats an
+                effect here: the request is a one-shot navigation, not state the
+                operator should have to dismiss.
+
+                Keyed on the request's SERIAL, not its project id. With the
+                project now optional, a refusal carrying no project produced a
+                key byte-identical to the no-request key, so the remount never
+                happened and the control stayed shut. */}
+            <SourceAttachments
+              key={`attachments-${source.id}-${attachRequest?.serial ?? 0}`}
+              source={source}
+              providerLabel={provider.label}
+              canManage={canManage}
+              attachRequest={attachRequest?.sourceId === source.id ? attachRequest : null}
+            />
           </div>
         ))}
       </div>
@@ -573,7 +700,7 @@ function RuntimeSourcePanel({ provider, sources, canManage, onConnect }: {
           Sync {sync.data.status}: {sync.data.records_ingested} records mirrored.
         </p>
       )}
-      {remove.isError && <p className="mt-3 text-xs text-red-400">Disconnect failed: {parseApiError(remove.error)}</p>}
+      {remove.isError && <p className="mt-3 text-xs text-red-400">Could not remove the tenant: {parseApiError(remove.error)}</p>}
 
       {/* Secondary, not the primary path: everything above is doable here now.
           The deep link remains for the settings this page deliberately omits
@@ -591,153 +718,268 @@ function RuntimeSourcePanel({ provider, sources, canManage, onConnect }: {
 }
 
 /**
- * "Shared with": the projects reading this mirror without owning it.
+ * Which projects use this source -- stated at rest, not behind a toggle.
  *
- * This is the whole point of the control. One Talend tenant commonly backs
- * several scanned projects, and registering its credential a second time is
- * refused -- that would poll the vendor twice and leave two mirrors of one
- * estate free to drift apart. Before this existed, an operator hitting that
- * 409 had no supported way forward at all.
+ * This control IS the source-to-project relationship. A source is a registered
+ * TENANT; projects attach to it, any number of them, changed at any time, and
+ * there is no owner among them. A tenant with nothing attached is a normal
+ * intermediate state -- the expected result of registering a credential before
+ * deciding which projects should read it -- so the empty case says so plainly
+ * and makes attaching the obvious next step rather than reading as a fault.
+ *
+ * Registering one tenant's credential a second time is still refused: that
+ * would poll the vendor twice and leave two mirrors of one estate free to drift
+ * apart. Attaching is the supported answer, and before this control existed an
+ * operator hitting that 409 had no way forward at all.
+ *
+ * It then had a second, quieter failure: the feature shipped and nobody found
+ * it. The whole relationship lived behind a grey `text-xs` disclosure button
+ * reading "Shared with", at the bottom of a source row, whose count appeared
+ * only once an attachment already existed -- so the state most needed ("nothing
+ * uses this yet") and the action needed ("attach a project") were both invisible
+ * until a click on something that looked like a label. Hence: the attachment
+ * list renders unconditionally, and only the picker is behind a button.
+ *
+ * Wording is deliberately plain. "Grant"/"grantee"/"read grant"/"share" is the
+ * API's vocabulary, not an operator's, and "share" additionally implies an owner
+ * doing the sharing -- which no longer exists. The words here are the question
+ * actually being asked: which projects use this, and how do I add one.
+ *
+ * The "polled once" line is load-bearing, not decoration: the observed reason
+ * operators hesitate is an assumption that another attached project doubles
+ * vendor cost. It does not; one tenant is mirrored once and polled once however
+ * many projects are attached.
  *
  * Deliberately NOT merged with workspace mapping. A mapping SPLITS one source's
- * rows between projects at write time; this SHARES the same rows with a second
- * reader. They answer different questions, and one combined control is how an
- * operator picks the wrong one.
+ * rows between projects at write time; an attachment SHARES the same rows with
+ * another project. They answer different questions, and one combined control is
+ * how an operator picks the wrong one.
  *
  * Full width on its own line because it is a per-source relationship list, not
  * another action button on the row above it.
+ *
+ * `attachRequest` is how the duplicate-registration 409 lands here: the operator
+ * is brought straight to this control with the refused project preselected,
+ * rather than being told the tenant is taken and left to work out that attaching
+ * is the supported answer.
  */
-function SourceReaders({ source, canManage }: { source: RuntimeSource; canManage: boolean }) {
-  const [open, setOpen] = useState(false);
-  const readers = useRuntimeSourceReaders(source.id, open);
-  const add = useAddRuntimeSourceReader(source.id);
-  const revoke = useRemoveRuntimeSourceReader(source.id);
+function SourceAttachments({ source, providerLabel, canManage, attachRequest }: {
+  source: RuntimeSource;
+  /**
+   * The provider's own label, from the catalogue manifest.
+   *
+   * Passed in rather than written into the copy: this control renders for every
+   * runtime-managed provider, and a literal "Talend" here is how "Elastic" once
+   * ended up in text that was meant to describe an arbitrary provider.
+   */
+  providerLabel: string;
+  canManage: boolean;
+  /** Non-null when the operator arrived here from a registration refused for THIS source. */
+  attachRequest: PendingAttach | null;
+}) {
+  // Fetched as soon as the source row is on screen, because the answer IS the
+  // content here. Behind the old toggle it was fetched only after a click, so
+  // the page could never say what it already knew. Best-effort by design (the
+  // hook does not retry): a caller who may not read attachments sees the error,
+  // not an empty row.
+  const attachments = useRuntimeSourceReaders(source.id);
+  const attach = useAddRuntimeSourceReader(source.id);
+  const detach = useRemoveRuntimeSourceReader(source.id);
   const projects = useProjects();
-  const [projectId, setProjectId] = useState("");
+  // Only the PICKER is disclosed; the state above it never is. Opens
+  // pre-filled when a refused registration sent the operator here -- the parent
+  // remounts this component per request, see the `key` at the call site.
+  const [picking, setPicking] = useState(attachRequest !== null);
+  const [projectId, setProjectId] = useState(attachRequest?.projectId ?? "");
 
-  const grants = readers.data?.grants ?? [];
-  // Neither the owner (it already reads its own mirror; the API 409s) nor a
-  // project that is already a reader.
-  const taken = new Set([source.project_id, ...grants.map((grant) => grant.project_id)]);
+  const grants = attachments.data?.grants ?? [];
+  // Eligible = every project this user can see, minus the ones already
+  // attached. Both sides come from API responses; nothing is hardcoded, and
+  // nothing is excluded for "already having a source of this type" -- a project
+  // may hold several tenants, and that filter was the reported bug.
+  //
+  // The union of both sources of truth: `linked_project_ids` on the source row
+  // and the attachment rows themselves. They should agree; if one lags the
+  // other, offering an already-attached project would be a dead option.
+  const attached = new Set([
+    ...source.linked_project_ids,
+    ...grants.map((grant) => grant.project_id),
+  ]);
   const candidates = (projects.data?.projects ?? []).filter(
-    (project) => !taken.has(project.id),
+    (project) => !attached.has(project.id),
   );
 
   return (
-    <div className="w-full border-t border-white/[0.05] pt-2">
-      <button
-        className="text-xs text-slate-500 hover:text-slate-300"
-        onClick={() => setOpen((value) => !value)}
-      >
-        {open ? "Hide" : "Shared with"}
-        {!open && grants.length > 0 && ` (${grants.length})`}
-      </button>
+    <div className="w-full space-y-2 border-t border-white/[0.05] pt-2">
+      {/* Says why the operator is looking at this control, when they did not
+          choose to open it. Without it the jump reads as the page losing
+          their connect dialog. */}
+      {attachRequest && (
+        <p className="text-xs text-amber-400">
+          That {providerLabel} tenant is already registered here, so registering it
+          again was refused.{" "}
+          {attachRequest.projectId
+            ? `Attach ${attachRequest.projectId} to this one instead`
+            : "Attach a project to this one instead"}{" "}
+          — the tenant stays polled once.
+        </p>
+      )}
 
-      {open && (
-        <div className="mt-2 space-y-2">
-          <p className="text-xs text-slate-600">
-            Other projects that read this mirror for their documentation. The tenant is
-            still polled once; a reader does not add vendor load.
-          </p>
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="text-xs text-slate-500">Projects using this source:</span>
+        {/* The rows below ARE the list; naming the projects again here would
+            print every one of them twice. Only the empty case needs a sentence,
+            because an absent list says nothing on its own. */}
+        {grants.length === 0 && !attachments.isLoading && (
+          /* Not an error, and not styled as one. A tenant registered before any
+             project is exactly what the new flow produces. */
+          <span className="text-xs text-slate-400">
+            None yet — the tenant is registered and mirroring; attach a project to
+            use it.
+          </span>
+        )}
+        {canManage && !picking && (
+          <button
+            className="text-xs text-accent-primary/80 hover:text-accent-primary"
+            onClick={() => setPicking(true)}
+          >
+            Attach a project
+          </button>
+        )}
+      </div>
 
-          {readers.isError && (
-            <p className="text-xs text-amber-400">
-              Could not load sharing: {parseApiError(readers.error)}
-            </p>
-          )}
+      {/* The hesitation this answers is a cost assumption, so it sits with the
+          state rather than inside the picker where it arrives too late. */}
+      <p className="text-xs text-slate-600">
+        Attaching costs nothing at the vendor: the tenant is mirrored once and polled
+        once however many projects are attached. Each attached project can narrow
+        which environments and how much history its own documents use.
+      </p>
 
-          {grants.map((grant) => (
-            <div key={grant.id} className="flex flex-wrap items-center gap-2 text-xs">
-              <span className="text-slate-300">{grant.project_id}</span>
-              <span className="text-slate-600">
-                {grant.environment_ids?.length
-                  ? grant.environment_ids.join(", ")
-                  : "every mirrored environment"}
-                {grant.window_days ? ` · last ${grant.window_days} days` : ""}
-              </span>
-              {canManage && (
-                <button
-                  className="text-red-400 hover:text-red-300 disabled:opacity-50"
-                  disabled={revoke.isPending}
-                  onClick={() => revoke.mutate(grant.project_id)}
-                >
-                  Revoke
-                </button>
-              )}
-            </div>
-          ))}
+      {attachments.isError && (
+        <p className="text-xs text-amber-400">
+          Could not load attached projects: {parseApiError(attachments.error)}
+        </p>
+      )}
 
-          {!readers.isLoading && grants.length === 0 && (
-            <p className="text-xs text-slate-600">No other project reads this mirror.</p>
-          )}
-
+      {grants.map((grant) => (
+        <div key={grant.id} className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-slate-300">{grant.project_id}</span>
+          <span className="text-slate-600">
+            {/* `null` = every mirrored environment, `[]` = a deliberate
+                "nothing". Collapsing the two would report a project that reads
+                no runtime evidence as reading all of it. */}
+            {grant.environment_ids === null
+              ? "every mirrored environment"
+              : grant.environment_ids.length === 0
+                ? "no environments selected"
+                : grant.environment_ids.join(", ")}
+            {grant.window_days ? ` · last ${grant.window_days} days` : ""}
+          </span>
           {canManage && (
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                className="input text-xs"
-                value={projectId}
-                onChange={(event) => setProjectId(event.target.value)}
-              >
-                <option value="">Add a project...</option>
-                {candidates.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.display_name === project.id
-                      ? project.id
-                      : `${project.display_name} (${project.id})`}
-                  </option>
-                ))}
-              </select>
-              <button
-                className="btn-ghost text-xs"
-                disabled={!projectId || add.isPending}
-                onClick={() =>
-                  add.mutate(
-                    { project_id: projectId },
-                    { onSuccess: () => setProjectId("") },
+            <button
+              className="text-red-400 hover:text-red-300 disabled:opacity-50"
+              disabled={detach.isPending}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Detach ${grant.project_id} from this source? Its documentation runs stop reading this tenant's runtime history.`,
                   )
+                ) {
+                  detach.mutate(grant.project_id);
                 }
-              >
-                Grant read
-              </button>
-            </div>
+              }}
+            >
+              Detach
+            </button>
           )}
-
-          {add.isError && (
-            <p className="text-xs text-red-400">Grant failed: {parseApiError(add.error)}</p>
-          )}
-          {revoke.isError && (
-            <p className="text-xs text-red-400">Revoke failed: {parseApiError(revoke.error)}</p>
-          )}
-          {/* A grant filters by project id, so it also reaches whatever the
-              source's workspace map re-points rows to. Stated, never implied. */}
-          {add.data && add.data.grant.exposes_project_ids.length > 1 && (
-            <p className="text-xs text-amber-400">
-              This grant also exposes runtime data attributed to{" "}
-              {add.data.grant.exposes_project_ids.slice(1).join(", ")}, because this
-              source maps workspaces to those projects.
-            </p>
-          )}
-          <p className="text-xs text-slate-600">
-            A reader can narrow which environments and how much history its documents
-            use in that project's read scope.
-          </p>
         </div>
+      ))}
+
+      {canManage && picking && (
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            className="input text-xs"
+            aria-label="Project to attach"
+            value={projectId}
+            onChange={(event) => setProjectId(event.target.value)}
+          >
+            <option value="">Choose a project…</option>
+            {candidates.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.display_name === project.id
+                  ? project.id
+                  : `${project.display_name} (${project.id})`}
+              </option>
+            ))}
+          </select>
+          <button
+            className="btn-ghost text-xs"
+            disabled={!projectId || attach.isPending}
+            onClick={() =>
+              attach.mutate(
+                { project_id: projectId },
+                {
+                  onSuccess: () => {
+                    setProjectId("");
+                    setPicking(false);
+                  },
+                },
+              )
+            }
+          >
+            Attach
+          </button>
+          <button
+            className="text-xs text-slate-500 hover:text-slate-300"
+            onClick={() => {
+              setProjectId("");
+              setPicking(false);
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {attach.isError && (
+        <p className="text-xs text-red-400">Could not attach: {parseApiError(attach.error)}</p>
+      )}
+      {detach.isError && (
+        <p className="text-xs text-red-400">Could not detach: {parseApiError(detach.error)}</p>
+      )}
+      {/* An attachment filters by project id, so it also reaches whatever the
+          source's workspace map re-points rows to. Stated, never implied. */}
+      {attach.data && attach.data.grant.exposes_project_ids.length > 1 && (
+        <p className="text-xs text-amber-400">
+          This also exposes runtime data attributed to{" "}
+          {attach.data.grant.exposes_project_ids.slice(1).join(", ")}, because this
+          source maps workspaces to those projects.
+        </p>
       )}
     </div>
   );
 }
 
 /** Resolves the registered dialog for the provider being connected or edited. */
-function ConnectorDialogHost({ editing, onClose }: {
+function ConnectorDialogHost({ editing, onClose, onRequestAttach }: {
   editing: { provider: ConnectorProvider; connector: ConnectorInstance | null };
   onClose: () => void;
+  onRequestAttach: (request: AttachRequest) => void;
 }) {
   const Dialog = connectorDialogRegistry[editing.provider.provider_id];
   // Unreachable while `canConnect` gates every entry point, and deliberately
   // silent rather than a fallback form: rendering *some* dialog is how the
   // original bug looked to the operator.
   if (!Dialog) return null;
-  return <Dialog provider={editing.provider} connector={editing.connector} onClose={onClose} />;
+  return (
+    <Dialog
+      provider={editing.provider}
+      connector={editing.connector}
+      onClose={onClose}
+      onRequestAttach={onRequestAttach}
+    />
+  );
 }
 
 function ConnectorBrowserDialog({ providers, onConnect, onClose }: { providers: ConnectorProvider[]; onConnect: (provider: ConnectorProvider) => void; onClose: () => void }) {
@@ -907,18 +1149,36 @@ function ElasticStackDialog({ provider, connector, onClose }: ConnectorDialogPro
  * connector store instead would render as "connected" and never sync.
  *
  * The form is the provider's own `credential_schema()`, fetched rather than
- * hardcoded, plus a project selector. Nothing else: TMC has four fields and this
- * dialog must not invent a fifth.
+ * hardcoded, plus an OPTIONAL project attachment. Nothing else: TMC has four
+ * fields and this dialog must not invent a fifth.
+ *
+ * The project is optional because a source is a registered TENANT, not a
+ * project's connection. Requiring one here -- with a picker that had been
+ * filtered down to nothing by a per-project limit that no longer exists -- is
+ * what made registering a second tenant impossible. Projects attach afterwards,
+ * any number of them, and `SourceAttachments` owns that.
+ *
+ * A duplicate 409 is not a failure state here. One tenant backs several scanned
+ * projects routinely, and the answer is to attach to the mirror that already
+ * exists -- so the refusal renders as a way forward, handed back to the page via
+ * `onRequestAttach`. The attach form itself is NOT reproduced here;
+ * `SourceAttachments` owns it, and a second control for one relationship is how
+ * an operator picks the wrong one.
  */
-function TalendTmcDialog({ provider, onClose }: ConnectorDialogProps) {
+function TalendTmcDialog({ provider, onClose, onRequestAttach }: ConnectorDialogProps) {
   const create = useCreateRuntimeSource();
   // Only requested while this dialog is mounted -- it is form metadata.
   const sourceTypes = useRuntimeSourceTypes(true);
   const projects = useProjects();
+  // Same query key the connector row uses, so this is a cache read rather than
+  // a second request. Needed to answer "is the colliding source on this page",
+  // which decides whether a jump to it is offered or only described.
+  const mirrors = useRuntimeSources(provider.provider_id);
   const [projectId, setProjectId] = useState("");
   const [label, setLabel] = useState(provider.label);
   const [values, setValues] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  const [conflict, setConflict] = useState<RuntimeSourceConflict | null>(null);
   const [scopes, setScopes] = useState<RuntimeScopeOption[] | null>(null);
   const [chosenScopes, setChosenScopes] = useState<string[]>([]);
   const [testing, setTesting] = useState(false);
@@ -937,6 +1197,27 @@ function TalendTmcDialog({ provider, onClose }: ConnectorDialogProps) {
   const selection = runtimeType?.scope_selection ?? null;
   const projectOptions = projects.data?.projects ?? [];
   const pending = create.isPending;
+
+  /**
+   * The source to hand the operator to, or null if there is nowhere to send them.
+   *
+   * Two things must both hold, and each rules out a button that would fail: the
+   * SERVER has to say this caller could create the attachment, which it answers
+   * from the same checks the attach route enforces; and the source has to be
+   * visible on this page, since the jump targets a control that only renders
+   * for a row we can list.
+   *
+   * There is no `kind` test any more. `physical_identity` is the only conflict
+   * the schema accepts, and any other value fails the parse so that `conflict`
+   * is null and the operator gets the server's prose -- never an affordance
+   * built for a collision this build cannot interpret.
+   */
+  const attachableSourceId = useMemo(() => {
+    if (conflict === null) return null;
+    if (!conflict.can_request_share || conflict.source_id === null) return null;
+    const sourceId = conflict.source_id;
+    return (mirrors.data?.sources ?? []).some((item) => item.id === sourceId) ? sourceId : null;
+  }, [conflict, mirrors.data?.sources]);
 
   /** Only what the operator filled in: an empty optional field is absent. */
   function filledCredentials(): Record<string, string> {
@@ -988,13 +1269,10 @@ function TalendTmcDialog({ provider, onClose }: ConnectorDialogProps) {
 
   async function save() {
     setError(null);
-    // A runtime source is bound to ONE project id and that id must match the
-    // intodoc project exactly. This is a select, so the only way to reach here
-    // without one is to not have chosen.
-    if (!projectId) {
-      setError("Choose the project this Talend environment belongs to.");
-      return;
-    }
+    setConflict(null);
+    // No project check. Registering the tenant with nothing attached is a
+    // supported path with its own option in the picker, and projects attach
+    // afterwards from the source row.
     const missing = fields.filter((field) => field.required && !values[field.name]?.trim());
     if (missing.length > 0) {
       setError(`Enter ${missing.map((field) => field.label || field.name).join(", ")}.`);
@@ -1011,7 +1289,9 @@ function TalendTmcDialog({ provider, onClose }: ConnectorDialogProps) {
         // The connector id the operator clicked; the server maps it to the
         // runtime provider key.
         provider_id: provider.provider_id,
-        project_id: projectId,
+        // Omitted entirely when nothing was chosen, so the tenant registers
+        // with no attachment rather than one to an empty project id.
+        ...(projectId ? { project_id: projectId } : {}),
         label: label.trim() || provider.label,
         credentials,
       });
@@ -1023,6 +1303,10 @@ function TalendTmcDialog({ provider, onClose }: ConnectorDialogProps) {
       // already registered" is the single most useful thing it can say. It
       // redacts credential-shaped substrings before they leave that service.
       setError(parseApiError(reason));
+      // ...and the structured half of that 409, when there is one. Null for
+      // every other failure, which is what keeps this an addition to the
+      // message rather than a replacement for it.
+      setConflict(runtimeSourceRegistrationConflict(reason));
     }
   }
 
@@ -1039,17 +1323,24 @@ function TalendTmcDialog({ provider, onClose }: ConnectorDialogProps) {
           <button className="btn-icon-action" aria-label="Close" onClick={onClose}>×</button>
         </div>
         <div className="space-y-5 px-6 py-5">
-          <Field label="Project">
-            {/* A dropdown of real intodoc projects, never free text. A typed
-                project id that does not match an intodoc project files real
-                execution history under a name documentation never reads, and
-                the run then attaches runtime evidence that is mostly wrong. */}
+          <Field label="Attach a project (optional)">
+            {/* OPTIONAL, and nothing is preselected. The default option is the
+                real "not yet" path, not a placeholder: a tenant is registered
+                first and projects attach to it afterwards, any number of them.
+                Every project the caller can see is offered -- projects are NOT
+                filtered out for already having a source of this type, because
+                a project may hold several tenants and that filter is exactly
+                what left this picker empty.
+
+                Still a dropdown of real intodoc projects rather than free text:
+                a typed project id that matches no intodoc project files real
+                execution history under a name documentation never reads. */}
             <select
               className="input-dark"
               value={projectId}
               onChange={(event) => setProjectId(event.target.value)}
             >
-              <option value="">Select a project</option>
+              <option value="">Don&apos;t attach a project yet</option>
               {projectOptions.map((project) => (
                 <option key={project.id} value={project.id}>
                   {project.display_name === project.id ? project.id : `${project.display_name} (${project.id})`}
@@ -1057,11 +1348,13 @@ function TalendTmcDialog({ provider, onClose }: ConnectorDialogProps) {
               ))}
             </select>
           </Field>
+          <p className="text-xs text-slate-600">
+            One tenant is mirrored once and polled once however many projects are
+            attached. You can attach and detach projects at any time from this
+            connector&apos;s row.
+          </p>
           {projects.isError && (
             <p className="text-xs text-amber-400">Could not load projects: {parseApiError(projects.error)}</p>
-          )}
-          {!projects.isLoading && !projects.isError && projectOptions.length === 0 && (
-            <p className="text-xs text-amber-400">No projects exist yet. Add a project before connecting a runtime source.</p>
           )}
 
           <Field label="Display name">
@@ -1134,6 +1427,39 @@ function TalendTmcDialog({ provider, onClose }: ConnectorDialogProps) {
           )}
 
           {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
+          {/* The refusal, turned into the next step. The server's sentence is
+              already above; this is what an operator can DO about it. */}
+          {conflict && (
+            <div className="space-y-2 rounded-md border border-amber-400/30 bg-amber-400/[0.06] p-3">
+              <p className="text-xs text-slate-300">
+                That tenant is registered already, and deliberately mirrored and polled
+                only once — projects attach to the existing source instead of the
+                credential being registered again. It costs nothing at the vendor.
+              </p>
+              {attachableSourceId !== null ? (
+                <button
+                  className="btn-ghost text-xs"
+                  onClick={() =>
+                    onRequestAttach({
+                      providerId: provider.provider_id,
+                      sourceId: attachableSourceId,
+                      projectId,
+                    })
+                  }
+                >
+                  {projectId
+                    ? `Attach ${projectId} to that tenant`
+                    : "Open that tenant to attach a project"}
+                </button>
+              ) : (
+                <p className="text-xs text-slate-400">
+                  {conflict.can_request_share
+                    ? "Open that source's row and use “Attach a project”."
+                    : "You cannot do that from here: an operator with access to that source has to attach your project to it."}
+                </p>
+              )}
+            </div>
+          )}
         </div>
         <div className="flex justify-end gap-2 border-t border-white/[0.08] px-6 py-4">
           <button className="btn-ghost" disabled={pending} onClick={onClose}>Cancel</button>

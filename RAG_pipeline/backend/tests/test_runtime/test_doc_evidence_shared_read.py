@@ -17,20 +17,28 @@ is true:
   must MERGE rather than let one silently overwrite the other.
 """
 
+import contextlib
 import datetime
 from datetime import UTC
+from unittest.mock import patch
 
 import pytest
+from cryptography.fernet import Fernet
 
+from src.config import settings
 from src.db.models import runtime_data  # noqa: F401 - registers the source tables
 from src.db.models.runtime_data import RuntimeLogEventRow
 from src.db.models.runtime_insights import RuntimeIncidentRow
+from src.db.models.runtime_topology import RuntimeJobScanMapRow
 from src.runtime.models import (
     RuntimeExecution,
     RuntimeExecutionState,
     RuntimeFailure,
     RuntimeJobRun,
+    RuntimePlan,
+    RuntimePlanStep,
 )
+from src.runtime.read_scope import RuntimeReadTerm, resolve_runtime_read_scope
 from src.runtime.store import RuntimeDuplicateSourceError, RuntimeStoreRepository
 
 # OWNER holds the credential and pays the poll; READER documents the same
@@ -77,6 +85,7 @@ async def _job_run(
     environment_id: str,
     environment_name: str,
     execution_id: str | None = None,
+    started_at: datetime.datetime | None = None,
 ) -> None:
     await store.upsert_job_run(
         project_id,
@@ -88,7 +97,7 @@ async def _job_run(
             state=RuntimeExecutionState.SUCCESS,
             environment_id=environment_id,
             environment_name=environment_name,
-            started_at=_T0,
+            started_at=started_at or _T0,
             execution_id=execution_id or run_id,
         ),
         _SRC,
@@ -140,10 +149,54 @@ async def store(db_session):
     return repo
 
 
+@pytest.fixture(autouse=True)
+def credential_key(monkeypatch):
+    """A per-run Fernet key: a project's own documentation read scope lives in
+    its source's credential blob, so reading or writing one costs a decrypt."""
+    monkeypatch.setattr(
+        settings, "source_credentials_encryption_key", Fernet.generate_key().decode()
+    )
+    monkeypatch.setattr(settings, "source_credentials_encryption_key_previous", "")
+    monkeypatch.setattr(settings, "source_credentials_encryption_key_id", "primary")
+    monkeypatch.setattr(settings, "source_credentials_encryption_key_previous_id", "previous")
+
+
 async def _source(store: RuntimeStoreRepository, project_id: str = _OWNER):
     return await store.create_source_config(
         project_id=project_id, source_type="mock", label="Talend EU"
     )
+
+
+async def _reader_terms(store: RuntimeStoreRepository, project_id: str = _READER):
+    """The per-project terms a documentation run resolves for this project.
+
+    `user_scope=None` is what the machine-key documentation path passes: there is
+    no user behind it, so there is no scope to check the project against, and
+    widening still comes only from stored grant rows.
+    """
+    resolved = await resolve_runtime_read_scope(
+        store, user_scope=None, project_id=project_id, now=_T0
+    )
+    return resolved.project_ids or [project_id], resolved.terms
+
+
+@contextlib.contextmanager
+def _recorded_sql(session):
+    """Every statement the session compiles, as SQL text plus its bound values.
+
+    Text alone is not enough: the two shapes under test differ by which VALUE
+    lands in a `project_id = ?` predicate as much as by the predicate itself.
+    """
+    statements: list[tuple[str, dict]] = []
+    original = session.execute
+
+    async def recording(statement, *args, **kwargs):
+        compiled = statement.compile(dialect=session.bind.dialect)
+        statements.append((str(compiled), dict(compiled.params)))
+        return await original(statement, *args, **kwargs)
+
+    with patch.object(session, "execute", recording):
+        yield statements
 
 
 class TestRegressionFloor:
@@ -151,6 +204,43 @@ class TestRegressionFloor:
 
     async def test_read_set_of_an_ungranted_project_is_itself_alone(self, store):
         assert await store.resolve_runtime_read_projects(_OWNER) == [_OWNER]
+
+    async def test_an_ungranted_read_emits_byte_identical_sql_with_or_without_terms(
+        self, store, db_session
+    ):
+        """The regression floor, checked on the SQL rather than on the rows.
+
+        An ungranted project is the overwhelmingly common case and it must keep
+        its query plan, not merely its results -- `_apply_read_terms` special-
+        cases a single unrestricted term into a bare `==` precisely so that a
+        one-element read set never becomes an `IN` or a one-branch `OR`. A
+        result-only assertion would pass while that guarantee quietly rotted.
+
+        Both runs go through the whole lane, so every sub-query is covered by
+        construction: a new one added without the special case shows up here as
+        a diff rather than as a slow query six months later.
+        """
+        arguments = dict(
+            project_id=_OWNER,
+            unit_names=["Maximo2RHM_Workorders", "RHM2Smartflow_Workorders"],
+            since=_SINCE,
+        )
+
+        with _recorded_sql(db_session) as flat_sql:
+            flat = await store.list_doc_evidence(
+                [_OWNER], project_ids=[_OWNER], **arguments
+            )
+        with _recorded_sql(db_session) as termed_sql:
+            termed = await store.list_doc_evidence(
+                [_OWNER],
+                project_ids=[_OWNER],
+                read_terms=[RuntimeReadTerm(project_id=_OWNER)],
+                **arguments,
+            )
+
+        assert flat_sql, "the lane must have issued queries for this to mean anything"
+        assert termed_sql == flat_sql
+        assert termed == flat
 
     async def test_a_project_without_a_grant_reads_nothing_of_the_tenant(self, store):
         await _source(store)
@@ -571,3 +661,327 @@ class TestScopeDeclaration:
 
         assert scope.window_days == 30
         assert scope.configured is True
+
+
+class TestEveryAggregateIsBounded:
+    """One unbounded sub-query is a leak whatever the others do.
+
+    The response is assembled from eight reads and all of them reach the same
+    prompt, so it is not enough for the run count to respect a grant while the
+    failure text, the plan list or the diagnosis does not. Each assertion below
+    is a different sub-query and a different way of expressing the narrowing:
+    directly on an environment column, through the execution id of the run that
+    produced the row, or through the execution population an insights table is
+    joined to.
+    """
+
+    @pytest.fixture
+    async def granted_prod_only(self, store, db_session):
+        """The owner runs ONE job in both environments; the reader is granted PROD.
+
+        The ACC side carries every kind of evidence the response can publish, so
+        a sub-query that forgot its terms shows up as a specific wrong field
+        rather than as a wrong total.
+        """
+        await _execution(
+            store,
+            project_id=_OWNER,
+            execution_id="acc-mx-1",
+            job_name="Maximo2RHM_Workorders",
+            state="failed",
+            started_at=_T0 + datetime.timedelta(hours=5),
+            duration_ms=5000,
+        )
+        await _job_run(
+            store,
+            project_id=_OWNER,
+            run_id="acc-mx-1",
+            job_name="Maximo2RHM_Workorders",
+            environment_id="env-acc",
+            environment_name="ACC",
+            started_at=_T0 + datetime.timedelta(hours=5),
+        )
+        # A SECOND acceptance run, so the excluded environment has a gap of its
+        # own: one run produces no inter-run gap at all, and a cadence assertion
+        # that cannot see a leaked series is not an assertion.
+        await _execution(
+            store,
+            project_id=_OWNER,
+            execution_id="acc-mx-2",
+            job_name="Maximo2RHM_Workorders",
+            started_at=_T0 + datetime.timedelta(hours=6),
+        )
+        await _job_run(
+            store,
+            project_id=_OWNER,
+            run_id="acc-mx-2",
+            job_name="Maximo2RHM_Workorders",
+            environment_id="env-acc",
+            environment_name="ACC",
+            started_at=_T0 + datetime.timedelta(hours=6),
+        )
+        await store.upsert_failure(
+            _OWNER,
+            RuntimeFailure(
+                execution_id="acc-mx-1",
+                job_name="Maximo2RHM_Workorders",
+                failed_at=_T0 + datetime.timedelta(hours=5),
+                error_summary="ACC-ONLY stack trace from the acceptance loop",
+            ),
+            _SRC,
+            _T0,
+        )
+        db_session.add_all(
+            [
+                RuntimeLogEventRow(
+                    project_id=_OWNER,
+                    execution_id="acc-mx-1",
+                    timestamp=_T0,
+                    severity="error",
+                    message="acc log line",
+                    line_ordinal=0,
+                    event_fingerprint="fp-acc",
+                    source_key=_SRC,
+                    ingested_at=_T0,
+                ),
+                RuntimeIncidentRow(
+                    project_id=_OWNER,
+                    incident_id="inc-acc",
+                    execution_id="acc-mx-1",
+                    signature_hash="sig-acc",
+                    pattern_id="sqlserver.deadlock",
+                    confidence="high",
+                    first_bad_at=_T0,
+                    created_at=_T0,
+                ),
+            ]
+        )
+        await db_session.flush()
+        for plan_id, label, environment_id in (
+            ("plan-prod", "PROD Plan", "env-prod"),
+            ("plan-acc", "ACC Plan", "env-acc"),
+        ):
+            await store.upsert_plan(
+                _OWNER,
+                RuntimePlan(
+                    plan_id=plan_id,
+                    source_key=_SRC,
+                    name=label,
+                    display_name=label,
+                    environment_id=environment_id,
+                    steps=[
+                        RuntimePlanStep(
+                            step_id=f"{plan_id}-1",
+                            name="step",
+                            job_name="Maximo2RHM_Workorders",
+                        )
+                    ],
+                ),
+                _SRC,
+                _T0,
+            )
+        source = await _source(store)
+        await store.add_read_grant(
+            source_id=source.id,
+            project_id=_READER,
+            environment_ids=["env-prod"],
+            window_days=None,
+            created_by="1",
+        )
+        return await _reader_terms(store)
+
+    async def test_no_aggregate_carries_the_excluded_environment(
+        self, store, granted_prod_only
+    ):
+        read_projects, terms = granted_prod_only
+
+        units, _, _ = await store.list_doc_evidence(
+            read_projects,
+            project_id=_READER,
+            unit_names=["Maximo2RHM_Workorders"],
+            since=_SINCE,
+            project_ids=read_projects,
+            read_terms=terms,
+        )
+        unit = units[0]
+
+        # runtime_executions, reached through the reliability rollup: no
+        # environment column, so the narrowing routes through the execution id.
+        assert unit.total_runs == 1
+        assert unit.failed_runs == 0
+        # ...and the duration percentiles, which read the same table directly.
+        assert unit.max_duration_ms == 100
+        # runtime_job_runs: its own environment column.
+        assert unit.environments == ["PROD"]
+        # runtime_plans: inventory with an environment column, so a narrowed
+        # grant is honoured here rather than failing closed.
+        assert unit.plans == ["PROD Plan"]
+        # runtime_failures: no environment, narrowed through its execution id.
+        # Getting this one wrong publishes an acceptance stack trace as the
+        # production failure mode.
+        assert unit.recent_failures == []
+        # runtime_log_events: no project predicate of its own at all, reached
+        # only through the (narrowed) execution population.
+        assert unit.log_quality.failed_executions == 0
+        assert unit.log_quality.executions_with_logs == 0
+        # runtime_incidents: same join, same population.
+        assert unit.incident_insights == []
+
+    async def test_the_cadence_series_never_pools_an_excluded_environment(
+        self, store, granted_prod_only
+    ):
+        """Asserted on the sub-query, not on the published field.
+
+        `environments[0]` already selects which environment's gaps are
+        published, so a leak here is invisible from the outside until the
+        dominant environment changes. The dict itself must not contain the
+        excluded one.
+        """
+        read_projects, terms = granted_prod_only
+
+        gaps = await store._doc_evidence_gap_quantiles(
+            read_projects,
+            read_projects,
+            ["Maximo2RHM_Workorders"],
+            _SINCE,
+            read_terms=terms,
+        )
+
+        assert all(environment != "ACC" for _job, environment in gaps)
+
+    async def test_a_scan_map_override_is_not_honoured_outside_the_grant(
+        self, store, db_session, granted_prod_only
+    ):
+        """The override resolves a runtime NAME off a job run.
+
+        `runtime_job_scan_maps` carries no environment of its own, so the limits
+        attach to the run it names: an override that can only be resolved
+        through an excluded run must not rename a unit into the granted estate.
+        """
+        read_projects, terms = granted_prod_only
+        db_session.add(
+            RuntimeJobScanMapRow(
+                project_id=_OWNER,
+                source_key=_SRC,
+                runtime_job_id="job-Acceptance_Only_Job",
+                static_job_id="Static_Unit",
+                created_at=_T0,
+                created_by="1",
+            )
+        )
+        await db_session.flush()
+
+        _units, unmatched, _ = await store.list_doc_evidence(
+            read_projects,
+            project_id=_READER,
+            unit_names=["Static_Unit"],
+            since=_SINCE,
+            project_ids=read_projects,
+            read_terms=terms,
+        )
+
+        assert unmatched == ["Static_Unit"]
+
+
+class TestCoverageRecordUnderANarrowedGrant:
+    """The record has to describe what was READ, not what was asked for.
+
+    The flat fields cannot: `environment_ids` unions the grant's environments
+    into the reader's own selection and `window_days` takes the widest of the
+    two, which is right for the reader's own sources and says nothing true about
+    a granted project. A consumer reading only those fields would publish a
+    bounded read as if it were whole.
+    """
+
+    async def test_a_narrowed_grant_is_named_with_its_limits(self, store):
+        source = await _source(store)
+        await store.add_read_grant(
+            source_id=source.id,
+            project_id=_READER,
+            environment_ids=["env-prod"],
+            window_days=30,
+            created_by="1",
+        )
+        read_projects, terms = await _reader_terms(store)
+
+        scope = await store.resolve_doc_read_scope(
+            read_projects, _READER, default_window_days=90, read_terms=terms
+        )
+
+        assert [limit.project_id for limit in scope.grant_limits] == [_OWNER]
+        assert scope.grant_limits[0].environment_ids == ["env-prod"]
+        assert scope.grant_limits[0].since == _T0 - datetime.timedelta(days=30)
+        # The reader's own term restricts nothing and is not a limitation.
+        assert all(not limit.unrestricted for limit in scope.grant_limits)
+
+    async def test_an_unnarrowed_grant_declares_no_limit(self, store):
+        source = await _source(store)
+        await store.add_read_grant(
+            source_id=source.id,
+            project_id=_READER,
+            environment_ids=None,
+            window_days=None,
+            created_by="1",
+        )
+        read_projects, terms = await _reader_terms(store)
+
+        scope = await store.resolve_doc_read_scope(
+            read_projects, _READER, default_window_days=90, read_terms=terms
+        )
+
+        assert scope.shared_read is True
+        assert scope.grant_limits == []
+
+    async def test_an_environment_the_grant_excludes_is_reported_unavailable(self, store):
+        """The reader selects ACC for itself and is granted PROD only.
+
+        ACC exists in the mirror -- in the grantor's estate -- but no query this
+        read issues can return a row from it. Resolving it to a name off the
+        un-narrowed mirror would publish it as an environment the document
+        covers; reporting it as unavailable is the same treatment a retired
+        environment already gets, and for the same reason.
+        """
+        reader_source = await _source(store, project_id=_READER)
+        await store.write_credentials(
+            source_id=reader_source.id,
+            plaintext_payload={"doc_environment_ids": ["env-acc"]},
+            credential_type="mock",
+            rotated_by="1",
+        )
+        owner_source = await _source(store)
+        await store.add_read_grant(
+            source_id=owner_source.id,
+            project_id=_READER,
+            environment_ids=["env-prod"],
+            window_days=None,
+            created_by="1",
+        )
+        read_projects, terms = await _reader_terms(store)
+
+        scope = await store.resolve_doc_read_scope(
+            read_projects, _READER, default_window_days=90, read_terms=terms
+        )
+
+        # The flat selection still carries both -- the grant's environment is
+        # what makes PROD readable at all, and the reader's own choice stands.
+        assert scope.environment_ids == ["env-acc", "env-prod"]
+        assert scope.environment_names == ["PROD"]
+        assert scope.unavailable_environment_ids == ["env-acc"]
+
+    async def test_the_picker_stops_offering_what_the_grant_excludes(self, store):
+        """A selection that can only resolve to no evidence is not a choice."""
+        source = await _source(store)
+        await store.add_read_grant(
+            source_id=source.id,
+            project_id=_READER,
+            environment_ids=["env-prod"],
+            window_days=None,
+            created_by="1",
+        )
+        read_projects, terms = await _reader_terms(store)
+
+        offered = await store.list_mirrored_environments(
+            read_projects, _READER, project_ids=read_projects, read_terms=terms
+        )
+
+        assert {item.environment_id for item in offered} == {"env-prod"}

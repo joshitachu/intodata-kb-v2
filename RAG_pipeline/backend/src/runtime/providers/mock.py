@@ -301,7 +301,8 @@ class MockRuntimeProvider(NoScopeSelectionMixin, SingleTenantIdentityMixin):
         return RuntimeSyncBatch(
             sources=[
                 RuntimeSource(
-                    project_id=project_id,
+                    # The stamp the rest of this batch is written with.
+                    estate_key=project_id,
                     source_key=source_key,
                     source_type="mock",
                     label="Mock runtime source",

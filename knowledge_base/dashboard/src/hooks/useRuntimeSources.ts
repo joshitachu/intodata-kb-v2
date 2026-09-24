@@ -99,13 +99,14 @@ export function useDeleteRuntimeSource() {
 }
 
 /**
- * Projects granted read access to one source's mirror.
+ * Projects attached to one source.
  *
- * The supported answer to "That physical runtime source is already registered":
- * one Talend tenant is polled ONCE, and every other project documenting the
- * same estate reads that mirror through a grant. Registering the credential
- * again is refused on purpose -- it would double the vendor poll and leave two
- * mirrors of one estate free to drift apart.
+ * These rows ARE the source-to-project relationship: a source has no owning
+ * project, only attachments, and any number of them. Also the supported answer
+ * to "That physical runtime source is already registered": one Talend tenant is
+ * polled ONCE, and every project documenting that estate attaches to it.
+ * Registering the credential again is refused on purpose -- it would double the
+ * vendor poll and leave two mirrors of one estate free to drift apart.
  */
 export function useRuntimeSourceReaders(sourceId: number | null, enabled = true) {
   return useQuery({
@@ -113,7 +114,7 @@ export function useRuntimeSourceReaders(sourceId: number | null, enabled = true)
     queryFn: () => api.listRuntimeSourceReaders(sourceId as number),
     enabled: enabled && sourceId !== null,
     // Best-effort, like the read scope: a caller without permission sees the
-    // source row without its sharing line, not an error in place of the list.
+    // source row without its attachment list, not an error in place of it.
     retry: false,
     staleTime: 15_000,
   });
@@ -124,9 +125,12 @@ function invalidateReaders(
   sourceId: number,
 ) {
   queryClient.invalidateQueries({ queryKey: ["runtime-source-readers", sourceId] });
-  // A grant changes what a documentation run for the READING project reads,
-  // so the scope line for every project is now potentially stale.
+  // An attachment changes what a documentation run for the attached project
+  // reads, so the scope line for every project is now potentially stale.
   queryClient.invalidateQueries({ queryKey: ["runtime-read-scope"] });
+  // It also changes `linked_project_ids` on the source row itself, which is
+  // what the connector row renders at rest.
+  invalidateRuntimeSources(queryClient);
 }
 
 export function useAddRuntimeSourceReader(sourceId: number) {

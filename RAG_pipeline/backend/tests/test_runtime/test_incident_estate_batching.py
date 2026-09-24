@@ -48,7 +48,7 @@ async def _seed_estate(store: _Store) -> None:
     await store.upsert_source(
         _P,
         RuntimeSource(
-            project_id=_P,
+            estate_key=_P,
             source_key=_SRC,
             source_type="mock",
             label="Mock source",

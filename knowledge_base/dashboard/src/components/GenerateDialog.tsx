@@ -14,6 +14,7 @@ import {
   describeKind,
   engineReadsKind,
   formatSyncedAt,
+  isCliSessionEngine,
   type GenerationEngine,
 } from "../lib/connectors";
 import { api } from "../api/client";
@@ -37,6 +38,17 @@ interface Props {
 // Same two values as the engine the live-data panel reasons about; kept as one
 // type so a third engine cannot be added on one side only.
 type GenerationMethod = GenerationEngine;
+
+/**
+ * Aliases the Claude Code CLI accepts for `--model`. Deliberately not sourced
+ * from the model catalogue: that catalogue lists network routes for the Python
+ * harness (`openai/...`, `ollama/...`), none of which this CLI can resolve.
+ */
+const CLAUDE_MODEL_ALIASES = [
+  { id: "sonnet", label: "Sonnet (default)" },
+  { id: "opus", label: "Opus" },
+  { id: "haiku", label: "Haiku" },
+] as const;
 
 /**
  * The generation plan is advisory. It NEVER gates the run.
@@ -169,9 +181,25 @@ export default function GenerateDialog({
     (!project.doc_generation_provider &&
       (defaultInvestigation?.id === "opencode-cli" ||
         defaultAnalysis?.id === "opencode-cli"));
-  const generationMethod =
-    runGenerationMethod ?? (configuredForOpenCode ? "opencode" : "legacy");
+  const configuredForClaude =
+    project.doc_generation_provider === "claude-cli" ||
+    savedInvestigation === "claude-cli" ||
+    (!project.doc_generation_provider &&
+      (defaultInvestigation?.id === "claude-cli" ||
+        defaultAnalysis?.id === "claude-cli"));
+  const defaultGenerationMethod: GenerationMethod = configuredForClaude
+    ? "claude"
+    : configuredForOpenCode
+      ? "opencode"
+      : "legacy";
+  const generationMethod = runGenerationMethod ?? defaultGenerationMethod;
   const usesOpenCode = generationMethod === "opencode";
+  const usesClaude = generationMethod === "claude";
+  // Claude Code and OpenCode are one lane with two transports: the same prompt
+  // on the same staging, driven by one session model. Everything the dialog
+  // does differently for OpenCode it must also do for Claude, so the UI keys on
+  // the lane rather than on the transport.
+  const usesCliSession = isCliSessionEngine(generationMethod);
   const configuredLegacyAnalysisModel =
     project.doc_generation_provider &&
     project.doc_generation_provider !== "custom" &&
@@ -196,7 +224,7 @@ export default function GenerateDialog({
   // nothing to compare against; in both cases the dialog behaves as it did
   // before this preview existed.
   const plan = planState.status === "ready" ? planState.plan : null;
-  const previewablePlan = !usesOpenCode && plan && plan.composite && plan.scan_available ? plan : null;
+  const previewablePlan = !usesCliSession && plan && plan.composite && plan.scan_available ? plan : null;
   // The server's own count, not the length of the list: it owns the skip
   // decision, and its arithmetic is what the run will actually charge for.
   const subprojectsToGenerate = previewablePlan?.will_generate ?? null;
@@ -208,14 +236,18 @@ export default function GenerateDialog({
       {
         projectId: project.id,
         resume,
-        investigationModel: usesOpenCode
+        investigationModel: usesCliSession
           ? null
           : runInvestigationModel || savedLegacyInvestigation,
-        model: usesOpenCode
+        model: usesCliSession
           ? runAnalysisModel || null
           : runAnalysisModel || configuredLegacyAnalysisModel,
-        writeModel: usesOpenCode ? null : runWriteModel || savedWrite,
-        generationMethod: usesOpenCode ? "opencode-cli" : "custom",
+        writeModel: usesCliSession ? null : runWriteModel || savedWrite,
+        generationMethod: usesClaude
+          ? "claude-cli"
+          : usesOpenCode
+            ? "opencode-cli"
+            : "custom",
         // Preserve the shared request shape across generation transports.
         liveEvidence,
       },
@@ -281,14 +313,15 @@ export default function GenerateDialog({
         </div>
 
         <div className="flex-1 overflow-y-auto px-7 py-5 space-y-6">
-          {usesOpenCode ? (
+          {usesCliSession ? (
             <section className="rounded border border-accent-primary/25 bg-accent-primary/5 p-4">
               <h4 className="font-mono uppercase tracking-wider text-xs text-accent-primary/80">
                 Whole-estate generation
               </h4>
               <p className="mt-2 text-sm text-slate-300">
-                OpenCode receives the complete scanned estate in one workspace and runs one
-                autonomous documentation session. Nexus will not split this run into sub-projects.
+                {usesClaude ? "Claude Code" : "OpenCode"} receives the complete scanned estate in
+                one workspace and runs one autonomous documentation session. Nexus will not split
+                this run into sub-projects.
               </p>
             </section>
           ) : (
@@ -369,7 +402,7 @@ export default function GenerateDialog({
             <div
               role="tablist"
               aria-label="Generation method"
-              className="grid grid-cols-2 gap-2 rounded border border-white/[0.08] bg-black/10 p-1"
+              className="grid grid-cols-3 gap-2 rounded border border-white/[0.08] bg-black/10 p-1"
             >
               <button
                 type="button"
@@ -387,6 +420,19 @@ export default function GenerateDialog({
               <button
                 type="button"
                 role="tab"
+                aria-selected={generationMethod === "claude"}
+                onClick={() => setRunGenerationMethod("claude")}
+                className={`rounded px-3 py-2 text-sm font-medium transition-colors ${
+                  generationMethod === "claude"
+                    ? "bg-accent-primary text-surface-bg"
+                    : "text-slate-400 hover:bg-white/[0.05] hover:text-slate-200"
+                }`}
+              >
+                Claude Code
+              </button>
+              <button
+                type="button"
+                role="tab"
                 aria-selected={generationMethod === "opencode"}
                 onClick={() => setRunGenerationMethod("opencode")}
                 className={`rounded px-3 py-2 text-sm font-medium transition-colors ${
@@ -399,17 +445,46 @@ export default function GenerateDialog({
               </button>
             </div>
             <p className="text-xs text-slate-500">
-              {usesOpenCode
-                ? "One OpenCode session runs the same complete Claude-compatible workflow."
-                : "The existing Python pipeline runs each legacy phase with its configured model."}
+              {usesClaude
+                ? "One Claude Code session runs the four-phase workflow. This is the method the prompt is written for; OpenCode is a transport for the same prompt."
+                : usesOpenCode
+                  ? "One OpenCode session runs the same complete Claude-compatible workflow."
+                  : "The existing Python pipeline runs each legacy phase with its configured model."}
             </p>
           </section>
 
           <section className="space-y-3">
             <h4 className="font-mono uppercase tracking-wider text-xs text-accent-primary/80">
-              {usesOpenCode ? "Session model" : "Models that will be used"}
+              {usesCliSession ? "Session model" : "Models that will be used"}
             </h4>
-            {usesOpenCode ? (
+            {usesClaude ? (
+              <>
+                <ModelRow
+                  label="Claude Code Session Model"
+                  effective={runAnalysisModel || "Server default (MCP_CLAUDE_MODEL)"}
+                  defaultLabel="Optional for this run"
+                  note="One model runs Investigation, Analysis, Documentation, and Topology in the same Claude Code session."
+                />
+                {/*
+                  A plain alias list, not the provider catalogue: this value
+                  becomes `claude --model <value>`, so an `openai/...` or
+                  `ollama/...` route from that catalogue would be rejected by the
+                  CLI. Blank is valid and means the server's MCP_CLAUDE_MODEL.
+                */}
+                <select
+                  value={runAnalysisModel}
+                  onChange={(event) => setRunAnalysisModel(event.target.value)}
+                  className="w-full rounded border border-white/[0.08] bg-black/20 px-3 py-2 text-sm text-slate-200"
+                >
+                  <option value="">Server default (MCP_CLAUDE_MODEL)</option>
+                  {CLAUDE_MODEL_ALIASES.map((alias) => (
+                    <option key={alias.id} value={alias.id}>
+                      {alias.label}
+                    </option>
+                  ))}
+                </select>
+              </>
+            ) : usesOpenCode ? (
               <>
                 <ModelRow
                   label="OpenCode Session Model"
@@ -972,9 +1047,15 @@ function LiveDataSourceRow({
           <ul className="mt-1 space-y-0.5">
             {sources.map((source) => (
               <li key={source.id} className="text-xs text-slate-400">
-                {/* WHICH source, WHICH project, WHEN it last synced. "Connected"
-                    on its own cannot answer "which one am I using". */}
-                {source.label || provider.label} · {source.project_id} · last synced{" "}
+                {/* WHICH source and WHEN it last synced. "Connected" on its own
+                    cannot answer "which one am I using".
+
+                    The project is not repeated: this list is already narrowed
+                    to sources attached to THIS project (`useRuntimeSources` is
+                    called with `projectId`). The source's `estate_key` is a row
+                    stamp, not a project, so printing it here would name
+                    something that is not this run's project. */}
+                {source.label || provider.label} · last synced{" "}
                 {formatSyncedAt(source.last_synced_at)}
                 {source.enabled ? (
                   source.status !== "success" && (

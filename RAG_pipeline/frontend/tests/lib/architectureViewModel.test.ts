@@ -342,7 +342,7 @@ describe("relationship cap", () => {
       delivery_paths: [], controls: [], runtime_observations: [], conflicts: [], risks: [],
       unknowns: [], artifact_annotations: [], component_annotations: [], lineage_annotations: [],
     });
-    const pairs = architectureRelationshipPairs(normalizeArchitectureL1(uitgelegd), uitgelegd);
+    const pairs = architectureRelationshipPairs(normalizeArchitectureL1(uitgelegd));
     const flow = architectureFlowsForPair(uitgelegd, pairs[0])[0];
     expect(flow.fieldRows[0].sourceOrExpression).toBe("Neemt het artikelnummer over uit de invoer.");
     expect(flow.fieldRows[0].expression).toBe("row1.gtin");

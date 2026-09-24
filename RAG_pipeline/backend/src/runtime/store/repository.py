@@ -18,14 +18,17 @@ import math
 import re
 import uuid
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
-from typing import NamedTuple
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any, NamedTuple, Protocol
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import Float, and_, case, cast, delete, func, or_, select
+from sqlalchemy import Float, Integer, and_, case, cast, delete, false, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models.runtime_data import (
+    ESTATE_KEY_PREFIX,
+    derive_estate_key,
     RuntimeArtifactRow,
     RuntimeComponentMetricRow,
     RuntimeConnectionRow,
@@ -68,6 +71,7 @@ from src.runtime.models import (
     ListRuntimeInventoryInput,
     ListRuntimeJobRunsInput,
     ListRuntimeJobReliabilityInput,
+    ListRuntimeJobScheduleProfileInput,
     ListRuntimeJobThroughputInput,
     ListRuntimeJobsInput,
     ListRuntimePlanRunsInput,
@@ -101,6 +105,7 @@ from src.runtime.models import (
     RuntimeJobReliability,
     RuntimeJobOperationalInsight,
     RuntimeJobRun,
+    RuntimeJobScheduleProfile,
     RuntimeJobThroughput,
     RuntimeComponentMetric,
     RuntimeLogEvent,
@@ -124,6 +129,7 @@ from src.runtime.models import (
     RuntimeSyncStatus,
     RuntimeWorkspace,
 )
+from src.runtime.read_scope import RuntimeReadTerm
 from src.runtime.secrets import (
     current_key_id,
     decrypt_and_rotate_if_needed,
@@ -298,6 +304,114 @@ def _epoch_seconds(dialect: str, column):
     return (func.julianday(column) - 2_440_587.5) * 86_400.0
 
 
+_SECONDS_PER_DAY = 86_400
+# Defensive ceiling on the day-by-day offset scan below. 200 years of daily
+# probes is far beyond any runtime window and still costs microseconds; the cap
+# only exists so a nonsensical `since`/`until` cannot spin.
+_OFFSET_SCAN_MAX_DAYS = 73_000
+
+
+def _zone_offset_seconds(zone: ZoneInfo, instant: datetime.datetime) -> int:
+    """UTC offset of `zone` at one absolute instant, in seconds."""
+    offset = instant.astimezone(zone).utcoffset()
+    return int(offset.total_seconds()) if offset is not None else 0
+
+
+def _offset_transition_instant(
+    zone: ZoneInfo, low: datetime.datetime, high: datetime.datetime
+) -> datetime.datetime:
+    """First minute in (low, high] where `zone`'s UTC offset stops matching low's.
+
+    Every IANA transition since 1970 lands on a whole minute, so a bisection to
+    minute resolution finds the exact instant rather than an approximation.
+    """
+    base = _zone_offset_seconds(zone, low)
+    minute = datetime.timedelta(minutes=1)
+    while high - low > minute:
+        mid = (low + (high - low) / 2).replace(second=0, microsecond=0)
+        if mid <= low:
+            break
+        if _zone_offset_seconds(zone, mid) == base:
+            low = mid
+        else:
+            high = mid
+    return high
+
+
+def _utc_offset_segments(
+    zone: ZoneInfo, lower: datetime.datetime, upper: datetime.datetime
+) -> list[tuple[datetime.datetime | None, int]]:
+    """`zone`'s UTC offset over [lower, upper] as ordered ``(start_utc, seconds)``.
+
+    The first segment's start is None, meaning "everything before the next
+    boundary". One segment means the whole window has a single offset.
+
+    Postgres could do this with ``AT TIME ZONE``, but this repository also runs
+    on SQLite, which has no IANA database at all. Deriving the offsets in Python
+    from the stdlib tz database yields ONE expression that is correct on both
+    backends, keeps the tested path identical to the production path, and drops
+    the dependency on the database server's tzdata and its session TimeZone.
+
+    DST-awareness is not optional here. A year of Amsterdam runs spans both CET
+    and CEST; a single fixed offset would misreport half of them by an hour --
+    enough to move a 23:31 job out of a 22:00-07:00 window entirely, or to split
+    one nightly schedule into two apparent ones.
+    """
+    lower = lower - datetime.timedelta(days=1)
+    upper = upper + datetime.timedelta(days=1)
+    segments: list[tuple[datetime.datetime | None, int]] = [
+        (None, _zone_offset_seconds(zone, lower))
+    ]
+    probe = lower
+    day = datetime.timedelta(days=1)
+    for _ in range(_OFFSET_SCAN_MAX_DAYS):
+        if probe >= upper:
+            break
+        nxt = min(probe + day, upper)
+        if _zone_offset_seconds(zone, nxt) != _zone_offset_seconds(zone, probe):
+            boundary = _offset_transition_instant(zone, probe, nxt)
+            segments.append((boundary, _zone_offset_seconds(zone, nxt)))
+        probe = nxt
+    return segments
+
+
+def _local_epoch_seconds(dialect: str, column, segments: Sequence[tuple[datetime.datetime | None, int]]):
+    """`column` as WHOLE epoch seconds shifted onto local wall-clock time.
+
+    Not a real instant any more -- it is "seconds since the local epoch", which
+    is exactly what time-of-day arithmetic needs and nothing else should consume.
+
+    Rounded to the second rather than truncated, and that is load-bearing.
+    SQLite reaches epoch seconds through ``julianday``, a double whose mantissa
+    leaves roughly 20 ms of slack at present-day Julian day numbers; truncating
+    it turned an 01:15:00 start into 01:14:59 on every row. Rounding lands on the
+    stored second exactly, and gives ONE integer both backends agree on, so the
+    day/position arithmetic downstream is exact integer arithmetic rather than
+    floating point with a floor at the end of it.
+    """
+    utc_seconds = _epoch_seconds(dialect, column)
+    if len(segments) == 1:
+        local = utc_seconds + segments[0][1]
+    else:
+        # Ordered, first-match-wins branches: everything before boundary i
+        # carries the offset of the segment that precedes it.
+        whens = [
+            (column < boundary, segments[index][1])
+            for index, (boundary, _offset) in enumerate(segments[1:])
+        ]
+        local = utc_seconds + case(*whens, else_=segments[-1][1])
+    # floor(x + 0.5) rather than a bare cast: Postgres ROUNDS numeric->integer
+    # casts while SQLite TRUNCATES them, so only an explicit round is the same
+    # operation on both.
+    return cast(func.floor(local + 0.5), Integer)
+
+
+def _seconds_to_time(seconds: int) -> datetime.time:
+    """Seconds-into-a-local-day as a clock time, wrapping at midnight."""
+    seconds %= _SECONDS_PER_DAY
+    return datetime.time(seconds // 3600, (seconds % 3600) // 60, seconds % 60)
+
+
 class _GapStats(NamedTuple):
     """Inter-run gap quantiles for ONE job in ONE environment, seconds."""
 
@@ -308,19 +422,19 @@ class _GapStats(NamedTuple):
 
 
 class _ResolvedReadGrant(NamedTuple):
-    """One grant, with the projects reading through it actually reaches.
+    """One attachment to a FOREIGN estate, with the stamps it actually reaches.
 
-    `exposes` is the grant's real blast radius: the granting source's own
-    project plus every project its workspace map re-points rows to. It is
-    computed rather than assumed so the API can state it at grant time -- a
-    grant that silently exposed a third project's rows would be the worst kind
-    of quiet.
+    `exposes` is the attachment's real blast radius: the source's estate key
+    plus every project its workspace map re-points rows to. It is computed
+    rather than assumed so the API can state it at attach time -- an attachment
+    that silently exposed a third project's rows would be the worst kind of
+    quiet.
     """
 
     source_id: int
     source_key: str
     source_label: str
-    source_project_id: str
+    source_estate_key: str
     environment_ids: list[str] | None
     window_days: int | None
     exposes: list[str]
@@ -502,6 +616,19 @@ def _as_utc(value: datetime.datetime | None) -> datetime.datetime | None:
     return value.astimezone(datetime.UTC)
 
 
+class _ProjectFilterParams(Protocol):
+    """The two fields `_apply_project_filter` reads off a filter-params model.
+
+    Structural rather than a shared base class: the inputs it serves disagree
+    about whether `project_id` is required, and forcing them onto one base to
+    satisfy a type hint would change contracts that are reachable from an LLM
+    tool call.
+    """
+
+    project_id: str | None
+    read_terms: list[RuntimeReadTerm]
+
+
 class RuntimeStoreRepository:
     """Async repository over the runtime-data tables, bound to one session."""
 
@@ -536,17 +663,225 @@ class RuntimeStoreRepository:
             return stmt.where(column == values[0])
         return stmt.where(column.in_(values))
 
+    def _read_term_environment_predicate(
+        self,
+        term: RuntimeReadTerm,
+        *,
+        environment_column: Any,
+        execution_id_column: Any,
+    ):
+        """The environment half of one read term, or None when it restricts nothing.
+
+        Three outcomes, and the difference between the last two is the whole
+        point of the grant model:
+
+        * `environment_ids is None` -> None. The grant names no environment, so
+          it restricts nothing and no predicate is emitted.
+        * the table can express the restriction -> that predicate. Directly when
+          the row carries an environment, otherwise through the execution ids
+          observed in those environments (`_environment_execution_ids`), which
+          is exactly how the documentation lane already narrows
+          `runtime_executions` -- a table that carries no environment column.
+        * the table can express NEITHER -> `false()`. The term contributes
+          nothing, so a narrowed grant exposes no row of that table at all.
+
+        An EMPTY list is the deliberate "nothing" case and also yields
+        `false()`; it is never read as "unset". That is the distinction
+        `RuntimeSourceReadGrantRow` and `RuntimeDocReadScope` already draw, and
+        collapsing the two would turn "expose no environment" into "expose every
+        environment" -- the most dangerous possible misreading of a grant.
+        """
+        if term.environment_ids is None:
+            return None
+        if not term.environment_ids:
+            return false()
+        if environment_column is not None:
+            return environment_column.in_(term.environment_ids)
+        if execution_id_column is not None:
+            return execution_id_column.in_(
+                self._environment_execution_ids(term.project_id, term.environment_ids)
+            )
+        return false()
+
+    def _apply_read_terms(
+        self,
+        stmt,
+        project_column,
+        terms: Sequence[RuntimeReadTerm],
+        *,
+        environment_column: Any = None,
+        time_column: Any = None,
+        execution_id_column: Any = None,
+    ):
+        """Apply a resolved read set as the row-stamp filter of one statement.
+
+        Three shapes, in order:
+
+        * NO terms -> the statement is returned unchanged. "Nothing was
+          resolved" is not "nothing is visible"; the caller falls back to
+          whatever predicate it used before read grants existed.
+        * ONE unrestricted term -> a bare `project_column == id`. Deliberately
+          not a one-element `IN` or a one-branch `OR`: the unshared path is
+          almost every read this store serves, and it must keep the query plan
+          and the index use it had. Same reason `_apply_read_projects`
+          special-cases a single element.
+        * otherwise -> a per-project disjunction. A grant's environment and
+          window are limits the GRANTOR set on THEIR estate, so they attach to
+          that project's branch only. Applied flatly, a `prod` grant would
+          either leak the grantor's non-prod rows (union) or hide the reader's
+          own non-prod rows (intersection); neither is what anyone agreed to.
+
+        Which columns a call site passes decides what a narrowed grant can
+        reach, so the rules are fixed rather than per-caller taste:
+
+        `environment_column` / `execution_id_column`
+            Pass the row's own environment column when it has one. When it does
+            not but the row carries an execution id, pass that instead and the
+            narrowing routes through the job-run table. Pass NEITHER only when
+            the table genuinely has neither -- `runtime_artifacts`,
+            `runtime_connections`, `runtime_job_dependencies` -- and accept the
+            consequence: a grant narrowed to specific environments exposes no
+            row of those inventory tables. The rejected alternative was to let
+            an unnarrowable table through unfiltered, which would hand a reader
+            granted one environment the grantor's COMPLETE artifact and
+            connection inventory. A missing row is a visible, reportable gap; a
+            leaked one cannot be taken back.
+
+        `time_column`
+            Pass it for event-shaped tables -- `runtime_executions`,
+            `runtime_job_runs`, `runtime_plan_runs`, `runtime_failures`,
+            `runtime_log_events` -- so a windowed grant bounds the history it
+            returns. Do NOT pass it for inventory: `runtime_jobs`,
+            `runtime_engines`, `runtime_plans`, `runtime_workspaces` describe
+            what EXISTS, and a window grant bounds how much history a reader may
+            see, not whether an entity exists. A window applied to inventory
+            would silently delete jobs from the estate a reader was granted, and
+            (since `last_seen_at` and friends are nullable) do it inconsistently.
+            When a term carries a window and no `time_column` is passed, the
+            window is therefore dropped on purpose, not by oversight.
+        """
+        if not terms:
+            return stmt
+        if len(terms) == 1 and terms[0].unrestricted:
+            return stmt.where(project_column == terms[0].project_id)
+        clauses: list[Any] = []
+        for term in terms:
+            predicates: list[Any] = [project_column == term.project_id]
+            environment = self._read_term_environment_predicate(
+                term,
+                environment_column=environment_column,
+                execution_id_column=execution_id_column,
+            )
+            if environment is not None:
+                predicates.append(environment)
+            if term.since is not None and time_column is not None:
+                predicates.append(time_column >= term.since)
+            clauses.append(and_(*predicates))
+        return stmt.where(or_(*clauses))
+
+    def _apply_project_filter(
+        self,
+        stmt,
+        project_column,
+        params: _ProjectFilterParams,
+        *,
+        environment_column: Any = None,
+        time_column: Any = None,
+        execution_id_column: Any = None,
+    ):
+        """The row-stamp filter for one request: the resolved read set if there is
+        one, else the single requested project, else nothing.
+
+        Every list/count pair in this file must be filtered through this one
+        call with the SAME columns. A page and its `total` computed from
+        different predicates is the standing trap here, and a read set widened
+        on one side of the pair would report a row count nobody can page to.
+        """
+        if params.read_terms:
+            return self._apply_read_terms(
+                stmt,
+                project_column,
+                params.read_terms,
+                environment_column=environment_column,
+                time_column=time_column,
+                execution_id_column=execution_id_column,
+            )
+        if params.project_id is not None:
+            return stmt.where(project_column == params.project_id)
+        return stmt
+
+    def _apply_doc_read_filter(
+        self,
+        stmt,
+        project_column,
+        project_ids: Sequence[str],
+        read_terms: Sequence[RuntimeReadTerm],
+        *,
+        environment_column: Any = None,
+        time_column: Any = None,
+        execution_id_column: Any = None,
+    ):
+        """The row-stamp filter of one documentation sub-query.
+
+        The documentation lane resolves its read set itself (it has no user
+        behind it), so it arrives as an explicit pair rather than on a params
+        model: `project_ids` is the FLAT read set the lane has always passed, and
+        `read_terms` is the same set carrying each grant's own limits.
+
+        The terms REPLACE the flat list rather than joining it -- a term already
+        emits its own project predicate, and the two name the same projects
+        (`resolve_runtime_read_scope` and `resolve_runtime_read_projects` walk the
+        same grants in the same order). Emitting both would only restate one
+        predicate twice.
+
+        For an UNGRANTED project the terms are one unrestricted term, and
+        `_apply_read_terms` emits exactly the bare `project_id = ...` that
+        `_apply_read_projects` emits for a one-element list: the overwhelmingly
+        common path keeps its SQL, its plan and its index use. The fallback to
+        `_apply_read_projects` is what a caller that resolved no terms at all
+        still gets.
+
+        Which columns to pass is not per-caller taste -- see `_apply_read_terms`.
+        A sub-query whose table can express neither environment nor execution-id
+        narrowing FAILS CLOSED for a narrowed grant, and the coverage record has
+        to say so.
+        """
+        if read_terms:
+            return self._apply_read_terms(
+                stmt,
+                project_column,
+                read_terms,
+                environment_column=environment_column,
+                time_column=time_column,
+                execution_id_column=execution_id_column,
+            )
+        return self._apply_read_projects(stmt, project_column, project_ids)
+
     @property
     def _dialect(self) -> str:
         return self._session.bind.dialect.name if self._session.bind is not None else ""
 
-    @staticmethod
-    def _apply_execution_filters(stmt, params: ListExecutionsInput):
+    def _apply_execution_filters(self, stmt, params: ListExecutionsInput):
         """Filters shared by the execution list and its count.
 
         Kept in one place so a page and its `total` can never be computed from
-        different predicates.
+        different predicates -- including the read set, which is why this is no
+        longer a staticmethod.
+
+        `ListExecutionsInput` carries no `project_id`: this surface was always
+        filtered by the caller's RBAC scope alone. That stops being sufficient
+        the moment a grant WIDENS that scope to include a granting project, so
+        the terms are applied here as well. `runtime_executions` has no
+        environment column, so environment narrowing routes through
+        `execution_id`, and `started_at` is the window column.
         """
+        stmt = self._apply_read_terms(
+            stmt,
+            RuntimeExecutionRow.project_id,
+            params.read_terms,
+            time_column=RuntimeExecutionRow.started_at,
+            execution_id_column=RuntimeExecutionRow.execution_id,
+        )
         if params.project_name:
             stmt = stmt.where(RuntimeExecutionRow.project_name == params.project_name)
         if params.job_name:
@@ -590,6 +925,50 @@ class RuntimeStoreRepository:
             if not ((key := (row.source_key, row.execution_id)) in seen or seen.add(key))
         ]
 
+    def _apply_failure_filters(self, stmt, params: DetectFailuresInput):
+        """Filters shared by the failure list and its count.
+
+        `runtime_failures` carries no environment column but does carry an
+        execution id, so a narrowed grant reaches it the same way the
+        documentation lane reaches `runtime_executions`. `failed_at` is the
+        window column: a failure is an event, and a windowed grant bounds it.
+        """
+        stmt = self._apply_read_terms(
+            stmt,
+            RuntimeFailureRow.project_id,
+            params.read_terms,
+            time_column=RuntimeFailureRow.failed_at,
+            execution_id_column=RuntimeFailureRow.execution_id,
+        )
+        if params.since:
+            stmt = stmt.where(RuntimeFailureRow.failed_at >= params.since)
+        if params.until:
+            stmt = stmt.where(RuntimeFailureRow.failed_at <= params.until)
+        return stmt
+
+    def _apply_execution_log_filters(self, stmt, params: GetExecutionLogsInput):
+        """Filters shared by one execution's log page and its count.
+
+        The execution id is already the narrowest possible filter, but the read
+        set is still applied: the caller's scope may have been WIDENED by a
+        grant, and an execution id is not secret -- the same id exists in the
+        granting project's mirror. Without the terms, a reader granted only PROD
+        could name an ACC execution and read its log lines.
+        """
+        stmt = stmt.where(RuntimeLogEventRow.execution_id == params.execution_id)
+        stmt = self._apply_read_terms(
+            stmt,
+            RuntimeLogEventRow.project_id,
+            params.read_terms,
+            time_column=RuntimeLogEventRow.timestamp,
+            execution_id_column=RuntimeLogEventRow.execution_id,
+        )
+        if params.min_severity is not None:
+            stmt = stmt.where(
+                RuntimeLogEventRow.severity.in_(_severities_at_or_above(params.min_severity))
+            )
+        return stmt
+
     async def get_execution_details(
         self, scope: ProjectScope, params: GetExecutionDetailsInput
     ) -> RuntimeExecution:
@@ -599,6 +978,16 @@ class RuntimeStoreRepository:
             RuntimeExecutionRow.execution_id == params.execution_id
         )
         stmt = self._apply_scope(stmt, RuntimeExecutionRow.project_id, scope)
+        # See `_apply_execution_log_filters`: a widened scope makes the read set
+        # the only thing standing between a granted reader and an execution the
+        # grant did not cover.
+        stmt = self._apply_read_terms(
+            stmt,
+            RuntimeExecutionRow.project_id,
+            params.read_terms,
+            time_column=RuntimeExecutionRow.started_at,
+            execution_id_column=RuntimeExecutionRow.execution_id,
+        )
         row = (await self._session.execute(stmt)).scalars().first()
         if row is None:
             raise RuntimeRecordNotFoundError(f"Unknown execution_id: {params.execution_id}")
@@ -611,10 +1000,7 @@ class RuntimeStoreRepository:
             return []
         stmt = select(RuntimeFailureRow)
         stmt = self._apply_scope(stmt, RuntimeFailureRow.project_id, scope)
-        if params.since:
-            stmt = stmt.where(RuntimeFailureRow.failed_at >= params.since)
-        if params.until:
-            stmt = stmt.where(RuntimeFailureRow.failed_at <= params.until)
+        stmt = self._apply_failure_filters(stmt, params)
         stmt = stmt.order_by(RuntimeFailureRow.failed_at.desc(), RuntimeFailureRow.id.desc()).offset(params.offset).limit(params.limit)
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_failure(row) for row in rows]
@@ -624,14 +1010,9 @@ class RuntimeStoreRepository:
     ) -> list[RuntimeLogEvent]:
         if self._denies_all(scope):
             raise RuntimeRecordNotFoundError(f"Unknown execution_id: {params.execution_id}")
-        stmt = select(RuntimeLogEventRow).where(
-            RuntimeLogEventRow.execution_id == params.execution_id
-        )
+        stmt = select(RuntimeLogEventRow)
         stmt = self._apply_scope(stmt, RuntimeLogEventRow.project_id, scope)
-        if params.min_severity is not None:
-            stmt = stmt.where(
-                RuntimeLogEventRow.severity.in_(_severities_at_or_above(params.min_severity))
-            )
+        stmt = self._apply_execution_log_filters(stmt, params)
         stmt = stmt.order_by(RuntimeLogEventRow.timestamp.asc(), RuntimeLogEventRow.line_ordinal.asc(), RuntimeLogEventRow.id.asc()).offset(params.offset).limit(params.limit)
         rows = (await self._session.execute(stmt)).scalars().all()
         if not rows:
@@ -669,19 +1050,15 @@ class RuntimeStoreRepository:
             return 0
         stmt = select(func.count()).select_from(RuntimeFailureRow)
         stmt = self._apply_scope(stmt, RuntimeFailureRow.project_id, scope)
-        if params.since:
-            stmt = stmt.where(RuntimeFailureRow.failed_at >= params.since)
-        if params.until:
-            stmt = stmt.where(RuntimeFailureRow.failed_at <= params.until)
+        stmt = self._apply_failure_filters(stmt, params)
         return int((await self._session.execute(stmt)).scalar_one())
 
     async def count_execution_logs(self, scope: ProjectScope, params: GetExecutionLogsInput) -> int:
         if self._denies_all(scope):
             return 0
-        stmt = select(func.count()).select_from(RuntimeLogEventRow).where(RuntimeLogEventRow.execution_id == params.execution_id)
+        stmt = select(func.count()).select_from(RuntimeLogEventRow)
         stmt = self._apply_scope(stmt, RuntimeLogEventRow.project_id, scope)
-        if params.min_severity is not None:
-            stmt = stmt.where(RuntimeLogEventRow.severity.in_(_severities_at_or_above(params.min_severity)))
+        stmt = self._apply_execution_log_filters(stmt, params)
         return int((await self._session.execute(stmt)).scalar_one())
 
     async def prune_expired_log_events(self, *, now: datetime.datetime | None = None, retention_days: int = 90) -> int:
@@ -728,6 +1105,7 @@ class RuntimeStoreRepository:
         self, scope: ProjectScope, *, query: str, project_id: str | None = None,
         execution_id: str | None = None, since: datetime.datetime | None = None,
         until: datetime.datetime | None = None, limit: int = 20, snippet_chars: int = 300,
+        read_terms: Sequence[RuntimeReadTerm] = (),
     ) -> list[dict[str, object]]:
         """Search redacted raw logs with bounded snippets; scope is always server-derived.
 
@@ -738,12 +1116,30 @@ class RuntimeStoreRepository:
         indistinguishable from "this project has no logs". Verified against a
         173,537-row corpus: ``plainto_tsquery('simple', 'latest logs')`` matched
         zero rows.
+
+        ``read_terms`` is the resolved read set and takes precedence over
+        ``project_id``; empty (the default) keeps every existing caller on the
+        exact predicate it had. This is the read path behind the agent's
+        ``search_logs`` tool and therefore the one that decides whether a shared
+        tenant can be QUESTIONED at all rather than merely documented.
+        `runtime_log_events` carries no environment column, so a grant narrowed
+        to an environment must route through ``execution_id`` -- getting that
+        wrong returns the grantor's other environments verbatim, redaction being
+        the only thing left in the way. ``timestamp`` bounds a windowed grant.
         """
         if self._denies_all(scope):
             return []
         stmt = select(RuntimeLogEventRow)
         stmt = self._apply_scope(stmt, RuntimeLogEventRow.project_id, scope)
-        if project_id is not None:
+        if read_terms:
+            stmt = self._apply_read_terms(
+                stmt,
+                RuntimeLogEventRow.project_id,
+                read_terms,
+                time_column=RuntimeLogEventRow.timestamp,
+                execution_id_column=RuntimeLogEventRow.execution_id,
+            )
+        elif project_id is not None:
             stmt = stmt.where(RuntimeLogEventRow.project_id == project_id)
         if execution_id is not None:
             stmt = stmt.where(RuntimeLogEventRow.execution_id == execution_id)
@@ -819,15 +1215,30 @@ class RuntimeStoreRepository:
         source_key: str | None = None,
         project_id: str | None = None,
         limit: int = 100,
+        read_terms: Sequence[RuntimeReadTerm] = (),
     ) -> list[RuntimeSyncState]:
-        """Return scoped source/project sync freshness and health rows."""
+        """Return scoped source/project sync freshness and health rows.
+
+        ``read_terms`` takes precedence over ``project_id``; empty keeps every
+        existing caller unchanged. `runtime_sync_state` is one current-state row
+        per (source, project) -- no environment column, no execution id -- so an
+        environment-narrowed grant exposes none of the grantor's rows, per the
+        fail-closed rule in `_apply_read_terms`. Its timestamps are watermarks
+        rather than history, so a grant WINDOW does not apply: "when did this
+        mirror last sync" is a fact about now, and hiding it would report a
+        healthy shared source as never synced.
+        """
         if self._denies_all(scope):
             return []
         stmt = select(RuntimeSyncStateRow)
         stmt = self._apply_scope(stmt, RuntimeSyncStateRow.project_id, scope)
         if source_key is not None:
             stmt = stmt.where(RuntimeSyncStateRow.source_key == source_key)
-        if project_id is not None:
+        if read_terms:
+            stmt = self._apply_read_terms(
+                stmt, RuntimeSyncStateRow.project_id, read_terms
+            )
+        elif project_id is not None:
             stmt = stmt.where(RuntimeSyncStateRow.project_id == project_id)
         stmt = stmt.order_by(RuntimeSyncStateRow.updated_at.desc(), RuntimeSyncStateRow.id.desc()).limit(limit)
         rows = (await self._session.execute(stmt)).scalars().all()
@@ -840,6 +1251,7 @@ class RuntimeStoreRepository:
         project_id: str | None = None,
         source_key: str | None = None,
         limit: int = 50,
+        read_terms: Sequence[RuntimeReadTerm] = (),
     ) -> list[RuntimeHealthSummary]:
         """Return DB-derived health rollups grouped by project/source/job.
 
@@ -847,10 +1259,18 @@ class RuntimeStoreRepository:
         fetched every in-scope execution (55k rows), every component metric (26k)
         and every incident, then reduced them in Python to at most `limit`
         summaries.
+
+        ``read_terms`` takes precedence over ``project_id``; empty keeps every
+        existing caller unchanged. Only the execution population is widened --
+        the metric and incident rollups join THROUGH it, so they inherit the
+        read set rather than re-stating it, which is the same reason they do not
+        re-state the scope.
         """
         if self._denies_all(scope):
             return []
-        executions = self._health_execution_base(scope, project_id, source_key)
+        executions = self._health_execution_base(
+            scope, project_id, source_key, read_terms=read_terms
+        )
         group = [executions.c.project_id, executions.c.source_key, executions.c.job_name]
         rows = (
             await self._session.execute(self._health_execution_rollup(executions, group))
@@ -902,13 +1322,20 @@ class RuntimeStoreRepository:
         return summaries[:limit]
 
     def _health_execution_base(
-        self, scope: ProjectScope, project_id: str | None, source_key: str | None
+        self,
+        scope: ProjectScope,
+        project_id: str | None,
+        source_key: str | None,
+        *,
+        read_terms: Sequence[RuntimeReadTerm] = (),
     ):
         """Scoped job executions behind the health rollup, as a subquery.
 
         Written once and reused by all three statements: the metric and incident
         rollups join through it rather than re-stating its filters, so a metric
-        can never be attributed to an execution the rollup itself excluded.
+        can never be attributed to an execution the rollup itself excluded --
+        and, with `read_terms`, so a shared read cannot widen one of the three
+        and not the others.
         """
         stmt = select(
             RuntimeExecutionRow.id.label("id"),
@@ -921,7 +1348,15 @@ class RuntimeStoreRepository:
             RuntimeExecutionRow.duration_ms.label("duration_ms"),
         ).where(RuntimeExecutionRow.executable_kind == RuntimeExecutableKind.JOB.value)
         stmt = self._apply_scope(stmt, RuntimeExecutionRow.project_id, scope)
-        if project_id is not None:
+        if read_terms:
+            stmt = self._apply_read_terms(
+                stmt,
+                RuntimeExecutionRow.project_id,
+                read_terms,
+                time_column=RuntimeExecutionRow.started_at,
+                execution_id_column=RuntimeExecutionRow.execution_id,
+            )
+        elif project_id is not None:
             stmt = stmt.where(RuntimeExecutionRow.project_id == project_id)
         if source_key is not None:
             stmt = stmt.where(RuntimeExecutionRow.source_key == source_key)
@@ -1075,14 +1510,37 @@ class RuntimeStoreRepository:
         source_key: str | None = None,
         project_id: str | None = None,
         limit: int = 100,
+        read_terms: Sequence[RuntimeReadTerm] = (),
     ) -> list[RuntimeSource]:
-        """Return scoped runtime source inventory rows."""
+        """Return scoped runtime source inventory rows.
+
+        ``read_terms`` takes precedence over ``project_id``; empty keeps every
+        existing caller unchanged. This is the MIRROR inventory -- "which
+        sources produced the rows I can see" -- which is why a granted reader
+        belongs in it. `list_source_configs` is the other thing and is
+        deliberately not widened.
+
+        `runtime_sources` has no environment column and no execution id, so an
+        environment-narrowed grant exposes none of the grantor's source rows
+        (`_apply_read_terms`, fail-closed). A source row is not per-environment,
+        so there is no honest way to narrow one. No time column either: a source
+        either exists in the mirror or it does not, and a window grant bounds
+        history rather than existence.
+
+        Filtered on `estate_key`, which IS this table's row stamp -- the same
+        value every row this source mirrors carries in its `project_id` column.
+        For a source registered against a project that value is the project id,
+        so this is the predicate it always was; the resolved read terms name
+        estate keys for the same reason.
+        """
         if self._denies_all(scope):
             return []
         stmt = select(RuntimeSourceRow)
-        stmt = self._apply_scope(stmt, RuntimeSourceRow.project_id, scope)
-        if project_id is not None:
-            stmt = stmt.where(RuntimeSourceRow.project_id == project_id)
+        stmt = self._apply_scope(stmt, RuntimeSourceRow.estate_key, scope)
+        if read_terms:
+            stmt = self._apply_read_terms(stmt, RuntimeSourceRow.estate_key, read_terms)
+        elif project_id is not None:
+            stmt = stmt.where(RuntimeSourceRow.estate_key == project_id)
         if source_key is not None:
             stmt = stmt.where(RuntimeSourceRow.source_key == source_key)
         stmt = stmt.order_by(RuntimeSourceRow.last_seen_at.desc().nullslast(), RuntimeSourceRow.id.desc()).limit(limit)
@@ -1095,6 +1553,7 @@ class RuntimeStoreRepository:
         project_id: str,
         *,
         project_ids: Sequence[str] | None = None,
+        read_terms: Sequence[RuntimeReadTerm] = (),
     ) -> list[RuntimeMirroredEnvironment]:
         """Environments present in this project's mirror, busiest first.
 
@@ -1109,13 +1568,26 @@ class RuntimeStoreRepository:
         is offered that source's environments. Without it the picker would show
         a reader an empty list and its selection would resolve to no evidence --
         the exact failure this model exists to prevent.
+
+        `read_terms` narrows it back by each grant's own limits. An environment
+        a grant excludes is one no read can return a row from, so offering it
+        would reintroduce that same failure from the other side -- a selection
+        that silently resolves to nothing -- and leaving it in would also tell a
+        reader granted PROD which other environments the grantor's estate has.
+        The inventory row names its own environment; the run fact names it and
+        carries the event time, so a windowed grant bounds what counts as
+        observed. Both are the honest reading of "what can this read reach".
         """
         if self._denies_all(scope):
             return []
         read_projects = list(project_ids) if project_ids else [project_id]
         inventory = select(RuntimeEnvironmentRow.environment_id, RuntimeEnvironmentRow.name)
-        inventory = self._apply_read_projects(
-            inventory, RuntimeEnvironmentRow.project_id, read_projects
+        inventory = self._apply_doc_read_filter(
+            inventory,
+            RuntimeEnvironmentRow.project_id,
+            read_projects,
+            read_terms,
+            environment_column=RuntimeEnvironmentRow.environment_id,
         )
         inventory = self._apply_scope(inventory, RuntimeEnvironmentRow.project_id, scope)
 
@@ -1129,8 +1601,13 @@ class RuntimeStoreRepository:
             .where(RuntimeJobRunRow.environment_id.is_not(None))
             .group_by(RuntimeJobRunRow.environment_id)
         )
-        observed = self._apply_read_projects(
-            observed, RuntimeJobRunRow.project_id, read_projects
+        observed = self._apply_doc_read_filter(
+            observed,
+            RuntimeJobRunRow.project_id,
+            read_projects,
+            read_terms,
+            environment_column=RuntimeJobRunRow.environment_id,
+            time_column=RuntimeJobRunRow.started_at,
         )
         observed = self._apply_scope(observed, RuntimeJobRunRow.project_id, scope)
 
@@ -1159,7 +1636,12 @@ class RuntimeStoreRepository:
         )
 
     async def resolve_doc_read_scope(
-        self, scope: ProjectScope, project_id: str, *, default_window_days: int
+        self,
+        scope: ProjectScope,
+        project_id: str,
+        *,
+        default_window_days: int,
+        read_terms: Sequence[RuntimeReadTerm] = (),
     ) -> RuntimeDocReadScope:
         """The documentation read scope configured for a project, if any.
 
@@ -1174,8 +1656,8 @@ class RuntimeStoreRepository:
         can only ever narrow ITS OWN contribution, so combining by intersection
         would let one source's narrow scope silently suppress another's data.
 
-        Two scope STORES, one rule
-        --------------------------
+        Two scope STORES, one rule -- and the limit that is NOT one of them
+        -------------------------------------------------------------------
         An owned source keeps its scope in the credential blob, as above. A
         source this project only READS keeps the scope on the grant row
         (`runtime_source_read_grants`), because the reason two projects share a
@@ -1183,15 +1665,29 @@ class RuntimeStoreRepository:
         the setting belongs to the (source, project) pair, not to the
         credential. Both are unioned here by the same rule, so a project that
         owns one source and reads another gets one coherent scope.
+
+        The union is what makes a granted environment READABLE at all: without
+        the grant's `env-prod` in this list the flat filter would exclude it from
+        every sub-query. It is emphatically NOT the grant being applied. A
+        grant's environment and window are an access boundary on someone else's
+        estate, and this flat scope cannot express them -- unioned they leak the
+        grantor's other environments, intersected they suppress the reader's own.
+        They are applied per project instead, through `read_terms`
+        (`_apply_read_terms`), and reported here as `grant_limits` so a consumer
+        can tell which projects were read more narrowly than these flat fields
+        say. `read_terms` also narrows the mirror the names below resolve
+        against, which is what moves a grant-excluded selection into
+        `unavailable_environment_ids` rather than leaving it looking available.
         """
         if self._denies_all(scope):
             return RuntimeDocReadScope(window_days=default_window_days)
+        # Only NARROWED terms: the reader's own term restricts nothing, and an
+        # unrestricted grant takes nothing out of this read either.
+        grant_limits = [term for term in read_terms if not term.unrestricted]
         # Selected by row id, not through `list_sources`: that returns the
         # id-less inventory model, and resolving back to an id by
         # (project, type) would silently collapse two sources of one type.
-        id_stmt = select(RuntimeSourceRow.id).where(RuntimeSourceRow.project_id == project_id)
-        id_stmt = self._apply_scope(id_stmt, RuntimeSourceRow.project_id, scope)
-        source_ids = list((await self._session.execute(id_stmt)).scalars().all())
+        source_ids = await self.own_source_ids_for_project(project_id, scope)
         grants = await self.resolve_read_grants_for_project(project_id)
         # Derived from the grants already in hand rather than by calling
         # `resolve_runtime_read_projects`, which would re-run the same queries.
@@ -1204,7 +1700,9 @@ class RuntimeStoreRepository:
         shared_from = [grant.source_label for grant in grants]
         if not source_ids and not grants:
             return RuntimeDocReadScope(
-                window_days=default_window_days, read_project_ids=read_projects
+                window_days=default_window_days,
+                read_project_ids=read_projects,
+                grant_limits=grant_limits,
             )
 
         selected: list[str] = []
@@ -1246,10 +1744,11 @@ class RuntimeStoreRepository:
                 shared_read=bool(grants),
                 shared_from=shared_from,
                 read_project_ids=read_projects,
+                grant_limits=grant_limits,
             )
         mirrored = {item.environment_id: item.name for item in
                     await self.list_mirrored_environments(
-                        scope, project_id, project_ids=read_projects
+                        scope, project_id, project_ids=read_projects, read_terms=read_terms
                     )}
         return RuntimeDocReadScope(
             environment_ids=selected,
@@ -1260,6 +1759,7 @@ class RuntimeStoreRepository:
             shared_read=bool(grants),
             shared_from=shared_from,
             read_project_ids=read_projects,
+            grant_limits=grant_limits,
         )
 
     # --- source management (credentials never returned) ---
@@ -1267,7 +1767,7 @@ class RuntimeStoreRepository:
     async def create_source_config(
         self,
         *,
-        project_id: str,
+        project_id: str | None = None,
         source_type: str,
         label: str,
         physical_identity: str | None = None,
@@ -1276,12 +1776,30 @@ class RuntimeStoreRepository:
         # not finish before the next is due.
         sync_interval_seconds: int = 1800,
     ) -> RuntimeSourceRead:
-        if source_type == "tmc":
-            existing_tmc = await self.find_source_id_by_project_and_type(project_id, source_type)
-            if existing_tmc is not None:
-                raise RuntimeDuplicateSourceError(
-                    "This project already has a TMC source. Edit its ingest scope to add environments."
-                )
+        """Register one runtime source, with or without a project.
+
+        `project_id` is now OPTIONAL and means "attach this project", not "own
+        this source". Supplied, it does two things: it becomes the source's
+        `estate_key` -- so every row this source mirrors is stamped with it,
+        exactly as before -- and it gets an attachment row. Omitted, the estate
+        key is derived from the source key (`derive_estate_key`) and no project
+        is attached yet; projects attach afterwards through `add_read_grant`.
+
+        Keeping the supplied project as the estate key, rather than always
+        deriving one, is deliberate and is what makes the common case free: a
+        source with exactly one attached project resolves to ONE unrestricted
+        read term, which `_apply_read_terms` emits as the same bare
+        `project_id = ...` every read used before any of this existed. A derived
+        estate key would force a two-branch disjunction onto every read of a
+        source that has only ever served one project.
+
+        The only uniqueness rule left is `physical_identity`: one tenant, one
+        mirror, one poll. The per-project TMC rule that used to sit beside it is
+        gone -- it blocked a project from connecting a SECOND, different tenant,
+        which is a different credential and a different estate, and told the
+        operator to widen the first source's ingest scope, which reaches none of
+        it.
+        """
         physical_identity = physical_identity or f"local:{source_type}:{uuid.uuid4().hex}"
         existing = (await self._session.execute(select(RuntimeSourceRow.id).where(
             RuntimeSourceRow.physical_identity == physical_identity,
@@ -1291,7 +1809,7 @@ class RuntimeStoreRepository:
         now = datetime.datetime.now(datetime.UTC)
         source_key = f"{source_type}-{uuid.uuid4().hex[:12]}"
         row = RuntimeSourceRow(
-            project_id=project_id,
+            estate_key=project_id or derive_estate_key(source_key),
             source_key=source_key,
             source_type=source_type,
             physical_identity=physical_identity,
@@ -1305,33 +1823,48 @@ class RuntimeStoreRepository:
             last_seen_at=now,
         )
         try:
-            # The partial unique index is the concurrency backstop. A savepoint
-            # keeps the caller's transaction usable when two registrations race.
+            # `ix_runtime_sources_physical_identity` is the concurrency backstop
+            # behind the SELECT above, and is now the only unique rule this
+            # insert can trip. A savepoint keeps the caller's transaction usable
+            # when two registrations of one tenant race.
             async with self._session.begin_nested():
                 self._session.add(row)
                 await self._session.flush()
                 health = RuntimeSourceHealthRow(source_id=row.id)
                 self._session.add(health)
+                if project_id is not None:
+                    # The attachment is written here, not left implicit, because
+                    # the attachment table is now the ONLY record of who may read
+                    # this source. A registration that skipped it would produce a
+                    # source nobody could see -- the bootstrapping trap, inverted.
+                    self._session.add(
+                        RuntimeSourceReadGrantRow(
+                            source_id=row.id,
+                            project_id=project_id,
+                            environment_ids=None,
+                            window_days=None,
+                            created_at=now,
+                            created_by=None,
+                        )
+                    )
                 await self._session.flush()
         except IntegrityError as exc:
             constraint = getattr(getattr(exc, "orig", None), "diag", None)
             constraint_name = getattr(constraint, "constraint_name", None)
-            sqlite_message = str(getattr(exc, "orig", exc))
-            is_project_tmc_collision = constraint_name == "uq_runtime_sources_project_tmc" or (
-                source_type == "tmc"
-                and "UNIQUE constraint failed: runtime_sources.project_id" in sqlite_message
-            )
-            if is_project_tmc_collision:
+            message = str(getattr(exc, "orig", exc))
+            if constraint_name == "ix_runtime_sources_physical_identity" or (
+                "physical_identity" in message
+            ):
                 raise RuntimeDuplicateSourceError(
-                    "This project already has a TMC source. Edit its ingest scope to add environments."
+                    "That physical runtime source is already registered"
                 ) from exc
             raise
-        return _to_source_read(row, health)
+        return _to_source_read(row, health, linked_project_ids=[project_id] if project_id else [])
 
     async def get_source_config(self, source_id: int, scope: ProjectScope) -> RuntimeSourceRead:
         row = await self._get_source_row(source_id, scope)
         health = await self._get_source_health_row(row.id)
-        return _to_source_read(row, health)
+        return _to_source_read(row, health, linked_project_ids=await self.list_linked_projects(row.id))
 
     async def promote_source_identity(self, source_id: int, physical_identity: str) -> None:
         """Replace a migration-era legacy identity after credentials are verified."""
@@ -1353,13 +1886,125 @@ class RuntimeStoreRepository:
             RuntimeSourceRow.physical_identity == physical_identity,
         ))).scalar_one_or_none()
 
-    async def find_source_id_by_project_and_type(
-        self, project_id: str, source_type: str
-    ) -> int | None:
-        return (await self._session.execute(select(RuntimeSourceRow.id).where(
-            RuntimeSourceRow.project_id == project_id,
-            RuntimeSourceRow.source_type == source_type,
-        ))).scalar_one_or_none()
+    # `find_source_id_by_project_and_type` lived here and is deliberately gone.
+    # It answered "which source of this type does this project already have",
+    # which was only ever asked to enforce "one TMC per project" -- the rule
+    # that stopped a project connecting a SECOND, different tenant and then
+    # advised widening the first source's ingest scope, which reaches none of
+    # it. The schema constraint went with migration 105 and the route's
+    # pre-check went with this change; keeping the lookup alive would leave the
+    # question askable, and it has no correct answer now that the count can
+    # legitimately exceed one.
+
+    # --- source visibility -------------------------------------------------
+
+    @staticmethod
+    def _attached_source_ids(project_ids: Sequence[str]):
+        """Sub-select: the ids of every source attached to one of these projects."""
+        return select(RuntimeSourceReadGrantRow.source_id).where(
+            RuntimeSourceReadGrantRow.project_id.in_(list(project_ids))
+        )
+
+    @staticmethod
+    def _unattached_source() -> Any:
+        """Predicate: this source has no attached project at all."""
+        return ~select(RuntimeSourceReadGrantRow.id).where(
+            RuntimeSourceReadGrantRow.source_id == RuntimeSourceRow.id
+        ).exists()
+
+    @staticmethod
+    def _ownerless_estate() -> Any:
+        """Predicate: this source's estate key names no project.
+
+        The SQL twin of `is_ownerless_estate_key`. A prefix match rather than a
+        flag column so the two can never disagree about one row -- the key is
+        derived once, at registration, and read the same way everywhere.
+        """
+        return RuntimeSourceRow.estate_key.startswith(ESTATE_KEY_PREFIX)
+
+    def _apply_source_visibility(self, stmt, scope: ProjectScope):
+        """Restrict a `runtime_sources` query to the CONNECTORS a caller may reach.
+
+        The rule, stated once and applied by every path that reads a source
+        config -- the list, the single-source fetch, the update, the delete.
+        `scope is None` is an unrestricted operator and adds no predicate. A
+        scoped caller reaches a source when EITHER:
+
+        * the source's `estate_key` is a project they hold. Every source that
+          existed before the estate key did, and every mirrored source row a
+          sync batch writes, carries a project id there, so this clause alone
+          reproduces the previous `project_id in scope` rule exactly; or
+        * the estate belongs to NO project (`is_ownerless_estate_key` -- it was
+          registered before any project) AND the caller holds a project attached
+          to it, or nothing is attached to it at all. This is the bootstrapping
+          case the whole change exists for: a tenant registered with no project
+          has to stay reachable by whoever may manage sources, or it can never
+          be attached to one, and once attached its stakeholders are the only
+          projects there are.
+
+        What is deliberately NOT in this rule: a read grant over a source whose
+        estate IS somebody's project. That grant shares the MIRROR -- and
+        `list_sources`, the mirror inventory, is widened by the resolved read
+        terms accordingly -- but it does not share the CONNECTOR. Admitting it
+        here would hand credential rotation and DELETE over another project's
+        tenant to everyone who was granted read of its runs, which is a strictly
+        larger permission than the grant was created to give, and one no
+        existing behaviour ever offered.
+
+        The permission itself (`runtime_sources:read` / `:write`) is the outer
+        gate and is applied by the route, not here.
+        """
+        if scope is None:
+            return stmt
+        if self._denies_all(scope):
+            # An empty scope means the caller may see nothing, and that has to
+            # hold HERE rather than only in each caller's early return: the
+            # unattached-and-ownerless branch below is satisfied by a row alone
+            # and would otherwise let a deny-all scope through it.
+            return stmt.where(false())
+        return stmt.where(
+            or_(
+                RuntimeSourceRow.estate_key.in_(list(scope)),
+                and_(
+                    self._ownerless_estate(),
+                    or_(
+                        RuntimeSourceRow.id.in_(self._attached_source_ids(scope)),
+                        self._unattached_source(),
+                    ),
+                ),
+            )
+        )
+
+    async def list_linked_projects(self, source_id: int) -> list[str]:
+        """Every project attached to this source, in a stable order."""
+        return (await self._linked_projects_by_source([source_id])).get(source_id, [])
+
+    async def _linked_projects_by_source(
+        self, source_ids: Sequence[int]
+    ) -> dict[int, list[str]]:
+        """Attached projects for several sources at once, sorted per source.
+
+        Batched because the attachment set is part of every source's published
+        identity now, and resolving it per row turns a two-statement list into
+        an N+1. Every source id asked for gets an entry, so an empty list always
+        means "attached to nobody" and never "not looked up" -- the same
+        distinction `environment_ids` draws between `[]` and None.
+        """
+        wanted = list(source_ids)
+        linked: dict[int, list[str]] = {source_id: [] for source_id in wanted}
+        if not wanted:
+            return linked
+        for source_id, project_id in (
+            await self._session.execute(
+                select(
+                    RuntimeSourceReadGrantRow.source_id, RuntimeSourceReadGrantRow.project_id
+                )
+                .where(RuntimeSourceReadGrantRow.source_id.in_(wanted))
+                .order_by(RuntimeSourceReadGrantRow.project_id.asc())
+            )
+        ).all():
+            linked[source_id].append(project_id)
+        return linked
 
     async def list_unresolved_identity_source_ids(
         self, source_types: set[str], endpoint_identity: str | None = None
@@ -1390,25 +2035,45 @@ class RuntimeStoreRepository:
         project_id: str | None = None,
         limit: int = 100,
     ) -> list[RuntimeSourceRead]:
+        """The source-management inventory, scoped by `_apply_source_visibility`.
+
+        Distinct from `list_sources`, which is the MIRROR inventory ("which
+        sources produced the rows I can see") and filters on the row stamp.
+        This one answers "which connectors may I administer", so it is resolved
+        from the attachment table and the estate key -- see
+        `_apply_source_visibility` for the rule and why an unattached, ownerless
+        source is in it.
+
+        `project_id` narrows to the sources ATTACHED to that project. It no
+        longer means "owned by", because nothing is owned; for every source
+        that predates this change the two sets are identical, since the
+        migration attached each source to the project it was registered
+        against.
+        """
         if self._denies_all(scope):
             return []
         stmt = select(RuntimeSourceRow)
-        stmt = self._apply_scope(stmt, RuntimeSourceRow.project_id, scope)
+        stmt = self._apply_source_visibility(stmt, scope)
         if project_id is not None:
-            stmt = stmt.where(RuntimeSourceRow.project_id == project_id)
+            stmt = stmt.where(RuntimeSourceRow.id.in_(self._attached_source_ids([project_id])))
         stmt = stmt.order_by(RuntimeSourceRow.ingested_at.desc(), RuntimeSourceRow.id.desc()).limit(limit)
         rows = list((await self._session.execute(stmt)).scalars().all())
+        source_ids = [row.id for row in rows] or [-1]
         health_rows = {
             row.source_id: row
             for row in (
                 await self._session.execute(
                     select(RuntimeSourceHealthRow).where(
-                        RuntimeSourceHealthRow.source_id.in_([row.id for row in rows] or [-1])
+                        RuntimeSourceHealthRow.source_id.in_(source_ids)
                     )
                 )
             ).scalars().all()
         }
-        return [_to_source_read(row, health_rows.get(row.id)) for row in rows]
+        linked = await self._linked_projects_by_source([row.id for row in rows])
+        return [
+            _to_source_read(row, health_rows.get(row.id), linked_project_ids=linked[row.id])
+            for row in rows
+        ]
 
     async def list_pollable_sources(self) -> list[RuntimeSourceRead]:
         """Return enabled source configs that have stored credentials (system scope).
@@ -1437,7 +2102,11 @@ class RuntimeStoreRepository:
                 )
             ).scalars().all()
         }
-        return [_to_source_read(row, health_rows.get(row.id)) for row in rows]
+        linked = await self._linked_projects_by_source([row.id for row in rows])
+        return [
+            _to_source_read(row, health_rows.get(row.id), linked_project_ids=linked[row.id])
+            for row in rows
+        ]
 
     async def update_source_config(
         self,
@@ -1458,7 +2127,11 @@ class RuntimeStoreRepository:
         if update.sync_interval_seconds is not None:
             row.sync_interval_seconds = max(update.sync_interval_seconds, 30)
         await self._session.flush()
-        return _to_source_read(row, await self._get_source_health_row(row.id))
+        return _to_source_read(
+            row,
+            await self._get_source_health_row(row.id),
+            linked_project_ids=await self.list_linked_projects(row.id),
+        )
 
     async def delete_source_config(self, source_id: int, scope: ProjectScope) -> None:
         row = await self._get_source_row(source_id, scope)
@@ -1520,14 +2193,20 @@ class RuntimeStoreRepository:
         )
         await self._session.flush()
 
-    # --- read grants (share a mirror; see RuntimeSourceReadGrantRow) ---
+    # --- project attachments (see RuntimeSourceReadGrantRow) ---
 
-    async def _projects_exposed_by_source(self, source_id: int, source_project_id: str) -> list[str]:
-        """Every project whose rows a read of this source can reach.
+    async def _projects_exposed_by_source(self, source_id: int, estate_key: str) -> list[str]:
+        """Every row stamp a read of this source can reach.
 
-        The source's own project, plus every project its workspace map
-        re-points containers to -- because a grant filters by project id, and
-        those rows carry the mapped project, not the source's.
+        The source's ESTATE KEY, plus every project its workspace map re-points
+        containers to -- because the filter is on the row stamp, and a mapped
+        container's rows carry the mapped project rather than the estate.
+
+        The first element is an estate key, which for every source that predates
+        this change IS a project id and for an ownerless source is not. Both are
+        row stamps, which is the only thing a downstream predicate needs; the
+        field on the API model is still called `exposes_project_ids` because
+        renaming it is the next wave's job.
         """
         mapped = (
             await self._session.execute(
@@ -1536,7 +2215,7 @@ class RuntimeStoreRepository:
                 .distinct()
             )
         ).scalars().all()
-        exposed = [source_project_id]
+        exposed = [estate_key]
         for project_id in mapped:
             if project_id and project_id not in exposed:
                 exposed.append(project_id)
@@ -1558,12 +2237,24 @@ class RuntimeStoreRepository:
         window_days: int | None,
         created_by: str | None,
     ) -> RuntimeSourceReadGrant:
+        """Attach one project to this source, or re-scope an existing attachment.
+
+        The refusal that remains is NOT "somebody already owns this" -- nothing
+        does. It is that a project which equals the source's `estate_key` is
+        already stamped on every row this source mirrors, so it reads them
+        through its own unrestricted term in `resolve_runtime_read_scope` and
+        no `environment_ids` or `window_days` written here could take a single
+        row away. Accepting the call would store a limit that silently does
+        nothing, and offer a revoke button that revokes nothing. Every source
+        registered against a project has exactly one such row, written at
+        registration (or by the migration), and it stays as the record of that
+        attachment.
+        """
         source = await self._get_source_row(source_id, None)
-        if project_id == source.project_id:
-            # Ownership already implies read. Storing it would create a row that
-            # can be revoked, which would read as revoking the owner's access.
+        if project_id == source.estate_key:
             raise RuntimeDuplicateSourceError(
-                "That project already owns this runtime source"
+                "That project is the estate this runtime source mirrors into; "
+                "it already reads every row of it"
             )
         now = datetime.datetime.now(datetime.UTC)
         stmt = select(RuntimeSourceReadGrantRow).where(
@@ -1587,17 +2278,46 @@ class RuntimeStoreRepository:
         return await self._to_read_grant(row, source)
 
     async def list_read_grants(self, source_id: int) -> list[RuntimeSourceReadGrant]:
+        """The projects reading this source's mirror that do not stamp it.
+
+        Excludes the attachment whose project EQUALS the source's estate key --
+        the row written at registration, and the one the migration created for
+        each source's former owner. It is an attachment, not a share: those rows
+        already carry that project's stamp, so listing it here would present the
+        estate's own project as a revocable reader of itself, and `add_read_grant`
+        refuses to create or re-scope it for exactly that reason.
+
+        `list_linked_projects` is the complete attachment list, and
+        `RuntimeSourceRead.linked_project_ids` publishes it.
+        """
         source = await self._get_source_row(source_id, None)
         rows = (
             await self._session.execute(
                 select(RuntimeSourceReadGrantRow)
-                .where(RuntimeSourceReadGrantRow.source_id == source_id)
+                .where(
+                    RuntimeSourceReadGrantRow.source_id == source_id,
+                    RuntimeSourceReadGrantRow.project_id != source.estate_key,
+                )
                 .order_by(RuntimeSourceReadGrantRow.project_id.asc())
             )
         ).scalars().all()
         return [await self._to_read_grant(row, source) for row in rows]
 
     async def delete_read_grant(self, source_id: int, project_id: str) -> None:
+        """Detach a project from this source.
+
+        A no-op for the attachment whose project equals the estate key, the same
+        row `add_read_grant` refuses to write. Removing it would take the source
+        out of that project's filtered source list while changing nothing about
+        what the project can actually read -- every row is still stamped with it
+        -- which is precisely the kind of half-revocation this model exists to
+        make impossible.
+        """
+        estate_key = (await self._session.execute(
+            select(RuntimeSourceRow.estate_key).where(RuntimeSourceRow.id == source_id)
+        )).scalars().first()
+        if estate_key is not None and estate_key == project_id:
+            return
         await self._session.execute(
             delete(RuntimeSourceReadGrantRow).where(
                 RuntimeSourceReadGrantRow.source_id == source_id,
@@ -1613,12 +2333,12 @@ class RuntimeStoreRepository:
             id=row.id,
             source_id=row.source_id,
             project_id=row.project_id,
-            source_project_id=source.project_id,
+            source_estate_key=source.estate_key,
             source_label=source.label,
             environment_ids=self._clean_environment_ids(row.environment_ids),
             window_days=row.window_days,
             exposes_project_ids=await self._projects_exposed_by_source(
-                row.source_id, source.project_id
+                row.source_id, source.estate_key
             ),
             created_at=_as_utc(row.created_at) or row.created_at,
             created_by=row.created_by,
@@ -1627,7 +2347,17 @@ class RuntimeStoreRepository:
     async def resolve_read_grants_for_project(
         self, project_id: str
     ) -> list[_ResolvedReadGrant]:
-        """Grants this project reads THROUGH, with each grant's blast radius.
+        """The attachments this project reads a FOREIGN estate through.
+
+        An attachment whose source stamps rows with this very project
+        (`estate_key == project_id` -- every source registered against it has
+        exactly one) is skipped, and that filter is what keeps the common case
+        identical to the behaviour before estate keys existed. Such a row widens
+        nothing: the reader's own unrestricted term already covers every row
+        carrying that stamp, so including it would add a duplicate term, report
+        the project as reading a "shared" source, and drag its own workspace-map
+        targets into its read set -- three changes to a project that is simply
+        reading its own mirror.
 
         Ordered by source id so a resolved read set is deterministic across
         calls -- two documentation runs of one project must not differ because
@@ -1636,7 +2366,10 @@ class RuntimeStoreRepository:
         stmt = (
             select(RuntimeSourceReadGrantRow, RuntimeSourceRow)
             .join(RuntimeSourceRow, RuntimeSourceRow.id == RuntimeSourceReadGrantRow.source_id)
-            .where(RuntimeSourceReadGrantRow.project_id == project_id)
+            .where(
+                RuntimeSourceReadGrantRow.project_id == project_id,
+                RuntimeSourceRow.estate_key != project_id,
+            )
             .order_by(RuntimeSourceReadGrantRow.source_id.asc())
         )
         resolved: list[_ResolvedReadGrant] = []
@@ -1646,25 +2379,25 @@ class RuntimeStoreRepository:
                     source_id=source.id,
                     source_key=source.source_key,
                     source_label=source.label,
-                    source_project_id=source.project_id,
+                    source_estate_key=source.estate_key,
                     environment_ids=self._clean_environment_ids(grant.environment_ids),
                     window_days=grant.window_days,
-                    exposes=await self._projects_exposed_by_source(source.id, source.project_id),
+                    exposes=await self._projects_exposed_by_source(source.id, source.estate_key),
                 )
             )
         return resolved
 
     async def resolve_runtime_read_projects(self, project_id: str) -> list[str]:
-        """The project ids one project's documentation read may draw from.
+        """The row stamps one project's documentation read may draw from.
 
-        Always starts with `project_id` itself, so an ungranted project
-        resolves to a single-element list and every downstream predicate stays
-        the `==` it was before read grants existed.
+        Always starts with `project_id` itself, so a project reading only its
+        own mirror resolves to a single-element list and every downstream
+        predicate stays the `==` it was before any of this existed.
 
-        Widening comes ONLY from stored grant rows. No caller may pass a set in;
-        `GET /runtime/doc-evidence` authenticates with a machine key and has no
-        user scope to fall back on, so a request-supplied read set would be an
-        authorization bypass with no second gate behind it.
+        Widening comes ONLY from stored attachment rows. No caller may pass a
+        set in; `GET /runtime/doc-evidence` authenticates with a machine key and
+        has no user scope to fall back on, so a request-supplied read set would
+        be an authorization bypass with no second gate behind it.
         """
         projects = [project_id]
         for grant in await self.resolve_read_grants_for_project(project_id):
@@ -1673,7 +2406,46 @@ class RuntimeStoreRepository:
                     projects.append(exposed)
         return projects
 
+    async def own_source_ids_for_project(self, project_id: str, scope: ProjectScope) -> list[int]:
+        """Sources whose non-secret config configures THIS project's documentation.
+
+        Two shapes qualify, and between them they are what "the project's own
+        sources" used to mean when a source had an owner:
+
+        * `estate_key == project_id` -- registered against this project, so its
+          rows carry this project's stamp. Identical to the old owner test;
+        * an OWNERLESS estate this project is attached to. Nobody owns it, so
+          its configured documentation scope can only be read by the projects
+          attached to it.
+
+        A source whose estate is ANOTHER project is deliberately absent: its
+        credential blob holds the scope its own stakeholders configured, and
+        letting that narrow a reader here would apply somebody else's setting as
+        if it were this project's. What a reader gets from such a source arrives
+        through the attachment row instead (`resolve_doc_read_scope`).
+        """
+        stmt = select(RuntimeSourceRow.id).where(
+            or_(
+                RuntimeSourceRow.estate_key == project_id,
+                and_(
+                    self._ownerless_estate(),
+                    RuntimeSourceRow.id.in_(self._attached_source_ids([project_id])),
+                ),
+            )
+        )
+        stmt = self._apply_source_visibility(stmt, scope)
+        return list((await self._session.execute(stmt.order_by(RuntimeSourceRow.id.asc()))).scalars().all())
+
     async def resolve_project_id(self, source_id: int, container_key: str | None) -> tuple[str, bool]:
+        """The stamp one mirrored record is written with, and whether it is the default.
+
+        The workspace map wins when it names the container: that is how a source
+        splits its rows between real projects, and it is unchanged. The fallback
+        is the source's `estate_key` -- which for a source registered against a
+        project is that project's id, exactly as before, and for an ownerless
+        source is the derived estate identifier that its attached projects reach
+        through their resolved read terms.
+        """
         source = await self._get_source_row(source_id, None)
         if container_key:
             row = (
@@ -1686,7 +2458,7 @@ class RuntimeStoreRepository:
             ).scalars().first()
             if row is not None:
                 return row.project_id, False
-        return source.project_id, True
+        return source.estate_key, True
 
     async def write_credentials(
         self,
@@ -1729,10 +2501,11 @@ class RuntimeStoreRepository:
         return json.loads(result.plaintext.decode("utf-8")), row.encryption_key_id
 
     async def _get_source_row(self, source_id: int, scope: ProjectScope) -> RuntimeSourceRow:
+        """One source row, or 404, under `_apply_source_visibility`."""
         if self._denies_all(scope):
             raise RuntimeRecordNotFoundError(f"Runtime source not found: {source_id}")
         stmt = select(RuntimeSourceRow).where(RuntimeSourceRow.id == source_id)
-        stmt = self._apply_scope(stmt, RuntimeSourceRow.project_id, scope)
+        stmt = self._apply_source_visibility(stmt, scope)
         row = (await self._session.execute(stmt)).scalars().first()
         if row is None:
             raise RuntimeRecordNotFoundError(f"Runtime source not found: {source_id}")
@@ -1770,7 +2543,9 @@ class RuntimeStoreRepository:
         row.enabled = True
         row.disabled_reason = None
         await self._session.flush()
-        return _to_source_read(row, health)
+        return _to_source_read(
+            row, health, linked_project_ids=await self.list_linked_projects(row.id)
+        )
 
     async def record_source_sync_failure(
         self,
@@ -1790,7 +2565,9 @@ class RuntimeStoreRepository:
             row.enabled = False
             row.disabled_reason = "auto-disabled"
         await self._session.flush()
-        return _to_source_read(row, health)
+        return _to_source_read(
+            row, health, linked_project_ids=await self.list_linked_projects(row.id)
+        )
 
     async def _ensure_source_health_row(self, source_id: int) -> RuntimeSourceHealthRow:
         row = await self._get_source_health_row(source_id)
@@ -1810,8 +2587,12 @@ class RuntimeStoreRepository:
             return []
         stmt = select(RuntimeEngineRow)
         stmt = self._apply_scope(stmt, RuntimeEngineRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimeEngineRow.project_id == params.project_id)
+        stmt = self._apply_project_filter(
+            stmt,
+            RuntimeEngineRow.project_id,
+            params,
+            environment_column=RuntimeEngineRow.environment_id,
+        )
         if params.source_key is not None:
             stmt = stmt.where(RuntimeEngineRow.source_key == params.source_key)
         if params.status is not None:
@@ -1827,8 +2608,12 @@ class RuntimeStoreRepository:
             return 0
         stmt = select(func.count()).select_from(RuntimeEngineRow)
         stmt = self._apply_scope(stmt, RuntimeEngineRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimeEngineRow.project_id == params.project_id)
+        stmt = self._apply_project_filter(
+            stmt,
+            RuntimeEngineRow.project_id,
+            params,
+            environment_column=RuntimeEngineRow.environment_id,
+        )
         if params.source_key is not None:
             stmt = stmt.where(RuntimeEngineRow.source_key == params.source_key)
         if params.status is not None:
@@ -1852,8 +2637,12 @@ class RuntimeStoreRepository:
             RuntimeEngineRow.workspace_name.label("workspace_name"),
         )
         stmt = self._apply_scope(stmt, RuntimeEngineRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimeEngineRow.project_id == params.project_id)
+        stmt = self._apply_project_filter(
+            stmt,
+            RuntimeEngineRow.project_id,
+            params,
+            environment_column=RuntimeEngineRow.environment_id,
+        )
         if params.source_key is not None:
             stmt = stmt.where(RuntimeEngineRow.source_key == params.source_key)
         if params.status is not None:
@@ -1889,8 +2678,13 @@ class RuntimeStoreRepository:
             RuntimeJobRunRow.duration_ms.label("duration_ms"),
         ).where(RuntimeJobRunRow.engine_id.is_not(None))
         stmt = self._apply_scope(stmt, RuntimeJobRunRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimeJobRunRow.project_id == params.project_id)
+        stmt = self._apply_project_filter(
+            stmt,
+            RuntimeJobRunRow.project_id,
+            params,
+            environment_column=RuntimeJobRunRow.environment_id,
+            time_column=RuntimeJobRunRow.started_at,
+        )
         if params.source_key is not None:
             stmt = stmt.where(RuntimeJobRunRow.source_key == params.source_key)
         if inventory_is_populated:
@@ -1985,8 +2779,12 @@ class RuntimeStoreRepository:
             return []
         stmt = select(RuntimeJobRow)
         stmt = self._apply_scope(stmt, RuntimeJobRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimeJobRow.project_id == params.project_id)
+        stmt = self._apply_project_filter(
+            stmt,
+            RuntimeJobRow.project_id,
+            params,
+            environment_column=RuntimeJobRow.environment_id,
+        )
         if params.source_key is not None:
             stmt = stmt.where(RuntimeJobRow.source_key == params.source_key)
         if params.environment_id is not None:
@@ -2008,8 +2806,12 @@ class RuntimeStoreRepository:
             return 0
         stmt = select(func.count()).select_from(RuntimeJobRow)
         stmt = self._apply_scope(stmt, RuntimeJobRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimeJobRow.project_id == params.project_id)
+        stmt = self._apply_project_filter(
+            stmt,
+            RuntimeJobRow.project_id,
+            params,
+            environment_column=RuntimeJobRow.environment_id,
+        )
         if params.source_key is not None:
             stmt = stmt.where(RuntimeJobRow.source_key == params.source_key)
         if params.environment_id is not None:
@@ -2047,8 +2849,12 @@ class RuntimeStoreRepository:
         )
         job_stmt = select(RuntimeJobRow)
         job_stmt = self._apply_scope(job_stmt, RuntimeJobRow.project_id, scope)
-        if params.project_id is not None:
-            job_stmt = job_stmt.where(RuntimeJobRow.project_id == params.project_id)
+        job_stmt = self._apply_project_filter(
+            job_stmt,
+            RuntimeJobRow.project_id,
+            params,
+            environment_column=RuntimeJobRow.environment_id,
+        )
         if params.source_key is not None:
             job_stmt = job_stmt.where(RuntimeJobRow.source_key == params.source_key)
         job_stmt = job_stmt.where(RuntimeJobRow.executable_kind.in_(kinds))
@@ -2058,8 +2864,13 @@ class RuntimeStoreRepository:
 
         run_stmt = select(RuntimeJobRunRow)
         run_stmt = self._apply_scope(run_stmt, RuntimeJobRunRow.project_id, scope)
-        if params.project_id is not None:
-            run_stmt = run_stmt.where(RuntimeJobRunRow.project_id == params.project_id)
+        run_stmt = self._apply_project_filter(
+            run_stmt,
+            RuntimeJobRunRow.project_id,
+            params,
+            environment_column=RuntimeJobRunRow.environment_id,
+            time_column=RuntimeJobRunRow.started_at,
+        )
         if params.source_key is not None:
             run_stmt = run_stmt.where(RuntimeJobRunRow.source_key == params.source_key)
         run_stmt = run_stmt.where(RuntimeJobRunRow.executable_kind.in_(kinds))
@@ -2100,8 +2911,10 @@ class RuntimeStoreRepository:
             return []
         stmt = select(RuntimeArtifactRow)
         stmt = self._apply_scope(stmt, RuntimeArtifactRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimeArtifactRow.project_id == params.project_id)
+        # No environment column and no execution id: an environment-narrowed
+        # grant exposes nothing here. See `_apply_read_terms` for why that is
+        # preferred over returning the grantor's whole artifact inventory.
+        stmt = self._apply_project_filter(stmt, RuntimeArtifactRow.project_id, params)
         if params.source_key is not None:
             stmt = stmt.where(RuntimeArtifactRow.source_key == params.source_key)
         if params.workspace_id is not None:
@@ -2122,8 +2935,8 @@ class RuntimeStoreRepository:
             return []
         stmt = select(RuntimeConnectionRow)
         stmt = self._apply_scope(stmt, RuntimeConnectionRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimeConnectionRow.project_id == params.project_id)
+        # Fail-closed under an environment-narrowed grant; see `list_artifacts`.
+        stmt = self._apply_project_filter(stmt, RuntimeConnectionRow.project_id, params)
         if params.source_key is not None:
             stmt = stmt.where(RuntimeConnectionRow.source_key == params.source_key)
         if params.workspace_id is not None:
@@ -2144,8 +2957,8 @@ class RuntimeStoreRepository:
             return []
         stmt = select(RuntimeJobDependencyRow)
         stmt = self._apply_scope(stmt, RuntimeJobDependencyRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimeJobDependencyRow.project_id == params.project_id)
+        # Fail-closed under an environment-narrowed grant; see `list_artifacts`.
+        stmt = self._apply_project_filter(stmt, RuntimeJobDependencyRow.project_id, params)
         if params.source_key is not None:
             stmt = stmt.where(RuntimeJobDependencyRow.source_key == params.source_key)
         if params.dependency_type is not None:
@@ -2163,13 +2976,19 @@ class RuntimeStoreRepository:
         scope: ProjectScope,
         params: ListRuntimeInventoryInput,
     ) -> RuntimeDependencySummary:
-        """Return availability and hygiene facts for optional extended metadata."""
+        """Return availability and hygiene facts for optional extended metadata.
+
+        The three sub-inputs carry `read_terms` forward. A summary built from a
+        narrower read set than the lists it summarises would report "artifacts
+        not supported" for a tenant whose artifacts the caller can page through.
+        """
         artifacts = await self.list_artifacts(
             scope,
             ListRuntimeArtifactsInput(
                 project_id=params.project_id,
                 source_key=params.source_key,
                 limit=params.limit,
+                read_terms=params.read_terms,
             ),
         )
         connections = await self.list_connections(
@@ -2178,6 +2997,7 @@ class RuntimeStoreRepository:
                 project_id=params.project_id,
                 source_key=params.source_key,
                 limit=params.limit,
+                read_terms=params.read_terms,
             ),
         )
         dependencies = await self.list_job_dependencies(
@@ -2186,6 +3006,7 @@ class RuntimeStoreRepository:
                 project_id=params.project_id,
                 source_key=params.source_key,
                 limit=params.limit,
+                read_terms=params.read_terms,
             ),
         )
         return RuntimeDependencySummary(
@@ -2215,8 +3036,13 @@ class RuntimeStoreRepository:
             return []
         stmt = select(RuntimeJobRunRow)
         stmt = self._apply_scope(stmt, RuntimeJobRunRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimeJobRunRow.project_id == params.project_id)
+        stmt = self._apply_project_filter(
+            stmt,
+            RuntimeJobRunRow.project_id,
+            params,
+            environment_column=RuntimeJobRunRow.environment_id,
+            time_column=RuntimeJobRunRow.started_at,
+        )
         if params.source_key is not None:
             stmt = stmt.where(RuntimeJobRunRow.source_key == params.source_key)
         if params.job_id is not None:
@@ -2249,8 +3075,12 @@ class RuntimeStoreRepository:
             RuntimeJobRow.engine_name.label("engine_name"),
         )
         stmt = self._apply_scope(stmt, RuntimeJobRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimeJobRow.project_id == params.project_id)
+        stmt = self._apply_project_filter(
+            stmt,
+            RuntimeJobRow.project_id,
+            params,
+            environment_column=RuntimeJobRow.environment_id,
+        )
         if params.source_key is not None:
             stmt = stmt.where(RuntimeJobRow.source_key == params.source_key)
         if params.environment_id is not None:
@@ -2277,8 +3107,13 @@ class RuntimeStoreRepository:
             RuntimeJobRunRow.started_at.label("started_at"),
         )
         stmt = self._apply_scope(stmt, RuntimeJobRunRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimeJobRunRow.project_id == params.project_id)
+        stmt = self._apply_project_filter(
+            stmt,
+            RuntimeJobRunRow.project_id,
+            params,
+            environment_column=RuntimeJobRunRow.environment_id,
+            time_column=RuntimeJobRunRow.started_at,
+        )
         if params.source_key is not None:
             stmt = stmt.where(RuntimeJobRunRow.source_key == params.source_key)
         if params.environment_id is not None:
@@ -2361,8 +3196,12 @@ class RuntimeStoreRepository:
             return []
         stmt = select(RuntimePlanRow)
         stmt = self._apply_scope(stmt, RuntimePlanRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimePlanRow.project_id == params.project_id)
+        stmt = self._apply_project_filter(
+            stmt,
+            RuntimePlanRow.project_id,
+            params,
+            environment_column=RuntimePlanRow.environment_id,
+        )
         if params.source_key is not None:
             stmt = stmt.where(RuntimePlanRow.source_key == params.source_key)
         if params.environment_id is not None:
@@ -2380,8 +3219,12 @@ class RuntimeStoreRepository:
             return 0
         stmt = select(func.count()).select_from(RuntimePlanRow)
         stmt = self._apply_scope(stmt, RuntimePlanRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimePlanRow.project_id == params.project_id)
+        stmt = self._apply_project_filter(
+            stmt,
+            RuntimePlanRow.project_id,
+            params,
+            environment_column=RuntimePlanRow.environment_id,
+        )
         if params.source_key is not None:
             stmt = stmt.where(RuntimePlanRow.source_key == params.source_key)
         if params.environment_id is not None:
@@ -2402,8 +3245,13 @@ class RuntimeStoreRepository:
             return []
         stmt = select(RuntimePlanRunRow)
         stmt = self._apply_scope(stmt, RuntimePlanRunRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimePlanRunRow.project_id == params.project_id)
+        stmt = self._apply_project_filter(
+            stmt,
+            RuntimePlanRunRow.project_id,
+            params,
+            environment_column=RuntimePlanRunRow.environment_id,
+            time_column=RuntimePlanRunRow.started_at,
+        )
         if params.source_key is not None:
             stmt = stmt.where(RuntimePlanRunRow.source_key == params.source_key)
         if params.plan_id is not None:
@@ -2432,8 +3280,12 @@ class RuntimeStoreRepository:
             RuntimePlanRow.workspace_name.label("workspace_name"),
         )
         stmt = self._apply_scope(stmt, RuntimePlanRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimePlanRow.project_id == params.project_id)
+        stmt = self._apply_project_filter(
+            stmt,
+            RuntimePlanRow.project_id,
+            params,
+            environment_column=RuntimePlanRow.environment_id,
+        )
         if params.source_key is not None:
             stmt = stmt.where(RuntimePlanRow.source_key == params.source_key)
         if params.environment_id is not None:
@@ -2465,8 +3317,13 @@ class RuntimeStoreRepository:
             RuntimePlanRunRow.ended_at.label("ended_at"),
         )
         stmt = self._apply_scope(stmt, RuntimePlanRunRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimePlanRunRow.project_id == params.project_id)
+        stmt = self._apply_project_filter(
+            stmt,
+            RuntimePlanRunRow.project_id,
+            params,
+            environment_column=RuntimePlanRunRow.environment_id,
+            time_column=RuntimePlanRunRow.started_at,
+        )
         if params.source_key is not None:
             stmt = stmt.where(RuntimePlanRunRow.source_key == params.source_key)
         if params.environment_id is not None:
@@ -2568,6 +3425,7 @@ class RuntimeStoreRepository:
             project_id=params.project_id,
             source_key=params.source_key,
             limit=params.limit,
+            read_terms=params.read_terms,
         )
         engine_inventory_is_populated = bool(
             (
@@ -2587,6 +3445,7 @@ class RuntimeStoreRepository:
                 project_id=params.project_id,
                 source_key=params.source_key,
                 limit=params.limit,
+                read_terms=params.read_terms,
             ),
         )
         plan_base = self._plan_run_base(
@@ -2595,6 +3454,7 @@ class RuntimeStoreRepository:
                 project_id=params.project_id,
                 source_key=params.source_key,
                 limit=params.limit,
+                read_terms=params.read_terms,
             ),
         )
         return RuntimeEstateOverview(
@@ -2644,13 +3504,43 @@ class RuntimeStoreRepository:
         so a status bucket and its total can never be computed from different
         predicates.
         """
+        # Each table's ROW STAMP column and its environment column, or None
+        # where it has neither. Stated explicitly rather than probed with
+        # `getattr` so that a table gaining an `environment_id` later cannot
+        # silently change what an environment-narrowed grant exposes on this
+        # surface -- and so `runtime_sources`, the one table here whose stamp is
+        # not called `project_id`, cannot be filtered on the wrong column by an
+        # attribute lookup that happens to resolve. Its stamp is `estate_key`:
+        # the same value every mirrored row carries, which is exactly what the
+        # other three are filtered on.
+        #
+        # `runtime_sources` has no environment column: a source is not
+        # per-environment, so a narrowed grant contributes no source rows here
+        # (`_apply_read_terms`, fail-closed). Every table on this surface is
+        # inventory, so none takes a time column.
+        stamp_columns = {
+            RuntimeSourceRow: RuntimeSourceRow.estate_key,
+            RuntimeEngineRow: RuntimeEngineRow.project_id,
+            RuntimeEnvironmentRow: RuntimeEnvironmentRow.project_id,
+            RuntimeWorkspaceRow: RuntimeWorkspaceRow.project_id,
+        }
+        environment_columns = {
+            RuntimeSourceRow: None,
+            RuntimeEngineRow: RuntimeEngineRow.environment_id,
+            RuntimeEnvironmentRow: RuntimeEnvironmentRow.environment_id,
+            RuntimeWorkspaceRow: RuntimeWorkspaceRow.environment_id,
+        }
 
         def aggregate(row_cls, expression, label: str, *conditions):
             """One scoped scalar subquery over `row_cls`, filtered like every other."""
             stmt = select(expression).select_from(row_cls)
-            stmt = self._apply_scope(stmt, row_cls.project_id, scope)
-            if params.project_id is not None:
-                stmt = stmt.where(row_cls.project_id == params.project_id)
+            stmt = self._apply_scope(stmt, stamp_columns[row_cls], scope)
+            stmt = self._apply_project_filter(
+                stmt,
+                stamp_columns[row_cls],
+                params,
+                environment_column=environment_columns[row_cls],
+            )
             if params.source_key is not None:
                 stmt = stmt.where(row_cls.source_key == params.source_key)
             for condition in conditions:
@@ -2771,6 +3661,7 @@ class RuntimeStoreRepository:
         until: datetime.datetime | None,
         environment_ids: Sequence[str] | None = None,
         project_ids: Sequence[str] | None = None,
+        read_terms: Sequence[RuntimeReadTerm] = (),
         executable_kind: RuntimeExecutableKind | None = None,
     ):
         """Scoped, filtered execution rows as a subquery for aggregate composition.
@@ -2781,7 +3672,34 @@ class RuntimeStoreRepository:
         filter here is what keeps a scoped rollup internally consistent -- a
         per-aggregate filter would let one number describe PROD while its
         neighbour described PROD+TST.
+
+        Three row-stamp filters can arrive, and they are tried in this order:
+        `read_terms` (the resolved read set, per project), `project_ids` (a flat
+        read set resolved by a caller that has no terms), then the bare
+        `project_id`.
+
+        `read_terms` used to be tried LAST, on the reasoning that the
+        documentation lane resolved its own widening into `project_ids` and a
+        second filter must not narrow it further. That was the leak: the
+        documentation lane's flat set names the granting project without
+        carrying the grant's own environment and window, so a grant scoped to
+        `prod` returned the grantor's whole estate. The terms name the same
+        projects in the same order (`resolve_runtime_read_scope` and
+        `resolve_runtime_read_projects` walk the same grants), so preferring them
+        loses no project and adds each grant's boundary back. For an ungranted
+        read -- one unrestricted term -- `_apply_read_terms` emits the same bare
+        `project_id = ...` that `_apply_read_projects` emits for a one-element
+        list, so that path is unchanged.
+
+        `environment_ids` and `read_terms` DO compose, and must: the first is
+        the caller's selection, the second the grantor's boundary, and the
+        honest answer is their intersection. The caller's selection is resolved
+        across every project in the read set (not just `project_id`), for the
+        reason `_environment_execution_ids` documents.
         """
+        read_project_ids = list(project_ids) if project_ids else [
+            term.project_id for term in read_terms
+        ]
         stmt = select(
             RuntimeExecutionRow.id.label("id"),
             RuntimeExecutionRow.project_id.label("project_id"),
@@ -2795,7 +3713,15 @@ class RuntimeStoreRepository:
             RuntimeExecutionRow.executable_kind.label("executable_kind"),
         )
         stmt = self._apply_scope(stmt, RuntimeExecutionRow.project_id, scope)
-        if project_ids:
+        if read_terms:
+            stmt = self._apply_read_terms(
+                stmt,
+                RuntimeExecutionRow.project_id,
+                read_terms,
+                time_column=RuntimeExecutionRow.started_at,
+                execution_id_column=RuntimeExecutionRow.execution_id,
+            )
+        elif project_ids:
             stmt = self._apply_read_projects(stmt, RuntimeExecutionRow.project_id, project_ids)
         elif project_id is not None:
             stmt = stmt.where(RuntimeExecutionRow.project_id == project_id)
@@ -2812,7 +3738,9 @@ class RuntimeStoreRepository:
         if environment_ids is not None:
             stmt = stmt.where(
                 RuntimeExecutionRow.execution_id.in_(
-                    self._environment_execution_ids(project_id, environment_ids, project_ids)
+                    self._environment_execution_ids(
+                        project_id, environment_ids, read_project_ids or None
+                    )
                 )
             )
         return stmt.subquery()
@@ -2821,29 +3749,51 @@ class RuntimeStoreRepository:
     def _state_count(column, state: RuntimeExecutionState):
         return func.coalesce(func.sum(case((column == state.value, 1), else_=0)), 0)
 
-    def _duration_percentiles(self, base, group_columns: list):
-        """Grouped p50/p95 duration subquery over non-null durations."""
+    def _grouped_percentiles(
+        self,
+        base,
+        group_columns: list,
+        value_column,
+        percentiles: Mapping[str, int],
+    ):
+        """Grouped discrete percentiles over one non-null numeric column of `base`.
+
+        `percentiles` maps an output label to the percentile rank it carries, so
+        one call can produce p50 and p95 side by side. Discrete (nearest-rank via
+        `_percentile_at_rank`) throughout: every reported value is a real observed
+        measurement. Kept generic because a second percentile implementation is
+        how a p50 duration and a p50 start time end up disagreeing about what
+        "median" means.
+        """
         ranked = (
             select(
                 *group_columns,
-                base.c.duration_ms.label("duration_ms"),
+                value_column.label("value"),
                 func.row_number()
-                .over(partition_by=group_columns, order_by=base.c.duration_ms.asc())
+                .over(partition_by=group_columns, order_by=value_column.asc())
                 .label("rn"),
                 func.count().over(partition_by=group_columns).label("cnt"),
             )
-            .where(base.c.duration_ms.is_not(None))
+            .where(value_column.is_not(None))
             .subquery()
         )
         ranked_groups = [ranked.c[column.name] for column in group_columns]
         return (
             select(
                 *ranked_groups,
-                _percentile_at_rank(ranked.c.rn, ranked.c.cnt, ranked.c.duration_ms, 50).label("p50"),
-                _percentile_at_rank(ranked.c.rn, ranked.c.cnt, ranked.c.duration_ms, 95).label("p95"),
+                *[
+                    _percentile_at_rank(ranked.c.rn, ranked.c.cnt, ranked.c.value, rank).label(label)
+                    for label, rank in percentiles.items()
+                ],
             )
             .group_by(*ranked_groups)
             .subquery()
+        )
+
+    def _duration_percentiles(self, base, group_columns: list):
+        """Grouped p50/p95 duration subquery over non-null durations."""
+        return self._grouped_percentiles(
+            base, group_columns, base.c.duration_ms, {"p50": 50, "p95": 95}
         )
 
     async def get_outcome_trend(
@@ -2859,6 +3809,7 @@ class RuntimeStoreRepository:
             job_name=params.job_name,
             since=params.since,
             until=params.until,
+            read_terms=params.read_terms,
             executable_kind=RuntimeExecutableKind.JOB,
         )
         bucket = _bucket_key_expr(self._dialect, base.c.started_at, params.bucket)
@@ -2936,6 +3887,7 @@ class RuntimeStoreRepository:
             job_name=params.job_name,
             since=None,
             until=None,
+            read_terms=params.read_terms,
             executable_kind=RuntimeExecutableKind.JOB,
         )
         row = (
@@ -2966,6 +3918,7 @@ class RuntimeStoreRepository:
             until=params.until,
             environment_ids=params.environment_ids,
             project_ids=params.project_ids,
+            read_terms=params.read_terms,
             executable_kind=RuntimeExecutableKind.JOB,
         )
         group = [base.c.project_id, base.c.source_key, base.c.job_name]
@@ -3108,6 +4061,167 @@ class RuntimeStoreRepository:
                 max_duration_ms=row["max_duration_ms"],
             )
             for row in rows
+        ]
+
+    async def _observed_run_bounds(
+        self, base, since: datetime.datetime | None, until: datetime.datetime | None
+    ) -> tuple[datetime.datetime, datetime.datetime] | None:
+        """UTC span the offset table has to cover, or None when nothing is in scope.
+
+        A caller that bounded the window on both sides already told us the span,
+        so the extra round trip is skipped. Otherwise min/max over the SAME scoped
+        subquery the aggregate uses -- deriving the span from a wider population
+        than the one being aggregated would build an offset table for rows the
+        caller may not read.
+        """
+        if since is not None and until is not None:
+            return _as_utc(since), _as_utc(until)  # type: ignore[return-value]
+        row = (
+            await self._session.execute(
+                select(
+                    func.min(base.c.started_at).label("observed_from"),
+                    func.max(base.c.started_at).label("observed_until"),
+                )
+            )
+        ).mappings().one()
+        lower, upper = _as_utc(row["observed_from"]), _as_utc(row["observed_until"])
+        if lower is None or upper is None:
+            return None
+        return lower, upper
+
+    async def list_job_schedule_profile(
+        self, scope: ProjectScope, params: ListRuntimeJobScheduleProfileInput
+    ) -> list[RuntimeJobScheduleProfile]:
+        """Per-job clock-time profile: when each job actually starts, per day.
+
+        Answers "which jobs run overnight, and at what time" -- the question
+        `get_outcome_trend` cannot answer, because that buckets CHRONOLOGICALLY
+        (22:00 on 3 September) while this pools every run onto one 24-hour clock
+        across many days. Talend schedules live in the management console, never
+        in the scanned design, so these observed starts are the only schedule
+        evidence that exists.
+
+        Mechanics, all of it dialect-portable:
+
+        - Timestamps are shifted to `params.timezone` wall-clock seconds with a
+          DST-aware offset table derived in Python (`_utc_offset_segments`).
+        - A window-relative axis, `shifted = local_seconds - window_start`, makes
+          a window that wraps midnight behave exactly like one that does not:
+          floor-dividing it by a day gives the NIGHT a run belongs to, and the
+          remainder is its position within the window. A naive median over raw
+          clock times puts the median of {23:50, 00:10} near midday; on this axis
+          it lands at midnight, where it belongs.
+        - The median start is discrete (nearest-rank), so it is always a start
+          that really happened -- the same convention as every duration
+          percentile here.
+
+        Runs of the same job name in different environments are pooled, exactly
+        as in `list_job_reliability`. Where one name carries a PROD and a DEV
+        deployment that is a blend of two schedules; pass `environment_ids` to
+        profile one deployment (see `_dominant_environment_gaps`).
+        """
+        if self._denies_all(scope):
+            return []
+        zone = ZoneInfo(params.timezone)
+        base = self._scoped_execution_base(
+            scope,
+            project_id=params.project_id,
+            source_key=params.source_key,
+            job_name=params.job_name,
+            since=params.since,
+            until=params.until,
+            environment_ids=params.environment_ids,
+            project_ids=params.project_ids,
+            read_terms=params.read_terms,
+            executable_kind=RuntimeExecutableKind.JOB,
+        )
+        bounds = await self._observed_run_bounds(base, params.since, params.until)
+        if bounds is None:
+            return []
+        segments = _utc_offset_segments(zone, *bounds)
+
+        start_hour = params.start_hour if params.start_hour is not None else 0
+        end_hour = params.end_hour if params.end_hour is not None else start_hour
+        window_start = start_hour * 3600
+        # Half-open [start, end) measured forward from the start, so 22->7 is
+        # nine hours and 22->22 (or no window at all) is the full day.
+        window_length = (end_hour * 3600 - window_start) % _SECONDS_PER_DAY or _SECONDS_PER_DAY
+
+        # The window-relative axis. `shifted` is exact integer seconds, so the
+        # division below is a correctly-rounded division of an exact value and
+        # its floor is the day index without fencepost risk; `window_pos` is then
+        # plain integer arithmetic in 0..86399.
+        shifted = _local_epoch_seconds(self._dialect, base.c.started_at, segments) - window_start
+        window_day = cast(func.floor(shifted / float(_SECONDS_PER_DAY)), Integer)
+        window_pos = shifted - window_day * _SECONDS_PER_DAY
+
+        keyed = (
+            select(
+                base.c.project_id,
+                base.c.source_key,
+                base.c.job_name,
+                base.c.state.label("state"),
+                base.c.duration_ms.label("duration_ms"),
+                window_day.label("window_day"),
+                window_pos.label("window_pos"),
+            )
+            .where(window_pos < window_length)
+            .subquery()
+        )
+        group = [keyed.c.project_id, keyed.c.source_key, keyed.c.job_name]
+        durations = self._grouped_percentiles(keyed, group, keyed.c.duration_ms, {"p50": 50})
+        starts = self._grouped_percentiles(keyed, group, keyed.c.window_pos, {"median_pos": 50})
+        aggregated = (
+            select(
+                *group,
+                func.count().label("total_runs"),
+                func.count(func.distinct(keyed.c.window_day)).label("distinct_days"),
+                func.min(keyed.c.window_pos).label("earliest_pos"),
+                func.max(keyed.c.window_pos).label("latest_pos"),
+                (
+                    func.count()
+                    - self._state_count(keyed.c.state, RuntimeExecutionState.SUCCESS)
+                ).label("non_success_runs"),
+            )
+            .group_by(*group)
+            .subquery()
+        )
+
+        def join_keys(other):
+            return and_(
+                other.c.project_id == aggregated.c.project_id,
+                other.c.source_key == aggregated.c.source_key,
+                other.c.job_name == aggregated.c.job_name,
+            )
+
+        stmt = (
+            select(aggregated, durations.c.p50, starts.c.median_pos)
+            .join(durations, join_keys(durations), isouter=True)
+            .join(starts, join_keys(starts), isouter=True)
+            .order_by(aggregated.c.total_runs.desc(), aggregated.c.job_name.asc())
+            .offset(params.offset)
+            .limit(params.limit)
+        )
+        rows = (await self._session.execute(stmt)).mappings().all()
+        return [
+            RuntimeJobScheduleProfile(
+                project_id=row["project_id"],
+                source_key=row["source_key"],
+                job_name=row["job_name"],
+                timezone=params.timezone,
+                window_start_hour=start_hour,
+                window_end_hour=end_hour,
+                total_runs=row["total_runs"],
+                distinct_days=row["distinct_days"],
+                # Back off the window-relative axis onto the wall clock.
+                median_start_time=_seconds_to_time(window_start + int(row["median_pos"])),
+                earliest_start_time=_seconds_to_time(window_start + int(row["earliest_pos"])),
+                latest_start_time=_seconds_to_time(window_start + int(row["latest_pos"])),
+                p50_duration_ms=row["p50"],
+                non_success_runs=row["non_success_runs"],
+            )
+            for row in rows
+            if row["median_pos"] is not None
         ]
 
     @staticmethod
@@ -3311,6 +4425,7 @@ class RuntimeStoreRepository:
             until=params.until,
             environment_ids=params.environment_ids,
             project_ids=params.project_ids,
+            read_terms=params.read_terms,
             executable_kind=RuntimeExecutableKind.JOB,
         )
         group = [base.c.project_id, base.c.source_key, base.c.job_name]
@@ -3654,6 +4769,7 @@ class RuntimeStoreRepository:
         max_failures_per_unit: int = 5,
         environment_ids: Sequence[str] | None = None,
         project_ids: Sequence[str] | None = None,
+        read_terms: Sequence[RuntimeReadTerm] = (),
     ) -> tuple[list[RuntimeDocEvidence], list[str], list[str]]:
         """Runtime profiles for scanned units, the units with no data, and the
         runtime jobs with no unit.
@@ -3732,6 +4848,49 @@ class RuntimeStoreRepository:
         * one job name can appear under two project ids.  Reliability rollups
           are therefore merged by name (`_merge_reliability_by_job_name`)
           instead of the last-write-wins dict this used to build.
+
+        Grant limits -- `read_terms`
+        ----------------------------
+        The same read set, carrying what each grant actually allows. It is what
+        makes `project_ids` safe: that list names a granting project, and
+        `environment_ids` above is the FLAT documentation scope, which by
+        construction unions the grant's environments into the reader's own. A
+        grant narrowed to `prod` therefore cannot be expressed there at all --
+        unioned it returns the grantor's non-prod rows, intersected it deletes
+        the reader's own. Each term's limits are applied to that term's project
+        alone (`_apply_read_terms`), so the two filters compose: a sub-query
+        reads `flat environments AND this project's granted environments`, and
+        `caller's window AND this project's granted window`.
+
+        Every sub-query below is bounded this way, because a documentation
+        prompt is assembled from all of them and one unbounded aggregate is a
+        leak whatever the others do. How each one expresses the narrowing is
+        fixed by what its table carries:
+
+        * `runtime_job_runs` (cadence, environments) and `runtime_plans` --
+          their own `environment_id`; the run facts also take the window through
+          `started_at`, the plan inventory deliberately does not.
+        * `runtime_executions` (reliability, durations, log quality, incidents)
+          and `runtime_failures` -- no environment column, so the narrowing
+          routes through the execution id of the run that produced them, and
+          `started_at` / `failed_at` is the window.
+        * `runtime_job_scan_maps` -- carries none of the three itself, but the
+          name it returns is read off a job run, so the limits attach there.
+        * `runtime_log_events`, `runtime_incidents`,
+          `runtime_execution_summaries` -- no project predicate at all; they are
+          reached only through the execution population, and inherit its bounds
+          through the join.
+
+        No table this lane reads is unnarrowable, so nothing here fails closed
+        today. A sub-query added over one that is -- `runtime_artifacts`,
+        `runtime_connections`, `runtime_job_dependencies` -- WILL fail closed
+        (`_apply_read_terms`), and must say so in the coverage record rather
+        than return a silent absence. A missing row is a reportable gap; a
+        leaked one cannot be taken back.
+
+        Empty `read_terms` means no read set was resolved, and every sub-query
+        falls back to `project_ids` exactly as it did before grants carried
+        limits.
         """
         requested = list(dict.fromkeys(name for name in unit_names if name))
         if self._denies_all(scope) or not requested:
@@ -3742,9 +4901,21 @@ class RuntimeStoreRepository:
         scoped = list(environment_ids) if environment_ids is not None else None
         if scoped is not None and not scoped:
             return [], requested, []
-        read_projects = list(project_ids) if project_ids else [project_id]
+        terms = list(read_terms)
+        # The terms name the same projects as `project_ids`, so a caller that
+        # resolved only the terms still gets the full read set here -- which
+        # matters because this list is what `_environment_execution_ids` scopes
+        # the flat environment filter to, and narrowing it to the reader alone
+        # would filter a shared read down to the reader's own executions.
+        read_projects = (
+            list(project_ids)
+            if project_ids
+            else [term.project_id for term in terms] or [project_id]
+        )
 
-        overrides = await self._doc_evidence_scan_map(scope, read_projects, requested)
+        overrides = await self._doc_evidence_scan_map(
+            scope, read_projects, requested, read_terms=terms
+        )
         # A mapped unit is looked up by its runtime name; everything else by its
         # own name.  Both directions are needed because one runtime job may back
         # several units and the response is keyed by unit.
@@ -3768,6 +4939,7 @@ class RuntimeStoreRepository:
                 # it was cut rather than absent.
                 limit=min(500 * len(read_projects), 5000),
                 environment_ids=scoped,
+                read_terms=terms,
             ),
         )
         matched = _merge_reliability_by_job_name(
@@ -3784,23 +4956,31 @@ class RuntimeStoreRepository:
 
         job_names = list(matched)
         durations = await self._doc_evidence_durations(
-            scope, read_projects, job_names, since, environment_ids=scoped
+            scope, read_projects, job_names, since, environment_ids=scoped, read_terms=terms
         )
         environments = await self._doc_evidence_environments(
-            scope, read_projects, job_names, since, environment_ids=scoped
+            scope, read_projects, job_names, since, environment_ids=scoped, read_terms=terms
         )
         gaps = await self._doc_evidence_gap_quantiles(
-            scope, read_projects, job_names, since, environment_ids=scoped
+            scope, read_projects, job_names, since, environment_ids=scoped, read_terms=terms
         )
-        plans = await self._doc_evidence_plans(scope, read_projects, job_names)
+        plans = await self._doc_evidence_plans(
+            scope, read_projects, job_names, read_terms=terms
+        )
         failures = await self._doc_evidence_failures(
-            scope, read_projects, job_names, since, max_failures_per_unit, environment_ids=scoped
+            scope,
+            read_projects,
+            job_names,
+            since,
+            max_failures_per_unit,
+            environment_ids=scoped,
+            read_terms=terms,
         )
         log_quality = await self._doc_evidence_log_quality(
-            scope, read_projects, job_names, since, environment_ids=scoped
+            scope, read_projects, job_names, since, environment_ids=scoped, read_terms=terms
         )
         incident_insights = await self._doc_evidence_incidents(
-            scope, read_projects, job_names, since, environment_ids=scoped
+            scope, read_projects, job_names, since, environment_ids=scoped, read_terms=terms
         )
 
         evidence: list[RuntimeDocEvidence] = []
@@ -3847,9 +5027,23 @@ class RuntimeStoreRepository:
         return evidence, [unit for unit in requested if unit not in covered], orphans
 
     async def _doc_evidence_scan_map(
-        self, scope: ProjectScope, project_ids: Sequence[str], unit_names: Sequence[str]
+        self,
+        scope: ProjectScope,
+        project_ids: Sequence[str],
+        unit_names: Sequence[str],
+        read_terms: Sequence[RuntimeReadTerm] = (),
     ) -> dict[str, str]:
-        """Explicit static-unit -> runtime-job-name overrides, when any exist."""
+        """Explicit static-unit -> runtime-job-name overrides, when any exist.
+
+        `runtime_job_scan_maps` carries no environment, no execution id and no
+        event time of its own, but the row it RETURNS is a job name read off a
+        job run -- and that run has all three. So a grant's limits attach to the
+        join partner: an override is honoured only where the run it names is
+        itself readable. The project predicate stays on the scan-map column it
+        has always been on; the join equates the two project ids anyway, so this
+        adds the grant's narrowing without moving the filter that was already
+        working.
+        """
         stmt = (
             select(RuntimeJobScanMapRow.static_job_id, RuntimeJobRunRow.job_name)
             .join(
@@ -3863,7 +5057,14 @@ class RuntimeStoreRepository:
             .where(RuntimeJobScanMapRow.static_job_id.in_(unit_names))
             .distinct()
         )
-        stmt = self._apply_read_projects(stmt, RuntimeJobScanMapRow.project_id, project_ids)
+        stmt = self._apply_doc_read_filter(
+            stmt,
+            RuntimeJobScanMapRow.project_id,
+            project_ids,
+            read_terms,
+            environment_column=RuntimeJobRunRow.environment_id,
+            time_column=RuntimeJobRunRow.started_at,
+        )
         stmt = self._apply_scope(stmt, RuntimeJobScanMapRow.project_id, scope)
         rows = (await self._session.execute(stmt)).all()
         return {static_job_id: job_name for static_job_id, job_name in rows}
@@ -3875,6 +5076,7 @@ class RuntimeStoreRepository:
         job_names: Sequence[str],
         since: datetime.datetime,
         environment_ids: Sequence[str] | None = None,
+        read_terms: Sequence[RuntimeReadTerm] = (),
     ) -> dict[str, tuple[int | None, int | None, int | None]]:
         """Duration percentiles over SUCCESSFUL runs only, as p50/p95/max.
 
@@ -3904,7 +5106,17 @@ class RuntimeStoreRepository:
             RuntimeExecutionRow.ended_at.is_not(None),
             RuntimeExecutionRow.duration_ms.is_not(None),
         )
-        base = self._apply_read_projects(base, RuntimeExecutionRow.project_id, project_ids)
+        base = self._apply_doc_read_filter(
+            base,
+            RuntimeExecutionRow.project_id,
+            project_ids,
+            read_terms,
+            # `runtime_executions` carries no environment column, so a grant's
+            # environment narrowing routes through the job run that produced the
+            # execution -- the same route `_environment_execution_ids` documents.
+            time_column=RuntimeExecutionRow.started_at,
+            execution_id_column=RuntimeExecutionRow.execution_id,
+        )
         if environment_ids is not None:
             base = base.where(
                 RuntimeExecutionRow.execution_id.in_(
@@ -3936,6 +5148,7 @@ class RuntimeStoreRepository:
         job_names: Sequence[str],
         since: datetime.datetime,
         environment_ids: Sequence[str] | None = None,
+        read_terms: Sequence[RuntimeReadTerm] = (),
     ) -> dict[tuple[str, str | None], _GapStats]:
         """Inter-run gap quantiles per (job, environment), in seconds.
 
@@ -3977,7 +5190,14 @@ class RuntimeStoreRepository:
             RuntimeJobRunRow.job_name.in_(job_names),
             RuntimeJobRunRow.started_at >= since,
         )
-        base = self._apply_read_projects(base, RuntimeJobRunRow.project_id, project_ids)
+        base = self._apply_doc_read_filter(
+            base,
+            RuntimeJobRunRow.project_id,
+            project_ids,
+            read_terms,
+            environment_column=RuntimeJobRunRow.environment_id,
+            time_column=RuntimeJobRunRow.started_at,
+        )
         if environment_ids is not None:
             base = base.where(RuntimeJobRunRow.environment_id.in_(list(environment_ids)))
         base = self._apply_scope(base, RuntimeJobRunRow.project_id, scope).subquery()
@@ -4044,6 +5264,7 @@ class RuntimeStoreRepository:
         job_names: Sequence[str],
         since: datetime.datetime,
         environment_ids: Sequence[str] | None = None,
+        read_terms: Sequence[RuntimeReadTerm] = (),
     ) -> dict[str, list[str]]:
         """Environments each job was observed running in, most frequent first.
 
@@ -4064,7 +5285,17 @@ class RuntimeStoreRepository:
             .group_by(RuntimeJobRunRow.job_name, RuntimeJobRunRow.environment_name)
             .order_by(func.count().desc(), RuntimeJobRunRow.environment_name.asc())
         )
-        stmt = self._apply_read_projects(stmt, RuntimeJobRunRow.project_id, project_ids)
+        stmt = self._apply_doc_read_filter(
+            stmt,
+            RuntimeJobRunRow.project_id,
+            project_ids,
+            read_terms,
+            # Same reason as the flat filter below, for the other narrowing: an
+            # environment a grant excludes must not be able to become this job's
+            # DOMINANT one and take the gap quantiles with it.
+            environment_column=RuntimeJobRunRow.environment_id,
+            time_column=RuntimeJobRunRow.started_at,
+        )
         if environment_ids is not None:
             # Keeps the `environments[0]` contract true under a read scope: the
             # dominant environment must be the dominant SELECTED one, or the
@@ -4078,7 +5309,11 @@ class RuntimeStoreRepository:
         return result
 
     async def _doc_evidence_plans(
-        self, scope: ProjectScope, project_ids: Sequence[str], job_names: Sequence[str]
+        self,
+        scope: ProjectScope,
+        project_ids: Sequence[str],
+        job_names: Sequence[str],
+        read_terms: Sequence[RuntimeReadTerm] = (),
     ) -> dict[str, list[str]]:
         """Orchestration plans that reference each job as one of their steps.
 
@@ -4104,7 +5339,21 @@ class RuntimeStoreRepository:
         stmt = select(
             RuntimePlanRow.name, RuntimePlanRow.display_name, RuntimePlanRow.steps
         ).where(RuntimePlanRow.steps.is_not(None))
-        stmt = self._apply_read_projects(stmt, RuntimePlanRow.project_id, project_ids)
+        stmt = self._apply_doc_read_filter(
+            stmt,
+            RuntimePlanRow.project_id,
+            project_ids,
+            read_terms,
+            # A plan is deployed into an environment and the row says which, so a
+            # narrowed grant can be honoured here rather than failing closed. A
+            # plan the provider left unattributed is excluded, the same reading
+            # `_environment_execution_ids` applies to an unattributed run.
+            environment_column=RuntimePlanRow.environment_id,
+            # No time column, deliberately: `runtime_plans` is inventory. A
+            # window grant bounds how much HISTORY a reader may see, not whether
+            # an orchestration exists, and applying one here would delete plans
+            # from an estate the reader was granted.
+        )
         stmt = self._apply_scope(stmt, RuntimePlanRow.project_id, scope)
         wanted = set(job_names)
         result: dict[str, list[str]] = {}
@@ -4128,6 +5377,7 @@ class RuntimeStoreRepository:
         since: datetime.datetime,
         max_per_job: int,
         environment_ids: Sequence[str] | None = None,
+        read_terms: Sequence[RuntimeReadTerm] = (),
     ) -> dict[str, list[RuntimeDocEvidenceFailure]]:
         """Distinct failure MODES per job, most recent first, redacted and capped.
 
@@ -4147,7 +5397,17 @@ class RuntimeStoreRepository:
             .where(RuntimeFailureRow.failed_at >= since)
             .order_by(RuntimeFailureRow.failed_at.desc(), RuntimeFailureRow.id.desc())
         )
-        stmt = self._apply_read_projects(stmt, RuntimeFailureRow.project_id, project_ids)
+        stmt = self._apply_doc_read_filter(
+            stmt,
+            RuntimeFailureRow.project_id,
+            project_ids,
+            read_terms,
+            # A failure row carries no environment of its own either, so a
+            # grant's environment narrowing takes the same route through the job
+            # run as the flat filter below, and `failed_at` is its window column.
+            time_column=RuntimeFailureRow.failed_at,
+            execution_id_column=RuntimeFailureRow.execution_id,
+        )
         if environment_ids is not None:
             # A failure row carries no environment either, and joining through
             # the job run is what stops a TST stack trace being published as the
@@ -4191,6 +5451,7 @@ class RuntimeStoreRepository:
         job_names: Sequence[str],
         since: datetime.datetime,
         environment_ids: Sequence[str] | None = None,
+        read_terms: Sequence[RuntimeReadTerm] = (),
     ) -> dict[str, RuntimeDocLogQuality]:
         """Measure diagnostic coverage without shipping a single raw log line.
 
@@ -4205,6 +5466,11 @@ class RuntimeStoreRepository:
         literal filter would be a duplicate rule to keep in step. That matters
         here more than elsewhere: the insights tables carry no `source_key`, so
         the join IS their only scoping mechanism.
+
+        A read grant's own limits arrive the same way. The population carries
+        them (`_apply_doc_read_filter`), so a grant narrowed to one environment
+        or a short window bounds these coverage counts without either insights
+        table needing a predicate it has no column for.
 
         Reaching them THROUGH the population is also what bounds the read.
         Aggregating them first and joining afterwards -- the previous shape --
@@ -4228,8 +5494,13 @@ class RuntimeStoreRepository:
             .where(RuntimeExecutionRow.started_at >= since)
             .where(RuntimeExecutionRow.state == RuntimeExecutionState.FAILED.value)
         )
-        population_stmt = self._apply_read_projects(
-            population_stmt, RuntimeExecutionRow.project_id, project_ids
+        population_stmt = self._apply_doc_read_filter(
+            population_stmt,
+            RuntimeExecutionRow.project_id,
+            project_ids,
+            read_terms,
+            time_column=RuntimeExecutionRow.started_at,
+            execution_id_column=RuntimeExecutionRow.execution_id,
         )
         if environment_ids is not None:
             population_stmt = population_stmt.where(
@@ -4261,6 +5532,7 @@ class RuntimeStoreRepository:
         since: datetime.datetime,
         max_per_job: int = 3,
         environment_ids: Sequence[str] | None = None,
+        read_terms: Sequence[RuntimeReadTerm] = (),
     ) -> dict[str, list[RuntimeDocIncidentInsight]]:
         """Return recurring diagnoses backed by useful log evidence.
 
@@ -4274,7 +5546,9 @@ class RuntimeStoreRepository:
         so the project predicate belongs on the execution table alone. Neither
         insights table carries a `source_key`, which makes that join their only
         scoping mechanism; a literal filter here would be a second copy of the
-        same rule, free to drift out of step with it.
+        same rule, free to drift out of step with it. A read grant's environment
+        and window ride the same join: they are applied to the execution, and a
+        diagnosis is published only for an execution the grant allows.
         """
         stmt = (
             select(
@@ -4315,7 +5589,14 @@ class RuntimeStoreRepository:
             .where(RuntimeIncidentRow.pattern_id.notin_(_UNINFORMATIVE_PATTERN_IDS))
             .order_by(RuntimeExecutionRow.job_name, RuntimeIncidentRow.first_bad_at.desc())
         )
-        stmt = self._apply_read_projects(stmt, RuntimeExecutionRow.project_id, project_ids)
+        stmt = self._apply_doc_read_filter(
+            stmt,
+            RuntimeExecutionRow.project_id,
+            project_ids,
+            read_terms,
+            time_column=RuntimeExecutionRow.started_at,
+            execution_id_column=RuntimeExecutionRow.execution_id,
+        )
         if environment_ids is not None:
             stmt = stmt.where(
                 RuntimeExecutionRow.execution_id.in_(
@@ -4382,7 +5663,24 @@ class RuntimeStoreRepository:
         component_type: str | None = None,
         since: datetime.datetime | None = None,
         until: datetime.datetime | None = None,
+        read_terms: Sequence[RuntimeReadTerm] = (),
+        bound_terms_by_measured_at: bool = True,
     ):
+        """Scoped component-metric rows as a subquery.
+
+        `read_terms` takes precedence over `project_id`. The metric table has no
+        environment column, so a narrowed grant routes through `execution_id`,
+        the same key the write-port and every metric join already use.
+
+        `bound_terms_by_measured_at` exists because the two callers reach these
+        rows differently. `list_component_hotspots` reads them DIRECTLY, so a
+        windowed grant has to be applied here or it is not applied at all.
+        `_job_throughput_base` reaches them through an INNER join to an already
+        windowed execution population, and applying the window again on
+        `measured_at` would drop a metric recorded moments after an in-window
+        run -- the exact failure that function's docstring warns about, since
+        the two windows are defined on different columns.
+        """
         stmt = select(
             RuntimeComponentMetricRow.project_id.label("project_id"),
             RuntimeComponentMetricRow.source_key.label("source_key"),
@@ -4397,7 +5695,19 @@ class RuntimeStoreRepository:
             RuntimeComponentMetricRow.measured_at.label("measured_at"),
         )
         stmt = self._apply_scope(stmt, RuntimeComponentMetricRow.project_id, scope)
-        if project_id is not None:
+        if read_terms:
+            stmt = self._apply_read_terms(
+                stmt,
+                RuntimeComponentMetricRow.project_id,
+                read_terms,
+                time_column=(
+                    RuntimeComponentMetricRow.measured_at
+                    if bound_terms_by_measured_at
+                    else None
+                ),
+                execution_id_column=RuntimeComponentMetricRow.execution_id,
+            )
+        elif project_id is not None:
             stmt = stmt.where(RuntimeComponentMetricRow.project_id == project_id)
         if source_key is not None:
             stmt = stmt.where(RuntimeComponentMetricRow.source_key == source_key)
@@ -4425,6 +5735,7 @@ class RuntimeStoreRepository:
             component_type=params.component_type,
             since=params.since,
             until=params.until,
+            read_terms=params.read_terms,
         )
         group = [base.c.project_id, base.c.source_key, base.c.component_key]
         percentiles = self._duration_percentiles(base, group)
@@ -4499,6 +5810,7 @@ class RuntimeStoreRepository:
             component_type=params.component_type,
             since=params.since,
             until=params.until,
+            read_terms=params.read_terms,
         )
         groups = (
             select(base.c.project_id, base.c.source_key, base.c.component_key)
@@ -4582,10 +5894,17 @@ class RuntimeStoreRepository:
             job_name=params.job_name,
             since=params.since,
             until=params.until,
+            read_terms=params.read_terms,
             executable_kind=RuntimeExecutableKind.JOB,
         )
         metrics = self._scoped_metric_base(
-            scope, project_id=params.project_id, source_key=params.source_key
+            scope,
+            project_id=params.project_id,
+            source_key=params.source_key,
+            read_terms=params.read_terms,
+            # The grant window reaches these rows through the INNER join below,
+            # never through `measured_at`. See `_scoped_metric_base`.
+            bound_terms_by_measured_at=False,
         )
         return (
             select(
@@ -4624,8 +5943,21 @@ class RuntimeStoreRepository:
     def _error_signature_stmt(self, scope: ProjectScope, params: ListRuntimeErrorSignaturesInput):
         stmt = select(RuntimeErrorSignatureRow)
         stmt = self._apply_scope(stmt, RuntimeErrorSignatureRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimeErrorSignatureRow.project_id == params.project_id)
+        # A signature is a rollup OF history, not an entity that exists apart
+        # from it, so a windowed grant bounds it on `last_seen_at` -- the same
+        # column the caller's own `since` filter uses below. A signature whose
+        # last occurrence predates the window (or was never stamped at all, the
+        # column being nullable) is not evidence for the window and is dropped,
+        # which is the same reading `_environment_execution_ids` applies to a
+        # run with no environment. There is no environment column and no
+        # execution id here, so an environment-narrowed grant contributes no
+        # signatures from the grantor.
+        stmt = self._apply_project_filter(
+            stmt,
+            RuntimeErrorSignatureRow.project_id,
+            params,
+            time_column=RuntimeErrorSignatureRow.last_seen_at,
+        )
         if params.error_code is not None:
             stmt = stmt.where(RuntimeErrorSignatureRow.error_code == params.error_code)
         if params.exception_class is not None:
@@ -4672,8 +6004,14 @@ class RuntimeStoreRepository:
             return 0
         stmt = select(func.count()).select_from(RuntimeJobRunRow)
         stmt = self._apply_scope(stmt, RuntimeJobRunRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimeJobRunRow.project_id == params.project_id)
+        # Identical arguments to `list_job_runs`: the page and its total.
+        stmt = self._apply_project_filter(
+            stmt,
+            RuntimeJobRunRow.project_id,
+            params,
+            environment_column=RuntimeJobRunRow.environment_id,
+            time_column=RuntimeJobRunRow.started_at,
+        )
         if params.source_key is not None:
             stmt = stmt.where(RuntimeJobRunRow.source_key == params.source_key)
         if params.job_id is not None:
@@ -4693,8 +6031,14 @@ class RuntimeStoreRepository:
             return 0
         stmt = select(func.count()).select_from(RuntimePlanRunRow)
         stmt = self._apply_scope(stmt, RuntimePlanRunRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimePlanRunRow.project_id == params.project_id)
+        # Identical arguments to `list_plan_runs`: the page and its total.
+        stmt = self._apply_project_filter(
+            stmt,
+            RuntimePlanRunRow.project_id,
+            params,
+            environment_column=RuntimePlanRunRow.environment_id,
+            time_column=RuntimePlanRunRow.started_at,
+        )
         if params.source_key is not None:
             stmt = stmt.where(RuntimePlanRunRow.source_key == params.source_key)
         if params.plan_id is not None:
@@ -4712,8 +6056,8 @@ class RuntimeStoreRepository:
             return 0
         stmt = select(func.count()).select_from(RuntimeArtifactRow)
         stmt = self._apply_scope(stmt, RuntimeArtifactRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimeArtifactRow.project_id == params.project_id)
+        # Identical arguments to `list_artifacts`: the page and its total.
+        stmt = self._apply_project_filter(stmt, RuntimeArtifactRow.project_id, params)
         if params.source_key is not None:
             stmt = stmt.where(RuntimeArtifactRow.source_key == params.source_key)
         if params.workspace_id is not None:
@@ -4729,8 +6073,8 @@ class RuntimeStoreRepository:
             return 0
         stmt = select(func.count()).select_from(RuntimeConnectionRow)
         stmt = self._apply_scope(stmt, RuntimeConnectionRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimeConnectionRow.project_id == params.project_id)
+        # Identical arguments to `list_connections`: the page and its total.
+        stmt = self._apply_project_filter(stmt, RuntimeConnectionRow.project_id, params)
         if params.source_key is not None:
             stmt = stmt.where(RuntimeConnectionRow.source_key == params.source_key)
         if params.workspace_id is not None:
@@ -4746,8 +6090,8 @@ class RuntimeStoreRepository:
             return 0
         stmt = select(func.count()).select_from(RuntimeJobDependencyRow)
         stmt = self._apply_scope(stmt, RuntimeJobDependencyRow.project_id, scope)
-        if params.project_id is not None:
-            stmt = stmt.where(RuntimeJobDependencyRow.project_id == params.project_id)
+        # Identical arguments to `list_job_dependencies`: the page and its total.
+        stmt = self._apply_project_filter(stmt, RuntimeJobDependencyRow.project_id, params)
         if params.source_key is not None:
             stmt = stmt.where(RuntimeJobDependencyRow.source_key == params.source_key)
         if params.dependency_type is not None:
@@ -4762,17 +6106,25 @@ class RuntimeStoreRepository:
 
     async def upsert_source(
         self,
-        project_id: str,
+        estate_key: str,
         source: RuntimeSource,
         ingested_at: datetime.datetime,
     ) -> None:
+        """Upsert the MIRRORED source row a sync batch declares.
+
+        `estate_key` is the stamp the rest of the batch is written with, so this
+        row is keyed the same way its data is. These rows carry no credentials,
+        no health and no schedule -- they are inventory, not connectors, which is
+        why `list_pollable_sources` excludes them and why no attachment row is
+        written for them.
+        """
         stmt = select(RuntimeSourceRow).where(
-            RuntimeSourceRow.project_id == project_id,
+            RuntimeSourceRow.estate_key == estate_key,
             RuntimeSourceRow.source_key == source.source_key,
         )
         row = (await self._session.execute(stmt)).scalars().first()
         if row is None:
-            row = RuntimeSourceRow(project_id=project_id, source_key=source.source_key)
+            row = RuntimeSourceRow(estate_key=estate_key, source_key=source.source_key)
             self._session.add(row)
         row.source_type = source.source_type
         row.physical_identity = f"observed:{source.source_key}"
@@ -5355,7 +6707,7 @@ def _to_sync_state(row: RuntimeSyncStateRow) -> RuntimeSyncState:
 
 def _to_source(row: RuntimeSourceRow) -> RuntimeSource:
     return RuntimeSource(
-        project_id=row.project_id,
+        estate_key=row.estate_key,
         source_key=row.source_key,
         source_type=row.source_type,
         label=row.label,
@@ -5381,10 +6733,16 @@ def _to_source_health(row: RuntimeSourceHealthRow | None) -> RuntimeSourceHealth
     )
 
 
-def _to_source_read(row: RuntimeSourceRow, health: RuntimeSourceHealthRow | None) -> RuntimeSourceRead:
+def _to_source_read(
+    row: RuntimeSourceRow,
+    health: RuntimeSourceHealthRow | None,
+    *,
+    linked_project_ids: Sequence[str] = (),
+) -> RuntimeSourceRead:
     return RuntimeSourceRead(
         id=row.id,
-        project_id=row.project_id,
+        estate_key=row.estate_key,
+        linked_project_ids=list(linked_project_ids),
         source_key=row.source_key,
         source_type=row.source_type,
         label=row.label,

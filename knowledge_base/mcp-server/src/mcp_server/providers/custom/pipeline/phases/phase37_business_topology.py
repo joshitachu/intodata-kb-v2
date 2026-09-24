@@ -1,35 +1,29 @@
-"""Additive, non-blocking business topology synthesis after documentation.
+"""Phase 3.7: the custom harness's adapter onto the shared topology builder.
 
-Two stages, in order of preference:
+The pipeline itself -- flow extraction (Stage A + B), single-shot synthesis,
+deterministic floor, pruning, deterministic enrichment, validation -- lives in
+:mod:`mcp_server.services.business_topology.builder` so every engine runs the
+same one. This phase only supplies what is harness-specific:
 
-**Stage A + B (primary)** -- the model extracts the architecture from this run's
-own finished Phase 3 documents in business language (:mod:`flow_extraction`),
-and Python assembles the published overlay from it (:mod:`assembly`). This is a
-generalisation of the pipeline that produced the hand-curated werkorder
-topology.
+* the inputs, from the run context (partition scope, plugin pack, the staged
+  runtime-evidence cache that ``Phase3Docs`` produced and ``Phase4Cleanup``
+  destroys, so it is still on disk here);
+* the :class:`~mcp_server.services.business_topology.builder.TopologyLLM`
+  strategy, which is the harness's persisted agent task with retry-with-
+  feedback, budget reservation under ``phase="business_topology"`` and resume;
+* writing ``docs_staging/_topology/`` and folding the result into the run state.
 
-**Single-shot synthesis (fallback)** -- the previous contract, where the model
-emits the published JSON itself. Retained because a pack may override its
-template and because a partition whose documents came out thin can still have a
-scanner-groundable overlay.
-
-**Deterministic overlay (floor)** -- evidence-only, no LLM. Published when both
-model lanes fail, so `available` can still be true with real cited edges.
-
-Verified motivation: on the last werkorder run all 8 partitions published the
-deterministic floor (0 business objects, 0 delivery paths), and the one partition
-whose model output was rich -- 14 systems / 8 streams / 8 delivery paths / 5
-business objects -- was rejected for three bookkeeping defects and replaced with
-a 4-system / 3-stream skeleton. Whatever validation rejects, this phase now
-prunes per claim rather than discarding wholesale.
+Additive and non-blocking: a topology failure never fails the documentation run.
 """
 
 from __future__ import annotations
 
-import json
-from typing import TYPE_CHECKING, Any
+import logging
+from typing import TYPE_CHECKING
 
 from mcp_server.providers.custom.pipeline.phase import Phase, PhaseEstimate, PhaseResult
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -37,13 +31,7 @@ if TYPE_CHECKING:
     from mcp_server.providers.base import DocGenContext, LogCallback
     from mcp_server.providers.custom.models import ExecutionPlan, HarnessRunState
     from mcp_server.providers.custom.pipeline.helpers import HarnessHelpersImpl
-    from mcp_server.services.business_topology import BusinessTopology
-    from mcp_server.services.business_topology.evidence import (
-        BusinessTopologyEvidenceBundle,
-    )
-    from mcp_server.services.business_topology.validation import (
-        BusinessTopologyValidationReport,
-    )
+    from mcp_server.services.business_topology.builder import TopologyCompletion
 
 
 class Phase37BusinessTopology(Phase):
@@ -66,461 +54,66 @@ class Phase37BusinessTopology(Phase):
         log_cb: "LogCallback",
     ) -> PhaseResult:
         from mcp_server.config import config
-        from mcp_server.services.business_topology import (
-            build_business_topology_evidence,
-            build_deterministic_topology,
-            build_topology_context_files,
-            register_doc_evidence,
-            validate_business_topology,
-        )
-        from mcp_server.services.business_topology.doc_evidence import (
-            discover_doc_filenames,
+        from mcp_server.services.business_topology.builder import (
+            TopologyBuildInputs,
+            build_business_topology,
+            load_staged_runtime_payload,
         )
 
-        output_dir = ctx.staging_dir / "_topology"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        validation_path = output_dir / "validation_report.json"
-        state_path = output_dir / "state.json"
-        topology_path = output_dir / "business_topology.json"
-        scan_output_dir = config.intodoc_output_dir / ctx.project_id
-        bundle = None
-
+        # Everything up to the build is inside the guard: a topology failure,
+        # including a malformed facts manifest while building the inputs, must
+        # never fail the documentation run.
         try:
-            bundle = build_business_topology_evidence(
+            # `ctx.partition` is a Partition, not a name: a composite run scopes
+            # this phase to one sub-project and the solution node is named after it.
+            partition = ctx.partition
+            inputs = TopologyBuildInputs(
                 project_id=ctx.project_id,
-                scan_output_dir=scan_output_dir,
                 staging_dir=ctx.staging_dir,
-                # Composite sub-project runs scope the artifact/lineage ledger to
-                # this partition's units; the starter pack's cross-project index
-                # (staged by the harness) carries the connective edges instead.
+                scan_output_dir=config.intodoc_output_dir / ctx.project_id,
+                subproject=partition.name if partition is not None else "",
                 unit_allowlist=(
-                    state.facts_manifest.unit_names() if ctx.partition is not None else None
+                    frozenset(state.facts_manifest.unit_names()) if partition is not None else None
                 ),
-            )
-            # The generated documents become a typed evidence tier so a flow
-            # taken from `03_DATA_FLOWS_AND_LINEAGE.md` can cite a resolvable id.
-            # The scanner-only bundle is kept for the deterministic overlay's own
-            # validation: its claims must not become citable via this tier.
-            # Whatever this run actually published, ranked -- not a fixed
-            # catalog list. A pack replaces the document set wholesale, and a
-            # hardcoded filename tuple would silently disable this lane for it.
-            doc_filenames = discover_doc_filenames(ctx.staging_dir)
-            doc_bundle, doc_records = register_doc_evidence(
-                bundle, ctx.staging_dir, filenames=doc_filenames
-            )
-            if not doc_records:
-                await log_cb(
-                    ctx.project_id,
-                    "[custom] Business topology: no generated documents found to extract "
-                    "flows from; falling back to single-shot synthesis",
-                    "warning",
-                )
-
-            # PUSH the high-signal evidence directly into the model context
-            # instead of relying on budget-limited agentic tool pulls (the
-            # verified ETTM_part1 starvation, where the model reported "without
-            # the ability to read evidence files (tool budget exhausted)").
-            # Tools are disabled for this phase in _tool_policy, so these files
-            # reach the model via provider.complete(context_files=...).
-            extraction_context = build_topology_context_files(
-                doc_bundle,
-                ctx.staging_dir,
-                byte_cap=config.topology_context_evidence_bytes,
-                include_generated_docs=bool(doc_records),
-                doc_filenames=doc_filenames,
-            )
-            synthesis_context = build_topology_context_files(
-                bundle,
-                ctx.staging_dir,
-                byte_cap=config.topology_context_evidence_bytes,
+                plugin_pack_dir=getattr(self._helpers, "plugin_pack_dir", None),
+                runtime_payload=load_staged_runtime_payload(ctx.staging_dir),
+                log_prefix="[custom]",
             )
 
-            # Built once, used two ways: (a) the floor the model lanes must beat
-            # -- a schema-valid but EMPTY topology must not be published when
-            # scanner edges ground real streams; (b) the published fallback.
-            deterministic_candidate = build_deterministic_topology(
-                bundle, project_id=ctx.project_id
-            )
-            deterministic_report = validate_business_topology(
-                deterministic_candidate, bundle=bundle, project_id=ctx.project_id
-            )
-            deterministic_streams = (
-                len(deterministic_candidate.data_streams)
-                if deterministic_report.validated
-                else 0
-            )
+            async def _log(message: str, level: str) -> None:
+                await log_cb(ctx.project_id, message, level)
 
-            lane = "deterministic"
-            topology: BusinessTopology | None = None
-            report: BusinessTopologyValidationReport | None = None
-            active_bundle = bundle
-            notes: list[str] = []
-
-            if doc_records:
-                topology, report, notes = await self._run_extraction_lane(
-                    ctx,
-                    state,
-                    log_cb,
-                    bundle=doc_bundle,
-                    doc_records=doc_records,
-                    deterministic=(
-                        deterministic_candidate if deterministic_streams else None
-                    ),
-                    context_files=extraction_context,
-                )
-                if topology is not None:
-                    lane = "flow_extraction"
-                    active_bundle = doc_bundle
-
-            # Stream COUNT is not the quality signal -- the verified complaint
-            # about the old overlay was 18 unlabelled scanner edges. The
-            # extraction lane already absorbs the scanner floor
-            # (`merge_scanner_floor`), so the second model lane runs only when
-            # the first produced nothing publishable at all.
-            if topology is None:
-                fallback_topology, fallback_report = await self._run_synthesis_lane(
-                    ctx,
-                    state,
-                    log_cb,
-                    bundle=bundle,
-                    context_files=synthesis_context,
-                )
-                if fallback_topology is not None:
-                    topology, report = fallback_topology, fallback_report
-                    lane = "single_shot_synthesis"
-                    active_bundle = bundle
-                    notes = []
-
-            if topology is None or not topology.data_streams:
-                if deterministic_streams:
-                    await log_cb(
-                        ctx.project_id,
-                        "[custom] Business topology: model lanes did not produce a "
-                        "publishable overlay; using deterministic evidence-only fallback "
-                        f"({len(deterministic_candidate.systems)} systems, "
-                        f"{deterministic_streams} streams)",
-                        "warning",
-                    )
-                    topology = deterministic_candidate
-                    report = deterministic_report
-                    lane = "deterministic"
-                    active_bundle = bundle
-                    notes = []
-                else:
-                    errors = list(report.errors) if report is not None else [
-                        "no publishable business topology was produced"
-                    ]
-                    validation_path.write_text(
-                        json.dumps({"validated": False, "errors": errors}, indent=2),
-                        encoding="utf-8",
-                    )
-                    topology_path.unlink(missing_ok=True)
-                    _write_state(
-                        state_path,
-                        available=False,
-                        validated=False,
-                        scan_fingerprint=bundle.scan_fingerprint,
-                        errors=errors,
-                    )
-                    state.warnings.append(
-                        "Business topology synthesis was not published; documentation is unaffected"
-                    )
-                    await log_cb(
-                        ctx.project_id,
-                        "[custom] Business topology validation failed (non-blocking): "
-                        + "; ".join(errors[:3]),
-                        "warning",
-                    )
-                    return PhaseResult(
-                        phase_name=self.name,
-                        success=True,
-                        metadata={"available": False, "validated": False, "errors": errors[:5]},
-                    )
-
-            # Re-validate against the exact persisted payload, so
-            # validation_report.json describes what is served.
-            report = validate_business_topology(
-                topology, bundle=active_bundle, project_id=ctx.project_id
+            result = await build_business_topology(
+                inputs, _HarnessTopologyLLM(self, ctx, state, log_cb), log=_log
             )
-            if notes:
-                report.warnings = [*[f"assembly: {note}" for note in notes[:10]], *report.warnings]
-            validation_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-            if not report.validated:
-                topology_path.unlink(missing_ok=True)
-                _write_state(
-                    state_path,
-                    available=False,
-                    validated=False,
-                    scan_fingerprint=bundle.scan_fingerprint,
-                    errors=report.errors,
-                    warnings=report.warnings,
-                )
-                state.warnings.append("Business topology failed final provenance validation")
-                return PhaseResult(
-                    phase_name=self.name,
-                    success=True,
-                    metadata={"available": False, "validated": False, "errors": report.errors[:5]},
-                )
-            topology_path.write_text(topology.model_dump_json(indent=2), encoding="utf-8")
-            _write_state(
-                state_path,
-                available=True,
-                validated=True,
-                scan_fingerprint=bundle.scan_fingerprint,
-                errors=[],
-                warnings=report.warnings,
-                lane=lane,
+        except Exception as exc:  # noqa: BLE001 - topology is advisory
+            logger.warning(
+                "Business topology phase failed for %s: %s", ctx.project_id, exc, exc_info=True
             )
-            await log_cb(
-                ctx.project_id,
-                f"[custom] Business topology complete via {lane}: "
-                f"{len(topology.systems)} systems, {len(topology.data_streams)} data streams, "
-                f"{len(topology.business_objects)} business objects, "
-                f"{len(topology.delivery_paths)} delivery paths",
-                "info",
-            )
-            return PhaseResult(
-                phase_name=self.name,
-                success=True,
-                metadata={
-                    "available": True,
-                    "validated": True,
-                    "lane": lane,
-                    "systems": len(topology.systems),
-                    "data_streams": len(topology.data_streams),
-                    "business_objects": len(topology.business_objects),
-                    "delivery_paths": len(topology.delivery_paths),
-                    "deterministic_fallback": lane == "deterministic",
-                },
-            )
-        except Exception as exc:  # noqa: BLE001 - this phase is explicitly non-blocking
-            fingerprint = bundle.scan_fingerprint if bundle is not None else ""
-            report_payload = {
-                "validated": False,
-                "scan_fingerprint": fingerprint,
-                "project_id": ctx.project_id,
-                "errors": [str(exc)],
-                "warnings": ["Documentation generation continued without a business topology overlay"],
-                "evidence_count": len(bundle.evidence_ids) if bundle is not None else 0,
-                "cited_evidence_count": 0,
-                "artifact_count": len(bundle.artifact_ids) if bundle is not None else 0,
-                "cited_artifact_count": 0,
-            }
-            validation_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
-            topology_path.unlink(missing_ok=True)
-            _write_state(
-                state_path,
-                available=False,
-                validated=False,
-                scan_fingerprint=fingerprint,
-                errors=[str(exc)],
-            )
-            state.warnings.append(f"Business topology synthesis failed non-fatally: {exc}")
-            await log_cb(
-                ctx.project_id,
-                f"[custom] Business topology failed (non-blocking): {exc}",
-                "warning",
-            )
+            state.warnings.append(f"Business topology failed (non-blocking): {exc}")
+            # A topology left in staging by an earlier attempt must not publish
+            # as if this run had produced it.
+            stale = ctx.staging_dir / "_topology" / "business_topology.json"
+            try:
+                stale.unlink(missing_ok=True)
+            except OSError:
+                pass
             return PhaseResult(
                 phase_name=self.name,
                 success=True,
                 metadata={"available": False, "validated": False, "error": str(exc)},
             )
-
-    async def _run_extraction_lane(
-        self,
-        ctx: "DocGenContext",
-        state: "HarnessRunState",
-        log_cb: "LogCallback",
-        *,
-        bundle: "BusinessTopologyEvidenceBundle",
-        doc_records: dict[str, dict[str, Any]],
-        deterministic: "BusinessTopology | None",
-        context_files: list["Path"],
-    ) -> tuple["BusinessTopology | None", "BusinessTopologyValidationReport | None", list[str]]:
-        """Stage A + B: extract business-level flows, then assemble in Python."""
-
-        from mcp_server.services.business_topology import (
-            assemble_topology,
-            parse_flow_extraction,
-            prune_to_valid,
-        )
-        from mcp_server.services.business_topology.assembly import merge_scanner_floor
-        from mcp_server.services.business_topology.prompt import flow_extraction_prompt
-
-        # `ctx.partition` is a Partition, not a name: a composite run scopes
-        # this phase to one sub-project and the solution node is named after it.
-        partition_name = ctx.partition.name if ctx.partition is not None else ""
-        subproject = partition_name or ctx.project_id
-        prompt = flow_extraction_prompt(
-            subproject=subproject,
-            documents=sorted(
-                {str(record.get("document") or "") for record in doc_records.values()}
-                - {""}
-            ),
-            plugin_pack_dir=self._helpers.plugin_pack_dir,
-        )
-
-        def _validate(text: str) -> dict[str, Any]:
-            extraction, dropped = parse_flow_extraction(text, subproject=subproject)
-            if extraction is None:
-                return {"ok": False, "errors": dropped}
-            if not extraction.flows:
-                # An extraction with systems but no flows describes no
-                # architecture; the retry is worth one call.
-                return {
-                    "ok": False,
-                    "errors": [
-                        "flow extraction contained no usable flows",
-                        *dropped[:5],
-                    ],
-                }
-            return {"ok": True, "errors": [], "warnings": dropped[:10]}
-
-        result = await self._dispatch_task(
-            ctx,
-            state,
-            log_cb,
-            target_id=f"flow_extraction_{bundle.scan_fingerprint[:16]}",
-            prompt=prompt,
-            context_files=context_files,
-            validate=_validate,
-        )
-        if result is None or not result.success:
-            await log_cb(
-                ctx.project_id,
-                "[custom] Business topology: flow extraction did not produce a usable "
-                "result; falling back",
-                "warning",
+        try:
+            result.write(ctx.staging_dir / "_topology")
+        except OSError as exc:
+            state.warnings.append(f"Business topology could not be written: {exc}")
+            return PhaseResult(
+                phase_name=self.name,
+                success=True,
+                metadata={"available": False, "validated": False, "error": str(exc)},
             )
-            return None, None, []
-
-        extraction, dropped = parse_flow_extraction(result.text, subproject=subproject)
-        if extraction is None or not extraction.flows:
-            return None, None, []
-        if dropped:
-            await log_cb(
-                ctx.project_id,
-                f"[custom] Business topology: flow extraction dropped {len(dropped)} "
-                f"unusable item(s) (e.g. {dropped[0]})",
-                "warning",
-            )
-
-        topology, notes = assemble_topology(
-            extraction,
-            bundle=bundle,
-            project_id=ctx.project_id,
-            doc_records=doc_records,
-            subproject=partition_name,
-            model_name=result.model_name,
-        )
-        if deterministic is not None:
-            floor_notes = merge_scanner_floor(topology, deterministic)
-            notes.extend(floor_notes)
-            if floor_notes:
-                await log_cb(ctx.project_id, f"[custom] Business topology: {floor_notes[0]}", "info")
-        # Pruning runs LAST, after the floor merge, so a defect introduced by
-        # either source costs only its own claim.
-        topology, report, pruned = prune_to_valid(
-            topology, bundle=bundle, project_id=ctx.project_id
-        )
-        if pruned:
-            await log_cb(
-                ctx.project_id,
-                f"[custom] Business topology: pruned {len(pruned)} claim(s) that failed "
-                f"provenance validation (e.g. {pruned[0]}); publishing the remainder",
-                "warning",
-            )
-        if not report.validated:
-            await log_cb(
-                ctx.project_id,
-                "[custom] Business topology: assembled overlay did not validate ("
-                + "; ".join(report.errors[:2])
-                + ")",
-                "warning",
-            )
-            return None, report, notes + [*dropped]
-        return topology, report, notes + [*dropped]
-
-    async def _run_synthesis_lane(
-        self,
-        ctx: "DocGenContext",
-        state: "HarnessRunState",
-        log_cb: "LogCallback",
-        *,
-        bundle: "BusinessTopologyEvidenceBundle",
-        context_files: list["Path"],
-    ) -> tuple["BusinessTopology | None", "BusinessTopologyValidationReport | None"]:
-        """The previous single-shot contract, kept as the second model lane."""
-
-        from mcp_server.services.business_topology import (
-            parse_validate_repair_business_topology,
-        )
-        from mcp_server.services.business_topology.prompt import business_topology_prompt
-        from mcp_server.services.business_topology.pruning import prune_to_valid
-
-        prompt = business_topology_prompt(
-            project_id=ctx.project_id,
-            scan_fingerprint=bundle.scan_fingerprint,
-            plugin_pack_dir=self._helpers.plugin_pack_dir,
-        )
-
-        def _validate(text: str) -> dict[str, Any]:
-            parsed, validation, repair_notes = parse_validate_repair_business_topology(
-                text, bundle=bundle, project_id=ctx.project_id
-            )
-            payload: dict[str, Any] = {
-                "ok": validation.validated,
-                **validation.model_dump(),
-            }
-            if parsed is not None and not parsed.data_streams:
-                payload["ok"] = False
-                payload["errors"] = [
-                    *validation.errors,
-                    "topology contains no data streams; emit the grounded streams",
-                ]
-            if repair_notes:
-                payload["repair_notes"] = repair_notes
-            return payload
-
-        result = await self._dispatch_task(
-            ctx,
-            state,
-            log_cb,
-            target_id=f"business_topology_{bundle.scan_fingerprint[:16]}",
-            prompt=prompt,
-            context_files=context_files,
-            validate=_validate,
-        )
-        if result is None or not result.success:
-            return None, None
-
-        topology, report, repair_notes = parse_validate_repair_business_topology(
-            result.text, bundle=bundle, project_id=ctx.project_id
-        )
-        if topology is None:
-            return None, report
-        if not report.validated:
-            # Partial acceptance: a claim-local defect costs that claim, not the
-            # whole architecture (the verified ETTM_part2 loss).
-            topology, report, pruned = prune_to_valid(
-                topology, bundle=bundle, project_id=ctx.project_id
-            )
-            if pruned:
-                await log_cb(
-                    ctx.project_id,
-                    f"[custom] Business topology: pruned {len(pruned)} invalid claim(s) "
-                    f"from single-shot synthesis (e.g. {pruned[0]})",
-                    "warning",
-                )
-        if repair_notes and report.validated:
-            await log_cb(
-                ctx.project_id,
-                "[custom] Business topology: accepted after deterministic repair "
-                f"({len(repair_notes)} corrections, e.g. {repair_notes[0]})",
-                "warning",
-            )
-        return (topology if report.validated else None), report
+        state.warnings.extend(result.run_warnings)
+        return PhaseResult(phase_name=self.name, success=True, metadata=result.metadata)
 
     async def _dispatch_task(
         self,
@@ -656,23 +249,43 @@ class Phase37BusinessTopology(Phase):
         )
 
 
-def _write_state(
-    path,
-    *,
-    available: bool,
-    validated: bool,
-    scan_fingerprint: str,
-    errors: list[str],
-    warnings: list[str] | None = None,
-    lane: str = "",
-) -> None:
-    payload: dict[str, Any] = {
-        "available": available,
-        "validated": validated,
-        "scan_fingerprint": scan_fingerprint,
-        "errors": errors,
-        "warnings": warnings or [],
-    }
-    if lane:
-        payload["lane"] = lane
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+class _HarnessTopologyLLM:
+    """The harness strategy: one persisted agent task per topology lane."""
+
+    def __init__(
+        self,
+        phase: Phase37BusinessTopology,
+        ctx: "DocGenContext",
+        state: "HarnessRunState",
+        log_cb: "LogCallback",
+    ) -> None:
+        self._phase = phase
+        self._ctx = ctx
+        self._state = state
+        self._log_cb = log_cb
+
+    async def complete(
+        self,
+        prompt: str,
+        *,
+        context_files: list["Path"],
+        purpose: str,
+        target_id: str,
+        validate,
+    ) -> "TopologyCompletion | None":
+        from mcp_server.services.business_topology.builder import TopologyCompletion
+
+        result = await self._phase._dispatch_task(
+            self._ctx,
+            self._state,
+            self._log_cb,
+            target_id=target_id,
+            prompt=prompt,
+            context_files=context_files,
+            validate=validate,
+        )
+        # A rejected-but-successful task still hands its text on: the builder
+        # re-parses and prunes, exactly as this phase always did.
+        if result is None or not result.success:
+            return None
+        return TopologyCompletion(text=result.text, model_name=result.model_name or "")

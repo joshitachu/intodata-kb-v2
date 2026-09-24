@@ -40,12 +40,12 @@ class TestGet:
 
     async def test_get_returns_existing_overrides(self, client, db_session):
         from mcp_server.db.models import InstanceSetting
-        db_session.add(InstanceSetting(key="doc_gen_analysis_model", value="anthropic/claude-sonnet-4-6"))
+        db_session.add(InstanceSetting(key="doc_gen_analysis_model", value="anthropic/claude-sonnet-5"))
         await db_session.commit()
         resp = await client.get("/mcp/admin/instance-settings")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["settings"]["doc_gen_analysis_model"] == "anthropic/claude-sonnet-4-6"
+        assert body["settings"]["doc_gen_analysis_model"] == "anthropic/claude-sonnet-5"
 
 
 class TestPut:
@@ -60,7 +60,7 @@ class TestPut:
     async def test_put_rejects_invalid_mcp_model_id(self, client):
         with patch(
             "mcp_server.api.routes.instance_settings._valid_mcp_model_ids",
-            return_value={"anthropic/claude-sonnet-4-6", "google/gemini-2.5-flash"},
+            return_value={"anthropic/claude-sonnet-5", "google/gemini-3.5-flash"},
         ):
             resp = await client.put(
                 "/mcp/admin/instance-settings",
@@ -80,10 +80,10 @@ class TestPut:
     async def test_put_writes_and_audits(self, client, db_session):
         resp = await client.put(
             "/mcp/admin/instance-settings",
-            json={"settings": {"doc_gen_analysis_model": "anthropic/claude-sonnet-4-6"}},
+            json={"settings": {"doc_gen_analysis_model": "anthropic/claude-sonnet-5"}},
         )
         assert resp.status_code == 200
-        assert resp.json()["settings"]["doc_gen_analysis_model"] == "anthropic/claude-sonnet-4-6"
+        assert resp.json()["settings"]["doc_gen_analysis_model"] == "anthropic/claude-sonnet-5"
 
         result = await db_session.execute(
             text("SELECT action, details FROM audit_logs WHERE action = 'update_instance_settings'")
@@ -98,11 +98,11 @@ class TestPut:
         else:
             details = details_raw
         assert "doc_gen_analysis_model" in details["diff"], f"details={details!r}"
-        assert details["diff"]["doc_gen_analysis_model"]["after"] == "anthropic/claude-sonnet-4-6"
+        assert details["diff"]["doc_gen_analysis_model"]["after"] == "anthropic/claude-sonnet-5"
 
     async def test_put_empty_string_clears(self, client, db_session):
         from mcp_server.db.models import InstanceSetting
-        db_session.add(InstanceSetting(key="doc_gen_analysis_model", value="anthropic/claude-sonnet-4-6"))
+        db_session.add(InstanceSetting(key="doc_gen_analysis_model", value="anthropic/claude-sonnet-5"))
         await db_session.commit()
         resp = await client.put(
             "/mcp/admin/instance-settings",
@@ -135,7 +135,7 @@ class TestPut:
             monkeypatch.delenv(var, raising=False)
         resp = await client.put(
             "/mcp/admin/instance-settings",
-            json={"settings": {"rag_chat_model": "anthropic/claude-sonnet-4-6"}},
+            json={"settings": {"rag_chat_model": "anthropic/claude-sonnet-5"}},
         )
         assert resp.status_code == 400
         assert "not runnable" in resp.json()["detail"]

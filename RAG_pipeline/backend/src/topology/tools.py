@@ -60,7 +60,9 @@ from src.topology.graph import (
     TopologyGraph,
     TopologyNode,
     TopologyView,
+    active_business_topology,
     build_design_index,
+    business_stream_edge_key,
     build_graph,
     component_target,
     design_target,
@@ -1185,6 +1187,7 @@ def _relationship_payload(
         "matched_entity": "relationship",
         "query": query,
         "relationship": _edge_content(edge, graph),
+        "business_facts": _stream_business_facts(edge, artifact.landscape),
         "endpoints": {
             "source": _endpoint_content(edge.source_id, graph),
             "target": _endpoint_content(edge.target_id, graph),
@@ -1197,7 +1200,11 @@ def _relationship_payload(
             "get_job_detail accepts those names, and get_field_lineage reports what "
             "data actually moves across it. Say whether the relationship is "
             "established in the words of established_note; do not paste the field "
-            "name onto its value."
+            "name onto its value. business_facts, when present, is what the "
+            "published business topology states about this exchange -- its rules, "
+            "conditions, contract width, controls, risks, open questions and "
+            "runtime measurements; an omitted key means the overlay states nothing "
+            "about it, not that it does not exist."
         ),
     }
     targets = [
@@ -2196,6 +2203,160 @@ def _business_overlay_content(business: BusinessTopology | None) -> dict[str, An
             "notes": [_clipped(note) for note in business.coverage.notes[:MAX_OVERVIEW_ITEMS]],
         },
     }
+
+
+def _stream_business_facts(
+    edge: TopologyEdgeFact, landscape: ProjectLandscape
+) -> dict[str, Any] | None:
+    """What the published overlay says about ONE stream, bounded.
+
+    The graph edge carries identity and wiring only. Everything the overlay
+    states about how the exchange behaves -- its structured facts, the rules it
+    applies, what guards it, what is still open and what runtime measured --
+    lives beside the stream in the overlay's own collections. Without this block
+    the answer to "which business rules does this exchange apply" was the
+    overview's rule COUNT, which reads as "none" to the reader.
+
+    None for a scanner edge or when no active overlay is published; absent
+    facts are omitted, never rendered as "not established".
+    """
+    business = active_business_topology(landscape)
+    if business is None or edge.dependency_type != "business_data_stream":
+        return None
+    stream = next(
+        (item for item in business.data_streams if business_stream_edge_key(item.id) == edge.key),
+        None,
+    )
+    if stream is None:
+        return None
+
+    # The SAME linking rules as the canvas (`streamBusinessLayer` in
+    # frontend/lib/architectureViewModel.ts): a rule belongs to a stream through
+    # its stream_ids OR through one of the stream's transformations; a conflict
+    # through the stream's conflict_ids OR its subject_refs (conflicts carry no
+    # stream_ids). Diverging here made the assistant deny a rule or conflict
+    # the canvas was showing.
+    def linked(items: Sequence[Any], ids: Sequence[str]) -> list[Any]:
+        wanted = set(ids)
+        return [item for item in items if item.id in wanted or stream.id in item.stream_ids]
+
+    transformations = [
+        item for item in business.transformations if stream.id in item.stream_ids
+    ]
+    transformation_ids = {item.id for item in transformations}
+    rules = [
+        item
+        for item in business.business_rules
+        if stream.id in item.stream_ids
+        or any(ref in transformation_ids for ref in item.transformation_ids)
+    ]
+    conflict_ids = set(stream.conflict_ids)
+    conflicts = [
+        item
+        for item in business.conflicts
+        if item.id in conflict_ids or stream.id in item.subject_refs
+    ]
+
+    facts: dict[str, Any] = {"stream_id": stream.id}
+    for field in ("mechanism", "generation", "key_form", "verdict"):
+        value = getattr(stream, field)
+        if value:
+            facts[field] = _clipped(value)
+    for field in ("direction_pattern", "lifecycle", "requiredness"):
+        value = getattr(stream, field)
+        if value and value not in {"unknown", "not_established"}:
+            facts[field] = value
+    if stream.business_summary:
+        facts["business_summary"] = _clipped(stream.business_summary)
+    if stream.contract_width is not None:
+        facts["contract_width"] = stream.contract_width.model_dump()
+    if stream.conditions:
+        facts["conditions"] = [
+            {"kind": item.kind, "statement": _clipped(item.statement, limit=MAX_EXPRESSION_CHARS)}
+            for item in stream.conditions[:MAX_OVERVIEW_ITEMS]
+        ]
+    if stream.deployment is not None:
+        facts["deployment"] = stream.deployment.model_dump()
+    if stream.document_refs:
+        facts["document_refs"] = list(stream.document_refs[:MAX_OVERVIEW_ITEMS])
+
+    if rules:
+        facts["business_rules"] = [
+            {
+                "name": item.name,
+                "kind": item.kind,
+                "statement": _clipped(item.statement),
+                "owner": item.owner,
+                "owner_question": _clipped(item.owner_question),
+                "status": item.status,
+            }
+            for item in rules[:MAX_OVERVIEW_ITEMS]
+        ]
+    if transformations:
+        facts["transformations"] = [
+            {
+                "name": item.name,
+                "kind": item.kind,
+                "target_field": item.target_field,
+                "mapping_count": len(item.mappings),
+                "mappings": [
+                    {
+                        "source": mapping.source,
+                        "target": mapping.target,
+                        "expression": _clipped(mapping.expression, limit=MAX_EXPRESSION_CHARS),
+                        "reaches_target": mapping.reaches_target,
+                    }
+                    for mapping in item.mappings[:MAX_MAPPING_EXPRESSIONS]
+                ],
+            }
+            for item in transformations[:MAX_OVERVIEW_ITEMS]
+        ]
+    controls = linked(business.controls, stream.control_ids)
+    if controls:
+        facts["controls"] = [
+            {"name": item.name, "control_type": item.control_type} for item in controls[:MAX_OVERVIEW_ITEMS]
+        ]
+    risks = linked(business.risks, stream.risk_ids)
+    if risks:
+        facts["risks"] = [
+            {"name": item.name, "severity": item.severity, "description": _clipped(item.description)}
+            for item in risks[:MAX_OVERVIEW_ITEMS]
+        ]
+    unknowns = linked(business.unknowns, stream.unknown_ids)
+    if unknowns:
+        facts["open_questions"] = [
+            _clipped(item.question or item.name) for item in unknowns[:MAX_OVERVIEW_ITEMS]
+        ]
+    if conflicts:
+        facts["conflicts"] = [
+            {
+                "name": item.name,
+                "conflict_type": item.conflict_type,
+                "resolution": _clipped(item.resolution),
+            }
+            for item in conflicts[:MAX_OVERVIEW_ITEMS]
+        ]
+    observations = linked(business.runtime_observations, stream.runtime_observation_ids)
+    if observations:
+        facts["runtime_observations"] = [
+            {
+                "kind": item.kind,
+                "observed_behavior": _clipped(item.observed_behavior),
+                "window": item.observation_window,
+                "source": item.source,
+                "metrics": [
+                    {
+                        "label": metric.label,
+                        "value": metric.value,
+                        "unit": metric.unit,
+                        "window": metric.window,
+                    }
+                    for metric in item.metrics[:MAX_OVERVIEW_ITEMS]
+                ],
+            }
+            for item in observations[:MAX_OVERVIEW_ITEMS]
+        ]
+    return facts
 
 
 def _by_severity(landscape: ProjectLandscape) -> list[LandscapeDiagnostic]:

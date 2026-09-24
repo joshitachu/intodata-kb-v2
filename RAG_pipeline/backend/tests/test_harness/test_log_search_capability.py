@@ -125,12 +125,22 @@ async def test_stored_log_search_projects_to_redacted_bounded_snippets(monkeypat
     ],
 )
 async def test_log_evidence_preserves_global_single_and_multi_project_scope(
-    monkeypatch, authorized_scope, requested_scope, expected_scope
+    monkeypatch, db_session, authorized_scope, requested_scope, expected_scope
 ) -> None:
+    """With no grant in the store, the scope handed to the provider is unchanged.
+
+    This is the regression floor for read grants reaching the log lane: the
+    resolver now runs on every call, and a project that reads nothing through a
+    grant must come out of it with exactly the scope the plain intersection
+    produced. `read_terms` is asserted empty for the same reason -- an empty read
+    set is what keeps the repository on the single-`project_id` predicate.
+    """
+
     seen: dict[str, object] = {}
 
-    async def search_logs(_self, _params, context):  # noqa: ANN001
+    async def search_logs(_self, _params, context, *, read_terms=()):  # noqa: ANN001
         seen["scope"] = context.project_scope
+        seen["read_terms"] = list(read_terms)
         return [
             {
                 "execution_id": "run-42",
@@ -149,10 +159,16 @@ async def test_log_evidence_preserves_global_single_and_multi_project_scope(
         question="search logs for timeout",
         project_scope=authorized_scope,
         project_ids=requested_scope,
-        db=SimpleNamespace(),
+        db=db_session,
     )
 
     assert seen["scope"] == expected_scope
+    # The reader's own term is unrestricted, so the read set names the same
+    # projects the scope does and adds no narrowing of its own.
+    assert [term.project_id for term in seen["read_terms"]] == (expected_scope or [])
+    assert all(term.unrestricted for term in seen["read_terms"])
+    # Nothing was shared, so the result carries no scope disclosure at all.
+    assert result.scope is None
     assert result.status == "succeeded"
     assert result.items[0].metadata == {
         "execution_ref": "run-42",

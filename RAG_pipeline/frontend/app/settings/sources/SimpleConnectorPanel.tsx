@@ -295,16 +295,25 @@ export function SimpleConnectorPanel() {
                         <p className="truncate text-sm font-medium">{source.label || `Source ${source.id}`}</p>
                         <p className="mt-0.5 text-xs text-muted-foreground">
                           {runtimeProviderLabel(runtimeTypesQuery.data, source.source_type)}
-                          {` · project ${source.project_id}`}
+                          {/*
+                            Projects ATTACHED to this tenant, which may be none:
+                            a source has no owning project, and naming a single
+                            one hid every other project reading the same mirror.
+                          */}
+                          {source.linked_project_ids.length > 0
+                            ? ` · projects ${source.linked_project_ids.join(", ")}`
+                            : " · no project attached yet"}
                           {source.last_synced_at
                             ? ` · last synced ${new Date(source.last_synced_at).toLocaleString()}`
                             : " · not synced yet"}
                         </p>
                         <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                          {source.enabled
-                            ? `Documentation runs for ${source.project_id} read this mirrored history.`
-                            : source.disabled_reason?.trim() ||
-                              "Disabled - documentation runs read no history from it."}
+                          {!source.enabled
+                            ? source.disabled_reason?.trim() ||
+                              "Disabled - documentation runs read no history from it."
+                            : source.linked_project_ids.length > 0
+                              ? `Documentation runs for ${source.linked_project_ids.join(", ")} read this mirrored history.`
+                              : "Mirrored and ready. Attach a project to it on the Connectors page so its documentation runs can read this history."}
                         </p>
                       </div>
                     </div>

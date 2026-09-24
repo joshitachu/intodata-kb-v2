@@ -36,11 +36,11 @@ pytestmark = pytest.mark.skipif(
 EXPECTED = {
     "systems": 18,
     "integration_solutions": 19,
-    "business_objects": 10,
-    "data_streams": 41,
+    "business_objects": 12,
+    "data_streams": 48,
     "delivery_paths": 19,
-    "transformations": 29,
-    "controls": 8,
+    "transformations": 36,
+    "controls": 11,
 }
 
 

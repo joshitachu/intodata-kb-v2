@@ -152,6 +152,18 @@ _COMPONENT_BODY_MAX_CHARS: Final = 24_000
 #: not.
 _COMPONENT_CODE_MAX_CHARS: Final = 2_000
 
+#: Per-value ceiling for a parameter declared on an EDGE rather than on a
+#: component. An edge parameter is a branch predicate, not a code block:
+#: measured over pluripharm's 103,274 connections, ``CONDITION`` has a median
+#: length of 58 characters and a maximum of 386, and the whole parameter
+#: payload of the widest single edge is 752 characters. The cap is above the
+#: measured maximum so a real predicate is never cut, and low enough that a
+#: pathological edge cannot displace the component the caller asked for.
+_EDGE_PARAM_VALUE_MAX_CHARS: Final = 600
+
+#: Ceiling for the parameter suffix rendered on ONE edge line.
+_EDGE_PARAMS_MAX_CHARS: Final = 1_500
+
 #: How many names a "that does not exist, these do" failure lists. A job holds
 #: up to 102 components, so listing all of them is the useful behaviour.
 _MAX_LISTED_NAMES: Final = 150
@@ -363,10 +375,15 @@ def _load_job(path: Path) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
-def _param_items(component: dict[str, Any]) -> list[tuple[str, str]]:
-    """A component's parameters as ``(name, value)``, skipping malformed entries."""
+def _param_items(carrier: dict[str, Any]) -> list[tuple[str, str]]:
+    """A parameter carrier's parameters as ``(name, value)``, skipping malformed entries.
 
-    raw = component.get("params")
+    A component is one carrier; a connection is the other. Talend serializes
+    both the same way, and an ESB route puts its branch predicate on the
+    connection -- so the reader is shared rather than duplicated per carrier.
+    """
+
+    raw = carrier.get("params")
     if not isinstance(raw, list):
         return []
     items: list[tuple[str, str]] = []
@@ -377,8 +394,45 @@ def _param_items(component: dict[str, Any]) -> list[tuple[str, str]]:
         value = entry.get("value")
         if not isinstance(name, str):
             continue
-        items.append((name, value if isinstance(value, str) else str(value)))
+        if isinstance(value, str):
+            text = value
+        elif value is None:
+            text = ""
+        else:
+            text = str(value)
+        if not text:
+            # A Talend TABLE parameter serializes its payload into `rows` and
+            # leaves `value` empty, so reading `value` alone renders it as
+            # blank: a tRunJob's CONTEXTPARAMS overrides and a route's
+            # NAMESPACES bindings both read as "declared, empty". An XPath
+            # predicate cannot be interpreted without its namespaces.
+            text = _table_rows_text(entry.get("rows"))
+        items.append((name, text))
     return items
+
+
+def _table_rows_text(rows: Any) -> str:
+    """A TABLE parameter's rows as one compact line, or "" when there are none.
+
+    Cell keys are kept verbatim (``NAMESPACE_PREFIX``, ``PARAM_VALUE_COLUMN``)
+    because the key is what names the cell; renaming them here would be a
+    second vocabulary for the scanner's one.
+    """
+
+    if not isinstance(rows, list):
+        return ""
+    rendered: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cells = ", ".join(
+            f"{key}={value}"
+            for key, value in row.items()
+            if isinstance(key, str) and isinstance(value, str)
+        )
+        if cells:
+            rendered.append("{" + cells + "}")
+    return "; ".join(rendered)
 
 
 def _component_label(component: dict[str, Any]) -> str | None:
@@ -477,16 +531,39 @@ def _job_matches(job: dict[str, Any], needle: str) -> list[_MatchSite]:
             if not isinstance(connection, dict):
                 continue
             name = connection.get("name")
-            if isinstance(name, str) and needle in name.casefold():
-                source = connection.get("source")
-                target = connection.get("target")
+            name = name if isinstance(name, str) else ""
+            source = connection.get("source")
+            target = connection.get("target")
+            edge = f"{source} -> {target}"
+            if name and needle in name.casefold():
                 sites.append(
-                    _MatchSite(
-                        where="connection_name",
-                        key=name,
-                        value=f"{source} -> {target}",
-                    )
+                    _MatchSite(where="connection_name", key=name, value=edge)
                 )
+            # The parameters an edge declares. On a Camel route the branch
+            # predicate lives here and nowhere else -- a term such as a header
+            # name tested by `choice().when(...)` occurs in no component, so a
+            # search that walks components only reports the route as not
+            # mentioning it.
+            for param_name, param_value in _param_items(connection):
+                key = f"{name}.{param_name}" if name else param_name
+                if needle in param_value.casefold():
+                    sites.append(
+                        _MatchSite(
+                            where="connection_param_value",
+                            key=key,
+                            value=f"{edge}  {param_name} = {param_value}",
+                        )
+                    )
+                elif needle in param_name.casefold():
+                    # `elif` for the same reason as the component case: one
+                    # finding, reported at its more informative half.
+                    sites.append(
+                        _MatchSite(
+                            where="connection_param_name",
+                            key=key,
+                            value=f"{edge}  {param_name} = {param_value}",
+                        )
+                    )
     return sites
 
 
@@ -754,7 +831,8 @@ async def search_source_evidence(
             f"Every one of the {examined} scanned job(s) in project {project_id} was "
             f"examined for the literal term {query!r} -- component parameters and their "
             "values, component names and types, component code, context variables, "
-            "connection names, job names, purposes and paths -- and it occurs in none of "
+            "connection names, the parameters an edge itself declares (a route's "
+            "branch predicates), job names, purposes and paths -- and it occurs in none of "
             "them. That is a fact about this term in this scan. Before reporting it as "
             "an absence, consider that the estate may spell it differently: try the "
             "column, table, queue or label name on its own rather than a phrase. The "
@@ -1229,6 +1307,13 @@ def _component_edges(
     confident wrong structural claim this module exists to prevent -- so the
     job's list is the source of truth, and the component's own lists are merged
     in afterwards so a future scan that populates them is not ignored.
+
+    An edge is rendered with whatever the edge itself declares. In a DI job it
+    declares nothing and the line is unchanged; on a Camel route
+    ``ROUTE_WHEN`` carries the branch predicate, so omitting it renders a
+    router as an unconditional fan-out of N identical arrows, which is a
+    confident wrong structural claim of exactly the kind this module exists to
+    prevent.
     """
 
     incoming: list[str] = []
@@ -1243,13 +1328,16 @@ def _component_edges(
             name = connection.get("name") or ""
             connector = connection.get("connector_name") or ""
             inactive = "" if connection.get("active", True) else " [inactive]"
+            declared = _edge_params(connection)
             if target == unique_name and isinstance(source, str):
                 incoming.append(
-                    f"{source} -> {unique_name}  [{connector}] {name}{inactive}".rstrip()
+                    f"{source} -> {unique_name}  [{connector}] "
+                    f"{name}{inactive}{declared}".rstrip()
                 )
             if source == unique_name and isinstance(target, str):
                 outgoing.append(
-                    f"{unique_name} -> {target}  [{connector}] {name}{inactive}".rstrip()
+                    f"{unique_name} -> {target}  [{connector}] "
+                    f"{name}{inactive}{declared}".rstrip()
                 )
 
     for field, bucket in (
@@ -1264,6 +1352,37 @@ def _component_edges(
             if rendered and not any(rendered in existing for existing in bucket):
                 bucket.append(rendered)
     return incoming, outgoing
+
+
+def _edge_params(connection: dict[str, Any]) -> str:
+    """What one edge declares, rendered as a bounded suffix, or "" when nothing.
+
+    Reads the same ``params`` list a component carries, through the same
+    reader. On a Talend DI job this returns "" for almost every edge -- of
+    pluripharm's 103,274 connections, 78,806 declare nothing beyond their name
+    -- so DI renderings are byte-identical to before. On an ESB route it
+    returns the ``choice()`` branch predicate and the language it is written
+    in, which is the only place that rule is recorded.
+    """
+
+    items = _param_items(connection)
+    if not items:
+        return ""
+    parts: list[str] = []
+    used = 0
+    omitted = 0
+    for name, value in items:
+        if used >= _EDGE_PARAMS_MAX_CHARS:
+            omitted += 1
+            continue
+        if len(value) > _EDGE_PARAM_VALUE_MAX_CHARS:
+            value = value[:_EDGE_PARAM_VALUE_MAX_CHARS] + " ...[cut]"
+        part = f"{name}={value}"
+        used += len(part) + 2
+        parts.append(part)
+    if omitted:
+        parts.append(f"...[{omitted} further parameter(s) not shown: size limit]")
+    return "  {" + "; ".join(parts) + "}"
 
 
 def _schema_lines(component: dict[str, Any]) -> list[str]:

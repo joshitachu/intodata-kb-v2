@@ -29,6 +29,8 @@ from src.api.routes import feedback as feedback_routes
 from src.api.routes import company_onboarding as company_onboarding_routes
 from src.api.routes import runtime as runtime_routes
 from src.api.routes import runtime_elastic as runtime_elastic_routes
+from src.api.routes import runtime_elastic_probe as runtime_elastic_probe_routes
+from src.api.routes import runtime_tools as runtime_tool_routes
 from src.api.routes import runtime_sources as runtime_source_routes
 from src.api.routes import runtime_source_types as runtime_source_type_routes
 from src.api.routes import runtime_workspace_map as runtime_workspace_map_routes
@@ -288,6 +290,8 @@ app.include_router(feedback_routes.router, prefix="/api/v1")
 app.include_router(ops_metrics_routes.router, prefix="/api/v1")
 app.include_router(runtime_routes.router, prefix="/api/v1")
 app.include_router(runtime_elastic_routes.router, prefix="/api/v1")
+app.include_router(runtime_elastic_probe_routes.router, prefix="/api/v1")
+app.include_router(runtime_tool_routes.router, prefix="/api/v1")
 app.include_router(runtime_source_routes.router, prefix="/api/v1")
 app.include_router(runtime_source_type_routes.router, prefix="/api/v1")
 app.include_router(runtime_workspace_map_routes.router, prefix="/api/v1")

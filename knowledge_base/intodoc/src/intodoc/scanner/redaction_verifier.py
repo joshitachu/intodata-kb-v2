@@ -60,6 +60,35 @@ def _check_named_value(
         findings.append(_finding("unredacted_sensitive_name", location, name, value))
 
 
+def _check_param_list(
+    findings: list[dict[str, str]],
+    cred_filter: CredentialFilter,
+    location: str,
+    params: list[ComponentParam],
+) -> int:
+    """Check every parameter of one carrier (component, connection, call ref).
+
+    Returns the number of values checked. One implementation because a
+    parameter is the same thing wherever it hangs; a per-carrier copy is how a
+    newly modelled carrier ends up outside the gate while looking covered.
+    """
+    checked = 0
+    for param in params:
+        checked += 1
+        _check_named_value(
+            findings, cred_filter, f"{location}/{param.name}", param.name, param.value,
+        )
+        # A TABLE row states its own sensitivity in its NAME cell (tRunJob
+        # CONTEXTPARAMS: {PARAM_NAME_COLUMN: "DbPassword", PARAM_VALUE_COLUMN:
+        # ...}), which the parameter-name check above cannot see -- the
+        # parameter is called CONTEXTPARAMS.
+        for index, row in enumerate(param.rows):
+            checked += _check_table_row(
+                findings, cred_filter, f"{location}/{param.name}/rows/{index}", row,
+            )
+    return checked
+
+
 def _check_table_row(
     findings: list[dict[str, str]],
     cred_filter: CredentialFilter,
@@ -213,24 +242,11 @@ def verify_scan_result(
                         var.name, val, var.type,
                     )
         for comp in job.components:
-            for p in comp.params:
-                checked_values += 1
-                _check_named_value(
-                    findings, cred_filter,
-                    f"jobs/{job.name}/components/{comp.unique_name}/{p.name}",
-                    p.name, p.value,
-                )
-                # A TABLE row states its own sensitivity in its NAME cell
-                # (tRunJob CONTEXTPARAMS: {PARAM_NAME_COLUMN: "DbPassword",
-                # PARAM_VALUE_COLUMN: ...}), which the parameter-name check
-                # above cannot see -- the parameter is called CONTEXTPARAMS.
-                for index, row in enumerate(p.rows):
-                    checked_values += _check_table_row(
-                        findings, cred_filter,
-                        f"jobs/{job.name}/components/{comp.unique_name}"
-                        f"/{p.name}/rows/{index}",
-                        row,
-                    )
+            checked_values += _check_param_list(
+                findings, cred_filter,
+                f"jobs/{job.name}/components/{comp.unique_name}",
+                comp.params,
+            )
             for schema in comp.schemas:
                 for column in schema.columns:
                     checked_values += 1
@@ -240,22 +256,26 @@ def verify_scan_result(
                         f"/schemas/{schema.connector}/{column.name}",
                         column.name, column.default_value, column.type,
                     )
+        # An ESB route edge carries the branch predicate and its namespace
+        # table; it is a parameter carrier exactly like a component.
+        for connection in job.connections:
+            checked_values += _check_param_list(
+                findings, cred_filter,
+                f"jobs/{job.name}/connections/{connection.name}",
+                connection.params,
+            )
         for ref in job.trunjob_refs:
-            for p in ref.context_params:
-                checked_values += 1
-                _check_named_value(
-                    findings, cred_filter,
-                    f"jobs/{job.name}/trunjob/{ref.child_job}/{p.name}",
-                    p.name, p.value,
-                )
+            checked_values += _check_param_list(
+                findings, cred_filter,
+                f"jobs/{job.name}/trunjob/{ref.child_job}",
+                ref.context_params,
+            )
         for artifact_ref in job.artifact_refs:
-            for p in artifact_ref.context_params:
-                checked_values += 1
-                _check_named_value(
-                    findings, cred_filter,
-                    f"jobs/{job.name}/artifact_ref/{artifact_ref.target_name}/{p.name}",
-                    p.name, p.value,
-                )
+            checked_values += _check_param_list(
+                findings, cred_filter,
+                f"jobs/{job.name}/artifact_ref/{artifact_ref.target_name}",
+                artifact_ref.context_params,
+            )
 
     for conn in result.metadata_connections:
         for key, val in conn.additional_params.items():

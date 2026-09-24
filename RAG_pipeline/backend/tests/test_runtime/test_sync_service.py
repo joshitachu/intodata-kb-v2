@@ -237,7 +237,7 @@ async def test_sync_cycle_writes_inventory_and_run_facts(db_session):
     batch = RuntimeSyncBatch(
         sources=[
             RuntimeSource(
-                project_id=_PROJECT,
+                estate_key=_PROJECT,
                 source_key=_SOURCE,
                 source_type="fixture",
                 label="Fixture Runtime",

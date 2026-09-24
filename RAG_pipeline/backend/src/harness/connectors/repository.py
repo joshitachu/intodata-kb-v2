@@ -13,7 +13,10 @@ from src.db.models.harness_connector import (
     HarnessConnectorInstanceRow,
 )
 
-from .models import CapabilityBindingCreate, ConnectorInstanceCreate, ConnectorInstanceUpdate
+from .models import (
+    CapabilityBindingCreate, CapabilityBindingUpdate, ConnectorInstanceCreate,
+    ConnectorInstanceUpdate,
+)
 
 
 class ConnectorNotFoundError(LookupError):
@@ -62,13 +65,13 @@ class ConnectorRepository:
         )
         rows = list(result.scalars())
         if project_ids is None:
-            return rows
+            return [row for row in rows if any(binding.project_ids for binding in row.capability_bindings)]
         allowed = set(project_ids)
         return [
             row
             for row in rows
             if any(
-                not binding.project_ids or bool(allowed.intersection(binding.project_ids))
+                bool(allowed.intersection(binding.project_ids))
                 for binding in row.capability_bindings
             )
         ]
@@ -77,16 +80,22 @@ class ConnectorRepository:
         self, row: HarnessConnectorInstanceRow, data: ConnectorInstanceUpdate, config: dict | None
     ) -> HarnessConnectorInstanceRow:
         changes = data.model_dump(exclude_unset=True)
+        requires_probe = config is not None or data.clear_credential_reference or "credential_reference" in changes
         if "name" in changes:
             row.name = changes["name"]
         if config is not None:
             row.config = config
         if "enabled" in changes:
+            requires_probe = requires_probe or (changes["enabled"] and not row.enabled)
             row.enabled = changes["enabled"]
         if data.clear_credential_reference:
             row.credential_reference = None
         elif "credential_reference" in changes:
             row.credential_reference = changes["credential_reference"]
+        if requires_probe:
+            row.health_status = "unknown"
+            row.health_summary = None
+            row.health_checked_at = None
         await self.db.flush()
         await self.db.refresh(row)
         return row
@@ -118,6 +127,30 @@ class ConnectorRepository:
         await self.db.delete(row)
         await self.db.flush()
 
+    async def get_binding(
+        self, instance_id: int, binding_id: int
+    ) -> HarnessConnectorCapabilityBindingRow:
+        statement = select(HarnessConnectorCapabilityBindingRow).where(
+            HarnessConnectorCapabilityBindingRow.id == binding_id,
+            HarnessConnectorCapabilityBindingRow.connector_instance_id == instance_id,
+        )
+        row = (await self.db.execute(statement)).scalar_one_or_none()
+        if row is None:
+            raise ConnectorNotFoundError(binding_id)
+        return row
+
+    async def update_binding(
+        self, row: HarnessConnectorCapabilityBindingRow, data: CapabilityBindingUpdate
+    ) -> HarnessConnectorCapabilityBindingRow:
+        changes = data.model_dump(exclude_unset=True)
+        if "project_ids" in changes:
+            row.project_ids = changes["project_ids"]
+        if "enabled" in changes:
+            row.enabled = changes["enabled"]
+        await self.db.flush()
+        await self.db.refresh(row)
+        return row
+
     async def set_health(self, row: HarnessConnectorInstanceRow, status: str, summary: str) -> None:
         row.health_status = status
         row.health_summary = summary[:500]
@@ -141,7 +174,7 @@ class ConnectorRepository:
         rows = list(result.scalars())
         return [
             row for row in rows
-            if (not row.project_ids or project_id in row.project_ids)
+            if (project_id is not None and project_id in row.project_ids)
             and (not row.domains or domain in row.domains)
         ]
 
@@ -161,10 +194,10 @@ class ConnectorRepository:
         )
         rows = list(result.scalars())
         if project_ids is None:
-            return rows
+            return [row for row in rows if row.project_ids]
         allowed = set(project_ids)
         return [
             row
             for row in rows
-            if not row.project_ids or bool(allowed.intersection(row.project_ids))
+            if bool(allowed.intersection(row.project_ids))
         ]

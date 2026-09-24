@@ -22,7 +22,12 @@ import {
   architectureRelationshipPairs,
   normalizeArchitectureL1,
   BUSINESS_RULE_KIND_LABEL,
+  CONFLICT_TYPE_LABEL,
+  DELIVERY_MODE_LABEL,
   REACHES_TARGET_LABEL,
+  REQUIREDNESS_LABEL,
+  RISK_SEVERITY_LABEL,
+  RUNTIME_OBSERVATION_KIND_LABEL,
   STREAM_CONDITION_KIND_LABEL,
   TRANSFORMATION_KIND_LABEL,
   type ArchitectureColumn,
@@ -564,6 +569,12 @@ function ArchitectureDetailsPanel({
       <div className="space-y-4 p-4">
         <p className="text-xs leading-relaxed text-slate-600">{system?.description}</p>
         <div className="grid grid-cols-2 gap-2"><Fact label="Relationships" value={`${systemPairs.length}`} /><Fact label="Role" value={system ? COLUMN_LABEL[system.column] : ""} /></div>
+        {system && (
+          <SystemFacts
+            systems={system.systemIds.map((id) => systemsById.get(id)).filter((item): item is BusinessSystem => Boolean(item))}
+            shownDescription={system.description}
+          />
+        )}
         <Section title="Connected architecture">
           <div className="space-y-2">{systemPairs.map((pair) => {
             const neighbourId = pair.first === selectedSystemId ? pair.second : pair.first;
@@ -607,6 +618,43 @@ function reachesClasses(reaches: ArchitectureFlowProjection["fieldRows"][number]
   if (reaches === "no" || reaches === "disabled") return "bg-red-50 text-red-700";
   if (reaches === "partial") return "bg-amber-50 text-amber-700";
   return "bg-slate-100 text-slate-500";
+}
+
+function severityClasses(severity: string): string {
+  if (severity === "critical" || severity === "high") return "bg-red-50 text-red-700";
+  if (severity === "medium") return "bg-amber-100 text-amber-800";
+  return "bg-slate-100 text-slate-600";
+}
+
+/**
+ * Who owns a system, what it is for and what else it is called. Rendered per
+ * member for a collapsed group node. Every line is conditional: a system the
+ * producer said nothing more about adds no rows.
+ */
+function SystemFacts({ systems, shownDescription }: { systems: BusinessSystem[]; shownDescription: string }) {
+  const rows = systems
+    .map((system) => ({
+      system,
+      purpose: system.purpose && system.purpose !== shownDescription ? system.purpose : "",
+      owner: system.owner ?? "",
+      aliases: system.aliases.filter((alias) => alias && alias !== system.name),
+    }))
+    .filter((row) => systems.length > 1 || row.purpose || row.owner || row.aliases.length > 0);
+  if (rows.length === 0) return null;
+  return (
+    <Section title={systems.length > 1 ? "Systems in this group" : "System facts"} count={systems.length > 1 ? systems.length : undefined}>
+      <div className="space-y-2">
+        {rows.map(({ system, purpose, owner, aliases }) => (
+          <div key={system.id} className="rounded-lg border border-slate-200 p-2.5 text-[10px] leading-relaxed text-slate-600">
+            {systems.length > 1 && <p className="text-xs font-bold text-slate-800">{system.name}</p>}
+            {purpose && <p className="mt-0.5"><b className="text-slate-700">Purpose:</b> {purpose}</p>}
+            {owner && <p className="mt-0.5"><b className="text-slate-700">Owner:</b> {owner}</p>}
+            {aliases.length > 0 && <p className="mt-0.5"><b className="text-slate-700">Also known as:</b> {aliases.join(", ")}</p>}
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
 }
 
 function contractNumber(value: number | null | undefined): string {
@@ -674,6 +722,9 @@ function FlowDetailsPanel({
   if (flow.directionPattern !== "unknown") {
     badges.push({ key: "direction", node: <Tag>{DIRECTION_PATTERN_LABEL[flow.directionPattern]}</Tag> });
   }
+  if (flow.requiredness !== "not_established") {
+    badges.push({ key: "requiredness", node: <Tag>{REQUIREDNESS_LABEL[flow.requiredness]}</Tag> });
+  }
   if (flow.generation) badges.push({ key: "generation", node: <Tag>{flow.generation}</Tag> });
   for (const protocol of flow.protocols) badges.push({ key: `protocol:${protocol}`, node: <Tag>{protocol}</Tag> });
   for (const solution of flow.integrationSolutions) badges.push({ key: `solution:${solution}`, node: <Tag>{solution}</Tag> });
@@ -690,7 +741,7 @@ function FlowDetailsPanel({
     headlineMetric && { label: headlineMetric.label, value: [headlineMetric.value, headlineMetric.unit].filter(Boolean).join(" "), hint: headlineMetric.window },
     flow.keyForm && { label: "Sleutel", value: flow.keyForm, hint: "" },
     flow.deployment && flow.deployment.agreement !== "unknown"
-      ? { label: "Versie", value: DEPLOYMENT_AGREEMENT_LABEL[flow.deployment.agreement], hint: [flow.deployment.supplied_version, flow.deployment.deployed_version].filter(Boolean).join(" aangeleverd / in productie ") }
+      ? { label: "Versie", value: DEPLOYMENT_AGREEMENT_LABEL[flow.deployment.agreement], hint: [flow.deployment.supplied_version && `${flow.deployment.supplied_version} aangeleverd`, flow.deployment.deployed_version && `${flow.deployment.deployed_version} in productie`].filter(Boolean).join(" / ") }
       : null,
   ].filter((item): item is { label: string; value: string; hint: string } => Boolean(item && item.value));
 
@@ -698,9 +749,11 @@ function FlowDetailsPanel({
   // stays a badge, so a stream published before these fields renders exactly as
   // it did.
   const techniek = [
+    flow.description && { label: "Toelichting", value: flow.description },
     flow.mechanism && { label: "Mechanisme", value: flow.mechanism },
     contract?.note && { label: "Contractbreedte", value: contract.note },
     flow.deployment?.note && { label: "Versie", value: flow.deployment.note },
+    flow.deployment?.built_at && { label: "Gebouwd", value: flow.deployment.built_at },
   ].filter((item): item is { label: string; value: string } => Boolean(item));
 
   const restMetrics = flow.runtimeMetrics.slice(1);
@@ -751,18 +804,30 @@ function FlowDetailsPanel({
         <div className="divide-y divide-slate-100 rounded-xl border border-slate-200">
           <Disclosure title="Delivery path" count={flow.deliveryPath?.segments.length}>
             {flow.deliveryPath ? (
-              <ol className="space-y-0">
-                {flow.deliveryPath.segments.map((segment, index) => (
-                  <li key={segment.id} className="relative flex gap-3 pb-4 last:pb-0">
-                    {index < flow.deliveryPath!.segments.length - 1 && <span className="absolute left-[13px] top-7 h-[calc(100%-20px)] w-px bg-slate-200" />}
-                    <span className="relative z-10 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-[10px] font-bold text-blue-700">{segment.sequence}</span>
-                    <div className="min-w-0 rounded-lg border border-slate-200 bg-white p-2.5">
-                      <p className="text-xs font-semibold text-slate-800">{segment.name}</p>
-                      <p className="mt-0.5 text-[10px] text-slate-500">{[segment.protocol, segment.component, segment.resource].filter(Boolean).join(" \u00b7 ")}</p>
-                    </div>
-                  </li>
-                ))}
-              </ol>
+              <>
+                {flow.deliveryPath.description && (
+                  <p className="mb-2 text-[10px] leading-relaxed text-slate-600">{flow.deliveryPath.description}</p>
+                )}
+                <ol className="space-y-0">
+                  {flow.deliveryPath.segments.map((segment, index) => (
+                    <li key={segment.id} className="relative flex gap-3 pb-4 last:pb-0">
+                      {index < flow.deliveryPath!.segments.length - 1 && <span className="absolute left-[13px] top-7 h-[calc(100%-20px)] w-px bg-slate-200" />}
+                      <span className="relative z-10 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-[10px] font-bold text-blue-700">{segment.sequence}</span>
+                      <div className="min-w-0 rounded-lg border border-slate-200 bg-white p-2.5">
+                        <p className="text-xs font-semibold text-slate-800">{segment.name}</p>
+                        <p className="mt-0.5 text-[10px] text-slate-500">{[
+                          segment.mechanism !== "unknown" ? segment.mechanism : "",
+                          segment.protocol !== "unknown" ? segment.protocol : "",
+                          segment.mode !== "unknown" ? DELIVERY_MODE_LABEL[segment.mode] : "",
+                          segment.component,
+                          segment.resource,
+                        ].filter(Boolean).join(" \u00b7 ")}</p>
+                        {segment.description && <p className="mt-1 text-[10px] leading-relaxed text-slate-600">{segment.description}</p>}
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </>
             ) : <EmptyFact text="An ordered delivery path has not yet been structured for this flow." />}
           </Disclosure>
 
@@ -845,9 +910,42 @@ function FlowDetailsPanel({
                     <p className="truncate text-[9px] font-semibold uppercase text-slate-400" title={metric.label}>{metric.label}</p>
                     <p className="mt-0.5 truncate text-xs font-semibold text-slate-700">{[metric.value, metric.unit].filter(Boolean).join(" ")}</p>
                     {metric.window && <p className="mt-0.5 truncate text-[9px] text-slate-400" title={metric.window}>{metric.window}</p>}
+                    {metric.source && <p className="truncate text-[9px] text-slate-400" title={metric.source}>{metric.source}</p>}
+                    {metric.note && <p className="mt-0.5 text-[9px] leading-relaxed text-slate-500">{metric.note}</p>}
                   </div>
                 ))}
               </div>
+            </Disclosure>
+          )}
+
+          {flow.runtimeObservations.length > 0 && (
+            <Disclosure title="Waarnemingen" count={flow.runtimeObservations.length}>
+              <ul className="space-y-1">{flow.runtimeObservations.map((observation) => (
+                <li key={observation.id} className="rounded-lg border border-sky-100 bg-sky-50/60 p-2 text-[10px] leading-relaxed text-slate-700">
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="min-w-0 truncate font-semibold text-slate-800" title={observation.name}>{observation.name || "Waarneming"}</span>
+                    {observation.kind && observation.kind !== "unknown" && <Tag>{RUNTIME_OBSERVATION_KIND_LABEL[observation.kind]}</Tag>}
+                  </span>
+                  {observation.observed_behavior && <span className="mt-0.5 block">{observation.observed_behavior}</span>}
+                  {(observation.observation_window || observation.source) && (
+                    <span className="mt-0.5 block text-[9px] text-slate-400">{[observation.observation_window, observation.source].filter(Boolean).join(" \u00b7 ")}</span>
+                  )}
+                </li>
+              ))}</ul>
+            </Disclosure>
+          )}
+
+          {flow.controls.length > 0 && (
+            <Disclosure title="Controles" count={flow.controls.length}>
+              <ul className="space-y-1">{flow.controls.map((control) => (
+                <li key={control.id} className="rounded-lg border border-emerald-100 bg-emerald-50/70 p-2 text-[10px] leading-relaxed text-slate-700">
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="min-w-0 truncate font-semibold" title={control.name}>{control.name || "Controle"}</span>
+                    {control.control_type && <Tag>{control.control_type}</Tag>}
+                  </span>
+                  {control.description && <span className="mt-0.5 block line-clamp-3" title={control.description}>{control.description}</span>}
+                </li>
+              ))}</ul>
             </Disclosure>
           )}
 
@@ -878,7 +976,10 @@ function FlowDetailsPanel({
             <Disclosure title="Risico's" count={flow.risks.length}>
               <ul className="space-y-1">{flow.risks.map((risk) => (
                 <li key={risk.id} className="rounded-lg border border-amber-100 bg-amber-50/70 p-2 text-[10px] leading-relaxed text-slate-700">
-                  <span className="block font-semibold">{risk.name || "Risk"}</span>
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="min-w-0 truncate font-semibold" title={risk.name}>{risk.name || "Risk"}</span>
+                    {risk.severity !== "unknown" && <span className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-semibold ${severityClasses(risk.severity)}`}>{RISK_SEVERITY_LABEL[risk.severity]}</span>}
+                  </span>
                   {risk.description && <span className="mt-0.5 block line-clamp-3" title={risk.description}>{risk.description}</span>}
                 </li>
               ))}</ul>
@@ -890,7 +991,9 @@ function FlowDetailsPanel({
               <ul className="space-y-1">{flow.conflicts.map((conflict) => (
                 <li key={conflict.id} className="rounded-lg border border-red-100 bg-red-50/70 p-2 text-[10px] leading-relaxed text-slate-700">
                   <span className="block font-semibold">{conflict.name || "Discrepancy"}</span>
+                  <span className="mt-0.5 block text-[9px] font-semibold uppercase tracking-wide text-red-700">{CONFLICT_TYPE_LABEL[conflict.conflict_type]}</span>
                   {conflict.description && <span className="mt-0.5 block line-clamp-3" title={conflict.description}>{conflict.description}</span>}
+                  {conflict.resolution && <span className="mt-1 block text-slate-600"><b>Oplossing:</b> {conflict.resolution}</span>}
                 </li>
               ))}</ul>
             </Disclosure>

@@ -3,11 +3,15 @@ Talend-specific fields or operation names."""
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time
 from enum import Enum
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+
+from src.db.models.runtime_data import is_ownerless_estate_key
+from src.runtime.read_scope import RuntimeReadTerm
 
 
 class RuntimeConnectionStatus(str, Enum):
@@ -106,7 +110,16 @@ class RuntimeSyncState(BaseModel):
 
 
 class RuntimeSource(BaseModel):
-    project_id: str
+    """One source row as it appears in the MIRROR inventory.
+
+    `estate_key` is the stamp its mirrored rows carry, NOT an owning project. It
+    was called `project_id` for as long as one column answered both questions;
+    the name went with the conflation, so a consumer that wants "which project
+    owns this" has to ask `RuntimeSourceRead.linked_project_ids`, which is the
+    only field that can answer it.
+    """
+
+    estate_key: str
     source_key: str
     source_type: str
     label: str
@@ -171,7 +184,23 @@ class RuntimeSourceHealth(BaseModel):
 
 
 class RuntimeSourceCreate(BaseModel):
-    project_id: str
+    """A registration request, with or without a project to attach.
+
+    `project_id` is OPTIONAL, and that is the whole behaviour change. Supplied,
+    it does exactly what it always did: it becomes the source's `estate_key`, so
+    every mirrored row carries it and the resolved read set collapses to the one
+    bare equality this store has always emitted for a single-project source --
+    the common path stays byte-identical. Omitted, the estate key is derived
+    from the source key and the source is attached to NOBODY; projects attach
+    afterwards through `POST /runtime/sources/{id}/readers`.
+
+    Registering with no project is what makes a vendor tenant connectable before
+    any project exists, which is the bootstrapping order operators actually
+    work in. It is NOT a lighter-weight variant of the project path: because it
+    attaches nothing, it cannot hand its caller access to any project's data.
+    """
+
+    project_id: str | None = None
     provider_key: str
     label: str
     credentials: dict[str, Any] = Field(default_factory=dict)
@@ -212,8 +241,31 @@ class RuntimeSourceScopeDiscovery(BaseModel):
 
 
 class RuntimeSourceRead(BaseModel):
+    """One registered source config, credentials excluded.
+
+    Three fields replace the single `project_id` this model used to carry,
+    because that one field was answering three questions and could only ever be
+    right about one of them:
+
+    * `estate_key` -- the stamp this source writes onto every row it mirrors.
+      For a source registered against a project it IS that project's id, which
+      is why nothing had to be re-stamped; for one registered against no project
+      it is a derived `estate:` key that no project id can collide with.
+    * `linked_project_ids` -- every project attached to this source, sorted.
+      The complete answer to "who may reach this", and the ONLY field that
+      answers it. An empty list is a real state, not a gap: a tenant registered
+      before any project has nobody attached yet.
+    * `is_ownerless` -- whether `estate_key` names a project at all.
+
+    `is_ownerless` is computed here rather than published as a stored field so
+    that no producer can forget it and no client has to re-implement the prefix
+    rule. A client that parsed `estate_key` itself would be duplicating a rule
+    it cannot see change; one that reads this boolean cannot get it wrong.
+    """
+
     id: int
-    project_id: str
+    estate_key: str
+    linked_project_ids: list[str] = Field(default_factory=list)
     source_key: str
     source_type: str
     label: str
@@ -227,6 +279,18 @@ class RuntimeSourceRead(BaseModel):
     last_seen_at: datetime | None = None
     ingested_at: datetime
     health: RuntimeSourceHealth | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def is_ownerless(self) -> bool:
+        """True when this source's estate belongs to no project.
+
+        The single interpretation of the estate-key prefix on the wire. See
+        `src.db.models.runtime_data.is_ownerless_estate_key`, which is also what
+        the store's SQL predicate mirrors, so the API and the query can never
+        disagree about one row.
+        """
+        return is_ownerless_estate_key(self.estate_key)
 
 
 class RuntimeWorkspaceProjectMap(BaseModel):
@@ -246,25 +310,32 @@ class RuntimeWorkspaceProjectMapCreate(BaseModel):
 
 
 class RuntimeSourceReadGrant(BaseModel):
-    """One project's permission to read another project's runtime mirror.
+    """One project ATTACHED to a runtime source's estate.
 
     Distinct from `RuntimeWorkspaceProjectMap`, which SPLITS a source's rows
-    between projects at write time. A grant SHARES the same rows with a second
-    reader. Presenting them as one control is how an operator picks the wrong
-    one.
+    between projects at write time. An attachment SHARES the same rows with
+    another reader. Presenting them as one control is how an operator picks the
+    wrong one.
+
+    Every project that may read the source is one of these rows -- there is no
+    owner with an implied one.
     """
 
     id: int
     source_id: int
-    # The reader. The source's own project is the grantor and never appears.
+    # The attached project.
     project_id: str
-    source_project_id: str
+    # The stamp the source mirrors into, which is NOT necessarily a project:
+    # for a source registered against one it is that project's id, and for a
+    # source registered against none it is a derived `estate:` key. It was
+    # published as `source_project_id` while those two were the same field.
+    source_estate_key: str
     source_label: str
     # None means every mirrored environment; [] is a deliberate "nothing".
     environment_ids: list[str] | None = None
     window_days: int | None = None
-    # Every project whose rows this grant exposes: the source's own project
-    # plus any project its workspace map re-points rows to. Returned so a grant
+    # Every row stamp this attachment exposes: the source's estate key plus any
+    # project its workspace map re-points rows to. Returned so an attachment
     # can never expose a third project's data without saying so.
     exposes_project_ids: list[str] = Field(default_factory=list)
     created_at: datetime
@@ -306,6 +377,23 @@ class RuntimeDocReadScope(BaseModel):
 
     Distinct from ingest scope: this narrows what is read OUT of the mirror,
     costs nothing at the vendor API, and can change without re-mirroring.
+
+    Two filters, and only one of them is flat
+    -----------------------------------------
+    The fields below are the FLAT scope: every configured source's environment
+    selection unioned, and the widest window. That is the right rule for a
+    project's OWN sources -- one source may only ever narrow its own
+    contribution, so an intersection would let one source silently suppress
+    another's data -- and it is the wrong rule for a read grant, whose limits
+    are a boundary the GRANTOR set on THEIR estate. Applying a grant's limits
+    flatly either leaks the grantor's excluded rows (union) or hides the
+    reader's own (intersection).
+
+    So a grant's own limits do not appear in `environment_ids` or `window_days`
+    at all: they are applied per project, on top of these fields, by
+    `RuntimeStoreRepository._apply_read_terms`, and `grant_limits` is what
+    records them. A consumer reading only the flat fields would believe the
+    granted projects were read as widely as its own.
     """
 
     # None means every mirrored environment. A list is a deliberate narrowing.
@@ -332,6 +420,15 @@ class RuntimeDocReadScope(BaseModel):
     # The project ids this read was actually scoped to: this project plus every
     # project the granted sources stamp their rows with.
     read_project_ids: list[str] = Field(default_factory=list)
+    # The projects in `read_project_ids` whose contribution a read grant bounded
+    # more tightly than the flat fields above describe, with the bound. Only
+    # NARROWED terms appear: an unrestricted grant takes nothing out, and a
+    # limitation that is not true of this read would be its own defect. `since`
+    # is absolute rather than a day count so it compares directly against the
+    # response's own `since` -- the reader's history starts at one instant and a
+    # granted project's at another, and a document that quotes one window for
+    # both is wrong about half its evidence.
+    grant_limits: list[RuntimeReadTerm] = Field(default_factory=list)
 
 
 class RuntimeWorkspace(BaseModel):
@@ -735,6 +832,55 @@ class RuntimeJobReliability(BaseModel):
     max_duration_ms: int | None = None
 
 
+class RuntimeJobScheduleProfile(BaseModel):
+    """Per-job clock-time profile: WHEN a job runs, pooled by local time of day.
+
+    Distinct from `RuntimeOutcomeTrendPoint`, which buckets chronologically along
+    the timeline ("22:00 on 3 September"). This pools every run in the window onto
+    a single 24-hour clock across many days, so "this job starts at 23:31 every
+    night" becomes a fact rather than 90 separate observations.
+
+    Talend job schedules live in the management console, not in the scanned
+    design, so the observed start times ARE the schedule evidence -- there is no
+    cron expression to read anywhere in the codebase.
+
+    All clock times are local to `timezone` and DST-correct: a run at 23:31 CET
+    and one at 23:31 CEST both report 23:31, not an hour apart.
+    """
+
+    project_id: str
+    source_key: str
+    job_name: str
+    # IANA zone the clock times below are expressed in. Echoed back because
+    # "02:15" means nothing without it.
+    timezone: str
+    # The requested time-of-day window, echoed back. start > end means the window
+    # wrapped midnight (22 -> 7 is the nightly batch window); start == end means
+    # the full 24 hours anchored at that hour.
+    window_start_hour: int
+    window_end_hour: int
+    total_runs: int
+    # Distinct occurrences of the window the job ran in, anchored at
+    # `window_start_hour` -- so a 22:00-07:00 window counts NIGHTS, not calendar
+    # dates. Counting calendar dates would split one night across two and report
+    # a nightly job as running twice as often as it does.
+    distinct_days: int
+    # Discrete median start: an actually observed start time, never an
+    # interpolation (see the percentile note above). Computed on a
+    # window-relative axis so a window spanning midnight does not put the median
+    # of {23:50, 00:10} at midday.
+    median_start_time: time
+    # Earliest/latest measured along the same window-relative axis, so for a
+    # 22:00-07:00 window the earliest is 22:05 rather than 00:02.
+    earliest_start_time: time
+    latest_start_time: time
+    p50_duration_ms: int | None = None
+    # Runs in the window whose state is anything other than success. Deliberately
+    # broader than `failed_runs` elsewhere: for a schedule question "the nightly
+    # load did not complete" matters whether it failed, misfired or timed out.
+    non_success_runs: int = 0
+
+
 class RuntimeDocEvidenceFailure(BaseModel):
     """One redacted failure headline, with how often that failure recurred.
 
@@ -971,7 +1117,25 @@ class RuntimeLogEvent(BaseModel):
 # --- Generic tool input models ---
 
 
-class ListExecutionsInput(BaseModel):
+class RuntimeReadTermsMixin(BaseModel):
+    """The resolved read set for one request, attached to its filter params.
+
+    Server-resolved only: `resolve_runtime_read_scope` is the sole producer, and
+    nothing derived from request input may populate it. Empty means "no read set
+    was resolved", and every consumer then falls back to the single `project_id`
+    predicate the lane used before read grants existed.
+
+    A MIXIN rather than a base class that also declares `project_id`: the inputs
+    that carry one disagree about whether it is required, and the execution
+    family carries none at all (it is scoped by `execution_id` and the caller's
+    RBAC scope). A shared base would have forced them to agree and changed the
+    contract of models that are reachable from an LLM tool call.
+    """
+
+    read_terms: list[RuntimeReadTerm] = Field(default_factory=list)
+
+
+class ListExecutionsInput(RuntimeReadTermsMixin):
     project_name: str | None = None
     job_name: str | None = None
     state: RuntimeExecutionState | None = None
@@ -989,18 +1153,18 @@ class ListExecutionsInput(BaseModel):
     offset: int = Field(default=0, ge=0)
 
 
-class GetExecutionDetailsInput(BaseModel):
+class GetExecutionDetailsInput(RuntimeReadTermsMixin):
     execution_id: str
 
 
-class DetectFailuresInput(BaseModel):
+class DetectFailuresInput(RuntimeReadTermsMixin):
     since: datetime | None = None
     until: datetime | None = None
     limit: int = Field(default=20, ge=1, le=200)
     offset: int = Field(default=0, ge=0)
 
 
-class GetExecutionLogsInput(BaseModel):
+class GetExecutionLogsInput(RuntimeReadTermsMixin):
     execution_id: str
     limit: int = Field(default=100, ge=1, le=10_000)
     min_severity: RuntimeLogSeverity | None = None
@@ -1037,19 +1201,19 @@ class FindSimilarFailuresInput(BaseModel):
         return self
 
 
-class ListRuntimeSyncStatusInput(BaseModel):
+class ListRuntimeSyncStatusInput(RuntimeReadTermsMixin):
     source_key: str | None = None
     project_id: str | None = None
     limit: int = Field(default=20, ge=1, le=100)
 
 
-class ListRuntimeHealthInput(BaseModel):
+class ListRuntimeHealthInput(RuntimeReadTermsMixin):
     source_key: str | None = None
     project_id: str | None = None
     limit: int = Field(default=10, ge=1, le=100)
 
 
-class ListRuntimeInventoryInput(BaseModel):
+class ListRuntimeInventoryInput(RuntimeReadTermsMixin):
     source_key: str | None = None
     project_id: str | None = None
     limit: int = Field(default=100, ge=1, le=500)
@@ -1094,6 +1258,56 @@ class ListRuntimeJobReliabilityInput(ListRuntimeInventoryInput):
     attention_only: bool = False
 
 
+class ListRuntimeJobScheduleProfileInput(ListRuntimeInventoryInput):
+    """Pool runs by local time of day to answer "when does this job run?".
+
+    The default timezone is `Europe/Amsterdam`, the operating zone of the
+    deployments this store serves. UTC would be defensible but useless: the
+    question is always asked in the operator's wall-clock time ("what runs
+    between 22:00 and 07:00"), and an answer an hour or two off in summer is
+    worse than no answer. Any IANA zone name is accepted and the resolved zone is
+    echoed on every result row.
+    """
+
+    timezone: str = "Europe/Amsterdam"
+    job_name: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+    # Local time-of-day window, in whole hours, half-open [start, end).
+    # `start_hour > end_hour` WRAPS midnight -- 22/7 is the nightly batch window
+    # and is the case this input exists for. `start_hour == end_hour` is the full
+    # 24 hours anchored at that hour. Both must be given together: one alone has
+    # no defensible reading.
+    start_hour: int | None = Field(default=None, ge=0, le=23)
+    end_hour: int | None = Field(default=None, ge=0, le=23)
+    # See ListRuntimeJobReliabilityInput: restrict to runs observed in these
+    # environments (the "PROD only" reading), and the resolved SHARED read set
+    # for the documentation lane, which takes precedence over `project_id`.
+    environment_ids: list[str] | None = None
+    project_ids: list[str] | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def _validate_timezone(cls, value: str) -> str:
+        """Reject an unknown zone here, where it is a validation error.
+
+        This input is reachable from an LLM tool call, so an unresolvable zone
+        must fail as a tool-argument error rather than as an exception inside the
+        repository's SQL construction.
+        """
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as e:
+            raise ValueError(f"Unknown IANA timezone: {value!r}") from e
+        return value
+
+    @model_validator(mode="after")
+    def _validate_window(self) -> "ListRuntimeJobScheduleProfileInput":
+        if (self.start_hour is None) != (self.end_hour is None):
+            raise ValueError("start_hour and end_hour must be given together")
+        return self
+
+
 class ListRuntimeComponentHotspotsInput(ListRuntimeInventoryInput):
     component_key: str | None = None
     component_type: str | None = None
@@ -1107,7 +1321,7 @@ class ListRuntimeJobThroughputInput(ListRuntimeInventoryInput):
     until: datetime | None = None
 
 
-class ListRuntimeErrorSignaturesInput(BaseModel):
+class ListRuntimeErrorSignaturesInput(RuntimeReadTermsMixin):
     """Error signatures are keyed by (project, signature) only.
 
     Deliberately does not inherit the inventory input: signature rows carry no

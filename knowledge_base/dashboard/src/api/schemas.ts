@@ -584,9 +584,28 @@ export const RuntimeDocReadScopeSchema = z.object({
   unavailable_environment_ids: z.array(z.string()).optional().default([]),
 });
 
+/**
+ * A registered TENANT, plus the projects attached to it.
+ *
+ * There is no owning project. `estate_key` is an internal row stamp -- the
+ * value written into every mirrored row -- and it must never be rendered as a
+ * project, however much it looks like one. `linked_project_ids` is who may
+ * actually reach this source, and `is_ownerless` is the answer to "is anything
+ * attached"; deriving that by inspecting `estate_key` is what the two separate
+ * fields exist to prevent.
+ *
+ * Zod strips what it does not declare, so a field missing here is permanently
+ * `undefined` in the browser with nothing logged. That is why every contract
+ * field is listed even where the component does not read it yet.
+ */
 export const RuntimeSourceSchema = z.object({
   id: z.number(),
-  project_id: z.string(),
+  estate_key: z.string().optional().default(""),
+  linked_project_ids: z.array(z.string()).optional().default([]),
+  // Defaulted rather than derived here: the MCP proxy fills it from the
+  // attachment list when the backend does not state it, so there is exactly
+  // one definition of "nothing is attached" in the stack.
+  is_ownerless: z.boolean().optional().default(false),
   source_type: z.string(),
   label: z.string().optional().default(""),
   // Same reasoning as `managed_by`: a status this build has not been taught
@@ -603,15 +622,21 @@ export const RuntimeSourceListResponseSchema = z.object({
   total: z.number().optional().default(0),
 });
 
+/** One project ATTACHED to a source. `source_estate_key` is a row stamp, never
+ *  a project, and is not rendered anywhere. */
 export const RuntimeSourceReadGrantSchema = z.object({
   id: z.number().optional().default(0),
   source_id: z.number().optional().default(0),
   project_id: z.string().optional().default(""),
-  source_project_id: z.string().optional().default(""),
+  source_estate_key: z.string().optional().default(""),
   source_label: z.string().optional().default(""),
+  // null means every mirrored environment; [] is a deliberate "nothing". The
+  // two are NOT collapsed: a later ingest-scope widening extends the former.
   environment_ids: z.array(z.string()).nullable().optional().default(null),
   window_days: z.number().nullable().optional().default(null),
   exposes_project_ids: z.array(z.string()).optional().default([]),
+  created_at: z.string().nullable().optional().default(null),
+  created_by: z.string().nullable().optional().default(null),
 });
 
 export const RuntimeSourceReadGrantListResponseSchema = z.object({
@@ -628,6 +653,50 @@ export const RuntimeSourceSyncResponseSchema = z.object({
   status: z.string().optional().default("unknown"),
   records_ingested: z.number().optional().default(0),
 });
+
+/**
+ * The machine-readable half of a refused registration (HTTP 409).
+ *
+ * A vendor tenant may be registered exactly once -- a second registration is a
+ * second poll and two mirrors of one estate free to drift apart -- and the way
+ * a project reaches the tenant that is already here is to ATTACH to it. That
+ * refusal used to arrive as prose alone, which no client could act on: offering
+ * the attachment means knowing WHICH source collided, and recovering that from
+ * an English sentence is not a contract.
+ *
+ * `physical_identity` is now the only kind. The old `project_source_type`
+ * collision -- "this project already holds a TMC source" -- was deleted with the
+ * one-source-per-project rule it enforced; a project may hold several tenants.
+ *
+ * `kind` stays a closed enum ON PURPOSE, against the usual rule in this file. A
+ * value this build cannot interpret must FAIL THE PARSE and leave the operator
+ * with the server's own sentence, rather than defaulting into an affordance
+ * that is wrong for their case. Nothing on the page depends on the parse
+ * succeeding, so prose is always the safe floor.
+ *
+ * Every identifying field is nullable because the server OMITS what the caller
+ * is not entitled to see: a 409 is reachable by anyone holding a working token
+ * for the tenant, so an unconditional owner field would make this error a
+ * project-existence oracle. Absent means "not yours to know", not "unknown".
+ */
+export const RuntimeSourceConflictSchema = z.object({
+  kind: z.enum(["physical_identity"]),
+  /** Whether THIS caller could attach a project. A button that 403s is worse than none. */
+  can_request_share: z.boolean().optional().default(false),
+  source_id: z.number().nullable().optional().default(null),
+  source_label: z.string().nullable().optional().default(null),
+  owner_project_id: z.string().nullable().optional().default(null),
+});
+
+/** The 409 body itself. `detail` stays a plain sentence for clients that render only it. */
+export const RuntimeSourceConflictBodySchema = z.object({
+  detail: z.string().optional().default(""),
+  conflict: RuntimeSourceConflictSchema,
+});
+
+/** Inferred rather than hand-written in `types.ts`: this shape exists only on an
+ *  error path, and the two must not be free to drift. */
+export type RuntimeSourceConflict = z.infer<typeof RuntimeSourceConflictSchema>;
 
 // --- Sub-projects: incremental generation ------------------------------------
 //

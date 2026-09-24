@@ -1603,8 +1603,12 @@ STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY = CapabilityDefinition(
     label="Read structured runtime evidence",
     semantic_name="read_runtime_evidence",
     purpose=(
-        "Read bounded present-tense operational evidence about executions, failures, "
-        "health, and synchronization from server-owned stored records."
+        "Read bounded present-tense operational evidence from server-owned stored "
+        "records: individual executions, failures, health and synchronization, plus "
+        "SERVER-SIDE AGGREGATES over the same runs -- per-job reliability and latency, "
+        "per-job rows processed, recurring error signatures, and time-bucketed outcome "
+        "trends. One aggregate operation answers a ranking or trend question that "
+        "listing executions cannot answer at all."
     ),
     preconditions=["A supported runtime evidence operation is known."],
     failure_recovery=_STANDARD_FAILURE_RECOVERY,
@@ -1615,14 +1619,29 @@ STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY = CapabilityDefinition(
         "type": "object",
         "required": ["operation"],
         "properties": {
+            # Grouped by what the operation returns, because the choice between
+            # them is the single decision that decides whether an aggregate
+            # question is answerable:
+            #   rows      -- one record per run or per inventory entry
+            #   aggregate -- one record per job / bucket / signature, computed
+            #                in the database over every matching run
             "operation": {
                 "type": "string",
                 "enum": [
+                    # Rows.
                     "list_executions",
                     "detect_failures",
                     "list_runtime_health",
                     "list_runtime_sync_status",
                     "list_runtime_sources",
+                    "list_runtime_jobs",
+                    # Aggregates.
+                    "get_runtime_outcome_trend",
+                    "list_runtime_job_reliability",
+                    "list_runtime_job_throughput",
+                    "list_runtime_error_signatures",
+                    "list_runtime_unhealthy",
+                    "list_runtime_job_schedule_profile",
                 ],
             },
             "project_id": {"type": ["string", "null"], "maxLength": 255},
@@ -1634,7 +1653,37 @@ STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY = CapabilityDefinition(
             },
             "since": {"type": ["string", "null"], "format": "date-time"},
             "until": {"type": ["string", "null"], "format": "date-time"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+            # 100 so an inventory rollup -- "which jobs run overnight" --
+            # fits in one call. The provider still clamps per operation, so a
+            # ranking read stays at 25 however high this is set.
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            # get_runtime_outcome_trend only. Without it the trend is stuck on
+            # its daily default, so "per hour" and "per week" are unaskable.
+            "bucket": {
+                "type": ["string", "null"],
+                "enum": ["hour", "day", "week", None],
+            },
+            # list_runtime_jobs only.
+            "environment_id": {"type": ["string", "null"], "maxLength": 255},
+            # list_runtime_jobs only. The job's own lifecycle status at the
+            # runtime, which is not the execution `state` of one of its runs.
+            "job_status": {"type": ["string", "null"], "maxLength": 100},
+            # list_runtime_job_reliability only: keep just the jobs whose latest
+            # observed run still needs intervention.
+            "attention_only": {"type": "boolean"},
+            # list_runtime_error_signatures only.
+            "error_code": {"type": ["string", "null"], "maxLength": 255},
+            "exception_class": {"type": ["string", "null"], "maxLength": 500},
+            "component_name": {"type": ["string", "null"], "maxLength": 255},
+            # list_runtime_job_schedule_profile only. The clock times a schedule
+            # answer reports are meaningless without the zone they are read in,
+            # and a batch window is stated in local time by whoever runs it.
+            "timezone": {"type": ["string", "null"], "maxLength": 64},
+            # The time-of-day window, in the hours of that zone. Both or
+            # neither; `start_hour` greater than `end_hour` wraps midnight,
+            # which is what an overnight window is.
+            "start_hour": {"type": ["integer", "null"], "minimum": 0, "maximum": 23},
+            "end_hour": {"type": ["integer", "null"], "minimum": 0, "maximum": 23},
         },
         "additionalProperties": False,
     },
@@ -1644,6 +1693,28 @@ STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY = CapabilityDefinition(
     use_when=[
         "The user asks for present-tense or time-bounded runtime executions, failures, "
         "health, sync status, or runtime source inventory.",
+        "The question ranks, counts, compares or summarizes behaviour ACROSS many runs "
+        "-- which jobs fail most, which are slowest, which move the most rows, which "
+        "errors recur, how the failure rate moved over time. Call the matching "
+        "aggregate operation ONCE: `list_runtime_job_reliability` (runs, failure rate, "
+        "failure streak and duration percentiles per job), `list_runtime_job_throughput` "
+        "(rows and rejects per job), `list_runtime_error_signatures` (recurring faults "
+        "with occurrence counts) or `get_runtime_outcome_trend` (outcomes per hour, day "
+        "or week). The aggregation happens server-side over every matching run, so one "
+        "call answers the whole question.",
+        "The user asks which jobs exist in the runtime estate, or which of them are "
+        "unhealthy right now: `list_runtime_jobs` for the inventory, "
+        "`list_runtime_unhealthy` for the estate health summary plus the engines, jobs "
+        "and plans that currently need attention.",
+        "The user asks WHEN jobs run -- the nightly schedule, what runs overnight, at "
+        "what time a job starts, which jobs run between two clock times. Call "
+        "`list_runtime_job_schedule_profile` with `timezone` and, for a window, "
+        "`start_hour` and `end_hour` (22 and 7 for an overnight window; the wrap is "
+        "handled). It pools every matching run by local time of day and returns the "
+        "median, earliest and latest observed start per job. Observed starts ARE the "
+        "schedule evidence: a Talend schedule lives in the runtime console and is not "
+        "part of a scan, so never answer that run times are unavailable, or that they "
+        "were not supplied, without calling this first.",
         "The user asks for failure or execution facts while excluding raw log search; structured stored records remain available independently of logs.",
         "A mixed impact question asks both what structurally depends on an entity and "
         "whether it is healthy now; read runtime evidence as well as topology before "
@@ -1652,6 +1723,17 @@ STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY = CapabilityDefinition(
     do_not_use_when=[
         "The user asks about documented design rather than observed runtime state.",
         "The user specifically requests raw or textual log evidence rather than structured execution records.",
+        "NEVER use `list_executions` to build an aggregate, ranking, trend or "
+        "per-job summary. It returns individual runs capped at `limit` and performs no "
+        "aggregation, so anything computed from it is a ranking of an arbitrary recent "
+        "slice rather than of the estate, and paging it exhausts the turn budget. Use "
+        "the aggregate operation above instead.",
+        "NEVER answer a time-of-day question from `get_runtime_outcome_trend`. With "
+        "bucket=hour it returns CONSECUTIVE hourly buckets along the calendar -- 22:00 "
+        "on 3 September -- not runs pooled by hour-of-day across many nights. "
+        "`list_runtime_job_schedule_profile` is the one that pools; presenting "
+        "consecutive buckets as a time-of-day profile states a schedule that was never "
+        "measured.",
         "The user explicitly excludes runtime evidence for this turn. Honor the "
         "exclusion or disclose that present-tense claims cannot be verified.",
     ],

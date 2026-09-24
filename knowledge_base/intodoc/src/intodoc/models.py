@@ -325,6 +325,20 @@ class ArtifactReference(BaseModel):
 
 
 class Connection(BaseModel):
+    """One edge of a design, with whatever the edge itself declares.
+
+    In a Talend DI Job an edge is pure topology -- a row link, an iterate, a
+    trigger -- and every rule lives in the components it joins. An ESB Route
+    is Apache Camel, which inverts that: ``choice().when(<predicate>)`` puts
+    the branch logic ON the edge, serialized as ``elementParameter`` children
+    of ``<connection connectorName="ROUTE_WHEN">`` (``CONDITION`` plus the
+    ``ROUTETYPE`` language that says how to read it). ``params`` is the same
+    shape as ``Component.params`` for exactly that reason: an edge is a
+    parameter carrier like a node, and modelling it as six closed scalars
+    meant a route's routing rules had nowhere to be stored and were dropped
+    at parse time.
+    """
+
     name: str
     source: str
     target: str
@@ -332,6 +346,14 @@ class Connection(BaseModel):
     line_style: int = 0  # 0=row, 1=trigger, etc.
     # Same ACTIVATE convention as Component.active: absent means active.
     active: bool = True
+    # Every remaining elementParameter the edge declares, in document order
+    # and with the same TABLE-row / redaction-descriptor handling components
+    # get. Empty for a plain DI row link, which declares nothing but its name.
+    params: list[ComponentParam] = Field(default_factory=list)
+
+    def compact_params(self) -> dict[str, str]:
+        """Collapse [{name, value, field_type}] -> {name: value}, as Component does."""
+        return {p.name: p.value for p in self.params}
 
 
 class ContextVariable(BaseModel):

@@ -11,6 +11,7 @@ import type {
   BusinessObject,
   BusinessSystem,
 } from "@/types/landscape";
+import { streamDeliveryPath } from "@/lib/architectureViewModel";
 
 export type LandscapeNodeData =
   | { entityType: "application"; application: LandscapeApplication }
@@ -137,8 +138,8 @@ function businessStreamAsEdge(
   landscape: ProjectLandscapeResponse,
   stream: BusinessDataStream,
 ): TopologyEdge {
-  const path = stream.delivery_path_id
-    ? landscape.business_topology?.delivery_paths.find((item) => item.id === stream.delivery_path_id)
+  const path = landscape.business_topology
+    ? streamDeliveryPath(landscape.business_topology, stream)
     : undefined;
   const mechanisms = [...new Set(path?.segments.map((segment) => segment.mechanism).filter(Boolean) ?? [])];
   const mechanism = mechanisms.length === 1 ? mechanisms[0] : mechanisms.length > 1 ? "mixed" : "unknown";
@@ -215,8 +216,8 @@ function businessStreamMatches(
 ): boolean {
   if (filters.dependencyTypes?.size && !filters.dependencyTypes.has("data")) return false;
   if (filters.mechanisms?.size) {
-    const path = stream.delivery_path_id
-      ? landscape.business_topology?.delivery_paths.find((item) => item.id === stream.delivery_path_id)
+    const path = landscape.business_topology
+      ? streamDeliveryPath(landscape.business_topology, stream)
       : undefined;
     if (!path?.segments.some((item) => filters.mechanisms!.has(item.mechanism))) return false;
   }

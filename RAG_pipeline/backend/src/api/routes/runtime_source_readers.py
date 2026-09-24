@@ -1,14 +1,21 @@
-"""Read grants over a runtime source's mirror.
+"""Project attachments to a runtime source's mirror.
 
-One vendor tenant commonly backs several scanned projects. Registration
-refuses the same credential twice -- a second row would mean a second poll and
-two mirrors of one estate free to drift apart -- so a second project reaches
-that tenant by being granted READ over the existing mirror, not by registering
-it again.
+One vendor tenant commonly backs several scanned projects. Registration refuses
+the same credential twice -- a second row would mean a second poll and two
+mirrors of one estate free to drift apart -- so a second project reaches that
+tenant by being ATTACHED to the existing mirror, not by registering it again.
+
+These rows are now the complete answer to "which projects may read this
+source", not a list of exceptions to an owner. A source registered against a
+project has one written at registration; a source registered against no project
+has none until one is created here, and is worth nothing until then. The paths
+and the table still say "readers" and "read grants" because renaming them during
+a behaviour change is how a migration goes wrong -- that rename is follow-up
+work.
 
 Sibling of `runtime_workspace_map`, and deliberately not merged with it. That
 one SPLITS a source's rows between projects at write time (each project owns
-different containers); this one SHARES the same rows with a second reader.
+different containers); this one SHARES the same rows with another reader.
 Presenting them as one control is how an operator picks the wrong one.
 """
 
@@ -61,13 +68,22 @@ async def add_read_grant(
     user: RuntimeSourceWriter,
     db: DBSession,
 ) -> ReadGrantResponse:
-    """Grant one project read access to this source's mirror.
+    """Attach one project to this source's mirror.
 
-    Authorization requires BOTH sides. A grant widens what a documentation run
-    sees, and `/runtime/doc-evidence` -- which consumes it -- authenticates with
-    a machine key and has no user scope to check it against. This route is
-    therefore the only gate, so it must not be passable by someone who can see
-    only one end of the share.
+    Authorization requires BOTH sides, where both exist. An attachment widens
+    what a documentation run sees, and `/runtime/doc-evidence` -- which consumes
+    it -- authenticates with a machine key and has no user scope to check it
+    against. This route is therefore the only gate, so it must not be passable
+    by someone who can see only one end of the share.
+
+    The GRANTING side is whatever `get_source_config` admits under the caller's
+    scope, which is deliberately not a re-implementation of that rule here. For
+    a source whose estate is a project it means holding that project, exactly as
+    before. For an estate that belongs to NO project there is no granting side
+    to hold: an unattached ownerless source is reachable by any scoped operator,
+    because a tenant registered before any project has to stay attachable or it
+    can never be used at all. The RECEIVING side is checked the same way in both
+    cases, so a caller still cannot attach a project they do not hold.
     """
     scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
@@ -117,10 +133,10 @@ async def delete_read_grant(
 ) -> None:
     """Revoke a grant.
 
-    Either side may revoke: the source owner, or an operator on the reading
-    project giving up an access they hold. Dropping your own read is not a
-    privilege escalation, and requiring the owner for it would strand a reader
-    who no longer wants a shared tenant in their documents.
+    Either side may do it: an operator who can reach the source, or one on the
+    attached project giving up an access they hold. Dropping your own read is
+    not a privilege escalation, and requiring the other side for it would strand
+    a reader who no longer wants a shared tenant in their documents.
     """
     scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)

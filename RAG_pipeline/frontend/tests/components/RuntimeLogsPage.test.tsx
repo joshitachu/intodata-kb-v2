@@ -127,7 +127,7 @@ function setDefaults() {
   mocks.useRuntimeDeployments.mockReturnValue(queryState({ deployments: [], total: 0 }));
   mocks.useRuntimePlans.mockReturnValue(queryState({ plans: [], total: 0 }));
   mocks.useRuntimeSources.mockReturnValue(queryState({
-    sources: [{ project_id: "werkorder", source_key: "tmc", label: "TMC", source_type: "tmc", status: "ok", enabled: true, sync_interval_seconds: 300, last_synced_at: null }],
+    sources: [{ estate_key: "werkorder", linked_project_ids: ["werkorder"], is_ownerless: false, source_key: "tmc", label: "TMC", source_type: "tmc", status: "ok", enabled: true, sync_interval_seconds: 300, last_synced_at: null }],
     total: 1,
   }));
   mocks.useRuntimeEngines.mockReturnValue(queryState({ engines: [], total: 0 }));
@@ -211,7 +211,7 @@ describe("RuntimeLogsPage", () => {
 
   it("reports a live feed when the newest import is within the polling window", () => {
     mocks.useRuntimeSources.mockReturnValue(queryState({
-      sources: [{ project_id: "werkorder", source_key: "tmc", label: "vw_TMC", source_type: "talend_tmc", status: "ok", enabled: true, sync_interval_seconds: 300, last_synced_at: new Date(Date.now() - 60_000).toISOString() }],
+      sources: [{ estate_key: "werkorder", linked_project_ids: ["werkorder"], is_ownerless: false, source_key: "tmc", label: "vw_TMC", source_type: "talend_tmc", status: "ok", enabled: true, sync_interval_seconds: 300, last_synced_at: new Date(Date.now() - 60_000).toISOString() }],
       total: 1,
     }));
     renderPage(RuntimeLogsPage);
@@ -221,7 +221,7 @@ describe("RuntimeLogsPage", () => {
 
   it("reports a stale feed when the newest import is older than three polling cycles", () => {
     mocks.useRuntimeSources.mockReturnValue(queryState({
-      sources: [{ project_id: "werkorder", source_key: "tmc", label: "vw_TMC", source_type: "talend_tmc", status: "ok", enabled: true, sync_interval_seconds: 300, last_synced_at: new Date(Date.now() - 3 * 3600_000).toISOString() }],
+      sources: [{ estate_key: "werkorder", linked_project_ids: ["werkorder"], is_ownerless: false, source_key: "tmc", label: "vw_TMC", source_type: "talend_tmc", status: "ok", enabled: true, sync_interval_seconds: 300, last_synced_at: new Date(Date.now() - 3 * 3600_000).toISOString() }],
       total: 1,
     }));
     renderPage(RuntimeLogsPage);
@@ -264,9 +264,9 @@ describe("RuntimeLogsPage", () => {
     }));
     mocks.useRuntimeSources.mockReturnValue(queryState({
       sources: [
-        { project_id: "werkorder", source_key: "tmc", label: "TMC", source_type: "talend_tmc" },
-        { project_id: "nexus_logs", source_key: "tmc-123", label: "TMC", source_type: "tmc" },
-        { project_id: "docs_only", source_key: "mock", label: "Mock", source_type: "mock" },
+        { estate_key: "werkorder", linked_project_ids: ["werkorder"], is_ownerless: false, source_key: "tmc", label: "TMC", source_type: "talend_tmc" },
+        { estate_key: "estate-nexus", linked_project_ids: ["nexus_logs"], is_ownerless: false, source_key: "tmc-123", label: "TMC", source_type: "tmc" },
+        { estate_key: "docs_only", linked_project_ids: ["docs_only"], is_ownerless: false, source_key: "mock", label: "Mock", source_type: "mock" },
       ],
       total: 3,
     }));

@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import time
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -749,6 +751,128 @@ def _render_chunk_extras(chunk_data: dict, chunk_id: str, parts: list[str]) -> N
             if data:
                 parts.append(f"\n### {section}\n```json\n{json.dumps(data, indent=2)}\n```\n")
 
+
+# ─────────────────────────────────────────────────────────────────────────── #
+# Runtime tools: the CLI lane's live query surface onto the runtime mirror
+# ─────────────────────────────────────────────────────────────────────────── #
+
+#: Where the standalone querying CLI is staged, relative to ``docs_staging/``.
+RUNTIME_TOOLS_DIRNAME = "_tools"
+RUNTIME_TOOLS_SCRIPT_NAME = "runtime_tools.py"
+
+#: Non-secret per-run identity written beside the script.  The bearer key is
+#: deliberately NOT in here: ``docs_staging/`` is swapped into ``docs/`` on
+#: success, so anything written here is published.
+RUNTIME_TOOLS_SIDECAR_NAME = "runtime_tools.json"
+
+
+def remove_runtime_tools(staging_dir: Path) -> None:
+    """Delete ``{staging}/_tools/`` before the staging tree is published.
+
+    ``_tools/`` is RUN-TIME FACILITY, not a deliverable: the script and its
+    identity sidecar exist only so the writing agent can query the runtime
+    mirror during the run.  It has to go before publication because the CLI lane
+    does NOT apply ``phase4_cleanup.PUBLISHED_STAGING_DIRS`` -- that allowlist
+    runs inside the custom harness's Phase 4, which the CLI transports never
+    execute.  Verified on a published CLI-lane tree: ``output/alitalend/docs/``
+    carries ``_provenance/``, which is absent from that allowlist, so nothing
+    would have stopped ``_tools/`` shipping to the client alongside it.
+
+    The durable record of what the agent asked is NOT here -- it is
+    ``_assessment/runtime_probe_ledger.jsonl``, and ``_assessment`` is published
+    deliberately so two runs of one project stay comparable.
+
+    Advisory: a failure to clean up must never fail a run whose documents are
+    already written.
+    """
+    target = staging_dir / RUNTIME_TOOLS_DIRNAME
+    try:
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+    except OSError as exc:
+        logger.warning("Could not remove %s before publication: %s", target, exc)
+
+
+def stage_runtime_tools(staging_dir: Path, project_id: str) -> Path | None:
+    """Copy ``scripts/runtime_tools.py`` into ``{staging}/_tools/`` for the agent.
+
+    The CLI lane previously received runtime facts only as a pre-computed
+    rollup, so it shipped zero runtime facts for questions that rollup was not
+    built to answer.  This stages the tool that lets the writing agent ask its
+    own questions of the same mirror.
+
+    Returns the staged script path, or ``None`` when it could not be staged.
+    Advisory like every other staging aid here (project memory, the work plan):
+    losing the ability to ask about runtime must not cost the run its documents.
+    It is staged on EVERY path -- fresh preprocess, extraction-cache hit and
+    resume alike -- because a resumed run writes the same documents as a fresh
+    one and must not be the one that silently has no runtime access.
+    """
+    source = Path(__file__).resolve().parent.parent / "scripts" / RUNTIME_TOOLS_SCRIPT_NAME
+    if not source.exists():
+        logger.warning("runtime_tools.py not found at %s", source)
+        return None
+    try:
+        tools_dir = staging_dir / RUNTIME_TOOLS_DIRNAME
+        tools_dir.mkdir(parents=True, exist_ok=True)
+        tools_dir.chmod(0o755)
+        destination = tools_dir / RUNTIME_TOOLS_SCRIPT_NAME
+        shutil.copy2(source, destination)
+        destination.chmod(0o755)
+        (tools_dir / RUNTIME_TOOLS_SIDECAR_NAME).write_text(
+            json.dumps(
+                {
+                    "project_id": project_id,
+                    "base_url": str(config.rag_base_url or "").rstrip("/"),
+                    "staging_dir": str(staging_dir),
+                    "written_at": time.time(),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning("runtime_tools.py could not be staged: %s", exc, exc_info=True)
+        return None
+    logger.info(
+        "Staged runtime tools at %s (project %s)", destination, project_id,
+    )
+    return destination
+
+
+@contextmanager
+def runtime_tool_environment(project_id: str, staging_dir: Path) -> Iterator[None]:
+    """Publish the runtime-tool settings to the provider subprocess environment.
+
+    Both CLI transports build their subprocess environment from ``os.environ``
+    (``providers/claude_cli.py``, ``providers/opencode_cli.py::_runtime_env``),
+    so this process's environment is the only channel that reaches them without
+    changing a provider.  The previous values are restored on the way out.
+
+    ``os.environ`` is process-global and two documentation runs can overlap in
+    one server process, so the SECRET travels this way but IDENTITY does not
+    depend on it: ``_tools/runtime_tools.json``, written per run by
+    :func:`stage_runtime_tools`, is what the script reads first for the project
+    id and base URL.  A race here can therefore cost a concurrent run its key
+    (visible: the request fails), never bind its queries to the wrong project
+    (invisible: another project's runtime data in these documents).
+    """
+    values = {
+        "NEXUS_RAG_BASE_URL": str(config.rag_base_url or "").rstrip("/"),
+        "NEXUS_INGEST_KEY": str(config.ingest_api_key or ""),
+        "NEXUS_PROJECT_ID": str(project_id),
+        "NEXUS_STAGING_DIR": str(staging_dir),
+    }
+    previous = {name: os.environ.get(name) for name in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for name, old in previous.items():
+            if old is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = old
 
 
 class DocGenerationCoordinator:
@@ -2325,6 +2449,18 @@ Required sections:
 
         total_groups = len(preprocess_groups)
 
+        # Runtime query tool. Staged here, outside the preprocess branch above,
+        # so a resumed run and an extraction-cache hit get it too: those runs
+        # write the same documents and must not be the ones with no runtime
+        # access. Advisory -- a failure to stage is logged, never fatal.
+        if stage_runtime_tools(staging_dir, project_id) is None:
+            await self.log_manager.emit(
+                project_id,
+                "Runtime query tool unavailable this run -- documents will carry "
+                "only the pre-computed runtime rollup",
+                level="warning",
+            )
+
         # Resume was detected BEFORE preprocessing, so its checklist came from
         # the PREVIOUS run's manifest. Preprocessing has just rewritten that
         # manifest, and a changed scan produces a different group set -- the
@@ -2577,8 +2713,33 @@ Required sections:
                 extra={"provider": resolved_provider, "model": effective_model, "write_model": effective_write_model},
             )
             async with LockHeartbeat(staging_dir, run_id=run_id):
-                agent_result = await provider.run(ctx, _log_cb)
+                # The runtime-tool settings must be on this process's
+                # environment while the provider launches its subprocess -- that
+                # is where both CLI transports copy their environment from.
+                with runtime_tool_environment(project_id, staging_dir):
+                    try:
+                        agent_result = await provider.run(ctx, _log_cb)
+                    finally:
+                        # Runs on the failure path too: a preserved staging tree
+                        # is resumed and re-published later, so leaving the
+                        # facility behind only defers the leak.
+                        remove_runtime_tools(staging_dir)
             result = agent_result.to_dict()
+            # The custom harness builds its topology in Phase 3.7; the CLI
+            # transports have no phase of their own, so it is built here, after
+            # the documents exist and before the checks and publication below.
+            if result.get("success") and (
+                model_resolution.uses_claude_cli or model_resolution.uses_opencode_cli
+            ):
+                await self._build_cli_business_topology(
+                    ctx,
+                    uses_claude_cli=model_resolution.uses_claude_cli,
+                    transport_provider=provider,
+                    scan_output_dir=Path(scan_output_dir),
+                    unit_allowlist=unit_allowlist,
+                    plugin_pack_dir=plugin_pack_dir,
+                    log_cb=_log_cb,
+                )
             finalized = True
             for message, level in self._finalize_memory_and_language(
                 output_dir=output_dir,
@@ -2638,6 +2799,136 @@ Required sections:
                         logging.WARNING if level == "warning" else logging.INFO, message
                     )
             release_generation_lock(staging_dir, run_id=run_id)
+
+    # ------------------------------------------------------------------ #
+    # Post-generation: business topology for the CLI transports
+    # ------------------------------------------------------------------ #
+
+    async def _build_cli_business_topology(
+        self,
+        ctx: DocGenContext,
+        *,
+        uses_claude_cli: bool,
+        scan_output_dir: Path,
+        unit_allowlist: set[str] | None,
+        transport_provider: object | None = None,
+        plugin_pack_dir: Path | None,
+        log_cb,
+    ) -> None:
+        """Build ``docs_staging/_topology/`` for a claude-cli / opencode-cli run.
+
+        Same pipeline as the custom harness's Phase 3.7
+        (``services/business_topology/builder.py``); only the model strategy
+        differs. Claude CLI gets a bounded single-turn, tool-less completion
+        on the run's own model (``ClaudeCliModelProvider``, at most two calls).
+        OpenCode gets the same bound through ``OpenCodeCompletionProvider``: a
+        single session on the run's own route, in an empty directory, with
+        every tool denied.
+
+        Runtime evidence is fetched in memory for enrichment only. It is NOT
+        staged under ``_transient/``: nothing on this lane deletes that
+        directory before the swap, so a staged copy would publish.
+
+        Advisory, like everything after ``provider.run``: never raises, and a
+        failure is recorded in ``state.json`` and the run log, never in the
+        run's outcome.
+        """
+        from mcp_server.services.business_topology.builder import (
+            BoundedModelTopologyLLM,
+            TopologyBuildInputs,
+            build_business_topology,
+        )
+
+        project_id = ctx.project_id
+        try:
+            runtime_payload = await self._cli_runtime_payload(ctx, scan_output_dir)
+            strategy: BoundedModelTopologyLLM | None = None
+            reason = ""
+            if uses_claude_cli:
+                from mcp_server.providers.custom.providers import ClaudeCliModelProvider
+
+                strategy = BoundedModelTopologyLLM(
+                    ClaudeCliModelProvider(model_name=ctx.effective_model),
+                    max_calls=2,
+                    timeout_s=300.0,
+                    max_tokens=config.phase3_max_tokens,
+                )
+            else:
+                from mcp_server.providers.opencode_cli import OpenCodeCompletionProvider
+
+                strategy = BoundedModelTopologyLLM(
+                    OpenCodeCompletionProvider(
+                        command=getattr(transport_provider, "command", None),
+                        model_route=getattr(transport_provider, "model_route", None),
+                    ),
+                    max_calls=2,
+                    timeout_s=300.0,
+                    max_tokens=config.phase3_max_tokens,
+                )
+            partition = ctx.partition
+            inputs = TopologyBuildInputs(
+                project_id=project_id,
+                staging_dir=ctx.staging_dir,
+                scan_output_dir=scan_output_dir,
+                subproject=(
+                    partition.name
+                    if partition is not None and unit_allowlist is not None
+                    else ""
+                ),
+                unit_allowlist=frozenset(unit_allowlist) if unit_allowlist is not None else None,
+                plugin_pack_dir=plugin_pack_dir,
+                runtime_payload=runtime_payload,
+                llm_unavailable_reason=reason,
+                log_prefix="[topology]",
+            )
+
+            async def _log(message: str, level: str) -> None:
+                await log_cb(project_id, message, level)
+
+            result = await build_business_topology(inputs, strategy, log=_log)
+            if strategy is not None:
+                result.state.setdefault("model_lanes", {})["calls"] = strategy.calls
+            result.write(ctx.staging_dir / "_topology")
+            for warning in result.run_warnings:
+                await log_cb(project_id, f"[topology] {warning}", "warning")
+        except Exception as exc:  # noqa: BLE001 - topology must never fail a docs run
+            logger.warning(
+                "CLI business topology failed for %s: %s", project_id, exc, exc_info=True
+            )
+            try:
+                await log_cb(
+                    project_id,
+                    f"[topology] Business topology failed (non-blocking): {exc}",
+                    "warning",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    @staticmethod
+    async def _cli_runtime_payload(ctx: DocGenContext, scan_output_dir: Path) -> dict | None:
+        """The run's runtime evidence as a payload, or ``None``. Never raises.
+
+        The same producer the harness uses (``fetch_runtime_evidence``) over the
+        same partition-filtered facts-manifest units, so both identifier keys
+        (``job_id`` and display name) are sent.
+        """
+        from mcp_server.providers.custom.partition_planner import filter_manifest
+        from mcp_server.providers.custom.runtime_evidence import fetch_runtime_evidence
+        from mcp_server.providers.custom.validators import build_facts_manifest
+
+        try:
+            facts = build_facts_manifest(ctx.project_id, scan_output_dir)
+            if ctx.partition is not None:
+                facts = filter_manifest(facts, ctx.partition)
+            store = await fetch_runtime_evidence(
+                ctx.project_id, list(facts.units), live_evidence=ctx.live_evidence
+            )
+            return store.to_json()
+        except Exception as exc:  # noqa: BLE001 - runtime absence is never a gate
+            logger.warning(
+                "CLI topology: runtime evidence unavailable for %s: %s", ctx.project_id, exc
+            )
+            return None
 
     # ------------------------------------------------------------------ #
     # Post-generation: persist memory, then check client language

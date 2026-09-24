@@ -201,7 +201,8 @@ interface DocReadScopeResponse {
 
 interface RuntimeSourceSummary {
   id: number;
-  project_id: string;
+  /** Projects attached to this source; a source has no owning project. */
+  linked_project_ids: string[];
   source_type: string;
   label: string;
   enabled: boolean;
@@ -251,8 +252,11 @@ function RuntimeMirrorScopeRow({ projectId }: { projectId: string }) {
     retry: false,
   });
 
-  const sources = (sourcesQuery.data?.sources ?? []).filter(
-    (source) => source.project_id === projectId,
+  // Sources this project is ATTACHED to, not sources it owns: a project reaches
+  // a shared tenant through an attachment, and it must be able to scope what its
+  // documentation runs read from it.
+  const sources = (sourcesQuery.data?.sources ?? []).filter((source) =>
+    (source.linked_project_ids ?? []).includes(projectId),
   );
   const scope = scopeQuery.data?.scope;
   const environments = scopeQuery.data?.available_environments ?? [];

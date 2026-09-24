@@ -7,6 +7,7 @@ whole feature, which is why authorization is pinned here in as much detail as
 the behaviour is.
 """
 
+import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -176,3 +177,92 @@ class TestGrantBehaviour:
             )
 
         assert resp.status_code == 422
+
+
+class TestOwnerlessEstate:
+    """Attaching to a source that belongs to no project.
+
+    This is the route's half of the registration change: a tenant can now be
+    registered before any project exists, and it is worth nothing until a
+    project is attached HERE. The estate key is not a project, so none of the
+    "owner" shortcuts apply -- the attachment row is the whole relation.
+    """
+
+    @pytest.fixture
+    async def ownerless(self, db_session):
+        from src.api.dependencies import get_current_user, get_db
+
+        store = RuntimeStoreRepository(db_session)
+        source = await store.create_source_config(source_type="mock", label="Unclaimed EU")
+
+        app.dependency_overrides[get_db] = lambda: db_session
+        app.dependency_overrides[get_current_user] = lambda: _mock_user()
+
+        with (
+            patch("src.api.dependencies.has_permission", return_value=True),
+            patch("src.runtime.audit.log_runtime_source_event", AsyncMock()),
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test", headers=_CSRF
+            ) as http:
+                yield SimpleNamespace(http=http, store=store, source=source)
+
+        app.dependency_overrides.clear()
+
+    async def test_attaching_reports_the_estate_it_exposes(self, ownerless):
+        with _scoped_to([_READER]):
+            resp = await ownerless.http.post(
+                _url(ownerless.source.id), json={"project_id": _READER}
+            )
+
+        grant = resp.json()["grant"]
+        assert resp.status_code == 200
+        assert grant["source_estate_key"] == ownerless.source.estate_key
+        # The estate key is a row stamp, and it is what the reader's queries
+        # will actually match on -- so it has to be named, not implied.
+        assert grant["exposes_project_ids"] == [ownerless.source.estate_key]
+
+    async def test_an_attached_project_reads_the_estate_s_rows(self, ownerless):
+        """End to end: attach, then read rows nobody could reach before."""
+        from src.runtime.models import ListRuntimeJobsInput, RuntimeJob
+        from src.runtime.read_scope import resolve_runtime_read_scope
+
+        stamp = ownerless.source.estate_key
+        await ownerless.store.upsert_job(
+            stamp,
+            RuntimeJob(job_id="job-1", source_key="mock", name="Estate_Job"),
+            "mock",
+            datetime.datetime(2026, 9, 1, tzinfo=datetime.UTC),
+        )
+
+        with _scoped_to([_READER]):
+            await ownerless.http.post(_url(ownerless.source.id), json={"project_id": _READER})
+
+        scope = await resolve_runtime_read_scope(
+            ownerless.store, user_scope=[_READER], project_id=_READER
+        )
+        jobs = await ownerless.store.list_jobs(
+            scope.scope, ListRuntimeJobsInput(project_id=_READER, read_terms=scope.terms)
+        )
+
+        assert [job.name for job in jobs] == ["Estate_Job"]
+
+    async def test_a_scoped_operator_may_attach_without_holding_the_estate(self, ownerless):
+        """There is no granting side to hold: the estate belongs to nobody.
+
+        `get_source_config` admits an unattached ownerless source to any scoped
+        caller, which is what keeps it attachable at all -- the bootstrapping
+        trap this change removes. The RECEIVING side is still checked, so a
+        caller still cannot attach a project they do not hold.
+        """
+        with _scoped_to([_READER]):
+            allowed = await ownerless.http.post(
+                _url(ownerless.source.id), json={"project_id": _READER}
+            )
+            refused = await ownerless.http.post(
+                _url(ownerless.source.id), json={"project_id": _OUTSIDER}
+            )
+
+        assert allowed.status_code == 200
+        assert refused.status_code == 404
+        assert await ownerless.store.list_linked_projects(ownerless.source.id) == [_READER]

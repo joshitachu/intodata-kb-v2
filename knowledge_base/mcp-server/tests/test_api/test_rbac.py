@@ -118,6 +118,9 @@ _ROUTES = [
     ("PATCH", "/mcp/projects/p1/plugin", {"plugin_pack_id": None},                           "project_plugin"),
     ("POST", "/mcp/push-to-rag",  {"project_id": "p1"},                                    "push_to_rag"),
     ("POST", "/mcp/reset-status", {"project_id": "p1"},                                    "reset_status"),
+    ("POST", "/mcp/projects/p1/connectors/conn-1/search", {
+        "source_ids": ["src-1"], "query": "errors", "limit": 5, "time_window_days": 7,
+    }, "project_connector_search"),
 ]
 
 _IDS = [r[3] for r in _ROUTES]

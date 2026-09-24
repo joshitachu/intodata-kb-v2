@@ -10,6 +10,7 @@ import re
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Final, NamedTuple
 
+from pydantic import BaseModel
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -60,16 +61,34 @@ from src.retrieval.metadata_retriever import (
     get_user_profile,
 )
 from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
-from src.runtime.providers.stored import StoredRuntimeProvider
+from src.runtime.providers.stored import (
+    AGGREGATE_MAX_ROWS,
+    StoredRuntimeProvider,
+    aggregate_row_cap,
+)
 from src.runtime.registry import SearchLogsInput
+from src.runtime.read_scope import (
+    RuntimeReadScope,
+    resolve_runtime_read_scope,
+    resolve_runtime_read_scope_for_user,
+)
+from src.runtime.store import RuntimeStoreRepository
 from src.runtime.insights.parser import redact_credentials
 from src.runtime.models import (
     DetectFailuresInput,
     ListExecutionsInput,
+    ListRuntimeErrorSignaturesInput,
     ListRuntimeHealthInput,
     ListRuntimeInventoryInput,
+    ListRuntimeJobScheduleProfileInput,
+    ListRuntimeJobReliabilityInput,
+    ListRuntimeJobThroughputInput,
+    ListRuntimeJobsInput,
     ListRuntimeSyncStatusInput,
     RuntimeExecutionState,
+    RuntimeTrendBucket,
+    RuntimeTrendInput,
+    RuntimeUnhealthySummary,
 )
 
 
@@ -1778,6 +1797,54 @@ def build_registered_read_adapters(
             since=_parse_datetime(arguments.get("since")),
             until=_parse_datetime(arguments.get("until")),
             limit=int(arguments.get("limit", 20)),
+            bucket=(
+                str(arguments["bucket"])
+                if arguments.get("bucket") is not None
+                else None
+            ),
+            environment_id=(
+                str(arguments["environment_id"])
+                if arguments.get("environment_id") is not None
+                else None
+            ),
+            job_status=(
+                str(arguments["job_status"])
+                if arguments.get("job_status") is not None
+                else None
+            ),
+            attention_only=bool(arguments.get("attention_only", False)),
+            error_code=(
+                str(arguments["error_code"])
+                if arguments.get("error_code") is not None
+                else None
+            ),
+            exception_class=(
+                str(arguments["exception_class"])
+                if arguments.get("exception_class") is not None
+                else None
+            ),
+            component_name=(
+                str(arguments["component_name"])
+                if arguments.get("component_name") is not None
+                else None
+            ),
+            timezone=(
+                str(arguments["timezone"])
+                if arguments.get("timezone") is not None
+                else None
+            ),
+            # Left as None when absent so the window stays unset rather than
+            # collapsing to hour 0, which would silently mean midnight.
+            start_hour=(
+                int(arguments["start_hour"])
+                if arguments.get("start_hour") is not None
+                else None
+            ),
+            end_hour=(
+                int(arguments["end_hour"])
+                if arguments.get("end_hour") is not None
+                else None
+            ),
         )
 
     async def logs_adapter(arguments, context):  # noqa: ANN001
@@ -1914,6 +1981,415 @@ async def read_generated_doc_evidence(
     )
 
 
+class _RuntimeEvidenceArgs(NamedTuple):
+    """The capability's validated arguments, before any per-operation shaping.
+
+    One flat record rather than a long parameter list on every builder: the
+    capability schema is a single union over all operations, and each builder
+    picks the subset its own provider input model accepts. A field an operation
+    does not accept is DROPPED here rather than silently ignored downstream --
+    `ListRuntimeErrorSignaturesInput`, for instance, deliberately has no
+    `source_key`, and passing one would tell the caller it filtered when it did
+    not.
+    """
+
+    project_id: str | None
+    source_key: str | None
+    job_name: str | None
+    state: str | None
+    since: datetime.datetime | None
+    until: datetime.datetime | None
+    limit: int
+    bucket: str | None
+    environment_id: str | None
+    job_status: str | None
+    attention_only: bool
+    error_code: str | None
+    exception_class: str | None
+    component_name: str | None
+    timezone: str | None
+    start_hour: int | None
+    end_hour: int | None
+
+
+def _unhealthy_records(returned: Any) -> list[Any]:
+    """Flatten the one summary object into the record list every operation returns.
+
+    ``list_runtime_unhealthy`` is the only stored read that answers with a
+    single object instead of a sequence, and the serializer below iterates.
+
+    The overview is emitted FIRST and carries the estate-wide
+    ``engines_unhealthy`` / ``jobs_unhealthy`` / ``plans_unhealthy`` totals, so a
+    caller whose ``limit`` cuts the tail can still see how many entities existed
+    and cannot read a truncated list as the whole estate.
+    """
+
+    if not isinstance(returned, RuntimeUnhealthySummary):
+        return []
+    overview = returned.overview.model_dump(mode="json")
+    # The overview has no name of its own; without one its evidence item is
+    # titled from the operation and reads like just another unhealthy entity.
+    overview["name"] = "runtime estate health overview"
+    return [
+        overview,
+        *returned.unhealthy_engines,
+        *returned.unhealthy_jobs,
+        *returned.unhealthy_plans,
+    ]
+
+
+class _RuntimeEvidenceOperation(NamedTuple):
+    """One stored-runtime read: provider method, argument shaping, result shape."""
+
+    #: Resolved on the provider INSTANCE, so a test double is dispatched to as
+    #: readily as the real provider.
+    provider_method: str
+    build_input: Callable[[_RuntimeEvidenceArgs], BaseModel]
+    #: Provider return value -> the records to serialize. Defaults to the
+    #: identity for the sequence-returning majority.
+    to_records: Callable[[Any], list[Any]] = list
+
+
+# Operation -> provider call. A table rather than an `elif` chain: the defect
+# this fixes was that `StoredRuntimeProvider` had implemented aggregation for a
+# year while the chain dispatched five of its twenty-seven methods, and a chain
+# gives nothing to assert against. `test_runtime_aggregate_evidence.py` asserts
+# this table's keys are exactly the capability schema's `operation` enum and
+# that every `provider_method` exists, so the two can no longer drift apart.
+#
+# Every entry passes the caller's `limit` to the provider so the provider's own
+# default (100 rows, 90 trend buckets) can never disagree with the truncation
+# applied to the serialized records: a caller asking for a top-N ranking gets N.
+_RUNTIME_EVIDENCE_OPERATIONS: Final[dict[str, _RuntimeEvidenceOperation]] = {
+    "list_executions": _RuntimeEvidenceOperation(
+        provider_method="list_executions",
+        build_input=lambda args: ListExecutionsInput(
+            job_name=args.job_name,
+            state=RuntimeExecutionState(args.state) if args.state else None,
+            since=args.since,
+            until=args.until,
+            limit=args.limit,
+        ),
+    ),
+    "detect_failures": _RuntimeEvidenceOperation(
+        provider_method="detect_failures",
+        build_input=lambda args: DetectFailuresInput(
+            since=args.since,
+            until=args.until,
+            limit=args.limit,
+        ),
+    ),
+    "list_runtime_health": _RuntimeEvidenceOperation(
+        provider_method="list_runtime_health",
+        build_input=lambda args: ListRuntimeHealthInput(
+            source_key=args.source_key,
+            project_id=args.project_id,
+            limit=args.limit,
+        ),
+    ),
+    "list_runtime_sync_status": _RuntimeEvidenceOperation(
+        provider_method="list_runtime_sync_status",
+        build_input=lambda args: ListRuntimeSyncStatusInput(
+            source_key=args.source_key,
+            project_id=args.project_id,
+            limit=args.limit,
+        ),
+    ),
+    "list_runtime_sources": _RuntimeEvidenceOperation(
+        provider_method="list_runtime_sources",
+        build_input=lambda args: ListRuntimeInventoryInput(
+            source_key=args.source_key,
+            project_id=args.project_id,
+            limit=args.limit,
+        ),
+    ),
+    "list_runtime_jobs": _RuntimeEvidenceOperation(
+        provider_method="list_runtime_jobs",
+        build_input=lambda args: ListRuntimeJobsInput(
+            source_key=args.source_key,
+            project_id=args.project_id,
+            environment_id=args.environment_id,
+            status=args.job_status,
+            limit=args.limit,
+        ),
+    ),
+    "get_runtime_outcome_trend": _RuntimeEvidenceOperation(
+        provider_method="get_runtime_outcome_trend",
+        build_input=lambda args: RuntimeTrendInput(
+            source_key=args.source_key,
+            project_id=args.project_id,
+            job_name=args.job_name,
+            since=args.since,
+            until=args.until,
+            # Omitted bucket keeps the model's own default rather than
+            # hardcoding a second one here.
+            **(
+                {"bucket": RuntimeTrendBucket(args.bucket)}
+                if args.bucket is not None
+                else {}
+            ),
+            # `limit` is a bucket count for a trend, not a row count.
+            limit=args.limit,
+        ),
+    ),
+    "list_runtime_job_reliability": _RuntimeEvidenceOperation(
+        provider_method="list_runtime_job_reliability",
+        build_input=lambda args: ListRuntimeJobReliabilityInput(
+            source_key=args.source_key,
+            project_id=args.project_id,
+            job_name=args.job_name,
+            since=args.since,
+            until=args.until,
+            attention_only=args.attention_only,
+            limit=args.limit,
+        ),
+    ),
+    "list_runtime_job_throughput": _RuntimeEvidenceOperation(
+        provider_method="list_runtime_job_throughput",
+        build_input=lambda args: ListRuntimeJobThroughputInput(
+            source_key=args.source_key,
+            project_id=args.project_id,
+            job_name=args.job_name,
+            since=args.since,
+            until=args.until,
+            limit=args.limit,
+        ),
+    ),
+    "list_runtime_error_signatures": _RuntimeEvidenceOperation(
+        provider_method="list_runtime_error_signatures",
+        # No `source_key`: signature rows carry none, and the input model
+        # refuses it rather than accepting a filter it cannot apply.
+        build_input=lambda args: ListRuntimeErrorSignaturesInput(
+            project_id=args.project_id,
+            error_code=args.error_code,
+            exception_class=args.exception_class,
+            component_name=args.component_name,
+            since=args.since,
+            until=args.until,
+            limit=args.limit,
+        ),
+    ),
+    "list_runtime_unhealthy": _RuntimeEvidenceOperation(
+        provider_method="list_runtime_unhealthy",
+        build_input=lambda args: ListRuntimeInventoryInput(
+            source_key=args.source_key,
+            project_id=args.project_id,
+            limit=args.limit,
+        ),
+        to_records=_unhealthy_records,
+    ),
+    # The only operation that reads runs by CLOCK TIME. `bucket="hour"` on the
+    # trend above walks consecutive hours of the calendar; this pools every run
+    # onto one 24-hour dial, which is the only shape that answers "when does
+    # this job run". `timezone` and the window hours are omitted when the
+    # caller did not supply them, so the input model's own defaults stand
+    # rather than a second set being hardcoded here.
+    "list_runtime_job_schedule_profile": _RuntimeEvidenceOperation(
+        provider_method="list_runtime_job_schedule_profile",
+        build_input=lambda args: ListRuntimeJobScheduleProfileInput(
+            source_key=args.source_key,
+            project_id=args.project_id,
+            job_name=args.job_name,
+            since=args.since,
+            until=args.until,
+            limit=args.limit,
+            **({"timezone": args.timezone} if args.timezone is not None else {}),
+            # Both or neither: the input model rejects a half-specified window,
+            # and passing one alone would turn a caller's typo into a silently
+            # different window rather than an argument error.
+            **(
+                {"start_hour": args.start_hour, "end_hour": args.end_hour}
+                if args.start_hour is not None and args.end_hour is not None
+                else {}
+            ),
+        ),
+    ),
+}
+
+
+async def _resolve_agent_runtime_read(
+    db: AsyncSession, *, project_scope: list[str] | None, project_id: str | None
+) -> RuntimeReadScope:
+    """Resolve what ONE agent runtime tool call may read, server-side.
+
+    Why this replaced the raw scope intersection
+    --------------------------------------------
+    `runtime_sources.physical_identity` is globally unique, so a vendor tenant is
+    registered once and every other project that needs it reads through a stored
+    READ GRANT over that one mirror. Until this call site existed, the grant
+    reached the documentation lane only: the agent's two runtime tools narrowed
+    the caller's scope to the named `project_id` and used it as a raw row-stamp
+    filter, so a granted reader project asking about its own tenant in chat was
+    told there was no runtime data -- about an estate it demonstrably had access
+    to, and had just published a document from. That intersection was exactly
+    right as an access boundary; it simply had no way to know that a boundary can
+    legitimately widen, so it has been deleted rather than left beside its
+    replacement for the next runtime read to pick up by mistake.
+
+    Which resolver, and why the distinction matters
+    -----------------------------------------------
+    `resolve_runtime_read_scope` is for a NAMED project: it checks the name
+    against the caller's own scope first, then widens only from that project's
+    stored grants. `resolve_runtime_read_scope_for_user` is for a call that names
+    none, where there is no single project to widen from, so it takes the union
+    of the grants held by every project the caller can already see. Sending the
+    second case through the first would pass `project_id=None` and get
+    `unscoped(user_scope)` back -- an unwidened read, which is the pre-grant
+    behaviour and the exact bug this change removes for an estate-wide question.
+
+    Nothing here is reachable from a tool argument
+    ----------------------------------------------
+    `project_scope` is the authenticated caller's RBAC allow-list, and
+    `project_id` is only ever used to NARROW it (inside the resolver) or to look
+    up grants attached to a project the caller already holds. A model-authored
+    `project_id` the caller has no scope for resolves to `denies_all` before any
+    grant row is read. Widening comes from grant rows and from nowhere else,
+    which is the same rule `GET /runtime/doc-evidence` states for the machine-key
+    path where there is no second gate behind it.
+
+    The DB is touched only when widening is possible: an unrestricted caller
+    (`project_scope is None`) naming no project short-circuits inside the
+    resolver without a query.
+    """
+
+    repo = RuntimeStoreRepository(db)
+    if project_id is not None:
+        return await resolve_runtime_read_scope(
+            repo, user_scope=project_scope, project_id=project_id
+        )
+    return await resolve_runtime_read_scope_for_user(repo, user_scope=project_scope)
+
+
+def _with_read_terms(params: BaseModel, read: RuntimeReadScope) -> BaseModel:
+    """Stamp the resolved read set onto a provider input, or refuse to run.
+
+    THE trap this function exists to close
+    --------------------------------------
+    `RuntimeReadScope.scope` is WIDENED to include the granting project; the
+    per-grant environment and window limits live in `.terms` and nowhere else.
+    Handing the widened scope to the provider without the terms returns the
+    grantor's rows with the grant's own narrowing silently not applied -- every
+    environment, the whole history -- which is a data leak, not a missing filter.
+    So the terms are applied here, once, for every operation, rather than inside
+    the per-operation builders where one of eleven could omit them and nothing
+    would look wrong.
+
+    Applied by `model_copy` rather than as a builder argument for the same reason
+    the access boundary is resolved outside the dispatch table: a new operation
+    added to `_RUNTIME_EVIDENCE_OPERATIONS` inherits this automatically and
+    cannot be added without it.
+
+    A model with no `read_terms` field while terms exist is a HARD failure, not a
+    silent drop. Every input the table builds carries `RuntimeReadTermsMixin`
+    today; the day one does not, the alternative to raising is to run it with a
+    widened scope and no narrowing -- the precise leak above.
+    """
+
+    if not read.terms:
+        return params
+    if "read_terms" not in type(params).model_fields:
+        raise ValueError(
+            f"{type(params).__name__} cannot carry a runtime read set, so this "
+            "read would apply a widened scope with no grant limits."
+        )
+    return params.model_copy(update={"read_terms": list(read.terms)})
+
+
+def _shared_read_scope_fields(read: RuntimeReadScope) -> dict[str, Any]:
+    """The two facts the model needs when an answer came off a shared mirror.
+
+    A runtime job vocabulary belongs to the whole TENANT, not to the project
+    reading it, so an answer drawn through a read grant is not comparable to one
+    drawn from an owned mirror and the agent has to be able to say which it was.
+    Same vocabulary as the documentation lane (`RuntimeDocReadScope.shared_read`
+    / `.shared_from`, surfaced by `GET /runtime/doc-evidence`) rather than a
+    second set of words for one concept.
+
+    Deliberately ~180 characters and only present when a grant actually applied.
+    This file records a measured incident where a larger tool payload was
+    truncated by the agent runtime and cost 21 calls and 2m08s; a disclosure that
+    pushes a result over that edge would destroy more answers than it explains.
+    Source LABELS, never the grantor's project ids: the reader may hold no
+    permission to see the owning project's name.
+    """
+
+    if not read.shared_read:
+        return {}
+    return {
+        "shared_read": True,
+        "shared_from": read.shared_from,
+        "shared_read_note": (
+            "Read through a grant over a shared mirrored tenant. Rows can belong "
+            "to a sibling project on the same tenant; that is by design, not a "
+            "mis-binding."
+        ),
+    }
+
+
+def _runtime_read_scope(
+    *,
+    operation: str,
+    project_id: str | None,
+    returned: int,
+    requested: int,
+    read: RuntimeReadScope,
+) -> dict[str, Any]:
+    """What this read actually covered, so a clamped result cannot read as complete.
+
+    The stored provider clamps every rollup to ``AGGREGATE_MAX_ROWS`` regardless
+    of the caller's ``limit``, so a project with 65 overnight jobs answers a
+    schedule question with 25 of them. Nothing in the result said so, which is
+    the same defect ``EvidenceQueryResult.scope`` was added for: a ranking
+    truncated in silence gets published as the ranking, exactly as an empty
+    search got published as "no filter is recorded".
+
+    ``at_cap`` is deliberately "may be partial" rather than "is partial" -- a
+    result of exactly N rows out of exactly N is indistinguishable from a
+    clamped one without a second counting query, and claiming certainty either
+    way would be the same overreach in miniature.
+
+    ``read`` adds the other thing a caller cannot infer from the rows: whether
+    they came off a mirror this project owns or one it reads through a grant.
+    The keys appear only when a grant actually applied, so an ungranted read's
+    scope dict is byte-identical to the one it produced before grants reached
+    this lane.
+    """
+
+    # The provider's own number for THIS rollup, not a copy. An inventory read
+    # (the overnight schedule) is allowed a larger page than a ranking read,
+    # and disclosing the default here would report a 67-row result as clamped.
+    spec = _RUNTIME_EVIDENCE_OPERATIONS.get(operation)
+    page_size = (
+        aggregate_row_cap(spec.provider_method) if spec is not None else AGGREGATE_MAX_ROWS
+    )
+    effective = min(requested, page_size)
+    at_cap = returned >= effective
+    scope: dict[str, Any] = {
+        "operation": operation,
+        "project_id": project_id or "all in scope",
+        "records_returned": returned,
+        "records_requested": requested,
+        "provider_page_size": page_size,
+        "may_be_truncated": at_cap,
+        **_shared_read_scope_fields(read),
+    }
+    if at_cap:
+        # Deliberately does NOT tell the caller to retry at `page_size`. A
+        # measured attempt to do that made things worse: the advice was obeyed,
+        # 100 rows serialized to 56 KB, OpenCode truncated the result to a file
+        # the agent could not read back, and it fell back to nine hourly calls
+        # -- 21 tool calls and 2m08s against 6 calls and 76s without the advice.
+        # The binding limit is payload size, not row count, and until the rows
+        # are smaller there is no larger read to recommend.
+        scope["truncation_note"] = (
+            f"This read returned {returned} record(s), the maximum for one call. "
+            "More may exist. Do not present this as the complete set: narrow the "
+            "question (a shorter window, a job name, a single source) and read "
+            "again, or say in the answer that the list is capped."
+        )
+    return scope
+
+
 async def query_structured_runtime_evidence(
     *,
     operation: str,
@@ -1926,62 +2402,74 @@ async def query_structured_runtime_evidence(
     since: datetime.datetime | None = None,
     until: datetime.datetime | None = None,
     limit: int = 20,
+    bucket: str | None = None,
+    environment_id: str | None = None,
+    job_status: str | None = None,
+    attention_only: bool = False,
+    error_code: str | None = None,
+    exception_class: str | None = None,
+    component_name: str | None = None,
+    timezone: str | None = None,
+    start_hour: int | None = None,
+    end_hour: int | None = None,
 ) -> EvidenceQueryResult:
-    """Execute one deterministic typed runtime read without a nested agent."""
+    """Execute one deterministic typed runtime read without a nested agent.
 
-    selected_scope = _intersect_scope(project_scope, project_id)
+    The access boundary is a resolved `RuntimeReadScope`, not a raw scope
+    intersection: see `_resolve_agent_runtime_read` for why a boundary here can
+    legitimately widen, and `_with_read_terms` for why the widened scope must
+    never travel without the grant limits that go with it.
+    """
+
+    selected = _RUNTIME_EVIDENCE_OPERATIONS.get(operation)
+    if selected is None:
+        return EvidenceQueryResult(
+            capability_id=STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY.id,
+            status="failed",
+            error_message="The requested runtime operation is not available.",
+        )
+
+    # The access boundary AND the row-stamp filter, resolved together here rather
+    # than inside a per-operation branch that could omit one of them. `read.scope`
+    # is the RBAC allow-list the provider context carries; `read.terms` is the
+    # per-project narrowing each grant attached to its own contribution, stamped
+    # onto the params below. Splitting the pair is the leak; they are produced
+    # and consumed as one object so that splitting them takes effort.
+    read = await _resolve_agent_runtime_read(
+        db, project_scope=project_scope, project_id=project_id
+    )
     provider = StoredRuntimeProvider()
-    provider_context = RuntimeProviderContext(project_scope=selected_scope, db=db)
+    provider_context = RuntimeProviderContext(project_scope=read.scope, db=db)
+    args = _RuntimeEvidenceArgs(
+        project_id=project_id,
+        source_key=source_key,
+        job_name=job_name,
+        state=state,
+        since=since,
+        until=until,
+        limit=limit,
+        bucket=bucket,
+        environment_id=environment_id,
+        job_status=job_status,
+        attention_only=attention_only,
+        error_code=error_code,
+        exception_class=exception_class,
+        component_name=component_name,
+        timezone=timezone,
+        start_hour=start_hour,
+        end_hour=end_hour,
+    )
     try:
-        if operation == "list_executions":
-            values = await provider.list_executions(
-                ListExecutionsInput(
-                    job_name=job_name,
-                    state=RuntimeExecutionState(state) if state else None,
-                    since=since,
-                    until=until,
-                    limit=limit,
-                ),
-                provider_context,
-            )
-        elif operation == "detect_failures":
-            values = await provider.detect_failures(
-                DetectFailuresInput(since=since, until=until, limit=limit),
-                provider_context,
-            )
-        elif operation == "list_runtime_health":
-            values = await provider.list_runtime_health(
-                ListRuntimeHealthInput(
-                    source_key=source_key,
-                    project_id=project_id,
-                    limit=limit,
-                ),
-                provider_context,
-            )
-        elif operation == "list_runtime_sync_status":
-            values = await provider.list_runtime_sync_status(
-                ListRuntimeSyncStatusInput(
-                    source_key=source_key,
-                    project_id=project_id,
-                    limit=limit,
-                ),
-                provider_context,
-            )
-        elif operation == "list_runtime_sources":
-            values = await provider.list_runtime_sources(
-                ListRuntimeInventoryInput(
-                    source_key=source_key,
-                    project_id=project_id,
-                    limit=limit,
-                ),
-                provider_context,
-            )
-        else:
-            return EvidenceQueryResult(
-                capability_id=STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY.id,
-                status="failed",
-                error_message="The requested runtime operation is not available.",
-            )
+        # Inside the try: a rejected enum value or an out-of-range bound raises
+        # `ValueError` (pydantic's `ValidationError` is one), and that is a
+        # failed read, not an exception for the caller to handle. So is an input
+        # model that cannot carry the read set (`_with_read_terms`), which is a
+        # refusal to run rather than a read with the limits dropped.
+        params = _with_read_terms(selected.build_input(args), read)
+        returned = await getattr(provider, selected.provider_method)(
+            params, provider_context
+        )
+        records = selected.to_records(returned)
     except (RuntimeProviderError, ValueError) as exc:
         return EvidenceQueryResult(
             capability_id=STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY.id,
@@ -1990,7 +2478,7 @@ async def query_structured_runtime_evidence(
         )
     serialized = [
         value.model_dump(mode="json") if hasattr(value, "model_dump") else dict(value)
-        for value in values
+        for value in records
         if hasattr(value, "model_dump") or isinstance(value, dict)
     ]
     return EvidenceQueryResult(
@@ -2001,6 +2489,17 @@ async def query_structured_runtime_evidence(
             serialized[:limit],
             project_id,
             capability_id=STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY.id,
+            # The caller's own bound, not the serializer's default. A hidden
+            # second cap at ten turned "rank the twenty worst jobs" into ten
+            # rows with nothing saying the rest were dropped.
+            max_items=limit,
+        ),
+        scope=_runtime_read_scope(
+            operation=operation,
+            project_id=project_id,
+            returned=len(serialized[:limit]),
+            requested=limit,
+            read=read,
         ),
     )
 
@@ -2024,10 +2523,32 @@ async def search_runtime_log_evidence(
     through ``HarnessCapabilityExecutor``. The stored provider owns repository
     scope and produces credential-redacted snippets; this layer prevents internal
     row identifiers or provider payloads from becoming evidence metadata.
+
+    Why this is the path that decides whether a shared tenant is answerable
+    ----------------------------------------------------------------------
+    ``search_logs`` is how the agent answers "what happened in this tenant". A
+    granted reader that cannot reach the grantor's log lines here can publish a
+    document about the estate and still be told there is nothing to read when it
+    asks a question about the same estate in chat, which is the failure this
+    whole change exists to remove.
+
+    ``project_ids`` and ``project_id`` are model-authored and NARROW ONLY. They
+    are intersected against the caller's authenticated scope first
+    (``_intersect_project_scopes``), and only the surviving set is handed to the
+    resolver as ``user_scope``; the resolver then widens from stored grant rows
+    attached to projects the caller already holds. A model naming a project it
+    has no scope for therefore resolves to an empty read set, exactly as before.
+
+    ``read.terms`` is passed to the provider explicitly rather than on ``params``
+    because ``SearchLogsInput`` is the model the runtime tool registry validates
+    LLM arguments against. Giving it a ``read_terms`` field would put the read
+    set inside the model's schema, where an argument could set it -- the one
+    thing the whole design forbids.
     """
-    selected_scope = _intersect_project_scopes(project_scope, project_ids)
-    if project_id is not None:
-        selected_scope = _intersect_scope(selected_scope, project_id)
+    narrowed_scope = _intersect_project_scopes(project_scope, project_ids)
+    read = await _resolve_agent_runtime_read(
+        db, project_scope=narrowed_scope, project_id=project_id
+    )
     try:
         params = SearchLogsInput(
             question=question,
@@ -2039,7 +2560,8 @@ async def search_runtime_log_evidence(
         )
         rows = await StoredRuntimeProvider().search_logs(
             params,
-            RuntimeProviderContext(project_scope=selected_scope, db=db),
+            RuntimeProviderContext(project_scope=read.scope, db=db),
+            read_terms=read.terms,
         )
     except (RuntimeProviderError, ValueError) as exc:
         return EvidenceQueryResult(
@@ -2057,7 +2579,7 @@ async def search_runtime_log_evidence(
 
         semantic_hits = await RuntimeSemanticService(qdrant).search(
             question,
-            project_ids=selected_scope,
+            project_ids=_semantic_read_projects(read),
             top_k=limit,
         )
         items.extend(
@@ -2070,7 +2592,32 @@ async def search_runtime_log_evidence(
         status="succeeded",
         items=items,
         answer_draft=_log_search_answer(question, items),
+        # Only populated under a grant, so an ungranted search returns the same
+        # `scope=None` result it always did.
+        scope=_shared_read_scope_fields(read) or None,
     )
+
+
+def _semantic_read_projects(read: RuntimeReadScope) -> list[str] | None:
+    """The projects the Qdrant runtime index may be searched over.
+
+    Qdrant carries a ``project_id`` payload field and nothing else: it cannot
+    express a grant's environment or window. So this applies the rule the
+    repository already applies to tables that cannot express a narrowing
+    (`_apply_read_terms`, for `runtime_artifacts` and its siblings) -- a term
+    that restricts contributes NOTHING here rather than everything. A reader
+    granted one environment gets no semantic hits from the grantor instead of
+    semantic hits from every environment the grantor has.
+
+    A missing hit is a visible gap that degrades an answer; a leaked one cannot
+    be taken back, and semantic hits carry curated incident text. ``None`` is
+    returned only for a caller with no RBAC restriction at all, for whom there
+    is nothing to narrow.
+    """
+
+    if read.scope is None:
+        return None
+    return [term.project_id for term in read.terms if term.unrestricted]
 
 
 def _semantic_runtime_evidence_item(hit: Any, *, index: int) -> EvidenceItem:
@@ -2152,16 +2699,25 @@ def _log_search_answer(question: str, items: list[EvidenceItem]) -> str:
     )[:4_000]
 
 
+#: How many records become evidence items when the caller states no bound.
+#:
+#: Callers that DO state one pass it: the cap used to be hardcoded here, so a
+#: read that asked for fifty rows silently produced ten evidence items and
+#: nothing in the result said the rest had been dropped.
+_RUNTIME_EVIDENCE_DEFAULT_MAX_ITEMS: Final = 10
+
+
 def _generic_runtime_items(
     tool_name: str,
     data: Any,
     project_id: str | None,
     *,
     capability_id: str = STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY.id,
+    max_items: int = _RUNTIME_EVIDENCE_DEFAULT_MAX_ITEMS,
 ) -> list[EvidenceItem]:
     """Normalize arbitrary safe runtime-tool output without knowing its intent."""
     if isinstance(data, list):
-        values = [item for item in data[:10] if isinstance(item, dict)]
+        values = [item for item in data[:max_items] if isinstance(item, dict)]
     elif isinstance(data, dict):
         nested = next(
             (
@@ -2171,7 +2727,7 @@ def _generic_runtime_items(
             ),
             None,
         )
-        values = nested[:10] if isinstance(nested, list) else [data]
+        values = nested[:max_items] if isinstance(nested, list) else [data]
     else:
         values = []
     result = []
@@ -2204,6 +2760,15 @@ def _generic_runtime_items(
                     "started_at",
                     "ended_at",
                     "updated_at",
+                    # Appended, so the precedence above is unchanged. These are
+                    # the only timestamps the rollup and trend rows carry: a
+                    # per-job reliability row or a trend bucket used to reach
+                    # the model with `observed_at: null`, which reads as
+                    # undated rather than as "the window you asked for".
+                    "latest_run_at",
+                    "last_run_at",
+                    "last_measured_at",
+                    "bucket_start",
                 )
                 if value.get(key)
             ),
@@ -2256,15 +2821,28 @@ def _runtime_record_summary(value: dict[str, Any]) -> str:
     # individually, with nothing indicating they belonged elsewhere. The id was
     # already present in the evidence item's metadata but absent from the prose
     # the model actually reads, so nothing made the attribution unavoidable.
+    #
+    # Extended for the aggregate operations. Without their measure columns an
+    # aggregate row renders as an identifier and nothing else -- a throughput
+    # ranking whose prose omits `rows_total` states no throughput, and a trend
+    # point has no identifier at all, so its summary was literally `{}`. Every
+    # key below is a scalar count, rate, duration or timestamp on a
+    # server-owned typed runtime model; the two free-text ones
+    # (`summary_text`, `causal_message`) are credential-redacted at the source.
     safe_keys = (
         "project_id",
         "name",
+        "display_name",
         "engine_name",
         "job_name",
+        "job_type",
+        "executable_kind",
         "plan_name",
         "source_key",
+        "owner",
         "status",
         "state",
+        "engine_status",
         "environment_name",
         "workspace_name",
         "version",
@@ -2277,6 +2855,72 @@ def _runtime_record_summary(value: dict[str, Any]) -> str:
         "failure_rate",
         "current_failure_streak",
         "error_summary",
+        # Outcome counts, shared by the trend points, the reliability rollup and
+        # the per-entity health rows.
+        "bucket_start",
+        "total_runs",
+        "success_runs",
+        "failed_runs",
+        "running_runs",
+        "unknown_runs",
+        "unfinished_runs",
+        "misfired_runs",
+        "terminated_runs",
+        "timed_out_runs",
+        "first_run_at",
+        "last_run_at",
+        "latest_run_at",
+        "latest_state",
+        "latest_unfinished",
+        "p50_duration_ms",
+        "p95_duration_ms",
+        "max_duration_ms",
+        # Throughput.
+        "executions_with_metrics",
+        "component_count",
+        "rows_total",
+        "rows_rejected",
+        "reject_ratio",
+        "last_measured_at",
+        # Error signatures.
+        "error_code",
+        "exception_class",
+        "component_name",
+        "summary_text",
+        "causal_message",
+        "occurrence_count",
+        "first_seen_at",
+        # Schedule profile. Without these the operation returns run counts and a
+        # duration and drops every clock time -- a schedule answer with no
+        # schedule in it, which reads as confirmation that the times are
+        # unavailable. `timezone` and the window hours travel WITH the times
+        # because a bare "02:15" is unreadable without the zone it was computed
+        # in and the window it was pooled over.
+        "timezone",
+        "window_start_hour",
+        "window_end_hour",
+        "median_start_time",
+        "earliest_start_time",
+        "latest_start_time",
+        "distinct_days",
+        "non_success_runs",
+        # Estate overview, which is what makes `list_runtime_unhealthy`
+        # readable: these totals say how many entities exist beyond the ones
+        # the item list had room for.
+        "sources_total",
+        "sources_failed",
+        "sources_partial",
+        "sources_stale",
+        "engines_total",
+        "engines_online",
+        "engines_degraded",
+        "engines_offline",
+        "engines_unknown",
+        "engines_unhealthy",
+        "jobs_unhealthy",
+        "plans_unhealthy",
+        "environments_total",
+        "workspaces_total",
     )
     safe = {key: value[key] for key in safe_keys if value.get(key) is not None}
     return _preview(json.dumps(safe, default=str, sort_keys=True), limit=1000)
@@ -2318,16 +2962,6 @@ def _runtime_health_summary(item: dict[str, Any]) -> str:
     if item.get("last_failure_at"):
         parts.append(f"last failure {item['last_failure_at']}")
     return ", ".join(parts) if parts else "Runtime health signal."
-
-
-def _intersect_scope(scope: list[str] | None, project_id: str | None) -> list[str] | None:
-    if project_id is None:
-        return scope
-    if scope is None:
-        return [project_id]
-    if project_id in scope:
-        return [project_id]
-    return []
 
 
 async def _resolve_document_project_scope(

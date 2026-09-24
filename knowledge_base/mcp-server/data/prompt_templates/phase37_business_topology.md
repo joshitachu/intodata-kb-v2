@@ -115,6 +115,43 @@ ENRICHMENT CONTRACT
   or annotations—not as L1 systems or solutions.
 - Keep job/component detail reachable through `artifact_ids`, but do not promote it to L1/L2 nodes.
 
+BUSINESS LAYER CONTRACT
+The schema declares these collections and fields; populate them whenever the attached evidence
+states the fact, and leave them empty or at their "not established" default otherwise. An empty
+list is a correct answer. A guessed rule, owner or verdict is not.
+- Structured stream facts (never only in `description` / `business_summary`):
+  * `mechanism`: the transport chain in a few words, e.g. `REST (ingest) + File staging`.
+  * `generation`: the platform generation or era the evidence places the stream in.
+  * `direction_pattern` (`push` / `pull` / `hybrid`) and `lifecycle` (`active`, `duplicate`,
+    `stopped`, `dormant`, `reference_only`) only when evidence establishes them; else `unknown`.
+  * `key_form`: the business key the exchange is matched on, when stated.
+  * `verdict`: a short assessment the evidence itself states (keep / replace / duplicate /
+    obsolete). Never your own recommendation.
+  * `conditions`: one entry per precondition or ordering constraint, `kind` one of `trigger`,
+    `filter`, `ordering`, `schedule`, `disabled`, `guard`, `unknown`, with a one-sentence
+    `statement` and an `evidence_note`. A value translation is a transformation, not a condition.
+  * `contract_width`: only when the evidence gives offered / mapped / written counts; else null.
+- `transformations[].kind`: `field_mapping`, `value_domain` (set `target_field` to the field
+  whose accepted values it defines), `derived_rule`, or `constant_set`. Mappings may carry
+  `expression` (verbatim rule), `category`, `reaches_target` (`yes` / `no` / `partial` /
+  `disabled` / `unknown`) and a short `note`.
+- `business_rules`: decisions the integration takes on the business's behalf (precedence,
+  selection, derivation, value mapping, feedback, ordering, disabled logic, thresholds). Each
+  rule needs a one-sentence `statement` an owner can confirm or reject, `inputs` / `output`,
+  `stream_ids` of the streams it governs, `transformation_ids` when a transformation implements
+  it, and an `owner_question`. Set `owner` only when evidence names the owning team or role.
+  Status `inferred` or `proposed`; cite the Phase 1/2 or scanner evidence the rule came from.
+- `controls` (validation, monitoring, filtering, authentication, reconciliation) with a
+  `control_type`; `observed` only with scanner evidence for the control itself.
+- `risks` with `severity` (`low`, `medium`, `high`, `critical`, or `unknown` when the evidence
+  does not grade it).
+- `unknowns`: every fact the evidence leaves open that a reader would expect answered, as a
+  `question`, status `not_established`. Prefer an unknown over a guessed owner, SLA, retry
+  policy, key or verdict.
+- Cross-link both ways: list the ids of controls, risks, unknowns and conflicts on each stream
+  they concern (`control_ids`, `risk_ids`, `unknown_ids`, `conflict_ids`), and the stream ids on
+  each of those claims. A reference to an id you did not emit fails validation.
+
 FIXED METADATA
 - project_id: ${PROJECT_ID}
 - scan_fingerprint (both top-level and metadata): ${SCAN_FINGERPRINT}

@@ -54,6 +54,14 @@ _CAPABILITIES = (
     ),
 )
 
+# Keep discovery bounded to event fields. Field capabilities accepts read-only
+# index access; GET /{index} would additionally require metadata privileges.
+_EVENT_FIELD_GROUPS = (
+    ("@timestamp", "timestamp", "*time*", "*Time*", "*TIME*", "*date*", "*Date*"),
+    ("*message*", "*Message*", "*MESSAGE*", "*service*", "*job*"),
+    ("*flow*", "*severity*", "*level*", "*environment*", "*env*"),
+)
+
 
 ELASTICSEARCH_MANIFEST = ConnectorProviderManifest(
     provider_id="elastic_stack",
@@ -105,6 +113,11 @@ class ElasticsearchProvider:
             custom_ca_pem=str(safe["custom_ca_pem"]) if safe.get("custom_ca_pem") else None,
         )
         return ConnectorTransport(policy)
+
+    def discard_evidence_references(self, envelope: EvidenceEnvelope) -> None:
+        """Release opaque item lookups when a caller does not expose get-item."""
+        for item in envelope.items:
+            self._opaque_items.pop(item.reference, None)
 
     @staticmethod
     def _endpoint(instance: ConnectorInstanceConfig) -> str:
@@ -173,32 +186,26 @@ class ElasticsearchProvider:
         self, instance: ConnectorInstanceConfig, source: ConnectorSourceProfile, credential: str
     ) -> ConnectorSourceProfile:
         locator = _source_locator(source)
-        headers = self._headers(instance, credential)
+        capability_fields: dict[str, str] = {}
         transport = self._transport_for(instance)
-        index_info, _ = await transport.request_json(
-            "GET", f"{self._endpoint(instance)}/{quote(locator, safe='*,-_')}", headers=headers,
-            params={"features": "mappings,aliases", "expand_wildcards": "open"},
-        )
-        mapping_fields = _mapping_fields(index_info)
-        candidate_fields = list(mapping_fields)[:100]
-        caps: Mapping[str, Any] = {}
-        if candidate_fields:
-            cap_response, _ = await transport.request_json(
-                "POST", f"{self._endpoint(instance)}/{quote(locator, safe='*,-_')}/_field_caps",
-                headers=headers, json={"fields": candidate_fields},
+        endpoint = f"{self._endpoint(instance)}/{quote(locator, safe='*,-_')}/_field_caps"
+        headers = self._headers(instance, credential)
+        for patterns in _EVENT_FIELD_GROUPS:
+            caps_response, _ = await transport.request_json(
+                "POST", endpoint, headers=headers, json={"fields": list(patterns)},
             )
-            caps = _as_mapping(cap_response)
+            capability_fields.update(_field_capability_fields(caps_response))
         return ConnectorSourceProfile(
             id=source.id,
             connector_instance_id=source.connector_instance_id,
             source_type=source.source_type,
             display_label=source.display_label,
             locator=locator,
-            fields=_detect_field_profile(mapping_fields, caps),
+            fields=_detect_field_profile(capability_fields),
             enabled=source.enabled,
             discovered_at=dt.datetime.now(dt.timezone.utc),
             discovery_digest=hashlib.sha256(
-                repr(sorted(mapping_fields)).encode()
+                repr(sorted(capability_fields)).encode()
             ).hexdigest(),
         )
 
@@ -324,22 +331,16 @@ class ElasticsearchProvider:
         return finalize_envelope(envelope)
 
 
-def _mapping_fields(index_info: Any) -> dict[str, str]:
+def _field_capability_fields(response: Any) -> dict[str, str]:
     output: dict[str, str] = {}
-    if not isinstance(index_info, Mapping):
-        return output
-    for index in index_info.values():
-        properties = _as_mapping(_as_mapping(_as_mapping(index).get("mappings")).get("properties"))
-        for name, metadata in properties.items():
-            if isinstance(name, str) and isinstance(metadata, Mapping):
-                field_type = metadata.get("type")
-                if isinstance(field_type, str):
-                    output[name] = field_type
+    for name, types in _as_mapping(_as_mapping(response).get("fields")).items():
+        if isinstance(name, str) and isinstance(types, Mapping) and types:
+            output[name] = str(next(iter(types)))
     return output
 
 
-def _detect_field_profile(mapping_fields: Mapping[str, str], capabilities: Mapping[str, Any]) -> dict[str, Any]:
-    names = list(mapping_fields)
+def _detect_field_profile(capability_fields: Mapping[str, str]) -> dict[str, Any]:
+    names = list(capability_fields)
     def pick(candidates: tuple[str, ...]) -> str | None:
         lower = {name.casefold(): name for name in names}
         for candidate in candidates:

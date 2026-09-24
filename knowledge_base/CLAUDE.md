@@ -245,7 +245,10 @@ This is the primary method for generating project documentation. Follow it exact
   backend's runtime mirror (`GET /api/v1/runtime/doc-evidence`) and renders them
   deterministically -- no LLM, no tools. `harness._ensure_runtime_evidence`, exposed on the
   shared facade as `HarnessHelpersImpl.ensure_runtime_evidence`, is the ONE producer: the
-  custom pipeline calls it from `Phase3Docs.run`, OpenCode from `_prepare_run`. It writes
+  custom pipeline calls it from `Phase3Docs.run`. (Verified 2026-09-23: NO CLI-side caller
+  exists -- claude-cli and opencode documents carry no runtime prose and no coverage
+  artifact. Only the CLI topology hook fetches runtime evidence, in memory, for
+  enrichment; see "Business Topology parity".) It writes
   three artifacts and every consumer reads them by name -- the cache
   (`_transient/runtime/runtime_evidence.json`, destroyed by Phase 4),
   `_analysis/_runtime_profile.md` (the project rollup), and
@@ -617,6 +620,58 @@ This is the primary method for generating project documentation. Follow it exact
   scanner landscape is thin (werkorder: 25 edges over 429 jobs, with `Log` / `Common` /
   `Talend` appearing as "systems"), which is the deeper reason the deterministic
   overlay always looked wrong and is a separate scanner-side follow-up.
+
+### Business Topology parity with the curated baseline (2026-09-23)
+
+The hand-curated `output/VW_FULL_LANDSCAPE/topology/business_topology.curated.json` is the
+quality baseline. Before this change no generator filled any of the structured stream
+facts, business rules, controls, risks, conflicts or runtime observations it carries, and
+only the custom harness produced a topology at all.
+
+- **One builder, every engine** (`services/business_topology/builder.py`). Lane order,
+  prune, enrichment and validation live in `build_business_topology(inputs, llm)`; the
+  engine supplies a `TopologyLLM` strategy. Phase 3.7 is a thin adapter over it (the
+  harness strategy keeps `phase="business_topology"` budget reservation, resume and
+  repair). `claude_service._build_cli_business_topology` runs it for claude-cli
+  (`ClaudeCliModelProvider`) and opencode-cli (`OpenCodeCompletionProvider`: one session
+  on the run's own route, empty temp dir, every tool denied via the `"*"` catch-all) through
+  `BoundedModelTopologyLLM` (max 2 calls). Never raises; `state.json` records
+  `model_lanes` and `enrichment`.
+- **Deterministic enrichment** (`enrichment.py` + `stream_facts.py` + `runtime_facts.py`),
+  no LLM: contract_width (mapped/written from lineage; offered only when the scan records
+  row schemas), conditions (ROUTE_WHEN predicates, deactivated designs, triggers, runtime
+  schedule), mechanism, direction_pattern, lifecycle (runtime-derived; absence of runtime
+  coverage is NEVER dormant), deployment, document_refs, mapping expressions, and one
+  runtime observation per stream -- measured, or `kind="absence"` stating why. Scanner and
+  runtime facts win for contract_width/deployment/runtime; everything else fills only
+  empty/unknown. Runtime observations cite `observed_runtime` evidence registered by
+  `register_runtime_evidence` AND persisted by `persist_runtime_evidence` (the read path
+  re-validates from disk).
+- **Stage A business layer** (`flow_extraction.py`, `assembly.py`, both phase37 prompts):
+  per-flow conditions, key_form, verdict, generation, business rules (with
+  owner_question), typed transformations; top-level controls, risks, open questions,
+  conflicts; system owner. All doc-tier (capped at 0.6, never `observed`). A documented
+  conflict without typed runtime/intended-state evidence becomes an open question.
+  Mechanism is a structured field and is no longer concatenated into prose.
+- **Composite merge keeps everything and is validated for real**
+  (`build_validated_composite_org_topology`): all stream fields, controls, risks,
+  unknowns, runtime observations, conflicts and annotations are carried with ids
+  re-namespaced per partition; `validation_report.json` records the true result. The
+  composite fingerprint is the current whole-scan fingerprint; a partition contributes
+  only when its recorded digest matches or `decide_partition_actions` says `unchanged`.
+- **Curated precedence** (`curated_overlay.py`, `projects.py` loaders): a fresh curated
+  file wins over single-run AND composite. A stale one overlays its analyst judgement onto
+  the generated topology; unmatched items are reported in `topology_state.curated_overlay`
+  (declared in all three schema mirrors -- the frontend schema is `.strict()`).
+- **Copilot**: `get_topology_node` on a business stream returns `business_facts`.
+- **Measure it**: `scripts/topology_parity.py --candidate ... --baseline ...`
+  (`parity.py`). Offline VW probe, deterministic floor + enrichment only, no LLM, no
+  runtime payload: overall 0.238 -> 0.366.
+- KNOWN LIMITS: deployment needs `artifact_version` on `GET /runtime/doc-evidence`;
+  filter/trigger conditions and `offered` need a rescan with the current scanner; VW's
+  runtime rows live under project id `alitalend`, so a live VW run records absence
+  unless that binding is fixed; OpenCode's honouring of the inline `permission` key is
+  unverified on a live run.
 
 ### Enterprise Talend method (`talend-enterprise-v1`, 2026-09-09)
 

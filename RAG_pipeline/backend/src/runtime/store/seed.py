@@ -432,7 +432,7 @@ async def seed_demo_inventory(
     await repo.upsert_source(
         project_id,
         RuntimeSource(
-            project_id=project_id,
+            estate_key=project_id,
             source_key=source_key,
             source_type="mock",
             label="Demo runtime source",

@@ -43,10 +43,21 @@ _EXEMPT_PATHS = {
 #       the server minted; it accepts no cookie and derives no identity from one,
 #       so there is no cross-site request to forge. Leaving it behind CSRF made
 #       every tool call 403, which OpenCode surfaces as MCP `needs_auth`.
+#   /api/v1/runtime/tools and /api/v1/runtime/elastic/probe -- the runtime
+#       evidence surface a documentation run queries while it writes. Called by
+#       a script inside the mcp-server staging tree, authenticated solely by the
+#       machine ingest key (verify_machine_topology_ingest_api_key); like the
+#       labs bridge above it accepts no cookie and derives no identity from one,
+#       so there is nothing for a cross-site request to forge. Their GET
+#       siblings (/runtime/doc-evidence, /runtime/elastic-aggregates) never hit
+#       this middleware because GET is a safe method -- which is exactly why
+#       this gap only appears once the surface gains its first POST.
 _EXEMPT_PREFIXES = (
     "/api/v1/ingest/",
     "/api/v1/usage/",
     "/api/v1/labs/mcp",
+    "/api/v1/runtime/tools",
+    "/api/v1/runtime/elastic/probe",
 )
 
 

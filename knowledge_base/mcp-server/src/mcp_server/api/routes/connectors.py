@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import json
+
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sqlalchemy import text
 
 from mcp_server.api.permissions import (
     require_connector_management,
@@ -11,8 +16,13 @@ from mcp_server.api.permissions import (
     require_project_management,
 )
 from mcp_server.connectors.catalog import connector_catalog
+from mcp_server.connectors.domain import EvidenceQuestion
 from mcp_server.connectors.errors import ConnectorError
-from mcp_server.connectors.repository import ConnectorRepository
+from mcp_server.connectors.repository import (
+    ConnectorRepository,
+    instance_config,
+    source_profile,
+)
 from mcp_server.connectors.service import ConnectorService
 from mcp_server.db.session import async_session_factory
 from mcp_server.schemas import (
@@ -34,6 +44,24 @@ from mcp_server.schemas import (
     ProjectConnectorBindingRequest,
     ProjectConnectorBindingResponse,
 )
+
+
+class ConnectorEvidenceSearchRequest(BaseModel):
+    """Small, bounded search contract for Labs; callers never send Elastic DSL."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_ids: list[str] = Field(min_length=1, max_length=3)
+    query: str = Field(min_length=1, max_length=500)
+    limit: int = Field(default=5, ge=1, le=10)
+    time_window_days: int = Field(default=7, ge=1, le=30)
+
+    @field_validator("source_ids")
+    @classmethod
+    def unique_source_ids(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("A source may only be searched once per request")
+        return value
 
 
 router = APIRouter(tags=["connectors"])
@@ -306,3 +334,151 @@ async def project_available_connectors(project_id: str, request: Request):
                 sources=[_source_response(source) for source in await repository.list_sources(connector.id)],
             ))
         return {"connectors": available}
+
+
+async def _has_labs_source_grant(session, *, project_id: str, connector_id: str, source_ids: list[str]) -> bool:
+    """Check the Labs-owned project binding without changing 8001 connector grants."""
+    result = await session.execute(text("""
+        SELECT i.config, i.enabled AS instance_enabled, i.health_status,
+               b.project_ids, b.enabled AS binding_enabled, b.capability_id
+        FROM harness_connector_instances i
+        JOIN harness_connector_capability_bindings b ON b.connector_instance_id = i.id
+        WHERE i.provider_key = 'mcp_elastic'
+    """))
+    requested = set(source_ids)
+    for row in result.mappings():
+        config = row["config"]
+        project_ids = row["project_ids"]
+        if isinstance(config, str):
+            try:
+                config = json.loads(config)
+            except ValueError:
+                continue
+        if isinstance(project_ids, str):
+            try:
+                project_ids = json.loads(project_ids)
+            except ValueError:
+                continue
+        if not isinstance(config, dict) or not isinstance(project_ids, list):
+            continue
+        if (
+            row["instance_enabled"] is True
+            and row["health_status"] == "healthy"
+            and row["binding_enabled"] is True
+            and row["capability_id"] == "connector.mcp_elastic.search"
+            and project_id in project_ids
+            and config.get("connector_id") == connector_id
+            and requested.issubset(set(config.get("source_ids", [])))
+        ):
+            return True
+    return False
+
+
+@router.post("/projects/{project_id}/connectors/{connector_id}/search")
+async def search_bound_elastic_evidence(
+    project_id: str,
+    connector_id: str,
+    payload: ConnectorEvidenceSearchRequest,
+    request: Request,
+):
+    """Search only Elastic sources explicitly granted to this project.
+
+    This is the Labs bridge to the already-managed connector. The caller's
+    session cookie is forwarded by RAG; no credential leaves this service and
+    neither raw Elastic DSL nor index locators are accepted from the caller.
+    """
+    await require_project_access(request, project_id)
+    actor_id, username = _actor(request)
+    async with async_session_factory() as session:
+        repository = ConnectorRepository(session)
+        instance = await repository.get_instance(connector_id)
+        if instance is None:
+            raise HTTPException(status_code=404, detail="Connector was not found")
+        if instance.provider_id != "elastic_stack" or not instance.enabled or instance.status != "connected":
+            raise HTTPException(status_code=409, detail="The existing Elastic connection is not ready")
+
+        if not await _has_labs_source_grant(
+            session,
+            project_id=project_id,
+            connector_id=connector_id,
+            source_ids=payload.source_ids,
+        ):
+            raise HTTPException(status_code=403, detail="A requested log source is outside this project's access")
+        max_calls = 3
+        if len(set(payload.source_ids)) > max_calls:
+            raise HTTPException(status_code=403, detail="The project connector call budget is too small for this search")
+        sources = await repository.get_sources(connector_id, payload.source_ids)
+        if len(sources) != len(set(payload.source_ids)) or any(not source.enabled for source in sources):
+            raise HTTPException(status_code=404, detail="An approved log source is unavailable")
+
+        window_days = min(payload.time_window_days, 7)
+        limit = min(payload.limit, 10)
+        provider = connector_catalog.provider(instance.provider_id)
+        credential = repository.secrets.decrypt_for_provider(instance.credential_ciphertext)
+        now = dt.datetime.now(dt.timezone.utc)
+        question = EvidenceQuestion(
+            question=payload.query,
+            entity_refs=(payload.query,),
+            time_from=now - dt.timedelta(days=window_days),
+            time_to=now,
+            limit=limit,
+        )
+        items: list[dict[str, object]] = []
+        try:
+            for source in sources:
+                remaining = limit - len(items)
+                if remaining <= 0:
+                    break
+                envelope = await provider.execute(
+                    instance=instance_config(instance),
+                    source=source_profile(source, repository.secrets),
+                    credential=credential,
+                    capability_id="runtime.events.search",
+                    question=EvidenceQuestion(
+                        question=payload.query,
+                        entity_refs=question.entity_refs,
+                        time_from=question.time_from,
+                        time_to=question.time_to,
+                        limit=remaining,
+                    ),
+                    run_id=actor_id,
+                    project_id=project_id,
+                )
+                label = source.display_label[:120]
+                for evidence in envelope.items[:remaining]:
+                    fields = dict(evidence.fields)
+                    message = next((
+                        value for key, value in fields.items()
+                        if any(term in key.casefold() for term in ("message", "error", "log"))
+                    ), None)
+                    excerpt = message if isinstance(message, str) else json.dumps(fields, ensure_ascii=False, default=str)
+                    title = next((
+                        str(value) for key, value in fields.items()
+                        if any(term in key.casefold() for term in ("service", "job", "name")) and value
+                    ), label)
+                    items.append({
+                        "title": title[:200],
+                        "excerpt": excerpt[:2000],
+                        "source_ref": evidence.reference[:255],
+                        "metadata": {
+                            "source": label,
+                            "observed_at": evidence.observed_at.isoformat() if evidence.observed_at else None,
+                            "fields": fields,
+                        },
+                    })
+                discard = getattr(provider, "discard_evidence_references", None)
+                if callable(discard):
+                    discard(envelope)
+        except ConnectorError as exc:
+            raise HTTPException(status_code=422, detail={"code": exc.code, "message": exc.message}) from exc
+
+        await repository.audit(
+            user_id=actor_id,
+            username=username,
+            action="connector.evidence.search",
+            resource_type="project_connector_binding",
+            resource_id=f"{project_id}:{connector_id}",
+            details={"project_id": project_id, "source_count": len(sources), "result_count": len(items)},
+        )
+        await session.commit()
+        return {"items": items, "truncated": len(items) >= limit}

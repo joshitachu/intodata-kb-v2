@@ -72,6 +72,9 @@ function mockApi(overrides: {
     if (url.startsWith("/api/runtime/source-types")) {
       return jsonResponse({ source_types: [SOURCE_TYPE] });
     }
+    // The attachment list the table reads per source. Answered before the
+    // generic /sources branch, which would otherwise serve it a source list.
+    if (url.includes("/readers")) return jsonResponse({ grants: [], total: 0 });
     if (url.startsWith("/api/runtime/sources") && init?.method === "POST") {
       return overrides.create?.() ?? jsonResponse({ source: { id: 1 } });
     }
@@ -87,7 +90,9 @@ function mockApi(overrides: {
 
 type RuntimeSourceFixture = {
   id: number;
-  project_id: string;
+  estate_key: string;
+  linked_project_ids: string[];
+  is_ownerless: boolean;
   source_key: string;
   source_type: string;
   label: string;
@@ -96,10 +101,13 @@ type RuntimeSourceFixture = {
   sync_interval_seconds: number;
 };
 
-function tmcSource(id: number, projectId: string): RuntimeSourceFixture {
+/** A registered TMC tenant with the given projects attached to it. */
+function tmcSource(id: number, linkedProjectIds: string[]): RuntimeSourceFixture {
   return {
     id,
-    project_id: projectId,
+    estate_key: linkedProjectIds[0] ?? `estate-${id}`,
+    linked_project_ids: linkedProjectIds,
+    is_ownerless: linkedProjectIds.length === 0,
     source_key: `tmc-${id}`,
     source_type: "tmc",
     label: "Talend TMC",
@@ -107,6 +115,27 @@ function tmcSource(id: number, projectId: string): RuntimeSourceFixture {
     enabled: true,
     sync_interval_seconds: 60,
   };
+}
+
+/** Read the label the attach picker is showing. */
+function attachTrigger(): HTMLElement {
+  return screen.getByRole("button", { name: "Attach to a project" });
+}
+
+/** Pick an option out of the attach picker (Radix opens on keyboard, not click). */
+async function chooseProject(label: string) {
+  fireEvent.keyDown(attachTrigger(), { key: "ArrowDown" });
+  const option = await screen.findByRole("menuitem", { name: new RegExp(label) });
+  fireEvent.keyDown(option, { key: "Enter" });
+}
+
+/** The create call, excluding the discovery POST that shares its prefix. */
+function createBody(calls: Array<{ url: string; init?: RequestInit }>): Record<string, unknown> {
+  const create = calls.find(
+    (call) => call.init?.method === "POST" && !call.url.includes("/discover"),
+  );
+  expect(create).toBeTruthy();
+  return JSON.parse(String(create?.init?.body));
 }
 
 async function openDialogWithCredentials() {
@@ -134,17 +163,31 @@ describe("Add runtime source — ingest scope selection", () => {
     expect(screen.getByRole("button", { name: /save source/i })).toHaveProperty("disabled", true);
   });
 
-  it("does not allow another TMC connection when every project already has one", async () => {
-    mockApi({ sources: [tmcSource(1, "p1"), tmcSource(2, "p2")] });
+  /**
+   * The bug this replaced. The dialog used to hide every project that already
+   * had a TMC source and then refuse to save when none were left, telling the
+   * operator to widen the existing source's ingest scope instead. That advice
+   * is wrong -- a second Talend account's environments cannot be reached
+   * through a source holding a different credential -- and the filter made
+   * registering a second tenant impossible.
+   */
+  it("still offers every project when they already have a TMC source", async () => {
+    mockApi({ sources: [tmcSource(1, ["p1"]), tmcSource(2, ["p2"])] });
     render(<AdminRuntimePage />);
     await waitFor(() => expect(screen.getByRole("button", { name: /add source/i })).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: /add source/i }));
 
-    await waitFor(() =>
-      expect(screen.getByRole("status").textContent).toContain("Edit ingest scope"),
+    await waitFor(() => expect(attachTrigger()).toBeTruthy());
+    expect(screen.queryByText(/already has a TMC source/i)).toBeNull();
+    expect(screen.queryByText(/Edit ingest scope on that source/i)).toBeNull();
+    expect(screen.getByRole("button", { name: /test connection/i })).toHaveProperty(
+      "disabled",
+      false,
     );
-    expect(screen.getByRole("button", { name: /test connection/i })).toHaveProperty("disabled", true);
-    expect(screen.getByRole("button", { name: /save source/i })).toHaveProperty("disabled", true);
+
+    fireEvent.keyDown(attachTrigger(), { key: "ArrowDown" });
+    expect(await screen.findByRole("menuitem", { name: /Project One/ })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /Project Two/ })).toBeTruthy();
   });
 
   it("lists what the source reported once the test succeeds", async () => {
@@ -240,5 +283,108 @@ describe("Add runtime source — ingest scope selection", () => {
 
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("401"));
     expect(screen.queryByText("PROD")).toBeNull();
+  });
+});
+
+/**
+ * Registering a tenant without naming a project.
+ *
+ * A runtime source is a vendor tenant, not a project's property. The project
+ * was a required field that could be empty -- which is how a whole tenant
+ * became unregisterable -- and is now optional, unselected by default, and
+ * attachable at any time afterwards.
+ */
+describe("Add runtime source — the project is optional", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("opens with no project chosen, however many projects exist", async () => {
+    mockApi();
+    await openDialogWithCredentials();
+
+    expect(screen.getByText("Attach to a project (optional)")).toBeTruthy();
+    // Not "Project One": preselecting whichever project loaded first attaches a
+    // tenant to it by accident.
+    expect(attachTrigger().textContent).toContain("Don't attach yet");
+  });
+
+  it("saves with nothing attached, and omits project_id rather than sending a blank", async () => {
+    const { calls } = mockApi();
+    await openDialogWithCredentials();
+
+    fireEvent.click(screen.getByRole("button", { name: /test connection/i }));
+    await waitFor(() => expect(screen.getByText("PROD")).toBeTruthy());
+
+    // The only thing that may block a save is the ingest scope.
+    expect(screen.getByRole("button", { name: /save source/i })).toHaveProperty("disabled", false);
+    fireEvent.click(screen.getByRole("button", { name: /save source/i }));
+
+    await waitFor(() => expect(calls.some((call) => call.init?.method === "POST")).toBe(true));
+    const body = createBody(calls);
+    expect(body).not.toHaveProperty("project_id");
+    expect(body.provider_key).toBe("tmc");
+  });
+
+  it("attaches the project the operator picks", async () => {
+    const { calls } = mockApi();
+    await openDialogWithCredentials();
+
+    await chooseProject("Project Two");
+    fireEvent.click(screen.getByRole("button", { name: /test connection/i }));
+    await waitFor(() => expect(screen.getByText("PROD")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /save source/i }));
+
+    await waitFor(() => expect(calls.some((call) => call.init?.method === "POST")).toBe(true));
+    expect(createBody(calls).project_id).toBe("p2");
+  });
+
+  it("forgets the chosen project when the dialog is reopened", async () => {
+    mockApi();
+    await openDialogWithCredentials();
+    await chooseProject("Project Two");
+    expect(attachTrigger().textContent).toContain("Project Two");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel$/ }));
+    fireEvent.click(screen.getByRole("button", { name: /add source/i }));
+
+    await waitFor(() => expect(attachTrigger().textContent).toContain("Don't attach yet"));
+  });
+});
+
+/**
+ * The sources table after the model change.
+ *
+ * There is no owning-project column any more. The estate key is an internal row
+ * stamp, so the only project relationship a source has is its attachments, and
+ * that is what the row states.
+ */
+describe("Runtime sources table — attachments, not an owner", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("has no Project column and never prints the estate key as one", async () => {
+    mockApi({ sources: [tmcSource(1, ["p1"])] });
+    render(<AdminRuntimePage />);
+
+    await waitFor(() => expect(screen.getByText("Talend TMC")).toBeTruthy());
+    expect(screen.queryByRole("columnheader", { name: "Project" })).toBeNull();
+    expect(screen.getByRole("columnheader", { name: "Projects" })).toBeTruthy();
+    // "p1" is this source's estate key. It is not a project and must not be
+    // rendered in the row as if it were one.
+    expect(screen.queryByText("p1")).toBeNull();
+  });
+
+  it("offers attaching from the row of a source no project has claimed", async () => {
+    mockApi({ sources: [tmcSource(3, [])] });
+    render(<AdminRuntimePage />);
+
+    // A user without runtime-source write access sees the state, not an action;
+    // either way it reads as a normal state rather than a fault.
+    await waitFor(() => expect(screen.getByText("No projects attached")).toBeTruthy());
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

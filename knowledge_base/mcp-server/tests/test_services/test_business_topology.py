@@ -829,6 +829,32 @@ async def test_business_topology_phase_failure_is_non_blocking(
     assert state.warnings
 
 
+async def test_business_topology_input_failure_is_non_blocking(tmp_path: Path) -> None:
+    """Building the phase's inputs sits inside the never-raise guard too."""
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    partition = MagicMock()
+    partition.name = "part-a"
+    ctx = MagicMock(project_id="demo", staging_dir=staging, resume_state=None, partition=partition)
+    facts = MagicMock()
+    facts.unit_names.side_effect = RuntimeError("malformed facts manifest")
+    state = HarnessRunState(project_id="demo", facts_manifest=FactsManifest(
+        project_id="demo", platform="generic", canonical_unit_label="unit", unit_count=0,
+    ))
+    object.__setattr__(state, "facts_manifest", facts)
+    # An earlier attempt's topology must not survive this failed one.
+    (staging / "_topology").mkdir()
+    (staging / "_topology" / "business_topology.json").write_text("{}", encoding="utf-8")
+
+    result = await Phase37BusinessTopology(MagicMock()).run(ctx, state, AsyncMock())
+
+    assert result.success is True
+    assert result.metadata["available"] is False
+    assert "malformed facts manifest" in result.metadata["error"]
+    assert any("malformed facts manifest" in warning for warning in state.warnings)
+    assert not (staging / "_topology" / "business_topology.json").exists()
+
+
 def test_evidence_unit_allowlist_scopes_artifacts_and_lineage(tmp_path: Path) -> None:
     """Composite sub-project scoping: only allowlisted units yield artifact and
     lineage evidence; landscape rows stay upload-wide (connective context)."""

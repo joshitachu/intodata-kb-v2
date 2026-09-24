@@ -40,20 +40,25 @@ from mcp_server.services.business_topology.evidence import (
     BusinessTopologyEvidenceBundle,
 )
 from mcp_server.services.business_topology.flow_extraction import (
-    ExtractedFlow,
     FlowExtraction,
 )
 from mcp_server.services.business_topology.models import (
+    BusinessConflict,
+    BusinessControl,
     BusinessDataStream,
     BusinessObject,
+    BusinessRisk,
+    BusinessRule,
     BusinessSystem,
     BusinessTopology,
     BusinessTopologyCoverage,
     BusinessTopologyMetadata,
     BusinessTransformation,
+    BusinessUnknown,
     DeliveryPath,
     DeliverySegment,
     IntegrationSolution,
+    StreamCondition,
     TransformationMapping,
 )
 
@@ -94,6 +99,25 @@ _CONFIDENCE_VALUE = {"certain": 0.9, "high": 0.8, "medium": 0.62, "low": 0.42}
 
 #: A documentation-only claim never outranks a scanner-grounded one.
 _DOC_TIER_MAX_CONFIDENCE = 0.6
+
+#: Confidence carried by an open question. It is a gap, not a claim, so the
+#: number only orders it; the deterministic overlay uses the same value.
+_UNKNOWN_CONFIDENCE = 0.2
+
+_NAME_CHARS = 90
+
+#: Typed supporting evidence a conflict may cite, per declared conflict type.
+#: Mirrors the validator's rules: documentation is NOT among them, which is why
+#: a documented disagreement only becomes a `BusinessConflict` when typed
+#: runtime / intended-state evidence about the same designs exists.
+_RUNTIME_SUPPORT = frozenset({"observed_runtime"})
+_INTENDED_SUPPORT = frozenset({"intended_documented", "approved_business_declaration"})
+_CONFLICT_SUPPORT_TYPES = {
+    "runtime_vs_implementation": _RUNTIME_SUPPORT,
+    "supporting_vs_implementation": _INTENDED_SUPPORT,
+    "supporting_sources_disagree": _RUNTIME_SUPPORT | _INTENDED_SUPPORT,
+    "unresolved": _RUNTIME_SUPPORT | _INTENDED_SUPPORT,
+}
 
 _PROTOCOL_PATTERNS = (
     ("REST", re.compile(r"\brest\b|https?|\bwebhook\b|\bapi\b", re.IGNORECASE)),
@@ -148,6 +172,38 @@ def _display_object_name(name: str) -> str:
         word if word.isupper() else (word.capitalize() if index == 0 else word.lower())
         for index, word in enumerate(words)
     )
+
+
+def _clean(text: str) -> str:
+    """Strip and redact one piece of copied prose (the copy boundary)."""
+
+    return redact_secretlike((text or "").strip())
+
+
+def _short_name(text: str) -> str:
+    """A display name derived from a statement when the model gave none."""
+
+    clean = re.sub(r"\s+", " ", text or "").strip()
+    if len(clean) <= _NAME_CHARS:
+        return clean
+    return clean[: _NAME_CHARS - 3].rstrip() + "..."
+
+
+def _flow_key(name: str) -> str:
+    """Key a model-written flow name for cross-reference lookup.
+
+    Whitespace- and case-insensitive only: a flow name is a sentence the model
+    wrote twice, not a design name, so this is not the fuzzy matching the design
+    resolver forbids.
+    """
+
+    return re.sub(r"\s+", " ", (name or "").strip()).casefold()
+
+
+def _doc_tier(word: str | None, fallback: str) -> tuple[str, float]:
+    """Status for a claim whose only authority is the generated documentation."""
+
+    return _status_for(word or fallback, scanner_backed=False)
 
 
 def _protocols_from(text: str) -> list[str]:
@@ -366,12 +422,34 @@ def assemble_topology(
     streams: list[BusinessDataStream] = []
     paths: list[DeliveryPath] = []
     transformations: list[BusinessTransformation] = []
+    rules: list[BusinessRule] = []
+    stream_by_id: dict[str, BusinessDataStream] = {}
+    streams_by_flow: dict[str, list[str]] = {}
     solution_artifacts: list[str] = []
     used_stream_ids: set[str] = set()
     unresolved_designs: set[str] = set()
 
-    def ensure_system(name: str, *, kind_hint: str, role: str, confidence: str) -> str:
+    def add_aliases(system: BusinessSystem, names: list[str]) -> None:
+        for raw in names:
+            alias = _clean(raw)
+            if (
+                alias
+                and alias.casefold() != system.name.casefold()
+                and alias not in system.aliases
+            ):
+                system.aliases.append(alias)
+
+    def ensure_system(
+        name: str,
+        *,
+        kind_hint: str,
+        role: str,
+        confidence: str,
+        owner: str = "",
+        aliases: list[str] | None = None,
+    ) -> str:
         role = redact_secretlike(role)
+        owner = _clean(owner)
         canonical, identity_id, scanner_kind = resolver.resolve(name)
         system_id = f"sys-{_slug(canonical)}"
         existing = systems.get(system_id)
@@ -379,6 +457,11 @@ def assemble_topology(
             if role and not existing.purpose:
                 existing.purpose = role
                 existing.description = role
+            if owner and not existing.owner:
+                existing.owner = owner
+            # The spelling the documents used is kept as an alias: it is how a
+            # reader searching the prose will look for this node.
+            add_aliases(existing, [name, *(aliases or [])])
             return system_id
         if identity_id is not None:
             status, value = _status_for(confidence, scanner_backed=True)
@@ -414,7 +497,9 @@ def assemble_topology(
             evidence_ids=evidence_ids,
             kind=kind,
             aliases=[],
+            owner=owner,
         )
+        add_aliases(systems[system_id], [name, *(aliases or [])])
         return system_id
 
     def ensure_object(name: str, evidence_ids: list[str]) -> str | None:
@@ -439,7 +524,12 @@ def assemble_topology(
 
     for system in extraction.systems:
         ensure_system(
-            system.name, kind_hint=system.kind, role=system.role, confidence="high"
+            system.name,
+            kind_hint=system.kind,
+            role=system.role,
+            confidence="high",
+            owner=system.owner,
+            aliases=system.aliases,
         )
 
     for index, flow in enumerate(extraction.flows, start=1):
@@ -536,12 +626,11 @@ def assemble_topology(
         # Prose from the documents is scrubbed at the copy boundary: a leaked
         # connection string here is a non-prunable secret finding that would
         # fail the whole overlay.
-        summary = redact_secretlike((flow.carries or "").strip())
-        mechanism = redact_secretlike((flow.mechanism or "").strip())
-        if mechanism:
-            summary = (
-                f"{summary} (mechanism: {mechanism})" if summary else f"Mechanism: {mechanism}"
-            )
+        # Mechanism is a STRUCTURED field. It used to be concatenated into
+        # description/business_summary, where no panel renders it and no reader
+        # can table or compare it.
+        summary = _clean(flow.carries)
+        mechanism = _clean(flow.mechanism)
         path_id = f"path-{stream_id[3:]}" if flow.technical_path else None
 
         streams.append(
@@ -561,8 +650,25 @@ def assemble_topology(
                 requiredness=flow.requiredness,
                 delivery_path_id=path_id,
                 artifact_ids=artifact_ids,
+                mechanism=mechanism,
+                generation=_clean(flow.generation),
+                key_form=_clean(flow.key_form),
+                verdict=_clean(flow.verdict),
+                conditions=[
+                    StreamCondition(
+                        kind=condition.kind,
+                        statement=_clean(condition.statement),
+                        evidence_note=_clean(condition.evidence or flow.evidence),
+                    )
+                    for condition in flow.conditions
+                    if _clean(condition.statement)
+                ],
+                document_refs=[_clean(flow.evidence)] if _clean(flow.evidence) else [],
             )
         )
+        stream_by_id[stream_id] = streams[-1]
+        for key in {_flow_key(flow.name), _flow_key(streams[-1].name)} - {""}:
+            streams_by_flow.setdefault(key, []).append(stream_id)
 
         if path_id is not None:
             segments: list[DeliverySegment] = []
@@ -620,7 +726,11 @@ def assemble_topology(
                 )
             )
 
+        transformation_by_name: dict[str, str] = {}
         for transform_index, transform in enumerate(flow.transformations, start=1):
+            transform_id = f"transform:{stream_id}:{transform_index}"
+            if transform.name:
+                transformation_by_name.setdefault(_flow_key(transform.name), transform_id)
             transform_designs = transform.implementing_designs or flow.implementing_designs
             transform_artifacts, transform_unresolved = resolve_designs(
                 transform_designs, design_index
@@ -628,9 +738,12 @@ def assemble_topology(
             unresolved_designs.update(transform_unresolved)
             transformations.append(
                 BusinessTransformation(
-                    id=f"transform:{stream_id}:{transform_index}",
-                    name=transform.name or f"{flow.business_object or 'Data'} transformation",
+                    id=transform_id,
+                    name=_clean(transform.name)
+                    or f"{flow.business_object or 'Data'} transformation",
                     description=redact_secretlike(transform.description),
+                    kind=transform.kind,
+                    target_field=_clean(transform.target_field),
                     status=status,
                     confidence=confidence,
                     evidence_ids=evidence_ids,
@@ -642,12 +755,65 @@ def assemble_topology(
                             source=redact_secretlike(mapping.source),
                             target=redact_secretlike(mapping.target),
                             mapping_type=mapping.mapping_type,
+                            expression=_clean(mapping.expression),
+                            category=_clean(mapping.category),
+                            reaches_target=mapping.reaches_target,
+                            note=_clean(mapping.note),
                         )
                         for mapping in transform.mappings
                         if mapping.source or mapping.target
                     ],
                 )
             )
+
+        # Business rules and conditions are documentation assertions about a
+        # flow, so they take the documentation tier regardless of how well the
+        # flow's DIRECTION is grounded: a scanner edge proves the exchange
+        # happens, not that the rule the prose describes is the one applied.
+        for rule_index, rule in enumerate(flow.business_rules, start=1):
+            statement = _clean(rule.statement)
+            rule_evidence = resolve_doc_citation(rule.evidence, doc_records) or doc_ids
+            if not statement or not rule_evidence:
+                notes.append(
+                    f"rule #{rule_index} of flow '{flow.name or index}' had no statement "
+                    "or no citable document and was not published"
+                )
+                continue
+            rule_status, rule_confidence = _doc_tier(rule.confidence, flow.confidence)
+            linked = transformation_by_name.get(_flow_key(rule.transformation))
+            if rule.transformation and linked is None:
+                notes.append(
+                    f"rule '{rule.name or statement[:40]}' names transformation "
+                    f"'{rule.transformation}', which flow '{flow.name or index}' does not declare"
+                )
+            rules.append(
+                BusinessRule(
+                    id=f"rule:{stream_id}:{rule_index}",
+                    name=_clean(rule.name) or _short_name(statement),
+                    description="",
+                    status=rule_status,
+                    confidence=rule_confidence,
+                    evidence_ids=list(rule_evidence),
+                    kind=rule.kind,
+                    statement=statement,
+                    inputs=[_clean(item) for item in rule.inputs if _clean(item)],
+                    output=_clean(rule.output),
+                    stream_ids=[stream_id],
+                    transformation_ids=[linked] if linked else [],
+                    owner=_clean(rule.owner),
+                    owner_question=_clean(rule.owner_question),
+                )
+            )
+
+    controls, risks, unknowns, conflicts = _assemble_findings(
+        extraction,
+        bundle=bundle,
+        doc_records=doc_records,
+        solution_name=solution_name,
+        stream_by_id=stream_by_id,
+        streams_by_flow=streams_by_flow,
+        notes=notes,
+    )
 
     solutions: list[IntegrationSolution] = []
     if solution_artifacts:
@@ -697,6 +863,11 @@ def assemble_topology(
         data_streams=streams,
         delivery_paths=paths,
         transformations=transformations,
+        business_rules=rules,
+        controls=controls,
+        risks=risks,
+        unknowns=unknowns,
+        conflicts=conflicts,
         coverage=BusinessTopologyCoverage(
             total_artifacts=len(bundle.artifact_ids),
             cited_artifacts=0,
@@ -726,6 +897,252 @@ def assemble_topology(
         ),
     )
     return topology, notes
+
+
+def _assemble_findings(
+    extraction: FlowExtraction,
+    *,
+    bundle: BusinessTopologyEvidenceBundle,
+    doc_records: dict[str, dict[str, object]],
+    solution_name: str,
+    stream_by_id: dict[str, BusinessDataStream],
+    streams_by_flow: dict[str, list[str]],
+    notes: list[str],
+) -> tuple[
+    list[BusinessControl],
+    list[BusinessRisk],
+    list[BusinessUnknown],
+    list[BusinessConflict],
+]:
+    """Map the extraction's top-level findings onto published claims.
+
+    The model refers to flows by the names it wrote; Python resolves those to
+    stream ids and writes the reverse links (`control_ids`, `risk_ids`,
+    `unknown_ids`, `conflict_ids`) onto the streams. A reference to a flow that
+    did not survive assembly is dropped from the link with a note, and the
+    finding itself still publishes: a control or risk without a stream is a
+    valid landscape-level claim.
+    """
+
+    scope = _slug(solution_name)
+
+    def stream_refs(flow_names: list[str], label: str) -> list[str]:
+        refs: list[str] = []
+        for name in flow_names:
+            matched = streams_by_flow.get(_flow_key(name))
+            if not matched:
+                notes.append(f"{label} refers to flow '{name}', which was not published")
+                continue
+            refs.extend(ref for ref in matched if ref not in refs)
+        return refs
+
+    def evidence_for(citation: str) -> list[str]:
+        return _doc_ids_for(citation, doc_records)
+
+    controls: list[BusinessControl] = []
+    for index, item in enumerate(extraction.controls, start=1):
+        evidence_ids = evidence_for(item.evidence)
+        name = _clean(item.name)
+        if not evidence_ids or not name:
+            notes.append(f"control #{index} had no citable document and was not published")
+            continue
+        status, confidence = _doc_tier(item.confidence, "medium")
+        control_id = f"control:{scope}:{index}"
+        refs = stream_refs(item.flows, f"control '{name}'")
+        controls.append(
+            BusinessControl(
+                id=control_id,
+                name=name,
+                description=_clean(item.description),
+                status=status,
+                confidence=confidence,
+                evidence_ids=evidence_ids,
+                stream_ids=refs,
+                control_type=_clean(item.control_type),
+            )
+        )
+        for ref in refs:
+            stream_by_id[ref].control_ids.append(control_id)
+
+    risks: list[BusinessRisk] = []
+    for index, item in enumerate(extraction.risks, start=1):
+        evidence_ids = evidence_for(item.evidence)
+        name = _clean(item.name)
+        if not evidence_ids or not name:
+            notes.append(f"risk #{index} had no citable document and was not published")
+            continue
+        status, confidence = _doc_tier(item.confidence, "medium")
+        risk_id = f"risk:{scope}:{index}"
+        refs = stream_refs(item.flows, f"risk '{name}'")
+        risks.append(
+            BusinessRisk(
+                id=risk_id,
+                name=name,
+                description=_clean(item.description),
+                status=status,
+                confidence=confidence,
+                evidence_ids=evidence_ids,
+                stream_ids=refs,
+                severity=item.severity,
+            )
+        )
+        for ref in refs:
+            stream_by_id[ref].risk_ids.append(risk_id)
+
+    unknowns: list[BusinessUnknown] = []
+
+    def add_unknown(
+        question: str, *, name: str, description: str, flows: list[str], citation: str
+    ) -> None:
+        unknown_id = f"unknown:{scope}:{len(unknowns) + 1}"
+        refs = stream_refs(flows, f"open question '{_short_name(question)}'")
+        unknowns.append(
+            BusinessUnknown(
+                id=unknown_id,
+                name=name or _short_name(question),
+                description=description,
+                # A gap, not an assertion: `not_established` is the honest
+                # status and the only one that needs no supporting evidence.
+                # The document that raised the question is still cited.
+                status="not_established",
+                confidence=_UNKNOWN_CONFIDENCE,
+                evidence_ids=evidence_for(citation),
+                stream_ids=refs,
+                question=question,
+            )
+        )
+        for ref in refs:
+            stream_by_id[ref].unknown_ids.append(unknown_id)
+
+    for item in extraction.open_questions:
+        question = _clean(item.question)
+        if question:
+            add_unknown(
+                question,
+                name=_clean(item.name),
+                description="",
+                flows=item.flows,
+                citation=item.evidence,
+            )
+
+    conflicts: list[BusinessConflict] = []
+    support_index = _typed_support_index(bundle)
+    for item in extraction.conflicts:
+        description = _clean(item.description)
+        if not description:
+            continue
+        refs = [
+            ref
+            for name in item.flows
+            for ref in streams_by_flow.get(_flow_key(name), [])
+        ]
+        refs = list(dict.fromkeys(refs))
+        conflict = _typed_conflict(
+            item.conflict_type,
+            description=description,
+            name=_clean(item.name) or _short_name(description),
+            subject_ids=refs,
+            stream_by_id=stream_by_id,
+            support_index=support_index,
+            doc_ids=evidence_for(item.evidence),
+            conflict_id=f"conflict:{scope}:{len(conflicts) + 1}",
+        )
+        if conflict is not None:
+            conflicts.append(conflict)
+            for ref in conflict.subject_refs:
+                stream_by_id[ref].conflict_ids.append(conflict.id)
+            continue
+        # The validator requires typed runtime or intended-state evidence for a
+        # conflict, and documentation is neither. Rather than publish a claim
+        # the validator must prune, the disagreement is kept as the question it
+        # really is -- still cited and still linked to its flows.
+        notes.append(
+            f"documented conflict '{_short_name(description)}' has no typed runtime or "
+            "intended-state evidence on its designs; published as an open question"
+        )
+        add_unknown(
+            f"Which account is correct? {description}",
+            name=_clean(item.name) or _short_name(description),
+            description=f"Conflict reported by the documentation ({item.conflict_type}).",
+            flows=item.flows,
+            citation=item.evidence,
+        )
+    return controls, risks, unknowns, conflicts
+
+
+def _typed_support_index(
+    bundle: BusinessTopologyEvidenceBundle,
+) -> dict[str, list[tuple[str, str]]]:
+    """``{scanner evidence id: [(typed supporting claim id, type)]}``.
+
+    Built from the supporting claims' own ``source_evidence_ids``, so a claim
+    is only ever associated with the designs it was recorded against.
+    """
+
+    index: dict[str, list[tuple[str, str]]] = {}
+    for evidence_id, record in sorted(bundle.evidence_records.items()):
+        evidence_type = bundle.evidence_types.get(evidence_id, "")
+        if evidence_type not in _RUNTIME_SUPPORT | _INTENDED_SUPPORT:
+            continue
+        for source_id in record.get("source_evidence_ids") or []:
+            index.setdefault(str(source_id), []).append((evidence_id, evidence_type))
+    return index
+
+
+def _typed_conflict(
+    conflict_type: str,
+    *,
+    description: str,
+    name: str,
+    subject_ids: list[str],
+    stream_by_id: dict[str, BusinessDataStream],
+    support_index: dict[str, list[tuple[str, str]]],
+    doc_ids: list[str],
+    conflict_id: str,
+) -> BusinessConflict | None:
+    """Build a conflict only when the validator's typed-evidence rule is met.
+
+    Implementation evidence is the subject streams' own scanner artifacts that
+    typed supporting claims were recorded against; supporting evidence is those
+    claims, filtered to the types the declared ``conflict_type`` accepts.
+    """
+
+    if not subject_ids:
+        return None
+    accepted = _CONFLICT_SUPPORT_TYPES.get(conflict_type, frozenset())
+    implementation: list[str] = []
+    supporting: list[str] = []
+    for ref in subject_ids:
+        for artifact_id in stream_by_id[ref].artifact_ids:
+            claims = [
+                claim_id
+                for claim_id, claim_type in support_index.get(artifact_id, [])
+                if claim_type in accepted
+            ]
+            if not claims:
+                continue
+            if artifact_id not in implementation:
+                implementation.append(artifact_id)
+            supporting.extend(claim for claim in claims if claim not in supporting)
+    if not supporting:
+        return None
+    if conflict_type == "supporting_sources_disagree":
+        if len(supporting) < 2:
+            return None
+        implementation = []
+    evidence_ids = list(dict.fromkeys([*implementation, *supporting, *doc_ids]))
+    return BusinessConflict(
+        id=conflict_id,
+        name=name,
+        description=description,
+        status="inferred",
+        confidence=_DOC_TIER_MAX_CONFIDENCE,
+        evidence_ids=evidence_ids,
+        conflict_type=conflict_type,  # type: ignore[arg-type]
+        subject_refs=list(subject_ids),
+        implementation_evidence_ids=implementation,
+        supporting_evidence_ids=supporting,
+    )
 
 
 def merge_scanner_floor(
@@ -783,6 +1200,13 @@ def merge_scanner_floor(
             assembled_system_ids.add(system.id)
         remap[system.id] = system.id
 
+    # The floor's own business-layer claims that can travel with it. Its
+    # transformations are scanner-lineage field mappings (status `observed`) --
+    # discarding them made an adopted stream an unlabelled edge again. Its
+    # unknowns are either attached to a stream or landscape-level questions
+    # about cross-partition edges; both cite only scanner evidence.
+    floor_unknowns = {item.id: item for item in deterministic.unknowns}
+
     added_streams: list[BusinessDataStream] = []
     needed_systems: set[str] = set()
     needed_solutions: set[str] = set()
@@ -804,7 +1228,7 @@ def merge_scanner_floor(
         copy.business_object_ids = []
         copy.control_ids = []
         copy.risk_ids = []
-        copy.unknown_ids = []
+        copy.unknown_ids = [ref for ref in copy.unknown_ids if ref in floor_unknowns]
         copy.runtime_observation_ids = []
         copy.conflict_ids = []
         copy.delivery_path_id = None
@@ -814,9 +1238,6 @@ def merge_scanner_floor(
         needed_solutions.update(copy.integration_solution_ids)
         needed_systems.update({source_id, destination_id})
         added_streams.append(copy)
-
-    if not added_streams:
-        return notes
 
     # Deep copies: these objects belong to the deterministic topology, which
     # remains the phase's fallback candidate. Sharing them would let a later
@@ -833,18 +1254,71 @@ def merge_scanner_floor(
         if stream.source_system_id in published_system_ids
         and stream.destination_system_id in published_system_ids
     ]
-    if not added_streams:
-        return notes
     for solution in deterministic.integration_solutions:
         if solution.id in needed_solutions and solution.id not in solution_ids:
             assembled.integration_solutions.append(solution.model_copy(deep=True))
             solution_ids.add(solution.id)
     assembled.data_streams.extend(added_streams)
     assembled.coverage.technical_relationships = len(assembled.data_streams)
-    notes.append(
-        f"added {len(added_streams)} scanner-backed stream(s) the documentation "
-        "extraction did not describe, so scanner edge coverage is not lost"
-    )
+
+    adopted_stream_ids = {stream.id for stream in added_streams}
+    taken_ids = {
+        claim.id
+        for collection in (
+            assembled.systems,
+            assembled.integration_solutions,
+            assembled.business_objects,
+            assembled.data_streams,
+            assembled.delivery_paths,
+            assembled.transformations,
+            assembled.business_rules,
+            assembled.controls,
+            assembled.risks,
+            assembled.unknowns,
+            assembled.conflicts,
+            assembled.runtime_observations,
+        )
+        for claim in collection
+    }
+    kept_transformations = 0
+    for transformation in deterministic.transformations:
+        refs = [ref for ref in transformation.stream_ids if ref in adopted_stream_ids]
+        if not refs or transformation.id in taken_ids:
+            continue
+        copy = transformation.model_copy(deep=True)
+        copy.stream_ids = refs
+        copy.integration_solution_ids = [
+            ref for ref in copy.integration_solution_ids if ref in solution_ids
+        ]
+        assembled.transformations.append(copy)
+        taken_ids.add(copy.id)
+        kept_transformations += 1
+
+    kept_unknowns: set[str] = set()
+    for unknown in deterministic.unknowns:
+        refs = [ref for ref in unknown.stream_ids if ref in adopted_stream_ids]
+        # A stream-attached unknown travels only with its stream; a
+        # landscape-level one (no stream at all) stands on its own evidence.
+        if (unknown.stream_ids and not refs) or unknown.id in taken_ids:
+            continue
+        copy = unknown.model_copy(deep=True)
+        copy.stream_ids = refs
+        assembled.unknowns.append(copy)
+        taken_ids.add(copy.id)
+        kept_unknowns.add(copy.id)
+    for stream in added_streams:
+        stream.unknown_ids = [ref for ref in stream.unknown_ids if ref in kept_unknowns]
+
+    if added_streams:
+        notes.append(
+            f"added {len(added_streams)} scanner-backed stream(s) the documentation "
+            "extraction did not describe, so scanner edge coverage is not lost"
+        )
+    if kept_transformations or kept_unknowns:
+        notes.append(
+            f"kept {kept_transformations} scanner-lineage transformation(s) and "
+            f"{len(kept_unknowns)} open question(s) from the scanner floor"
+        )
     assembled.coverage.notes.extend(notes)
     return notes
 

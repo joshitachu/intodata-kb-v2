@@ -184,7 +184,7 @@ async def run_runtime_source_sync_cycle(
     try:
         credentials, _key_id = await repo.read_credentials(source_id)
         sync_progress.update(source_id, phase="Reading from the source")
-        batch = await provider.sync(credentials=credentials, project_id=source.project_id)
+        batch = await provider.sync(credentials=credentials, project_id=source.estate_key)
         sync_progress.update(
             source_id,
             phase="Saving imported records",
@@ -195,7 +195,7 @@ async def run_runtime_source_sync_cycle(
             repo=repo,
             source_id=source_id,
             source_key=source.source_type,
-            default_project_id=source.project_id,
+            default_project_id=source.estate_key,
             container_key_field=provider.container_key_field(),
             batch=batch,
             cycle_at=cycle_at,
@@ -213,7 +213,7 @@ async def run_runtime_source_sync_cycle(
         )
         return RuntimeSyncCycleResult(
             source_key=source.source_type,
-            project_id=source.project_id,
+            project_id=source.estate_key,
             status=RuntimeSyncStatus.FAILED,
             last_synced_at=None,
             failure_reason_code=exc.__class__.__name__[:80],
@@ -299,6 +299,13 @@ async def _persist_source_batch_with_project_map(
     failure_reason = _clean_reason_code(batch.failure_reason_code) if batch.partial else None
     error_summary = sanitize_sync_error(batch.error_summary) if batch.error_summary else None
 
+    # ``default_project_id`` is the source's ESTATE KEY, the stamp every record
+    # below is written with unless the workspace map re-points its container to
+    # a real project. For a source registered against a project the two are the
+    # same string, so nothing about this path changed; for a source registered
+    # against none it is the derived estate identifier its attached projects
+    # reach through their resolved read terms.
+    #
     # ``batch.sources`` is deliberately NOT persisted here.
     #
     # A provider's batch declares its own source row because the original

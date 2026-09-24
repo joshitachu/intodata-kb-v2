@@ -1386,39 +1386,35 @@ async def _push_partition_docs(
 
 
 def _write_composite_org_topology(project_id: str, fingerprint: str) -> None:
-    """Materialize the deterministic org-level business topology after a run.
+    """Materialize the org-level business topology after a run -- validated.
 
     The landscape endpoint also builds this on request, but writing it here
     means the artifact exists under ``output/{pid}/topology/`` immediately after
     a composite run completes (inspectable, and served without a rebuild).
+    Both callers go through ``build_validated_composite_org_topology``, so
+    ``validation_report.json`` states the TRUE outcome (errors, warnings,
+    pruned claims); an unvalidated merge is never written as ``validated: true``
+    and its ``business_topology.json`` is removed rather than left behind.
     """
     try:
-        from mcp_server.services.business_topology import build_composite_org_topology
+        from mcp_server.services.business_topology.composite import (
+            build_validated_composite_org_topology,
+        )
 
-        topology = build_composite_org_topology(
-            project_id, project_root=config.project_root
+        result = build_validated_composite_org_topology(
+            project_id,
+            project_root=config.project_root,
+            scan_fingerprint=fingerprint,
         )
-        if topology is None:
+        if result is None:
             return
-        topo_dir = upload_topology_dir(project_id)
-        topo_dir.mkdir(parents=True, exist_ok=True)
-        (topo_dir / "business_topology.json").write_text(
-            json.dumps(topology.model_dump(mode="json"), indent=2), encoding="utf-8"
-        )
-        (topo_dir / "validation_report.json").write_text(
-            json.dumps(
-                {
-                    "validated": True,
-                    "scan_fingerprint": fingerprint,
-                    "project_id": project_id,
-                    "errors": [],
-                    "warnings": topology.coverage.notes,
-                    "generated_by": "composite_org_merge",
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        result.write(upload_topology_dir(project_id))
+        if not result.validated:
+            logger.warning(
+                "Composite org topology for %s did not validate: %s",
+                project_id,
+                "; ".join(result.report.errors[:3]),
+            )
     except Exception as exc:  # noqa: BLE001 - additive artifact must not block finalize
         logger.warning(
             "Composite org topology materialization failed for %s: %s",

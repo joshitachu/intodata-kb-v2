@@ -53,6 +53,7 @@ neither service returns a stored credential in any response.
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 
 from mcp_server.api.permissions import (
     require_connector_management,
@@ -97,8 +98,32 @@ def _raise(exc: RuntimeSourcesBridgeError) -> None:
     Verbatim on purpose: "That physical runtime source is already registered"
     (409) tells an operator exactly what happened, and the RAG backend has
     already redacted credential-shaped substrings from its error strings.
+
+    Drops ``exc.extra``: FastAPI's handler renders ``{"detail": ...}`` and
+    nothing else. Any route whose upstream errors carry a structured block
+    beside the sentence must use `_relay` instead, or that block dies here.
     """
     raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+def _relay(exc: RuntimeSourcesBridgeError) -> JSONResponse:
+    """Relay an upstream error INCLUDING whatever it carried beside ``detail``.
+
+    A registration conflict is the case this exists for. The RAG backend's 409
+    names the source that already mirrors the tenant so the dashboard can take
+    the operator to its "Shared with" control -- the supported way for a second
+    project to reach one Talend tenant -- instead of restating a refusal it
+    cannot act on. Raising an ``HTTPException`` here would flatten the body back
+    to ``{"detail": ...}`` and restore the dead end.
+
+    Falls back to `_raise` when there is nothing extra, so every other failure
+    keeps its existing shape byte for byte.
+    """
+    if not exc.extra:
+        _raise(exc)
+    # `detail` stays a plain sentence at the top level: the dashboard's
+    # `parseApiError` reads exactly that, and does so for every other route too.
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail, **exc.extra})
 
 
 @router.get("/runtime-sources/source-types", response_model=RuntimeSourceTypeListResponse)
@@ -187,9 +212,19 @@ async def discover_runtime_source_scopes(
 async def create_runtime_source(payload: RuntimeSourceCreateRequest, request: Request):
     """Register a runtime source, storing the credential in the RAG backend.
 
+    ``project_id`` is OPTIONAL. A source is a registered tenant, not a project's
+    connection: projects attach to it afterwards through ``/readers``, any
+    number of them, changed at any time. Registering with nothing attached is a
+    normal intermediate state.
+
     The RAG backend validates the credential against the vendor API and resolves
     the tenant behind it BEFORE persisting anything, so a bad token creates no
     row -- its 400 is a real "Connect & test" result, not an optimistic save.
+
+    Its 409 is relayed through `_relay` rather than `_raise`: a duplicate
+    registration answers with a `conflict` block naming the mirror that already
+    exists, and that block is the dashboard's whole route from "refused" to
+    "attach a project to the tenant that is already here".
     """
     await require_connector_management(request)
     if payload.provider_id not in runtime_managed_connector_ids():
@@ -207,7 +242,7 @@ async def create_runtime_source(payload: RuntimeSourceCreateRequest, request: Re
             sync_interval_seconds=payload.sync_interval_seconds,
         )
     except RuntimeSourcesBridgeError as exc:
-        _raise(exc)
+        return _relay(exc)
     return source
 
 
@@ -236,12 +271,16 @@ async def delete_runtime_source(source_id: int, request: Request):
     "/runtime-sources/{source_id}/readers", response_model=RuntimeSourceReadGrantListResponse
 )
 async def list_runtime_source_readers(source_id: int, request: Request):
-    """Projects that read this source's mirror without owning its credential.
+    """Projects attached to this source.
 
-    The answer to the duplicate-registration 409: a second project documenting
-    the same Talend tenant is granted read here rather than registering the
-    tenant again, which would double the poll and create a second mirror free
-    to drift from the first.
+    These rows ARE the source-to-project relationship -- a source has no owning
+    project, only attachments. Also the answer to the duplicate-registration
+    409: a second project documenting the same Talend tenant attaches here
+    rather than registering the tenant again, which would double the poll and
+    create a second mirror free to drift from the first.
+
+    The path still says ``readers``; renaming it (and the table behind it) is a
+    deliberate follow-up, so every client keeps working across the change.
     """
     await require_connector_view(request)
     try:

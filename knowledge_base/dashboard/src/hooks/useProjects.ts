@@ -66,7 +66,7 @@ export function useGenerate() {
       investigationModel?: string | null;
       model?: string | null;
       writeModel?: string | null;
-      generationMethod?: "custom" | "opencode-cli" | null;
+      generationMethod?: "custom" | "opencode-cli" | "claude-cli" | null;
       generationProfile?: Record<string, unknown> | null;
       liveEvidence?: boolean;
     }): Promise<import("../types").StatusResponse> =>

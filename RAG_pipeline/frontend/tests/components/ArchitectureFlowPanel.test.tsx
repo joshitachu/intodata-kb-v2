@@ -26,12 +26,19 @@ vi.mock("@xyflow/react", async () => {
   }
   return {
     ReactFlow: (props: {
+      nodes: Array<{ id: string }>;
       edges: Array<{ id: string }>;
+      onNodeClick?: (event: unknown, node: { id: string }) => void;
       onEdgeClick?: (event: unknown, edge: { id: string }) => void;
       children?: ReactNode;
     }) => createElement(
       "div",
       { "data-testid": "react-flow" },
+      props.nodes.map((node) => createElement(
+        "button",
+        { key: node.id, type: "button", "data-testid": `node:${node.id}`, onClick: (event: unknown) => props.onNodeClick?.(event, node) },
+        node.id,
+      )),
       props.edges.map((edge) => createElement(
         "button",
         { key: edge.id, type: "button", "data-testid": `edge:${edge.id}`, onClick: (event: unknown) => props.onEdgeClick?.(event, edge) },
@@ -77,6 +84,8 @@ const ADDITIVE_HEADINGS = [
   "Tegenspraken",
   "Bronnen",
   "Techniek",
+  "Controles",
+  "Waarnemingen",
 ];
 
 const claim = { name: "", description: "", status: "observed" as const, confidence: 0.9, evidence_ids: ["ev:1"] };
@@ -274,5 +283,87 @@ describe("architecture flow side panel", () => {
     for (const title of ["Risico's", "Tegenspraken", "Open vragen", "Known transformations", "Bronnen"]) {
       expect(within(panel).queryByTestId(`disclosure:${title}`)).toBeNull();
     }
+  });
+
+  /**
+   * Every remaining contract slot has a renderer: controls, risk severity,
+   * conflict type + resolution, observed behaviour, requiredness, and the
+   * delivery path resolved from EITHER side of its two-way link.
+   */
+  it("renders controls, severity, conflict resolution, observations and the delivery path", async () => {
+    const topology = structuredTopology() as unknown as Record<string, unknown> & {
+      data_streams: Array<Record<string, unknown>>;
+    };
+    topology.data_streams[0] = {
+      ...topology.data_streams[0],
+      requiredness: "conditional",
+      description: "Alleen de open werkorders.",
+      control_ids: ["ct-1"],
+      risk_ids: ["rk-1"],
+      conflict_ids: ["cf-1"],
+      // Only the stream side of the link is filled: the path's own stream_id
+      // points elsewhere, which the L1 panel previously could not follow.
+      delivery_path_id: "dp-1",
+    };
+    topology.delivery_paths = [{
+      ...claim, id: "dp-1", name: "Pad", description: "Via de berichtenbus.", stream_id: "ds-other",
+      segments: [{
+        ...claim, id: "seg-1", name: "Naar de bus", description: "Wordt per bericht verstuurd.", sequence: 1,
+        source_ref: "sys-maximo", destination_ref: "sys-4ps", mechanism: "queue", protocol: "JMS",
+        resource: "", component: "cJMS_1", artifact_ids: [], mode: "buffered",
+      }],
+    }];
+    topology.controls = [{ ...claim, id: "ct-1", name: "Telling", description: "Aantallen worden vergeleken.", stream_ids: [], control_type: "reconciliatie" }];
+    topology.risks = [{ ...claim, id: "rk-1", name: "Dubbele levering", description: "", stream_ids: [], severity: "high" }];
+    topology.conflicts = [{
+      ...claim, id: "cf-1", name: "Schema wijkt af", description: "", conflict_type: "runtime_vs_implementation",
+      subject_refs: [], implementation_evidence_ids: [], supporting_evidence_ids: [], resolution: "Productie is leidend.",
+    }];
+
+    const panel = await openFirstFlow(landscapeFor(topology));
+
+    expect(within(panel).getByText("Voorwaardelijk")).toBeInTheDocument();
+
+    fireEvent.click(within(panel).getByTestId("disclosure:Delivery path"));
+    expect(within(panel).getByText("Via de berichtenbus.")).toBeInTheDocument();
+    expect(within(panel).getByText("queue \u00b7 JMS \u00b7 Gebufferd \u00b7 cJMS_1")).toBeInTheDocument();
+    expect(within(panel).getByText("Wordt per bericht verstuurd.")).toBeInTheDocument();
+
+    fireEvent.click(within(panel).getByTestId("disclosure:Controles"));
+    expect(within(panel).getByText("Telling")).toBeInTheDocument();
+    expect(within(panel).getByText("reconciliatie")).toBeInTheDocument();
+
+    fireEvent.click(within(panel).getByTestId("disclosure:Risico's"));
+    expect(within(panel).getByText("Hoog")).toBeInTheDocument();
+
+    fireEvent.click(within(panel).getByTestId("disclosure:Tegenspraken"));
+    expect(within(panel).getByText("Productie wijkt af van implementatie")).toBeInTheDocument();
+    expect(within(panel).getByText("Productie is leidend.")).toBeInTheDocument();
+
+    fireEvent.click(within(panel).getByTestId("disclosure:Waarnemingen"));
+    expect(within(panel).getByText("Draait elk half uur.")).toBeInTheDocument();
+    expect(within(panel).getByText("Frequentie")).toBeInTheDocument();
+
+    fireEvent.click(within(panel).getByTestId("disclosure:Techniek"));
+    expect(within(panel).getByText("Alleen de open werkorders.")).toBeInTheDocument();
+  });
+
+  it("shows a system's owner, purpose and aliases on the system focus panel", async () => {
+    const topology = structuredTopology() as unknown as { systems: Array<Record<string, unknown>> };
+    topology.systems[1] = {
+      ...topology.systems[1],
+      description: "ERP",
+      purpose: "Financiele afhandeling van werkorders.",
+      owner: "Team Financien",
+      aliases: ["4PS", "Dynamics"],
+    };
+    render(<ArchitectureTopologyCanvas landscape={landscapeFor(topology)} onOpenFlow={vi.fn()} />);
+    const node = await waitFor(() => screen.getByTestId("node:system:sys-4ps"));
+    fireEvent.click(node);
+    const panel = screen.getByLabelText("System focus details");
+    expect(within(panel).getByText("Financiele afhandeling van werkorders.")).toBeInTheDocument();
+    expect(within(panel).getByText("Team Financien")).toBeInTheDocument();
+    // The system's own name is not repeated as an alias.
+    expect(within(panel).getByText("Dynamics")).toBeInTheDocument();
   });
 });

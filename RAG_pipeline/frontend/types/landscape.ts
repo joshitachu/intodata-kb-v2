@@ -118,7 +118,9 @@ export const BusinessIntegrationSolutionSchema = z.object({
   name: z.string(),
   description: z.string().default(""),
   platform: z.string().default(""),
-  role: z.string().default("execution"),
+  // The MCP contract's default. "execution" is the SCANNER application role
+  // (`LandscapeApplicationSchema`), not an integration-solution fact.
+  role: z.string().default(""),
   status: ClaimStatusSchema,
   confidence: z.number().min(0).max(1),
   artifact_ids: z.array(z.string()).default([]),
@@ -208,7 +210,9 @@ export const BusinessDataStreamSchema = z.object({
 export const BusinessDeliveryPathSegmentSchema = z.object({
   id: z.string(),
   name: z.string(),
-  description: z.string(),
+  // Defaulted in the contract (`EvidenceBackedClaim.description = ""`); a
+  // required field here rejected a valid segment that omitted it.
+  description: z.string().default(""),
   sequence: z.number().int().positive(),
   source_ref: z.string(),
   destination_ref: z.string(),
@@ -357,7 +361,7 @@ export const BusinessUnknownSchema = EvidenceBackedClaimSchema.extend({
 export const BusinessAnnotationSchema = z.object({
   id: z.string(),
   name: z.string(),
-  description: z.string(),
+  description: z.string().default(""),
   status: ClaimStatusSchema,
   confidence: z.number().min(0).max(1),
   evidence_ids: BusinessEvidenceIdsSchema,
@@ -365,7 +369,7 @@ export const BusinessAnnotationSchema = z.object({
 
 export const ArtifactAnnotationSchema = BusinessAnnotationSchema.extend({
   artifact_id: z.string(),
-  business_role: z.string(),
+  business_role: z.string().default(""),
 }).strict();
 
 export const ComponentAnnotationSchema = BusinessAnnotationSchema.extend({
@@ -385,7 +389,7 @@ export const BusinessTopologySchema = z.object({
   metadata: z.object({
     project_id: z.string(),
     scan_fingerprint: z.string(),
-    generated_by: z.string(),
+    generated_by: z.string().default("documentation_topology_agent"),
     model_name: z.string().default(""),
   }).strict(),
   systems: z.array(BusinessSystemSchema).default([]),
@@ -415,12 +419,21 @@ export const BusinessTopologySchema = z.object({
   }).strict(),
 }).strict();
 
+/** What a STALE analyst-curated file contributed to the served topology. */
+export const CuratedOverlayStateSchema = z.object({
+  applied: z.record(z.string(), z.number()).default({}),
+  unmatched_count: z.number().default(0),
+  demoted_count: z.number().default(0),
+  unmatched_ids: z.record(z.string(), z.array(z.string())).default({}),
+}).strict();
+
 export const TopologyStateSchema = z.object({
   available: z.boolean().default(false),
   validated: z.boolean().default(false),
   stale: z.boolean().default(false),
   source: z.string().default("none"),
   message: z.string().optional(),
+  curated_overlay: CuratedOverlayStateSchema.nullable().optional(),
 }).strict();
 
 /** Identity-only bridge from business claims back to scanner entities. */

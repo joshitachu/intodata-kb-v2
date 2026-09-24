@@ -5,9 +5,10 @@ import { fastapiFetch } from "@/lib/fastapi";
 export async function proxyConnectorRequest(request: NextRequest, path = "") {
   const method = request.method;
   try {
-    const body = method === "GET" || method === "HEAD" || method === "DELETE"
-      ? undefined
-      : await request.json();
+    const rawBody = method === "GET" || method === "HEAD" || method === "DELETE"
+      ? ""
+      : await request.text();
+    const body = rawBody.trim() ? JSON.parse(rawBody) : undefined;
     const data = await fastapiFetch<unknown>(
       `/api/v1/connectors${path ? `/${path}` : ""}${request.nextUrl.search}`,
       { method, body, cache: "no-store" },

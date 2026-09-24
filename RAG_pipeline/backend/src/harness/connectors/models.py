@@ -129,6 +129,15 @@ class CapabilityBindingCreate(BaseModel):
     enabled: bool = True
 
 
+class CapabilityBindingUpdate(BaseModel):
+    """Owner edits to a project-scoped capability grant."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_ids: list[str] | None = Field(default=None, max_length=100)
+    enabled: bool | None = None
+
+
 class ConnectorInstanceView(BaseModel):
     id: int
     name: str

@@ -39,8 +39,12 @@ class FixtureKnowledgeConnector:
         )
 
     async def read(
-        self, capability_id: str, query: ConnectorQuery, config: dict
+        self, capability_id: str, query: ConnectorQuery, config: dict,
+        credential_reference: str | None = None,
+        project_id: str | None = None,
     ) -> ConnectorReadResult:
+        _ = credential_reference
+        _ = project_id
         if capability_id != FIXTURE_CAPABILITY_ID:
             raise ValueError("Unsupported connector capability")
         parsed = ConnectorConfig.model_validate(self.validate_config(config))

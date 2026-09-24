@@ -502,3 +502,210 @@ class OpenCodeCliProvider(DocGenerationProvider):
             if process is not None and process.returncode is None:
                 await self._stop_process(process)
             shutil.rmtree(state_root, ignore_errors=True)
+
+
+# A single-turn completion needs NO tool: its context is inline. OpenCode's
+# `"*"` key is the catch-all and also covers MCP tool ids, so it switches off
+# anything an operator's OPENCODE_CONFIG adds. Every known key is ALSO denied by
+# name, because the inline block is merged over the operator's file and a
+# specific `read: allow` there must not survive beside the wildcard. The empty
+# working directory is a second layer, not the policy.
+_COMPLETION_DENIED_PERMISSIONS = (
+    "read", "edit", "write", "patch", "glob", "grep", "list", "lsp", "bash",
+    "task", "todowrite", "todoread", "webfetch", "websearch", "codesearch",
+    "skill", "question", "external_directory",
+)
+
+
+class OpenCodeCompletionProvider:
+    """One bounded, non-agentic completion over the OpenCode transport.
+
+    Adapter from OpenCode's session CLI to the ``ModelProvider.complete``
+    contract the topology builder's ``BoundedModelTopologyLLM`` drives -- the
+    same role ``ClaudeCliModelProvider`` plays for Claude. Everything that makes
+    an OpenCode session safe is reused from :class:`OpenCodeCliProvider` rather
+    than copied: the pinned-version preflight, isolated HOME/XDG state, route
+    credentials, credential redaction and process-group cleanup.
+
+    Differences from a documentation session, all deliberate:
+
+    * the prompt carries its context inline, so the session needs no file tools;
+    * it runs in an EMPTY temporary directory, never in staging;
+    * EVERY tool is denied through the inline OpenCode configuration (the
+      ``"*"`` catch-all, which also covers MCP tool ids, plus each known key);
+    * the answer is the session's assistant text, not files it wrote.
+    """
+
+    supports_tools: bool = False
+    provider_name = "opencode-cli"
+
+    def __init__(self, command: str | None = None, model_route: str | None = None) -> None:
+        self._session = OpenCodeCliProvider(command=command, model_route=model_route)
+        self.model_name = self._session.model_route or "opencode"
+
+    @staticmethod
+    def _inline_context(context_files: list[Path] | None) -> str:
+        parts: list[str] = []
+        for path in context_files or []:
+            try:
+                parts.append(f"\n\n--- CONTEXT FILE: {path.name} ---\n")
+                parts.append(path.read_text(encoding="utf-8"))
+            except OSError as exc:
+                parts.append(f"\n\n--- CONTEXT FILE ERROR: {path.name} ({exc}) ---\n")
+        return "".join(parts)
+
+    @staticmethod
+    def _deny_tools(env: dict[str, str]) -> None:
+        try:
+            inline = json.loads(env.get("OPENCODE_CONFIG_CONTENT") or "{}")
+        except json.JSONDecodeError as exc:
+            raise OpenCodeCompatibilityError("OPENCODE_CONFIG_CONTENT must be valid JSON") from exc
+        if not isinstance(inline, dict):
+            raise OpenCodeCompatibilityError("OPENCODE_CONFIG_CONTENT must contain a JSON object")
+        # Replaced, not merged: OpenCode evaluates the LAST matching rule, so an
+        # inherited allow placed after the wildcard would re-open that tool.
+        inline["permission"] = {
+            "*": "deny",
+            **{name: "deny" for name in _COMPLETION_DENIED_PERMISSIONS},
+        }
+        env["OPENCODE_CONFIG_CONTENT"] = json.dumps(inline, separators=(",", ":"))
+
+    @staticmethod
+    def _collect_text(event: dict[str, Any], texts: dict[str, str], order: list[str]) -> None:
+        """Accumulate assistant text; full ``text`` parts replace, deltas append."""
+        part = event.get("part")
+        if not isinstance(part, dict):
+            return
+        kind = str(part.get("type") or "")
+        if kind not in {"text", "text-delta"}:
+            return
+        key = str(part.get("id") or f"_{len(order)}")
+        if key not in texts:
+            texts[key] = ""
+            order.append(key)
+        if kind == "text":
+            texts[key] = str(part.get("text") or "")
+        else:
+            texts[key] += str(part.get("delta") or part.get("text") or "")
+
+    async def complete(
+        self,
+        prompt: str,
+        context_files: list[Path] | None = None,
+        options: Any = None,
+    ) -> Any:
+        from mcp_server.providers.custom.models import ModelOptions, ModelResult
+
+        opts = options or ModelOptions()
+        full_prompt = prompt + self._inline_context(context_files)
+        if opts.system_prompt:
+            full_prompt = f"{opts.system_prompt}\n\n---\n\n{full_prompt}"
+        started = time.monotonic()
+
+        def failure(reason: str, **usage: int) -> ModelResult:
+            return ModelResult(
+                success=False,
+                model_name=self.model_name,
+                latency_ms=int((time.monotonic() - started) * 1000),
+                raw_error=reason[:1000],
+                metadata={"provider": self.provider_name},
+                **usage,
+            )
+
+        try:
+            executable = self._session._preflight()
+        except OpenCodeCompatibilityError as exc:
+            return failure(str(exc))
+
+        state_root = Path(tempfile.mkdtemp(prefix="nexus-opencode-completion-"))
+        workdir = state_root / "work"
+        workdir.mkdir()
+        process: asyncio.subprocess.Process | None = None
+        texts: dict[str, str] = {}
+        order: list[str] = []
+        errors: list[str] = []
+        input_tokens = output_tokens = 0
+        env: dict[str, str] = {}
+        try:
+            env = self._session._execution_env(state_root)
+            self._deny_tools(env)
+            command = [executable, "run", "--format", "json"]
+            if self._session.model_route:
+                command.extend(["--model", self._session.model_route])
+            command.extend(["--dir", str(workdir)])
+            process = await asyncio.create_subprocess_exec(
+                *command, stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                cwd=str(workdir), env=env,
+                start_new_session=os.name == "posix",
+                limit=_STREAM_BUFFER_BYTES,
+            )
+            assert process.stdin is not None and process.stdout is not None
+            assert process.stderr is not None
+            stdin = process.stdin
+
+            async def send_prompt() -> None:
+                # Inside the timeout: an inlined prompt can be several hundred
+                # KB, and a child that stops reading must not hang the build.
+                stdin.write(full_prompt.encode("utf-8"))
+                await stdin.drain()
+                stdin.close()
+
+            async def consume_stdout() -> None:
+                nonlocal input_tokens, output_tokens
+                async for raw in iter_frames(process.stdout, max_frame_bytes=_MAX_EVENT_BYTES):
+                    try:
+                        event = json.loads(raw.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    inp, out, _cost = OpenCodeCliProvider._usage(event)
+                    input_tokens += inp
+                    output_tokens += out
+                    message, level = OpenCodeCliProvider._event_summary(event)
+                    if level == "error":
+                        errors.append(_safe_stderr(message or "OpenCode error", env))
+                    self._collect_text(event, texts, order)
+
+            async def consume_stderr() -> str:
+                retained = ""
+                async for raw in iter_frames(process.stderr, max_frame_bytes=_MAX_STDERR_LINE_BYTES):
+                    retained = f"{retained}\n{raw.decode('utf-8', errors='replace')}"[-4000:]
+                return _safe_stderr(retained, env)
+
+            _, _, stderr, returncode = await asyncio.wait_for(
+                asyncio.gather(
+                    send_prompt(), consume_stdout(), consume_stderr(), process.wait()
+                ),
+                timeout=max(1.0, float(opts.timeout_s)),
+            )
+            text = "".join(texts[key] for key in order).strip()
+            if returncode != 0 or errors or not text:
+                reason = (
+                    errors[-1] if errors
+                    else str(stderr).strip() or f"OpenCode exited {returncode} with no text"
+                )
+                return failure(reason, input_tokens=input_tokens, output_tokens=output_tokens)
+            return ModelResult(
+                success=True,
+                text=text,
+                model_name=self.model_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_ms=int((time.monotonic() - started) * 1000),
+                metadata={"provider": self.provider_name},
+            )
+        except TimeoutError:
+            return failure(
+                f"OpenCode completion timed out after {opts.timeout_s}s",
+                input_tokens=input_tokens, output_tokens=output_tokens,
+            )
+        except OpenCodeCompatibilityError as exc:
+            return failure(str(exc))
+        except OSError as exc:
+            return failure(f"OpenCode launch failed: {exc}")
+        finally:
+            if process is not None and process.returncode is None:
+                await OpenCodeCliProvider._stop_process(process)
+            shutil.rmtree(state_root, ignore_errors=True)

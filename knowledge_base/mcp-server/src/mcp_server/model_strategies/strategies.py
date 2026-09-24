@@ -117,44 +117,6 @@ class KimiModelStrategy(ModelProviderStrategy):
         )
 
 
-class Route33ModelStrategy(ModelProviderStrategy):
-    provider_id = "route33"
-
-    def create_model_provider(
-        self,
-        model_id: str,
-        *,
-        api_key: str | None = None,
-        base_url: str | None = None,
-        ollama_base_url: str | None = None,
-    ):
-        from mcp_server.config import config
-        from mcp_server.providers.custom.providers import (
-            OpenAICompatibleProvider,
-            Route33AnthropicMessagesProvider,
-        )
-
-        model_name = self.parse_model_name(model_id)
-        resolved_api_key = (
-            api_key
-            or config.doc_generation_route33_api_key
-            or os.environ.get("ROUTE33_API_KEY")
-        )
-        if model_name.startswith("anthropic/"):
-            return Route33AnthropicMessagesProvider(
-                model_name,
-                api_key=resolved_api_key,
-                base_url=base_url or config.doc_generation_route33_base_url,
-            )
-
-        return OpenAICompatibleProvider(
-            model_name,
-            api_key=resolved_api_key,
-            base_url=base_url or config.doc_generation_route33_base_url,
-            provider_name="route33",
-        )
-
-
 class OpenRouterModelStrategy(ModelProviderStrategy):
     """OpenRouter aggregator, reached over its OpenAI-compatible endpoint.
 
@@ -300,6 +262,39 @@ class ClaudeCliStrategy(ModelProviderStrategy):
                 rag_capable=False,
             )
         ]
+
+
+class OpenCodeGoModelStrategy(ModelProviderStrategy):
+    """`opencode-go/<model>` is a ROUTE handed to the OpenCode CLI, not a provider.
+
+    The Python harness never constructs a client for these ids: the subscription
+    is redeemed inside the CLI session, which reads the key from a private
+    per-run auth file (`providers/opencode_cli.py`). They belong in the catalogue
+    because the dashboard's OpenCode session-model picker offers them.
+
+    Without this strategy every `opencode-go/...` entry failed
+    `get_model_strategy()` -- the catalogue carried 20 of them and not one
+    resolved, which is what `test_every_catalogue_model_resolves_to_a_strategy`
+    had been reporting (one id at a time, so it read as a single stale model
+    rather than a whole missing provider).
+
+    Descriptors come from `data/model_catalogue.json`, so this returns none of
+    its own: listing them here too would mint a second, drifting source.
+    """
+
+    provider_id = "opencode-go"
+
+    def owns(self, model_id: str) -> bool:
+        return model_id.startswith(f"{self.provider_id}/")
+
+    def create_model_provider(self, model_id: str, **_kwargs):
+        raise ValueError(
+            f"{model_id!r} is an OpenCode subscription route; it is resolved inside the "
+            "OpenCode CLI session, not by a harness model provider."
+        )
+
+    def descriptors(self) -> list[ModelDescriptorData]:
+        return []
 
 
 class OpenCodeCliStrategy(ModelProviderStrategy):

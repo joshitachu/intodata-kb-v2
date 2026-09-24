@@ -9,7 +9,9 @@
  *     project. `/api/source/connectors/usage` returns connector -> projects.
  *   - **Runtime sync** (Talend Management Console today) is a *runtime source*
  *     whose credential lives in this backend's scheduler tables.
- *     `/api/runtime/sources` returns one row per source, carrying its project.
+ *     `/api/runtime/sources` returns one row per source, carrying the projects
+ *     ATTACHED to it -- a source has no owning project, and one tenant can be
+ *     read by several projects at once.
  *
  * This module inverts both into one project -> sources map so a project row can
  * state what a documentation run will reach for. The kinds are deliberately kept
@@ -62,7 +64,8 @@ export interface ConnectorUsageResponse {
 
 export interface RuntimeSource {
   id: number;
-  project_id: string;
+  /** Projects attached to this source. Empty is a real state: no project reads it yet. */
+  linked_project_ids: string[];
   source_type: string;
   label: string;
   status: string;
@@ -193,20 +196,26 @@ export function useProjectLiveSources(): {
 
   for (const source of runtimeQuery.data?.sources ?? []) {
     const synced = formatTimestamp(source.last_synced_at);
-    add(source.project_id, {
-      key: `runtime:${source.id}`,
-      label: runtimeProviderLabel(typesQuery.data, source.source_type),
-      kind: "runtime_sync",
-      detail: [
-        LIVE_SOURCE_KIND_LABEL.runtime_sync,
-        source.label ? `Source: ${source.label}` : null,
-        !source.enabled ? source.disabled_reason?.trim() || "Disabled" : null,
-        synced ? `Last synced ${synced}` : "Not synced yet",
-      ]
-        .filter(Boolean)
-        .join(" · "),
-      healthy: source.enabled && source.status === "success",
-    });
+    // One chip per ATTACHED project. A tenant shared by three projects feeds
+    // three documentation runs, and crediting it to only one of them was how a
+    // project that reads a shared mirror came to look like it had no runtime
+    // data at all.
+    for (const projectId of source.linked_project_ids ?? []) {
+      add(projectId, {
+        key: `runtime:${source.id}`,
+        label: runtimeProviderLabel(typesQuery.data, source.source_type),
+        kind: "runtime_sync",
+        detail: [
+          LIVE_SOURCE_KIND_LABEL.runtime_sync,
+          source.label ? `Source: ${source.label}` : null,
+          !source.enabled ? source.disabled_reason?.trim() || "Disabled" : null,
+          synced ? `Last synced ${synced}` : "Not synced yet",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        healthy: source.enabled && source.status === "success",
+      });
+    }
   }
 
   return {

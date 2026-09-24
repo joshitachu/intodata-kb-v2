@@ -250,7 +250,7 @@ class TestRoundTrips:
         await repo.upsert_source(
             "project-a",
             RuntimeSource(
-                project_id="project-a",
+                estate_key="project-a",
                 source_key=_SRC,
                 source_type="mock",
                 label="Demo source",
@@ -413,7 +413,7 @@ class TestScopeEnforcement:
             await repo.upsert_source(
                 project_id,
                 RuntimeSource(
-                    project_id=project_id,
+                    estate_key=project_id,
                     source_key=_SRC,
                     source_type="mock",
                     label=f"Source {project_id}",
@@ -443,7 +443,10 @@ class TestScopeEnforcement:
         denied = await repo.list_engines(["project-a"], ListRuntimeEnginesInput(project_id="project-b"))
         empty = await repo.get_estate_overview([], ListRuntimeInventoryInput())
 
-        assert [source.project_id for source in sources] == ["project-a"]
+        # The mirror inventory is filtered on the ROW STAMP, which this model
+        # now names honestly: `estate_key`, the value written into every
+        # mirrored row's `project_id` column.
+        assert [source.estate_key for source in sources] == ["project-a"]
         assert [engine.engine_id for engine in engines] == ["engine-a"]
         assert denied == []
         assert empty.engines_total == 0
@@ -649,7 +652,7 @@ class TestPagination:
     async def test_repeated_inventory_upsert_is_idempotent(self, db_session):
         repo = RuntimeStoreRepository(db_session)
         source = RuntimeSource(
-            project_id="project-a",
+            estate_key="project-a",
             source_key=_SRC,
             source_type="mock",
             label="Before",
@@ -1020,7 +1023,7 @@ class TestHealthRollups:
         await repo.upsert_source(
             "project-a",
             RuntimeSource(
-                project_id="project-a",
+                estate_key="project-a",
                 source_key=_SRC,
                 source_type="mock",
                 label="Demo source",

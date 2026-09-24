@@ -9,6 +9,22 @@ parameter or path value may widen access. `project_id` query params are filters
 *within* the caller's scope, never an authorization source. Cross-project point
 lookups return 404 so they cannot reveal whether an execution exists outside scope.
 
+Read grants, and the one way to apply them
+------------------------------------------
+Scope widens in exactly one place: a STORED read grant, resolved by the
+`RuntimeRead` / `RuntimeReadById` dependencies in `src/api/dependencies.py`. The
+resolved `RuntimeReadScope` carries two halves -- `scope`, widened to include the
+granting project, and `terms`, the per-grant environment and window limits -- and
+a handler that passes one without the other has switched the grant's own
+narrowing off. So the rule in this module is mechanical and has no exceptions:
+
+    wherever `read.scope` goes, `read_terms=read.terms` goes with it.
+
+An endpoint whose repository call cannot carry `read_terms` is NOT widened; it
+keeps `_intersect_scope` and says so at its call site. Handing a widened scope to
+a lane that cannot express the narrowing is the fail-open this design exists to
+prevent, and it is worse than a shared reader seeing nothing.
+
 All endpoints are available to any authenticated user; authorization is project-scope
 based (the same contract used across the RAG backend), so there is no extra
 role/permission gate.
@@ -27,7 +43,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from src.api.dependencies import CurrentUser, DBSession, RuntimeSourceReader, RuntimeSourceWriter
+from src.api.dependencies import (
+    CurrentUser,
+    DBSession,
+    RuntimeRead,
+    RuntimeReadById,
+    RuntimeSourceReader,
+    RuntimeSourceWriter,
+)
 from src.api.routes.ingest import verify_machine_topology_ingest_api_key
 from src.rbac.permissions import get_user_project_ids
 from src.runtime.insights.models import (
@@ -95,6 +118,11 @@ from src.runtime.models import (
     RuntimeTrendBucket,
     RuntimeTrendCoverage,
     RuntimeTrendInput,
+)
+from src.runtime.read_scope import (
+    RuntimeReadScope,
+    resolve_runtime_read_scope,
+    resolve_runtime_read_scope_for_user,
 )
 from src.runtime.status import get_runtime_status
 from src.runtime.store import ProjectScope, RuntimeRecordNotFoundError, RuntimeStoreRepository
@@ -306,6 +334,25 @@ def _intersect_scope(scope: ProjectScope, project_id: str | None) -> ProjectScop
       - restricted [ids] + out-of-scope     -> []  (deny)
       - empty [] (no access)                -> []  (stays denied)
       - no filter                            -> scope unchanged
+
+    THE UNWIDENED PATH, kept deliberately. The `RuntimeRead` dependency replaced
+    this on every endpoint whose repository call can carry `read_terms`. What is
+    left are the endpoints that must NOT widen, and each one says why where it
+    calls this:
+
+      * the two `job-scan-maps` WRITES -- a read grant is read permission;
+      * `GET /job-scan-maps`, `GET /sources`, `GET /job-insights` and the
+        incident lane -- their repository methods take no `read_terms`, so a
+        widened scope would arrive with the grant's narrowing missing;
+      * `GET /doc-read-scope` -- for the 404 GATE only. It resolves its own read
+        set immediately afterwards, terms included, because the picker it feeds
+        must describe the environments a documentation run will really reach.
+        The gate stays because this endpoint answers for a NAMED project and has
+        to 404 on one the user cannot see, which an empty read set cannot
+        express.
+
+    Deleting it would therefore mean widening one of those, which is the one
+    thing none of them may do.
     """
     if project_id is None:
         return scope
@@ -314,6 +361,61 @@ def _intersect_scope(scope: ProjectScope, project_id: str | None) -> ProjectScop
     if project_id in scope:
         return [project_id]
     return []
+
+
+async def _execution_read_scope(
+    repo: RuntimeStoreRepository, read: RuntimeReadScope, execution_id: str
+) -> ProjectScope:
+    """The narrowest scope under which `execution_id` is readable, or 404.
+
+    The bridge to a lane that takes a plain `ProjectScope` and cannot carry
+    `read_terms`. Handing such a lane the widened `read.scope` would be the
+    fail-open this module exists to prevent -- worse than a plain widening,
+    because an execution id is not unique across projects: the gate could match
+    the reader's OWN row while the terms-blind query behind it picked the
+    grantor's row with the same id from an environment the grant excluded.
+
+    So the scope is resolved to rows that are readable OUTRIGHT, in at most one
+    query plus one per narrowed grant:
+
+    * terms that restrict nothing are tried together, and on a hit the whole
+      unrestricted set is returned -- every project in it is fully readable, so
+      no later query inside that scope can reach a row the grant did not allow;
+    * each narrowed term is then tried alone, carrying its own environment and
+      window, and a hit returns that project and nothing else;
+    * no terms at all means no read set was resolved (an unrestricted user, or a
+      fully denied one), so `read.scope` is already exactly the old boundary.
+
+    Raises `RuntimeRecordNotFoundError`, the same signal the repository raises,
+    so a caller's existing 404 handler covers both without a second branch.
+    """
+    if not read.terms:
+        return read.scope
+
+    unrestricted = [term for term in read.terms if term.unrestricted]
+    if unrestricted:
+        projects = [term.project_id for term in unrestricted]
+        try:
+            await repo.get_execution_details(
+                projects,
+                GetExecutionDetailsInput(execution_id=execution_id, read_terms=unrestricted),
+            )
+            return projects
+        except RuntimeRecordNotFoundError:
+            pass
+
+    for term in read.terms:
+        if term.unrestricted:
+            continue
+        try:
+            await repo.get_execution_details(
+                [term.project_id],
+                GetExecutionDetailsInput(execution_id=execution_id, read_terms=[term]),
+            )
+            return [term.project_id]
+        except RuntimeRecordNotFoundError:
+            continue
+    raise RuntimeRecordNotFoundError(f"Unknown execution_id: {execution_id}")
 
 
 @router.get("/status", response_model=RuntimeStatusResponse, summary="Get live runtime connection status")
@@ -343,14 +445,28 @@ async def get_runtime_doc_evidence(
 
     Scope widens ONLY through stored read grants
     --------------------------------------------
-    `resolve_runtime_read_projects` adds the projects whose runtime rows this
+    `resolve_runtime_read_scope` adds the projects whose runtime rows this
     project has been granted, so one vendor tenant, mirrored once, can be read
     by every scanned project it backs instead of being registered (and polled)
     once per project.  The signature is deliberately unchanged: no caller may
     pass a project set in.  With no user behind this key there is no second
     gate, so a request-supplied read set would be an authorization bypass with
-    nothing behind it.  `read_scope.shared_read` reports whether the widening
-    actually applied, and `read_scope.read_project_ids` says to what.
+    nothing behind it.  `user_scope=None` says exactly that -- there is no user
+    scope to check the named project against -- and widening still comes only
+    from stored grant rows.  `read_scope.shared_read` reports whether the
+    widening actually applied, and `read_scope.read_project_ids` says to what.
+
+    Two resolutions, on purpose
+    ---------------------------
+    `resolve_doc_read_scope` is the FLAT documentation scope this response
+    reports and applies to the whole read: every configured source's environment
+    selection unioned, and the widest window.  `resolve_runtime_read_scope` is
+    the PER-PROJECT terms, which bound each granting project's contribution on
+    top of it -- a grant's environment and window are limits the GRANTOR set on
+    THEIR estate, and the flat scope cannot express them without either leaking
+    the grantor's excluded rows or suppressing the reader's own.  Both are
+    anchored at the same `now`, so a grant's window floor and this response's
+    own `since` compare against one instant rather than two.
 
     Aggregates only.  No log lines and no per-run timestamps cross this
     boundary, and the one free-text field is redacted, because the response is
@@ -373,15 +489,19 @@ async def get_runtime_doc_evidence(
     signal; `read_scope.shared_read` is how a consumer tells the two apart.
     """
     repo = RuntimeStoreRepository(db)
-    read_projects = await repo.resolve_runtime_read_projects(project_id)
+    now = datetime.now(UTC)
+    read = await resolve_runtime_read_scope(
+        repo, user_scope=None, project_id=project_id, now=now
+    )
+    read_projects = read.project_ids or [project_id]
     # The caller's `window_days` is the DEFAULT, not the ceiling: a per-project
     # setting is the operator's deliberate choice about how much history
     # describes this estate, and the generator has no basis to overrule it.
     read_scope = await repo.resolve_doc_read_scope(
-        read_projects, project_id, default_window_days=window_days
+        read_projects, project_id, default_window_days=window_days, read_terms=read.terms
     )
     effective_window = read_scope.window_days or window_days
-    since = datetime.now(UTC) - timedelta(days=effective_window)
+    since = now - timedelta(days=effective_window)
     units_, unmatched, orphans = await repo.list_doc_evidence(
         read_projects,
         project_id=project_id,
@@ -390,6 +510,9 @@ async def get_runtime_doc_evidence(
         max_failures_per_unit=max_failures_per_unit,
         environment_ids=read_scope.environment_ids,
         project_ids=read_projects,
+        # Never one without the other: `read_projects` names the granting
+        # project, and the terms are what that grant actually allows of it.
+        read_terms=read.terms,
     )
     return RuntimeDocEvidenceResponse(
         project_id=project_id,
@@ -437,19 +560,32 @@ async def get_runtime_doc_read_scope(
     offers the shared tenant's environments.  Without that the reader's
     operator could not configure a scope for the data their documentation runs
     will actually read.
+
+    It offers the environments that grant actually REACHES, which is why the
+    resolved terms are threaded into both calls.  This endpoint exists so an
+    operator's selection lands on data; an environment a grant excludes would be
+    a choice that silently resolves to no evidence, and listing it would also
+    tell a reader granted PROD what else the grantor's estate runs.
     """
     scope = await get_user_project_ids(user, db)
     if _intersect_scope(scope, project_id) == []:
         raise HTTPException(status_code=404, detail="Project not found")
     repo = RuntimeStoreRepository(db)
-    read_projects = await repo.resolve_runtime_read_projects(project_id)
+    # Same resolver as `/doc-evidence`, under the USER's scope: the check above
+    # already 404s a project outside it, and resolving here keeps the scope this
+    # picker describes identical to the one a documentation run will read.
+    read = await resolve_runtime_read_scope(repo, user_scope=scope, project_id=project_id)
+    read_projects = read.project_ids or [project_id]
     return RuntimeDocReadScopeResponse(
         project_id=project_id,
         scope=await repo.resolve_doc_read_scope(
-            read_projects, project_id, default_window_days=default_window_days
+            read_projects,
+            project_id,
+            default_window_days=default_window_days,
+            read_terms=read.terms,
         ),
         available_environments=await repo.list_mirrored_environments(
-            read_projects, project_id, project_ids=read_projects
+            read_projects, project_id, project_ids=read_projects, read_terms=read.terms
         ),
     )
 
@@ -460,6 +596,14 @@ async def list_runtime_job_scan_maps(
     user: RuntimeSourceReader,
     db: DBSession,
 ) -> RuntimeJobScanMapListResponse:
+    """Static-to-runtime job mappings for one project.
+
+    NOT widened by read grants. `RuntimeTopologyRepository.list_job_scan_maps`
+    takes a single `project_id` and has no `read_terms` parameter, so there is no
+    way to express a grant's environment or window here; a mapping is also a
+    statement about the READER's scan, not about the mirrored estate, so a
+    granted tenant has nothing to contribute to it.
+    """
     scope = await get_user_project_ids(user, db)
     if _intersect_scope(scope, project_id) == []:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -473,6 +617,14 @@ async def upsert_runtime_job_scan_map(
     user: RuntimeSourceWriter,
     db: DBSession,
 ) -> RuntimeJobScanMapResponse:
+    """Create or replace one static-to-runtime job mapping.
+
+    A WRITE, and therefore deliberately on the raw user scope. A read grant says
+    "this project may READ my mirrored rows"; it is not consent to write into the
+    granting project, and `RuntimeRead` here would silently turn one into the
+    other. The same applies to the DELETE below, and to any write added beside
+    them: writes intersect, never widen.
+    """
     scope = await get_user_project_ids(user, db)
     if _intersect_scope(scope, body.project_id) == []:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -494,6 +646,7 @@ async def delete_runtime_job_scan_map(
     user: RuntimeSourceWriter,
     db: DBSession,
 ) -> None:
+    # A WRITE: raw user scope only, never `RuntimeRead`. See the upsert above.
     scope = await get_user_project_ids(user, db)
     if _intersect_scope(scope, project_id) == []:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -507,7 +660,7 @@ async def delete_runtime_job_scan_map(
 
 @router.get("/executions", response_model=ExecutionListResponse, summary="List runtime executions")
 async def list_executions(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     job_name: str | None = None,
@@ -519,7 +672,15 @@ async def list_executions(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> ExecutionListResponse:
-    scope = await get_user_project_ids(user, db)
+    """Page of runtime executions, newest first.
+
+    `ListExecutionsInput` carries no `project_id` of its own -- this surface was
+    always filtered by the caller's scope alone -- which is exactly why the terms
+    matter here. `read.scope` may now include a granting project, and without
+    `read_terms` that widening would arrive with the grant's environment and
+    window stripped off. The SAME params object feeds the page and the count, so
+    the two can never be computed from different predicates.
+    """
     repo = RuntimeStoreRepository(db)
     params = ListExecutionsInput(
         job_name=job_name,
@@ -530,12 +691,12 @@ async def list_executions(
         unfinished=unfinished,
         limit=limit,
         offset=offset,
+        read_terms=read.terms,
     )
-    executions = await repo.list_executions(
-        _intersect_scope(scope, project_id),
-        params,
+    executions = await repo.list_executions(read.scope, params)
+    return ExecutionListResponse(
+        executions=executions, total=await repo.count_executions(read.scope, params)
     )
-    return ExecutionListResponse(executions=executions, total=await repo.count_executions(_intersect_scope(scope, project_id), params))
 
 
 @router.get(
@@ -545,14 +706,24 @@ async def list_executions(
 )
 async def get_execution(
     execution_id: str,
-    user: CurrentUser,
+    read: RuntimeReadById,
     db: DBSession,
 ) -> ExecutionDetailResponse:
-    scope = await get_user_project_ids(user, db)
+    """One execution by id -- the drill-down from a row in the list above.
+
+    `RuntimeReadById`, not `RuntimeRead`: there is no `project_id` here to widen
+    from, and without the by-id resolver a granted reader would 404 on the very
+    row the list just handed them.
+
+    An execution id is not a secret -- the same id exists in the granting
+    project's mirror -- so `read_terms` is the only thing keeping a reader
+    granted PROD from naming an ACC execution and reading it.
+    """
     repo = RuntimeStoreRepository(db)
     try:
         execution = await repo.get_execution_details(
-            scope, GetExecutionDetailsInput(execution_id=execution_id)
+            read.scope,
+            GetExecutionDetailsInput(execution_id=execution_id, read_terms=read.terms),
         )
     except RuntimeRecordNotFoundError:
         raise HTTPException(status_code=404, detail="Execution not found")
@@ -569,10 +740,27 @@ async def get_execution_correlation(
     user: CurrentUser,
     db: DBSession,
 ) -> RuntimeExecutionCorrelation:
+    """Correlate one execution with the static topology it was scanned from.
+
+    Resolved in the handler rather than through `RuntimeReadById` because
+    `RuntimeCorrelationService` takes a plain `ProjectScope` and cannot carry
+    `read_terms`: the scope it receives must FIRST be narrowed to the project of
+    the execution the terms actually admit (`_execution_read_scope`). Doing half
+    of that in a dependency would leave a widened scope sitting in the handler
+    looking ready to use, which is precisely the mistake this module is arranged
+    to make impossible.
+
+    Everything the service reads after that point is keyed by the resolved
+    execution's own project, so narrowing here costs nothing and the drill-down
+    reaches a granted reader's rows the same way the list and the detail do.
+    """
+    repo = RuntimeStoreRepository(db)
+    read = await resolve_runtime_read_scope_for_user(
+        repo, user_scope=await get_user_project_ids(user, db)
+    )
     try:
-        return await RuntimeCorrelationService(db).correlate_execution(
-            await get_user_project_ids(user, db), execution_id
-        )
+        scope = await _execution_read_scope(repo, read, execution_id)
+        return await RuntimeCorrelationService(db).correlate_execution(scope, execution_id)
     except RuntimeRecordNotFoundError:
         raise HTTPException(status_code=404, detail="Execution not found")
 
@@ -584,34 +772,60 @@ async def get_execution_correlation(
 )
 async def get_execution_logs(
     execution_id: str,
-    user: CurrentUser,
+    read: RuntimeReadById,
     db: DBSession,
     min_severity: RuntimeLogSeverity | None = None,
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> LogEventListResponse:
-    scope = await get_user_project_ids(user, db)
+    """Log lines of one execution -- the second half of the drill-down.
+
+    The read set is applied to all THREE reads below (the existence gate, the
+    page and the count) and with the same terms, so a granted reader cannot see
+    a total it is not allowed to page to, and a reader granted PROD cannot name
+    an ACC execution and read its lines.
+    """
     repo = RuntimeStoreRepository(db)
     # Gate on a scoped existence check first: an unknown or out-of-scope id is a 404,
     # while an in-scope execution with no log lines at this severity is an empty list.
     try:
-        await repo.get_execution_details(scope, GetExecutionDetailsInput(execution_id=execution_id))
+        await repo.get_execution_details(
+            read.scope,
+            GetExecutionDetailsInput(execution_id=execution_id, read_terms=read.terms),
+        )
     except RuntimeRecordNotFoundError:
         raise HTTPException(status_code=404, detail="Execution not found")
     try:
-        params = GetExecutionLogsInput(execution_id=execution_id, min_severity=min_severity, limit=limit, offset=offset)
+        params = GetExecutionLogsInput(
+            execution_id=execution_id,
+            min_severity=min_severity,
+            limit=limit,
+            offset=offset,
+            read_terms=read.terms,
+        )
         events = await repo.get_execution_logs(
-            scope,
+            read.scope,
             params,
         )
     except RuntimeRecordNotFoundError:
         events = []
-    return LogEventListResponse(execution_id=execution_id, events=events, total=await repo.count_execution_logs(scope, GetExecutionLogsInput(execution_id=execution_id, min_severity=min_severity)))
+    return LogEventListResponse(
+        execution_id=execution_id,
+        events=events,
+        total=await repo.count_execution_logs(
+            read.scope,
+            GetExecutionLogsInput(
+                execution_id=execution_id,
+                min_severity=min_severity,
+                read_terms=read.terms,
+            ),
+        ),
+    )
 
 
 @router.get("/failures", response_model=FailureListResponse, summary="List runtime failures")
 async def list_failures(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     since: datetime | None = None,
@@ -619,14 +833,19 @@ async def list_failures(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> FailureListResponse:
-    scope = await get_user_project_ids(user, db)
+    """Failures across the read set, newest first.
+
+    Like `/executions`, `DetectFailuresInput` carries no `project_id`, so the
+    terms are the only thing narrowing a granting project's contribution.
+    """
     repo = RuntimeStoreRepository(db)
-    params = DetectFailuresInput(since=since, until=until, limit=limit, offset=offset)
-    failures = await repo.detect_failures(
-        _intersect_scope(scope, project_id),
-        params,
+    params = DetectFailuresInput(
+        since=since, until=until, limit=limit, offset=offset, read_terms=read.terms
     )
-    return FailureListResponse(failures=failures, total=await repo.count_failures(_intersect_scope(scope, project_id), params))
+    failures = await repo.detect_failures(read.scope, params)
+    return FailureListResponse(
+        failures=failures, total=await repo.count_failures(read.scope, params)
+    )
 
 
 @router.get(
@@ -635,7 +854,7 @@ async def list_failures(
     summary="Get bucketed run-outcome and duration trend",
 )
 async def get_runtime_trend(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
@@ -645,9 +864,13 @@ async def get_runtime_trend(
     until: datetime | None = None,
     limit: int = Query(default=90, ge=1, le=400),
 ) -> RuntimeTrendResponse:
-    scope = await get_user_project_ids(user, db)
+    """Bucketed run outcomes, and the coverage the series was drawn from.
+
+    Both calls take the same params, so the coverage statement describes the
+    population the points were counted over -- including, under a grant, the
+    window that grant imposes on the grantor's half of it.
+    """
     repo = RuntimeStoreRepository(db)
-    scoped_projects = _intersect_scope(scope, project_id)
     params = RuntimeTrendInput(
         project_id=project_id,
         source_key=source_key,
@@ -656,9 +879,10 @@ async def get_runtime_trend(
         since=since,
         until=until,
         limit=limit,
+        read_terms=read.terms,
     )
-    points = await repo.get_outcome_trend(scoped_projects, params)
-    coverage = await repo.get_outcome_trend_coverage(scoped_projects, params)
+    points = await repo.get_outcome_trend(read.scope, params)
+    coverage = await repo.get_outcome_trend_coverage(read.scope, params)
     return RuntimeTrendResponse(
         bucket=bucket,
         points=points,
@@ -673,7 +897,7 @@ async def get_runtime_trend(
     summary="List per-job reliability and latency rollups",
 )
 async def list_runtime_job_reliability(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
@@ -687,9 +911,7 @@ async def list_runtime_job_reliability(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> RuntimeJobReliabilityResponse:
-    scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    selected_scope = _intersect_scope(scope, project_id)
     params = ListRuntimeJobReliabilityInput(
         project_id=project_id,
         source_key=source_key,
@@ -699,10 +921,11 @@ async def list_runtime_job_reliability(
         attention_only=attention_only,
         limit=limit,
         offset=offset,
+        read_terms=read.terms,
     )
     return RuntimeJobReliabilityResponse(
-        jobs=await repo.list_job_reliability(selected_scope, params),
-        total=await repo.count_job_reliability(selected_scope, params),
+        jobs=await repo.list_job_reliability(read.scope, params),
+        total=await repo.count_job_reliability(read.scope, params),
     )
 
 
@@ -723,6 +946,13 @@ async def list_runtime_job_insights(
 
     The response contains aggregate coverage plus the dominant high/medium
     deterministic diagnosis. It never returns raw log rows or stack traces.
+
+    NOT widened by read grants. `list_job_operational_insights` builds its own
+    `ListRuntimeJobReliabilityInput` internally and takes no `read_terms`, so
+    terms passed here would reach the `total` and not the page -- a count nobody
+    can page to -- while a widened scope alone would reach the grantor's rows
+    with the grant's narrowing missing. Widening belongs in that repository
+    method, not in a second resolution here.
     """
     scope = _intersect_scope(await get_user_project_ids(user, db), project_id)
     repo = RuntimeStoreRepository(db)
@@ -750,7 +980,7 @@ async def list_runtime_job_insights(
     summary="List per-component throughput and latency hotspots",
 )
 async def list_runtime_component_hotspots(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
@@ -761,9 +991,7 @@ async def list_runtime_component_hotspots(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> RuntimeComponentHotspotResponse:
-    scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    selected_scope = _intersect_scope(scope, project_id)
     params = ListRuntimeComponentHotspotsInput(
         project_id=project_id,
         source_key=source_key,
@@ -773,10 +1001,11 @@ async def list_runtime_component_hotspots(
         until=until,
         limit=limit,
         offset=offset,
+        read_terms=read.terms,
     )
     return RuntimeComponentHotspotResponse(
-        components=await repo.list_component_hotspots(selected_scope, params),
-        total=await repo.count_component_hotspots(selected_scope, params),
+        components=await repo.list_component_hotspots(read.scope, params),
+        total=await repo.count_component_hotspots(read.scope, params),
     )
 
 
@@ -786,7 +1015,7 @@ async def list_runtime_component_hotspots(
     summary="List rows moved per job from component metrics",
 )
 async def list_runtime_job_throughput(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
@@ -796,9 +1025,7 @@ async def list_runtime_job_throughput(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> RuntimeJobThroughputResponse:
-    scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    selected_scope = _intersect_scope(scope, project_id)
     params = ListRuntimeJobThroughputInput(
         project_id=project_id,
         source_key=source_key,
@@ -807,10 +1034,11 @@ async def list_runtime_job_throughput(
         until=until,
         limit=limit,
         offset=offset,
+        read_terms=read.terms,
     )
     return RuntimeJobThroughputResponse(
-        jobs=await repo.list_job_throughput(selected_scope, params),
-        total=await repo.count_job_throughput(selected_scope, params),
+        jobs=await repo.list_job_throughput(read.scope, params),
+        total=await repo.count_job_throughput(read.scope, params),
     )
 
 
@@ -820,7 +1048,7 @@ async def list_runtime_job_throughput(
     summary="List recurring runtime error signatures",
 )
 async def list_runtime_error_signatures(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     error_code: str | None = None,
@@ -831,9 +1059,7 @@ async def list_runtime_error_signatures(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> RuntimeErrorSignatureResponse:
-    scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    selected_scope = _intersect_scope(scope, project_id)
     params = ListRuntimeErrorSignaturesInput(
         project_id=project_id,
         error_code=error_code,
@@ -843,47 +1069,56 @@ async def list_runtime_error_signatures(
         until=until,
         limit=limit,
         offset=offset,
+        read_terms=read.terms,
     )
     return RuntimeErrorSignatureResponse(
-        signatures=await repo.list_error_signatures(selected_scope, params),
-        total=await repo.count_error_signatures(selected_scope, params),
+        signatures=await repo.list_error_signatures(read.scope, params),
+        total=await repo.count_error_signatures(read.scope, params),
     )
 
 
 @router.get("/sync-status", response_model=SyncStatusResponse, summary="List runtime sync status")
 async def list_sync_status(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
     limit: int = Query(default=100, ge=1, le=200),
 ) -> SyncStatusResponse:
-    scope = await get_user_project_ids(user, db)
+    """Freshness of every mirror in the read set.
+
+    `read_terms` is a keyword here rather than a params field, but the rule is
+    the same one: it travels with `read.scope` and takes precedence over
+    `project_id`. A sync-state row is per (source, project) with no environment
+    and no execution id, so an environment-narrowed grant contributes none of the
+    grantor's rows -- fail-closed, as the repository documents.
+    """
     repo = RuntimeStoreRepository(db)
     states = await repo.list_sync_states(
-        _intersect_scope(scope, project_id),
+        read.scope,
         source_key=source_key,
         project_id=project_id,
         limit=limit,
+        read_terms=read.terms,
     )
     return SyncStatusResponse(states=states, total=len(states))
 
 
 @router.get("/health", response_model=HealthSummaryResponse, summary="List runtime health rollups")
 async def list_runtime_health(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
     limit: int = Query(default=50, ge=1, le=200),
 ) -> HealthSummaryResponse:
-    scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
     health = await repo.list_health_summaries(
-        _intersect_scope(scope, project_id),
+        read.scope,
         project_id=project_id,
         source_key=source_key,
         limit=limit,
+        read_terms=read.terms,
     )
     return HealthSummaryResponse(health=health, total=len(health))
 
@@ -896,6 +1131,16 @@ async def list_runtime_sources(
     source_key: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
 ) -> RuntimeSourceListResponse:
+    """Registered source CONFIGURATIONS for this project.
+
+    NOT widened by read grants, and deliberately so. `list_source_configs` is the
+    registration surface -- who holds the credential, when it last polled, what
+    it is called -- not the mirror inventory, and `RuntimeStoreRepository` draws
+    that line explicitly: `list_sources` takes `read_terms` and this one does
+    not. A grant says "read my mirrored rows"; it does not hand the reader the
+    grantor's connector setup, and a widened scope here would do exactly that
+    with no narrowing available to bound it.
+    """
     scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
     sources = await repo.list_source_configs(
@@ -910,7 +1155,7 @@ async def list_runtime_sources(
 
 @router.get("/engines", response_model=RuntimeEngineListResponse, summary="List runtime engines")
 async def list_runtime_engines(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
@@ -918,20 +1163,19 @@ async def list_runtime_engines(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> RuntimeEngineListResponse:
-    scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    selected_scope = _intersect_scope(scope, project_id)
     params = ListRuntimeEnginesInput(
         project_id=project_id,
         source_key=source_key,
         status=status,
         limit=limit,
         offset=offset,
+        read_terms=read.terms,
     )
-    engines = await repo.list_engines(selected_scope, params)
+    engines = await repo.list_engines(read.scope, params)
     return RuntimeEngineListResponse(
         engines=engines,
-        total=await repo.count_engines(selected_scope, params),
+        total=await repo.count_engines(read.scope, params),
     )
 
 
@@ -941,22 +1185,22 @@ async def list_runtime_engines(
     summary="List runtime engine health",
 )
 async def list_runtime_engine_health(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
     status: RuntimeEngineStatus | None = None,
     limit: int = Query(default=100, ge=1, le=500),
 ) -> RuntimeEngineHealthResponse:
-    scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
     health = await repo.list_engine_health(
-        _intersect_scope(scope, project_id),
+        read.scope,
         ListRuntimeEnginesInput(
             project_id=project_id,
             source_key=source_key,
             status=status,
             limit=limit,
+            read_terms=read.terms,
         ),
     )
     return RuntimeEngineHealthResponse(health=health, total=len(health))
@@ -964,23 +1208,24 @@ async def list_runtime_engine_health(
 
 @router.get("/overview", response_model=RuntimeOverviewResponse, summary="Get runtime estate overview")
 async def get_runtime_overview(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
 ) -> RuntimeOverviewResponse:
-    scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
     overview = await repo.get_estate_overview(
-        _intersect_scope(scope, project_id),
-        ListRuntimeInventoryInput(project_id=project_id, source_key=source_key),
+        read.scope,
+        ListRuntimeInventoryInput(
+            project_id=project_id, source_key=source_key, read_terms=read.terms
+        ),
     )
     return RuntimeOverviewResponse(overview=overview)
 
 
 @router.get("/jobs", response_model=RuntimeJobListResponse, summary="List runtime jobs")
 async def list_runtime_jobs(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
@@ -992,9 +1237,13 @@ async def list_runtime_jobs(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> RuntimeJobListResponse:
-    scope = await get_user_project_ids(user, db)
+    """Job inventory across the read set.
+
+    Inventory, so a grant's WINDOW deliberately does not apply here: a window
+    bounds how much history a reader may see, not whether a job exists. The
+    grant's environment does apply, because `runtime_jobs` carries one.
+    """
     repo = RuntimeStoreRepository(db)
-    selected_scope = _intersect_scope(scope, project_id)
     params = ListRuntimeJobsInput(
         project_id=project_id,
         source_key=source_key,
@@ -1005,11 +1254,12 @@ async def list_runtime_jobs(
         executable_kind=executable_kind,
         limit=limit,
         offset=offset,
+        read_terms=read.terms,
     )
-    jobs = await repo.list_jobs(selected_scope, params)
+    jobs = await repo.list_jobs(read.scope, params)
     return RuntimeJobListResponse(
         jobs=jobs,
-        total=await repo.count_jobs(selected_scope, params),
+        total=await repo.count_jobs(read.scope, params),
     )
 
 
@@ -1019,7 +1269,7 @@ async def list_runtime_jobs(
     summary="List latest Route and Data Service deployments",
 )
 async def list_runtime_deployments(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
@@ -1030,9 +1280,7 @@ async def list_runtime_deployments(
 ) -> RuntimeDeploymentListResponse:
     if executable_kind == RuntimeExecutableKind.JOB:
         raise HTTPException(status_code=422, detail="Deployments only support routes and data services")
-    scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    selected_scope = _intersect_scope(scope, project_id)
     params = ListRuntimeDeploymentsInput(
         project_id=project_id,
         source_key=source_key,
@@ -1040,16 +1288,17 @@ async def list_runtime_deployments(
         state=state,
         limit=limit,
         offset=offset,
+        read_terms=read.terms,
     )
     return RuntimeDeploymentListResponse(
-        deployments=await repo.list_deployments(selected_scope, params),
-        total=await repo.count_deployments(selected_scope, params),
+        deployments=await repo.list_deployments(read.scope, params),
+        total=await repo.count_deployments(read.scope, params),
     )
 
 
 @router.get("/artifacts", response_model=RuntimeArtifactListResponse, summary="List runtime artifacts")
 async def list_runtime_artifacts(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
@@ -1058,9 +1307,15 @@ async def list_runtime_artifacts(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> RuntimeArtifactListResponse:
-    scope = await get_user_project_ids(user, db)
+    """Artifact inventory across the read set.
+
+    `runtime_artifacts` carries neither an environment nor an execution id, so an
+    environment-narrowed grant contributes NOTHING here rather than everything.
+    That fail-closed rule lives in `_apply_read_terms`; the alternative would
+    hand a reader granted one environment the grantor's complete artifact
+    inventory.
+    """
     repo = RuntimeStoreRepository(db)
-    selected_scope = _intersect_scope(scope, project_id)
     params = ListRuntimeArtifactsInput(
         project_id=project_id,
         source_key=source_key,
@@ -1068,16 +1323,17 @@ async def list_runtime_artifacts(
         artifact_type=artifact_type,
         limit=limit,
         offset=offset,
+        read_terms=read.terms,
     )
     return RuntimeArtifactListResponse(
-        artifacts=await repo.list_artifacts(selected_scope, params),
-        total=await repo.count_artifacts(selected_scope, params),
+        artifacts=await repo.list_artifacts(read.scope, params),
+        total=await repo.count_artifacts(read.scope, params),
     )
 
 
 @router.get("/connections", response_model=RuntimeConnectionListResponse, summary="List runtime connections")
 async def list_runtime_connections(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
@@ -1086,9 +1342,7 @@ async def list_runtime_connections(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> RuntimeConnectionListResponse:
-    scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    selected_scope = _intersect_scope(scope, project_id)
     params = ListRuntimeConnectionsInput(
         project_id=project_id,
         source_key=source_key,
@@ -1096,16 +1350,17 @@ async def list_runtime_connections(
         connection_type=connection_type,
         limit=limit,
         offset=offset,
+        read_terms=read.terms,
     )
     return RuntimeConnectionListResponse(
-        connections=await repo.list_connections(selected_scope, params),
-        total=await repo.count_connections(selected_scope, params),
+        connections=await repo.list_connections(read.scope, params),
+        total=await repo.count_connections(read.scope, params),
     )
 
 
 @router.get("/dependencies", response_model=RuntimeDependencyListResponse, summary="List runtime dependencies")
 async def list_runtime_dependencies(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
@@ -1115,9 +1370,7 @@ async def list_runtime_dependencies(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> RuntimeDependencyListResponse:
-    scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    selected_scope = _intersect_scope(scope, project_id)
     params = ListRuntimeDependenciesInput(
         project_id=project_id,
         source_key=source_key,
@@ -1126,10 +1379,11 @@ async def list_runtime_dependencies(
         job_id=job_id,
         limit=limit,
         offset=offset,
+        read_terms=read.terms,
     )
     return RuntimeDependencyListResponse(
-        dependencies=await repo.list_job_dependencies(selected_scope, params),
-        total=await repo.count_job_dependencies(selected_scope, params),
+        dependencies=await repo.list_job_dependencies(read.scope, params),
+        total=await repo.count_job_dependencies(read.scope, params),
     )
 
 
@@ -1139,24 +1393,28 @@ async def list_runtime_dependencies(
     summary="Get runtime dependency metadata summary",
 )
 async def get_runtime_dependency_summary(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
 ) -> RuntimeDependencySummaryResponse:
-    scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
     summary = await repo.get_dependency_summary(
-        _intersect_scope(scope, project_id),
-        ListRuntimeInventoryInput(project_id=project_id, source_key=source_key, limit=limit),
+        read.scope,
+        ListRuntimeInventoryInput(
+            project_id=project_id,
+            source_key=source_key,
+            limit=limit,
+            read_terms=read.terms,
+        ),
     )
     return RuntimeDependencySummaryResponse(summary=summary)
 
 
 @router.get("/job-runs", response_model=RuntimeJobRunListResponse, summary="List runtime job runs")
 async def list_runtime_job_runs(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
@@ -1168,9 +1426,7 @@ async def list_runtime_job_runs(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> RuntimeJobRunListResponse:
-    scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    selected_scope = _intersect_scope(scope, project_id)
     params = ListRuntimeJobRunsInput(
         project_id=project_id,
         source_key=source_key,
@@ -1181,16 +1437,17 @@ async def list_runtime_job_runs(
         until=until,
         limit=limit,
         offset=offset,
+        read_terms=read.terms,
     )
     return RuntimeJobRunListResponse(
-        runs=await repo.list_job_runs(selected_scope, params),
-        total=await repo.count_job_runs(selected_scope, params),
+        runs=await repo.list_job_runs(read.scope, params),
+        total=await repo.count_job_runs(read.scope, params),
     )
 
 
 @router.get("/job-health", response_model=RuntimeJobHealthResponse, summary="List runtime job health")
 async def list_runtime_job_health(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
@@ -1199,10 +1456,9 @@ async def list_runtime_job_health(
     engine_id: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
 ) -> RuntimeJobHealthResponse:
-    scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
     health = await repo.list_job_health(
-        _intersect_scope(scope, project_id),
+        read.scope,
         ListRuntimeJobsInput(
             project_id=project_id,
             source_key=source_key,
@@ -1210,6 +1466,7 @@ async def list_runtime_job_health(
             workspace_id=workspace_id,
             engine_id=engine_id,
             limit=limit,
+            read_terms=read.terms,
         ),
     )
     return RuntimeJobHealthResponse(health=health, total=len(health))
@@ -1217,7 +1474,7 @@ async def list_runtime_job_health(
 
 @router.get("/plans", response_model=RuntimePlanListResponse, summary="List runtime plans")
 async def list_runtime_plans(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
@@ -1227,9 +1484,7 @@ async def list_runtime_plans(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> RuntimePlanListResponse:
-    scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    selected_scope = _intersect_scope(scope, project_id)
     params = ListRuntimePlansInput(
         project_id=project_id,
         source_key=source_key,
@@ -1238,17 +1493,18 @@ async def list_runtime_plans(
         status=status,
         limit=limit,
         offset=offset,
+        read_terms=read.terms,
     )
-    plans = await repo.list_plans(selected_scope, params)
+    plans = await repo.list_plans(read.scope, params)
     return RuntimePlanListResponse(
         plans=plans,
-        total=await repo.count_plans(selected_scope, params),
+        total=await repo.count_plans(read.scope, params),
     )
 
 
 @router.get("/plan-runs", response_model=RuntimePlanRunListResponse, summary="List runtime plan runs")
 async def list_runtime_plan_runs(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
@@ -1259,9 +1515,7 @@ async def list_runtime_plan_runs(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> RuntimePlanRunListResponse:
-    scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    selected_scope = _intersect_scope(scope, project_id)
     params = ListRuntimePlanRunsInput(
         project_id=project_id,
         source_key=source_key,
@@ -1271,16 +1525,17 @@ async def list_runtime_plan_runs(
         until=until,
         limit=limit,
         offset=offset,
+        read_terms=read.terms,
     )
     return RuntimePlanRunListResponse(
-        runs=await repo.list_plan_runs(selected_scope, params),
-        total=await repo.count_plan_runs(selected_scope, params),
+        runs=await repo.list_plan_runs(read.scope, params),
+        total=await repo.count_plan_runs(read.scope, params),
     )
 
 
 @router.get("/plan-health", response_model=RuntimePlanHealthResponse, summary="List runtime plan health")
 async def list_runtime_plan_health(
-    user: CurrentUser,
+    read: RuntimeRead,
     db: DBSession,
     project_id: str | None = None,
     source_key: str | None = None,
@@ -1288,16 +1543,16 @@ async def list_runtime_plan_health(
     workspace_id: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
 ) -> RuntimePlanHealthResponse:
-    scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
     health = await repo.list_plan_health(
-        _intersect_scope(scope, project_id),
+        read.scope,
         ListRuntimePlansInput(
             project_id=project_id,
             source_key=source_key,
             environment_id=environment_id,
             workspace_id=workspace_id,
             limit=limit,
+            read_terms=read.terms,
         ),
     )
     return RuntimePlanHealthResponse(health=health, total=len(health))
@@ -1305,6 +1560,21 @@ async def list_runtime_plan_health(
 
 # ---------------------------------------------------------------------------
 # Smart-log insight endpoints (Slice 2)
+#
+# NONE of these are widened by read grants, and the reason is one property of
+# the lane rather than six separate decisions: `RuntimeInsightRepository` filters
+# on `ProjectScope` alone and has no `read_terms` parameter anywhere, and its
+# tables (`runtime_execution_summaries`, `runtime_enriched_events`,
+# `runtime_incidents`) carry no environment column to narrow by. Handing it the
+# widened `read.scope` would therefore return the grantor's rows with the grant's
+# environment and window silently dropped -- the exact fail-open the rest of this
+# module is arranged to prevent.
+#
+# So they stay on the raw user scope and `_intersect_scope`. A granted reader
+# sees no incident from the shared tenant, which is a visible, reportable gap;
+# the alternative is not. Closing it means threading `read_terms` through
+# `RuntimeInsightRepository` the way `RuntimeStoreRepository` already has been --
+# one change in that repository, not a second resolution here.
 # ---------------------------------------------------------------------------
 
 

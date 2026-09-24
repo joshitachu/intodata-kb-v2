@@ -58,10 +58,26 @@ def test_generate_request_plugin_pack_id_optional():
     assert req.plugin_pack_id is None
 
 
-@pytest.mark.parametrize("method", ["custom", "opencode-cli"])
+@pytest.mark.parametrize("method", ["custom", "opencode-cli", "claude-cli"])
 def test_generate_request_accepts_generation_method_override(method):
     req = GenerateRequest(project_id="p1", doc_generation_provider=method)
     assert req.doc_generation_provider == method
+
+
+def test_every_cli_session_provider_is_accepted_by_the_schema():
+    """Two allowlists for one decision is how a supported engine gets a 422.
+
+    `get_provider()` has always resolved `claude-cli`, and the routing rules in
+    `api/routes/projects.py` name it, but the request schema's Literal listed
+    only custom + opencode-cli -- so selecting the engine that OWNS the
+    four-phase prompt was rejected at the door while its transport adapter was
+    admitted. Pin the two lists together rather than re-listing by hand.
+    """
+    from mcp_server.api.routes.projects import CLI_SESSION_PROVIDERS
+
+    for provider in sorted(CLI_SESSION_PROVIDERS):
+        req = GenerateRequest(project_id="p1", doc_generation_provider=provider)
+        assert req.doc_generation_provider == provider
 
 
 def test_generate_request_rejects_unknown_generation_method_override():

@@ -20,7 +20,8 @@ class ConnectorProvider(Protocol):
     async def health(self, config: dict, credential_reference: str | None) -> ConnectorHealthResult: ...
 
     async def read(
-        self, capability_id: str, query: ConnectorQuery, config: dict
+        self, capability_id: str, query: ConnectorQuery, config: dict,
+        credential_reference: str | None, project_id: str | None,
     ) -> ConnectorReadResult: ...
 
 

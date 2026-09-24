@@ -1,6 +1,7 @@
 FROM python:3.11-slim
 
 ARG OPENCODE_VERSION=1.18.7
+ARG CLAUDE_CODE_VERSION=2.1.280
 
 # WeasyPrint plus runtime tools used by MCP scan, git, and repo-agent flows.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -25,6 +26,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN npm install --global "opencode-ai@${OPENCODE_VERSION}" \
     && test "$(opencode --version)" = "${OPENCODE_VERSION}"
 
+# Claude Code is the canonical generation lane -- providers/claude_cli.py owns the
+# four-phase prompt that opencode_cli.py reuses verbatim, so the binary must be
+# present for the lane it was written for and not only for its transport adapter.
+# `claude --version` prints "2.1.280 (Claude Code)", not a bare version, so this
+# verifies the prefix; an exact test as used for opencode above would always fail.
+RUN npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && case "$(claude --version)" in \
+         "${CLAUDE_CODE_VERSION}"*) : ;; \
+         *) echo "claude version mismatch: $(claude --version) != ${CLAUDE_CODE_VERSION}" >&2; exit 1 ;; \
+       esac
+
 WORKDIR /app
 
 # OpenCode/Bun resolve user state through HOME and the XDG directories. The
@@ -33,7 +45,15 @@ WORKDIR /app
 ENV HOME=/app/.home \
     XDG_CONFIG_HOME=/app/.home/.config \
     XDG_CACHE_HOME=/app/.home/.cache \
-    XDG_DATA_HOME=/app/.home/.local/share
+    XDG_DATA_HOME=/app/.home/.local/share \
+    CLAUDE_CONFIG_DIR=/app/.home/.claude
+
+# Claude Code keeps credentials in $CLAUDE_CONFIG_DIR/.credentials.json but its
+# main config in `.claude.json` -- which defaults to $HOME/.claude.json, one
+# level ABOVE the config dir and therefore outside the claude_home volume. Left
+# at the default it is lost on every image rebuild, and the CLI greets each new
+# container with "Claude configuration file not found ... a backup file exists".
+# Setting CLAUDE_CONFIG_DIR pulls both files into the one persistent volume.
 
 # Install intodoc CLI first (scanner dependency)
 COPY intodoc/pyproject.toml /tmp/intodoc/pyproject.toml

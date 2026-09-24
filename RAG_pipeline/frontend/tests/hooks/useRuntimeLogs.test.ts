@@ -141,7 +141,11 @@ describe("useRuntimeLogs", () => {
     const fetchSpy = mockFetchOnce({
       sources: [
         {
-          project_id: "project-a",
+          // A source has no owning project: an internal estate stamp plus the
+          // projects attached to it.
+          estate_key: "project-a",
+          linked_project_ids: ["project-a"],
+          is_ownerless: false,
           source_key: "mock",
           source_type: "mock",
           label: "Demo runtime source",

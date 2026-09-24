@@ -14,6 +14,16 @@ class FakeTransport:
         self.calls.append((method, url, kwargs))
         if url.endswith("/_resolve/index/*"):
             return {"indices": [{"name": "logs-prod"}], "aliases": [], "data_streams": []}, 200
+        if url.endswith("/_field_caps"):
+            patterns = kwargs["json"]["fields"]
+            if "@timestamp" in patterns:
+                return {"fields": {"@timestamp": {"date": {"type": "date", "searchable": True}}}}, 200
+            if "*message*" in patterns:
+                return {"fields": {
+                    "message": {"text": {"type": "text", "searchable": True}},
+                    "service.name": {"keyword": {"type": "keyword", "searchable": True}},
+                }}, 200
+            return {"fields": {"severity": {"keyword": {"type": "keyword", "searchable": True}}}}, 200
         if url.endswith("/_search"):
             if kwargs["json"]["size"] == 0:
                 return {"aggregations": {"severity": {"buckets": [{"key": "error", "doc_count": 2}]}}}, 200
@@ -40,6 +50,23 @@ async def test_discovery_returns_non_hidden_profiles_only():
     provider = ElasticsearchProvider(FakeTransport())
     sources = await provider.discover(_instance(), "credential")
     assert [source.locator for source in sources] == ["logs-prod"]
+
+
+@pytest.mark.asyncio
+async def test_source_profile_uses_read_permitted_field_capabilities():
+    transport = FakeTransport()
+    provider = ElasticsearchProvider(transport)
+    source = await provider.describe(_instance(), _source(), "credential")
+
+    assert source.fields["timestamp_field"] == "@timestamp"
+    assert source.fields["message_fields"] == ["message"]
+    assert source.fields["service_field"] == "service.name"
+    assert source.fields["severity_field"] == "severity"
+    assert [(method, url) for method, url, _ in transport.calls] == [
+        ("POST", "https://elastic.example/logs-prod/_field_caps"),
+        ("POST", "https://elastic.example/logs-prod/_field_caps"),
+        ("POST", "https://elastic.example/logs-prod/_field_caps"),
+    ]
 
 
 @pytest.mark.asyncio

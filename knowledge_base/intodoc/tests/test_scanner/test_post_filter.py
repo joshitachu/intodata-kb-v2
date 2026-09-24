@@ -6,6 +6,7 @@ from intodoc.config import RedactionLevel
 from intodoc.models import (
     ComponentParam,
     Component,
+    Connection,
     ContextGroup,
     ContextVariable,
     FileType,
@@ -589,3 +590,99 @@ def test_component_param_nonsensitive_name_preserved():
     params = result.jobs[0].components[0].params
     assert params[0].value == "1000"
     assert params[1].value == "json"
+
+
+# ── Connection param filtering ─────────────────────────────────────
+
+
+def test_connection_params_go_through_the_component_param_filter():
+    """An ESB route edge is a parameter carrier and is filtered like one.
+
+    The branch predicate on a Camel ROUTE_WHEN edge is an ordinary value: it
+    can carry a URL, and on a header/bean predicate it can carry a literal
+    under a sensitive name. Adding a model field that skips the filter would
+    be a redaction hole, so the connection list is walked with the same
+    function the component list is walked with.
+    """
+    cf = CredentialFilter(level=RedactionLevel.STANDARD)
+    result = _make_scan_result(jobs=[
+        ParsedJob(
+            name="route_job", path="routes/route_job",
+            connections=[
+                Connection(
+                    name="when1",
+                    source="cMessageRouter_1",
+                    target="cLog_1",
+                    connector_name="ROUTE_WHEN",
+                    line_style=15,
+                    params=[
+                        ComponentParam(
+                            name="CONDITION",
+                            value='"${header.endpoint} == \'http://internal.server.com/x\'"',
+                            field_type="MEMO_JAVA",
+                        ),
+                        ComponentParam(name="ROUTETYPE", value="simple", field_type="CLOSED_LIST"),
+                        ComponentParam(
+                            name="api_key", value="prod-internal-custom-xyz123", field_type="TEXT",
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    ])
+
+    filter_scan_result(result, cf)
+
+    params = {p.name: p.value for p in result.jobs[0].connections[0].params}
+    assert "internal.server.com" not in params["CONDITION"]
+    # Structure-only predicates survive: redaction removes secrets, it does
+    # not remove logic.
+    assert params["ROUTETYPE"] == "simple"
+    assert params["api_key"] == "[REDACTED]"
+
+
+def test_connection_table_param_rows_are_filtered():
+    cf = CredentialFilter(level=RedactionLevel.STANDARD)
+    result = _make_scan_result(jobs=[
+        ParsedJob(
+            name="route_job", path="routes/route_job",
+            connections=[
+                Connection(
+                    name="when1", source="a", target="b", connector_name="ROUTE_WHEN",
+                    params=[
+                        ComponentParam(
+                            name="NAMESPACES", value="", field_type="TABLE",
+                            rows=[
+                                {"PARAM_NAME_COLUMN": "password", "PARAM_VALUE_COLUMN": "hunter2seed"},
+                                {"PARAM_NAME_COLUMN": "prefix", "PARAM_VALUE_COLUMN": "ord"},
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    ])
+
+    filter_scan_result(result, cf)
+
+    rows = result.jobs[0].connections[0].params[0].rows
+    assert rows[0]["PARAM_VALUE_COLUMN"] == "[REDACTED]"
+    assert rows[1]["PARAM_VALUE_COLUMN"] == "ord"
+
+
+def test_di_connection_without_params_is_untouched():
+    cf = CredentialFilter(level=RedactionLevel.STANDARD)
+    result = _make_scan_result(jobs=[
+        ParsedJob(
+            name="di_job", path="process/di_job",
+            connections=[
+                Connection(name="row1", source="tDBInput_1", target="tMap_1", connector_name="FLOW"),
+            ],
+        ),
+    ])
+
+    filter_scan_result(result, cf)
+
+    connection = result.jobs[0].connections[0]
+    assert connection.params == []
+    assert connection.name == "row1"

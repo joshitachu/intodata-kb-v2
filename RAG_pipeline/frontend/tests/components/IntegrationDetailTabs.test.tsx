@@ -191,4 +191,54 @@ describe("IntegrationDetailCanvas field and rule tabs", () => {
     fireEvent.click(screen.getByRole("button", { name: "controls" }));
     expect(screen.queryByText("In productie")).toBeNull();
   });
+
+  it("shows control type, risk severity, conflict resolution, the unknown's question and document references", () => {
+    const { landscape, edge } = buildLandscape({ structured: true });
+    const topology = landscape.business_topology!;
+    const stream = {
+      ...edge.businessStream!,
+      control_ids: ["ct-1"], risk_ids: ["rk-1"], unknown_ids: ["un-1"], conflict_ids: ["cf-1"],
+      document_refs: ["03_CATALOG.md#werkorders"],
+    };
+    const enriched: ProjectLandscapeResponse = {
+      ...landscape,
+      business_topology: {
+        ...topology,
+        data_streams: [stream],
+        controls: [{ ...claim, id: "ct-1", name: "Telling", stream_ids: [], control_type: "reconciliatie" }],
+        risks: [{ ...claim, id: "rk-1", name: "Dubbele levering", stream_ids: [], severity: "critical" }],
+        unknowns: [{ ...claim, id: "un-1", name: "Eigenaar", stream_ids: [], question: "Wie beheert deze koppeling?" }],
+        conflicts: [{
+          ...claim, id: "cf-1", name: "Schema wijkt af", conflict_type: "supporting_vs_implementation",
+          subject_refs: [], implementation_evidence_ids: [], supporting_evidence_ids: [], resolution: "Code is leidend.",
+        }],
+        // Linked from the PATH side only.
+        delivery_paths: [{
+          ...claim, id: "dp-1", name: "Pad", stream_id: "ds-wo",
+          segments: [{
+            ...claim, id: "seg-1", name: "Hop", sequence: 1, source_ref: "sys-maximo", destination_ref: "sys-4ps",
+            mechanism: "queue", protocol: "JMS", resource: "", component: "cJMS_1", artifact_ids: [], mode: "event_driven",
+          }],
+        }],
+      },
+    };
+    render(<IntegrationDetailCanvas landscape={enriched} edge={{ ...edge, businessStream: stream }} onBack={vi.fn()} onOpenArtifact={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "controls" }));
+    expect(screen.getByText("reconciliatie")).toBeInTheDocument();
+    expect(screen.getByText("Kritiek")).toBeInTheDocument();
+    expect(screen.getByText("Documentatie wijkt af van implementatie")).toBeInTheDocument();
+    expect(screen.getByText("Resolution: Code is leidend.")).toBeInTheDocument();
+    expect(screen.getByText("Wie beheert deze koppeling?")).toBeInTheDocument();
+    // The runtime observation carries its kind and window, not only its prose.
+    expect(screen.getByText("Betrouwbaarheid")).toBeInTheDocument();
+    expect(screen.getByText("Draait elk half uur.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "delivery" }));
+    expect(screen.getByText(/JMS · Event-gedreven · cJMS_1/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "evidence" }));
+    expect(screen.getByText("Documentation references")).toBeInTheDocument();
+    expect(screen.getByText("03_CATALOG.md#werkorders")).toBeInTheDocument();
+  });
 });

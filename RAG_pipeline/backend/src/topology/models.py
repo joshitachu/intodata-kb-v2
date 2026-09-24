@@ -199,7 +199,8 @@ class BusinessIntegrationSolution(BaseModel):
     name: str = ""
     description: str = ""
     platform: str = ""
-    role: str = "execution"
+    # The MCP contract's default; "execution" belongs to scanner applications.
+    role: str = ""
     status: str = ""
     confidence: float | None = None
     artifact_ids: list[str] = Field(default_factory=list)
@@ -248,11 +249,14 @@ class BusinessDataStream(BaseModel):
     integration_solution_ids: list[str] = Field(default_factory=list)
     protocols: list[str] = Field(default_factory=list)
     requiredness: str = "not_established"
+    delivery_path_id: str | None = None
     status: str = ""
     confidence: float | None = None
     control_ids: list[str] = Field(default_factory=list)
     risk_ids: list[str] = Field(default_factory=list)
     unknown_ids: list[str] = Field(default_factory=list)
+    runtime_observation_ids: list[str] = Field(default_factory=list)
+    conflict_ids: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
     artifact_ids: list[str] = Field(default_factory=list)
     # Additive structured facts. This mirror is lenient, so an absent field is
@@ -281,6 +285,42 @@ class BusinessClaim(BaseModel):
     confidence: float | None = None
     stream_ids: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
+
+
+class BusinessDeliverySegment(BaseModel):
+    """One ordered hop of a stream's delivery path.
+
+    `resource` is deliberately NOT parsed: it is the queue name, file path or
+    table the hop touches -- the same class of value `LandscapeChannel` drops
+    (see the module docstring). Mechanism, protocol, mode and the implementing
+    component are enough to answer "how is this delivered".
+    """
+
+    id: str
+    name: str = ""
+    description: str = ""
+    status: str = ""
+    confidence: float | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
+    sequence: int = 0
+    source_ref: str = ""
+    destination_ref: str = ""
+    mechanism: str = "unknown"
+    protocol: str = "unknown"
+    component: str = ""
+    artifact_ids: list[str] = Field(default_factory=list)
+    mode: str = "unknown"
+
+
+class BusinessDeliveryPath(BaseModel):
+    id: str
+    name: str = ""
+    description: str = ""
+    status: str = ""
+    confidence: float | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
+    stream_id: str = ""
+    segments: list[BusinessDeliverySegment] = Field(default_factory=list)
 
 
 class BusinessTransformationMapping(BaseModel):
@@ -321,6 +361,10 @@ class BusinessRule(BusinessClaim):
     owner_question: str = ""
 
 
+class BusinessControl(BusinessClaim):
+    control_type: str = ""
+
+
 class BusinessRisk(BusinessClaim):
     severity: str = "unknown"
 
@@ -332,7 +376,60 @@ class BusinessUnknown(BusinessClaim):
 class BusinessConflict(BusinessClaim):
     conflict_type: str = "unresolved"
     subject_refs: list[str] = Field(default_factory=list)
+    implementation_evidence_ids: list[str] = Field(default_factory=list)
+    supporting_evidence_ids: list[str] = Field(default_factory=list)
     resolution: str = ""
+
+
+class BusinessRuntimeMetric(BaseModel):
+    """One measured number, with the window and source it came from."""
+
+    label: str = ""
+    value: str = ""
+    unit: str = ""
+    window: str = ""
+    source: str = ""
+    note: str = ""
+
+
+class BusinessRuntimeObservation(BusinessClaim):
+    """Observed runtime behaviour attached to a stream or delivery path.
+
+    Annotative only: it names no source or destination system, so it can never
+    create a relationship in the business graph.
+    """
+
+    delivery_path_ids: list[str] = Field(default_factory=list)
+    observed_behavior: str = ""
+    observation_window: str = ""
+    kind: str = "unknown"
+    metrics: list[BusinessRuntimeMetric] = Field(default_factory=list)
+    source: str = ""
+
+
+class BusinessAnnotation(BaseModel):
+    id: str
+    name: str = ""
+    description: str = ""
+    status: str = ""
+    confidence: float | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class BusinessArtifactAnnotation(BusinessAnnotation):
+    artifact_id: str = ""
+    business_role: str = ""
+
+
+class BusinessComponentAnnotation(BusinessAnnotation):
+    component_id: str = ""
+    human_explanation: str = ""
+
+
+class BusinessLineageAnnotation(BusinessAnnotation):
+    lineage_id: str = ""
+    business_meaning: str = ""
+    business_object_id: str | None = None
 
 
 class BusinessCoverage(BaseModel):
@@ -354,13 +451,27 @@ class BusinessTopology(BaseModel):
     integration_solutions: list[BusinessIntegrationSolution] = Field(default_factory=list)
     business_objects: list[BusinessObject] = Field(default_factory=list)
     data_streams: list[BusinessDataStream] = Field(default_factory=list)
+    delivery_paths: list[BusinessDeliveryPath] = Field(default_factory=list)
     transformations: list[BusinessTransformation] = Field(default_factory=list)
     business_rules: list[BusinessRule] = Field(default_factory=list)
-    controls: list[BusinessClaim] = Field(default_factory=list)
+    controls: list[BusinessControl] = Field(default_factory=list)
+    runtime_observations: list[BusinessRuntimeObservation] = Field(default_factory=list)
     risks: list[BusinessRisk] = Field(default_factory=list)
     unknowns: list[BusinessUnknown] = Field(default_factory=list)
     conflicts: list[BusinessConflict] = Field(default_factory=list)
+    artifact_annotations: list[BusinessArtifactAnnotation] = Field(default_factory=list)
+    component_annotations: list[BusinessComponentAnnotation] = Field(default_factory=list)
+    lineage_annotations: list[BusinessLineageAnnotation] = Field(default_factory=list)
     coverage: BusinessCoverage = Field(default_factory=BusinessCoverage)
+
+
+class CuratedOverlayState(BaseModel):
+    """What a stale analyst-curated file contributed to the served topology."""
+
+    applied: dict[str, int] = Field(default_factory=dict)
+    unmatched_count: int = 0
+    demoted_count: int = 0
+    unmatched_ids: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class TopologyState(BaseModel):
@@ -369,6 +480,7 @@ class TopologyState(BaseModel):
     stale: bool = False
     source: str = "none"
     message: str = ""
+    curated_overlay: CuratedOverlayState | None = None
 
 
 # --- Identity bridge from overlay claims back to scanner entities ------------

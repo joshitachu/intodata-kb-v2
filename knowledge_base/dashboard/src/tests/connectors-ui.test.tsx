@@ -39,15 +39,17 @@ const createRuntimeSourceMutation = {
   mutate: vi.fn(),
   mutateAsync: vi.fn(async (_payload: {
     provider_id: string;
-    project_id: string;
+    /** Optional: a tenant may be registered with nothing attached. */
+    project_id?: string;
     label: string;
     credentials: Record<string, string>;
   }) => ({ id: 1 })),
 };
 const syncRuntimeSourceMutation = { ...idleMutation, mutate: vi.fn(), mutateAsync: vi.fn() };
 const deleteRuntimeSourceMutation = { ...idleMutation, mutate: vi.fn(), mutateAsync: vi.fn() };
-// Read grants: the projects sharing one mirror. Defaults to none, so the
-// existing row-state assertions see a source that nobody else reads.
+// Attachments: the projects using one source. Defaults to none, so the existing
+// row-state assertions see a tenant with nothing attached -- which is now a
+// normal state rather than a broken one.
 const addReaderMutation = { ...idleMutation, mutate: vi.fn(), mutateAsync: vi.fn() };
 const removeReaderMutation = { ...idleMutation, mutate: vi.fn(), mutateAsync: vi.fn() };
 const readerGrants = { grants: [] as Array<Record<string, unknown>> };
@@ -105,10 +107,17 @@ const projectFixture = [
   { id: "IntodataStreams", display_name: "IntodataStreams" },
 ];
 
+/**
+ * A registered tenant. `estate_key` is a row stamp, NOT a project -- it is set
+ * deliberately different from every attached project id so any test that
+ * renders it as one fails loudly instead of looking plausible.
+ */
 function runtimeSource(overrides: Record<string, unknown> = {}) {
   return {
     id: 35,
-    project_id: "werkorder",
+    estate_key: "estate-35",
+    linked_project_ids: ["werkorder"],
+    is_ownerless: false,
     source_type: "tmc",
     label: "Talend TMC",
     status: "success",
@@ -116,6 +125,23 @@ function runtimeSource(overrides: Record<string, unknown> = {}) {
     sync_interval_seconds: 60,
     disabled_reason: null,
     last_synced_at: "2026-08-24T10:00:00Z",
+    ...overrides,
+  };
+}
+
+/** One attachment row, as `GET /readers` returns it. */
+function attachment(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 7,
+    source_id: 35,
+    project_id: "IntodataStreams",
+    source_estate_key: "estate-35",
+    source_label: "Talend TMC",
+    environment_ids: null,
+    window_days: null,
+    exposes_project_ids: ["estate-35"],
+    created_at: "2026-09-20T10:00:00Z",
+    created_by: "operator@example.com",
     ...overrides,
   };
 }
@@ -310,9 +336,10 @@ describe("credential ownership", () => {
 });
 
 /**
- * The row must describe the mirror as it actually is. A runtime source is bound
- * to exactly ONE project, so a flat "Connected" on a provider row would imply
- * coverage the scheduler does not have.
+ * The row must describe the mirror as it actually is. Projects ATTACH to a
+ * registered tenant, so a flat "Connected" on a provider row would imply
+ * coverage the scheduler does not have -- including the now-normal case of a
+ * tenant registered with nothing attached.
  */
 describe("runtime-managed row state", () => {
   beforeEach(() => {
@@ -321,13 +348,13 @@ describe("runtime-managed row state", () => {
     });
   });
 
-  it("names the connected project rather than implying blanket coverage", () => {
+  it("names the attached projects rather than implying blanket coverage", () => {
     connectorHooks.runtimeSources.mockReturnValue({
       data: { sources: [runtimeSource()], total: 1 }, isLoading: false, isError: false, error: null,
     });
     render(<ConnectorsPage canManage />);
 
-    expect(screen.getByText("Mirroring werkorder")).toBeInTheDocument();
+    expect(screen.getByText("Used by werkorder")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "✓ Connected" })).toBeInTheDocument();
   });
 
@@ -335,9 +362,9 @@ describe("runtime-managed row state", () => {
     connectorHooks.runtimeSources.mockReturnValue({
       data: {
         sources: [
-          runtimeSource({ id: 1, project_id: "a" }),
-          runtimeSource({ id: 2, project_id: "b" }),
-          runtimeSource({ id: 3, project_id: "c" }),
+          runtimeSource({ id: 1, linked_project_ids: ["a"] }),
+          runtimeSource({ id: 2, linked_project_ids: ["b"] }),
+          runtimeSource({ id: 3, linked_project_ids: ["c"] }),
         ],
         total: 3,
       },
@@ -345,7 +372,38 @@ describe("runtime-managed row state", () => {
     });
     render(<ConnectorsPage canManage />);
 
-    expect(screen.getByText("Mirroring 3 projects")).toBeInTheDocument();
+    expect(screen.getByText("Used by 3 projects")).toBeInTheDocument();
+  });
+
+  it("calls a registered tenant with nothing attached exactly that", () => {
+    // The state the new flow produces on purpose: the credential is stored and
+    // the mirror is running before anyone decides which projects read it.
+    connectorHooks.runtimeSources.mockReturnValue({
+      data: {
+        sources: [runtimeSource({ linked_project_ids: [], is_ownerless: true })],
+        total: 1,
+      },
+      isLoading: false, isError: false, error: null,
+    });
+    render(<ConnectorsPage canManage />);
+
+    expect(
+      screen.getByText("1 tenant registered - no projects attached yet"),
+    ).toBeInTheDocument();
+    // Not a fault: the mirror is healthy, so the status stays green.
+    expect(screen.getByRole("button", { name: "✓ Connected" })).toBeInTheDocument();
+  });
+
+  it("never renders the estate key as a project", () => {
+    connectorHooks.runtimeSources.mockReturnValue({
+      data: { sources: [runtimeSource()], total: 1 }, isLoading: false, isError: false, error: null,
+    });
+    render(<ConnectorsPage canManage />);
+    fireEvent.click(screen.getByRole("button", { name: "✓ Connected" }));
+
+    // `estate-35` is an internal row stamp. It may exist as a diagnostic
+    // tooltip; it may never be text an operator reads as a project name.
+    expect(screen.queryByText(/estate-35/)).toBeNull();
   });
 
   it("does not show a green tick over a failing mirror", () => {
@@ -370,17 +428,20 @@ describe("runtime-managed row state", () => {
     expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
   });
 
-  it("exposes per-project sync and disconnect, plus the advanced link as secondary", () => {
+  it("exposes per-tenant sync and removal, plus the advanced link as secondary", () => {
     connectorHooks.runtimeSources.mockReturnValue({
       data: { sources: [runtimeSource()], total: 1 }, isLoading: false, isError: false, error: null,
     });
     render(<ConnectorsPage canManage />);
     fireEvent.click(screen.getByRole("button", { name: "✓ Connected" }));
 
-    expect(screen.getByText("werkorder")).toBeInTheDocument();
+    // The tenant's own label heads its block, not a project id.
+    expect(screen.getAllByText("Talend TMC").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "Sync now" }));
     expect(syncRuntimeSourceMutation.mutate).toHaveBeenCalledWith(35);
-    expect(screen.getByRole("button", { name: "Connect another project" })).toBeInTheDocument();
+    // A second TENANT, not a second project: attaching a project to a tenant
+    // already registered needs no credential and happens further down the row.
+    expect(screen.getByRole("button", { name: "Register another tenant" })).toBeInTheDocument();
   });
 
   it("hides every mutating action from a read-only operator", () => {
@@ -391,19 +452,29 @@ describe("runtime-managed row state", () => {
     fireEvent.click(screen.getByRole("button", { name: "✓ Connected" }));
 
     expect(screen.queryByRole("button", { name: "Sync now" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Disconnect" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove tenant" })).toBeNull();
   });
 });
 
 /**
- * Sharing one mirror with a second project.
+ * Attachments: which projects use one registered tenant.
  *
- * This is the operator's way out of "That physical runtime source is already
- * registered". One Talend tenant is polled once; every other project
- * documenting the same estate reads that mirror instead of re-registering it,
- * which would double the vendor poll and create a second, drifting mirror.
+ * This control IS the source-to-project relationship. A source has no owning
+ * project -- every project that may reach it is an attachment, any number of
+ * them, changed at any time. It is also the operator's way out of "That
+ * physical runtime source is already registered": one Talend tenant is mirrored
+ * once and polled once, and every project documenting that estate attaches to
+ * it rather than re-registering the credential, which would double the vendor
+ * poll and create a second, drifting mirror.
+ *
+ * The feature shipped and was then reported as missing, because the whole
+ * relationship sat behind a grey disclosure button labelled "Shared with" whose
+ * count only appeared once an attachment existed -- so an operator with nothing
+ * attached saw neither the state nor the action. These tests pin the
+ * correction: the attachment list renders WITHOUT a click, and only the picker
+ * is disclosed.
  */
-describe("runtime mirror sharing", () => {
+describe("runtime source attachments", () => {
   beforeEach(() => {
     connectorHooks.catalog.mockReturnValue({
       data: { providers: [tmcProvider] }, isLoading: false, isError: false, error: null,
@@ -414,17 +485,67 @@ describe("runtime mirror sharing", () => {
     readerGrants.grants = [];
   });
 
-  function openSharing() {
-    render(<ConnectorsPage canManage />);
+  /** Expand the provider row. Nothing further is needed to SEE the attachments. */
+  function showSource(canManage = true) {
+    render(<ConnectorsPage canManage={canManage} />);
     fireEvent.click(screen.getByRole("button", { name: "✓ Connected" }));
-    fireEvent.click(screen.getByRole("button", { name: /Shared with/ }));
   }
 
-  it("grants a second project read access to the existing mirror", () => {
-    openSharing();
+  function openPicker() {
+    showSource();
+    fireEvent.click(screen.getByRole("button", { name: "Attach a project" }));
+  }
 
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "IntodataStreams" } });
-    fireEvent.click(screen.getByRole("button", { name: "Grant read" }));
+  it("states which projects use the source without any click", () => {
+    readerGrants.grants = [
+      attachment({ environment_ids: ["env-prod"], window_days: 30 }),
+    ];
+    showSource();
+
+    expect(screen.getByText("Projects using this source:")).toBeInTheDocument();
+    expect(screen.getByText("IntodataStreams")).toBeInTheDocument();
+    expect(screen.getByText(/env-prod · last 30 days/)).toBeInTheDocument();
+    // No owner, and no disclosure toggle in between.
+    expect(screen.queryByText(/owner/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /Shared with/ })).toBeNull();
+  });
+
+  it("treats nothing-attached as a normal state with an obvious next step", () => {
+    connectorHooks.runtimeSources.mockReturnValue({
+      data: {
+        sources: [runtimeSource({ linked_project_ids: [], is_ownerless: true })],
+        total: 1,
+      },
+      isLoading: false, isError: false, error: null,
+    });
+    showSource();
+
+    // Said plainly, not as an error, and the action sits right beside it. The
+    // old control hid both facts behind a click, which is why the feature was
+    // reported as missing while it was running in production.
+    expect(
+      screen.getByText(/the tenant is registered and mirroring; attach a project to use it/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Attach a project" })).toBeInTheDocument();
+  });
+
+  it("answers the cost question before it is asked", () => {
+    showSource();
+
+    // Operators assume another attached project doubles the vendor poll. It
+    // does not, and that sits with the state rather than inside the picker.
+    expect(
+      screen.getByText(/polled once however many projects are attached/),
+    ).toBeInTheDocument();
+  });
+
+  it("attaches a project to the existing tenant", () => {
+    openPicker();
+
+    fireEvent.change(screen.getByLabelText("Project to attach"), {
+      target: { value: "IntodataStreams" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Attach" }));
 
     expect(addReaderMutation.mutate).toHaveBeenCalledWith(
       { project_id: "IntodataStreams" },
@@ -432,68 +553,223 @@ describe("runtime mirror sharing", () => {
     );
   });
 
-  it("never offers the owning project, which already reads its own mirror", () => {
-    openSharing();
+  it("offers every visible project minus the ones already attached", () => {
+    readerGrants.grants = [attachment({ project_id: "werkorder" })];
+    openPicker();
 
-    // `werkorder` owns the source; the API 409s on granting it to itself, so
-    // offering it would be a dead option.
-    const options = Array.from(screen.getByRole("combobox").querySelectorAll("option"));
-    expect(options.map((option) => option.getAttribute("value"))).not.toContain("werkorder");
+    const options = Array.from(
+      screen.getByLabelText("Project to attach").querySelectorAll("option"),
+    ).map((option) => option.getAttribute("value"));
+
+    // Already attached: offering it would be a dead option.
+    expect(options).not.toContain("werkorder");
+    // NOT filtered out for "already having a TMC source" -- a project may hold
+    // several tenants, and that filter is the bug this change removes.
+    expect(options).toContain("IntodataStreams");
   });
 
-  it("lists an existing reader with the slice it reads", () => {
+  it("confirms before detaching a project", () => {
+    readerGrants.grants = [attachment()];
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    showSource();
+
+    fireEvent.click(screen.getByRole("button", { name: "Detach" }));
+    expect(confirm).toHaveBeenCalled();
+    expect(removeReaderMutation.mutate).not.toHaveBeenCalled();
+
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "Detach" }));
+    expect(removeReaderMutation.mutate).toHaveBeenCalledWith("IntodataStreams");
+    confirm.mockRestore();
+  });
+
+  it("keeps 'every environment' and 'none selected' apart", () => {
+    // `null` widens with the ingest scope; `[]` is a deliberate "nothing".
+    // Collapsing them reports a project reading no runtime evidence as
+    // reading all of it.
     readerGrants.grants = [
-      {
-        id: 7,
-        source_id: 35,
-        project_id: "IntodataStreams",
-        source_project_id: "werkorder",
-        source_label: "Talend TMC",
-        environment_ids: ["env-prod"],
-        window_days: 30,
-        exposes_project_ids: ["werkorder"],
-      },
+      attachment({ id: 7, project_id: "IntodataStreams", environment_ids: null }),
+      attachment({ id: 8, project_id: "werkorder", environment_ids: [] }),
     ];
-    openSharing();
+    showSource();
 
-    expect(screen.getByText("IntodataStreams")).toBeInTheDocument();
-    expect(screen.getByText(/env-prod · last 30 days/)).toBeInTheDocument();
+    expect(screen.getByText(/every mirrored environment/)).toBeInTheDocument();
+    expect(screen.getByText(/no environments selected/)).toBeInTheDocument();
   });
 
-  it("says plainly when no other project reads the mirror", () => {
-    openSharing();
+  it("hides every mutating action from a read-only operator, but not the state", () => {
+    readerGrants.grants = [attachment()];
+    showSource(false);
 
-    expect(screen.getByText("No other project reads this mirror.")).toBeInTheDocument();
-  });
-
-  it("hides granting and revoking from a read-only operator", () => {
-    readerGrants.grants = [
-      {
-        id: 7,
-        source_id: 35,
-        project_id: "IntodataStreams",
-        source_project_id: "werkorder",
-        source_label: "Talend TMC",
-        environment_ids: null,
-        window_days: null,
-        exposes_project_ids: ["werkorder"],
-      },
-    ];
-    render(<ConnectorsPage canManage={false} />);
-    fireEvent.click(screen.getByRole("button", { name: "✓ Connected" }));
-    fireEvent.click(screen.getByRole("button", { name: /Shared with/ }));
-
+    // Which projects use the source is information, not a privilege.
     expect(screen.getByText("IntodataStreams")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Grant read" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Revoke" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Attach a project" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Detach" })).toBeNull();
   });
 });
 
 /**
- * The project selector is the anti-recurrence device for a live defect: runtime
- * history filed under a project id that does not match the intodoc project, so
- * documentation silently attached mostly-wrong runtime evidence. A free-text box
- * recreates it; a dropdown of real projects cannot.
+ * The duplicate-registration 409, as a signpost rather than a dead end.
+ *
+ * Registering a Talend tenant twice is refused on purpose: it would poll the
+ * vendor twice and leave two mirrors of one estate free to drift apart. The
+ * supported answer -- attach to the tenant that is already here -- has been
+ * available for a while, and the refusal never mentioned it.
+ *
+ * `physical_identity` is the only conflict kind left; the `project_source_type`
+ * collision died with the one-source-per-project rule it enforced. An
+ * unrecognised kind must therefore fall back to the server's PROSE rather than
+ * into an affordance built for a collision this build cannot interpret.
+ */
+describe("registering a tenant that is already mirrored", () => {
+  beforeEach(() => {
+    connectorHooks.catalog.mockReturnValue({
+      data: { providers: [tmcProvider] }, isLoading: false, isError: false, error: null,
+    });
+    // The source that already mirrors the tenant, visible on this page. Its id
+    // is what the conflict block names.
+    connectorHooks.runtimeSources.mockReturnValue({
+      data: { sources: [runtimeSource()], total: 1 }, isLoading: false, isError: false, error: null,
+    });
+    readerGrants.grants = [];
+  });
+
+  /** A 409 as `request()` throws it: `ApiError`'s `"{status}: {body}"` message. */
+  function conflict409(conflict: Record<string, unknown>, detail = "Already registered.") {
+    return new Error(`409: ${JSON.stringify({ detail, conflict })}`);
+  }
+
+  /** Reach the connect form from an already-connected provider row. */
+  function openSecondRegistration(projectId = "IntodataStreams") {
+    render(<ConnectorsPage canManage />);
+    fireEvent.click(screen.getByRole("button", { name: "✓ Connected" }));
+    fireEvent.click(screen.getByRole("button", { name: "Register another tenant" }));
+    if (projectId) {
+      fireEvent.change(screen.getByLabelText("Attach a project (optional)"), {
+        target: { value: projectId },
+      });
+    }
+    fireEvent.change(screen.getByLabelText("API token"), { target: { value: "fake-token" } });
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://api.eu.cloud.talend.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Connect & test" }));
+  }
+
+  it("takes the operator to the existing tenant's attachment control", async () => {
+    createRuntimeSourceMutation.mutateAsync.mockRejectedValueOnce(
+      conflict409({
+        kind: "physical_identity",
+        can_request_share: true,
+        source_id: 35,
+        source_label: "Talend TMC",
+        owner_project_id: "werkorder",
+      }),
+    );
+    openSecondRegistration();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Attach IntodataStreams to that tenant" }),
+    );
+
+    // The refused project arrives preselected in the EXISTING attachment
+    // control -- no second form, and no hunting for it on the row.
+    expect(
+      screen.getByText(/Attach IntodataStreams to this one instead/),
+    ).toBeInTheDocument();
+    expect(
+      (screen.getByLabelText("Project to attach") as HTMLSelectElement).value,
+    ).toBe("IntodataStreams");
+    // The connect dialog is gone: its work is now this control's.
+    expect(screen.queryByLabelText("API token")).toBeNull();
+  });
+
+  it("still routes to the tenant when no project was chosen", async () => {
+    // Registering with nothing attached is a supported path, so the refusal
+    // must still lead somewhere -- the picker simply opens unfilled.
+    createRuntimeSourceMutation.mutateAsync.mockRejectedValueOnce(
+      conflict409({
+        kind: "physical_identity",
+        can_request_share: true,
+        source_id: 35,
+        source_label: "Talend TMC",
+      }),
+    );
+    openSecondRegistration("");
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Open that tenant to attach a project" }),
+    );
+
+    expect(screen.getByText(/Attach a project to this one instead/)).toBeInTheDocument();
+    expect((screen.getByLabelText("Project to attach") as HTMLSelectElement).value).toBe("");
+  });
+
+  it("says who must do it when the caller cannot", async () => {
+    // The server withheld the source's identity because this caller has no
+    // access to it, and said so by omission plus can_request_share.
+    createRuntimeSourceMutation.mutateAsync.mockRejectedValueOnce(
+      conflict409({ kind: "physical_identity", can_request_share: false }),
+    );
+    openSecondRegistration();
+
+    expect(
+      await screen.findByText(/an operator with access to that source has to attach/i),
+    ).toBeInTheDocument();
+    // A button that would 403 is worse than no button.
+    expect(screen.queryByRole("button", { name: /Attach .* to that tenant/ })).toBeNull();
+  });
+
+  it("falls back to prose for a conflict kind this build cannot interpret", async () => {
+    // The deleted `project_source_type`, or anything a newer backend invents.
+    // An unparsed kind must never land in an affordance built for another one.
+    createRuntimeSourceMutation.mutateAsync.mockRejectedValueOnce(
+      conflict409(
+        {
+          kind: "some_kind_from_a_newer_backend",
+          can_request_share: true,
+          source_id: 35,
+        },
+        "Registration refused for a reason this build has not been taught.",
+      ),
+    );
+    openSecondRegistration();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Registration refused for a reason this build has not been taught.",
+    );
+    expect(screen.queryByRole("button", { name: /to that tenant/ })).toBeNull();
+    expect(screen.queryByText(/ingest scope/)).toBeNull();
+  });
+
+  it("falls back to the server's sentence when there is no conflict block", async () => {
+    // A 409 from an older backend, or any other failure. The message still
+    // renders; nothing is invented on top of it.
+    createRuntimeSourceMutation.mutateAsync.mockRejectedValueOnce(
+      new Error('409: {"detail":"That physical runtime source is already registered"}'),
+    );
+    openSecondRegistration();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "That physical runtime source is already registered",
+    );
+    expect(screen.queryByRole("button", { name: /to that tenant/ })).toBeNull();
+  });
+});
+
+/**
+ * Registering a tenant. The project is OPTIONAL.
+ *
+ * The reported defect: this dialog demanded a project, its picker had been
+ * filtered down to nothing by a per-project limit that no longer exists, and
+ * the resulting message sent operators to "Edit ingest scope" on a source
+ * holding a DIFFERENT tenant's credential. A source is a registered tenant;
+ * projects attach to it afterwards, any number of them.
+ *
+ * The dropdown itself stays. It is the anti-recurrence device for a separate
+ * live defect: runtime history filed under a project id that does not match the
+ * intodoc project, so documentation silently attached mostly-wrong runtime
+ * evidence. A free-text box recreates that; a dropdown of real projects cannot.
  */
 describe("Talend Management Console connect form", () => {
   beforeEach(() => {
@@ -507,6 +783,11 @@ describe("Talend Management Console connect form", () => {
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
   }
 
+  /** The optional project control. Labelled as optional, so named as such. */
+  function projectSelect() {
+    return screen.getByLabelText("Attach a project (optional)");
+  }
+
   it("opens its OWN form, not another provider's", () => {
     openDialog();
     expect(screen.getByRole("heading", { name: "Connect Talend Management Console" })).toBeInTheDocument();
@@ -514,30 +795,48 @@ describe("Talend Management Console connect form", () => {
     expect(screen.queryByLabelText("Elasticsearch HTTPS endpoint")).toBeNull();
   });
 
-  it("binds the project with a dropdown of real projects, never free text", () => {
+  it("offers an explicit 'not yet' and preselects no project", () => {
     openDialog();
 
-    const project = screen.getByLabelText("Project");
+    const project = projectSelect() as HTMLSelectElement;
     expect(project.tagName).toBe("SELECT");
-    // Every option is an id the dashboard's own project list returned, so a
-    // typo cannot become a project_id.
-    const values = Array.from(project.querySelectorAll("option"))
-      .map((option) => (option as HTMLOptionElement).value)
-      .filter(Boolean);
-    expect(values).toEqual(["werkorder", "IntodataStreams"]);
+    // The default is the real "attach later" path, not a placeholder, and
+    // nothing is preselected merely because a project exists.
+    expect(project.value).toBe("");
+    const options = Array.from(project.querySelectorAll("option"));
+    expect(options[0].textContent).toBe("Don't attach a project yet");
+    // Every project is offered. None is filtered out for already holding a TMC
+    // source -- that filter is what emptied this picker, and a project may now
+    // hold several tenants.
+    expect(options.slice(1).map((option) => option.value)).toEqual([
+      "werkorder",
+      "IntodataStreams",
+    ]);
   });
 
-  it("refuses to submit until a project is chosen", async () => {
+  it("registers the tenant with no project at all", async () => {
     openDialog();
 
     fireEvent.change(screen.getByLabelText("API token"), { target: { value: "fake-token" } });
     fireEvent.change(screen.getByLabelText("Base URL"), { target: { value: "https://eu.cloud.talend.com" } });
     fireEvent.click(screen.getByRole("button", { name: "Connect & test" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Choose the project this Talend environment belongs to.",
-    );
-    expect(createRuntimeSourceMutation.mutateAsync).not.toHaveBeenCalled();
+    await waitFor(() => expect(createRuntimeSourceMutation.mutateAsync).toHaveBeenCalledTimes(1));
+    // The key is OMITTED rather than sent empty: the tenant registers with
+    // nothing attached, not attached to a project called "".
+    const payload = createRuntimeSourceMutation.mutateAsync.mock.calls[0][0];
+    expect("project_id" in payload).toBe(false);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("says a tenant is polled once however many projects attach", () => {
+    openDialog();
+
+    // The observed hesitation is a cost assumption, and it belongs where the
+    // decision is made rather than after it.
+    expect(
+      screen.getByText(/mirrored once and polled once however many projects are attached/),
+    ).toBeInTheDocument();
   });
 
   it("renders exactly the fields the provider declares", () => {
@@ -549,12 +848,12 @@ describe("Talend Management Console connect form", () => {
     expect(screen.getByLabelText("Task/artifact filters (comma-separated) (optional)")).toBeInTheDocument();
     expect(screen.getByLabelText("Run history in days (1-90) (optional)")).toBeInTheDocument();
     // No invented settings. The whole form is the provider's four credential
-    // fields plus the project binding and a display name -- asserted as an
+    // fields plus the optional attachment and a display name -- asserted as an
     // exact set, so a field added here without a provider to back it fails.
     const labels = Array.from(document.querySelectorAll("label > span:first-child"))
       .map((node) => node.textContent);
     expect(labels).toEqual([
-      "Project",
+      "Attach a project (optional)",
       "Display name",
       "API token",
       "Base URL",
@@ -563,10 +862,10 @@ describe("Talend Management Console connect form", () => {
     ]);
   });
 
-  it("posts the connector id and the selected project, and omits blank optionals", async () => {
+  it("posts the connector id and the chosen project, and omits blank optionals", async () => {
     openDialog();
 
-    fireEvent.change(screen.getByLabelText("Project"), { target: { value: "IntodataStreams" } });
+    fireEvent.change(projectSelect(), { target: { value: "IntodataStreams" } });
     fireEvent.change(screen.getByLabelText("API token"), { target: { value: "fake-token" } });
     fireEvent.change(screen.getByLabelText("Base URL"), { target: { value: "https://eu.cloud.talend.com" } });
     fireEvent.click(screen.getByRole("button", { name: "Connect & test" }));
@@ -589,7 +888,7 @@ describe("Talend Management Console connect form", () => {
     );
     openDialog();
 
-    fireEvent.change(screen.getByLabelText("Project"), { target: { value: "werkorder" } });
+    fireEvent.change(projectSelect(), { target: { value: "werkorder" } });
     fireEvent.change(screen.getByLabelText("API token"), { target: { value: "fake-token" } });
     fireEvent.change(screen.getByLabelText("Base URL"), { target: { value: "https://eu.cloud.talend.com" } });
     fireEvent.click(screen.getByRole("button", { name: "Connect & test" }));
@@ -603,7 +902,7 @@ describe("Talend Management Console connect form", () => {
     openDialog();
 
     const token = screen.getByLabelText("API token") as HTMLInputElement;
-    fireEvent.change(screen.getByLabelText("Project"), { target: { value: "werkorder" } });
+    fireEvent.change(projectSelect(), { target: { value: "werkorder" } });
     fireEvent.change(token, { target: { value: "fake-token" } });
     fireEvent.change(screen.getByLabelText("Base URL"), { target: { value: "https://eu.cloud.talend.com" } });
     // Write-only: masked while typing, and cleared the moment it leaves the form.
@@ -767,7 +1066,9 @@ describe("Talend Management Console ingest scope", () => {
   function openScopedDialog() {
     render(<ConnectorsPage canManage />);
     fireEvent.click(saveButton());
-    fireEvent.change(screen.getByLabelText("Project"), { target: { value: "IntodataStreams" } });
+    fireEvent.change(screen.getByLabelText("Attach a project (optional)"), {
+      target: { value: "IntodataStreams" },
+    });
     fireEvent.change(screen.getByLabelText("API token"), { target: { value: "fake-token" } });
     fireEvent.change(screen.getByLabelText("Base URL"), {
       target: { value: "https://api.eu.cloud.talend.com" },

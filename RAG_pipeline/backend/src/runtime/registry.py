@@ -29,6 +29,7 @@ from src.runtime.models import (
     ListRuntimeHealthInput,
     ListRuntimeInventoryInput,
     ListRuntimeJobReliabilityInput,
+    ListRuntimeJobScheduleProfileInput,
     ListRuntimeJobsInput,
     ListRuntimeJobThroughputInput,
     ListRuntimePlansInput,
@@ -252,6 +253,27 @@ _TOOL_SPECS: dict[str, RuntimeToolSpec] = {
                 "(compare last_run_at)."
             ),
             input_model=ListRuntimeJobReliabilityInput,
+        ),
+        RuntimeToolSpec(
+            name="list_runtime_job_schedule_profile",
+            description=(
+                "Answer 'when does this job run?', 'what runs overnight?' and 'what is the "
+                "nightly schedule?'. Pools every run onto ONE 24-hour clock across many days "
+                "and returns, per job: run count, how many days/nights it ran, median start "
+                "time, earliest and latest start, median duration, and a non-success count. "
+                "Set start_hour and end_hour for a time-of-day window; the window may wrap "
+                "midnight (start_hour=22, end_hour=7 is the nightly batch window). Times are "
+                "local to 'timezone' (IANA name, default Europe/Amsterdam) and the zone used "
+                "is echoed on every row. "
+                "This is the ONLY tool that answers what time of day something runs: job "
+                "schedules live in the management console, not in the scanned code, so these "
+                "observed start times are the schedule evidence -- never answer that run "
+                "times are unavailable without calling this first. "
+                "Do not use get_runtime_outcome_trend for this: that buckets chronologically "
+                "along the timeline ('22:00 on 3 September') and cannot tell you that a job "
+                "starts at 23:31 every night."
+            ),
+            input_model=ListRuntimeJobScheduleProfileInput,
         ),
         RuntimeToolSpec(
             name="list_runtime_component_hotspots",

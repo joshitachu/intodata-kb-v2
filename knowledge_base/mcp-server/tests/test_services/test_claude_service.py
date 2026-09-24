@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -12,6 +13,16 @@ import pytest
 from mcp_server.providers.base import DocGenContext
 from mcp_server.providers.claude_cli import ClaudeCliProvider
 from mcp_server.providers.custom.providers import ClaudeCliModelProvider
+from mcp_server.services.token_refresh import MODE_OAUTH, AuthState
+
+
+def _authenticated() -> AuthState:
+    """A logged-in service account, independent of the test host's real ~/.claude.
+
+    describe_auth() reads the real filesystem, so without this a developer with
+    credentials and CI without them would exercise different branches.
+    """
+    return AuthState(mode=MODE_OAUTH, credentials_path=Path("/nonexistent/.credentials.json"))
 from mcp_server.services.claude_service import (
     DocGenerationCoordinator as ClaudeService,
     _render_chunk_extras,
@@ -217,7 +228,8 @@ async def test_generate_docs_cli_not_found(claude_svc, monkeypatch, tmp_path):
 
     with patch("mcp_server.db.session.async_session_factory", _fake_session_factory), \
          patch("mcp_server.services.project_registry.ProjectRegistry.get_project", return_value=project), \
-         patch("mcp_server.providers.claude_cli.ensure_token_fresh", return_value=True):
+         patch("mcp_server.providers.claude_cli.ensure_token_fresh", return_value=True), \
+         patch("mcp_server.providers.claude_cli.describe_auth", _authenticated):
         result = await claude_svc.generate_docs("proj", doc_generation_provider="claude-cli")
 
     assert result is False or result.get("success") is False
@@ -314,6 +326,7 @@ async def test_claude_cli_command_uses_resolved_cli_model(monkeypatch, tmp_path)
 
     monkeypatch.setattr(config, "claude_command", "claude")
     monkeypatch.setattr("mcp_server.providers.claude_cli.ensure_token_fresh", lambda: True)
+    monkeypatch.setattr("mcp_server.providers.claude_cli.describe_auth", _authenticated)
     monkeypatch.setattr("mcp_server.providers.claude_cli.shutil.which", lambda command: "/usr/bin/claude")
     monkeypatch.setattr("mcp_server.providers.claude_cli.subprocess.Popen", _FakeProc)
 
@@ -345,6 +358,7 @@ async def test_claude_cli_model_provider_returns_text(monkeypatch):
 
     monkeypatch.setattr(config, "claude_command", "claude")
     monkeypatch.setattr("mcp_server.providers.custom.providers.ensure_token_fresh", lambda: True)
+    monkeypatch.setattr("mcp_server.providers.custom.providers.describe_auth", _authenticated)
     monkeypatch.setattr("mcp_server.providers.custom.providers.shutil.which", lambda command: "/usr/bin/claude")
     monkeypatch.setattr("mcp_server.providers.custom.providers.subprocess.run", _fake_run)
 

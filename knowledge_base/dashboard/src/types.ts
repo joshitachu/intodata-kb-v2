@@ -275,13 +275,28 @@ export interface RuntimeSourceType {
 }
 
 /**
- * A credential the RAG backend's scheduler polls, bound to exactly one project.
+ * A registered TENANT whose credential the RAG backend's scheduler polls.
+ *
+ * Not bound to a project. Projects ATTACH to a source -- any number of them,
+ * changed at any time -- and one tenant is mirrored once and polled once
+ * however many are attached.
  *
  * No credential field: secrets are write-only and no server returns them.
  */
 export interface RuntimeSource {
   id: number;
-  project_id: string;
+  /**
+   * The internal stamp written onto every row this source mirrors.
+   *
+   * NOT a project id and never to be displayed as one, even though it often
+   * reads like one (a source first registered against a project is stamped
+   * with that project's id). Diagnostic value only.
+   */
+  estate_key: string;
+  /** Every project attached to this source, sorted. Empty is a normal state. */
+  linked_project_ids: string[];
+  /** True when nothing is attached. Read this; never infer it from `estate_key`. */
+  is_ownerless: boolean;
   source_type: string;
   label: string;
   /** `success` | `failed` | `pending` | ... -- open, so a new value renders as itself. */
@@ -314,33 +329,38 @@ export interface RuntimeSourceSyncResult {
 }
 
 /**
- * One project's permission to read a runtime mirror it does not own.
+ * One project ATTACHED to a runtime source.
  *
+ * This row IS the source-to-project relationship. There is no owner with an
+ * implied attachment: every project that may reach a source has one of these.
  * One Talend tenant commonly backs several scanned projects, and registering
  * its credential twice is refused -- that would poll the vendor twice and leave
- * two mirrors of one estate free to drift apart. A second project therefore
- * SHARES the existing mirror through a grant.
+ * two mirrors of one estate free to drift apart -- so the second project
+ * attaches to the tenant that is already registered.
  *
  * Not to be confused with a workspace mapping, which SPLITS one source's rows
- * between projects at write time. Share vs split: different answers to
+ * between projects at write time. Attach vs split: different answers to
  * different questions.
  */
 export interface RuntimeSourceReadGrant {
   id: number;
   source_id: number;
-  /** The reader. The source's own project is the grantor and never appears. */
+  /** The attached project. */
   project_id: string;
-  source_project_id: string;
+  /** The source's row stamp. Not a project; not displayed. */
+  source_estate_key: string;
   source_label: string;
-  /** null means every mirrored environment. */
+  /** null means every mirrored environment; [] is a deliberate "nothing". */
   environment_ids: string[] | null;
   window_days: number | null;
   /**
-   * Every project whose rows this grant exposes -- the source's own project
-   * plus any project its workspace map re-points rows to. Shown so a grant can
+   * Every row stamp this attachment exposes -- the source's estate key plus any
+   * project its workspace map re-points rows to. Shown so an attachment can
    * never widen past what the operator intended without saying so.
    */
   exposes_project_ids: string[];
+  created_at: string | null;
+  created_by: string | null;
 }
 
 export interface ConnectorEvidenceFinding {

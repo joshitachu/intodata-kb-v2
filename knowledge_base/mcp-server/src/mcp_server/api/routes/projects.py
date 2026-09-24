@@ -15,7 +15,13 @@ import tempfile
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+
+if TYPE_CHECKING:
+    from mcp_server.services.business_topology.evidence import (
+        BusinessTopologyEvidenceBundle,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -2395,10 +2401,24 @@ def _count_staged_docs(staging_dir: Path) -> int:
     )
 
 
+#: The CLI-session lane. `claude-cli` builds the prompt and `opencode-cli`
+#: returns it verbatim onto identical staging, so any rule that keys on one of
+#: them and not the other splits one lane in half.
+CLI_SESSION_PROVIDERS = frozenset({"opencode-cli", "claude-cli"})
+
+
 def _should_partition_generation(doc_generation_provider: str | None) -> bool:
-    """Keep server-selected partitions out of the autonomous OpenCode lane."""
+    """Keep server-selected partitions out of the autonomous CLI-session lane.
+
+    These providers receive the complete scanned estate in one workspace and
+    drive the whole four-phase workflow themselves; a server-side split hands
+    the session a partial estate it was never told about. The rule is the lane's,
+    not one transport's -- it named `opencode-cli` alone while `claude-cli` ran
+    the identical prompt, so the canonical provider got partitioned and its
+    transport adapter did not.
+    """
     effective_provider = doc_generation_provider or config.doc_generation_provider
-    return effective_provider != "opencode-cli"
+    return effective_provider not in CLI_SESSION_PROVIDERS
 
 
 async def _run_generate_background(
@@ -4631,7 +4651,181 @@ async def get_project_landscape(project_id: str, request: Request):
 def _load_published_business_topology(
     project_id: str,
 ) -> tuple[dict | None, dict, dict]:
-    """Load only a validated topology for the exact current scan fingerprint."""
+    """Serve the business topology for the current scan, by precedence.
+
+    1. An analyst-curated ``output/{pid}/topology/business_topology.curated.json``
+       whose fingerprint matches the current scan wins over EVERY generated
+       topology. It is parsed through ``BusinessTopology.model_validate``; it was
+       previously consulted only on the composite branch (never reached once a
+       single-run ``docs/_topology`` existed) and served as an unchecked dict.
+    2. Otherwise the generated topology: the single-run publication when one
+       exists, else the composite org merge (validated for real).
+    3. A STALE curated file never wins, but its analyst judgement is overlaid onto
+       the generated topology (``curated_overlay``); curated items that cannot
+       be placed are reported in ``coverage.notes`` and the state, not dropped.
+    """
+
+    from mcp_server.services.business_topology import compute_scan_fingerprint
+    from mcp_server.services.business_topology.curated_overlay import (
+        CURATED_FILENAME,
+        CURATED_SOURCE,
+        curated_is_fresh,
+        load_curated_topology,
+    )
+
+    try:
+        current_fingerprint = compute_scan_fingerprint(
+            config.intodoc_output_dir / project_id
+        )
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "Scan fingerprint unavailable for %s: %s", project_id, type(exc).__name__
+        )
+        current_fingerprint = ""
+
+    curated = load_curated_topology(
+        config.project_root / "output" / project_id / "topology" / CURATED_FILENAME,
+        project_id=project_id,
+    )
+    if curated.topology is not None and curated_is_fresh(
+        curated.topology, current_fingerprint
+    ):
+        payload = curated.topology.model_dump(mode="json")
+        return payload, {
+            "available": True,
+            "validated": True,
+            "stale": False,
+            "source": CURATED_SOURCE,
+            "message": "Analyst-curated business topology is available.",
+        }, _curated_topology_evidence(project_id, payload, current_fingerprint)
+
+    topology, state, evidence, bundle = _load_generated_business_topology(
+        project_id, current_fingerprint
+    )
+    if curated.topology is not None:
+        if topology is not None:
+            return _overlay_stale_curated_topology(
+                topology, state, evidence, curated.topology, bundle=bundle,
+                project_id=project_id,
+            )
+        logger.info(
+            "Curated topology for %s is stale (curated=%s current=%s) and no "
+            "generated topology is available to carry its judgement",
+            project_id,
+            curated.topology.scan_fingerprint[:12],
+            current_fingerprint[:12],
+        )
+    elif curated.error:
+        state = {
+            **state,
+            "message": f"{state['message']} An analyst-curated topology exists but "
+            f"was ignored ({curated.error}).",
+        }
+    return topology, state, evidence
+
+
+def _curated_topology_evidence(
+    project_id: str, topology: dict, scan_fingerprint: str
+) -> dict:
+    """Drill-down catalogue for a curated topology, wherever it was published.
+
+    The org-level catalogue (``output/{pid}/topology/evidence``, merged or
+    authored) is preferred; a single-run project's curated file resolves
+    against its own ``docs/_topology`` ledger.
+    """
+
+    output_dir = config.project_root / "output" / project_id
+    evidence = _composite_topology_evidence(
+        project_id, topology, output_dir / "topology", scan_fingerprint
+    )
+    if evidence:
+        return evidence
+    docs_topology = output_dir / "docs" / "_topology"
+    if (docs_topology / "evidence").is_dir():
+        try:
+            return _load_topology_evidence_catalog(docs_topology, topology)
+        except Exception as exc:  # noqa: BLE001 - drill-down evidence is additive
+            logger.warning(
+                "Curated topology evidence unavailable for %s: %s",
+                project_id,
+                type(exc).__name__,
+            )
+    return {}
+
+
+def _overlay_stale_curated_topology(
+    topology: dict,
+    state: dict,
+    evidence: dict,
+    curated: "BusinessTopology",
+    *,
+    bundle: "BusinessTopologyEvidenceBundle | None",
+    project_id: str,
+) -> tuple[dict, dict, dict]:
+    """Carry a stale curated file's analyst judgement onto the served topology.
+
+    The overlaid result is re-validated against ``bundle`` -- the evidence the
+    generated topology itself was validated against -- so the overlay never
+    rides on a ``validated: true`` it did not earn. Without a bundle, or when
+    the overlay cannot validate, the generated topology is served unchanged and
+    the state says why.
+    """
+
+    from mcp_server.services.business_topology import BusinessTopology
+    from mcp_server.services.business_topology.curated_overlay import (
+        overlay_curated_judgement,
+        validate_curated_overlay,
+    )
+
+    def not_applied(reason: str) -> tuple[dict, dict, dict]:
+        return topology, {
+            **state,
+            "message": f"{state['message']} Analyst-curated judgement from an "
+            f"older scan was not applied ({reason}).",
+        }, evidence
+
+    if bundle is None:
+        return not_applied("no evidence bundle to validate it against")
+    try:
+        overlay = overlay_curated_judgement(
+            BusinessTopology.model_validate(topology), curated
+        )
+        validated = validate_curated_overlay(overlay, bundle=bundle, project_id=project_id)
+    except ValueError as exc:  # pydantic ValidationError is a ValueError
+        logger.warning(
+            "Curated judgement overlay failed (%s); serving the generated topology",
+            type(exc).__name__,
+        )
+        return not_applied("the overlay could not be built")
+    if validated is None:
+        return not_applied("the overlaid topology did not pass validation")
+    message = state["message"]
+    if validated.applied_count:
+        message += (
+            f" Analyst-curated judgement from an older scan was overlaid "
+            f"({validated.applied_count} item(s))."
+        )
+    if validated.unmatched_count:
+        message += (
+            f" {validated.unmatched_count} curated item(s) could not be matched to "
+            "the current topology and were not applied (listed in coverage notes)."
+        )
+    return validated.topology.model_dump(mode="json"), {
+        **state,
+        "message": message,
+        "curated_overlay": validated.state_metadata(),
+    }, evidence
+
+
+def _load_generated_business_topology(
+    project_id: str, current_fingerprint: str
+) -> tuple[dict | None, dict, dict, "BusinessTopologyEvidenceBundle | None"]:
+    """Load only a validated topology for the exact current scan fingerprint.
+
+    Also returns the evidence bundle the served topology was validated against
+    (``None`` when nothing is served), so a stale curated overlay can be
+    re-validated against the same provenance instead of inheriting the flag.
+    """
 
     topology_dir = (
         config.project_root / "output" / project_id / "docs" / "_topology"
@@ -4650,10 +4844,10 @@ def _load_published_business_topology(
         # output/{pid}/{subproject}/docs/_topology/ and have no upload-level
         # docs/ tree. Merge them into one org-level topology on request so the
         # landscape endpoint returns a valid object instead of null.
-        composite = _load_composite_business_topology(project_id)
+        composite = _load_composite_business_topology(project_id, current_fingerprint)
         if composite is not None:
             return composite
-        return None, missing_state, {}
+        return None, missing_state, {}, None
 
     invalid_state = {
         "available": True,
@@ -4662,21 +4856,20 @@ def _load_published_business_topology(
         "source": "documentation_topology_agent",
         "message": "The latest business topology did not pass validation.",
     }
-    if not report_path.is_file():
-        return None, invalid_state, {}
+    if not report_path.is_file() or not current_fingerprint:
+        return None, invalid_state, {}, None
 
     try:
         topology = json.loads(topology_path.read_text(encoding="utf-8"))
         report = json.loads(report_path.read_text(encoding="utf-8"))
         if not isinstance(topology, dict) or not isinstance(report, dict):
-            return None, invalid_state, {}
+            return None, invalid_state, {}, None
         if report.get("validated") is not True:
-            return None, invalid_state, {}
+            return None, invalid_state, {}, None
 
-        from mcp_server.services.business_topology import (
-            BusinessTopology,
-            compute_scan_fingerprint,
-            load_business_topology_evidence,
+        from mcp_server.services.business_topology import BusinessTopology
+        from mcp_server.services.business_topology.composite import (
+            load_publication_evidence_bundle,
         )
         from mcp_server.services.business_topology.validation import (
             validate_business_topology,
@@ -4687,9 +4880,6 @@ def _load_published_business_topology(
         # strict contract at read time.
         topology_model = BusinessTopology.model_validate(topology)
 
-        current_fingerprint = compute_scan_fingerprint(
-            config.intodoc_output_dir / project_id
-        )
         topology_fingerprint = str(
             topology.get("scan_fingerprint")
             or (topology.get("metadata") or {}).get("scan_fingerprint")
@@ -4697,7 +4887,7 @@ def _load_published_business_topology(
         )
         report_fingerprint = str(report.get("scan_fingerprint") or "")
         if report.get("project_id") != project_id:
-            return None, invalid_state, {}
+            return None, invalid_state, {}, None
         if (
             not topology_fingerprint
             or topology_fingerprint != current_fingerprint
@@ -4712,11 +4902,13 @@ def _load_published_business_topology(
                     "Business topology belongs to an older scan; regenerate "
                     "documentation to refresh it."
                 ),
-            }, {}
+            }, {}, None
 
-        bundle = load_business_topology_evidence(topology_dir)
+        # The bundle the topology was validated against at publication: the
+        # scanner ledger, plus the documentation tier for the lane that used it.
+        bundle = load_publication_evidence_bundle(topology_dir)
         if bundle.scan_fingerprint != current_fingerprint:
-            return None, invalid_state, {}
+            return None, invalid_state, {}, None
         # Curated, evidence-grounded overlays are authored from the merged
         # claim ledger and carry exact scanner artifact identities.  They are
         # schema-validated above, but may intentionally use approved business
@@ -4732,13 +4924,13 @@ def _load_published_business_topology(
                 project_id=project_id,
             )
             if not fresh_report.validated:
-                return None, invalid_state, {}
+                return None, invalid_state, {}, None
             recalculated_coverage = topology_model.coverage.model_dump(mode="json")
             if any(
                 recalculated_coverage.get(key) != value
                 for key, value in supplied_coverage.items()
             ):
-                return None, invalid_state, {}
+                return None, invalid_state, {}, None
 
         return topology, {
             "available": True,
@@ -4746,79 +4938,50 @@ def _load_published_business_topology(
             "stale": False,
             "source": "documentation_topology_agent",
             "message": "Validated business topology is available.",
-        }, _load_topology_evidence_catalog(topology_dir, topology)
+        }, _load_topology_evidence_catalog(topology_dir, topology), bundle
     except (OSError, json.JSONDecodeError, ValueError, FileNotFoundError) as exc:
         logger.warning(
             "Business topology unavailable for project %s: %s",
             project_id,
             type(exc).__name__,
         )
-        return None, invalid_state, {}
+        return None, invalid_state, {}, None
 
 
 def _load_composite_business_topology(
     project_id: str,
-) -> tuple[dict | None, dict, dict] | None:
-    """Build+serve the org-level topology for a composite (multi-ZIP) upload.
+    current_fingerprint: str | None = None,
+) -> tuple[dict | None, dict, dict, "BusinessTopologyEvidenceBundle | None"] | None:
+    """Build, validate and serve the org-level topology for a composite upload.
 
     Returns ``None`` when the project is not a composite upload (so the caller
     falls back to its ``missing`` state). Otherwise returns the standard
-    ``(topology, state, evidence)`` triple. The merged object is deterministic
-    (union of validated per-partition topologies + the cross-project index) and
-    is persisted under ``output/{pid}/topology/`` so a later reload -- or an
-    operator inspecting the artifact -- sees the same JSON that was served.
+    ``(topology, state, evidence)`` triple. The merge is validated for real
+    (``build_validated_composite_org_topology``: validate + prune claim-local
+    defects) and persisted under ``output/{pid}/topology/`` together with a
+    ``validation_report.json`` that states the TRUE result -- the merge used to
+    be written as ``validated: true`` without ever being checked. A merge that
+    fails global validation is not served.
     """
 
-    from mcp_server.services.business_topology import (
-        build_composite_org_topology,
-        compute_scan_fingerprint,
+    from mcp_server.services.business_topology import compute_scan_fingerprint
+    from mcp_server.services.business_topology.composite import (
+        GENERATED_BY as COMPOSITE_SOURCE,
+        build_validated_composite_org_topology,
     )
 
     topology_dir = config.project_root / "output" / project_id / "topology"
-    current_fingerprint = compute_scan_fingerprint(
-        config.intodoc_output_dir / project_id
-    )
-
-    # Prefer an analyst-curated overlay when present and current. The curated
-    # file is the deterministic merge with real system roles + named streams
-    # written back in place (same schema, same scan_fingerprint). It exists only
-    # for projects an analyst has enriched; everything else falls through to the
-    # deterministic merge below.
-    curated_path = topology_dir / "business_topology.curated.json"
-    if curated_path.is_file():
-        try:
-            curated = json.loads(curated_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.warning(
-                "Unreadable curated business topology for %s: %s", project_id, exc
-            )
-            curated = None
-        if isinstance(curated, dict):
-            curated_fp = str(curated.get("scan_fingerprint") or "")
-            if curated_fp and curated_fp == current_fingerprint:
-                return curated, {
-                    "available": True,
-                    "validated": True,
-                    "stale": False,
-                    "source": "analyst_curated",
-                    "message": (
-                        "Analyst-curated organization business topology is "
-                        "available."
-                    ),
-                }, _composite_topology_evidence(
-                    project_id, curated, topology_dir, current_fingerprint
-                )
-            logger.info(
-                "Curated topology for %s ignored (fingerprint mismatch: "
-                "curated=%s current=%s)",
-                project_id,
-                curated_fp[:12],
-                current_fingerprint[:12],
-            )
-
     try:
-        topology_model = build_composite_org_topology(
-            project_id, project_root=config.project_root
+        if current_fingerprint is None:
+            current_fingerprint = compute_scan_fingerprint(
+                config.intodoc_output_dir / project_id
+            )
+        if not current_fingerprint:
+            return None
+        result = build_validated_composite_org_topology(
+            project_id,
+            project_root=config.project_root,
+            scan_fingerprint=current_fingerprint,
         )
     except Exception as exc:  # noqa: BLE001 - additive overlay must not 500 the graph
         logger.warning(
@@ -4827,58 +4990,57 @@ def _load_composite_business_topology(
             type(exc).__name__,
         )
         return None
-    if topology_model is None:
+    if result is None:
         return None
 
-    topology = topology_model.model_dump(mode="json")
-
-    topology_fingerprint = str(topology.get("scan_fingerprint") or "")
-    if not topology_fingerprint or topology_fingerprint != current_fingerprint:
-        return None, {
-            "available": True,
-            "validated": False,
-            "stale": True,
-            "source": "composite_org_merge",
-            "message": (
-                "Organization topology belongs to an older scan; regenerate "
-                "documentation to refresh it."
-            ),
-        }, {}
-
-    # Persist the served artifact (best-effort; serving never depends on it).
+    # Persist what is (or is not) served (best-effort; serving never depends on it).
     try:
-        topology_dir.mkdir(parents=True, exist_ok=True)
-        (topology_dir / "business_topology.json").write_text(
-            json.dumps(topology, indent=2), encoding="utf-8"
-        )
-        (topology_dir / "validation_report.json").write_text(
-            json.dumps(
-                {
-                    "validated": True,
-                    "scan_fingerprint": current_fingerprint,
-                    "project_id": project_id,
-                    "errors": [],
-                    "warnings": topology.get("coverage", {}).get("notes", []),
-                    "generated_by": "composite_org_merge",
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        result.write(topology_dir)
     except OSError as exc:
         logger.warning(
             "Could not persist composite topology for %s: %s", project_id, exc
         )
 
+    if result.all_stale:
+        return None, {
+            "available": True,
+            "validated": False,
+            "stale": True,
+            "source": COMPOSITE_SOURCE,
+            "message": (
+                "Organization topology belongs to an older scan; regenerate "
+                "documentation to refresh it."
+            ),
+        }, {}, None
+    if not result.validated or result.topology is None:
+        first_error = result.report.errors[0] if result.report.errors else "unknown error"
+        return None, {
+            "available": True,
+            "validated": False,
+            "stale": False,
+            "source": COMPOSITE_SOURCE,
+            "message": (
+                "The organization business topology did not pass validation "
+                f"({len(result.report.errors)} error(s), first: {first_error[:160]})."
+            ),
+        }, {}, None
+
+    topology = result.topology.model_dump(mode="json")
+    message = "Organization-level business topology is available."
+    if result.dropped_ids:
+        message += (
+            f" {len(result.dropped_ids)} merged claim(s) failed provenance "
+            "validation and were omitted (see validation_report.json)."
+        )
     return topology, {
         "available": True,
         "validated": True,
         "stale": False,
-        "source": "composite_org_merge",
-        "message": "Organization-level business topology is available.",
+        "source": COMPOSITE_SOURCE,
+        "message": message,
     }, _composite_topology_evidence(
         project_id, topology, topology_dir, current_fingerprint
-    )
+    ), result.bundle
 
 
 def _composite_topology_evidence(

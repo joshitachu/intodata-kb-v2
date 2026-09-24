@@ -32,8 +32,21 @@ by name — see `_merge_reliability_by_job_name`.
 ### Symptom
 
 Registering the same TMC token + base URL against a second project returns
-409 `That physical runtime source is already registered`
-(`src/api/routes/runtime_sources.py:271`).
+409 `That physical runtime source is already registered`.
+
+**Resolved.** The refusal is still a 409 — it is correct — but it is no longer a
+dead end. `_registration_conflict` (`src/api/routes/runtime_sources.py`) now
+names sharing as the way forward in `detail` and returns a `conflict` block
+beside it (`kind`, `can_request_share`, and the owning source's id/label/project
+when, and only when, the caller's scope already contains that project — the Q4
+rule above). The dashboard turns that into a jump straight to the owning
+source's sharing control with the refused project preselected.
+
+The discoverability half mattered more than the wording: the grant mechanism
+shipped 2026-08-26 and was invisible enough that it was reported as missing and
+requested from scratch. Sharing state is now rendered at rest on the source row
+in both the dashboard and the RAG app's `/admin/runtime` console, rather than
+behind a collapsed toggle.
 
 ### Cause
 

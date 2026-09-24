@@ -5,6 +5,8 @@ import {
   Activity,
   ArrowRight,
   Check,
+  ChevronDown,
+  ChevronRight,
   CircleAlert,
   Database,
   ExternalLink,
@@ -25,6 +27,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
+import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
@@ -63,6 +66,9 @@ type Connector = {
   updated_at: string;
 };
 
+type ExistingElasticSource = { id: string; label: string; type: string };
+type ExistingElastic = { available: boolean; display_name: string | null; sources: ExistingElasticSource[] };
+
 type Binding = {
   id: number;
   connector_instance_id: number;
@@ -96,25 +102,55 @@ const FIELD_LABELS: Record<string, string> = {
   base_url: "Endpoint URL",
   allowed_hosts: "Allowed hosts",
   index: "Index",
+  project_field: "Project ID field",
   search_path: "Search path",
   health_path: "Health path",
   timeout_seconds: "Timeout (seconds)",
   max_response_bytes: "Maximum response size",
   max_results: "Maximum results",
   dataset: "Dataset",
+  host: "Database host",
+  port: "Port",
+  database: "Database",
+  username: "Read-only user",
+  view_name: "Approved read-only view",
+  openapi_spec: "OpenAPI 3 contract (JSON)",
+  operation_id: "Reviewed operation ID",
+  operation_path: "Reviewed GET path",
+  health_project_id: "Health-check project ID",
+  query_parameter: "Search parameter",
+  project_parameter: "Project parameter",
+  limit_parameter: "Limit parameter",
+  items_field: "Results array field",
+  title_field: "Result title field",
+  excerpt_field: "Result excerpt field",
+  source_ref_field: "Result source field",
+  result_project_field: "Result project field",
 };
 
 const FIELD_DEFAULTS: Record<string, string> = {
   dataset: "default",
   max_results: "10",
   search_path: "/{index}/_search",
-  health_path: "/_cluster/health",
+  health_path: "/{index}/_search",
   timeout_seconds: "5",
   max_response_bytes: "1000000",
+  project_field: "project_id.keyword",
+  port: "5432",
+  query_parameter: "q",
+  project_parameter: "project_id",
+  limit_parameter: "limit",
+  items_field: "items",
+  title_field: "title",
+  excerpt_field: "excerpt",
+  source_ref_field: "source_ref",
+  result_project_field: "project_id",
 };
 
 async function errorMessage(response: Response, fallback: string) {
   const body = await response.json().catch(() => null);
+  const named = (body as { error?: unknown } | null)?.error;
+  if (typeof named === "string" && named.trim()) return named;
   return apiErrorMessage((body as { detail?: unknown } | null)?.detail, fallback);
 }
 
@@ -124,6 +160,11 @@ function parseConfig(schema: Record<string, string>, values: Record<string, stri
     const raw = values[key]?.trim();
     if (!raw) continue;
     if (kind.includes("array")) parsed[key] = raw.split(",").map((part) => part.trim()).filter(Boolean);
+    else if (key === "openapi_spec") {
+      if (new TextEncoder().encode(raw).length > 65_536) throw new Error("OpenAPI contract exceeds 64 KiB");
+      try { parsed[key] = JSON.parse(raw) as unknown; }
+      catch { throw new Error("OpenAPI contract must be valid JSON"); }
+    }
     else if (kind === "integer") parsed[key] = Number.parseInt(raw, 10);
     else if (kind === "number") parsed[key] = Number.parseFloat(raw);
     else parsed[key] = raw;
@@ -154,6 +195,9 @@ export default function ConnectorControlPlane() {
   const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [connectors, setConnectors] = useState<Connector[]>([]);
+  const [existingElastic, setExistingElastic] = useState<ExistingElastic>({ available: false, display_name: null, sources: [] });
+  const [elasticProjectId, setElasticProjectId] = useState("");
+  const [usingExistingElastic, setUsingExistingElastic] = useState(false);
   const [bindings, setBindings] = useState<Record<number, Binding[]>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -162,6 +206,21 @@ export default function ConnectorControlPlane() {
   const [setup, setSetup] = useState<SetupState>(EMPTY_SETUP);
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Connector | null>(null);
+  const [accessFor, setAccessFor] = useState<Connector | null>(null);
+  const [accessProjects, setAccessProjects] = useState<string[]>([]);
+  const [resourcesFor, setResourcesFor] = useState<Connector | null>(null);
+  const [resources, setResources] = useState<Array<{ id: string; label: string; kind: string }>>([]);
+  const [resourcesLoading, setResourcesLoading] = useState(false);
+  const [previewFor, setPreviewFor] = useState<Connector | null>(null);
+  const [previewProjectId, setPreviewProjectId] = useState("");
+  const [previewQuery, setPreviewQuery] = useState("");
+  const [previewItems, setPreviewItems] = useState<Array<{ title: string; excerpt: string; source_ref: string }>>([]);
+  const [previewTruncated, setPreviewTruncated] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewComplete, setPreviewComplete] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [expandedSourceProjects, setExpandedSourceProjects] = useState<Record<string, boolean>>({});
+  const [expandedConnectorCards, setExpandedConnectorCards] = useState<Record<number, boolean>>({});
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -175,6 +234,12 @@ export default function ConnectorControlPlane() {
       if (!connectorResponse.ok) throw new Error(await errorMessage(connectorResponse, "Could not load connectors"));
       const providerData = (await providerResponse.json()) as { providers?: Provider[] };
       const connectorData = (await connectorResponse.json()) as { connectors?: Connector[] };
+      const existingResponse = await authedFetch("/api/admin/connectors/existing-elastic", { cache: "no-store" });
+      if (existingResponse.ok) {
+        setExistingElastic((await existingResponse.json()) as ExistingElastic);
+      } else {
+        setExistingElastic({ available: false, display_name: null, sources: [] });
+      }
       const nextConnectors = connectorData.connectors ?? [];
       setProviders(providerData.providers ?? []);
       setConnectors(nextConnectors);
@@ -283,6 +348,139 @@ export default function ConnectorControlPlane() {
     }
   }
 
+  function editAccess(connector: Connector) {
+    setAccessFor(connector);
+    setAccessProjects([...new Set((bindings[connector.id] ?? []).flatMap((binding) => binding.project_ids))]);
+  }
+
+  async function saveAccess() {
+    const connector = accessFor;
+    if (!connector || accessProjects.length === 0) return;
+    const provider = providers.find((item) => item.provider_key === connector.provider_key);
+    if (!provider) return;
+    setBusyId(connector.id);
+    setError(null);
+    try {
+      const existing = bindings[connector.id] ?? [];
+      for (const capabilityId of provider.capability_ids) {
+        const binding = existing.find((item) => item.capability_id === capabilityId);
+        const response = await authedFetch(
+          binding
+            ? `/api/admin/connectors/${connector.id}/bindings/${binding.id}`
+            : `/api/admin/connectors/${connector.id}/bindings`,
+          {
+            method: binding ? "PATCH" : "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(binding
+              ? { project_ids: accessProjects }
+              : { capability_id: capabilityId, project_ids: accessProjects, enabled: true }),
+          },
+        );
+        if (!response.ok) throw new Error(await errorMessage(response, "Could not update project access"));
+      }
+      setAccessFor(null);
+      await refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Project access update failed");
+      await refresh();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function inspectResources(connector: Connector) {
+    setResourcesFor(connector);
+    setResources([]);
+    setResourcesLoading(true);
+    setError(null);
+    try {
+      const response = await authedFetch(`/api/admin/connectors/${connector.id}/resources`, { cache: "no-store" });
+      if (!response.ok) throw new Error(await errorMessage(response, "Could not discover resources"));
+      const payload = (await response.json()) as { resources?: Array<{ id: string; label: string; kind: string }> };
+      setResources(payload.resources ?? []);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Resource discovery failed");
+      setResourcesFor(null);
+    } finally {
+      setResourcesLoading(false);
+    }
+  }
+
+  async function useIndex(index: string) {
+    const connector = resourcesFor;
+    if (!connector) return;
+    await perform(
+      connector,
+      () => authedFetch(`/api/admin/connectors/${connector.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ config: { ...connector.config, index } }),
+      }),
+      "Could not select index",
+    );
+    setResourcesFor(null);
+  }
+
+  function openPreview(connector: Connector) {
+    const projectId = (bindings[connector.id] ?? []).flatMap((binding) => binding.project_ids)[0] ?? "";
+    setPreviewFor(connector);
+    setPreviewProjectId(projectId);
+    setPreviewQuery(connector.provider_key === "mcp_elastic" ? "error OR failed OR exception" : "");
+    setPreviewItems([]);
+    setPreviewError(null);
+    setPreviewComplete(false);
+  }
+
+  async function runPreview(event: FormEvent) {
+    event.preventDefault();
+    const connector = previewFor;
+    const capabilityId = connector && (bindings[connector.id] ?? [])[0]?.capability_id;
+    if (!connector || !capabilityId || !previewProjectId || !previewQuery.trim()) return;
+    setPreviewLoading(true);
+    setPreviewError(null);
+    try {
+      const response = await authedFetch(`/api/admin/connectors/${connector.id}/preview`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          capability_id: capabilityId,
+          project_id: previewProjectId,
+          query: previewQuery.trim(),
+          limit: 5,
+        }),
+      });
+      if (!response.ok) throw new Error(await errorMessage(response, "Preview failed"));
+      const payload = (await response.json()) as { items?: Array<{ title: string; excerpt: string; source_ref: string }>; truncated?: boolean };
+      setPreviewItems(payload.items ?? []);
+      setPreviewTruncated(payload.truncated ?? false);
+      setPreviewComplete(true);
+    } catch (reason) {
+      setPreviewError(reason instanceof Error ? reason.message : "Preview failed");
+      setPreviewItems([]);
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  async function enableExistingElastic() {
+    if (!elasticProjectId) return;
+    setUsingExistingElastic(true);
+    setError(null);
+    try {
+      const response = await authedFetch("/api/admin/connectors/existing-elastic/use", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ project_id: elasticProjectId }),
+      });
+      if (!response.ok) throw new Error(await errorMessage(response, "Could not enable the existing Elastic connection"));
+      await refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not enable the existing Elastic connection");
+    } finally {
+      setUsingExistingElastic(false);
+    }
+  }
+
   const selectedProvider = providers.find((provider) => provider.provider_key === setup.providerKey);
 
   if (!isOwner) {
@@ -336,6 +534,36 @@ export default function ConnectorControlPlane() {
           </div>
         )}
 
+        {existingElastic.available && (
+          <section className="overflow-hidden rounded-2xl border border-cyan-500/20 bg-gradient-to-r from-cyan-500/[0.08] via-card to-primary/[0.06] shadow-elevation-sm">
+            <div className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+              <div className="flex min-w-0 items-start gap-3">
+                <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-2.5 text-cyan-700 dark:text-cyan-300"><Database className="h-5 w-5" /></div>
+                <div className="min-w-0">
+                  <h2 className="text-sm font-semibold">Elastic is already connected</h2>
+                  <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">Use {existingElastic.display_name ?? "your Nexus Elastic connection"} in Labs. No URL or key to enter. We’ll add only a couple of recommended log sources to the project you choose.</p>
+                </div>
+              </div>
+              <div className="flex flex-col gap-2 sm:min-w-64 sm:flex-row">
+                <SelectMenu
+                  value={elasticProjectId}
+                  onChange={setElasticProjectId}
+                  options={projects.map((project) => ({ value: project.id, label: project.display_name }))}
+                  placeholder="Choose a project"
+                  ariaLabel="Project to enable Elastic for"
+                  variant="field"
+                  size="md"
+                  className="w-full max-w-none"
+                  disabled={usingExistingElastic}
+                />
+                <Button onClick={() => void enableExistingElastic()} disabled={!elasticProjectId} isLoading={usingExistingElastic}>
+                  <Zap className="h-4 w-4" /> Enable for Labs
+                </Button>
+              </div>
+            </div>
+          </section>
+        )}
+
         <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
           <div className="space-y-4">
             <div className="flex items-center justify-between">
@@ -349,45 +577,115 @@ export default function ConnectorControlPlane() {
               <div className="flex min-h-72 flex-col items-center justify-center rounded-2xl border border-dashed border-primary/25 bg-card/60 p-8 text-center">
                 <div className="relative mb-5"><div className="absolute inset-0 rounded-full bg-primary/25 blur-xl" /><div className="relative rounded-2xl border border-primary/20 bg-primary/10 p-4 text-primary"><Unplug className="h-7 w-7" /></div></div>
                 <h3 className="font-semibold">Your capability fabric is empty</h3>
-                <p className="mt-1 max-w-sm text-sm text-muted-foreground">Add the deterministic fixture for a safe end-to-end test, or connect an allowlisted search index.</p>
+                <p className="mt-1 max-w-sm text-sm text-muted-foreground">Try the fixture end to end, or connect a project-scoped search index, approved database view, or reviewed API.</p>
                 <Button className="mt-5" onClick={() => setSetupOpen(true)}><Plus className="h-4 w-4" /> Configure first connector</Button>
               </div>
             ) : connectors.map((connector) => {
               const provider = providers.find((item) => item.provider_key === connector.provider_key);
               const connectorBindings = bindings[connector.id] ?? [];
               const projectIds = [...new Set(connectorBindings.flatMap((binding) => binding.project_ids))];
+              const sourceIds = Array.isArray(connector.config.source_ids)
+                ? connector.config.source_ids.filter((id): id is string => typeof id === "string")
+                : [];
+              const sourceLabels = new Map(existingElastic.sources.map((source) => [source.id, source.label]));
+              const timeWindowDays = typeof connector.config.time_window_days === "number"
+                ? connector.config.time_window_days
+                : 7;
               const isBusy = busyId === connector.id;
+              const cardExpanded = Boolean(expandedConnectorCards[connector.id]);
+              const detailsId = `connector-details-${connector.id}`;
               return (
                 <article key={connector.id} className="group overflow-hidden rounded-2xl border border-border/80 bg-card/85 shadow-elevation-sm backdrop-blur transition hover:border-primary/25 hover:shadow-elevation-md">
-                  <div className="flex flex-col gap-5 p-5 sm:p-6">
-                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                      <div className="flex min-w-0 items-start gap-4">
-                        <div className="relative shrink-0 rounded-xl border border-primary/15 bg-gradient-to-br from-primary/15 to-cyan-500/5 p-3 text-primary">
-                          {connector.provider_key === "http_elastic" ? <Search className="h-5 w-5" /> : <Database className="h-5 w-5" />}
+                  <div className={cn("flex flex-col gap-5 p-4 sm:px-5", cardExpanded ? "sm:py-6" : "sm:py-4")}>
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        aria-expanded={cardExpanded}
+                        aria-controls={detailsId}
+                        onClick={() => setExpandedConnectorCards((current) => ({ ...current, [connector.id]: !current[connector.id] }))}
+                        className="flex min-w-0 flex-1 items-center gap-4 rounded-xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                      >
+                        <div className={cn("relative shrink-0 rounded-xl p-2.5", connector.provider_key === "mcp_elastic" ? "border border-border bg-white" : "border border-primary/15 bg-gradient-to-br from-primary/15 to-cyan-500/5 text-primary")}>
+                          {connector.provider_key === "mcp_elastic"
+                            ? <Image src="/elastic-logo.png" alt="Elastic" width={40} height={40} className="h-10 w-10 object-contain" />
+                            : connector.provider_key === "http_elastic" ? <Search className="h-5 w-5" /> : <Database className="h-5 w-5" />}
                           <span className={cn("absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2 border-card", connector.health_status === "healthy" ? "bg-emerald-500" : connector.health_status === "unhealthy" ? "bg-rose-500" : "bg-amber-400")} />
                         </div>
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2"><h3 className="truncate font-semibold">{connector.name}</h3><span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide", statusTone(connector.health_status))}>{connector.health_status}</span></div>
-                          <p className="mt-1 text-sm text-muted-foreground">{provider?.description ?? connector.provider_key}</p>
+                          {cardExpanded && <p className="mt-1 text-sm text-muted-foreground">{provider?.description ?? connector.provider_key}</p>}
                         </div>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1">
+                        {cardExpanded ? <ChevronDown className="ml-auto h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-muted-foreground" />}
+                      </button>
+                      {cardExpanded && <div className="flex shrink-0 items-center gap-1">
                         <Button variant="ghost" size="sm" disabled={isBusy} onClick={() => void perform(connector, () => authedFetch(`/api/admin/connectors/${connector.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: !connector.enabled }) }), "Could not update connector")}>
                           <Power className="h-3.5 w-3.5" /> {connector.enabled ? "Disable" : "Enable"}
                         </Button>
                         <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setDeleteTarget(connector)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                      </div>}
+                    </div>
+                    {cardExpanded && <div id={detailsId} className="flex flex-col gap-5">
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <InfoTile icon={ShieldCheck} label="Health" value={connector.health_summary ?? "Awaiting first probe"} detail={relativeDate(connector.health_checked_at)} />
+                        <InfoTile icon={Link2} label="Project scope" value={projectIds.length ? projectIds.map((id) => projects.find((project) => project.id === id)?.display_name ?? id).join(", ") : "Not bound"} detail={`${connectorBindings.length} capability binding${connectorBindings.length === 1 ? "" : "s"}`} />
+                        <InfoTile icon={KeyRound} label="Credentials" value={connector.credential_present ? "Server secret reference attached" : "No credential reference"} detail={connector.auth_mode === "none" ? "No authentication" : connector.credential_reference_type ?? "Opaque reference"} />
                       </div>
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-3">
-                      <InfoTile icon={ShieldCheck} label="Health" value={connector.health_summary ?? "Awaiting first probe"} detail={relativeDate(connector.health_checked_at)} />
-                      <InfoTile icon={Link2} label="Project scope" value={projectIds.length ? projectIds.map((id) => projects.find((project) => project.id === id)?.display_name ?? id).join(", ") : "Not bound"} detail={`${connectorBindings.length} capability binding${connectorBindings.length === 1 ? "" : "s"}`} />
-                      <InfoTile icon={KeyRound} label="Credentials" value={connector.credential_present ? "Vault reference attached" : "No credential reference"} detail={connector.auth_mode === "none" ? "No authentication" : connector.credential_reference_type ?? "Opaque reference"} />
-                    </div>
+                      {connector.provider_key === "mcp_elastic" && (
+                      <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/[0.04] p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <p className="text-xs font-semibold">Elastic sources available in each project</p>
+                            <p className="mt-1 text-[11px] text-muted-foreground">A test search checks the last {timeWindowDays} days.</p>
+                          </div>
+                          <span className="rounded-md border border-border bg-background/70 px-2 py-1 text-[10px] text-muted-foreground">{sourceIds.length} source{sourceIds.length === 1 ? "" : "s"}</span>
+                        </div>
+                        <div className="mt-3 divide-y divide-border/60">
+                          {projectIds.map((projectId) => {
+                            const projectKey = `${connector.id}:${projectId}`;
+                            const expanded = Boolean(expandedSourceProjects[projectKey]);
+                            const detailId = `elastic-sources-${connector.id}-${projectId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+                            return (
+                              <div key={projectId} className="py-1.5 first:pt-0 last:pb-0">
+                                <button
+                                  type="button"
+                                  aria-expanded={expanded}
+                                  aria-controls={detailId}
+                                  onClick={() => setExpandedSourceProjects((current) => ({ ...current, [projectKey]: !current[projectKey] }))}
+                                  className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition-colors hover:bg-background/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                                >
+                                  {expanded ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
+                                  <span className="min-w-0 flex-1 truncate text-xs font-medium">{projects.find((project) => project.id === projectId)?.display_name ?? projectId}</span>
+                                  <span className="shrink-0 text-[10px] text-muted-foreground">{sourceIds.length} source{sourceIds.length === 1 ? "" : "s"} · {timeWindowDays} days</span>
+                                </button>
+                                {expanded && (
+                                  <div id={detailId} className="flex flex-wrap gap-1.5 px-8 pb-2 pt-1">
+                                    {sourceIds.length ? sourceIds.map((sourceId) => (
+                                      <span key={`${projectId}-${sourceId}`} className="rounded-md border border-cyan-500/20 bg-background/70 px-2 py-1 text-[10px] text-muted-foreground" title={sourceId}>
+                                        {sourceLabels.get(sourceId) ?? "Source name unavailable"}
+                                      </span>
+                                    )) : <span className="text-[10px] text-muted-foreground">No sources selected</span>}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                          {!existingElastic.sources.length && sourceIds.length > 0 && (
+                            <p className="pt-2 text-[10px] text-muted-foreground">Elastic source names are temporarily unavailable; refresh to try again.</p>
+                          )}
+                        </div>
+                      </div>
+                      )}
+                    </div>}
                   </div>
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 bg-muted/15 px-5 py-3 sm:px-6">
+                  {cardExpanded && <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 bg-muted/15 px-5 py-3 sm:px-6">
                     <div className="flex flex-wrap gap-1.5">{connectorBindings.map((binding) => <span key={binding.id} className="rounded-md border border-border bg-background/70 px-2 py-1 font-mono text-[10px] text-muted-foreground">{binding.capability_id}</span>)}</div>
-                    <Button variant="secondary" size="sm" isLoading={isBusy} onClick={() => void perform(connector, () => authedFetch(`/api/admin/connectors/${connector.id}/health`, { method: "POST" }), "Health check failed")}><Gauge className="h-3.5 w-3.5" /> Test connection</Button>
-                  </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button variant="ghost" size="sm" onClick={() => editAccess(connector)}><Fingerprint className="h-3.5 w-3.5" /> Project access</Button>
+                      {connector.provider_key === "http_elastic" && <Button variant="ghost" size="sm" onClick={() => void inspectResources(connector)}><Search className="h-3.5 w-3.5" /> Browse indexes</Button>}
+                      <Button variant="ghost" size="sm" disabled={connector.health_status !== "healthy" || connectorBindings.length === 0} onClick={() => openPreview(connector)}><Sparkles className="h-3.5 w-3.5" /> {connector.provider_key === "mcp_elastic" ? "Test search" : "Preview evidence"}</Button>
+                      <Button variant="secondary" size="sm" isLoading={isBusy} onClick={() => void perform(connector, () => authedFetch(`/api/admin/connectors/${connector.id}/health`, { method: "POST" }), "Health check failed")}><Gauge className="h-3.5 w-3.5" /> Test connection</Button>
+                    </div>
+                  </div>}
                 </article>
               );
             })}
@@ -409,7 +707,7 @@ export default function ConnectorControlPlane() {
             </Link>
             <div className="rounded-2xl border border-dashed border-border bg-muted/20 p-5">
               <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">On the horizon</div>
-              <p className="mt-2 text-sm font-medium">Databases & custom MCP</p><p className="mt-1 text-xs leading-5 text-muted-foreground">Not available yet. This screen only exposes providers the backend can safely execute today.</p>
+              <p className="mt-2 text-sm font-medium">Custom MCP & approved actions</p><p className="mt-1 text-xs leading-5 text-muted-foreground">Coming after per-tool scope and approval controls. Database and reviewed API searches are available above.</p>
             </div>
           </aside>
         </section>
@@ -424,10 +722,10 @@ export default function ConnectorControlPlane() {
             <div className="rounded-xl border border-primary/15 bg-primary/5 p-4"><div className="flex items-center gap-2 text-sm font-medium text-primary"><Sparkles className="h-4 w-4" /> {selectedProvider.display_name}</div><p className="mt-1 text-xs leading-5 text-muted-foreground">{selectedProvider.description}</p></div>
             <Field label="Display name"><Input value={setup.name} onChange={(event) => setSetup((current) => ({ ...current, name: event.target.value }))} required /></Field>
             <div className="grid gap-4 sm:grid-cols-2">
-              {Object.entries(selectedProvider.config_schema).map(([key, kind]) => <Field key={key} label={FIELD_LABELS[key] ?? key.replaceAll("_", " ")} hint={kind.includes("array") ? "Comma-separated hostnames" : undefined}><Input type={kind === "integer" || kind === "number" ? "number" : kind.includes("URL") ? "url" : "text"} value={setup.config[key] ?? ""} onChange={(event) => setSetup((current) => ({ ...current, config: { ...current.config, [key]: event.target.value } }))} required={["base_url", "allowed_hosts", "index", "dataset"].includes(key)} /></Field>)}
+              {Object.entries(selectedProvider.config_schema).map(([key, kind]) => <Field key={key} label={FIELD_LABELS[key] ?? key.replaceAll("_", " ")} hint={kind.includes("array") ? "Comma-separated hostnames" : key === "view_name" ? "Must expose project_id, searchable_text, title, excerpt and source_ref" : key === "openapi_spec" ? "Paste an owner-reviewed OpenAPI 3 JSON document (64 KiB max). Only the selected GET operation runs." : undefined}>{key === "openapi_spec" ? <textarea className="min-h-36 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30" value={setup.config[key] ?? ""} onChange={(event) => setSetup((current) => ({ ...current, config: { ...current.config, [key]: event.target.value } }))} required /> : <Input type={kind === "integer" || kind === "number" ? "number" : kind.includes("URL") ? "url" : "text"} value={setup.config[key] ?? ""} onChange={(event) => setSetup((current) => ({ ...current, config: { ...current.config, [key]: event.target.value } }))} required={["base_url", "allowed_hosts", "index", "dataset", "host", "database", "username", "view_name", "operation_id", "operation_path", "health_project_id"].includes(key)} />}</Field>)}
             </div>
             {selectedProvider.auth_modes.length > 1 && <Field label="Authentication"><SelectMenu value={setup.authMode} onChange={(value) => setSetup((current) => ({ ...current, authMode: value as AuthMode }))} options={selectedProvider.auth_modes.map((mode) => ({ value: mode, label: mode === "none" ? "No authentication" : "Credential reference" }))} ariaLabel="Authentication mode" variant="field" size="md" className="w-full max-w-none" /></Field>}
-            {setup.authMode === "credential_reference" && <Field label="Credential reference" hint="An opaque vault reference only; never paste a secret here."><Input value={setup.credentialReference} onChange={(event) => setSetup((current) => ({ ...current, credentialReference: event.target.value }))} placeholder="vault://team/search-reader" required /></Field>}
+            {setup.authMode === "credential_reference" && <Field label="Credential reference" hint="Use a server-provisioned env:NEXUS_CONNECTOR_* reference. Never paste a secret here."><Input value={setup.credentialReference} onChange={(event) => setSetup((current) => ({ ...current, credentialReference: event.target.value }))} placeholder="env:NEXUS_CONNECTOR_SEARCH_READER" required /></Field>}
             <Field label="Project access" hint="Labs receives this connector only inside selected projects.">
               <div className="max-h-44 space-y-1 overflow-y-auto rounded-xl border border-border p-2">{projects.map((project) => { const checked = setup.projectIds.includes(project.id); return <label key={project.id} className={cn("flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition", checked ? "bg-primary/8 text-foreground" : "hover:bg-muted/60 text-muted-foreground")}><input type="checkbox" className="sr-only" checked={checked} onChange={() => setSetup((current) => ({ ...current, projectIds: checked ? current.projectIds.filter((id) => id !== project.id) : [...current.projectIds, project.id] }))} /><span className={cn("flex h-5 w-5 items-center justify-center rounded-md border", checked ? "border-primary bg-primary text-primary-foreground" : "border-border")}><Check className={cn("h-3.5 w-3.5", !checked && "opacity-0")} /></span><span className="min-w-0 flex-1"><span className="block truncate font-medium">{project.display_name}</span><span className="block truncate text-[11px] opacity-70">{project.id}</span></span></label>; })}</div>
             </Field>
@@ -436,6 +734,36 @@ export default function ConnectorControlPlane() {
       </Modal>
 
       <Modal open={Boolean(deleteTarget)} title="Remove connector?" description="This removes its project bindings too. Labs will stop receiving these capabilities immediately." onClose={() => setDeleteTarget(null)} size="sm" footer={<><Button variant="secondary" onClick={() => setDeleteTarget(null)}>Cancel</Button><Button variant="destructive" isLoading={busyId === deleteTarget?.id} onClick={() => { const target = deleteTarget; if (!target) return; setDeleteTarget(null); void perform(target, () => authedFetch(`/api/admin/connectors/${target.id}`, { method: "DELETE" }), "Could not remove connector"); }}>Remove connector</Button></>}><p className="text-sm text-muted-foreground">You are removing <span className="font-medium text-foreground">{deleteTarget?.name}</span>. This cannot be undone.</p></Modal>
+
+      <Modal open={Boolean(accessFor)} title="Project access" description="Choose the projects that may offer this connector's capabilities to Labs." onClose={() => setAccessFor(null)} size="lg" footer={<><Button variant="secondary" onClick={() => setAccessFor(null)}>Cancel</Button><Button disabled={accessProjects.length === 0} isLoading={busyId === accessFor?.id} onClick={() => void saveAccess()}>Save access</Button></>}>
+        <div className="space-y-1">{projects.map((project) => {
+          const checked = accessProjects.includes(project.id);
+          return <label key={project.id} className={cn("flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-sm", checked ? "bg-primary/10" : "hover:bg-muted/60")}><input type="checkbox" className="sr-only" checked={checked} onChange={() => setAccessProjects((current) => checked ? current.filter((id) => id !== project.id) : [...current, project.id])} /><span className={cn("flex h-5 w-5 items-center justify-center rounded-md border", checked ? "border-primary bg-primary text-primary-foreground" : "border-border")}><Check className={cn("h-3.5 w-3.5", !checked && "opacity-0")} /></span><span>{project.display_name}</span></label>;
+        })}</div>
+      </Modal>
+
+      <Modal open={Boolean(resourcesFor)} title="Available indexes" description="Discovered from the live endpoint. Selecting one updates this connector and requires a fresh health check." onClose={() => setResourcesFor(null)} size="lg">
+        {resourcesLoading ? <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-primary" /></div> : resources.length === 0 ? <p className="py-6 text-center text-sm text-muted-foreground">No indexes were returned.</p> : <div className="space-y-2">{resources.map((resource) => <div key={resource.id} className="flex items-center justify-between gap-3 rounded-xl border border-border p-3"><div className="min-w-0"><div className="truncate text-sm font-medium">{resource.label}</div><div className="text-xs text-muted-foreground">{resource.kind}</div></div><Button size="sm" variant="secondary" disabled={resourcesFor?.config.index === resource.id} onClick={() => void useIndex(resource.id)}>{resourcesFor?.config.index === resource.id ? "Selected" : "Use index"}</Button></div>)}</div>}
+      </Modal>
+
+      <Modal open={Boolean(previewFor)} title={previewFor?.provider_key === "mcp_elastic" ? "Test Elastic search" : "Preview live evidence"} description="See the bounded, project-scoped results Labs would receive." onClose={() => setPreviewFor(null)} size="lg">
+        <form className="space-y-4" onSubmit={(event) => void runPreview(event)}>
+          <Field label="Project"><SelectMenu value={previewProjectId} onChange={setPreviewProjectId} options={[...new Set((bindings[previewFor?.id ?? -1] ?? []).flatMap((binding) => binding.project_ids))].map((id) => ({ value: id, label: projects.find((project) => project.id === id)?.display_name ?? id }))} ariaLabel="Preview project" variant="field" size="md" className="w-full max-w-none" /></Field>
+          {previewFor?.provider_key === "mcp_elastic" && (() => {
+            const ids = Array.isArray(previewFor.config.source_ids)
+              ? previewFor.config.source_ids.filter((id): id is string => typeof id === "string")
+              : [];
+            const windowDays = typeof previewFor.config.time_window_days === "number" ? previewFor.config.time_window_days : 7;
+            const names = ids.map((id) => existingElastic.sources.find((source) => source.id === id)?.label).filter((label): label is string => Boolean(label));
+            return <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/[0.04] p-3 text-xs"><span className="font-medium">Search scope:</span> {names.length ? names.join(", ") : "Configured Elastic sources"} · last {windowDays} days</div>;
+          })()}
+          <Field label="Search query"><Input value={previewQuery} onChange={(event) => setPreviewQuery(event.target.value)} placeholder="Search for a real record" required /></Field>
+          <Button type="submit" isLoading={previewLoading} disabled={!previewProjectId || !previewQuery.trim()}><Search className="h-4 w-4" /> {previewFor?.provider_key === "mcp_elastic" ? "Run test search" : "Run preview"}</Button>
+        </form>
+        {previewError && <p className="mt-4 rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-sm text-destructive">{previewError}</p>}
+        {previewItems.length > 0 && <div className="mt-5 space-y-2">{previewItems.map((item, index) => <div key={`${item.source_ref}-${index}`} className="rounded-xl border border-border bg-muted/20 p-3"><div className="text-sm font-medium">{item.title}</div><p className="mt-1 line-clamp-4 whitespace-pre-wrap text-xs leading-5 text-muted-foreground">{item.excerpt}</p><div className="mt-2 truncate font-mono text-[10px] text-muted-foreground">{item.source_ref}</div></div>)}{previewTruncated && <p className="text-xs text-muted-foreground">More results exist. Labs receives a bounded set per call.</p>}</div>}
+        {previewComplete && !previewError && previewQuery && previewItems.length === 0 && <p className="mt-5 text-sm text-muted-foreground">No matching records were returned from the selected sources in this time window.</p>}
+      </Modal>
     </main>
   );
 }

@@ -51,11 +51,12 @@ class TestListRuntimeToolDefinitions:
             "list_runtime_unhealthy",
             "get_runtime_outcome_trend",
             "list_runtime_job_reliability",
+            "list_runtime_job_schedule_profile",
             "list_runtime_component_hotspots",
             "list_runtime_job_throughput",
             "list_runtime_error_signatures",
         }
-        assert len(definitions) == 24
+        assert len(definitions) == 25
 
     def test_every_tool_is_dispatchable_on_the_stored_provider(self):
         """The client dispatches via getattr(provider, tool_name).
@@ -84,6 +85,19 @@ class TestListRuntimeToolDefinitions:
         assert "credentials" in definitions["list_runtime_connections"].description
         assert "unhealthy engines" in definitions["list_runtime_unhealthy"].description
         assert "get_execution_logs" not in definitions
+
+    def test_schedule_profile_description_separates_it_from_the_trend_tool(self):
+        """The regression this tool exists for was a model answering that run times
+        'live in the management console and were not supplied'. The description has
+        to carry both the trigger phrases and the contrast with the trend tool, or
+        the model reaches for get_runtime_outcome_trend and concludes the same."""
+        definitions = {d.name: d for d in list_runtime_tool_definitions()}
+        schedule = definitions["list_runtime_job_schedule_profile"].description
+        assert "when does this job run" in schedule
+        assert "what runs overnight" in schedule
+        assert "nightly schedule" in schedule
+        assert "get_runtime_outcome_trend" in schedule
+        assert "wrap" in schedule
 
 
 class TestResolveToolCall:

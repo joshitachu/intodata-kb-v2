@@ -11,8 +11,7 @@ runtime, the runtime-data mirror) and a Next.js frontend (:3000 -- chat, topolog
 
 ## Current state
 
-- **Committed.** `457622c` (2026-08-24) squashed the long-standing uncommitted tree onto `master` and later work is committed on top.
-  `UNCOMMITTED` suffixes still present in PROGRESS_LOG session headers are stale markers.
+- **Committed** through `acd990f`; `UNCOMMITTED` suffixes in older PROGRESS_LOG headers are stale markers.
 - **Answer path**: Hindsight was removed from both RAG entry points (2026-09-01) -- it cost ~20-25s per turn on the critical path and
   its timeouts were hanging turns. `hindsight_client`, the `/memory` routes and the health check are untouched; memory is still
   reachable, just not on the answer path. The turn-claim lease is now derived (`agent_runtime_v2_hard_deadline_seconds` + margin =
@@ -23,8 +22,12 @@ runtime, the runtime-data mirror) and a Next.js frontend (:3000 -- chat, topolog
   access approval, and the tour is a custom engine (driver.js removed) with per-role steps and a `using` / `running` split of `/guide`.
 - **Runtime mirror**: TMC sources choose their ingest scope at connect time; doc read scope is a separate per-project setting. Poll
   interval defaults rose 60s -> 1800s after the scheduler was measured pinning a CPU core. `/admin/logs` is the hub + drill-down console.
-- **Topology**: `/topology` opens on the scanner-computed L1 landscape with L2 drill-down; the copilot resolves relationship-shaped
-  targets client-side.
+- **Runtime tools for doc runs** (uncommitted): `GET/POST /api/v1/runtime/tools*` exposes the 25-tool registry via
+  `execute_runtime_tool`; `POST /api/v1/runtime/elastic/probe/*` adds 4 read-only Elastic primitives. Both CSRF-exempt (bearer key,
+  no cookie). Probe bodies are forced to `size: 0`/`_source: false` and RAISE if documents return; an unmapped field yields `None`,
+  never an ambiguous `0`. No read-grant widening yet (0 grant rows) -- fix belongs in `execute_runtime_tool`, not inline. See ADR-035.
+- **Topology**: L1 landscape + L2 drill-down; mirrors match the MCP contract field-for-field (parity tests), every field renders,
+  and `get_topology_node` on a stream returns `business_facts` (uncommitted, 2026-09-23).
 - **Sources**: GitHub App, Azure DevOps (organization PAT) and ZIP are first-class; multi-repo projects are selectable from
   `/settings/sources` with branch pinning. Model: `kimi/kimi-k2.6` (k2.5 was retired by the provider).
 
@@ -57,4 +60,5 @@ decide a `runtime_log_events` retention policy.
   cannot be determined from dates; both are in the archive.
 - The archived `## Blockers` section lists a Voyage AI API key placeholder needing a real key; nothing dated since confirms or retires
   it, so whether reranking is live is unconfirmed.
-- Latest baselines, from different trees: backend 2,672 passed / 5 pre-existing (2026-09-01); frontend 1,063 / 5 (2026-08-28).
+- Latest baselines: backend `-k topology` 450 passed (2026-09-23); frontend `tests/lib`+`tests/components` 1147 passed / 59
+  pre-existing jsdom `localStorage.clear` failures (identical on clean HEAD, 2026-09-23).

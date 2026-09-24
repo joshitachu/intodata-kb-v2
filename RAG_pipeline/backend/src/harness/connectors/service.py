@@ -7,6 +7,7 @@ from typing import Any
 
 from .models import (
     CapabilityBindingCreate,
+    CapabilityBindingUpdate,
     CapabilityBindingView,
     ConnectorAuthMode,
     ConnectorHealthResult,
@@ -68,11 +69,30 @@ class ConnectorService:
         manifest = self.providers.manifest(row.provider_key)
         if data.capability_id not in manifest.capability_ids:
             raise ConnectorPolicyError("Capability is not provided by this connector")
+        if not data.project_ids:
+            raise ConnectorPolicyError("At least one project is required")
         return await self.repository.add_binding(instance_id, data)
 
     async def list_bindings(self, instance_id: int):
         row = await self.repository.get_instance(instance_id, bindings=True)
         return list(row.capability_bindings)
+
+    async def update_binding(
+        self, instance_id: int, binding_id: int, data: CapabilityBindingUpdate
+    ):
+        instance = await self.repository.get_instance(instance_id)
+        row = await self.repository.get_binding(instance_id, binding_id)
+        if row.capability_id not in self.providers.manifest(instance.provider_key).capability_ids:
+            raise ConnectorPolicyError("Capability is not provided by this connector")
+        if "project_ids" in data.model_fields_set and data.project_ids is None:
+            raise ConnectorPolicyError("Project scope cannot be null")
+        if "enabled" in data.model_fields_set and data.enabled is None:
+            raise ConnectorPolicyError("Enabled cannot be null")
+        if data.project_ids is not None and not data.project_ids:
+            raise ConnectorPolicyError("At least one project is required")
+        if data.project_ids is None and not row.project_ids:
+            raise ConnectorPolicyError("At least one project is required")
+        return await self.repository.update_binding(row, data)
 
     async def delete(self, instance_id: int) -> None:
         row = await self.repository.get_instance(instance_id)
@@ -81,12 +101,21 @@ class ConnectorService:
     async def unbind(self, instance_id: int, binding_id: int) -> None:
         await self.repository.delete_binding(instance_id, binding_id)
 
-    async def check_health(self, instance_id: int) -> ConnectorHealthResult:
+    async def check_health(self, instance_id: int, access_token: str | None = None) -> ConnectorHealthResult:
         row = await self.repository.get_instance(instance_id)
         if not row.enabled:
             raise ConnectorPolicyError("Connector is disabled")
         try:
-            result = await self.providers.get(row.provider_key).health(row.config, row.credential_reference)
+            provider = self.providers.get(row.provider_key)
+            user_health = getattr(provider, "health_for_user", None)
+            if callable(user_health):
+                if not access_token:
+                    raise ConnectorPolicyError("This connector health check requires your active session")
+                result = await user_health(row.config, access_token)
+            else:
+                result = await provider.health(row.config, row.credential_reference)
+        except ConnectorPolicyError:
+            raise
         except Exception:
             result = ConnectorHealthResult(
                 status=ConnectorHealthStatus.UNHEALTHY, summary="Connector health check failed"
@@ -94,9 +123,21 @@ class ConnectorService:
         await self.repository.set_health(row, result.status.value, result.summary)
         return result
 
+    async def list_resources(self, instance_id: int) -> list[dict[str, str]]:
+        """Return bounded index choices for an owner configuring a search connector."""
+
+        row = await self.repository.get_instance(instance_id)
+        if not row.enabled:
+            raise ConnectorPolicyError("Connector is disabled")
+        discover = getattr(self.providers.get(row.provider_key), "discover_indexes", None)
+        if discover is None:
+            return []
+        names = await discover(row.config, row.credential_reference)
+        return [{"id": name, "label": name, "kind": "index"} for name in names]
+
     async def read(
         self, instance_id: int, capability_id: str, project_id: str | None,
-        domain: str | None, query: ConnectorQuery,
+        domain: str | None, query: ConnectorQuery, access_token: str | None = None,
     ) -> ConnectorReadResult:
         row = await self.repository.get_instance(instance_id, bindings=True)
         binding = next((item for item in row.capability_bindings if item.capability_id == capability_id), None)
@@ -104,11 +145,22 @@ class ConnectorService:
             raise ConnectorPolicyError("Connector is unavailable")
         if binding is None or not binding.enabled:
             raise ConnectorPolicyError("Connector capability is disabled")
-        if binding.project_ids and project_id not in binding.project_ids:
+        if not project_id or project_id not in binding.project_ids:
             raise ConnectorPolicyError("Connector is outside project scope")
         if binding.domains and domain not in binding.domains:
             raise ConnectorPolicyError("Connector is outside domain scope")
-        result = await self.providers.get(row.provider_key).read(capability_id, query, row.config)
+        provider = self.providers.get(row.provider_key)
+        user_read = getattr(provider, "read_for_user", None)
+        if callable(user_read):
+            if not access_token or not project_id:
+                raise ConnectorPolicyError("This connector search requires your active session and project")
+            result = await user_read(
+                capability_id, query, row.config, project_id=project_id, access_token=access_token
+            )
+        else:
+            result = await provider.read(
+                capability_id, query, row.config, row.credential_reference, project_id
+            )
         return ConnectorReadResult.model_validate(redact(result.model_dump(), set(binding.redaction_fields)))
 
 

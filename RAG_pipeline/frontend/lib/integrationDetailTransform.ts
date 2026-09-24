@@ -8,6 +8,7 @@ import type {
 } from "@/types/landscape";
 import { landscapeEntityLabel, type TopologyEdge } from "@/lib/landscapeTransform";
 import {
+  streamDeliveryPath,
   TRANSFORMATION_KIND_LABEL,
   type ReachesTarget,
   type TransformationKind,
@@ -219,9 +220,7 @@ export function implementingDesignDetail(
   const integrationSolutions = (topology?.integration_solutions ?? []).filter((solution) =>
     solution.artifact_ids.some((artifactId) => evidenceArtifactIds.has(artifactId)),
   );
-  const path = stream?.delivery_path_id
-    ? topology?.delivery_paths.find((item) => item.id === stream.delivery_path_id)
-    : undefined;
+  const path = stream && topology ? streamDeliveryPath(topology, stream) : undefined;
   const deliverySegments = (path?.segments ?? []).filter((segment) =>
     segment.artifact_ids.some((artifactId) => evidenceArtifactIds.has(artifactId))
     || segment.component === record.artifact_id,

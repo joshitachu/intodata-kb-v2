@@ -1,6 +1,6 @@
 import { type ZodType } from "zod";
 import { getLoginUrl } from "../hooks/useAuth";
-import { ApiError } from "../lib/errors";
+import { ApiError, httpStatusFromError } from "../lib/errors";
 import {
   AddSourceResponseSchema,
   AssignPluginPackResponseSchema,
@@ -45,6 +45,7 @@ import {
   RuntimeSourceTypeListResponseSchema,
   QuestionnaireResponseSchema,
   ReviewAggregateResponseSchema,
+  RuntimeSourceConflictBodySchema,
   RunComparisonSchema,
   ScanRunListResponseSchema,
   ScanStatusResponseSchema,
@@ -101,6 +102,39 @@ async function request<T>(
   if (res.status === 204) return undefined as T;
   const data = await res.json();
   return schema ? parseResponse(schema, data) : (data as T);
+}
+
+/**
+ * The `conflict` block from a refused runtime-source registration, or null.
+ *
+ * Error bodies never pass through `request`'s Zod step -- a failure is thrown as
+ * `ApiError` carrying the raw text -- so the one structured error this app acts
+ * on is validated here instead. Returning null on anything unexpected is the
+ * point: the caller already has the server's sentence from `parseApiError`, and
+ * falling back to prose is always safe, whereas guessing at an unparsed body
+ * would offer an affordance that may not apply.
+ *
+ * Why it exists at all: registering a Talend tenant that is already mirrored is
+ * refused on purpose, and the supported way forward is a read grant on the
+ * existing mirror. Without knowing which source collided, a client can only
+ * repeat the refusal -- which is the dead end this removes.
+ */
+export function runtimeSourceRegistrationConflict(
+  error: unknown,
+): import("./schemas").RuntimeSourceConflict | null {
+  if (httpStatusFromError(error) !== 409) return null;
+  if (!(error instanceof Error)) return null;
+  // `ApiError.message` is `"{status}: {body}"`; the same convention `parseApiError` reads.
+  const match = error.message.match(/^\d{3}:\s*(.*)$/s);
+  if (!match) return null;
+  let body: unknown;
+  try {
+    body = JSON.parse(match[1]);
+  } catch {
+    return null;
+  }
+  const parsed = RuntimeSourceConflictBodySchema.safeParse(body);
+  return parsed.success ? parsed.data.conflict : null;
 }
 
 export const api = {
@@ -734,7 +768,13 @@ export const api = {
     // The CONNECTOR id (e.g. `talend_tmc`). The server maps it to the RAG
     // runtime provider key; the browser must never send that key itself.
     provider_id: string;
-    project_id: string;
+    /**
+     * OPTIONAL. A source is a registered tenant; projects attach to it
+     * afterwards through `addRuntimeSourceReader`. Omit to register with
+     * nothing attached -- `JSON.stringify` drops an undefined key, so the
+     * server sees no project rather than an empty one.
+     */
+    project_id?: string;
     label: string;
     // Values are strings except the ingest-scope field, which is a list of ids.
     credentials: Record<string, string | string[]>;
@@ -756,9 +796,11 @@ export const api = {
   deleteRuntimeSource: (sourceId: number) =>
     request<void>(`/mcp/runtime-sources/${sourceId}`, { method: "DELETE" }),
 
-  // --- Read grants: share one mirror with a second project ---
-  // The answer to "already registered". A tenant is polled once; other projects
-  // documenting the same estate read that mirror instead of re-registering it.
+  // --- Attachments: which projects use one source ---
+  // These rows ARE the source-to-project relationship; a source has no owner.
+  // Also the answer to "already registered": a tenant is polled once, and other
+  // projects documenting the same estate attach instead of re-registering it.
+  // The paths still say `readers`; renaming them is a deliberate follow-up.
 
   listRuntimeSourceReaders: (sourceId: number) =>
     request<{ grants: import("../types").RuntimeSourceReadGrant[]; total: number }>(
@@ -856,7 +898,7 @@ export const api = {
     investigationModel?: string | null;
     model?: string | null;
     writeModel?: string | null;
-    generationMethod?: "custom" | "opencode-cli" | null;
+    generationMethod?: "custom" | "opencode-cli" | "claude-cli" | null;
     /**
      * An explicit, versioned generation contract. Omitted means legacy;
      * an empty object asks the server to apply the selected contract defaults.

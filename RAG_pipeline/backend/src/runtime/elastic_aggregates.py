@@ -19,12 +19,27 @@ testable without a cluster.
 Five rules shape everything here.
 
 1. **One scoping rule, reused, never re-invented.** Scope is resolved exactly as
-   `GET /runtime/doc-evidence` resolves it -- `resolve_runtime_read_projects`
-   then `resolve_doc_read_scope` (`doc_environment_ids` / `doc_window_days`) --
-   and widening comes only from stored read grants. No caller may pass a project
-   set or an environment in: this lane authenticates with a machine key and has
-   no user scope behind it, so a request-supplied read set would be an
-   authorization bypass with nothing behind it.
+   `GET /runtime/doc-evidence` resolves it -- `resolve_doc_read_scope`
+   (`doc_environment_ids` / `doc_window_days`) -- and widening comes only from
+   stored read grants. No caller may pass a project set or an environment in:
+   this lane authenticates with a machine key and has no user scope behind it, so
+   a request-supplied read set would be an authorization bypass with nothing
+   behind it.
+
+   TWO FILTERS, COMPOSED, NOT ONE. `RuntimeDocReadScope` is a FLAT union: it
+   merges the reader's own `doc_environment_ids` with every grant's
+   `environment_ids`, and takes the widest `doc_window_days`. That is defensible
+   for a project's own configuration (a source may only narrow its own
+   contribution) and WRONG for a grant, which is a boundary the grantor set on
+   THEIR estate. Applied flatly on its own it leaks: a reader that selects `acc`
+   for itself while holding a `prod`-only grant unions to `("acc","prod")` and
+   reads the grantor's ACC rows, and a reader configuring a 365-day window
+   against a 7-day grant reads a year of the grantor's history. So the flat doc
+   scope is kept exactly as it was -- it still narrows this project's own read --
+   and the resolved per-grant read set (`resolve_runtime_read_scope`) is ANDed
+   onto the population as well, one term per project. The reader's own term is
+   unrestricted, so its own rows are unchanged; each granting project's rows are
+   additionally bounded by that grant's environment and window.
 
 2. **The environment filter is applied ONCE, to the whole population.** It
    narrows the execution population that every aggregate below composes over
@@ -131,6 +146,7 @@ from src.db.models.runtime_data import (
     RuntimeSourceRow,
 )
 from src.runtime.models import RuntimeDocReadScope, RuntimeLogSeverity
+from src.runtime.read_scope import RuntimeReadTerm, resolve_runtime_read_scope
 from src.runtime.secrets import RuntimeCredentialSecretError
 from src.runtime.source_registry import get_source_provider
 from src.runtime.store import (
@@ -329,11 +345,32 @@ class ElasticAggregateService:
 
         There is deliberately no `environment_ids`, `project_ids` or `source_key`
         parameter. Scope is resolved from stored configuration only.
+
+        Two resolutions, on purpose. `resolve_doc_read_scope` gives the FLAT
+        documentation scope this payload reports (`environments`, `window_days`)
+        and still narrows the whole read; `resolve_runtime_read_scope` gives the
+        PER-GRANT terms that bound each granting project's contribution on top of
+        it. Anchoring both at `window_end` keeps a grant's window floor and the
+        payload's own window comparing against the same instant. See rule 1.
         """
         window_end = _as_utc(now) or datetime.datetime.now(datetime.UTC)
-        read_projects = await self._store.resolve_runtime_read_projects(project_id)
+        # No user behind the machine key, hence `user_scope=None`: there is no
+        # scope to check the named project against, and widening still comes only
+        # from stored grants.
+        read = await resolve_runtime_read_scope(
+            self._store, user_scope=None, project_id=project_id, now=window_end
+        )
+        read_terms = read.terms
+        read_projects = read.project_ids or [project_id]
         read_scope = await self._store.resolve_doc_read_scope(
-            read_projects, project_id, default_window_days=default_window_days
+            read_projects,
+            project_id,
+            default_window_days=default_window_days,
+            # The terms go in as well, because the flat scope resolves its
+            # environment NAMES against the mirror: without them an environment
+            # a grant excludes resolves to a name and is published as one this
+            # payload describes, when no row of it can be read.
+            read_terms=read_terms,
         )
         window_days = read_scope.window_days or default_window_days
         since = window_end - datetime.timedelta(days=window_days)
@@ -346,6 +383,7 @@ class ElasticAggregateService:
         index_pattern, pattern_notes = await self._index_pattern(sources)
         limitations.extend(pattern_notes)
         limitations.extend(_scope_limitations(read_scope, window_days))
+        limitations.extend(_grant_limitations(read_terms))
 
         if not sources:
             limitations.insert(
@@ -386,6 +424,7 @@ class ElasticAggregateService:
         population_total = await self._population_size(
             scope,
             read_projects=read_projects,
+            read_terms=read_terms,
             source_keys=source_keys,
             since=since,
             until=window_end,
@@ -395,6 +434,7 @@ class ElasticAggregateService:
             await self._aggregate(
                 scope,
                 read_projects=read_projects,
+                read_terms=read_terms,
                 source_keys=source_keys,
                 since=since,
                 until=window_end,
@@ -404,7 +444,7 @@ class ElasticAggregateService:
             else []
         )
         correlations, correlation_notes = await self._correlations(
-            scope, read_projects=read_projects, source_keys=source_keys
+            scope, read_terms=read_terms, source_keys=source_keys
         )
 
         per_job, output_notes = _rows_to_per_job(rows, correlations)
@@ -437,7 +477,7 @@ class ElasticAggregateService:
             limitations.extend(
                 await self._empty_population_notes(
                     scope,
-                    read_projects=read_projects,
+                    read_terms=read_terms,
                     source_keys=source_keys,
                     since=since,
                     until=window_end,
@@ -466,15 +506,32 @@ class ElasticAggregateService:
         granted source belongs to the GRANTING project, and a reader that looked
         only at its own rows would find no source and report "no Elastic source"
         for an estate it was explicitly granted.
+
+        The ONE place the per-grant terms are deliberately not applied.
+        `runtime_sources` carries no environment, no execution id and no event
+        time, so `_apply_read_terms` would fail CLOSED on a narrowed grant and
+        drop the grantor's source entirely -- and with it the `source_key` every
+        query below filters on, so a `prod`-only grant would return nothing at
+        all instead of prod. That defeats a grant rather than bounding it. What
+        actually crosses from a granted source row is its shape-validated index
+        pattern, which describes the estate the reader was granted; the ROWS are
+        still bounded per term in `_population`, which is where the narrowing has
+        to hold.
         """
         types = _elastic_source_types()
         stmt = select(RuntimeSourceRow.id, RuntimeSourceRow.source_key).where(
             RuntimeSourceRow.source_type.in_(sorted(types))
         )
+        # Filtered on `estate_key`, the stamp this source writes onto its rows.
+        # Both predicates carry row stamps, not project ids: `read_projects` is
+        # a resolved read set (`resolve_runtime_read_scope` puts each granted
+        # source's estate key in it), and a scope entry matches a source whose
+        # estate key IS that project, which is every source registered against
+        # one. The column simply stopped pretending to be a project.
         stmt = RuntimeStoreRepository._apply_read_projects(
-            stmt, RuntimeSourceRow.project_id, read_projects
+            stmt, RuntimeSourceRow.estate_key, read_projects
         )
-        stmt = RuntimeStoreRepository._apply_scope(stmt, RuntimeSourceRow.project_id, scope)
+        stmt = RuntimeStoreRepository._apply_scope(stmt, RuntimeSourceRow.estate_key, scope)
         stmt = stmt.order_by(RuntimeSourceRow.id.asc())
         return [
             _ElasticSource(source_id=row[0], source_key=row[1])
@@ -554,6 +611,7 @@ class ElasticAggregateService:
         scope: ProjectScope,
         *,
         read_projects: Sequence[str],
+        read_terms: Sequence[RuntimeReadTerm],
         source_keys: Sequence[str],
         since: datetime.datetime,
         until: datetime.datetime,
@@ -580,6 +638,17 @@ class ElasticAggregateService:
         execution's messages. `max()` collapses it to one deterministic value,
         and `coalesce(..., '')` keeps the group key non-NULL so the percentile
         join below cannot silently drop the unnamed-environment group.
+
+        THIS is where a read grant's own boundary is enforced. Everything the
+        payload publishes -- message counts, error counts, latency percentiles,
+        job and environment names -- composes over these rows, so applying the
+        per-project terms here bounds all of it at once. `runtime_executions`
+        carries no environment column, so a grant's environment narrowing routes
+        through `execution_id` exactly as `_apply_execution_filters` does, and
+        `started_at` is the window column. The terms REPLACE `_apply_read_projects`
+        rather than joining it: a term already emits its own project predicate,
+        and for an ungranted read (one unrestricted term) that predicate is the
+        same bare `project_id = ...` this lane emitted before grants existed.
         """
         environment_probe = (
             select(func.max(RuntimeJobRunRow.environment_name))
@@ -603,9 +672,18 @@ class ElasticAggregateService:
             RuntimeExecutionRow.started_at >= since,
             RuntimeExecutionRow.started_at <= until,
         )
-        stmt = RuntimeStoreRepository._apply_read_projects(
-            stmt, RuntimeExecutionRow.project_id, read_projects
-        )
+        if read_terms:
+            stmt = self._store._apply_read_terms(
+                stmt,
+                RuntimeExecutionRow.project_id,
+                read_terms,
+                time_column=RuntimeExecutionRow.started_at,
+                execution_id_column=RuntimeExecutionRow.execution_id,
+            )
+        else:
+            stmt = RuntimeStoreRepository._apply_read_projects(
+                stmt, RuntimeExecutionRow.project_id, read_projects
+            )
         if environment_ids is not None:
             # The store's own environment-scoping subquery, reused rather than
             # restated: `runtime_executions` carries no environment column,
@@ -628,6 +706,7 @@ class ElasticAggregateService:
         scope: ProjectScope,
         *,
         read_projects: Sequence[str],
+        read_terms: Sequence[RuntimeReadTerm],
         source_keys: Sequence[str],
         since: datetime.datetime,
         until: datetime.datetime,
@@ -637,11 +716,14 @@ class ElasticAggregateService:
 
         One indexed aggregate, so the payload can say whether
         `MAX_PROBED_EXECUTIONS` bound instead of leaving a truncated count
-        looking like a total.
+        looking like a total. Built from the SAME `_population` call the
+        aggregates use, terms included, so the reported total can never describe
+        a wider population than the rows below it.
         """
         counted = self._population(
             scope,
             read_projects=read_projects,
+            read_terms=read_terms,
             source_keys=source_keys,
             since=since,
             until=until,
@@ -656,6 +738,7 @@ class ElasticAggregateService:
         scope: ProjectScope,
         *,
         read_projects: Sequence[str],
+        read_terms: Sequence[RuntimeReadTerm],
         source_keys: Sequence[str],
         since: datetime.datetime,
         until: datetime.datetime,
@@ -680,6 +763,7 @@ class ElasticAggregateService:
         population = self._population(
             scope,
             read_projects=read_projects,
+            read_terms=read_terms,
             source_keys=source_keys,
             since=since,
             until=until,
@@ -775,7 +859,7 @@ class ElasticAggregateService:
         self,
         scope: ProjectScope,
         *,
-        read_projects: Sequence[str],
+        read_terms: Sequence[RuntimeReadTerm],
         source_keys: Sequence[str],
     ) -> tuple[dict[str, _CorrelationEdge], list[str]]:
         """One declared correlation edge per job, plus what that dropped.
@@ -786,6 +870,15 @@ class ElasticAggregateService:
         under a second key -- double counting for any reader that sums them. The
         survivor is the most recently observed edge, then alphabetical, so the
         choice is deterministic; the rest are reported.
+
+        `runtime_job_dependencies` carries neither an environment nor an
+        execution id nor an event time, so a NARROWED grant contributes no edge
+        at all here (`_apply_read_terms` fails closed, the rule it applies to
+        `runtime_artifacts` and `runtime_connections`). A dependency row names
+        two jobs of the grantor's estate, and there is no honest way to show that
+        such a row belongs to the one environment a grant allowed; publishing it
+        anyway would hand a reader granted PROD the grantor's whole declared
+        topology. `_grant_limitations` states the resulting gap.
         """
         stmt = select(
             RuntimeJobDependencyRow.job_name,
@@ -795,8 +888,8 @@ class ElasticAggregateService:
             RuntimeJobDependencyRow.source_key.in_(list(source_keys)),
             RuntimeJobDependencyRow.dependency_type.in_(sorted(CORRELATION_DEPENDENCY_TYPES)),
         )
-        stmt = RuntimeStoreRepository._apply_read_projects(
-            stmt, RuntimeJobDependencyRow.project_id, read_projects
+        stmt = self._store._apply_read_terms(
+            stmt, RuntimeJobDependencyRow.project_id, read_terms
         )
         stmt = RuntimeStoreRepository._apply_scope(
             stmt, RuntimeJobDependencyRow.project_id, scope
@@ -853,7 +946,7 @@ class ElasticAggregateService:
         self,
         scope: ProjectScope,
         *,
-        read_projects: Sequence[str],
+        read_terms: Sequence[RuntimeReadTerm],
         source_keys: Sequence[str],
         since: datetime.datetime,
         until: datetime.datetime,
@@ -865,6 +958,11 @@ class ElasticAggregateService:
         Only reached when the payload would otherwise be a silent empty, and the
         bounded message probe is CHEAP exactly here: nothing was attributed, so
         qualifying rows are plentiful and the `LIMIT` bites immediately.
+
+        Both probes carry the read terms. These counts are published statements
+        about how much data exists behind the read, so a probe that spanned a
+        wider population than the payload would answer "your mirror holds N Elastic
+        messages" with a number drawn from rows the grant excludes.
         """
         notes = [
             f"An Elastic runtime source is registered, but its mirror holds no "
@@ -877,8 +975,12 @@ class ElasticAggregateService:
             RuntimeJobRunRow.started_at >= since,
             RuntimeJobRunRow.started_at <= until,
         )
-        job_runs = RuntimeStoreRepository._apply_read_projects(
-            job_runs, RuntimeJobRunRow.project_id, read_projects
+        job_runs = self._store._apply_read_terms(
+            job_runs,
+            RuntimeJobRunRow.project_id,
+            read_terms,
+            environment_column=RuntimeJobRunRow.environment_id,
+            time_column=RuntimeJobRunRow.started_at,
         )
         job_runs = RuntimeStoreRepository._apply_scope(
             job_runs, RuntimeJobRunRow.project_id, scope
@@ -904,8 +1006,12 @@ class ElasticAggregateService:
             RuntimeLogEventRow.timestamp >= since,
             RuntimeLogEventRow.timestamp <= until,
         )
-        messages = RuntimeStoreRepository._apply_read_projects(
-            messages, RuntimeLogEventRow.project_id, read_projects
+        messages = self._store._apply_read_terms(
+            messages,
+            RuntimeLogEventRow.project_id,
+            read_terms,
+            time_column=RuntimeLogEventRow.timestamp,
+            execution_id_column=RuntimeLogEventRow.execution_id,
         )
         messages = RuntimeStoreRepository._apply_scope(
             messages, RuntimeLogEventRow.project_id, scope
@@ -1049,6 +1155,40 @@ def _scope_limitations(read_scope: RuntimeDocReadScope, window_days: int) -> lis
             f"{window_days} day(s) long."
         )
     return notes
+
+
+def _grant_limitations(read_terms: Sequence[RuntimeReadTerm]) -> list[str]:
+    """What a NARROWED read grant took out of this payload.
+
+    `_scope_limitations` reports the flat documentation scope -- the reader's own
+    selection. This reports the other filter: the per-grant environment and
+    window bounding each granting project's contribution, which `read_scope`
+    cannot express because it unions every selection into one list.
+
+    Both consequences are stated, because both are invisible in the numbers. A
+    narrowed grant bounds the granting project's message, error and latency
+    figures, and it removes that project's correlation edges entirely --
+    `runtime_job_dependencies` cannot be attributed to an environment or a
+    window, so it fails closed. A reader that sees no hand-off must be able to
+    tell "none is mirrored" from "the grant does not reach them".
+    """
+    narrowed = [term for term in read_terms if not term.unrestricted]
+    if not narrowed:
+        return []
+    return [
+        (
+            f"{len(narrowed)} of the project(s) in this read are reached through a read "
+            "grant that narrows them to specific environments and/or a shorter history. "
+            "Their figures below are bounded by that grant and are not a statement about "
+            "the whole of those estates."
+        ),
+        (
+            "Declared message correlations from those granted project(s) are excluded: a "
+            "correlation edge carries no environment and no timestamp, so it cannot be "
+            "shown to fall inside the grant. An absent hand-off below may therefore be a "
+            "grant boundary rather than a missing correlation id."
+        ),
+    ]
 
 
 def _population_limitations(

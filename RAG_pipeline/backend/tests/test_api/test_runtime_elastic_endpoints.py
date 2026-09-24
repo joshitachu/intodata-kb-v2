@@ -18,6 +18,15 @@ Four things are therefore pinned here rather than in the service tests:
 * the response is the `elastic-aggregates-1` object at the TOP LEVEL. The
   consumer's models set `extra="forbid"`, so an envelope field would make the
   whole payload invalid.
+
+`TestSharedReadGrant` pins the fifth: what a READ GRANT over another tenant's
+Elastic estate may reach. `RuntimeDocReadScope` unions every environment
+selection into one flat list and takes the widest window, which is right for a
+project's own configuration and wrong for a grant -- flatly applied it returns
+the grantor's ACC rows to a reader holding a PROD-only grant (as soon as that
+reader selects ACC for itself), and a year of the grantor's history to a reader
+holding a 7-day grant. Both cases are asserted here, because neither shows up as
+an error: they show up as extra rows in a payload a documentation run publishes.
 """
 
 from __future__ import annotations
@@ -285,8 +294,7 @@ class TestScopeResolution:
         payload -- and say why -- rather than fall back to everything.
         """
         store = RuntimeStoreRepository(db_session)
-        source_id = await store.find_source_id_by_project_and_type(_P, "elastic")
-        assert source_id is not None
+        source_id = await _attached_source_id(store, _P, "elastic")
         await store.write_credentials(
             source_id=source_id,
             plaintext_payload={
@@ -306,8 +314,7 @@ class TestScopeResolution:
         self, client, db_session
     ):
         store = RuntimeStoreRepository(db_session)
-        source_id = await store.find_source_id_by_project_and_type(_P, "elastic")
-        assert source_id is not None
+        source_id = await _attached_source_id(store, _P, "elastic")
         await store.write_credentials(
             source_id=source_id,
             plaintext_payload={"index_pattern": f"esb-{_P}-*", "doc_window_days": 1},
@@ -349,6 +356,262 @@ class TestStatedAbsence:
         assert _OTHER_MARKER not in resp.text
 
 
+_READER = "proj-reader-tenant"
+_PROD = "env-prod"
+_ACC = "env-acc"
+_READER_ACC_JOB = "Reader_AccJob"
+_GRANTOR_PROD_JOB = "Grantor_ProdJob"
+#: Would appear only if a PROD grant let the grantor's ACC rows through.
+_GRANTOR_ACC_JOB = "Grantor_AccJob"
+#: Would appear only if the reader's own (longer) window were applied to the
+#: grantor's rows instead of the grant's.
+_GRANTOR_ANCIENT_JOB = "Grantor_AncientProdJob"
+
+
+async def _seed_exchange(
+    store: RuntimeStoreRepository,
+    *,
+    project_id: str,
+    source_key: str,
+    job_name: str,
+    environment_id: str,
+    started_at: datetime.datetime,
+    messages: int,
+) -> None:
+    """One mirrored Elastic exchange: execution + job run + attributable lines."""
+    execution_id = f"{project_id}-{job_name}"
+    await store.upsert_execution(
+        project_id,
+        RuntimeExecution(
+            execution_id=execution_id,
+            job_name=job_name,
+            state=RuntimeExecutionState.SUCCESS,
+            started_at=started_at,
+            ended_at=started_at + datetime.timedelta(milliseconds=400),
+            duration_ms=400,
+        ),
+        source_key,
+        started_at,
+    )
+    await store.upsert_job_run(
+        project_id,
+        RuntimeJobRun(
+            run_id=execution_id,
+            job_id=f"{job_name}-id",
+            job_name=job_name,
+            source_key=source_key,
+            execution_id=execution_id,
+            state=RuntimeExecutionState.SUCCESS,
+            environment_id=environment_id,
+            environment_name=environment_id.removeprefix("env-").upper(),
+            started_at=started_at,
+        ),
+        source_key,
+        started_at,
+    )
+    for ordinal in range(messages):
+        await store.upsert_log_event(
+            project_id,
+            RuntimeLogEvent(
+                execution_id=execution_id,
+                timestamp=started_at + datetime.timedelta(seconds=ordinal),
+                severity=RuntimeLogSeverity.INFO,
+                message=f"line {ordinal}",
+                line_ordinal=ordinal,
+            ),
+            source_key,
+            started_at,
+        )
+
+
+@pytest.fixture
+async def shared_client(db_session):
+    """A reader tenant with an ACC estate, and a grantor with PROD + ACC + history.
+
+    The grant itself is added per test, so the same estate answers "no grant",
+    "grant" and "narrowed grant".
+    """
+    from src.api.dependencies import get_db
+
+    store = RuntimeStoreRepository(db_session)
+    reader_source = await store.create_source_config(
+        project_id=_READER, source_type="elastic", label="ACME-reader-PRODUCTION"
+    )
+    grantor_source = await store.create_source_config(
+        project_id=_OTHER, source_type="elastic", label="ACME-grantor-PRODUCTION"
+    )
+    for source, project_id in ((reader_source, _READER), (grantor_source, _OTHER)):
+        await store.write_credentials(
+            source_id=source.id,
+            plaintext_payload={"index_pattern": f"esb-{project_id}-*"},
+            credential_type="elastic",
+            rotated_by="1",
+        )
+
+    await _seed_exchange(
+        store,
+        project_id=_READER,
+        source_key=reader_source.source_key,
+        job_name=_READER_ACC_JOB,
+        environment_id=_ACC,
+        started_at=_T0,
+        messages=2,
+    )
+    await _seed_exchange(
+        store,
+        project_id=_OTHER,
+        source_key=grantor_source.source_key,
+        job_name=_GRANTOR_PROD_JOB,
+        environment_id=_PROD,
+        started_at=_T0,
+        messages=4,
+    )
+    await _seed_exchange(
+        store,
+        project_id=_OTHER,
+        source_key=grantor_source.source_key,
+        job_name=_GRANTOR_ACC_JOB,
+        environment_id=_ACC,
+        started_at=_T0,
+        messages=40,
+    )
+    await _seed_exchange(
+        store,
+        project_id=_OTHER,
+        source_key=grantor_source.source_key,
+        job_name=_GRANTOR_ANCIENT_JOB,
+        environment_id=_PROD,
+        started_at=datetime.datetime.now(UTC) - datetime.timedelta(days=200),
+        messages=7,
+    )
+
+    app.dependency_overrides[get_db] = lambda: db_session
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        yield http
+    app.dependency_overrides.clear()
+
+
+async def _configure_reader(db_session, **payload) -> None:
+    """Write the reader's OWN documentation read scope into its source config."""
+    store = RuntimeStoreRepository(db_session)
+    source_id = await _attached_source_id(store, _READER, "elastic")
+    await store.write_credentials(
+        source_id=source_id,
+        plaintext_payload={"index_pattern": f"esb-{_READER}-*", **payload},
+        credential_type="elastic",
+        rotated_by="1",
+    )
+
+
+async def _grant(db_session, *, environment_ids=None, window_days=None) -> None:
+    store = RuntimeStoreRepository(db_session)
+    source_id = await _attached_source_id(store, _OTHER, "elastic")
+    await store.add_read_grant(
+        source_id=source_id,
+        project_id=_READER,
+        environment_ids=environment_ids,
+        window_days=window_days,
+        created_by="1",
+    )
+
+
+def _jobs(body: dict) -> set[str]:
+    return {row["job_name"] for row in body["per_job"]}
+
+
+class TestSharedReadGrant:
+    async def test_without_a_grant_the_other_tenant_is_invisible(self, shared_client):
+        body = (
+            await shared_client.get(_URL, params={"project_id": _READER, "window_days": 365})
+        ).json()
+
+        assert _jobs(body) == {_READER_ACC_JOB}
+
+    async def test_an_unnarrowed_grant_returns_the_whole_granted_estate(
+        self, shared_client, db_session
+    ):
+        """Fail-closed must be a consequence of NARROWING, not of sharing."""
+        await _grant(db_session)
+        body = (
+            await shared_client.get(_URL, params={"project_id": _READER, "window_days": 365})
+        ).json()
+
+        assert _jobs(body) == {
+            _READER_ACC_JOB,
+            _GRANTOR_PROD_JOB,
+            _GRANTOR_ACC_JOB,
+            _GRANTOR_ANCIENT_JOB,
+        }
+
+    async def test_a_prod_grant_does_not_publish_the_grantors_acc_estate(
+        self, shared_client, db_session
+    ):
+        """The union leak, in the exact shape that produces it.
+
+        The reader selects ACC for ITSELF while holding a PROD-only grant. A flat
+        union resolves to ("env-acc", "env-prod") over both projects and hands the
+        grantor's 40-message ACC job to a documentation run.
+        """
+        await _grant(db_session, environment_ids=[_PROD])
+        await _configure_reader(db_session, doc_environment_ids=[_ACC])
+
+        body = (
+            await shared_client.get(_URL, params={"project_id": _READER, "window_days": 365})
+        ).json()
+
+        assert _GRANTOR_ACC_JOB not in _jobs(body)
+        # The grant is still worth something: its PROD job is published...
+        assert _GRANTOR_PROD_JOB in _jobs(body)
+        # ...and the reader's own ACC estate is not suppressed by the grant's
+        # environment, which a flat intersection would have done.
+        assert _READER_ACC_JOB in _jobs(body)
+
+    async def test_a_short_grant_window_bounds_the_grantors_history(
+        self, shared_client, db_session
+    ):
+        """`resolve_doc_read_scope` takes the WIDEST window; a grant is a ceiling."""
+        await _grant(db_session, window_days=30)
+        await _configure_reader(db_session, doc_window_days=365)
+
+        body = (
+            await shared_client.get(_URL, params={"project_id": _READER, "window_days": 90})
+        ).json()
+
+        # The reported window is still the widest -- it describes this project's
+        # own read, and the payload has always reported it.
+        assert body["window_days"] == 365
+        assert _GRANTOR_ANCIENT_JOB not in _jobs(body)
+        assert _GRANTOR_PROD_JOB in _jobs(body)
+        assert _READER_ACC_JOB in _jobs(body)
+
+    async def test_a_narrowed_grant_states_what_it_removed(
+        self, shared_client, db_session
+    ):
+        """Silence about a bounded read is what makes a partial payload look whole."""
+        await _grant(db_session, environment_ids=[_PROD])
+        body = (
+            await shared_client.get(_URL, params={"project_id": _READER, "window_days": 365})
+        ).json()
+
+        assert any("read grant that narrows them" in note for note in body["limitations"])
+        assert any(
+            "Declared message correlations from those granted" in note
+            for note in body["limitations"]
+        )
+
+    async def test_an_unnarrowed_grant_states_nothing_extra(
+        self, shared_client, db_session
+    ):
+        """A limitation that is not true of this read would be its own defect."""
+        await _grant(db_session)
+        body = (
+            await shared_client.get(_URL, params={"project_id": _READER, "window_days": 365})
+        ).json()
+
+        assert not any("read grant that narrows them" in note for note in body["limitations"])
+
+
 class TestPromptSafety:
     """The body reaches an LLM prompt."""
 
@@ -375,3 +638,21 @@ class TestPromptSafety:
                 "correlated_target_job",
             )
         )
+
+
+async def _attached_source_id(store: RuntimeStoreRepository, project_id: str, source_type: str) -> int:
+    """The source of this type attached to this project.
+
+    Replaces `find_source_id_by_project_and_type`, which was deleted with the
+    "one source of a type per project" rule it existed to enforce. A project may
+    now legitimately hold two sources of one type, so the test asks the
+    attachment inventory and asserts the fixture's own assumption -- exactly one
+    -- instead of relying on a lookup that silently returned the lowest id.
+    """
+    attached = [
+        source.id
+        for source in await store.list_source_configs([project_id], project_id=project_id)
+        if source.source_type == source_type
+    ]
+    assert len(attached) == 1, f"expected one {source_type} source on {project_id}, got {attached}"
+    return attached[0]

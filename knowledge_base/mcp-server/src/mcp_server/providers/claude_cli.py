@@ -19,7 +19,11 @@ from mcp_server.providers.custom.analysis_parser import PHASE2_SECTION_NAMES
 from mcp_server.providers.custom.section_parser import allcaps_heading_name
 from mcp_server.services.doc_quality_scorer import collapse_floor_by_doc
 from mcp_server.services.group_attribution_guard import analysis_group_for_slice
-from mcp_server.services.token_refresh import ensure_token_fresh
+from mcp_server.services.token_refresh import (
+    apply_auth_env,
+    describe_auth,
+    ensure_token_fresh,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -540,6 +544,61 @@ PHASE 1 -- SETUP:
    - Reference doc templates: {staging_abs}/_preprocess/_ref_core*.md, _ref_business_ops*.md
      and _ref_user*.md -- one set per Phase 3 agent (see the agent table in Phase 3).
 
+RUNTIME EVIDENCE -- THE LIVE ESTATE, QUERIED FROM A LOCAL SCRIPT:
+   The scan says what the code does. It cannot say what ran, how often, or what it did
+   when it failed. That evidence lives in the runtime registers -- the Talend Management
+   Console execution history and the Elasticsearch log estate -- and this run can query
+   them through a script staged inside the staging directory:
+     Bash python3 {staging_abs}/_tools/runtime_tools.py list
+     Bash python3 {staging_abs}/_tools/runtime_tools.py call <tool> '<json>'
+     Bash python3 {staging_abs}/_tools/runtime_tools.py elastic <probe> '<json>'
+   This is a local script invoked with Bash, inside {staging_abs}/. It is NOT an MCP
+   tool; the prohibition on MCP tools above is unchanged and still absolute.
+   START WITH `list`. It returns every available tool and probe with its JSON input
+   schema -- roughly 25 runtime tools and 4 Elasticsearch probes. Read that output and
+   pick; do not guess a tool name, and do not guess an argument.
+   If the script is not there, no runtime source is connected for this project. Say so
+   where a runtime fact would go, and carry on. That is not an error.
+   Every call is recorded in this run's probe ledger, and a figure in a published
+   document that no probe returned is reported against the run afterwards.
+
+   1. EVERY PUBLISHED RUNTIME NUMBER CARRIES ITS MEASUREMENT REFERENCE.
+      Say which register or index it came from, which table or aggregate, the time
+      window it covers, and the denominator it was divided by. The SAME estate reads as
+      0.087% failing or 30.8% failing depending on which register the number covers and
+      what it is divided by -- a factor of 350. A number without a window and a
+      denominator is not reportable. "Over the last 30 days the PROD execution register
+      recorded 17 failed runs out of 2,122" is a fact. "Fails 23% of the time" is not.
+   2. NEVER MIX ENVIRONMENTS IN ONE RATIO.
+      A failure rate computed over a register that blends PROD and ACC describes no
+      environment that exists. Measured on one estate: 23.1% unscoped, while PROD alone
+      is 0.8% and ACC is 60.7%. Establish which environments a register covers BEFORE
+      you quote any rate over it, and name the environment the number describes.
+   3. ZERO IS AMBIGUOUS -- TREAT IT AS A QUESTION, NOT AN ANSWER.
+      A count of zero means either "this field does not exist" or "the field exists and
+      is empty". Those are different facts and must never be conflated. The tools report
+      field_unmapped explicitly; if you got a bare zero you have not yet established
+      which of the two it is. Go and establish it before you write it down.
+   4. ESTABLISH PRESENCE WITHOUT READING CONTENT.
+      To show that message payloads carry real business content, use the SIZE
+      DISTRIBUTION rather than retrieving a message: an envelope is a few hundred bytes,
+      a real business message is tens of kilobytes. The tools deliberately cannot return
+      document content. That is a confidentiality boundary, not an inconvenience, and
+      there is no route around it to look for.
+   5. ABSENCE IS A FINDING, AND IT IS STATED PLAINLY.
+      If the runtime estate holds no data for a unit, say so and say what you checked.
+      Low coverage is EXPECTED and correct: the runtime source lists SCHEDULED TASKS,
+      not the artifact inventory. A design invoked by a parent (tRunJob) or embedded as
+      a joblet runs constantly and never appears as a task of its own. Absence from the
+      runtime source is NOT evidence that a design does not run, and writing it as if
+      it were is a false statement about the client's estate.
+
+   The documents state the findings; they never state the mechanics. The CLIENT PROSE
+   rule covers this script exactly as it covers every other internal name: no script or
+   tool names, no file paths, no phases, no sub-agents in a published document. "The
+   interface ran 2,122 times in the last 30 days, 17 of them failing" is right; naming
+   the command that established it is not.
+
 {phase2_header}
    a. Reads {staging_abs}/_assessment/quick_scan/{{group}}.md -- THAT group's pre-computed
       risk flags -- and calibrates analysis depth accordingly (CRITICAL/HIGH flags warrant
@@ -618,6 +677,10 @@ PHASE 1 -- SETUP:
    - Read {staging_abs}/_preprocess/{analysis_guide_file} for structured analysis guidance.
    - Read {staging_abs}/_analysis/_shared_library.md if it exists: it is the only place the
      interfaces of the reusable designs (joblets, routelets) your groups call are written down.
+   - The runtime registers are queryable here too (see RUNTIME EVIDENCE above). Use them
+     where a group's risk flags turn on whether something actually runs, or fails, or has
+     not run at all -- and attach the register, the environment, the window and the
+     denominator to every number you write down. All five rules in that block apply.
    - Do NOT call fetch_chunk(), fetch_json, get_analysis_prompts(), get_reference_docs(), or any MCP tools.
    - Do NOT use TodoWrite or ASCII validation scripts. The ONLY mkdir you may run is
      the one in step e, for the group directory you are writing section files into.
@@ -751,9 +814,10 @@ PHASE 3 -- WRITE DOCS (parallel sub-agents by theme):
    - Read in parallel as widely as you like. If a batch of reads fails, retry the failed
      reads individually; never drop evidence because one call in a batch failed.
    - Copy the four blocks below -- COVERAGE OBLIGATION, EVIDENCE GROUNDING, CLIENT PROSE
-     and UNRESOLVED EVIDENCE -- VERBATIM into every doc sub-agent prompt. A writer that
-     never receives them pads, reconstructs quotes from memory, names internal files in
-     client prose and has nowhere to put doubt.
+     and UNRESOLVED EVIDENCE -- and the RUNTIME EVIDENCE block above, VERBATIM into every
+     doc sub-agent prompt. A writer that never receives them pads, reconstructs quotes
+     from memory, names internal files in client prose, publishes a runtime percentage
+     with no window or denominator behind it, and has nowhere to put doubt.
    SCORECARD INTEGRATION:
    - Reference specific scores in your documents, and name the published document that
      carries them, never an internal file.
@@ -963,6 +1027,9 @@ PROHIBITED ACTIONS:
      before a windowed read.
    - Do NOT call get_analysis_prompts(), get_reference_docs(), get_scan_status, get_chunks, fetch_json, fetch_chunk, trigger_scan, or any other MCP/fetch tools.
      ALL scan data, prompts, and reference docs are pre-bundled in _preprocess/.
+     The one exception is not an exception to this rule: {staging_abs}/_tools/runtime_tools.py
+     is a local script run with Bash (see RUNTIME EVIDENCE), not an MCP tool, and it is the
+     only way to reach evidence a static scan cannot contain.
    - Only final .md docs and the _analysis/, _assessment/, _preprocess/, _provenance/ and
      _knowledge/ contents go to {staging_abs}/.
 
@@ -991,7 +1058,17 @@ FILE READING GUIDANCE:
 
         project_id = ctx.project_id
 
-        # Ensure OAuth token is fresh before spawning CLI
+        # Preflight in two steps, because they are two different faults with two
+        # different fixes. describe_auth() catches "nothing is configured" --
+        # which ensure_token_fresh() cannot report, since it returns True for an
+        # absent credentials file (API-key auth needs no refresh). Without this
+        # the run reached the subprocess and died there on a vaguer error.
+        auth = describe_auth()
+        if not auth.configured:
+            logger.error(auth.remedy)
+            await log_cb(project_id, auth.remedy, "error")
+            return AgentResult(success=False, error=auth.remedy)
+
         if not ensure_token_fresh():
             msg = (
                 "Claude OAuth token expired and refresh failed. "
@@ -1040,6 +1117,11 @@ FILE READING GUIDANCE:
         try:
             env = {**os.environ, "PYTHONUTF8": "1"}
             env.pop("CLAUDECODE", None)
+            # An OAuth login must not be overridden by the harness's API key.
+            resolved_auth = apply_auth_env(env)
+            await log_cb(
+                project_id, f"Claude Code auth mode: {resolved_auth.mode}", "info",
+            )
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,

@@ -13,8 +13,20 @@ import type { ConnectorProvider } from "../types";
  * manifest with no change to any component.
  */
 
-/** The doc-generation engine a run will use. */
-export type GenerationEngine = "legacy" | "opencode";
+/**
+ * The doc-generation engine a run will use.
+ *
+ * `claude` and `opencode` are ONE lane with two transports: providers/claude_cli.py
+ * builds the prompt and opencode_cli.py returns it verbatim, onto identical
+ * staging. Anything one of them reads, the other reads. `legacy` is the separate
+ * Python harness.
+ */
+export type GenerationEngine = "legacy" | "opencode" | "claude";
+
+/** True for the CLI-session lane, whichever transport carries it. */
+export function isCliSessionEngine(engine: GenerationEngine): boolean {
+  return engine === "opencode" || engine === "claude";
+}
 
 /**
  * Type-column copy. A runtime-sync provider mirrors on a schedule; a
@@ -48,8 +60,10 @@ export function describeKind(provider: ConnectorProvider): string {
  * `null` means this build has not been taught the kind. Say so; do not guess.
  */
 export function enginesReadingKind(kind: string): GenerationEngine[] | null {
-  if (kind === "runtime_sync") return ["legacy", "opencode"];
-  if (kind === "live_evidence") return ["opencode"];
+  // `claude` accompanies `opencode` everywhere: same prompt, same staging, so
+  // there is no reach a transport swap could change.
+  if (kind === "runtime_sync") return ["legacy", "opencode", "claude"];
+  if (kind === "live_evidence") return ["opencode", "claude"];
   return null;
 }
 
@@ -68,12 +82,17 @@ export function describeEngineReach(kind: string, engine: GenerationEngine): str
   if (readers === null) {
     return "This build cannot say which engine reads this source; the server decides.";
   }
-  if (readers.length > 1) return "Read by both the legacy pipeline and OpenCode runs.";
-  const only = readers[0];
-  const name = only === "opencode" ? "OpenCode runs" : "legacy pipeline runs";
-  return only === engine
-    ? `Read by ${name}.`
-    : `Read by ${name}; this run will not query it.`;
+  if (readers.includes("legacy") && readers.some(isCliSessionEngine)) {
+    return "Read by both the legacy pipeline and CLI-session runs.";
+  }
+  if (readers.every(isCliSessionEngine)) {
+    return readers.includes(engine)
+      ? "Read by CLI-session runs (Claude Code and OpenCode)."
+      : "Read by CLI-session runs (Claude Code and OpenCode); this run will not query it.";
+  }
+  return readers.includes(engine)
+    ? "Read by legacy pipeline runs."
+    : "Read by legacy pipeline runs; this run will not query it.";
 }
 
 /** Absolute timestamp for a sync clock. `null` is never synced, said plainly. */

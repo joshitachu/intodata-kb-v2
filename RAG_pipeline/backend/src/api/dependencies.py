@@ -16,8 +16,15 @@ from src.db.models import User
 from src.rbac.permissions import (
     RUNTIME_SOURCES_READ,
     RUNTIME_SOURCES_WRITE,
+    get_user_project_ids,
     has_permission,
 )
+from src.runtime.read_scope import (
+    RuntimeReadScope,
+    resolve_runtime_read_scope,
+    resolve_runtime_read_scope_for_user,
+)
+from src.runtime.store import RuntimeStoreRepository
 
 logger = logging.getLogger(__name__)
 
@@ -165,3 +172,84 @@ AuditViewer = Annotated[User, Depends(require_permission("view_audit_logs"))]
 ProjectCreator = Annotated[User, Depends(require_permission("create_projects"))]
 RuntimeSourceReader = Annotated[User, Depends(require_permission(RUNTIME_SOURCES_READ))]
 RuntimeSourceWriter = Annotated[User, Depends(require_permission(RUNTIME_SOURCES_WRITE))]
+
+
+# --- Runtime read scope -------------------------------------------------------
+#
+# ONE resolution point for every runtime READ. Before this, ~30 handlers each
+# wrote `scope = await get_user_project_ids(user, db)` followed by
+# `_intersect_scope(scope, project_id)`, which is why stored read grants reached
+# exactly three of them: the other ~37 filtered on the raw row stamp and returned
+# NOTHING to a project reading a shared mirror through a grant.
+#
+# THE RULE THESE DEPENDENCIES EXIST TO ENFORCE: `RuntimeReadScope.scope` is
+# WIDENED to include the granting project, while the per-grant environment and
+# window limits live in `.terms`. The two are therefore halves of one filter and
+# must travel together -- a handler that passes `read.scope` without
+# `read_terms=read.terms` has asked for the grantor's rows with the grant's own
+# narrowing switched off. Returning the whole object from the dependency, rather
+# than a bare `ProjectScope`, is what makes forgetting the second half visible at
+# the call site instead of silent in the result.
+
+
+async def get_runtime_read_scope(
+    user: CurrentUser,
+    db: DBSession,
+    project_id: str | None = None,
+) -> RuntimeReadScope:
+    """Resolve the read set for a request that NAMES a project.
+
+    FastAPI supplies `project_id` from the query string, so a handler that
+    already declares its own `project_id` keeps its own requiredness (a route
+    declaring `project_id: str` still 422s when it is missing) and both see the
+    same value. A handler that declares none simply inherits an optional filter,
+    which is what every `/runtime/*` list endpoint already offered.
+
+    Widening comes ONLY from stored grant rows, never from request input --
+    `resolve_runtime_read_scope` checks the caller's own scope against the named
+    project FIRST and denies before it looks a grant up. A caller that names no
+    project is not widened at all: `RuntimeReadScope.unscoped` carries the RBAC
+    boundary with no terms, so a listing across everything behaves exactly as it
+    did before grants existed.
+
+    Denial is returned (`denies_all`), not raised, because the routes disagree
+    about what it means: a point lookup owes a 404 and a list owes an empty page.
+    """
+    return await resolve_runtime_read_scope(
+        RuntimeStoreRepository(db),
+        user_scope=await get_user_project_ids(user, db),
+        project_id=project_id,
+    )
+
+
+RuntimeRead = Annotated[RuntimeReadScope, Depends(get_runtime_read_scope)]
+
+
+async def get_runtime_read_scope_for_user(
+    user: CurrentUser,
+    db: DBSession,
+) -> RuntimeReadScope:
+    """Resolve the read set for a request that reads BY ID, naming no project.
+
+    `GET /runtime/executions/{execution_id}` and its siblings identify a row by
+    its own id, so `get_runtime_read_scope` would have nothing to widen from and
+    the drill-down would 404 on exactly the rows a granted reader had just seen
+    in a list -- a dead end one click after the feature appears to work, which is
+    worse than not sharing at all.
+
+    The widening is the union of the grants held by every project the user can
+    already see; `resolve_runtime_read_scope_for_user` documents why that grants
+    no reach naming those projects one at a time would not, and skips the scan
+    entirely for an unrestricted user.
+
+    Deliberately NOT the same dependency with `project_id=None`: that case is
+    defined as "no widening at all", and quietly widening it would change every
+    unfiltered list endpoint in the router at once.
+    """
+    return await resolve_runtime_read_scope_for_user(
+        RuntimeStoreRepository(db),
+        user_scope=await get_user_project_ids(user, db),
+    )
+
+
+RuntimeReadById = Annotated[RuntimeReadScope, Depends(get_runtime_read_scope_for_user)]

@@ -456,6 +456,12 @@ presented as diagnosed.
 Optional: `RUNTIME_SEMANTIC_ENABLED=true` adds semantic recall over captured
 runtime logs (indexes into Qdrant, off by default).
 
+TMC is a **runtime source**, not an agent connector. Its scheduled ingestion
+fills the same stored runtime repository used by **Admin → Runtime** and Labs'
+stored-runtime evidence tools. Keep it here so a dashboard incident and a chat
+answer refer to the same captured runs, logs, freshness and project grants.
+Do not register a second direct-to-TMC search connector for Labs.
+
 ### 13b. Expose runtime to chat
 
 Registering a source fills the mirror; it does not expose runtime tools to the
@@ -479,6 +485,35 @@ sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" up -d backend
 
 Reads are project-scoped from the authenticated request's RBAC allow-list, never
 from LLM-supplied tool arguments.
+
+### Agent evidence connectors (separate from runtime ingestion)
+
+**Admin → Connectors** registers query-time, read-only evidence sources. The
+installed types are fixture data, Elasticsearch-compatible HTTPS search, an
+approved PostgreSQL view and one reviewed OpenAPI 3 GET operation. Owners bind
+each capability to explicit projects, run a health check, and can preview the
+bounded evidence returned to Labs. An empty project binding grants nothing.
+These connectors do not ingest into or replace the runtime dashboard.
+
+For authenticated agent connectors, provision a backend-only file at
+`deploy/connectors.env` (git-ignored), or set `NEXUS_CONNECTOR_ENV_FILE` to an
+absolute path. Compose loads the file only into the backend container. Each
+variable must start with `NEXUS_CONNECTOR_` and contain one JSON object with a
+host-bound secret, for example:
+
+```text
+NEXUS_CONNECTOR_SEARCH_READER={"host":"search.example.com","secret":"<provisioned-key>"}
+NEXUS_CONNECTOR_REPORTING_READER={"host":"db.example.com","port":5432,"secret":"<provisioned-password>"}
+```
+
+Select `env:NEXUS_CONNECTOR_SEARCH_READER` (or the appropriate variable) in the
+connector UI; never paste the secret itself there. Provision a dedicated,
+least-privilege credential, and for PostgreSQL grant SELECT on only the approved
+view. The view must expose `project_id`, `searchable_text`, `title`, `excerpt`
+and `source_ref`. Elasticsearch needs a project keyword field (default
+`project_id.keyword`); the reviewed API must require project and limit query
+parameters and return each item's project ID. Registration without a real
+credential and reachable endpoint is not a successful live integration.
 
 **`RUNTIME_PROVIDER_KEY` does not gate the v2 harness.** It gates
 `execute_runtime_tool` (`src/runtime/client.py`), used by the legacy v1 agent
@@ -742,21 +777,71 @@ defaults to `custom` (the in-repo Python harness). Supported values:
 
 - `custom` — the harness, using `MCP_DOC_GENERATION_MODEL`
 - `openai/<model>`, `anthropic/<model>`, `google/<model>`, `deepseek/<model>`,
-  `route33/<model>`, `openrouter/<model>`, `ollama/<model>` — the harness with
+  `openrouter/<model>`, `ollama/<model>` — the harness with
   that adapter
-- `claude-cli` — legacy Claude Code CLI subprocess fallback
-- `opencode-cli` — the OpenCode three-phase runtime, pinned in the image
-  (`MCP_OPENCODE_*` vars) and still selectable per generation run
+- `claude-cli` — the Claude Code CLI, pinned in the image
+  (`MCP_CLAUDE_CODE_VERSION`). This is the canonical four-phase generation
+  method: `providers/claude_cli.py` owns the prompt and `opencode_cli.py`
+  reuses it verbatim. Requires the one-off login in section 15a.
+- `opencode-cli` — an OpenCode transport for that same prompt, pinned in the
+  image (`MCP_OPENCODE_*` vars) and selectable per generation run
 
 An unrecognised value raises at generation time, not at startup.
+
+### 15a. Authenticate The Claude Code CLI
+
+`claude-cli` authenticates by OAuth subscription, not by API key, so it needs one
+interactive login per deployment. The token lives in the `claude_home` named
+volume mounted at `/app/.home/.claude`, which is what makes it survive an image
+rebuild — nothing is written into the repo.
+
+```bash
+docker compose exec -it -u appuser mcp-server claude auth login --claudeai
+```
+
+Two details that are easy to get wrong and both fail quietly:
+
+- **The subcommand is `claude auth login`, not `claude login`.** A bare
+  `claude login` is parsed as a *prompt*: the CLI replies "It looks like you
+  typed 'login' as a regular message", exits 0, and authenticates nothing.
+- **`-u appuser` is not optional.** `docker compose exec` runs as root by
+  default, and a root login writes credentials the service user cannot read.
+
+Verify — `claude auth status` prints JSON naming the method actually in use:
+
+```bash
+docker compose exec -u appuser mcp-server claude auth status
+```
+
+Expect `"authMethod": "claudeai"` (or similar subscription value). If it reports
+`"authMethod": "api_key"` with `"apiKeySource": "ANTHROPIC_API_KEY"`, the login
+has not happened yet — see the note below.
+
+**`ANTHROPIC_API_KEY` outranks an OAuth login inside the CLI.** That variable is
+set on `mcp-server` for the Python harness's `anthropic/<model>` adapter, which
+is a different lane with different billing. Left in place, a deployment put on a
+subscription on purpose would silently bill the API account instead, with
+nothing in the run output naming which one paid. The provider therefore removes
+it from the CLI subprocess whenever OAuth credentials exist
+(`services/token_refresh.py::apply_auth_env`) — the parent process keeps it, so
+the harness adapter is unaffected. To bill the API account deliberately, simply
+do not log in.
+
+For a fully non-interactive host, `claude setup-token` issues a long-lived
+subscription token instead. The service does not attempt to renew a credential
+format it does not recognise; it defers to the CLI and logs a warning.
+
+If nothing is configured at all, a `claude-cli` run fails immediately at
+preflight and names the login command in its error, rather than dying later
+inside the subprocess.
 
 The model defaults are **hosted** models, and no key ships with the stack:
 
 | Variable | Default |
 |----------|---------|
-| `MCP_DOC_GENERATION_MODEL` / `_WRITE_MODEL` | `anthropic/claude-sonnet-4-6` |
-| `MCP_DOC_GENERATION_INVESTIGATION_MODEL` | `google/gemini-2.5-flash` |
-| `MCP_DOC_GENERATION_FALLBACK_MODEL` | `openai/gpt-5.4` |
+| `MCP_DOC_GENERATION_MODEL` / `_WRITE_MODEL` | `anthropic/claude-sonnet-5` |
+| `MCP_DOC_GENERATION_INVESTIGATION_MODEL` | `google/gemini-3.5-flash` |
+| `MCP_DOC_GENERATION_FALLBACK_MODEL` | `openai/gpt-6-luna` |
 | `MCP_DOC_GENERATION_API_KEY` | empty (falls back to `LLM_API_KEY`) |
 
 So a stack deployed with defaults and no key will start and pass health checks,
@@ -764,7 +849,7 @@ then fail at the first doc-generation run. Decide per client:
 
 - **Hosted models**: set `MCP_DOC_GENERATION_API_KEY` (plus `..._BASE_URL` for a
   gateway), or a provider-specific pair — `MCP_DOC_GENERATION_OPENROUTER_API_KEY`,
-  `..._DEEPSEEK_API_KEY`, `..._ROUTE33_API_KEY`, each with a matching
+  `..._DEEPSEEK_API_KEY`, each with a matching
   `..._BASE_URL`. Confirm the client accepts source code leaving the VPS before
   enabling any hosted provider.
 - **Local only**: use `ollama/<model>` routes against `MCP_OLLAMA_BASE_URL`

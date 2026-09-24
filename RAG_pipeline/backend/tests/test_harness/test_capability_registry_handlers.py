@@ -13,6 +13,7 @@ from src.harness.capability_runtime import (
     CapabilityObservation,
 )
 from src.harness.connectors.models import ConnectorReadResult, ConnectorResultItem
+from src.harness.connectors.service import ConnectorPolicyError
 from src.harness.executor import (
     CapabilityExecutionContext,
     CapabilityExecutionRequest,
@@ -266,6 +267,30 @@ async def test_bound_connector_handler_preserves_safe_provenance_without_dispatc
             "uri": "https://evidence.example/items/17",
         }
     ]
+
+
+async def test_bound_connector_handler_rejects_project_outside_server_scope() -> None:
+    capability = _read_capability("connector.instance_7.search_records").model_copy(
+        update={"metadata": {
+            "connector_instance_id": 7,
+            "connector_capability_id": "search.records",
+        }}
+    )
+
+    class ConnectorService:
+        async def read(self, *args):
+            raise AssertionError("Connector must not be called for an unauthorized project")
+
+    with pytest.raises(ConnectorPolicyError, match="outside project scope"):
+        await BoundConnectorEvidenceHandler(capability)(
+            capability,
+            CapabilityExecutionRequest(
+                capability_id=capability.id,
+                arguments={"query": "finding", "project_id": "project-b"},
+            ),
+            CapabilityExecutionContext(user_id=1, project_scope=["project-a"]),
+            CapabilityHandlerServices(connector_service=ConnectorService()),
+        )
 
 
 @dataclass

@@ -37,6 +37,24 @@ def test_default_opencode_generation_bypasses_partition_orchestration(monkeypatc
     assert _should_partition_generation(None) is False
 
 
+def test_claude_cli_generation_bypasses_partition_orchestration(monkeypatch):
+    """The rule belongs to the CLI-session lane, not to one transport.
+
+    claude-cli builds the four-phase prompt that opencode-cli returns verbatim,
+    onto identical staging. Partitioning one and not the other hands the
+    canonical provider a partial estate its prompt was never told about, while
+    its adapter sees the whole one.
+    """
+    from mcp_server.api.routes.projects import _should_partition_generation
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "doc_generation_provider", "custom")
+    assert _should_partition_generation("claude-cli") is False
+
+    monkeypatch.setattr(config, "doc_generation_provider", "claude-cli")
+    assert _should_partition_generation(None) is False
+
+
 def test_component_flow_direction_distinguishes_route_inputs_and_outputs():
     from mcp_server.api.routes.projects import _component_flow_direction
 

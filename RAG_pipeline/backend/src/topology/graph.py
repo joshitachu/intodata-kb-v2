@@ -433,7 +433,10 @@ def _business_graph(business: BusinessTopology, evidence: TopologyEvidence | Non
             target_id=stream.destination_system_id,
             name=stream.name or stream.id,
             dependency_type="business_data_stream",
-            mechanism=", ".join(stream.protocols) or "unknown",
+            # The structured field is the stream's own statement of HOW it moves;
+            # protocols are only the wire format and were a stand-in from before
+            # the field existed.
+            mechanism=stream.mechanism or ", ".join(stream.protocols) or "unknown",
             reliability=stream.requiredness,
             confidence=stream.status,
             evidence_count=len(stream.evidence_ids),

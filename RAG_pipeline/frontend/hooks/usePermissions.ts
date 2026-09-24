@@ -2,7 +2,14 @@
 
 import { useAuthContext } from "@/components/AuthProvider";
 
-/** All known permission codenames from the RBAC system. */
+/**
+ * All known permission codenames from the RBAC system.
+ *
+ * Mirrors `ALL_PERMISSIONS` in `backend/src/rbac/permissions.py`. It must stay
+ * complete: a codename missing here is a compile error at the call site, which
+ * pushes the caller into reading `user.permissions` by hand and re-implementing
+ * the Owner bypass.
+ */
 type PermissionCodename =
   | "manage_users"
   | "manage_roles"
@@ -13,7 +20,10 @@ type PermissionCodename =
   | "query_rag"
   | "ingest_documents"
   | "view_audit_logs"
-  | "create_projects";
+  | "create_projects"
+  | "runtime_sources:read"
+  | "runtime_sources:write"
+  | "manage_packs";
 
 interface UsePermissionsReturn {
   /** Check if the current user has a specific permission (Owner bypasses). */
@@ -28,6 +38,8 @@ interface UsePermissionsReturn {
   canCreateProjects: boolean;
   canIngestDocuments: boolean;
   canViewAuditLogs: boolean;
+  /** Register, edit, share or delete a runtime source (`runtime_sources:write`). */
+  canWriteRuntimeSources: boolean;
 }
 
 export function usePermissions(): UsePermissionsReturn {
@@ -51,5 +63,6 @@ export function usePermissions(): UsePermissionsReturn {
     canCreateProjects: hasPermission("create_projects"),
     canIngestDocuments: hasPermission("ingest_documents"),
     canViewAuditLogs: hasPermission("view_audit_logs"),
+    canWriteRuntimeSources: hasPermission("runtime_sources:write"),
   };
 }

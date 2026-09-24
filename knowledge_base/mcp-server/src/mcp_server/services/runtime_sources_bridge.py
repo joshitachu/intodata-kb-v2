@@ -114,12 +114,21 @@ class RuntimeSourcesBridgeError(Exception):
     token/secret) before they leave it, so relaying them verbatim keeps genuinely
     useful messages -- a 409 "That physical runtime source is already registered"
     -- without echoing a credential back to the browser.
+
+    ``extra`` carries whatever the RAG backend put BESIDE ``detail`` in the error
+    body. Registration conflicts now ship a ``conflict`` block there naming the
+    source that collided, which is what lets the dashboard offer the read grant
+    instead of repeating the refusal -- and a proxy that forwards only ``detail``
+    turns that back into the dead end it was built to remove. Kept generic
+    rather than typed to ``conflict``: this is a relay, and the next structured
+    error should not need another edit here to survive the hop.
     """
 
-    def __init__(self, status_code: int, detail: Any) -> None:
+    def __init__(self, status_code: int, detail: Any, extra: dict[str, Any] | None = None) -> None:
         super().__init__(f"Runtime source request failed with {status_code}")
         self.status_code = status_code
         self.detail = detail
+        self.extra: dict[str, Any] = extra or {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,7 +209,9 @@ class RuntimeSourcesBridge:
             ) from exc
 
         if response.status_code >= 400:
-            raise RuntimeSourcesBridgeError(response.status_code, _detail_of(response))
+            raise RuntimeSourcesBridgeError(
+                response.status_code, _detail_of(response), _structured_error_fields(response)
+            )
         if response.status_code == 204 or not response.content:
             return None
         return response.json()
@@ -266,28 +277,34 @@ class RuntimeSourcesBridge:
         identity: ForwardedIdentity,
         *,
         connector_provider_id: str,
-        project_id: str,
+        project_id: str | None,
         label: str,
         credentials: dict[str, Any],
         sync_interval_seconds: int,
     ) -> dict[str, Any]:
-        """Register a runtime source, translating the connector id to a provider key."""
+        """Register a runtime source, translating the connector id to a provider key.
+
+        ``project_id`` is optional and the key is OMITTED when it is None rather
+        than sent as null: a source is a registered tenant, and attaching
+        projects is a separate relationship managed through ``/readers``.
+        Sending an explicit null would ask the backend to distinguish "not
+        supplied" from "supplied as nothing" for no benefit.
+        """
         provider_key = runtime_provider_key(connector_provider_id)
         if provider_key is None:
             raise RuntimeSourcesBridgeError(
                 400, f"{connector_provider_id!r} is not a runtime-managed connector."
             )
+        body: dict[str, Any] = {
+            "provider_key": provider_key,
+            "label": label,
+            "credentials": credentials,
+            "sync_interval_seconds": sync_interval_seconds,
+        }
+        if project_id:
+            body["project_id"] = project_id
         payload = await self._request(
-            "POST",
-            "/api/v1/runtime/sources",
-            identity,
-            payload={
-                "project_id": project_id,
-                "provider_key": provider_key,
-                "label": label,
-                "credentials": credentials,
-                "sync_interval_seconds": sync_interval_seconds,
-            },
+            "POST", "/api/v1/runtime/sources", identity, payload=body
         )
         return dict((payload or {}).get("source") or {})
 
@@ -312,13 +329,14 @@ class RuntimeSourcesBridge:
     async def list_read_grants(
         self, identity: ForwardedIdentity, source_id: int
     ) -> list[dict[str, Any]]:
-        """Projects allowed to read this source's mirror without owning it.
+        """Projects attached to this source.
 
-        One vendor tenant commonly backs several scanned projects, and
-        registering its credential twice is refused on purpose -- that would
-        mean a second poll and two mirrors free to drift apart. Sharing is
-        therefore a read grant, and the operator needs to see the grants to
-        manage them.
+        These rows ARE the source-to-project relationship; there is no owner
+        with an implied attachment. One vendor tenant commonly backs several
+        scanned projects, and registering its credential twice is refused on
+        purpose -- that would mean a second poll and two mirrors free to drift
+        apart. The route path still says ``readers`` because the rename is a
+        deliberate follow-up.
         """
         payload = await self._request(
             "GET", f"/api/v1/runtime/sources/{source_id}/readers", identity
@@ -379,3 +397,24 @@ def _detail_of(response: httpx.Response) -> Any:
     if isinstance(body, dict) and "detail" in body:
         return body["detail"]
     return body
+
+
+def _structured_error_fields(response: httpx.Response) -> dict[str, Any]:
+    """Return the error body's top-level fields OTHER than ``detail``.
+
+    A registration 409 carries ``conflict`` beside its sentence: which source
+    collided, who owns it, and whether this caller may grant read on it. The
+    RAG backend already applies its own disclosure rule to that block (it omits
+    the fields a caller is not entitled to) -- this side must not second-guess
+    it, and equally must not drop it, which is what a ``detail``-only relay did.
+
+    Nothing is interpreted here on purpose: a relay that enumerates known keys
+    silently swallows the next one.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return {}
+    if not isinstance(body, dict):
+        return {}
+    return {key: value for key, value in body.items() if key != "detail"}

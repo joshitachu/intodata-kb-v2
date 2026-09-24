@@ -240,6 +240,35 @@ def _duplicate_ids(topology: BusinessTopology) -> list[str]:
 _CREDENTIAL_URL_RE = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/:]+:[^\s/@]+@", re.I)
 _BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{12,}", re.I)
 _PRIVATE_KEY_RE = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")
+#: A credential ASSIGNMENT of a LITERAL: `password=abc123`, `pwd = "..."`,
+#: `apiKey: '...'`. The verbatim tMap expressions and route predicates copied by
+#: enrichment are code, where this is how a hardcoded secret appears. Deliberately
+#: NOT matched, because they are code and not secrets: comparisons (`pwd ==`),
+#: and unquoted values that continue as an expression (`decoded.substring(0, i)`,
+#: `context.db_password`) -- matching those corrupted the copied expression. `:`
+#: takes only a quoted value, so prose such as "token: refreshed hourly" is left
+#: alone.
+_CREDENTIAL_ASSIGNMENT_RE = re.compile(
+    r"\b(?P<key>password|passwd|pwd|secret|client[_-]?secret|api[_-]?key|access[_-]?token)"
+    r"(?P<sep>\s*=(?!=)\s*|\s*:\s*(?=[\"']))"
+    r"(?P<value>\"[^\"\n]*\"|'[^'\n]*'|[^\s;,&()\"'.]+(?![.(\w]))",
+    re.I,
+)
+#: Placeholders a redactor already wrote -- ours (`[REDACTED]`) and the
+#: scanner's (`[CREDENTIAL_PARAM_REDACTED]` and kin). Not a secret.
+_PLACEHOLDER_RE = re.compile(r"^\[[A-Z0-9_ ]*REDACTED[A-Z0-9_ ]*\]$")
+
+
+def _is_redacted(value: str) -> bool:
+    bare = value.strip("\"'")
+    return not bare or bool(_PLACEHOLDER_RE.match(bare))
+
+
+def _has_credential_assignment(text: str) -> bool:
+    return any(
+        not _is_redacted(match.group("value"))
+        for match in _CREDENTIAL_ASSIGNMENT_RE.finditer(text)
+    )
 
 
 def redact_secretlike(text: str) -> str:
@@ -258,7 +287,34 @@ def redact_secretlike(text: str) -> str:
     scrubbed = _CREDENTIAL_URL_RE.sub("[REDACTED]@", text)
     scrubbed = _BEARER_RE.sub("Bearer [REDACTED]", scrubbed)
     scrubbed = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", scrubbed)
+    scrubbed = _CREDENTIAL_ASSIGNMENT_RE.sub(
+        lambda match: match.group(0)
+        if _is_redacted(match.group("value"))
+        else f"{match.group('key')}{match.group('sep')}[REDACTED]",
+        scrubbed,
+    )
     return scrubbed
+
+
+def redact_topology_prose(topology: BusinessTopology) -> BusinessTopology:
+    """Apply :func:`redact_secretlike` to every free-text field of a topology.
+
+    For model-written JSON (the single-shot synthesis lane), which never passes
+    through a copy boundary: without it, one repeated connection URI fails the
+    whole overlay on a non-prunable secret finding. Identifiers and id lists are
+    left untouched so references keep resolving.
+    """
+
+    def scrub(value: Any, key: str = "") -> Any:
+        if isinstance(value, dict):
+            return {name: scrub(item, name) for name, item in value.items()}
+        if isinstance(value, list):
+            return [scrub(item, key) for item in value]
+        if isinstance(value, str) and key != "id" and not key.endswith(("_id", "_ids", "_refs")):
+            return redact_secretlike(value)
+        return value
+
+    return BusinessTopology.model_validate(scrub(topology.model_dump(mode="json")))
 
 
 def _sensitive_findings(value: Any, path: str = "$") -> list[str]:
@@ -277,7 +333,12 @@ def _sensitive_findings(value: Any, path: str = "$") -> list[str]:
         for index, item in enumerate(value):
             findings.extend(_sensitive_findings(item, f"{path}[{index}]"))
     elif isinstance(value, str):
-        if credential_url.search(value) or bearer.search(value) or private_key.search(value):
+        if (
+            credential_url.search(value)
+            or bearer.search(value)
+            or private_key.search(value)
+            or _has_credential_assignment(value)
+        ):
             findings.append(f"secret-like content in {path}")
     return findings
 

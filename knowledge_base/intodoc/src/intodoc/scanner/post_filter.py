@@ -175,6 +175,15 @@ def _filter_job(
             if filtered != comp.code:
                 comp.code = filtered
 
+    # Connection parameters. An ESB route edge carries the branch predicate
+    # (ROUTE_WHEN CONDITION), which is a value like any other: it can embed a
+    # header comparison against real business identifiers, and on a header or
+    # bean predicate it can embed a credential-shaped literal. A parameter is
+    # filtered by the rule that fits it wherever it hangs, so this is the same
+    # function the component list is filtered with, not a second policy.
+    for connection in job.connections:
+        _filter_component_params(connection.params, cred_filter)
+
     # Child-design context overrides (tRunJob and cTalendJob both hand a
     # parent's values to a child, and both must be filtered).
     for ref in job.trunjob_refs:

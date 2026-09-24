@@ -165,20 +165,24 @@ class MCPServerConfig(BaseSettings):
     doc_generation_provider: str = "custom"
     # Supported values:
     #   "custom" | "openai/<model>" | "anthropic/<model>" | "google/<model>" | "ollama/<model>"
-    #   "claude-cli" (legacy subprocess fallback) | "opencode-cli" (OpenCode runtime)
+    #   "claude-cli" (canonical four-phase prompt) | "opencode-cli" (same prompt, OpenCode transport)
 
     # "single_shot" — Python pre-reads files, model extracts evidence in one call (works with any model)
     # "agentic"     — multi-turn action loop (requires Claude-level instruction following)
     investigation_strategy: str = "single_shot"
 
-    doc_generation_model: str = "anthropic/claude-sonnet-4-6"
+    # Defaults track the current generation. Every id here must exist in
+    # data/model_catalogue.json, which is itself verified against each provider's
+    # live /models endpoint -- a default naming a retired model fails at
+    # generation time, not at startup, which is the worst moment to find out.
+    doc_generation_model: str = "anthropic/claude-sonnet-5"
     # write_model for Phase 3 (doc writing) — use "provider/model" format or "claude-cli".
-    # Example: "anthropic/claude-sonnet-4-6", "google/gemini-2.5-pro", "openai/gpt-4.1", "claude-cli"
+    # Example: "anthropic/claude-sonnet-5", "google/gemini-3.1-pro-preview", "openai/gpt-6-luna", "claude-cli"
     # Set to same value as doc_generation_model to use one model for all phases.
-    doc_generation_write_model: str = "anthropic/claude-sonnet-4-6"
+    doc_generation_write_model: str = "anthropic/claude-sonnet-5"
     # Phase 1 investigation model. Defaults to doc_generation_model if not set.
     doc_generation_investigation_model: str | None = (
-        "google/gemini-2.5-flash"  # MCP_DOC_GENERATION_INVESTIGATION_MODEL
+        "google/gemini-3.5-flash"  # MCP_DOC_GENERATION_INVESTIGATION_MODEL
     )
     # Number of same-provider retries after the initial API request and before
     # switching to the configured fallback model.
@@ -198,11 +202,6 @@ class MCPServerConfig(BaseSettings):
     doc_generation_base_url: str | None = None
     doc_generation_deepseek_api_key: str | None = None
     doc_generation_deepseek_base_url: str | None = None
-    # Route33 is used only through explicit route33/<model> doc-generation model
-    # ids. Do not commit keys; set MCP_DOC_GENERATION_ROUTE33_API_KEY or
-    # ROUTE33_API_KEY in the runtime environment.
-    doc_generation_route33_api_key: str | None = None
-    doc_generation_route33_base_url: str = "https://api.route33.ai/v1"
     # OpenRouter is used through explicit openrouter/<vendor>/<model> doc-generation
     # model ids (legacy harness) and openrouter/... OpenCode routes. Set
     # MCP_DOC_GENERATION_OPENROUTER_API_KEY or OPENROUTER_API_KEY in the environment.
@@ -779,7 +778,6 @@ _PROVIDER_KEY_MAP: dict[str, tuple[str, ...]] = {
     "google": ("GOOGLE_API_KEY",),
     "gemini": ("GOOGLE_API_KEY",),
     "deepseek": ("MCP_DOC_GENERATION_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"),
-    "route33": ("MCP_DOC_GENERATION_ROUTE33_API_KEY", "ROUTE33_API_KEY"),
     "openrouter": ("MCP_DOC_GENERATION_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"),
 }
 

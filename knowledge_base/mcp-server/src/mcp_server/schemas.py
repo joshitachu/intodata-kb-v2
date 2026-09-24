@@ -195,7 +195,34 @@ class ProjectAvailableConnectorsResponse(BaseModel):
 
 # --- Runtime sources (proxied to the RAG backend) ---
 
-class RuntimeSourceCredentialField(BaseModel):
+class _RagRelayModel(BaseModel):
+    """Base for every model that RELAYS an object the RAG backend owns.
+
+    ``extra="allow"`` is the point. A ``response_model`` is a filter: Pydantic
+    drops any key the model does not declare, FastAPI serialises what is left,
+    and the browser's Zod schema then strips again. A field the RAG backend adds
+    and this file has not been taught is therefore ``undefined`` in the browser
+    with nothing logged on either side -- no 422, no warning, no diff in the
+    response status. That is precisely how ``estate_key`` /
+    ``linked_project_ids`` / ``is_ownerless`` would have died at this hop.
+
+    The same reasoning already governs error bodies here
+    (``_structured_error_fields`` in the bridge captures whatever sits beside
+    ``detail`` rather than enumerating known keys); this extends it to the
+    success bodies, which is the half that was still enumerating.
+
+    Safe because every RAG model in this lane is credential-free BY
+    CONSTRUCTION -- ``RuntimeSourceRead`` and ``RuntimeSourceReadGrant`` are
+    built from database rows with the secret column excluded, and neither
+    service returns a stored credential in any response. Declared fields are
+    still declared: they document the contract, supply defaults when the
+    backend lags, and keep the OpenAPI schema useful.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+
+class RuntimeSourceCredentialField(_RagRelayModel):
     """One input in a runtime provider's credential form.
 
     Mirrors ``RuntimeSourceProvider.credential_schema()`` so the dashboard
@@ -210,7 +237,7 @@ class RuntimeSourceCredentialField(BaseModel):
     required: bool = True
 
 
-class RuntimeScopeSelection(BaseModel):
+class RuntimeScopeSelection(_RagRelayModel):
     """A provider's selectable ingest scope, e.g. Talend environments.
 
     Mirrors ``RuntimeSourceProvider.scope_selection()``. ``field`` names the
@@ -225,7 +252,7 @@ class RuntimeScopeSelection(BaseModel):
     multiple: bool = True
 
 
-class RuntimeScopeOption(BaseModel):
+class RuntimeScopeOption(_RagRelayModel):
     """One scope a live connection reported as reachable."""
 
     id: str
@@ -234,7 +261,7 @@ class RuntimeScopeOption(BaseModel):
     default_selected: bool = False
 
 
-class RuntimeSourceTypeResponse(BaseModel):
+class RuntimeSourceTypeResponse(_RagRelayModel):
     provider_key: str
     provider_label: str = ""
     credential_schema: list[RuntimeSourceCredentialField] = Field(default_factory=list)
@@ -261,17 +288,29 @@ class RuntimeSourceScopesResponse(BaseModel):
     scopes: list[RuntimeScopeOption] = Field(default_factory=list)
 
 
-class RuntimeSourceResponse(BaseModel):
+class RuntimeSourceResponse(_RagRelayModel):
     """A registered runtime source, as the RAG backend reports it.
 
-    Deliberately a subset of ``RuntimeSourceRead``: enough for the connector row
-    to be honest about which project is covered and when it last synced. No
-    credential field exists on the RAG model either -- secrets are write-only on
-    both sides of this proxy.
+    A source is a registered TENANT, not a project's connection. It carries an
+    ``estate_key`` -- an internal stamp written onto every row it mirrors -- and
+    a set of ATTACHED projects, any number, changeable at any time. The old
+    ``project_id`` conflated the two and is gone from this model: it is not
+    relayed under a name the dashboard could mistake for an owning project.
+
+    No credential field exists on the RAG model either -- secrets are write-only
+    on both sides of this proxy.
     """
 
     id: int
-    project_id: str
+    # The row stamp. NOT a project id, and never to be rendered as one; see
+    # `linked_project_ids` for who may actually reach this source.
+    estate_key: str = ""
+    # Every project attached to this source, sorted by the backend. Empty is a
+    # real and normal state: a tenant registered before any project.
+    linked_project_ids: list[str] = Field(default_factory=list)
+    # Answered by the backend. Kept as a field rather than derived at each call
+    # site so "nothing is attached" has exactly one definition.
+    is_ownerless: bool = False
     source_type: str
     label: str = ""
     # success | failed | pending | ... -- a plain string so an unfamiliar status
@@ -282,13 +321,26 @@ class RuntimeSourceResponse(BaseModel):
     disabled_reason: str | None = None
     last_synced_at: datetime.datetime | None = None
 
+    @model_validator(mode="after")
+    def _derive_ownerless_when_unstated(self) -> "RuntimeSourceResponse":
+        """Fall back to the attachment list when the backend did not say.
+
+        A bare ``False`` default would be a fabricated answer: an ownerless
+        source would relay as owned, and the dashboard's empty state -- the
+        whole point of the flag -- would never appear. Absence is filled from
+        the only other fact that defines it, never guessed.
+        """
+        if "is_ownerless" not in self.model_fields_set:
+            self.is_ownerless = not self.linked_project_ids
+        return self
+
 
 class RuntimeSourceListResponse(BaseModel):
     sources: list[RuntimeSourceResponse]
     total: int = 0
 
 
-class RuntimeDocReadScopeResponse(BaseModel):
+class RuntimeDocReadScopeResponse(_RagRelayModel):
     """The slice of a project's runtime mirror that documentation runs read.
 
     Every field is optional with a safe default: this is a status surface, and
@@ -311,25 +363,35 @@ class RuntimeDocReadScopeResponse(BaseModel):
     read_project_ids: list[str] = Field(default_factory=list)
 
 
-class RuntimeSourceReadGrant(BaseModel):
-    """One project's permission to read a runtime source it does not own.
+class RuntimeSourceReadGrant(_RagRelayModel):
+    """One project ATTACHED to a runtime source.
+
+    This row IS the relationship between a source and a project -- there is no
+    owner with an implied one. Any number of projects may be attached, and the
+    set changes at any time.
 
     Not a workspace mapping. A mapping SPLITS a source's rows between projects
-    at write time; a grant SHARES the same rows with a second reader. The UI
-    keeps them apart for that reason.
+    at write time; an attachment SHARES the same rows with another reader. The
+    UI keeps them apart for that reason.
     """
 
     id: int = 0
     source_id: int = 0
+    # The attached project.
     project_id: str = ""
-    source_project_id: str = ""
+    # The source's row stamp, NOT a project. Renamed from `source_project_id`
+    # with the column; kept off every display surface.
+    source_estate_key: str = ""
     source_label: str = ""
+    # None means every mirrored environment; [] is a deliberate "nothing".
     environment_ids: list[str] | None = None
     window_days: int | None = None
-    # Every project whose rows the grant exposes: the source's own project plus
-    # any project its workspace map re-points rows to. Shown in the UI so a
-    # grant cannot quietly widen past what the operator intended.
+    # Every row stamp this attachment exposes: the source's estate key plus any
+    # project its workspace map re-points rows to. Shown in the UI so an
+    # attachment cannot quietly widen past what the operator intended.
     exposes_project_ids: list[str] = Field(default_factory=list)
+    created_at: datetime.datetime | None = None
+    created_by: str | None = None
 
 
 class RuntimeSourceReadGrantRequest(BaseModel):
@@ -354,14 +416,17 @@ class RuntimeSourceCreateRequest(BaseModel):
     to the RAG runtime ``provider_key`` (``tmc``). The dashboard never sends the
     runtime key, so the two spellings cannot drift apart in the browser.
 
-    ``project_id`` binds the mirrored history to an intodoc project and must be
-    an id the dashboard's own project list returned. A runtime source filed
+    ``project_id`` is OPTIONAL. A source is a registered tenant, and projects
+    attach to it afterwards through ``/readers`` -- any number of them, changed
+    at any time. Omit it to register the tenant with nothing attached, which is
+    a normal intermediate state rather than an error. When it IS supplied it
+    must be an id the dashboard's own project list returned: a source filed
     under a project that does not exist mirrors real executions into a namespace
     documentation never reads.
     """
 
     provider_id: StrippedStr = Field(..., min_length=1, max_length=100)
-    project_id: StrippedStr = Field(..., min_length=1, max_length=255)
+    project_id: Annotated[StrippedStr, Field(min_length=1, max_length=255)] | None = None
     label: StrippedStr = Field(..., min_length=1, max_length=255)
     # Values are write-only: never logged here, never returned by either service.
     # A value may be a list: the provider's ingest-scope field (``scope_selection``,
@@ -372,8 +437,21 @@ class RuntimeSourceCreateRequest(BaseModel):
     # Matches the RAG model's floor; the scheduler polls no faster than this.
     sync_interval_seconds: int = Field(default=60, ge=30, le=86_400)
 
+    @field_validator("project_id", mode="before")
+    @classmethod
+    def _blank_project_is_no_project(cls, value: Any) -> Any:
+        """An empty select is "don't attach yet", not a 422.
 
-class RuntimeSourceSyncResponse(BaseModel):
+        The dialog's project control has a real "attach later" option whose
+        value is the empty string. Rejecting it would make the supported path
+        fail validation on a technicality.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+
+class RuntimeSourceSyncResponse(_RagRelayModel):
     source: RuntimeSourceResponse | None = None
     status: str = "unknown"
     records_ingested: int = 0
@@ -989,7 +1067,11 @@ class GenerateRequest(BaseModel):
     generation_profile: dict[str, Any] | None = None
 
     project_id: StrippedStr = Field(..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN)
-    doc_generation_provider: Literal["custom", "opencode-cli"] | None = Field(
+    # `claude-cli` is the canonical CLI lane -- providers/claude_cli.py builds
+    # the four-phase prompt that opencode_cli.py returns verbatim -- so omitting
+    # it here rejected the engine that owns the workflow while admitting its
+    # transport adapter. get_provider() has always resolved all three.
+    doc_generation_provider: Literal["custom", "opencode-cli", "claude-cli"] | None = Field(
         None,
         description="One-off generation method override; does not change project settings",
     )
@@ -1599,6 +1681,16 @@ class LandscapeDiagnosticResponse(BaseModel):
     severity: str = "info"
 
 
+class CuratedOverlayStateResponse(BaseModel):
+    """What a stale curated file contributed to the served generated topology."""
+
+    applied: dict[str, int] = Field(default_factory=dict)
+    unmatched_count: int = 0
+    #: Overlaid claims published as not_established: no citation resolves now.
+    demoted_count: int = 0
+    unmatched_ids: dict[str, list[str]] = Field(default_factory=dict)
+
+
 class BusinessTopologyStateResponse(BaseModel):
     """Publication state for the optional AI-authored business overlay.
 
@@ -1612,6 +1704,11 @@ class BusinessTopologyStateResponse(BaseModel):
     stale: bool = False
     source: str = "none"
     message: str = "Business topology has not been generated."
+    # Set only when a STALE analyst-curated file was overlaid onto the
+    # generated topology. Without it the unmatched curated items -- analyst
+    # judgement that found no generated stream or system to attach to -- were
+    # dropped by this model and reached clients only as a count in `message`.
+    curated_overlay: CuratedOverlayStateResponse | None = None
 
 
 class ProjectLandscapeResponse(BaseModel):

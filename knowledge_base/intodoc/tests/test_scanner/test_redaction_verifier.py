@@ -7,6 +7,7 @@ real credentials or hostnames.
 from intodoc.models import (
     Component,
     ComponentParam,
+    Connection,
     ContextGroup,
     ContextVariable,
     FileType,
@@ -244,3 +245,74 @@ def test_scanner_composed_field_references_do_not_fail_the_gate():
     report = verify_scan_result(result, CredentialFilter())
     assert report["passed"] is True, report
     assert report["residual_pattern_counts"] == {}
+
+
+def test_connection_param_secret_fails_the_name_driven_gate():
+    """A connection is a parameter carrier and must be inside the gate.
+
+    The leaf sweep would catch a pattern-shaped value anywhere, but the
+    name-driven check (check 1) enumerates carriers explicitly, so a newly
+    modelled carrier is outside it until it is named. `ServiceApiKey` is not
+    pattern-shaped -- only the NAME says it is a secret -- so this fails only
+    if connection parameters are genuinely walked.
+    """
+    job = ParsedJob(
+        name="Route1",
+        path="routes/Route1_1.0.item",
+        connections=[
+            Connection(
+                name="when1",
+                source="cMessageRouter_1",
+                target="cLog_1",
+                connector_name="ROUTE_WHEN",
+                params=[ComponentParam(name="ServiceApiKey", value="FAKE-abc-123", field_type="TEXT")],
+            ),
+        ],
+    )
+    report = verify_scan_result(_scan_result(jobs=[job]), CredentialFilter())
+    assert report["passed"] is False
+    assert any("connections/when1" in f["location"] for f in report["findings"])
+
+
+def test_connection_table_row_secret_fails_the_gate():
+    """A TABLE row states its own sensitivity in its NAME cell."""
+    job = ParsedJob(
+        name="Route1",
+        path="routes/Route1_1.0.item",
+        connections=[
+            Connection(
+                name="when1", source="a", target="b", connector_name="ROUTE_WHEN",
+                params=[ComponentParam(
+                    name="NAMESPACES", value="", field_type="TABLE",
+                    rows=[{"PARAM_NAME_COLUMN": "ServiceApiKey", "PARAM_VALUE_COLUMN": "FAKE-abc-123"}],
+                )],
+            ),
+        ],
+    )
+    report = verify_scan_result(_scan_result(jobs=[job]), CredentialFilter())
+    assert report["passed"] is False
+    assert any("NAMESPACES/rows/0" in f["location"] for f in report["findings"])
+
+
+def test_route_predicate_is_not_mistaken_for_a_secret():
+    """A branch predicate is business logic and must pass the gate untouched."""
+    job = ParsedJob(
+        name="Route1",
+        path="routes/Route1_1.0.item",
+        connections=[
+            Connection(
+                name="when1", source="a", target="b", connector_name="ROUTE_WHEN",
+                params=[
+                    ComponentParam(
+                        name="CONDITION",
+                        value="\"${body} is 'java.lang.Exception'\"",
+                        field_type="MEMO_JAVA",
+                    ),
+                    ComponentParam(name="ROUTETYPE", value="simple", field_type="CLOSED_LIST"),
+                ],
+            ),
+        ],
+    )
+    report = verify_scan_result(_scan_result(jobs=[job]), CredentialFilter())
+    assert report["passed"] is True
+    assert report["findings"] == []

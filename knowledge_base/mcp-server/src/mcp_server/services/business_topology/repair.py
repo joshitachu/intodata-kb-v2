@@ -54,6 +54,7 @@ from mcp_server.services.business_topology.validation import (
     _directional_artifact_ids,
     _evidence_of_type,
     _scanner_identity_evidence_ids,
+    redact_topology_prose,
     BusinessTopologyValidationReport,
     parse_business_topology,
     validate_business_topology,
@@ -452,6 +453,9 @@ def parse_validate_repair_business_topology(
     if raw_topology is None:
         assert parse_failure is not None
         return None, parse_failure, []
+    # Model-written JSON has no copy boundary; redact before the secret check
+    # makes one repeated connection string fail the whole overlay.
+    raw_topology = redact_topology_prose(raw_topology)
     report = validate_business_topology(
         raw_topology, bundle=bundle, project_id=project_id
     )

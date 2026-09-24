@@ -70,9 +70,13 @@ class FakeBridge:
         self.identities.append(identity)
         self.create_calls.append(kwargs)
         self._maybe_raise()
+        project_id = kwargs["project_id"]
+        linked = [project_id] if project_id else []
         return {
             "id": 42,
-            "project_id": kwargs["project_id"],
+            "estate_key": project_id or "estate-42",
+            "linked_project_ids": linked,
+            "is_ownerless": not linked,
             "source_type": "tmc",
             "label": kwargs["label"],
             "status": "pending",
@@ -123,11 +127,13 @@ class FakeBridge:
             "id": 7,
             "source_id": source_id,
             "project_id": project_id,
-            "source_project_id": "werkorder",
+            "source_estate_key": "werkorder",
             "source_label": "Talend TMC",
             "environment_ids": environment_ids,
             "window_days": window_days,
             "exposes_project_ids": ["werkorder"],
+            "created_at": "2026-09-20T10:00:00Z",
+            "created_by": "operator@example.com",
         }
         self.grants.append(grant)
         return grant
@@ -171,6 +177,43 @@ class TestCreate:
         # The bridge -- not the browser, and not this route -- owns the mapping,
         # so the assertion is that the connector id reached it intact.
         assert response.json()["source_type"] == "tmc"
+
+    async def test_registers_a_tenant_with_no_project_at_all(self, client, bridge):
+        """A source is a registered TENANT; projects attach to it afterwards.
+
+        The reported bug: the add-source flow demanded a project up front, and
+        the picker that was supposed to supply one had been filtered empty. A
+        tenant with nothing attached is a normal intermediate state.
+        """
+        response = await client.post(
+            "/mcp/runtime-sources",
+            json={
+                "provider_id": "talend_tmc",
+                "label": "Talend EU",
+                "credentials": {"api_token": "t", "base_url": "https://x"},
+            },
+        )
+
+        assert response.status_code == 201, response.text
+        assert bridge.create_calls[0]["project_id"] is None
+        body = response.json()
+        assert body["linked_project_ids"] == []
+        assert body["is_ownerless"] is True
+
+    async def test_an_empty_project_select_means_attach_later_not_a_422(self, client, bridge):
+        """The dialog's "attach later" option has an empty value."""
+        response = await client.post(
+            "/mcp/runtime-sources",
+            json={
+                "provider_id": "talend_tmc",
+                "project_id": "",
+                "label": "Talend EU",
+                "credentials": {"api_token": "t", "base_url": "https://x"},
+            },
+        )
+
+        assert response.status_code == 201, response.text
+        assert bridge.create_calls[0]["project_id"] is None
 
     async def test_never_echoes_the_credential_back(self, client, bridge):
         response = await client.post(
@@ -253,6 +296,45 @@ class TestCreate:
         assert response.status_code == 409
         assert response.json()["detail"] == "That physical runtime source is already registered"
 
+    async def test_the_conflict_block_survives_the_proxy_hop(self, client, bridge):
+        """A `detail`-only relay turns a signpost back into a dead end.
+
+        The RAG backend names the source that already mirrors the tenant so the
+        dashboard can take the operator to its "Shared with" control. Dropping
+        that block here would leave the browser with prose it cannot act on --
+        and the drop would be silent, since `detail` still reads correctly.
+        """
+        bridge.error = RuntimeSourcesBridgeError(
+            409,
+            "That physical runtime source is already registered as 'Talend EU' in project 'werkorder'.",
+            {
+                "conflict": {
+                    "kind": "physical_identity",
+                    "can_request_share": True,
+                    "source_id": 35,
+                    "source_label": "Talend EU",
+                    "owner_project_id": "werkorder",
+                }
+            },
+        )
+
+        response = await client.post(
+            "/mcp/runtime-sources",
+            json={
+                "provider_id": "talend_tmc",
+                "project_id": "IntodataStreams",
+                "label": "TMC",
+                "credentials": {"api_token": "t", "base_url": "https://x"},
+            },
+        )
+
+        assert response.status_code == 409
+        body = response.json()
+        # `detail` stays a top-level string, because that is all some clients read.
+        assert body["detail"].startswith("That physical runtime source is already registered")
+        assert body["conflict"]["source_id"] == 35
+        assert body["conflict"]["can_request_share"] is True
+
     async def test_relays_a_validation_failure_as_the_backend_worded_it(self, client, bridge):
         bridge.error = RuntimeSourcesBridgeError(400, "401 Unauthorized")
 
@@ -271,11 +353,18 @@ class TestCreate:
 
 
 class TestList:
-    async def test_reports_sources_with_the_project_they_are_bound_to(self, client, bridge):
+    async def test_reports_the_projects_attached_to_each_source(self, client, bridge):
+        """Attachments, not an owner. Any number of projects, none included.
+
+        `estate_key` is an internal row stamp that happens to read like a
+        project id, which is exactly why it must never be relayed as one.
+        """
         bridge.sources = [
             {
                 "id": 35,
-                "project_id": "werkorder",
+                "estate_key": "werkorder",
+                "linked_project_ids": ["IntodataStreams", "werkorder"],
+                "is_ownerless": False,
                 "source_type": "talend_tmc",
                 "label": "Talend TMC",
                 "status": "success",
@@ -290,8 +379,88 @@ class TestList:
         assert response.status_code == 200
         body = response.json()
         assert body["total"] == 1
-        assert body["sources"][0]["project_id"] == "werkorder"
-        assert body["sources"][0]["status"] == "success"
+        source = body["sources"][0]
+        assert source["estate_key"] == "werkorder"
+        assert source["linked_project_ids"] == ["IntodataStreams", "werkorder"]
+        assert source["is_ownerless"] is False
+        assert source["status"] == "success"
+
+    async def test_an_unattached_source_reports_itself_as_ownerless(self, client, bridge):
+        bridge.sources = [
+            {
+                "id": 36,
+                "estate_key": "estate-36",
+                "linked_project_ids": [],
+                "is_ownerless": True,
+                "source_type": "tmc",
+                "label": "Talend EU",
+                "status": "pending",
+                "enabled": True,
+                "sync_interval_seconds": 60,
+            }
+        ]
+
+        response = await client.get("/mcp/runtime-sources")
+
+        assert response.json()["sources"][0]["is_ownerless"] is True
+
+    async def test_ownerless_is_derived_rather_than_fabricated_when_unstated(
+        self, client, bridge
+    ):
+        """A bare `False` default would relay an unattached source as attached.
+
+        The dashboard's empty state -- the whole point of the flag -- would then
+        never render, and nothing would log the substitution.
+        """
+        bridge.sources = [
+            {
+                "id": 37,
+                "estate_key": "estate-37",
+                "linked_project_ids": [],
+                "source_type": "tmc",
+                "label": "Talend EU",
+                "status": "pending",
+                "enabled": True,
+                "sync_interval_seconds": 60,
+            }
+        ]
+
+        response = await client.get("/mcp/runtime-sources")
+
+        assert response.json()["sources"][0]["is_ownerless"] is True
+
+    async def test_a_field_this_proxy_has_not_been_taught_survives_the_hop(
+        self, client, bridge
+    ):
+        """The defect class this whole change exists to close.
+
+        A `response_model` is a FILTER. Anything the RAG backend adds and this
+        file does not declare is dropped here, serialised away without a 422, a
+        warning or any difference in status -- and lands in the browser as
+        `undefined`. `estate_key` and `linked_project_ids` would have died
+        exactly this way. Pinned generically: a relay that enumerates the fields
+        it knows swallows the next one in silence.
+        """
+        bridge.sources = [
+            {
+                "id": 38,
+                "estate_key": "estate-38",
+                "linked_project_ids": ["p1"],
+                "is_ownerless": False,
+                "source_type": "tmc",
+                "label": "Talend EU",
+                "status": "success",
+                "enabled": True,
+                "sync_interval_seconds": 60,
+                "a_field_from_a_newer_backend": {"nested": ["value"]},
+            }
+        ]
+
+        response = await client.get("/mcp/runtime-sources")
+
+        assert response.json()["sources"][0]["a_field_from_a_newer_backend"] == {
+            "nested": ["value"]
+        }
 
     async def test_rejects_an_unmapped_provider_filter(self, client, bridge):
         response = await client.get("/mcp/runtime-sources?provider_id=elastic_stack")
@@ -302,7 +471,9 @@ class TestList:
         bridge.sources = [
             {
                 "id": 1,
-                "project_id": "p",
+                "estate_key": "p",
+                "linked_project_ids": ["p"],
+                "is_ownerless": False,
                 "source_type": "tmc",
                 "label": "l",
                 "status": "quarantined_by_a_newer_backend",
@@ -461,15 +632,44 @@ class TestBridgeTransport:
         assert seen["headers"]["x-csrf-token"] == "c"
         assert "authorization" not in seen["headers"]
 
+    async def test_omits_the_project_key_entirely_when_none_was_chosen(self):
+        """Registering a tenant with nothing attached sends no project at all.
+
+        Omitted rather than null: "not supplied" and "supplied as nothing" are
+        the same request here, and only one of them needs to exist.
+        """
+        seen: dict = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            import json
+
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"source": {"id": 1, "source_type": "tmc"}})
+
+        bridge = RuntimeSourcesBridge(
+            base_url="http://rag.test", transport=httpx.MockTransport(handler)
+        )
+        await bridge.create_source(
+            ForwardedIdentity.from_cookies({"access_token": "jwt", "csrf_token": "c"}),
+            connector_provider_id="talend_tmc",
+            project_id=None,
+            label="Talend EU",
+            credentials={"api_token": "t", "base_url": "https://eu.cloud.talend.com"},
+            sync_interval_seconds=60,
+        )
+
+        assert "project_id" not in seen["body"]
+        assert seen["body"]["provider_key"] == "tmc"
+
     async def test_list_filters_to_the_connectors_own_source_types(self):
         async def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"sources": [
-                {"id": 1, "source_type": "tmc", "project_id": "a"},
+                {"id": 1, "source_type": "tmc", "estate_key": "a"},
                 # A row written before the provider key was shortened. Live data
                 # contains both spellings; dropping this one would report a
                 # connected project as unconnected.
-                {"id": 2, "source_type": "talend_tmc", "project_id": "b"},
-                {"id": 3, "source_type": "mock", "project_id": "c"},
+                {"id": 2, "source_type": "talend_tmc", "estate_key": "b"},
+                {"id": 3, "source_type": "mock", "estate_key": "c"},
             ]})
 
         bridge = RuntimeSourcesBridge(
@@ -495,6 +695,34 @@ class TestBridgeTransport:
 
         assert caught.value.status_code == 409
         assert caught.value.detail == "That physical runtime source is already registered"
+        assert caught.value.extra == {}
+
+    async def test_structured_error_fields_are_carried_not_discarded(self):
+        """Whatever the backend put beside `detail` has to reach the route.
+
+        Captured generically rather than by key: this is a relay, and a bridge
+        that enumerates the fields it knows swallows the next one in silence.
+        """
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                409,
+                json={
+                    "detail": "That physical runtime source is already registered",
+                    "conflict": {"kind": "physical_identity", "can_request_share": False},
+                },
+            )
+
+        bridge = RuntimeSourcesBridge(
+            base_url="http://rag.test", transport=httpx.MockTransport(handler)
+        )
+
+        with pytest.raises(RuntimeSourcesBridgeError) as caught:
+            await bridge.delete_source(ForwardedIdentity.from_cookies({"access_token": "j"}), 1)
+
+        assert caught.value.extra == {
+            "conflict": {"kind": "physical_identity", "can_request_share": False}
+        }
 
     async def test_an_unreachable_backend_is_a_502_not_a_traceback(self):
         async def handler(request: httpx.Request) -> httpx.Response:
@@ -545,12 +773,32 @@ class TestDiscover:
 
 
 class TestReadGrants:
-    """Sharing a tenant is the supported answer to the duplicate-source 409.
+    """Attachments: the relationship between a source and the projects using it.
 
-    A second project documenting the same Talend estate is granted READ over
-    the existing mirror; registering the credential again is refused, because
-    that would poll the vendor twice and leave two mirrors free to drift.
+    A source has no owning project. Every project that may reach it is one of
+    these rows, and the set changes at any time. Attaching is also the supported
+    answer to the duplicate-source 409: registering one tenant's credential
+    twice would poll the vendor twice and leave two mirrors free to drift.
     """
+
+    async def test_the_grant_estate_key_survives_the_hop_under_its_new_name(
+        self, client, bridge
+    ):
+        """`source_project_id` was renamed to `source_estate_key` upstream.
+
+        It is a row stamp, not the source's owning project -- there is no such
+        thing any more. A proxy that still declared the old name would relay an
+        empty string under it and drop the real value with nothing logged.
+        """
+        response = await client.post(
+            "/mcp/runtime-sources/42/readers", json={"project_id": "scherpenhuizen"}
+        )
+
+        grant = response.json()["grant"]
+        assert grant["source_estate_key"] == "werkorder"
+        # The audit fields the contract carries reach the client too.
+        assert grant["created_by"] == "operator@example.com"
+        assert grant["created_at"].startswith("2026-09-20T10:00:00")
 
     async def test_granting_forwards_the_project_and_its_scope(self, client, bridge):
         response = await client.post(

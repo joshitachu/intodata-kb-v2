@@ -28,11 +28,52 @@ from sqlalchemy import (
     JSON,
     Boolean,
     LargeBinary,
-    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db.base import Base
+
+
+# --- Estate keys -------------------------------------------------------------
+#
+# `runtime_sources.estate_key` is the value stamped into the `project_id` column
+# of every row this source mirrors. It is an ESTATE identifier -- "the tenant
+# behind this credential" -- and NOT a project: a vendor tenant can be
+# registered before any project exists, and projects attach to it afterwards
+# through `runtime_source_read_grants`.
+#
+# Two shapes, and the difference is the whole migration:
+#
+# * a source registered against a project keeps that project's id as its estate
+#   key (every source that existed before this column did was backfilled that
+#   way). Nothing about its ~868 MB of mirrored rows moves, no index changes,
+#   and every read it serves emits the same predicate it did before.
+# * a source registered with NO project derives `estate:{source_key}`.
+#
+# The `estate:` prefix cannot collide with a project id because a project id is
+# also used as a filesystem directory name (generated docs live in
+# `output/{project_id}/docs/`, and the ASCII-only rule exists for the same
+# reason): `:` is not a legal character in a Windows path component, so no
+# project id can contain one. `source_key` is itself unique per source
+# (`{source_type}-{uuid4[:12]}`), so the derived key is stable for the life of
+# the row and unique across sources.
+ESTATE_KEY_PREFIX = "estate:"
+
+
+def derive_estate_key(source_key: str) -> str:
+    """The estate key of a source registered against no project."""
+    return f"{ESTATE_KEY_PREFIX}{source_key}"
+
+
+def is_ownerless_estate_key(estate_key: str) -> bool:
+    """True when this estate key belongs to no project (see `derive_estate_key`).
+
+    The one place the prefix is interpreted rather than merely constructed:
+    source visibility has to tell "registered against a project that a caller
+    may or may not hold" apart from "registered against no project at all",
+    and those are the only two things an estate key can be.
+    """
+    return estate_key.startswith(ESTATE_KEY_PREFIX)
 
 
 # Provider evidence that the normalized `state` column deliberately discards.
@@ -165,24 +206,44 @@ class RuntimeSyncStateRow(Base):
 
 
 class RuntimeSourceRow(Base):
-    """Current-state inventory for one runtime source in one project."""
+    """One runtime source: a credential-backed connector, or a mirrored source row.
+
+    There is deliberately NO owning project. `estate_key` (see the module
+    header) is the stamp this source writes onto its mirrored rows; which
+    projects may READ those rows lives entirely in
+    `RuntimeSourceReadGrantRow`. The column it replaces, `project_id`, was
+    doing three jobs at once -- who pays the poll, what rows get stamped with,
+    and who may read them -- and every consequence the product owner hit came
+    from one of those three silently standing in for another:
+
+    * a tenant could not be registered before a project existed, because the
+      stamp had to name one;
+    * `uq_runtime_sources_project_tmc` allowed one TMC per project, so a
+      project that already had one could not connect a SECOND, different tenant
+      (a different credential, a different estate) -- and the refusal advised
+      widening the first source's ingest scope, which reaches nothing of the
+      second tenant;
+    * deleting the owning project orphaned the source.
+
+    `physical_identity` stays globally unique and stays the real duplicate
+    guard: one tenant, one mirror, one poll. That is the rule
+    `uq_runtime_sources_project_tmc` was mistaken for.
+
+    Two kinds of row share this table and both are keyed the same way. A
+    REGISTERED source carries credentials, health and a schedule. A MIRRORED
+    source row is written by a sync batch (`upsert_source`) and carries none of
+    those; its estate key is whatever the batch stamped its data with.
+    """
 
     __tablename__ = "runtime_sources"
     __table_args__ = (
-        UniqueConstraint("project_id", "source_key", name="uq_runtime_sources_project_source"),
-        Index("ix_runtime_sources_project_id", "project_id"),
+        UniqueConstraint("estate_key", "source_key", name="uq_runtime_sources_estate_source"),
+        Index("ix_runtime_sources_estate_key", "estate_key"),
         Index("ix_runtime_sources_source_key", "source_key"),
-        Index(
-            "uq_runtime_sources_project_tmc",
-            "project_id",
-            unique=True,
-            postgresql_where=text("source_type = 'tmc'"),
-            sqlite_where=text("source_type = 'tmc'"),
-        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    project_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    estate_key: Mapped[str] = mapped_column(String(255), nullable=False)
     source_key: Mapped[str] = mapped_column(String(100), nullable=False)
     source_type: Mapped[str] = mapped_column(String(100), nullable=False)
     physical_identity: Mapped[str] = mapped_column(String(512), nullable=False)
@@ -261,24 +322,39 @@ class RuntimeWorkspaceProjectMapRow(Base):
 
 
 class RuntimeSourceReadGrantRow(Base):
-    """Grants one project permission to READ another project's runtime mirror.
+    """One project ATTACHED to one runtime source's estate.
 
-    `runtime_sources.project_id` conflates three relations: who holds the
-    credential and pays the poll, which project a mirrored row is stamped with
-    (`RuntimeWorkspaceProjectMapRow` already re-points that), and which projects
-    may read the result. This table is the third one, made explicit.
+    The complete answer to "which projects may read this source's mirror".
+    `runtime_sources` no longer holds a project at all, so there is no owner to
+    be implied: EVERY attached project is a row here, including the project a
+    legacy source was registered against (the migration wrote one for each).
 
-    It exists because one Talend tenant commonly backs several scanned projects,
-    and the registration guard -- correctly -- refuses to store the same
-    credential twice: a second row would mean a second poll and two mirrors of
-    one estate that drift apart. Sharing therefore has to happen on the read
-    side.
+    Named `runtime_source_read_grants` because it was born as the third of the
+    three relations `runtime_sources.project_id` conflated, and it is still the
+    same table with the same shape. Renaming it to `runtime_source_projects`
+    during a behaviour change is how a migration goes wrong; that rename is
+    follow-up work, not part of this one.
 
-    Scope lives on the grant, not on the source's credential blob, because the
-    reason two projects share a tenant is usually that they care about different
-    environments of it. `environment_ids` NULL means every mirrored environment;
-    an empty list is a deliberate "nothing", the same distinction
+    Why attachment is a row rather than a column on the source: one Talend
+    tenant commonly backs several scanned projects, and the registration guard
+    -- correctly -- refuses to store the same credential twice, because a second
+    row would mean a second poll and two mirrors of one estate that drift apart.
+    A tenant therefore reaches N projects on the READ side, never by being
+    registered N times.
+
+    Scope lives on the attachment, not on the source's credential blob, because
+    the reason two projects share a tenant is usually that they care about
+    different environments of it. `environment_ids` NULL means every mirrored
+    environment; an empty list is a deliberate "nothing", the same distinction
     `RuntimeDocReadScope` draws.
+
+    One narrowing is deliberately inert: a row whose `project_id` EQUALS the
+    source's `estate_key` (every legacy source has exactly one) describes a
+    project that every mirrored row is already stamped with, so it is reached
+    by the reader's own unrestricted term in `resolve_runtime_read_scope` and no
+    environment or window on it can take rows away. `add_read_grant` refuses to
+    write such a row for that reason -- storing a limit that does nothing is
+    worse than refusing it.
     """
 
     __tablename__ = "runtime_source_read_grants"
@@ -294,8 +370,8 @@ class RuntimeSourceReadGrantRow(Base):
     source_id: Mapped[int] = mapped_column(
         ForeignKey("runtime_sources.id", ondelete="CASCADE"), nullable=False
     )
-    # The READER. The source's own project_id is the grantor and is never a row
-    # here -- ownership already implies read.
+    # The attached project. Every project that may read this source is one,
+    # with no implied row for anybody.
     project_id: Mapped[str] = mapped_column(String(255), nullable=False)
     environment_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
     window_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
