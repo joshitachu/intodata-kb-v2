@@ -33,23 +33,27 @@ async def build_request_capability_registry(
             continue
         runtime_id = connector_runtime_capability_id(instance.id, binding.capability_id)
         purpose = configured.purpose
+        output_contracts = [configured.output_type]
         if instance.provider_key == "mcp_elastic":
             scoped_projects = (
                 [project_id for project_id in binding.project_ids if project_id in project_ids]
-                if project_ids is not None else list(binding.project_ids)
+                if project_ids is not None
+                else list(binding.project_ids)
             )
             context = _elastic_field_context(
                 getattr(instance, "config", {}), project_ids=scoped_projects
             )
             if context:
                 purpose = f"{purpose} {context}"[:500]
+            output_contracts.append(
+                "One terminal Elastic observation for the exact query, including "
+                "per-source freshness and coverage; no automatic retry or provider fallback."
+            )
         registry.register(
             capability := CapabilityDefinition(
                 id=runtime_id,
                 label=f"{configured.label}: {instance.name}",
-                semantic_name=(
-                    f"{configured.semantic_name}_connector_{instance.id}"
-                ),
+                semantic_name=(f"{configured.semantic_name}_connector_{instance.id}"),
                 purpose=purpose,
                 preconditions=list(configured.preconditions),
                 failure_recovery=dict(configured.failure_recovery),
@@ -65,7 +69,7 @@ async def build_request_capability_registry(
                 do_not_use_when=list(configured.do_not_use_when),
                 task_types=["connector_evidence"],
                 evidence_sources=[EvidenceSource.CONNECTOR_EVIDENCE],
-                output_contracts=[configured.output_type],
+                output_contracts=output_contracts,
                 metadata={
                     "execution_surface": "request_bound_connector",
                     "auth_required": True,
@@ -97,7 +101,8 @@ def _elastic_field_context(config: object, *, project_ids: list[str] | None = No
             for project_id in project_ids
             for context in (
                 project_contexts.get(project_id, [])
-                if isinstance(project_contexts.get(project_id), list) else []
+                if isinstance(project_contexts.get(project_id), list)
+                else []
             )
         ]
     if not isinstance(contexts, list):
@@ -107,17 +112,39 @@ def _elastic_field_context(config: object, *, project_ids: list[str] | None = No
         if not isinstance(item, dict):
             continue
         raw_label = item.get("label")
-        label = raw_label if isinstance(raw_label, str) and _SAFE_ELASTIC_LABEL.fullmatch(raw_label) else f"source {index}"
+        label = (
+            raw_label
+            if isinstance(raw_label, str) and _SAFE_ELASTIC_LABEL.fullmatch(raw_label)
+            else f"source {index}"
+        )
         fields = item.get("search_fields")
-        names = list(dict.fromkeys(
-            value for value in fields[:6]
-            if isinstance(fields, list) and isinstance(value, str) and _SAFE_ELASTIC_FIELD.fullmatch(value)
-        )) if isinstance(fields, list) else []
+        names = (
+            list(
+                dict.fromkeys(
+                    value
+                    for value in fields[:6]
+                    if isinstance(fields, list)
+                    and isinstance(value, str)
+                    and _SAFE_ELASTIC_FIELD.fullmatch(value)
+                )
+            )
+            if isinstance(fields, list)
+            else []
+        )
         message_fields = item.get("message_fields")
-        messages = list(dict.fromkeys(
-            value for value in message_fields[:3]
-            if isinstance(message_fields, list) and isinstance(value, str) and _SAFE_ELASTIC_FIELD.fullmatch(value)
-        )) if isinstance(message_fields, list) else []
+        messages = (
+            list(
+                dict.fromkeys(
+                    value
+                    for value in message_fields[:3]
+                    if isinstance(message_fields, list)
+                    and isinstance(value, str)
+                    and _SAFE_ELASTIC_FIELD.fullmatch(value)
+                )
+            )
+            if isinstance(message_fields, list)
+            else []
+        )
         roles: list[str] = []
         for label_name, key in (
             ("timestamp", "timestamp_field"),
@@ -135,10 +162,7 @@ def _elastic_field_context(config: object, *, project_ids: list[str] | None = No
         )
     if not lines:
         return ""
-    guidance = (
-        "Fields by selected source: "
-        + " | ".join(lines)
-    )
+    guidance = "Fields by selected source: " + " | ".join(lines)
     return guidance[:250]
 
 

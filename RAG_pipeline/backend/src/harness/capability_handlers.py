@@ -12,6 +12,8 @@ from src.harness.capability_runtime import (
     CapabilityHandlerServices,
     CapabilityObservation,
 )
+from src.harness.connectors.models import ConnectorQuery
+from src.harness.connectors.service import ConnectorPolicyError
 from src.harness.conversation_state import (
     ConversationEffectReceipt,
     ConversationRequestedInput,
@@ -24,30 +26,30 @@ from src.harness.models import (
     ATTACH_GIT_SOURCE_CAPABILITY,
     ATTACH_ZIP_SOURCE_CAPABILITY,
     CONVERSATION_SUMMARY_FACTS_CAPABILITY,
-    DOCUMENT_LIST_CAPABILITY,
     DOCUMENT_FULL_TEXT_CAPABILITY,
+    DOCUMENT_LIST_CAPABILITY,
     DOCUMENT_READ_CAPABILITY,
-    DOCUMENT_SEARCH_CAPABILITY,
-    DOCUMENTATION_ANSWER_CAPABILITY,
-    GENERATED_DOCUMENT_READ_CAPABILITY,
     DOCUMENT_REVERT_EVIDENCE_UPDATE_CAPABILITY,
+    DOCUMENT_SEARCH_CAPABILITY,
     DOCUMENT_UPDATE_FROM_EVIDENCE_CAPABILITY,
     DOCUMENT_UPDATE_PROPOSAL_CAPABILITY,
+    DOCUMENTATION_ANSWER_CAPABILITY,
     DOCUMENTATION_GENERATION_CAPABILITY,
-    DOCUMENTATION_PACK_LIST_CAPABILITY,
     DOCUMENTATION_GENERATION_STATUS_CAPABILITY,
+    DOCUMENTATION_PACK_LIST_CAPABILITY,
+    GENERATED_DOCUMENT_READ_CAPABILITY,
     LOG_SEARCH_EVIDENCE_CAPABILITY,
     METADATA_QUERY_CAPABILITY,
+    ONBOARDING_RESUME_CAPABILITY,
     PACK_CREATE_CAPABILITY,
     PACK_DRAFT_ABANDON_CAPABILITY,
     PACK_DRAFT_CREATE_CAPABILITY,
-    PACK_DRAFT_REFINE_CAPABILITY,
     PACK_DRAFT_READ_CAPABILITY,
+    PACK_DRAFT_REFINE_CAPABILITY,
     PACK_DRAFT_SAVE_CAPABILITY,
     PACK_DRAFT_VALIDATE_CAPABILITY,
-    ONBOARDING_RESUME_CAPABILITY,
-    PROJECT_ONBOARDING_CAPABILITY,
     PROJECT_ACTIVE_WORKFLOW_STATUS_CAPABILITY,
+    PROJECT_ONBOARDING_CAPABILITY,
     PROJECT_STATUS_CAPABILITY,
     PUBLISH_INDEX_CAPABILITY,
     SOURCE_OPTIONS_CAPABILITY,
@@ -56,21 +58,18 @@ from src.harness.models import (
     WORKFLOW_CANCELLATION_CAPABILITY,
     CapabilityDefinition,
 )
+from src.harness.packs.builder_workflow import PackBuilderWorkflow
 from src.harness.packs.draft_service import (
-    SavedPackRecord,
     DraftNotFoundError,
     DraftRecord,
     DraftServiceError,
     PackDraftService,
+    SavedPackRecord,
 )
-from src.harness.packs.builder_workflow import PackBuilderWorkflow
-from src.harness.providers.mcp_packs import McpPackProvider, McpPackProviderError
-from src.harness.connectors.models import ConnectorQuery
-from src.harness.connectors.service import ConnectorPolicyError
 from src.harness.providers.mcp_docs import McpDocumentationProvider
+from src.harness.providers.mcp_packs import McpPackProvider, McpPackProviderError
 from src.harness.providers.mcp_projects import McpProjectsProvider
 from src.runtime.insights.parser import redact_credentials
-
 
 _SAFE_EVIDENCE_METADATA_KEYS = frozenset(
     {
@@ -295,9 +294,7 @@ class DocumentationPackCatalogHandler:
             # Personal packs live in MCP, which owns the one pack format. There
             # is no second registry here to read.
             try:
-                packs = await McpPackProvider().list_packs(
-                    access_token=context.access_token
-                )
+                packs = await McpPackProvider().list_packs(access_token=context.access_token)
             except McpPackProviderError:
                 if scope == "private":
                     raise
@@ -358,11 +355,13 @@ class DocumentationUpdateHandler:
                     "changed_logical_ids": result.changed_logical_ids,
                     "reconciliation_status": "revision_activated",
                 },
-                artifact_links=[{
-                    "label": "Updated Documentation",
-                    "url": f"/projects/{request.arguments['project_id']}/docs/{result.filename}",
-                    "kind": "docs",
-                }],
+                artifact_links=[
+                    {
+                        "label": "Updated Documentation",
+                        "url": f"/projects/{request.arguments['project_id']}/docs/{result.filename}",
+                        "kind": "docs",
+                    }
+                ],
             )
         result = await provider.update_doc_from_evidence(
             project_id=str(request.arguments["project_id"]),
@@ -512,12 +511,28 @@ class BoundConnectorEvidenceHandler:
                 }
             )
         outcome = result.diagnostics.get("outcome")
-        summary = f"Retrieved {len(result.items)} connector evidence item(s)."
+        summary = (
+            f"Elastic search completed with {len(result.items)} match(es). "
+            "This observation is terminal for the exact query: answer from it without "
+            "automatic retries or switching evidence providers."
+            if result.diagnostics.get("contract") == "authoritative_elastic_search_v1"
+            else f"Retrieved {len(result.items)} connector evidence item(s)."
+        )
         if not result.items and isinstance(outcome, str):
             summary = {
-                "no_matches_in_active_sources": "No matches were found, but the selected sources contain recent events.",
-                "no_recent_events": "No matches were found and the selected sources contain no recent events.",
-                "coverage_unavailable": "No matches were returned and source coverage could not be fully checked.",
+                "no_matches_in_active_sources": (
+                    "No Elastic matches were found, but the selected sources contain recent "
+                    "events. This is the terminal result for the exact query; do not retry "
+                    "with synonyms or a wildcard."
+                ),
+                "no_recent_events": (
+                    "No Elastic matches were found and the selected sources contain no recent "
+                    "events. Report the stale or empty coverage without another search."
+                ),
+                "coverage_unavailable": (
+                    "No Elastic matches were returned and source coverage could not be fully "
+                    "checked. Report that limitation without retrying or using another provider."
+                ),
             }.get(outcome, summary)
         return CapabilityObservation(
             capability_id=capability.id,
@@ -530,7 +545,14 @@ class BoundConnectorEvidenceHandler:
                 "diagnostics": result.diagnostics,
             },
             evidence_refs=references,
-            safe_details={"evidence_count": len(result.items)},
+            safe_details={
+                "evidence_count": len(result.items),
+                "outcome": outcome,
+                "terminal_for_exact_query": bool(
+                    result.diagnostics.get("terminal_for_exact_query")
+                ),
+                "retry_recommended": bool(result.diagnostics.get("retry_recommended", True)),
+            },
         )
 
 
@@ -1047,10 +1069,7 @@ class PackCreateHandler(_PackDraftHandler):
             capability_id=capability.id,
             status="succeeded",
             output_type=capability.output_type,
-            summary=(
-                f"Created pack {saved.name} version {saved.version} "
-                f"producing {documents}."
-            ),
+            summary=(f"Created pack {saved.name} version {saved.version} producing {documents}."),
             data={
                 "mcp_pack_id": saved.mcp_pack_id,
                 "name": saved.name,
@@ -1422,9 +1441,7 @@ class PackDraftSaveHandler(_PackDraftHandler):
                     "name": saved.name,
                     "version": saved.version,
                 },
-                artifact_links=[
-                    {"label": saved.name, "url": "/pack?tab=library", "kind": "pack"}
-                ],
+                artifact_links=[{"label": saved.name, "url": "/pack?tab=library", "kind": "pack"}],
             )
         try:
             saved = await draft_service.save(
@@ -1473,9 +1490,7 @@ class PackDraftSaveHandler(_PackDraftHandler):
                 "version": saved.version,
                 "documents": list(saved.documents),
             },
-            artifact_links=[
-                {"label": saved.name, "url": "/pack?tab=library", "kind": "pack"}
-            ],
+            artifact_links=[{"label": saved.name, "url": "/pack?tab=library", "kind": "pack"}],
         )
 
 
@@ -1671,7 +1686,8 @@ def _safe_scope_value(value: Any) -> Any:
         return _safe_text(value, limit=1_500)
     if isinstance(value, list):
         return [
-            safe for item in value[:_MAX_SCOPE_LIST_ENTRIES]
+            safe
+            for item in value[:_MAX_SCOPE_LIST_ENTRIES]
             if (safe := _safe_scope_value(item)) is not None
         ]
     return None

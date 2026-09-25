@@ -12,10 +12,22 @@ from .domain import EvidenceEnvelope, EvidenceItem
 
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_SECRET_KEY = re.compile(r"(?:password|secret|token|authorization|api[_-]?key|cookie|credential)", re.I)
+_SECRET_KEY = re.compile(
+    r"(?:password|secret|token|authorization|api[_-]?key|cookie|credential)", re.I
+)
 _BEARER = re.compile(r"\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}", re.I)
 _URL_USERINFO = re.compile(r"(https?://)[^\s/@:]+(?::[^\s/@]*)?@", re.I)
+_JDBC_USERINFO = re.compile(r"(jdbc:[a-z0-9+.-]+://)[^\s/@:]+(?::[^\s/@]*)?@", re.I)
+_SECRET_ASSIGNMENT = re.compile(
+    r"\b(password|passwd|pwd|secret|token|authorization|api[_-]?key|access[_-]?key|client[_-]?secret)"
+    r"(\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+    re.I,
+)
 _LONG_TOKEN = re.compile(r"\b(?:eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9._-]+|[A-Za-z0-9+/=_-]{32,})\b")
+
+
+def _redact_secret_assignment(match: re.Match[str]) -> str:
+    return f"{match.group(1)}{match.group(2)}[REDACTED]"
 
 
 def redact_value(value: Any, *, max_string_chars: int = 2_000) -> tuple[Any, int, bool]:
@@ -25,9 +37,14 @@ def redact_value(value: Any, *, max_string_chars: int = 2_000) -> tuple[Any, int
     if isinstance(value, str):
         cleaned = _CONTROL.sub(" ", value)
         redacted_count = 0
-        for pattern in (_BEARER, _URL_USERINFO, _LONG_TOKEN):
+        for pattern in (_BEARER, _URL_USERINFO, _JDBC_USERINFO, _LONG_TOKEN):
             cleaned, count = pattern.subn("[REDACTED]", cleaned)
             redacted_count += count
+        # Run assignments after compound bearer/URL forms so an
+        # ``Authorization: Bearer <short-token>`` cannot leave the token behind
+        # when only the first word is consumed as the assignment value.
+        cleaned, count = _SECRET_ASSIGNMENT.subn(_redact_secret_assignment, cleaned)
+        redacted_count += count
         truncated = len(cleaned) > max_string_chars
         return cleaned[:max_string_chars], redacted_count, truncated
     if isinstance(value, Mapping):
@@ -40,7 +57,9 @@ def redact_value(value: Any, *, max_string_chars: int = 2_000) -> tuple[Any, int
                 out[key] = "[REDACTED]"
                 count += 1
                 continue
-            item, item_count, item_truncated = redact_value(raw_value, max_string_chars=max_string_chars)
+            item, item_count, item_truncated = redact_value(
+                raw_value, max_string_chars=max_string_chars
+            )
             out[key] = item
             count += item_count
             truncated = truncated or item_truncated
@@ -50,7 +69,9 @@ def redact_value(value: Any, *, max_string_chars: int = 2_000) -> tuple[Any, int
         count = 0
         truncated = False
         for item in value[:100]:
-            normalized, item_count, item_truncated = redact_value(item, max_string_chars=max_string_chars)
+            normalized, item_count, item_truncated = redact_value(
+                item, max_string_chars=max_string_chars
+            )
             out.append(normalized)
             count += item_count
             truncated = truncated or item_truncated
@@ -58,7 +79,9 @@ def redact_value(value: Any, *, max_string_chars: int = 2_000) -> tuple[Any, int
     return "[UNSUPPORTED_VALUE]", 0, True
 
 
-def normalize_event_fields(fields: Mapping[str, Any], approved_fields: set[str]) -> tuple[dict[str, Any], int, bool]:
+def normalize_event_fields(
+    fields: Mapping[str, Any], approved_fields: set[str]
+) -> tuple[dict[str, Any], int, bool]:
     """Preserve only source-profile-approved fields from an event."""
     filtered = {key: value for key, value in fields.items() if key in approved_fields}
     normalized, redaction_count, truncated = redact_value(filtered)
@@ -85,7 +108,9 @@ def finalize_envelope(envelope: EvidenceEnvelope, *, max_bytes: int = 131_072) -
     for item in envelope.items[:item_limit]:
         fields, count, item_truncated = redact_value(item.fields)
         assert isinstance(fields, dict)
-        items.append(EvidenceItem(reference=item.reference, observed_at=item.observed_at, fields=fields))
+        items.append(
+            EvidenceItem(reference=item.reference, observed_at=item.observed_at, fields=fields)
+        )
         redaction_count += count
         truncated = truncated or item_truncated
     if len(envelope.items) > item_limit:
@@ -107,7 +132,9 @@ def finalize_envelope(envelope: EvidenceEnvelope, *, max_bytes: int = 131_072) -
     payload = envelope_to_dict(candidate)
     encoded = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()
     if len(encoded) > max_bytes:
-        candidate = replace(candidate, items=(), truncation={"applied": True, "reason": "byte_limit"})
+        candidate = replace(
+            candidate, items=(), truncation={"applied": True, "reason": "byte_limit"}
+        )
         payload = envelope_to_dict(candidate)
         encoded = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()
     return replace(candidate, digest=f"sha256:{hashlib.sha256(encoded).hexdigest()}")
@@ -126,12 +153,20 @@ def envelope_to_dict(envelope: EvidenceEnvelope) -> dict[str, Any]:
         "observed_at": envelope.observed_at.isoformat(),
         "source_window": dict(envelope.source_window),
         "items": [
-            {"reference": item.reference, "observed_at": item.observed_at.isoformat() if item.observed_at else None, "fields": dict(item.fields)}
+            {
+                "reference": item.reference,
+                "observed_at": item.observed_at.isoformat() if item.observed_at else None,
+                "fields": dict(item.fields),
+            }
             for item in envelope.items
         ],
         "summary": dict(envelope.summary),
         "limitations": [
-            {"code": limitation.code, "message": limitation.message, "retryable": limitation.retryable}
+            {
+                "code": limitation.code,
+                "message": limitation.message,
+                "retryable": limitation.retryable,
+            }
             for limitation in envelope.limitations
         ],
         "redaction": dict(envelope.redaction),

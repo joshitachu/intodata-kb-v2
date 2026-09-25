@@ -25,6 +25,7 @@ from mcp_server.services.claude_service import (
     DocGenerationCoordinator,
     GroupWorkItem,
     build_group_work_items,
+    estate_weights,
     plan_phase2_workers,
     resolve_owning_group,
 )
@@ -39,9 +40,24 @@ TALEND8 = [
 ]
 
 
-def _items(sizes: dict[str, int]) -> list[GroupWorkItem]:
+def _items(
+    sizes: dict[str, int], designs: dict[str, int] | None = None
+) -> list[GroupWorkItem]:
+    """Work items from a ``{name: bytes}`` map.
+
+    Every group gets one design unless ``designs`` says otherwise. That makes
+    the design term a uniform multiple of the byte term, so these fixtures
+    exercise the packing rule and not the blend; the blend has its own section
+    below and the real-estate regressions at the bottom carry true counts.
+    """
+    designs = designs or {}
     return [
-        GroupWorkItem(name=name, evidence_files=(name,), evidence_bytes=size, design_count=1)
+        GroupWorkItem(
+            name=name,
+            evidence_files=(name,),
+            evidence_bytes=size,
+            design_count=designs.get(name, 1),
+        )
         for name, size in sizes.items()
     ]
 
@@ -73,10 +89,15 @@ def _real_items(dirs: list[Path]) -> list[GroupWorkItem]:
 
 def test_the_heaviest_group_sets_the_target_weight() -> None:
     """A group that size already has to be carried by one sub-agent, so that
-    much work in one context is proven workable on this estate."""
+    much work in one context is proven workable on this estate.
+
+    Uniform design counts scale every weight by the same factor (600 bytes over
+    3 designs = 200 per design, so each weight is bytes + 200), which is why the
+    worker count here is the same as it was on bytes alone.
+    """
     workers, target = plan_phase2_workers(_items({"a": 400, "b": 100, "c": 100}))
-    assert target == 400
-    # total 600 / target 400 -> 2 by weight; 3 groups / cap 6 -> 1 by safety.
+    assert target == 600  # 400 bytes + 1 design x (600 / 3)
+    # total 1200 / target 600 -> 2 by weight; 3 groups / cap 6 -> 1 by safety.
     assert len(workers) == 2
 
 
@@ -127,7 +148,7 @@ def test_a_perfectly_uniform_estate_is_not_batched_at_all() -> None:
     run 12x to ~5000x), so this is reported, not worked around with a constant.
     """
     workers, target = plan_phase2_workers(_items({f"g{i}": 5_000 for i in range(20)}))
-    assert target == 5_000
+    assert target == 10_000  # 5,000 bytes + 1 design x 5,000 mean bytes/design
     assert len(workers) == 20
     assert max(len(w) for w in workers) == 1
 
@@ -163,6 +184,65 @@ def test_the_cap_is_configurable_because_it_is_a_safety_bound(monkeypatch) -> No
     monkeypatch.setattr(config, "phase2_max_groups_per_worker", 2, raising=False)
     workers, _ = plan_phase2_workers(_items(sizes))
     assert max(len(w) for w in workers) <= 2
+
+
+# --------------------------------------------------------------------------
+# 1b. The weight: bytes blended with design count
+# --------------------------------------------------------------------------
+
+
+def test_weight_is_the_mean_of_byte_share_and_design_share() -> None:
+    """The blend has no tuning constant: the design term is scaled by the
+    estate's own mean bytes-per-design, so it sums to exactly ``total_bytes``
+    and each group's weight share is the mean of its two shares."""
+    items = _items({"dense": 1_000, "sparse": 1_000}, {"dense": 9, "sparse": 1})
+    weights = estate_weights(items)
+
+    # 2,000 bytes / 10 designs = 200 bytes per design.
+    assert weights == {"dense": 1_000 + 9 * 200, "sparse": 1_000 + 1 * 200}
+    assert sum(weights.values()) == 2 * 2_000
+    assert weights["dense"] / sum(weights.values()) == pytest.approx(
+        ((1_000 / 2_000) + (9 / 10)) / 2
+    )
+
+
+def test_two_groups_of_equal_bytes_are_not_equal_work() -> None:
+    """Measured: ``Processors`` is 98 designs in 1.9 MB and ``PPDWH_old`` is 3
+    designs in 0.3 MB -- densities a byte metric cannot see. Equal bytes and
+    unequal designs must not produce equal weight."""
+    weights = estate_weights(
+        _items({"many": 1_000_000, "few": 1_000_000}, {"many": 98, "few": 3})
+    )
+    assert weights["many"] > weights["few"]
+
+
+def test_a_run_without_design_counts_falls_back_to_the_old_byte_measure() -> None:
+    """A resumed run that did not re-run the quick scan has zero designs
+    everywhere. The planner must still plan, on the one number it has, rather
+    than divide by zero or refuse."""
+    sizes = {"a": 400, "b": 100, "c": 100}
+    items = _items(sizes, {name: 0 for name in sizes})
+
+    assert estate_weights(items) == {"a": 400.0, "b": 100.0, "c": 100.0}
+    workers, target = plan_phase2_workers(items)
+    assert target == 400
+    assert len(workers) == 2
+
+
+def test_an_empty_estate_has_no_weights() -> None:
+    assert estate_weights([]) == {}
+
+
+def test_the_plan_is_deterministic_under_float_weights() -> None:
+    """Weights are floats and a float sum is order-dependent, so the packer
+    rounds before comparing and breaks remaining ties on name."""
+    sizes = {f"g{i}": (i * 7919) % 1000 + 1 for i in range(30)}
+    designs = {f"g{i}": (i * 13) % 7 + 1 for i in range(30)}
+    first, _ = plan_phase2_workers(_items(sizes, designs))
+    second, _ = plan_phase2_workers(
+        _items(dict(reversed(list(sizes.items()))), designs)
+    )
+    assert first == second
 
 
 # --------------------------------------------------------------------------

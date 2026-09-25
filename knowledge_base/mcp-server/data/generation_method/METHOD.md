@@ -44,6 +44,13 @@ and reduced to markdown; you are reading the export, not the raw repository.
     _red_flags.md         RF-xxx-nnn catalogue
     _security_checklist.md
     _pattern_library.md
+      These five are staged from the pinned method library
+      (data/investigation_methods/_shared/). Their digests are verified at load
+      and a mismatch fails the run. Five of the seven files there match no
+      upstream revision of the project they descend from -- they were adapted
+      for Talend and carry the AP-xxx-nnn / RF-xxx-nnn / P-ERR-nnn identifier
+      schemes this method cites, which upstream does not use. Cite an ID from
+      the catalogue in front of you, never one you remember from elsewhere.
   _method/
     METHOD.md             this file
     _shared/              the confidence model and the validation checklist
@@ -56,6 +63,10 @@ and reduced to markdown; you are reading the export, not the raw repository.
                           breakdown of the design total
     scorecard.md          written by Phase 2.6, or by the server when it is disabled
   _analysis/              YOU write here in Phase 2
+    {group}.md            the group analysis -- ONE per group, and the only
+                          kind of file here that counts as a group analysis
+    {group}_summary.md    that group's navigation aid, not an analysis
+    _shared_library.md    the shared-library digest; underscore = not a group
   _provenance/            YOU create this; one JSON sidecar per document
   _knowledge/             YOU create this; the run's open-questions ledger
   _tools/runtime_tools.py the live runtime query surface (see section 4)
@@ -125,6 +136,31 @@ about the platform itself comes up. A platform with no directory there has no
 platform-specific method, and the two shared files above are the whole method
 for this run. Never apply one platform's parsing guidance to another: confident
 wrong instruction produces absences that are artefacts of the wrong method.
+
+### The form of a locus
+
+A locus is a FILE AND A LINE RANGE, written so that a reader can open it
+without guessing. Two forms, both fine, and nothing else:
+
+```
+`_preprocess/Collectors.md:7524-8164`
+`_preprocess/Collectors.md`, lines 7524-8164
+```
+
+- ALWAYS write the path from the staging root. `_preprocess/Staging.md:1-27`
+  resolves; `Staging.md:1-27` does not -- three different directories hold a
+  `Staging.md`, and the line numbers are only right for one of them.
+- Several spans separated by commas is the normal way to cite scattered
+  evidence: `_preprocess/Global.md:1613-1650,1767-1795,1937-1959`.
+- A single line is `:42`. The last line of a file is `-EOF`.
+- Citing a file with no line range at all is a weaker locus. It is allowed
+  where the whole file is the point, and it is the wrong answer for a quoted
+  expression: give the range you copied it from.
+
+This IS checked, deterministically, after the run: every cited path is opened
+and every cited range is compared against the file's length. What the check
+CANNOT do is read your claim -- it establishes that the locus resolves, never
+that the cited lines say what you said they say. That part stays on you.
 
 ### Copy, never reconstruct
 
@@ -275,8 +311,10 @@ workers, each covering several groups.
    let it finish. It reads only the reusable designs named there and writes the
    interface digest to `<staging>/_analysis/_shared_library.md`. It writes NO
    group analysis: a reusable design is still documented in full by the group
-   that owns it. Every group worker reads that digest, because a design that
-   CALLS a joblet has no definition of that joblet in its own evidence.
+   that owns it. The leading underscore is what says so -- see the `_analysis/`
+   naming rule in the coverage section below. Every group worker reads that
+   digest, because a design that CALLS a joblet has no definition of that
+   joblet in its own evidence.
 3. Then spawn ONE sub-agent per WORKER, all at once, each owning the SET of
    groups in its row. Do not spawn one per group.
 4. The suggested split balances evidence bytes and caps how many groups sit in
@@ -367,11 +405,30 @@ brevity.
 
 ### Coverage, checked by you
 
-There is no Python gate counting your files. When the workers return, check the
-work yourself against the group list in the run message and the Groups table in
-`_assessment/phase2_work_plan.md`, per GROUP and never per worker -- a worker
-that returned "done" having written three of its four groups passes a
-per-worker check and fails this one.
+NOT EVERY FILE IN `_analysis/` IS A GROUP ANALYSIS. Three kinds of file live
+there and only one of them counts:
+
+- `{group}.md` -- the group analysis. This is the only one that counts.
+- `{group}_summary.md` -- that group's navigation aid. A summary is NOT
+  evidence that the group was analysed, and a summary whose text says "see
+  {group}.md" while no `{group}.md` exists is a MISSING group, not a covered
+  one. Measured on a published run: the largest group in the estate, 98
+  designs, shipped a summary pointing at an analysis that was never written.
+- `_`-prefixed files -- run artifacts, never a group. `_shared_library.md` is
+  the pre-pass digest; the rule is positional, so anything else written with a
+  leading underscore is a run artifact too.
+
+So `ls _analysis/*.md | wc -l` is NOT the number of groups analysed and must
+never be used as one. Count `{group}.md` files whose name is on the group list,
+and nothing else.
+
+There is no Python gate counting your files. A check after the run does report
+which groups have a summary and no analysis, but it reports after the fact: it
+never writes the missing one, and by then the run is over. When the workers
+return, check the work yourself against the group list in the run message and the
+Groups table in `_assessment/phase2_work_plan.md`, per GROUP and never per
+worker -- a worker that returned "done" having written three of its four groups
+passes a per-worker check and fails this one.
 
 For each group owed an analysis, confirm `_analysis/{group}.md` exists, is not
 trivially small, and carries a heading for every section of the guide. A group

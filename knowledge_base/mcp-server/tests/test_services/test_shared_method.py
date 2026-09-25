@@ -34,6 +34,7 @@ from mcp_server.config import config
 from mcp_server.services.investigation_method import (
     METHOD_MANIFEST_FILENAME,
     METHODS_DIRNAME,
+    SCORECARD_ROLES,
     SHARED_METHOD_KEY,
     STAGED_MANIFEST_FILENAME,
     STAGED_METHOD_DIRNAME,
@@ -44,21 +45,43 @@ from mcp_server.services.investigation_method import (
     materialize_investigation_method,
     materialize_shared_method,
     method_prompt_index,
+    shared_method_paths_by_role,
     staged_method_dir,
     staged_method_dirs,
     staged_shared_method_dir,
 )
 
-EXPECTED_METHOD_VERSION = "shared-method-1"
+EXPECTED_METHOD_VERSION = "shared-method-2"
 
 #: Same Integration Suite revision as the Talend guides -- the two directories
 #: must not be able to describe different methods.
 EXPECTED_REVISION = "0c68b22633a6d067fcc30e29dd18e86d9ea6d24f"
 
-EXPECTED_FILES = {
+#: Copied VERBATIM from upstream at ``EXPECTED_REVISION``. These are the files
+#: the method-level ``source:`` block describes.
+VERBATIM_FILES = {
     "confidence-model.md": "confidence",
     "validation-checklist.md": "validation",
 }
+
+#: The five assessment catalogues, consolidated here on 2026-09-25 from the
+#: UNPINNED copy under ``src/mcp_server/templates/``. Two sources for one method
+#: layer, and nothing saying which won; that is the drift this directory exists
+#: to make impossible, so it had to own these too.
+#:
+#: Their bytes match NO upstream revision -- each was diffed at import against
+#: both ``templates/integration/method/<name>.md`` at ``EXPECTED_REVISION`` and
+#: the pre-refactor ``templates/integration/<name>.md`` at 686977cfaad0. They
+#: therefore carry ``revision: unknown`` and a ``divergence:`` note per file.
+DIVERGENT_FILES = {
+    "scoring-rubric.md": "scoring-rubric",
+    "anti-patterns.md": "anti-patterns",
+    "red-flags.md": "red-flags",
+    "security-checklist.md": "security-checklist",
+    "pattern-library.md": "pattern-library",
+}
+
+EXPECTED_FILES = {**VERBATIM_FILES, **DIVERGENT_FILES}
 
 #: Platforms with no method directory of their own. Each must still receive the
 #: shared method.
@@ -123,6 +146,71 @@ def test_shared_method_records_where_it_came_from() -> None:
     # The manifest spells this key `change:`; it must land on the one canonical
     # field, or a consumer reading `.note` silently sees an unexplained import.
     assert len(entry.note.split()) >= 15
+
+
+def test_a_file_that_matches_no_upstream_revision_says_so_instead_of_claiming_one() -> None:
+    """The five assessment catalogues were diffed at import and every one
+    DIFFERS from upstream, at the pinned revision and at the only earlier one.
+
+    The manifest has a single directory-level ``source.revision``. Left alone,
+    it would have covered these five with a provenance claim a reviewer running
+    the same diff would find false -- and overstated provenance is worse than an
+    admitted gap, because it is the thing that stops anyone checking. So
+    provenance is per FILE: ``revision: unknown`` overrides the method-level
+    value, and ``divergence`` records what the diff actually showed.
+    """
+    method = load_shared_method()
+    assert method is not None
+    by_name = {item.name: item for item in method.files}
+
+    for name in VERBATIM_FILES:
+        item = by_name[name]
+        assert item.revision == ""  # inherits the method's revision
+        assert item.resolved_revision(method.source.revision) == EXPECTED_REVISION
+        assert item.divergence == ""
+
+    for name in DIVERGENT_FILES:
+        item = by_name[name]
+        assert item.resolved_revision(method.source.revision) == "unknown"
+        assert item.resolved_revision(method.source.revision) != EXPECTED_REVISION
+        # Not a bare flag: a reviewer has to be able to reproduce the diff.
+        assert len(item.divergence.split()) >= 20
+        assert EXPECTED_REVISION in item.divergence
+
+
+def test_the_staged_manifest_carries_the_per_file_provenance(tmp_path: Path) -> None:
+    """The staged copy is read on its own, away from the manifest that produced
+    it, so a blank revision there is only interpretable if you still have the
+    method to compare against."""
+    staging = tmp_path / "docs_staging"
+    assert materialize_shared_method(staging) is not None
+    payload = yaml.safe_load(
+        (staged_shared_method_dir(staging) / STAGED_MANIFEST_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    entries = {entry["name"]: entry for entry in payload["files"]}
+
+    assert entries["confidence-model.md"]["revision"] == EXPECTED_REVISION
+    assert "divergence" not in entries["confidence-model.md"]
+    for name in DIVERGENT_FILES:
+        assert entries[name]["revision"] == "unknown"
+        assert entries[name]["divergence"]
+
+
+def test_the_assessment_catalogues_have_exactly_one_home() -> None:
+    """The defect this consolidation removed: two copies of one method layer,
+    one pinned and one not, and nothing saying which won."""
+    legacy = Path(mcp_server.__file__).resolve().parent / "templates"
+    assert not sorted(legacy.glob("*.md")), (
+        "assessment catalogues are back under src/mcp_server/templates/; the "
+        "pinned library is the one source"
+    )
+    assert (legacy / "assessment.html").is_file(), "the Jinja report template stays"
+
+    paths = shared_method_paths_by_role()
+    for role in SCORECARD_ROLES:
+        assert paths[role].is_file()
 
 
 def test_shared_method_files_are_ascii_only() -> None:
@@ -437,21 +525,34 @@ def test_prompt_index_puts_the_vocabulary_before_the_platform_guides(tmp_path: P
     materialize_investigation_method(staging, "talend")
 
     bullets = _bullets(method_prompt_index(staging, "talend"))
-    assert len(bullets) == 8  # six Talend files plus the two shared ones
+    # Six Talend files, the two shared verbatim ones, and the five assessment
+    # catalogues consolidated here in 2026-09.
+    assert len(bullets) == 6 + len(EXPECTED_FILES)
 
     assert "nexus-adaptation.md" in bullets[0]
     assert f"{SHARED_METHOD_KEY}/confidence-model.md" in bullets[1]
     assert f"{SHARED_METHOD_KEY}/validation-checklist.md" in bullets[2]
 
-    # Every remaining bullet is a platform guide, and no shared file trails them.
-    assert all(f"{STAGED_METHOD_DIRNAME}/talend/" in line for line in bullets[3:])
+    # Then the platform guides, uninterrupted.
+    platform_span = bullets[3 : 3 + 5]
+    assert all(f"{STAGED_METHOD_DIRNAME}/talend/" in line for line in platform_span)
+
+    # The assessment catalogues trail everything. They are looked up when
+    # scoring, not read to learn how to read an export, and leaving them on the
+    # default rank would have listed all five AHEAD of the parsing guides --
+    # shared files sort before platform files at equal rank.
+    tail = bullets[3 + 5 :]
+    assert {line.split("/")[-1].split(" ")[0] for line in tail} == set(DIVERGENT_FILES)
 
     positions = {
         name: next(i for i, line in enumerate(bullets) if name in line)
-        for name in ("confidence-model.md", "profile.md", "parsing-core.md")
+        for name in (
+            "confidence-model.md", "profile.md", "parsing-core.md", "scoring-rubric.md",
+        )
     }
     assert positions["confidence-model.md"] < positions["profile.md"]
     assert positions["confidence-model.md"] < positions["parsing-core.md"]
+    assert positions["parsing-core.md"] < positions["scoring-rubric.md"]
 
 
 def test_prompt_index_names_both_methods_and_their_versions(tmp_path: Path) -> None:

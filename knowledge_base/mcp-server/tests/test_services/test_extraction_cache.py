@@ -638,11 +638,14 @@ async def test_generate_docs_second_run_skips_preprocess_on_a_cache_hit(
     real_preprocess = DocGenerationCoordinator._preprocess_scan_data
     calls: list[str] = []
 
-    async def _counting_preprocess(self, project_id, staging_dir, platform="talend", **kwargs):
+    # Deliberately NOT async, and it must stay that way: `_preprocess_scan_data`
+    # is synchronous (fc51dbd) so the caller can run it on a worker thread. A
+    # coroutine spy here would be awaited by asyncio.to_thread's return value,
+    # not by the callsite, and the test would fail on the shape rather than on
+    # the cache behaviour it exists to check.
+    def _counting_preprocess(self, project_id, staging_dir, platform="talend", **kwargs):
         calls.append(project_id)
-        return await real_preprocess(
-            self, project_id, staging_dir, platform, **kwargs
-        )
+        return real_preprocess(self, project_id, staging_dir, platform, **kwargs)
 
     monkeypatch.setattr(
         DocGenerationCoordinator, "_preprocess_scan_data", _counting_preprocess,

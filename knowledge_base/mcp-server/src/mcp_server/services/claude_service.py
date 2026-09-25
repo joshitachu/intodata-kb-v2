@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -54,6 +55,11 @@ from mcp_server.services.client_language_guard import (
     write_provenance_report,
 )
 from mcp_server.providers.custom import analysis_store
+from mcp_server.providers.custom.locus_gate import (
+    locus_gate_messages,
+    validate_loci,
+    write_locus_gate_report,
+)
 from mcp_server.services.group_attribution_guard import (
     analysis_group_for_slice,
     attribution_warnings,
@@ -65,6 +71,7 @@ from mcp_server.services.generation_method import materialize_generation_method
 from mcp_server.services.investigation_method import (
     InvestigationMethodError,
     materialize_investigation_method,
+    shared_method_paths_by_role,
 )
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.plugin_runner import build_plugin_runner
@@ -171,14 +178,61 @@ class GroupWorkItem:
         return sum(self.risk_counts)
 
 
+def estate_weights(items: Sequence[GroupWorkItem]) -> dict[str, float]:
+    """Per-group Phase 2 workload, blending evidence bytes and design count.
+
+        weight(g) = bytes(g) + designs(g) * (total_bytes / total_designs)
+
+    Equivalently -- and this is the point -- a group's share of the total weight
+    is the MEAN of its byte share and its design share, because the design term
+    sums to exactly ``total_bytes`` across the estate. So it is a 50/50 blend of
+    the two measures, scale-free, with no tuning constant to get wrong.
+
+    Bytes alone were the measure until 2026-09-25 and they mislead badly.
+    Measured on one live 482-design / 41-group estate:
+
+      * ``Processors``  98 designs in 1,912,160 bytes  =  51 designs per MB
+      * ``PPDWH_old``    3 designs in   300,507 bytes  =  10 designs per MB
+      * ``demo``         1 design  in     1,293 bytes  = 773 designs per MB
+
+    a 77x density spread the byte metric cannot see. The consequence was visible
+    in the plan it produced: the byte-heaviest worker (3,840,359 bytes) carried
+    60 designs while the third-heaviest (2,142,487 bytes) carried 116 -- the
+    metric named the wrong worker as the critical path. Worker design counts
+    ranged 116 to 30 (3.87x).
+
+    Designs alone are not the answer either: they ignore how much evidence has
+    to fit in one context. Balancing on design count alone puts PPDWH (3.8 MB)
+    and five small groups in one worker and hands it 4,416,664 bytes -- a byte
+    spread of 6.77x, worse than the metric it replaced.
+
+    ``total_designs == 0`` -- a resumed run that did not re-run the quick scan,
+    or a scan with no per-group design census -- collapses the design term to
+    zero and the weight is exactly the old byte measure. That is the degradation
+    that must not be a special case: the planner still runs, it just balances on
+    the one number it has.
+    """
+    total_bytes = sum(item.evidence_bytes for item in items)
+    total_designs = sum(item.design_count for item in items)
+    per_design = (total_bytes / total_designs) if total_designs else 0.0
+    return {
+        item.name: item.evidence_bytes + item.design_count * per_design
+        for item in items
+    }
+
+
 @dataclass(frozen=True)
 class Phase2WorkPlan:
-    """The suggestion the orchestrator reads. Not an instruction: it balances
-    bytes, and bytes are the only thing Python can weigh here."""
+    """The suggestion the orchestrator reads. Not an instruction: it balances a
+    blend of evidence bytes and design count (see ``estate_weights``), which is
+    as close to "work" as this side can get without reading the evidence."""
 
     groups: tuple[GroupWorkItem, ...]
     workers: tuple[tuple[str, ...], ...]
-    target_weight_bytes: int
+    #: The heaviest single group's blended weight -- see ``plan_phase2_workers``
+    #: for why that is the target. Not bytes; render it with ``worker_weight``'s
+    #: units, never with a "bytes" suffix.
+    target_weight: float
     composition: tuple[tuple[str, int], ...] = ()
     #: (design, kind, owning group) for every reusable artifact -- a joblet or
     #: routelet, which exists to be CALLED by another design. These drive the
@@ -214,8 +268,19 @@ class Phase2WorkPlan:
         return from_manifest or sum(g.design_count for g in self.groups)
 
     def worker_load(self, index: int) -> int:
+        """Evidence bytes in one worker. Reported because it is what has to fit
+        in a context, not because it is what the split was balanced on."""
         by_name = {g.name: g.evidence_bytes for g in self.groups}
         return sum(by_name.get(name, 0) for name in self.workers[index])
+
+    def worker_designs(self, index: int) -> int:
+        by_name = {g.name: g.design_count for g in self.groups}
+        return sum(by_name.get(name, 0) for name in self.workers[index])
+
+    def worker_weight(self, index: int) -> float:
+        """The blended measure the split was actually balanced on."""
+        weights = estate_weights(self.groups)
+        return sum(weights.get(name, 0.0) for name in self.workers[index])
 
     def reusable_designs(self) -> int:
         return sum(n for kind, n in self.composition if kind in REUSABLE_ARTIFACT_KINDS)
@@ -274,15 +339,15 @@ def plan_phase2_workers(
     items: Sequence[GroupWorkItem],
     *,
     max_groups_per_worker: int | None = None,
-) -> tuple[list[list[str]], int]:
+) -> tuple[list[list[str]], float]:
     """Bin-pack whole groups onto workers. Returns ``(workers, target_weight)``.
 
     Everything derives from the estate except ``max_groups_per_worker``, which
     is an attribution-safety bound rather than a tuning knob (see
     ``config.phase2_max_groups_per_worker``).
 
-        weight     = a group's evidence bytes (its ``_preprocess`` slices summed)
-        biggest    = the heaviest group
+        weight     = ``estate_weights`` -- bytes blended 50/50 with design count
+        biggest    = the heaviest group by that weight
         by_weight  = ceil(total / biggest)
         by_safety  = ceil(n_groups / max_groups_per_worker)
         workers    = min(n_groups, max(by_weight, by_safety))
@@ -296,37 +361,47 @@ def plan_phase2_workers(
     ALONE concentrates 13 groups into one context on talend8 -- which is the
     misattribution surface this whole change has to keep small.
 
+    The weight was evidence bytes alone until 2026-09-25. ``estate_weights``
+    carries the measurement that changed it; what it buys, on the same live
+    41-group / 482-design estate and the same 7 workers, is a worker design
+    spread of 2.61x where bytes alone gave 3.87x, and the heaviest worker in
+    blended terms lands within 3% of the irreducible floor (the heaviest single
+    group, which is unsplittable by the rule above this one).
+
     Packing is heaviest-group-first into the LIGHTEST worker that still has
     group-count headroom, adding a worker when every one of them is at the cap.
     Enforcing the cap only in the worker-count formula is not enough: greedy
     placement still dumped 13 groups into one bin, because a bin that is light
-    in BYTES attracts every remaining small group. Deterministic: groups sort
-    on (-bytes, name) and ties break on the lowest worker index, so identical
-    input yields a byte-identical plan.
+    in weight attracts every remaining small group. Deterministic: groups sort
+    on (-weight, name) and ties break on the lowest worker index, so identical
+    input yields a byte-identical plan. The weight is a float, and a float sum
+    is order-dependent, so the sort key rounds it -- ties then break on name,
+    which is total.
     """
     cap = max_groups_per_worker or config.phase2_max_groups_per_worker
     cap = max(int(cap), 1)
-    ordered = sorted(items, key=lambda g: (-g.evidence_bytes, g.name))
+    weights = estate_weights(items)
+    ordered = sorted(items, key=lambda g: (-round(weights[g.name], 6), g.name))
     if not ordered:
-        return [], 0
+        return [], 0.0
 
-    total = sum(g.evidence_bytes for g in ordered)
-    biggest = ordered[0].evidence_bytes
-    by_weight = -(-total // biggest) if biggest else 1  # ceil
+    total = sum(weights.values())
+    biggest = weights[ordered[0].name]
+    by_weight = math.ceil(total / biggest) if biggest else 1
     by_safety = -(-len(ordered) // cap)  # ceil
     count = min(len(ordered), max(by_weight, by_safety, 1))
 
     bins: list[list[str]] = [[] for _ in range(count)]
-    loads = [0] * count
+    loads = [0.0] * count
     for item in ordered:
         candidates = [k for k in range(len(bins)) if len(bins[k]) < cap]
         if not candidates:
             bins.append([])
-            loads.append(0)
+            loads.append(0.0)
             candidates = [len(bins) - 1]
-        index = min(candidates, key=lambda k: (loads[k], k))
+        index = min(candidates, key=lambda k: (round(loads[k], 6), k))
         bins[index].append(item.name)
-        loads[index] += item.evidence_bytes
+        loads[index] += weights[item.name]
     return [sorted(names) for names in bins if names], biggest
 
 
@@ -480,6 +555,30 @@ def _render_shared_library_section(plan: Phase2WorkPlan) -> list[str]:
     return lines
 
 
+def _density_spread(plan: Phase2WorkPlan) -> str:
+    """Densest over sparsest group, in designs per MB.
+
+    Stated in the plan because it is the number that justifies the weight rule,
+    and because an orchestrator deciding whether to deviate needs to see that a
+    2 MB group can be 30 designs or 100.
+    """
+    densities = [
+        (g.design_count / (g.evidence_bytes / 1_000_000.0), g.name)
+        for g in plan.groups
+        if g.evidence_bytes > 0 and g.design_count > 0
+    ]
+    if len(densities) < 2:
+        return "not computable (no per-group design counts this run)"
+    low = min(densities)
+    high = max(densities)
+    if low[0] <= 0:
+        return "not computable"
+    return (
+        f"{high[0]:.0f} ({high[1]}) down to {low[0]:.0f} ({low[1]}), "
+        f"a {high[0] / low[0]:.0f}x spread"
+    )
+
+
 def render_phase2_work_plan(plan: Phase2WorkPlan) -> str:
     """Render the plan as the ASCII markdown the orchestrator reads."""
     total = plan.total_evidence_bytes
@@ -493,8 +592,8 @@ def render_phase2_work_plan(plan: Phase2WorkPlan) -> str:
     lines: list[str] = [
         "# Phase 2 Work Plan\n\n",
         "Computed by the server before Phase 2 (Python only, no model call).\n",
-        "This is a SUGGESTION sized on evidence bytes -- the only thing this side\n",
-        "can weigh. Read it, then decide.\n\n",
+        "This is a SUGGESTION sized on a blend of evidence bytes and design count\n",
+        "-- the two things this side can weigh. Read it, then decide.\n\n",
         "## Why batching, and not one sub-agent per group\n\n",
         "Sub-agents do not run 20-wide. On a measured 20-group run every group was\n",
         "requested in parallel and the dispatcher ran 3-4 at a time: analyses landed\n",
@@ -527,8 +626,13 @@ def render_phase2_work_plan(plan: Phase2WorkPlan) -> str:
             else "- Largest single group: none\n"
         ),
         f"- Evidence spread, largest over smallest: {spread}\n",
+        f"- Design density spread, designs per MB of evidence: {_density_spread(plan)}\n",
         f"- Target weight per worker (the heaviest group, which one sub-agent "
-        f"already has to carry): {_thousands(plan.target_weight_bytes)} bytes\n",
+        f"already has to carry): {_thousands(round(plan.target_weight))} weight\n",
+        "  Weight blends evidence bytes with design count: a group's share of the\n"
+        "  total weight is the mean of its byte share and its design share. Bytes\n"
+        "  alone named the wrong worker as the critical path on a measured estate\n"
+        "  where one worker held 60 designs in 3.8 MB and another held 116 in 2.1 MB.\n",
         f"- Suggested workers: {len(plan.workers)} "
         f"(at most {plan.max_groups_in_a_worker} groups in any one of them, "
         f"about {plan.dispatch_waves} dispatch wave(s) at the "
@@ -569,14 +673,24 @@ def render_phase2_work_plan(plan: Phase2WorkPlan) -> str:
         "worker holds more than "
         f"{config.phase2_max_groups_per_worker} groups: that bound is what keeps a\n",
         "misattributed component from travelling, not a performance setting.\n\n",
-        "| Worker | Groups | Evidence bytes |\n",
-        "|--------|--------|----------------|\n",
+        "Both raw columns are shown because they disagree, and a worker you are\n",
+        "deciding about is better judged on the two than on the blend of them.\n\n",
+        "| Worker | Groups | Evidence bytes | Designs | Weight |\n",
+        "|--------|--------|----------------|---------|--------|\n",
     ]
     for index, names in enumerate(plan.workers, 1):
         lines.append(
             f"| W{index} | {', '.join(names) or '(none)'} | "
-            f"{_thousands(plan.worker_load(index - 1))} |\n"
+            f"{_thousands(plan.worker_load(index - 1))} | "
+            f"{plan.worker_designs(index - 1)} | "
+            f"{_thousands(round(plan.worker_weight(index - 1)))} |\n"
         )
+    lines.append(
+        "\nThe heaviest worker is the run's critical path: only "
+        f"{PHASE2_OBSERVED_SUBAGENT_CONCURRENCY} sub-agents run at a time, so the\n"
+        "run cannot finish before it does. A group is never split, so no split can\n"
+        "bring the heaviest worker below the heaviest single group.\n"
+    )
 
     lines += [
         "\n## Deviating from this\n\n",
@@ -1602,23 +1716,46 @@ class DocGenerationCoordinator:
         else:
             logger.warning("Reference docs dir not found: %s", ref_dir)
 
-        # --- Bundle scoring/assessment templates for Phase 2.6 ---
-        _templates_dir = Path(__file__).resolve().parent.parent / "templates"
-        scoring_templates = {
-            "_scoring_rubric.md": "scoring-rubric.md",
-            "_anti_patterns.md": "anti-patterns.md",
-            "_red_flags.md": "red-flags.md",
-            "_security_checklist.md": "security-checklist.md",
-            "_pattern_library.md": "pattern-library.md",
+        # --- Bundle the assessment catalogues for Phase 2.6 ---
+        #
+        # Source of record is the PINNED method library
+        # (``data/investigation_methods/_shared/``), not a second unpinned copy
+        # under ``src/mcp_server/templates/``. Until 2026-09-25 there were two
+        # copies of this method layer and nothing saying which won, which made
+        # drift likelier rather than less likely; these five moved into the
+        # library so the digest verification and provenance record that already
+        # covered the confidence model cover them too.
+        #
+        # The DESTINATION names are unchanged on purpose. ``harness.py``
+        # (Phase 2.6), ``prompt_packs.py``, ``phase26_scorecard.py`` and
+        # ``METHOD.md`` all address these files as ``_preprocess/_*.md``; the
+        # consolidation is about where the bytes come from, not about renaming
+        # the contract those four depend on. The SOURCE is resolved by role, so
+        # an upstream rename is a manifest edit (upstream already calls two of
+        # them red-flags-library.md and security-review-checklist.md).
+        scorecard_destinations = {
+            "scoring-rubric": "_scoring_rubric.md",
+            "anti-patterns": "_anti_patterns.md",
+            "red-flags": "_red_flags.md",
+            "security-checklist": "_security_checklist.md",
+            "pattern-library": "_pattern_library.md",
         }
-        for dest_name, src_name in scoring_templates.items():
-            src_path = _templates_dir / src_name
-            if src_path.exists():
+        method_files = shared_method_paths_by_role()
+        for role, dest_name in scorecard_destinations.items():
+            src_path = method_files.get(role)
+            if src_path is not None and src_path.is_file():
                 content = src_path.read_text(encoding="utf-8")
                 (preprocess_dir / dest_name).write_text(content, encoding="utf-8")
-                logger.info("Bundled scoring template %s: %d bytes", dest_name, len(content))
+                logger.info(
+                    "Bundled assessment catalogue %s from %s: %d bytes",
+                    dest_name, src_path, len(content),
+                )
             else:
-                logger.warning("Scoring template not found: %s", src_path)
+                logger.warning(
+                    "Assessment catalogue for role '%s' is not in the shared method "
+                    "library; %s will be absent and the scorecard will score without it",
+                    role, dest_name,
+                )
 
         # --- Write doc templates for Phase 3 agents ---
         self._write_doc_templates(preprocess_dir)
@@ -1903,7 +2040,7 @@ class DocGenerationCoordinator:
         plan = Phase2WorkPlan(
             groups=tuple(items),
             workers=tuple(tuple(names) for names in workers),
-            target_weight_bytes=target,
+            target_weight=target,
             composition=read_artifact_composition(
                 scan_dir, unit_allowlist=unit_allowlist
             ),
@@ -3100,6 +3237,24 @@ Required sections:
         except (OSError, ValueError) as exc:
             logger.warning("Provenance validation failed: %s", exc, exc_info=True)
             messages.append((f"Provenance validation failed: {exc}", "warning"))
+
+        # Locus gate. The provenance check above asks whether a document DECLARED
+        # its sources; this one opens each `_preprocess/<file>.md lines N-M` an
+        # analysis cites and checks the range is real and in bounds. Measured on
+        # the pluripharm run that prompted it: 2,350 of 2,350 ranges resolved, and
+        # the single failure was substantive -- `Processors_summary.md` cited a
+        # `Processors.md` that was never written, for the largest group in the
+        # estate. A file count over `_analysis/*.md` cannot see that.
+        #
+        # Advisory, like every other Phase 3 final check on this lane: a failure
+        # is a warning and the documents ship as written.
+        try:
+            loci = validate_loci(staging_dir)
+            write_locus_gate_report(staging_dir, loci)
+            messages.extend(locus_gate_messages(loci))
+        except (OSError, ValueError) as exc:
+            logger.warning("Locus gate failed: %s", exc, exc_info=True)
+            messages.append((f"Locus gate failed: {exc}", "warning"))
 
         messages.extend(
             DocGenerationCoordinator._publish_rag_evidence_layer(

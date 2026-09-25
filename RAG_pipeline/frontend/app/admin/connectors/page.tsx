@@ -81,6 +81,9 @@ type ElasticSearchDiagnostics = {
   searched_sources?: string[];
   unavailable_sources?: string[];
   coverage_error?: string;
+  retry_recommended?: boolean;
+  terminal_for_exact_query?: boolean;
+  coverage_status?: "complete" | "partial" | "unavailable";
 };
 type ElasticFreshness = {
   checked_at: string;
@@ -93,6 +96,7 @@ type ElasticFreshness = {
     events_in_window?: number | null;
     total_documents?: number | null;
     timestamped_documents?: number | null;
+    freshness_status?: "active" | "stale" | "timestamp_unavailable" | "empty" | null;
     error_code?: string | null;
     error?: string | null;
   }>;
@@ -228,6 +232,22 @@ function elasticSourcesForProject(config: Record<string, unknown>, projectId: st
     return stringList((scopes as Record<string, unknown>)[projectId]);
   }
   return stringList(config.source_ids);
+}
+
+function elasticFreshnessLabel(source: ElasticFreshness["sources"][number]) {
+  if (source.status === "unavailable") {
+    return { label: "Unavailable", tone: "text-destructive" };
+  }
+  if (source.freshness_status === "active" || (source.events_in_window ?? 0) > 0) {
+    return { label: "Active", tone: "text-emerald-600 dark:text-emerald-400" };
+  }
+  if (source.freshness_status === "timestamp_unavailable") {
+    return { label: "No timestamp coverage", tone: "text-amber-600 dark:text-amber-400" };
+  }
+  if (source.freshness_status === "stale" || source.latest_event_at) {
+    return { label: "Stale", tone: "text-amber-600 dark:text-amber-400" };
+  }
+  return { label: "Empty", tone: "text-muted-foreground" };
 }
 
 export default function ConnectorControlPlane() {
@@ -927,6 +947,7 @@ export default function ConnectorControlPlane() {
         </form>
         {previewError && <p className="mt-4 rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-sm text-destructive">{previewError}</p>}
         {previewItems.length > 0 && <div className="mt-5 space-y-2">{previewItems.map((item, index) => <div key={`${item.source_ref}-${index}`} className="rounded-xl border border-border bg-muted/20 p-3"><div className="text-sm font-medium">{item.title}</div><p className="mt-1 line-clamp-4 whitespace-pre-wrap text-xs leading-5 text-muted-foreground">{item.excerpt}</p><div className="mt-2 truncate font-mono text-[10px] text-muted-foreground">{item.source_ref}</div></div>)}{previewTruncated && <p className="text-xs text-muted-foreground">More results exist. Labs receives a bounded set per call.</p>}</div>}
+        {previewComplete && previewDiagnostics?.terminal_for_exact_query && <p className="mt-3 text-xs text-muted-foreground">This result already includes source freshness and coverage. Labs should answer from it without automatic retry searches.</p>}
         {previewComplete && !previewError && previewQuery && previewItems.length === 0 && <div className="mt-5 rounded-xl border border-amber-400/25 bg-amber-500/[0.06] p-4 text-sm">
           <p className="font-medium">{previewDiagnostics?.outcome === "no_matches_in_active_sources" ? "No matching records; the selected sources do contain recent events." : previewDiagnostics?.outcome === "no_recent_events" ? "No recent events exist in the selected sources." : previewDiagnostics?.outcome === "coverage_unavailable" ? "No records were returned and source coverage could not be fully checked." : "No matching records were returned from the selected sources in this time window."}</p>
           {typeof previewDiagnostics?.recent_event_count === "number" && <p className="mt-1 text-xs text-muted-foreground">Recent events checked: {previewDiagnostics.recent_event_count}</p>}
@@ -935,14 +956,16 @@ export default function ConnectorControlPlane() {
         {freshnessError && <p role="alert" className="mt-4 rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-sm text-destructive">Freshness check failed: {freshnessError}</p>}
         {freshnessResult && <div className="mt-5 space-y-2" aria-live="polite">
           <p className="text-xs text-muted-foreground">Checked {new Date(freshnessResult.checked_at).toLocaleString()} · recent window: {freshnessResult.window_days} days</p>
-          {freshnessResult.sources.map((source) => <div key={source.source_id} className="rounded-xl border border-border bg-muted/20 p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm font-medium">{source.source}</span><span className={cn("text-xs font-medium", source.status === "available" ? "text-emerald-600 dark:text-emerald-400" : "text-destructive")}>{source.status === "available" ? "Checked" : "Unavailable"}</span></div>
+          {freshnessResult.sources.map((source) => {
+            const freshness = elasticFreshnessLabel(source);
+            return <div key={source.source_id} className="rounded-xl border border-border bg-muted/20 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm font-medium">{source.source}</span><span className={cn("text-xs font-medium", freshness.tone)}>{freshness.label}</span></div>
             {source.status === "unavailable" ? <p className="mt-1 text-xs text-destructive">{source.error ?? "This source could not be checked."}</p> : <div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-3">
               <span>Newest event: {source.latest_event_at ? new Date(source.latest_event_at).toLocaleString() : "none found"}</span>
               <span>Events in last {freshnessResult.window_days} days: {source.events_in_window ?? 0}</span>
               <span>Indexed documents: {source.total_documents ?? 0}{(source.timestamped_documents ?? 0) < (source.total_documents ?? 0) ? ` · ${source.total_documents! - source.timestamped_documents!} without timestamps` : ""}</span>
             </div>}
-          </div>)}
+          </div>;})}
         </div>}
       </Modal>
     </main>

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -91,6 +92,7 @@ class ElasticSourceFreshnessResponse(BaseModel):
     events_in_window: int | None = None
     total_documents: int | None = None
     timestamped_documents: int | None = None
+    freshness_status: Literal["active", "stale", "timestamp_unavailable", "empty"] | None = None
     error_code: str | None = None
     error: str | None = None
 
@@ -112,70 +114,175 @@ def _actor(request: Request) -> tuple[int, str | None]:
 
 
 def _raise_connector_error(exc: ConnectorError) -> None:
-    status = 404 if exc.code in {"connector_not_found", "project_not_found", "not_found"} else 409 if exc.code == "active_bindings" else 400
-    raise HTTPException(status_code=status, detail={"code": exc.code, "message": exc.message}) from exc
+    status = (
+        404
+        if exc.code in {"connector_not_found", "project_not_found", "not_found"}
+        else 409
+        if exc.code == "active_bindings"
+        else 400
+    )
+    raise HTTPException(
+        status_code=status, detail={"code": exc.code, "message": exc.message}
+    ) from exc
 
 
 def _connector_response(row: object) -> ConnectorResponse:
     return ConnectorResponse(
-        id=row.id, provider_id=row.provider_id, display_name=row.display_name, ownership_scope=row.ownership_scope,
-        enabled=row.enabled, status=row.status, last_checked_at=row.last_checked_at, health_code=row.health_code,
-        provider_version=row.provider_version, redaction_policy_version=row.redaction_policy_version,
-        has_credential=bool(row.credential_ciphertext), has_kibana_credential=bool(row.kibana_credential_ciphertext),
-        created_at=row.created_at, updated_at=row.updated_at,
+        id=row.id,
+        provider_id=row.provider_id,
+        display_name=row.display_name,
+        ownership_scope=row.ownership_scope,
+        enabled=row.enabled,
+        status=row.status,
+        last_checked_at=row.last_checked_at,
+        health_code=row.health_code,
+        provider_version=row.provider_version,
+        redaction_policy_version=row.redaction_policy_version,
+        has_credential=bool(row.credential_ciphertext),
+        has_kibana_credential=bool(row.kibana_credential_ciphertext),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
     )
 
 
 def _source_response(row: object) -> ConnectorSourceResponse:
     return ConnectorSourceResponse(
-        id=row.id, connector_instance_id=row.connector_instance_id, source_type=row.source_type,
-        display_label=row.display_label, field_profile=dict(row.field_profile or {}), discovered_at=row.discovered_at,
-        discovery_digest=row.discovery_digest, enabled=row.enabled,
+        id=row.id,
+        connector_instance_id=row.connector_instance_id,
+        source_type=row.source_type,
+        display_label=row.display_label,
+        field_profile=dict(row.field_profile or {}),
+        discovered_at=row.discovered_at,
+        discovery_digest=row.discovery_digest,
+        enabled=row.enabled,
     )
+
+
+def _elastic_profile_needs_refresh(row: object) -> bool:
+    """Identify legacy source profiles that cannot return useful search evidence.
+
+    Early Elastic bindings stored only a timestamp and one message field. That
+    is enough to run a query, but not enough to distinguish search-only fields
+    from fields that can be projected from ``_source``. Refresh those profiles
+    lazily on their next authorized search so existing projects repair
+    themselves without being disconnected and rebound by an owner.
+    """
+    profile = getattr(row, "field_profile", None)
+    if profile is None:
+        # Lightweight test doubles and non-persisted callers do not carry the
+        # database field; only real persisted legacy rows need migration.
+        return False
+    if not isinstance(profile, dict):
+        return True
+    timestamp = profile.get("timestamp_field")
+    search_fields = profile.get("search_fields")
+    return not (
+        profile.get("profile_version") == 2
+        and isinstance(timestamp, str)
+        and timestamp
+        and isinstance(search_fields, list)
+        and any(isinstance(field, str) and field for field in search_fields)
+    )
+
+
+_SAFE_ELASTIC_FIELD = re.compile(r"^[A-Za-z0-9@_.-]{1,128}$")
+
+
+def _elastic_field_context(row: object, profile: object) -> dict[str, object]:
+    """Return bounded field names only; never samples or source locators."""
+    fields = getattr(profile, "fields", {})
+    fields = fields if isinstance(fields, dict) else {}
+
+    def field_name(value: object) -> str | None:
+        return value if isinstance(value, str) and _SAFE_ELASTIC_FIELD.fullmatch(value) else None
+
+    def field_names(key: str, limit: int) -> list[str]:
+        values = fields.get(key)
+        if not isinstance(values, (list, tuple)):
+            return []
+        return list(
+            dict.fromkeys(
+                name for value in values[: limit * 2] if (name := field_name(value)) is not None
+            )
+        )[:limit]
+
+    context: dict[str, object] = {
+        "label": str(getattr(row, "display_label", "Elastic source"))[:120],
+        "search_fields": field_names("search_fields", 12),
+        "message_fields": field_names("message_fields", 5),
+    }
+    for key in ("timestamp_field", "service_field", "severity_field", "environment_field"):
+        if value := field_name(fields.get(key)):
+            context[key] = value
+    return context
 
 
 def _binding_response(row: object) -> ProjectConnectorBindingResponse:
     return ProjectConnectorBindingResponse(
-        id=row.id, project_id=row.project_id, connector_instance_id=row.connector_instance_id,
-        source_ids=list(row.source_ids or []), capability_ids=list(row.capability_ids or []),
-        budgets=dict(row.budgets or {}), max_time_window_days=row.max_time_window_days,
-        enabled=row.enabled, version=row.version, created_at=row.created_at, updated_at=row.updated_at,
+        id=row.id,
+        project_id=row.project_id,
+        connector_instance_id=row.connector_instance_id,
+        source_ids=list(row.source_ids or []),
+        capability_ids=list(row.capability_ids or []),
+        budgets=dict(row.budgets or {}),
+        max_time_window_days=row.max_time_window_days,
+        enabled=row.enabled,
+        version=row.version,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
     )
 
 
 @router.get("/connectors/catalog", response_model=ConnectorCatalogResponse)
 async def connector_catalogue(request: Request):
     await require_connector_view(request)
-    return {"providers": [
-        {
-            "provider_id": manifest.provider_id, "label": manifest.label, "version": manifest.version,
-            "authentication_types": list(manifest.authentication_types),
-            "redaction_policy_version": manifest.redaction_policy_version,
-            "kind": manifest.kind.value,
-            "build_state": manifest.build_state.value,
-            "managed_by": manifest.managed_by.value,
-            "description": manifest.description,
-            # Field NAMES and shapes only. A stored secret is never returned:
-            # `secret_fields` tells a client which inputs to render write-only,
-            # it does not carry their values.
-            "configuration_schema": dict(manifest.configuration_schema),
-            "secret_fields": list(manifest.secret_fields),
-            "capabilities": [
-                {"id": cap.id, "label": cap.label, "description": cap.description, "read_only": cap.read_only,
-                 "gather_eligible": cap.gather_eligible, "risk": cap.risk.value,
-                 "accepted_entity_ref_types": list(cap.accepted_entity_ref_types), "use_when": cap.use_when,
-                 "do_not_use_when": cap.do_not_use_when}
-                for cap in manifest.capabilities
-            ],
-        } for manifest in connector_catalog.manifests()
-    ]}
+    return {
+        "providers": [
+            {
+                "provider_id": manifest.provider_id,
+                "label": manifest.label,
+                "version": manifest.version,
+                "authentication_types": list(manifest.authentication_types),
+                "redaction_policy_version": manifest.redaction_policy_version,
+                "kind": manifest.kind.value,
+                "build_state": manifest.build_state.value,
+                "managed_by": manifest.managed_by.value,
+                "description": manifest.description,
+                # Field NAMES and shapes only. A stored secret is never returned:
+                # `secret_fields` tells a client which inputs to render write-only,
+                # it does not carry their values.
+                "configuration_schema": dict(manifest.configuration_schema),
+                "secret_fields": list(manifest.secret_fields),
+                "capabilities": [
+                    {
+                        "id": cap.id,
+                        "label": cap.label,
+                        "description": cap.description,
+                        "read_only": cap.read_only,
+                        "gather_eligible": cap.gather_eligible,
+                        "risk": cap.risk.value,
+                        "accepted_entity_ref_types": list(cap.accepted_entity_ref_types),
+                        "use_when": cap.use_when,
+                        "do_not_use_when": cap.do_not_use_when,
+                    }
+                    for cap in manifest.capabilities
+                ],
+            }
+            for manifest in connector_catalog.manifests()
+        ]
+    }
 
 
 @router.get("/connectors", response_model=ConnectorListResponse)
 async def list_connectors(request: Request):
     await require_connector_view(request)
     async with async_session_factory() as session:
-        return {"connectors": [_connector_response(row) for row in await ConnectorRepository(session).list_instances()]}
+        return {
+            "connectors": [
+                _connector_response(row)
+                for row in await ConnectorRepository(session).list_instances()
+            ]
+        }
 
 
 @router.post("/connectors", response_model=ConnectorResponse, status_code=201)
@@ -185,9 +292,14 @@ async def create_connector(payload: ConnectorCreateRequest, request: Request):
     try:
         async with async_session_factory() as session:
             row = await ConnectorService(session).create_instance(
-                provider_id=payload.provider_id, display_name=payload.display_name, safe_config=payload.safe_config,
-                credential_type=payload.credential_type, credential=payload.credential,
-                kibana_credential=payload.kibana_credential, user_id=user_id, username=username,
+                provider_id=payload.provider_id,
+                display_name=payload.display_name,
+                safe_config=payload.safe_config,
+                credential_type=payload.credential_type,
+                credential=payload.credential,
+                kibana_credential=payload.kibana_credential,
+                user_id=user_id,
+                username=username,
             )
             await session.commit()
             return _connector_response(row)
@@ -214,8 +326,12 @@ async def update_connector(connector_id: str, payload: ConnectorUpdateRequest, r
     try:
         async with async_session_factory() as session:
             row = await ConnectorService(session).update_instance(
-                connector_id, display_name=payload.display_name, safe_config=payload.safe_config,
-                enabled=payload.enabled, user_id=user_id, username=username,
+                connector_id,
+                display_name=payload.display_name,
+                safe_config=payload.safe_config,
+                enabled=payload.enabled,
+                user_id=user_id,
+                username=username,
             )
             await session.commit()
             return _connector_response(row)
@@ -231,23 +347,30 @@ async def delete_connector(connector_id: str, request: Request):
     user_id, username = _actor(request)
     try:
         async with async_session_factory() as session:
-            await ConnectorService(session).delete_instance(connector_id, user_id=user_id, username=username)
+            await ConnectorService(session).delete_instance(
+                connector_id, user_id=user_id, username=username
+            )
             await session.commit()
     except ConnectorError as exc:
         _raise_connector_error(exc)
 
 
 @router.post("/connectors/{connector_id}/rotate-credential", response_model=ConnectorResponse)
-async def rotate_connector_credential(connector_id: str, payload: ConnectorRotateCredentialRequest, request: Request):
+async def rotate_connector_credential(
+    connector_id: str, payload: ConnectorRotateCredentialRequest, request: Request
+):
     await require_connector_management(request)
     user_id, username = _actor(request)
     try:
         async with async_session_factory() as session:
             await ConnectorService(session).rotate_credential(
-                connector_id, credential=payload.credential, credential_type=payload.credential_type,
+                connector_id,
+                credential=payload.credential,
+                credential_type=payload.credential_type,
                 kibana_credential=payload.kibana_credential,
                 reuse_elasticsearch_credential=payload.reuse_elasticsearch_credential,
-                user_id=user_id, username=username,
+                user_id=user_id,
+                username=username,
             )
             await session.commit()
             row = await ConnectorRepository(session).get_instance(connector_id)
@@ -265,7 +388,9 @@ async def test_connector(connector_id: str, request: Request):
     user_id, username = _actor(request)
     try:
         async with async_session_factory() as session:
-            result = await ConnectorService(session).test_instance(connector_id, user_id=user_id, username=username)
+            result = await ConnectorService(session).test_instance(
+                connector_id, user_id=user_id, username=username
+            )
             await session.commit()
             return result
     except ConnectorError as exc:
@@ -280,21 +405,38 @@ async def list_connector_sources(connector_id: str, request: Request):
         if await repository.get_instance(connector_id) is None:
             raise HTTPException(status_code=404, detail="Connector was not found")
         rows = await repository.list_sources(connector_id)
-        return {"connector_instance_id": connector_id, "sources": [_source_response(row) for row in rows], "total": len(rows)}
+        return {
+            "connector_instance_id": connector_id,
+            "sources": [_source_response(row) for row in rows],
+            "total": len(rows),
+        }
 
 
 @router.post("/connectors/{connector_id}/discover", response_model=ConnectorSourceListResponse)
-async def discover_connector(connector_id: str, request: Request, payload: ConnectorDiscoverRequest = ConnectorDiscoverRequest()):
+async def discover_connector(
+    connector_id: str,
+    request: Request,
+    payload: ConnectorDiscoverRequest = ConnectorDiscoverRequest(),
+):
     await require_connector_management(request)
     user_id, username = _actor(request)
     try:
         async with async_session_factory() as session:
             rows = await ConnectorService(session).discover(
-                connector_id, selected_source_ids=payload.source_ids or None, include_kibana=payload.include_kibana,
-                kibana_space=payload.kibana_space, data_view_id=payload.data_view_id, user_id=user_id, username=username,
+                connector_id,
+                selected_source_ids=payload.source_ids or None,
+                include_kibana=payload.include_kibana,
+                kibana_space=payload.kibana_space,
+                data_view_id=payload.data_view_id,
+                user_id=user_id,
+                username=username,
             )
             await session.commit()
-            return {"connector_instance_id": connector_id, "sources": [_source_response(row) for row in rows], "total": len(rows)}
+            return {
+                "connector_instance_id": connector_id,
+                "sources": [_source_response(row) for row in rows],
+                "total": len(rows),
+            }
     except ConnectorError as exc:
         _raise_connector_error(exc)
 
@@ -309,34 +451,57 @@ async def list_kibana_spaces(connector_id: str, request: Request):
         _raise_connector_error(exc)
 
 
-@router.get("/connectors/{connector_id}/kibana/spaces/{space}/data-views", response_model=KibanaDataViewListResponse)
+@router.get(
+    "/connectors/{connector_id}/kibana/spaces/{space}/data-views",
+    response_model=KibanaDataViewListResponse,
+)
 async def list_kibana_data_views(connector_id: str, space: str, request: Request):
     await require_connector_management(request)
     try:
         async with async_session_factory() as session:
-            return {"data_views": await ConnectorService(session).kibana_data_views(connector_id, space)}
+            return {
+                "data_views": await ConnectorService(session).kibana_data_views(connector_id, space)
+            }
     except ConnectorError as exc:
         _raise_connector_error(exc)
 
 
-@router.get("/projects/{project_id}/connector-bindings", response_model=ProjectConnectorBindingListResponse)
+@router.get(
+    "/projects/{project_id}/connector-bindings", response_model=ProjectConnectorBindingListResponse
+)
 async def list_project_connector_bindings(project_id: str, request: Request):
     await require_project_access(request, project_id)
     async with async_session_factory() as session:
-        return {"project_id": project_id, "bindings": [_binding_response(row) for row in await ConnectorRepository(session).list_bindings(project_id)]}
+        return {
+            "project_id": project_id,
+            "bindings": [
+                _binding_response(row)
+                for row in await ConnectorRepository(session).list_bindings(project_id)
+            ],
+        }
 
 
-@router.put("/projects/{project_id}/connector-bindings/{connector_id}", response_model=ProjectConnectorBindingResponse)
-async def upsert_project_connector_binding(project_id: str, connector_id: str, payload: ProjectConnectorBindingRequest, request: Request):
+@router.put(
+    "/projects/{project_id}/connector-bindings/{connector_id}",
+    response_model=ProjectConnectorBindingResponse,
+)
+async def upsert_project_connector_binding(
+    project_id: str, connector_id: str, payload: ProjectConnectorBindingRequest, request: Request
+):
     await require_project_management(request, project_id)
     user_id, username = _actor(request)
     try:
         async with async_session_factory() as session:
             row = await ConnectorService(session).upsert_binding(
-                project_id=project_id, connector_id=connector_id, source_ids=payload.source_ids,
-                capability_ids=payload.capability_ids, budgets=payload.budgets,
-                max_time_window_days=payload.max_time_window_days, enabled=payload.enabled,
-                user_id=user_id, username=username,
+                project_id=project_id,
+                connector_id=connector_id,
+                source_ids=payload.source_ids,
+                capability_ids=payload.capability_ids,
+                budgets=payload.budgets,
+                max_time_window_days=payload.max_time_window_days,
+                enabled=payload.enabled,
+                user_id=user_id,
+                username=username,
             )
             await session.commit()
             return _binding_response(row)
@@ -355,12 +520,20 @@ async def delete_project_connector_binding(project_id: str, connector_id: str, r
         deleted = await repository.delete_binding(project_id, connector_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Connector binding was not found")
-        await repository.audit(user_id=user_id, username=username, action="connector.binding.delete",
-                               resource_type="project_connector_binding", resource_id=f"{project_id}:{connector_id}", details={})
+        await repository.audit(
+            user_id=user_id,
+            username=username,
+            action="connector.binding.delete",
+            resource_type="project_connector_binding",
+            resource_id=f"{project_id}:{connector_id}",
+            details={},
+        )
         await session.commit()
 
 
-@router.get("/projects/{project_id}/available-connectors", response_model=ProjectAvailableConnectorsResponse)
+@router.get(
+    "/projects/{project_id}/available-connectors", response_model=ProjectAvailableConnectorsResponse
+)
 async def project_available_connectors(project_id: str, request: Request):
     """Safe source metadata for owners configuring a binding; no credentials/locators."""
     await require_project_management(request, project_id)
@@ -368,22 +541,31 @@ async def project_available_connectors(project_id: str, request: Request):
         repository = ConnectorRepository(session)
         available: list[ProjectAvailableConnector] = []
         for connector in await repository.list_instances():
-            available.append(ProjectAvailableConnector(
-                connector=_connector_response(connector),
-                sources=[_source_response(source) for source in await repository.list_sources(connector.id)],
-            ))
+            available.append(
+                ProjectAvailableConnector(
+                    connector=_connector_response(connector),
+                    sources=[
+                        _source_response(source)
+                        for source in await repository.list_sources(connector.id)
+                    ],
+                )
+            )
         return {"connectors": available}
 
 
-async def _has_labs_source_grant(session, *, project_id: str, connector_id: str, source_ids: list[str]) -> bool:
+async def _has_labs_source_grant(
+    session, *, project_id: str, connector_id: str, source_ids: list[str]
+) -> bool:
     """Check the Labs-owned project binding without changing 8001 connector grants."""
-    result = await session.execute(text("""
+    result = await session.execute(
+        text("""
         SELECT i.config, i.enabled AS instance_enabled, i.health_status,
                b.project_ids, b.enabled AS binding_enabled, b.capability_id
         FROM harness_connector_instances i
         JOIN harness_connector_capability_bindings b ON b.connector_instance_id = i.id
         WHERE i.provider_key = 'mcp_elastic'
-    """))
+    """)
+    )
     requested = set(source_ids)
     for row in result.mappings():
         config = row["config"]
@@ -403,7 +585,8 @@ async def _has_labs_source_grant(session, *, project_id: str, connector_id: str,
         project_sources = config.get("project_sources")
         allowed_sources = (
             project_sources.get(project_id, [])
-            if isinstance(project_sources, dict) else config.get("source_ids", [])
+            if isinstance(project_sources, dict)
+            else config.get("source_ids", [])
         )
         if (
             row["instance_enabled"] is True
@@ -439,8 +622,14 @@ async def search_bound_elastic_evidence(
         instance = await repository.get_instance(connector_id)
         if instance is None:
             raise HTTPException(status_code=404, detail="Connector was not found")
-        if instance.provider_id != "elastic_stack" or not instance.enabled or instance.status != "connected":
-            raise HTTPException(status_code=409, detail="The existing Elastic connection is not ready")
+        if (
+            instance.provider_id != "elastic_stack"
+            or not instance.enabled
+            or instance.status != "connected"
+        ):
+            raise HTTPException(
+                status_code=409, detail="The existing Elastic connection is not ready"
+            )
 
         if not await _has_labs_source_grant(
             session,
@@ -448,18 +637,42 @@ async def search_bound_elastic_evidence(
             connector_id=connector_id,
             source_ids=payload.source_ids,
         ):
-            raise HTTPException(status_code=403, detail="A requested log source is outside this project's access")
+            raise HTTPException(
+                status_code=403, detail="A requested log source is outside this project's access"
+            )
         max_calls = 3
         if len(set(payload.source_ids)) > max_calls:
-            raise HTTPException(status_code=403, detail="The project connector call budget is too small for this search")
+            raise HTTPException(
+                status_code=403,
+                detail="The project connector call budget is too small for this search",
+            )
         sources = await repository.get_sources(connector_id, payload.source_ids)
-        if len(sources) != len(set(payload.source_ids)) or any(not source.enabled for source in sources):
+        if len(sources) != len(set(payload.source_ids)) or any(
+            not source.enabled for source in sources
+        ):
             raise HTTPException(status_code=404, detail="An approved log source is unavailable")
 
         window_days = min(payload.time_window_days, 7)
         limit = min(payload.limit, 10)
         provider = connector_catalog.provider(instance.provider_id)
         credential = repository.secrets.decrypt_for_provider(instance.credential_ciphertext)
+        provider_instance = instance_config(instance)
+        source_profiles = []
+        for source in sources:
+            profile = source_profile(source, repository.secrets)
+            if _elastic_profile_needs_refresh(source):
+                # Read-only field-capabilities probe under the same authority
+                # as the search. Persisting safe field names makes later calls
+                # cheap and automatically repairs old bindings.
+                try:
+                    profile = await provider.describe(provider_instance, profile, credential)
+                    await repository.upsert_sources([profile])
+                except ConnectorError as exc:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={"code": exc.code, "message": exc.message},
+                    ) from exc
+            source_profiles.append((source, profile))
         now = dt.datetime.now(dt.timezone.utc)
         question = EvidenceQuestion(
             question=payload.query,
@@ -469,14 +682,12 @@ async def search_bound_elastic_evidence(
             limit=limit,
         )
         items: list[dict[str, object]] = []
+        any_source_truncated = False
         try:
-            for source in sources:
-                remaining = limit - len(items)
-                if remaining <= 0:
-                    break
+            for source, profile in source_profiles:
                 envelope = await provider.execute(
-                    instance=instance_config(instance),
-                    source=source_profile(source, repository.secrets),
+                    instance=provider_instance,
+                    source=profile,
                     credential=credential,
                     capability_id="runtime.events.search",
                     question=EvidenceQuestion(
@@ -484,38 +695,72 @@ async def search_bound_elastic_evidence(
                         entity_refs=question.entity_refs,
                         time_from=question.time_from,
                         time_to=question.time_to,
-                        limit=remaining,
+                        # Ask for one extra bounded item when possible so the
+                        # public ``truncated`` flag is evidence-based instead
+                        # of treating exactly five results as proof of more.
+                        limit=min(limit + 1, 10),
                     ),
                     run_id=actor_id,
                     project_id=project_id,
                 )
                 label = source.display_label[:120]
-                for evidence in envelope.items[:remaining]:
+                any_source_truncated = any_source_truncated or len(envelope.items) > limit
+                for evidence in envelope.items[:limit]:
                     fields = dict(evidence.fields)
-                    message = next((
-                        value for key, value in fields.items()
-                        if any(term in key.casefold() for term in ("message", "error", "log"))
-                    ), None)
-                    excerpt = message if isinstance(message, str) else json.dumps(fields, ensure_ascii=False, default=str)
-                    title = next((
-                        str(value) for key, value in fields.items()
-                        if any(term in key.casefold() for term in ("service", "job", "name")) and value
-                    ), label)
-                    items.append({
-                        "title": title[:200],
-                        "excerpt": excerpt[:2000],
-                        "source_ref": evidence.reference[:255],
-                        "metadata": {
-                            "source": label,
-                            "observed_at": evidence.observed_at.isoformat() if evidence.observed_at else None,
-                            "fields": fields,
-                        },
-                    })
+                    message = next(
+                        (
+                            value
+                            for key, value in fields.items()
+                            if any(term in key.casefold() for term in ("message", "error", "log"))
+                        ),
+                        None,
+                    )
+                    excerpt = (
+                        message
+                        if isinstance(message, str)
+                        else json.dumps(fields, ensure_ascii=False, default=str)
+                    )
+                    title = next(
+                        (
+                            str(value)
+                            for key, value in fields.items()
+                            if any(term in key.casefold() for term in ("service", "job", "name"))
+                            and value
+                        ),
+                        label,
+                    )
+                    items.append(
+                        {
+                            "title": title[:200],
+                            "excerpt": excerpt[:2000],
+                            "source_ref": evidence.reference[:255],
+                            "metadata": {
+                                "source": label,
+                                "observed_at": evidence.observed_at.isoformat()
+                                if evidence.observed_at
+                                else None,
+                                "fields": fields,
+                            },
+                        }
+                    )
                 discard = getattr(provider, "discard_evidence_references", None)
                 if callable(discard):
                     discard(envelope)
         except ConnectorError as exc:
-            raise HTTPException(status_code=422, detail={"code": exc.code, "message": exc.message}) from exc
+            raise HTTPException(
+                status_code=422, detail={"code": exc.code, "message": exc.message}
+            ) from exc
+
+        items.sort(
+            key=lambda item: str(
+                item.get("metadata", {}).get("observed_at", "")
+                if isinstance(item.get("metadata"), dict)
+                else ""
+            ),
+            reverse=True,
+        )
+        result_truncated = any_source_truncated or len(items) > limit
+        items = items[:limit]
 
         await repository.audit(
             user_id=actor_id,
@@ -523,17 +768,24 @@ async def search_bound_elastic_evidence(
             action="connector.evidence.search",
             resource_type="project_connector_binding",
             resource_id=f"{project_id}:{connector_id}",
-            details={"project_id": project_id, "source_count": len(sources), "result_count": len(items)},
+            details={
+                "project_id": project_id,
+                "source_count": len(sources),
+                "result_count": len(items),
+            },
         )
         await session.commit()
         return {
             "items": items,
-            "truncated": len(items) >= limit,
+            "truncated": result_truncated,
             "diagnostics": {
                 "outcome": "matches_found" if items else "freshness_check_required",
                 "query": payload.query,
                 "window_days": window_days,
                 "searched_sources": [source.display_label[:120] for source in sources],
+                "field_contexts": [
+                    _elastic_field_context(source, profile) for source, profile in source_profiles
+                ],
             },
         }
 
@@ -556,17 +808,27 @@ async def check_bound_elastic_freshness(
         instance = await repository.get_instance(connector_id)
         if instance is None:
             raise HTTPException(status_code=404, detail="Connector was not found")
-        if instance.provider_id != "elastic_stack" or not instance.enabled or instance.status != "connected":
-            raise HTTPException(status_code=409, detail="The existing Elastic connection is not ready")
+        if (
+            instance.provider_id != "elastic_stack"
+            or not instance.enabled
+            or instance.status != "connected"
+        ):
+            raise HTTPException(
+                status_code=409, detail="The existing Elastic connection is not ready"
+            )
         if not await _has_labs_source_grant(
             session,
             project_id=project_id,
             connector_id=connector_id,
             source_ids=payload.source_ids,
         ):
-            raise HTTPException(status_code=403, detail="A requested log source is outside this project's access")
+            raise HTTPException(
+                status_code=403, detail="A requested log source is outside this project's access"
+            )
         sources = await repository.get_sources(connector_id, payload.source_ids)
-        if len(sources) != len(set(payload.source_ids)) or any(not source.enabled for source in sources):
+        if len(sources) != len(set(payload.source_ids)) or any(
+            not source.enabled for source in sources
+        ):
             raise HTTPException(status_code=404, detail="An approved log source is unavailable")
 
         # Labs itself is deliberately limited to seven days. Keep this diagnostic
@@ -586,20 +848,24 @@ async def check_bound_elastic_freshness(
                     checked_at=checked_at,
                     window_days=window_days,
                 )
-                results.append({
-                    "source_id": source.id,
-                    "source": source.display_label[:120],
-                    "status": "available",
-                    **measured,
-                })
+                results.append(
+                    {
+                        "source_id": source.id,
+                        "source": source.display_label[:120],
+                        "status": "available",
+                        **measured,
+                    }
+                )
             except ConnectorError as exc:
-                results.append({
-                    "source_id": source.id,
-                    "source": source.display_label[:120],
-                    "status": "unavailable",
-                    "error_code": exc.code,
-                    "error": exc.message,
-                })
+                results.append(
+                    {
+                        "source_id": source.id,
+                        "source": source.display_label[:120],
+                        "status": "unavailable",
+                        "error_code": exc.code,
+                        "error": exc.message,
+                    }
+                )
 
         await repository.audit(
             user_id=actor_id,
@@ -610,4 +876,8 @@ async def check_bound_elastic_freshness(
             details={"project_id": project_id, "source_count": len(sources)},
         )
         await session.commit()
-        return {"checked_at": checked_at.isoformat(), "window_days": window_days, "sources": results}
+        return {
+            "checked_at": checked_at.isoformat(),
+            "window_days": window_days,
+            "sources": results,
+        }

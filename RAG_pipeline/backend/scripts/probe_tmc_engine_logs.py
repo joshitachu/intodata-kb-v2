@@ -132,14 +132,14 @@ async def main() -> None:
         bron = (
             await session.execute(select(RuntimeSourceRow).where(RuntimeSourceRow.id == source_id))
         ).scalar_one()
-        per_engine_runs = await _newest_per_engine(session, bron.project_id, per_engine)
+        per_engine_runs = await _newest_per_engine(session, bron.estate_key, per_engine)
 
     token = str(credentials.get("api_token") or "").strip()
     base_url = str(credentials.get("base_url") or "").strip().rstrip("/")
     if not token or not base_url:
         raise SystemExit("source has no usable TMC credentials")
 
-    print(f"bron {bron.source_key} / project {bron.project_id}")
+    print(f"bron {bron.source_key} / estate {bron.estate_key}")
     print(f"engines in de spiegel: {len(per_engine_runs)}\n")
 
     async with httpx.AsyncClient(

@@ -96,7 +96,30 @@ MethodFileRole = Literal[
     # declaring one would be restating vocabulary that already exists once.
     "confidence",
     "validation",
+    # Assessment reference catalogues, also platform-agnostic. These are the
+    # five files the Phase 2.6 scorecard is written against. They lived
+    # unpinned under ``src/mcp_server/templates/`` until 2026-09-25, which made
+    # this module the SECOND mechanism owning the method layer rather than the
+    # only one; they are here so there is one.
+    "scoring-rubric",
+    "anti-patterns",
+    "red-flags",
+    "security-checklist",
+    "pattern-library",
 ]
+
+#: Roles a consumer resolves BY ROLE rather than by filename, because the file
+#: it wants is defined by what the file is for. Keyed this way so an upstream
+#: rename is a manifest edit and not a code change -- the same argument that
+#: keys ``_ROLE_PURPOSE`` on role. ``red-flags.md`` and ``security-checklist.md``
+#: already carry names upstream no longer uses, so this is not hypothetical.
+SCORECARD_ROLES: tuple[str, ...] = (
+    "scoring-rubric",
+    "anti-patterns",
+    "red-flags",
+    "security-checklist",
+    "pattern-library",
+)
 
 #: One line per role, for an agent prompt. Keyed on role rather than filename so
 #: an upstream rename does not silently drop a guide's description.
@@ -135,6 +158,29 @@ _ROLE_PURPOSE: dict[str, str] = {
         "The pre-delivery and peer-review self-check applied before a document "
         "is considered done. Applies to every platform."
     ),
+    "scoring-rubric": (
+        "Assessment reference: the dimensions and 1-5 level criteria the "
+        "scorecard is scored against. Reference catalogue, not a parsing guide "
+        "and not evidence about this estate."
+    ),
+    "anti-patterns": (
+        "Assessment reference: the AP-xxx-nnn anti-pattern catalogue, with "
+        "detection hints. Cite by ID; verify each against this estate's own "
+        "evidence before reporting it."
+    ),
+    "red-flags": (
+        "Assessment reference: the RF-xxx-nnn catalogue of issues that always "
+        "warrant attention. Cite by ID; verify before reporting."
+    ),
+    "security-checklist": (
+        "Assessment reference: the structured security review checklist. A "
+        "check it lists that this estate's evidence cannot answer is Unknown, "
+        "not a pass."
+    ),
+    "pattern-library": (
+        "Assessment reference: the catalogue of known good patterns, for "
+        "judging architecture and design quality. Reference catalogue only."
+    ),
 }
 
 #: Roles whose one-line purpose is unknown fall back to this rather than to "".
@@ -156,6 +202,11 @@ _UNKNOWN_PURPOSE = "Platform investigation guidance."
 #:   applied last but listed before the parsing guides because it states what
 #:   "done" means, and work aimed at unstated acceptance criteria gets redone.
 #: 3 everything else -- the platform guides, in manifest order.
+#: 4 the assessment reference catalogues. Ranked explicitly rather than left on
+#:   the default, because the default puts shared files BEFORE platform files
+#:   (the method tiebreak below), which would list five reference catalogues
+#:   ahead of the guides that say how to read the exports at all. They are
+#:   looked up when scoring, not read to learn the estate, so they go last.
 #:
 #: Ties break on method (shared before platform) and then manifest position, so
 #: the order is total and byte-stable: this text sits in a cached prompt prefix.
@@ -163,6 +214,7 @@ _PROMPT_ROLE_RANK: dict[str, int] = {
     "nexus-adaptation": 0,
     "confidence": 1,
     "validation": 2,
+    **{role: 4 for role in SCORECARD_ROLES},
 }
 _DEFAULT_PROMPT_RANK = 3
 
@@ -183,17 +235,37 @@ class InvestigationMethodError(RuntimeError):
 
 
 class InvestigationMethodFile(BaseModel):
-    """One file of a method, with the digest that proves it is the reviewed text."""
+    """One file of a method, with the digest that proves it is the reviewed text.
+
+    ``revision`` and ``divergence`` exist because provenance is a property of a
+    FILE, not of a directory. A method directory can legitimately hold files
+    with different origins -- ``_shared`` holds two verbatim upstream copies and
+    five catalogues that match no upstream revision -- and a single
+    directory-level ``source.revision`` covering all of them is a claim a
+    reviewer running the same diff would find false. Overstated provenance is
+    worse than an admitted gap: it is the thing that stops anyone checking.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1)
     role: MethodFileRole
     sha256: str = Field(min_length=64, max_length=64)
+    #: Upstream revision these exact bytes came from. Empty means "the method's
+    #: own ``source.revision``"; any other value, including the literal
+    #: ``unknown``, overrides it for this file alone.
+    revision: str = ""
+    #: How this file differs from upstream, when it does. Free text, and the
+    #: only honest answer when the bytes match no upstream revision.
+    divergence: str = ""
 
     @property
     def purpose(self) -> str:
         return _ROLE_PURPOSE.get(self.role, _UNKNOWN_PURPOSE)
+
+    def resolved_revision(self, method_revision: str) -> str:
+        """The revision claim that applies to THIS file."""
+        return self.revision or method_revision
 
 
 class InvestigationMethodSource(BaseModel):
@@ -276,6 +348,12 @@ class InvestigationMethod(BaseModel):
                     "role": item.role,
                     "sha256": item.sha256,
                     "purpose": item.purpose,
+                    # Resolved, not raw: the staged manifest is read on its own,
+                    # away from the manifest that produced it, so a blank field
+                    # there reads as "same as the method" only if you still have
+                    # the method to compare against.
+                    "revision": item.resolved_revision(self.source.revision),
+                    **({"divergence": item.divergence} if item.divergence else {}),
                 }
                 for item in self.files
             ],
@@ -389,6 +467,26 @@ def load_shared_method() -> InvestigationMethod | None:
     fails closed.
     """
     return _load_method(SHARED_METHOD_KEY)
+
+
+def shared_method_paths_by_role() -> dict[str, Path]:
+    """Verified on-disk paths of the shared method files, keyed by role.
+
+    The lookup a consumer needs when it wants a specific method FILE rather
+    than the whole staged directory -- ``_preprocess_scan_data`` bundling the
+    five assessment catalogues for the scorecard is the case this exists for.
+    Keyed on role, not filename, for the reason ``SCORECARD_ROLES`` states.
+
+    Goes through ``load_shared_method`` so the caller inherits digest
+    verification: these bytes reach a model as authority, and a caller reading
+    the directory directly would be a third mechanism owning the method layer,
+    which is the defect this consolidation removed. Returns ``{}`` when the
+    library is absent; a present-but-unverifiable one still raises.
+    """
+    method = load_shared_method()
+    if method is None or method.root is None:
+        return {}
+    return {item.role: method.root / item.name for item in method.files}
 
 
 def _load_method(key: str) -> InvestigationMethod | None:

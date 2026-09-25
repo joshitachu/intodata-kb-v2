@@ -25,13 +25,13 @@
         "packs": ["connectors"],
         "activity_label": "Searching approved Elastic logs",
         "semantic_name": "search_existing_elastic_logs",
-        "purpose": "Search this project's selected Elastic sources with short terms or OR alternatives. Use discovered field roles. Use * only for a recent sample. Empty results include freshness diagnostics for no match, no recent data, and unavailable coverage.",
-        "use_when": ["The user asks about recent runtime activity, errors, or monitoring evidence in Elastic; use the project's selected source fields and report the returned coverage diagnosis when no items match."],
-        "do_not_use_when": ["The user asks for design documentation, field mappings, or business rules; search project documentation instead."],
+        "purpose": "Run one bounded search over this project's selected Elastic sources. Pass short search terms, not the whole user question. The same observation includes exact-query matches plus per-source freshness and coverage, so it is authoritative for that query and scope.",
+        "use_when": ["The user asks for Elastic evidence. Call once with short literal search terms or OR alternatives, not the whole user question, then answer from the returned matches and coverage diagnosis."],
+        "do_not_use_when": ["Do not retry an empty result with synonyms, ERROR alone, or * unless the user explicitly requests another search. Do not fall back to TMC, runtime evidence, documentation, or another provider when the request is specifically about Elastic unless the user explicitly broadens the request.", "The user asks for design documentation, field mappings, or business rules; search project documentation instead."],
         "preconditions": ["The existing Elastic connection is healthy and the project has an explicit source grant."],
         "failure_recovery": {
           "unavailable": "Explain that Elastic is not enabled for this project and direct the owner to Connectors.",
-          "failed": "Report the safe failure and do not repeat an identical search."
+          "failed": "Report the safe failure. Do not retry or switch evidence providers unless the user explicitly asks."
         },
         "shadow_safe": false
       }

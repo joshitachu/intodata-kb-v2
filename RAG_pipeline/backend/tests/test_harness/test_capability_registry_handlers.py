@@ -222,8 +222,9 @@ async def test_bound_connector_handler_preserves_safe_provenance_without_dispatc
     )
 
     class ConnectorService:
-        async def read(self, *args):
+        async def read(self, *args, **kwargs):
             assert args[:4] == (7, "search.records", "project-a", "security")
+            assert kwargs == {"access_token": None}
             return ConnectorReadResult(
                 items=[
                     ConnectorResultItem(
@@ -267,6 +268,61 @@ async def test_bound_connector_handler_preserves_safe_provenance_without_dispatc
             "uri": "https://evidence.example/items/17",
         }
     ]
+
+
+async def test_bound_elastic_handler_marks_authoritative_empty_result_terminal() -> None:
+    capability = _read_capability("connector.instance_7.elastic_search").model_copy(
+        update={
+            "input_schema": {
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "query": {"type": "string"},
+                    "project_id": {"type": ["string", "null"]},
+                    "limit": {"type": "integer"},
+                },
+                "additionalProperties": False,
+            },
+            "output_type": "evidence_items",
+            "metadata": {
+                "connector_instance_id": 7,
+                "connector_capability_id": "connector.mcp_elastic.search",
+            },
+        }
+    )
+
+    class ConnectorService:
+        async def read(self, *_args, **kwargs):
+            assert kwargs == {"access_token": None}
+            return ConnectorReadResult(
+                items=[],
+                diagnostics={
+                    "contract": "authoritative_elastic_search_v1",
+                    "outcome": "no_matches_in_active_sources",
+                    "terminal_for_exact_query": True,
+                    "retry_recommended": False,
+                    "cross_provider_fallback_recommended": False,
+                },
+            )
+
+    observation = await BoundConnectorEvidenceHandler(capability)(
+        capability,
+        CapabilityExecutionRequest(
+            capability_id=capability.id,
+            arguments={"query": "error", "project_id": "project-a"},
+        ),
+        CapabilityExecutionContext(user_id=1, project_scope=["project-a"]),
+        CapabilityHandlerServices(connector_service=ConnectorService()),
+    )
+
+    assert "terminal result" in observation.summary
+    assert "do not retry" in observation.summary
+    assert observation.safe_details == {
+        "evidence_count": 0,
+        "outcome": "no_matches_in_active_sources",
+        "terminal_for_exact_query": True,
+        "retry_recommended": False,
+    }
 
 
 async def test_bound_connector_handler_rejects_project_outside_server_scope() -> None:

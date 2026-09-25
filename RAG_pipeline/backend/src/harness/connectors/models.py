@@ -191,6 +191,7 @@ class ConnectorFreshnessSource(BaseModel):
     events_in_window: int | None = None
     total_documents: int | None = None
     timestamped_documents: int | None = None
+    freshness_status: Literal["active", "stale", "timestamp_unavailable", "empty"] | None = None
     error_code: str | None = None
     error: str | None = None
 

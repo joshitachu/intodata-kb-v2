@@ -1,20 +1,42 @@
 # Platform-AGNOSTIC investigation method, shared by every platform.
 #
 # The per-platform directories beside this one (talend/, ...) carry parsing
-# guidance that is wrong to hand to another platform. These two files are the
-# opposite: they define VOCABULARY and SELF-CHECK, and both upstream files
-# declare `applies to: all platforms` in their own front matter. Filing them
-# under talend/ would have made a Workato run either miss them or inherit
-# Talend parsing rules to get them.
-#
-# Both files are copied VERBATIM from the Integration Suite at the revision
-# below -- the same source and the same revision as the Talend guides, so the
-# two directories cannot describe different methods.
+# guidance that is wrong to hand to another platform. The files here are the
+# opposite: they define VOCABULARY, SELF-CHECK and the assessment reference
+# catalogues. Filing them under talend/ would have made a Workato run either
+# miss them or inherit Talend parsing rules to get them.
 #
 # `sha256` is computed over the bytes AS STORED IN THIS REPOSITORY.
 # `services/investigation_method.py` verifies every digest at load time and
 # fails closed on a mismatch. Editing a copied file without updating its digest
-# is a hard error, not silent drift.
+# is a hard error, not silent drift. The check runs in both directions: a file
+# on disk that no entry below names is also a failure, so a guide cannot be
+# dropped into this directory and staged with no provenance.
+#
+# TWO ORIGIN CLASSES LIVE HERE, and the difference is recorded per file rather
+# than implied by the directory:
+#
+#   * `confidence-model.md` and `validation-checklist.md` are VERBATIM copies of
+#     the upstream files of the same name at the revision in `source:` below --
+#     re-verified byte-for-byte on 2026-09-25 against
+#     `templates/integration/method/<name>.md` at 0c68b22633a6d067fcc30e29dd18e86d9ea6d24f.
+#
+#   * the five assessment catalogues (`anti-patterns.md`, `pattern-library.md`,
+#     `red-flags.md`, `scoring-rubric.md`, `security-checklist.md`) are NOT
+#     upstream copies. They were imported into `src/mcp_server/templates/` on
+#     2026-07-01 with no digest and no provenance record, and consolidated into
+#     this directory on 2026-09-25 so that one mechanism -- not two -- owns the
+#     method layer. Each was diffed against upstream during that move and each
+#     DIFFERS; see the per-file `divergence:` notes. They therefore carry
+#     `revision: unknown`, which OVERRIDES the method-level `source.revision`
+#     for those files. Their bytes were deliberately left untouched: they are
+#     what the shipped Phase 2.6 scorecard was calibrated on, and METHOD.md
+#     cites their `AP-xxx-nnn` / `RF-xxx-nnn` identifier schemes, which upstream
+#     does not use. Reconciling them with upstream is open work, not something
+#     this move did silently.
+#
+# `source:` below describes where the VERBATIM files came from. A file that says
+# otherwise in its own `revision:` is the authority on itself.
 #
 # PROVENANCE / PERMISSION. The upstream repository
 # (github.com/santiagopereda/integration-suite) carries CONTRIBUTING.md but no
@@ -26,7 +48,7 @@
 # `_shared` entry, and nothing else depends on it.
 
 platform: _shared
-method_version: shared-method-1
+method_version: shared-method-2
 
 source:
   name: integration-suite
@@ -42,6 +64,72 @@ files:
   - name: validation-checklist.md
     role: validation
     sha256: 2217fa3cdfe369057b217a1130dd3d96f22a8175fa8d04e02b2700ccf9552675
+  - name: scoring-rubric.md
+    role: scoring-rubric
+    sha256: 8d24d1b884b86b0cd36f11fc5c6c6bd440578c8b6b0169dd8723bd8f9b1e2185
+    revision: unknown
+    divergence: >-
+      Local copy differs from upstream scoring-rubric.md at
+      0c68b22633a6d067fcc30e29dd18e86d9ea6d24f (local 8,398 bytes, upstream
+      18,903) and from the pre-refactor upstream file at 686977cfaad0 (10,467
+      bytes); no upstream revision of that filename matches these bytes. The
+      local file is a per-dimension level table ("Error Handling & Resilience",
+      levels 1-5) with no front matter; upstream is a weighted 8-dimension
+      Gartner-ladder rubric that cross-references confidence-model.md. Not
+      reconciled.
+  - name: anti-patterns.md
+    role: anti-patterns
+    sha256: 54792e1e217c4220dd8e01ca6b2545975f4b3b4cc832c685280426de9642380d
+    revision: unknown
+    divergence: >-
+      Local copy differs from upstream anti-patterns.md at
+      0c68b22633a6d067fcc30e29dd18e86d9ea6d24f (local 8,064 bytes, upstream
+      5,083) and from the pre-refactor upstream file at 686977cfaad0 (4,736
+      bytes); no upstream revision of that filename matches these bytes. The
+      local file is a Talend-specific ID'd table (AP-SEC-001 .. , with tMap /
+      tRunJob / tRESTClient detection hints); upstream is untyped prose sections
+      ("Point-to-Point Spaghetti") with no IDs. METHOD.md cites the AP-xxx-nnn
+      scheme, so the local file is the one the pipeline is written against. Not
+      reconciled.
+  - name: red-flags.md
+    role: red-flags
+    sha256: 532874e4d5b448b7d2745a651d137aebb6a8866eb7c940dec8c2a76f29c050cc
+    revision: unknown
+    divergence: >-
+      Local copy differs from upstream red-flags-library.md at
+      0c68b22633a6d067fcc30e29dd18e86d9ea6d24f (local 6,567 bytes, upstream
+      5,149) and from the pre-refactor upstream file at 686977cfaad0 (4,802
+      bytes); no upstream revision matches these bytes. Note also that upstream
+      names this file red-flags-library.md -- the local name is kept because
+      claude_service, harness, prompt_packs, phase26_scorecard and METHOD.md all
+      address it as red-flags / _red_flags.md. The local file uses RF-SEC-001
+      IDs; upstream uses SEC-01. Not reconciled.
+  - name: security-checklist.md
+    role: security-checklist
+    sha256: cf38dcff0d162bdf5a29f410615fcc3b1143e73e047685430c7a052a31a6d6d1
+    revision: unknown
+    divergence: >-
+      Local copy differs from upstream security-review-checklist.md at
+      0c68b22633a6d067fcc30e29dd18e86d9ea6d24f (local 4,921 bytes, upstream
+      3,606) and from the pre-refactor upstream file at 686977cfaad0 (3,349
+      bytes); no upstream revision matches these bytes. Upstream names this file
+      security-review-checklist.md; the local name is kept for the same reason
+      as red-flags.md. The local file is a Pass/Fail/Evidence table organised by
+      integration concern; upstream is OWASP API Security Top 10 prose. Not
+      reconciled.
+  - name: pattern-library.md
+    role: pattern-library
+    sha256: f09566e76f9dfd4b86b96383fcbd607cb0b7fa14d2a40ab3c8aa702ac54b89a1
+    revision: unknown
+    divergence: >-
+      Local copy differs from upstream pattern-library.md at
+      0c68b22633a6d067fcc30e29dd18e86d9ea6d24f (local 7,827 bytes, upstream
+      6,495) and from the pre-refactor upstream file at 686977cfaad0 (6,148
+      bytes); no upstream revision matches these bytes. The local file is a
+      P-ERR-001 style catalogue of Talend-observable implementation patterns
+      with "Look for" detection hints; upstream is a numbered catalogue of
+      architectural patterns ("Pattern 1: API-Led Connectivity"). Not
+      reconciled.
 
 update_log:
   - date: "2026-09-24"
@@ -57,3 +145,19 @@ update_log:
       graded Confirmed must carry a locus", and "absence is not Confirmed: a
       search returning nothing is Confirmed about the search itself, Inferred
       about the thing's actual absence".
+  - date: "2026-09-25"
+    revision: unknown
+    change: >-
+      Consolidated the five assessment catalogues (scoring-rubric,
+      anti-patterns, red-flags, security-checklist, pattern-library) into this
+      directory from src/mcp_server/templates/, where they had sat since
+      2026-07-01 with no digest, no provenance and no statement of which copy
+      wins. Adding the pinned lane beside an unpinned one made drift MORE
+      likely, not less: two sources for one method layer. Both consumers now
+      read these bytes -- the CLI lane via ClaudeService._preprocess_scan_data,
+      which copies them to _preprocess/_*.md under their long-standing
+      destination names, and the custom lane's Phase 2.6, which reads those same
+      names. Bytes unchanged: every file was diffed against upstream during the
+      move and every one DIFFERS, so each carries revision: unknown plus a
+      divergence note rather than a provenance claim that would not survive a
+      reviewer running the same diff. Digests are over the bytes as moved.

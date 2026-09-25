@@ -185,7 +185,7 @@ async def test_preprocess_generic_direct_redacted_source_mode(claude_svc, monkey
         lambda self, platform: {"content": "phase 3 guide"},
     )
 
-    groups = await claude_svc._preprocess_scan_data(project_id, tmp_path / "staging", platform="generic")
+    groups = claude_svc._preprocess_scan_data(project_id, tmp_path / "staging", platform="generic")
 
     assert groups == ["src"]
     bundle = (tmp_path / "staging" / "_preprocess" / "src.md").read_text(encoding="utf-8")
@@ -493,7 +493,7 @@ async def test_preprocess_disambiguates_case_colliding_groups(claude_svc, monkey
 
     staging = tmp_path / "docs_staging"
     staging.mkdir()
-    groups = await claude_svc._preprocess_scan_data("proj", staging, "talend")
+    groups = claude_svc._preprocess_scan_data("proj", staging, "talend")
 
     assert sorted(groups) == ["VISE2AssetCheck", "Vise2AssetCheck_part_ci1"]
     preprocess = staging / "_preprocess"
