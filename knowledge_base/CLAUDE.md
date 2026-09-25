@@ -55,6 +55,46 @@ same coordinator-prepared evidence, staging, resume, validation and publication
 path. Do not add an OpenCode scheduler, generation profile, goal-driven path or
 agent workspace; those architectures are retired.
 
+### The CLI lane's method is a FILE, not a prompt (2026-09-24)
+
+`data/generation_method/METHOD.md` is the whole procedure -- the four phases,
+the workspace layout, what each phase produces, and the self-check. It is staged
+to `{staging}/_method/METHOD.md` by `services/generation_method.py` and read by
+the agent. `ClaudeCliProvider._build_prompt` is now ~2.8 KB (was ~47 KB) and
+carries only what a method file cannot know: paths, counts, models, resume
+state. Change the METHOD, not the prompt.
+
+Evidence discipline is NOT restated in METHOD.md -- it points at
+`data/investigation_methods/_shared/confidence-model.md` (Basis
+`Confirmed`/`Inferred`/`Unknown` per finding; document Ceiling derived from the
+input class, never hand-set; Aggregation is a minimum, never a product; a
+`Confirmed` finding must carry a locus) and `validation-checklist.md`. Both are
+digest-pinned copies from the Integration Suite and live in a `_shared`
+namespace because they apply to every platform. `materialize_investigation_method`
+stages them plus the platform's own guides; it had been dead code, so the pinned
+Talend guides were reaching no lane at all until this date.
+
+REMOVED from this lane, and do not reintroduce:
+- `scripts/bundle_analysis.py` and Phase 2.8. Doc-pack bundling belongs to the
+  custom harness (`phase28_bundles.py`), which is unaffected.
+- The Phase 2.5 `ls | grep -c` coverage gate. Coverage is the agent's own check.
+- `analysis_target_kb`, a per-group byte cap computed from the PROJECT total.
+  Measured on `talend8_main`: every group got the same 60 KB ceiling, so a
+  2,013 KB group was analysed at 3.0% while a 6 KB group had 9x more headroom
+  than it needed. The governing rule is now intent, not bytes -- **Phase 2 is
+  the retrieval corpus (exhaustive, depth scales with the evidence); Phase 3 is
+  the human deliverable (selective, and the only place omission is decided).**
+- The per-section `_analysis/{group}/{SECTION}.md` split. Back to one
+  `_analysis/{group}.md` with H2 headings -- but ONLY because the two Python
+  consumers above were deleted first. `analysis_store` still reads both layouts
+  so in-flight runs resume. NEVER reintroduce Python that parses model prose to
+  find sections: that is the run-258 defect (see `.agent/decisions/035`).
+
+KNOWN, not yet decided: `--max-turns 200` on the subprocess is now the binding
+constraint on Phase 2 depth for a large estate, and it is also the runaway guard.
+UNPROVEN: no generation has run against this method. It trades Python validators
+for a method document -- better rules, less enforcement.
+
 The MCP-based 7-phase documentation workflow is documented in:
 **`.agent/system/mcp-workflow.md`**
 

@@ -60,6 +60,11 @@ from mcp_server.services.group_attribution_guard import (
     evidence_files_for_group,
     write_group_attribution_report,
 )
+from mcp_server.services.generation_method import materialize_generation_method
+from mcp_server.services.investigation_method import (
+    InvestigationMethodError,
+    materialize_investigation_method,
+)
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.plugin_runner import build_plugin_runner
 from mcp_server.services.project_memory import (
@@ -1203,10 +1208,6 @@ class DocGenerationCoordinator:
         state["analysis_files"] = analysed
         state["pending_groups"] = pending
         state["analysis_complete"] = complete
-        # A bundle built before the pending analyses landed describes an estate
-        # that is missing them. Skipping Phase 2.8 on a resume that still owes
-        # work republishes exactly the gap being repaired.
-        state["bundles_stale"] = bool(state.get("bundles_exist")) and not complete
         return state
 
     @staticmethod
@@ -1233,8 +1234,6 @@ class DocGenerationCoordinator:
         - analysis_complete: bool      -- every expected group has one, and the
                                           expectation came from a real checklist
         - scorecard_exists: bool
-        - bundles_exist: bool
-        - bundles_stale: bool          -- bundles predate the pending analyses
         - completed_docs: list[str]    -- *.md files in staging root >500 bytes
 
         WHY the remainder, and not just the completions: this method used to
@@ -1263,10 +1262,6 @@ class DocGenerationCoordinator:
 
         analysis_files = DocGenerationCoordinator._analysed_groups(analysis_dir)
 
-        bundle_files = (
-            list(analysis_dir.glob("_bundle_*.md"))
-            if analysis_dir.exists() else []
-        )
         scorecard_path = assessment_dir / "scorecard.md"
         scorecard_exists = scorecard_path.exists() and scorecard_path.stat().st_size > 100
         completed_docs = (
@@ -1288,7 +1283,6 @@ class DocGenerationCoordinator:
                 "preprocess_exists": len(preprocess_files) > 0,
                 "preprocess_files": preprocess_files,
                 "scorecard_exists": scorecard_exists,
-                "bundles_exist": len(bundle_files) > 0,
                 "completed_docs": completed_docs,
             },
             staging_dir,
@@ -1620,14 +1614,6 @@ class DocGenerationCoordinator:
                 logger.info("Bundled scoring template %s: %d bytes", dest_name, len(content))
             else:
                 logger.warning("Scoring template not found: %s", src_path)
-
-        # --- Copy analysis bundling script for Phase 2.8 ---
-        _bundle_script = Path(__file__).resolve().parent.parent / "scripts" / "bundle_analysis.py"
-        if _bundle_script.exists():
-            shutil.copy2(_bundle_script, preprocess_dir / "_bundle_analysis.py")
-            logger.info("Copied bundle_analysis.py to _preprocess/ (%d bytes)", _bundle_script.stat().st_size)
-        else:
-            logger.warning("bundle_analysis.py not found at %s", _bundle_script)
 
         # --- Write doc templates for Phase 3 agents ---
         self._write_doc_templates(preprocess_dir)
@@ -2461,6 +2447,31 @@ Required sections:
                 level="warning",
             )
 
+        # The METHOD -- the four phases and every standing rule -- as a file the
+        # orchestrating agent reads. Staged here for the same reason as the tool
+        # above: a resumed run and an extraction-cache hit skip preprocessing
+        # but still do the whole job, and the run brief names this path
+        # unconditionally. A brief that points at a method which was never
+        # copied costs a tool call to discover and then improvisation.
+        # `_method/_shared/` beside it carries the confidence model and the
+        # validation checklist METHOD.md defers to.
+        if materialize_generation_method(staging_dir) is None:
+            await self.log_manager.emit(
+                project_id,
+                "Generation method could not be staged -- the agent will have no "
+                "METHOD.md to read",
+                level="warning",
+            )
+        try:
+            materialize_investigation_method(staging_dir, platform)
+        except InvestigationMethodError as exc:
+            # A digest mismatch means the method library was edited without
+            # updating its manifest. Worth seeing in the log; never worth
+            # costing a client their documents.
+            await self.log_manager.emit(
+                project_id, f"Investigation method not staged: {exc}", level="warning",
+            )
+
         # Resume was detected BEFORE preprocessing, so its checklist came from
         # the PREVIOUS run's manifest. Preprocessing has just rewritten that
         # manifest, and a changed scan produces a different group set -- the
@@ -3093,9 +3104,12 @@ Required sections:
             )
         )
 
-        # The working evidence, removed now that the deterministic checks that
-        # read it have run. `_`-prefixed, so its presence up to this point never
-        # counted as a delivered document nor reached the client corpus.
+        # The working evidence and the staged method, removed now that the
+        # deterministic checks that read them have run. All `_`-prefixed, so
+        # their presence up to this point never counted as a delivered document
+        # nor reached the client corpus. `_method/` is prompt input, not a
+        # deliverable: the durable record of which method a run used is the
+        # repository, not a copy in every customer's document tree.
         #
         # Conditional on the attribution check having had something to check:
         # a run that published no group analyses either cleaned up itself (the
@@ -3106,7 +3120,7 @@ Required sections:
             return messages
 
         removed: list[str] = []
-        for dirname in ("_analysis", "_preprocess"):
+        for dirname in ("_analysis", "_preprocess", "_method"):
             target = staging_dir / dirname
             if not target.is_dir():
                 continue

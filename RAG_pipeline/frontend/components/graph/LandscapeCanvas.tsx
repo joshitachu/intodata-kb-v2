@@ -22,6 +22,7 @@ import {
 } from "@/lib/landscapeTransform";
 import type { BusinessSystem, LandscapeApplication, LandscapeSystem, ProjectLandscapeResponse } from "@/types/landscape";
 import type { AssistantCanvasEmphasis, AssistantFocusRequest, CopilotViewContext } from "@/types/copilot";
+import type { BusinessHealthFeed } from "@/lib/businessHealth";
 import { useFitOnContainerResize } from "@/hooks/useFitOnContainerResize";
 
 export type LandscapeSelection =
@@ -65,6 +66,12 @@ interface LandscapeCanvasProps {
   assistantEmphasis?: AssistantCanvasEmphasis | null;
   assistantFocusRequest?: AssistantFocusRequest | null;
   onContextChange?: (context: CopilotViewContext) => void;
+  /**
+   * Live runtime mirror for the business overlay. Optional: the technical
+   * scanner fallback below has no business streams to hang health on, so it
+   * ignores this entirely rather than inventing a second join.
+   */
+  health?: BusinessHealthFeed;
 }
 
 export function LandscapeCanvas(props: LandscapeCanvasProps) {
@@ -76,6 +83,7 @@ export function LandscapeCanvas(props: LandscapeCanvasProps) {
   if (hasBusinessTopology) {
     return <ArchitectureTopologyCanvas
       landscape={props.landscape}
+      health={props.health}
       assistantEmphasis={props.assistantEmphasis}
       assistantFocusRequest={props.assistantFocusRequest}
       onContextChange={props.onContextChange}

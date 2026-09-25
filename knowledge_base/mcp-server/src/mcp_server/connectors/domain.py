@@ -7,6 +7,7 @@ used by management, the capability broker, and provider adapters alike.
 from __future__ import annotations
 
 import datetime as dt
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Mapping
@@ -219,12 +220,27 @@ class ConnectorSourceProfile:
     @property
     def approved_fields(self) -> tuple[str, ...]:
         values: list[str] = []
-        for value in self.fields.values():
+        # Search-only field names help build queries but are not event fields
+        # that may be returned to the caller.
+        for key, value in self.fields.items():
+            if key == "search_fields":
+                continue
             if isinstance(value, str):
                 values.append(value)
             elif isinstance(value, (list, tuple)):
                 values.extend(item for item in value if isinstance(item, str))
         return tuple(dict.fromkeys(values))
+
+    @property
+    def searchable_fields(self) -> tuple[str, ...]:
+        """Discovered text fields usable for matching, never returned as payload."""
+        values = self.fields.get("search_fields", ())
+        if not isinstance(values, (list, tuple)):
+            return ()
+        return tuple(dict.fromkeys(
+            item for item in values
+            if isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9@_.-]{1,128}", item)
+        ))[:12]
 
 
 @dataclass(frozen=True, slots=True)

@@ -13,10 +13,6 @@ Two properties are being pinned, and the second matters as much as the first:
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from mcp_server.providers.base import DocGenContext
-from mcp_server.providers.claude_cli import ClaudeCliProvider
 from mcp_server.providers.custom.measurement_provenance import (
     find_runtime_measurement_claims,
     ledger_figures,
@@ -24,6 +20,8 @@ from mcp_server.providers.custom.measurement_provenance import (
     measurement_provenance_errors,
     measurement_reference,
 )
+
+from tests.test_providers.method_source import method
 
 #: One entry in the shape the shipped CLI actually writes
 #: (``scripts/runtime_tools.py::_ledger_entry`` + ``digest_result``): the
@@ -423,52 +421,32 @@ def test_static_invocation_counts_are_not_execution_counts():
 # --------------------------------------------------------------------------- #
 
 
-def _prompt(tmp_path: Path) -> str:
-    staging = tmp_path / "docs_staging"
-    (staging / "_preprocess").mkdir(parents=True, exist_ok=True)
-    return ClaudeCliProvider._build_prompt(
-        DocGenContext(
-            project_id="p",
-            staging_dir=staging,
-            staging_abs=str(staging),
-            logs_abs=str(tmp_path / "logs"),
-            preprocess_groups=["afas"],
-            total_jobs=142,
-            total_groups=20,
-            effective_model="m",
-            write_model="m",
-            platform="talend",
-            analysis_guide_file="_analysis_guide.md",
-            enterprise_mode=False,
-            resume_state=None,
-            scoped_docs=None,
-        )
-    )
-
-
-def test_prompt_carries_the_runtime_evidence_block(tmp_path):
-    prompt = _prompt(tmp_path)
-    assert "RUNTIME EVIDENCE" in prompt
+def test_the_method_carries_the_runtime_evidence_block():
+    """The block moved from the prompt into ``data/generation_method/METHOD.md``
+    when the 47 KB prompt collapsed to a run brief. The rules are unchanged, so
+    the assertion followed them rather than being deleted with the f-string."""
+    body = method()
+    assert "RUNTIME EVIDENCE" in body
     for command in ("runtime_tools.py list", "runtime_tools.py call", "runtime_tools.py elastic"):
-        assert command in prompt
+        assert command in body
     # The block must not contradict the standing ban on MCP tools.
-    assert "It is NOT an MCP" in prompt
+    assert "a local script run with Bash, not an MCP tool" in body
     for rule in ("field_unmapped", "0.087%", "30.8%", "23.1%", "60.7%", "SCHEDULED TASKS"):
-        assert rule in prompt
+        assert rule in body
 
 
-def test_the_prompts_own_examples_behave_as_the_prompt_says(tmp_path):
+def test_the_methods_own_examples_behave_as_the_method_says():
     # The block teaches by example. If the gate disagrees with the example, one
     # of the two is wrong and the writer is caught between them.
-    # The prompt wraps its prose, so compare against a whitespace-normalised copy.
-    prompt = " ".join(_prompt(tmp_path).split())
+    # The method wraps its prose, so compare against a whitespace-normalised copy.
+    body = method()
     good = (
         "Over the last 30 days the PROD execution register recorded 17 failed "
         "runs out of 2,122"
     )
     good_prose = "The interface ran 2,122 times in the last 30 days, 17 of them failing"
     bad = "Fails 23% of the time"
-    assert good in prompt and good_prose in prompt and bad in prompt
+    assert good in body and good_prose in body and bad in body
     assert measurement_provenance_errors(good + ".") == []
     assert measurement_provenance_errors(good_prose + ".") == []
     assert measurement_provenance_errors(bad + ".") != []

@@ -26,7 +26,7 @@ populates the store through the repository write-port; this provider only reads.
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence
 from zoneinfo import ZoneInfoNotFoundError
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -163,7 +163,18 @@ class StoredRuntimeProvider(NoScopeSelectionMixin, SingleTenantIdentityMixin):
         return "workspace_id"
 
     def static_ref_strategy(self) -> None:
+        """Nothing to declare: this provider reads the mirror, it does not fill it.
+
+        The rows it serves were written by whichever provider actually ingested
+        them, and that provider's own strategy is the one that binds them. A
+        second declaration here would resolve the same rows twice under a
+        provenance that names the reader rather than the ingester.
+        """
         return None
+
+    def executable_semantics(self) -> Mapping[str, Literal["execution", "lifecycle"]]:
+        """Empty for the same reason: it produces no runtime rows of its own."""
+        return {}
 
     def physical_source_identity(self, credentials: Mapping[str, Any]) -> str:
         return "stored:central-runtime-store"

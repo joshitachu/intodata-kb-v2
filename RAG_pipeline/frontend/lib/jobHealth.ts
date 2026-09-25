@@ -2,14 +2,15 @@
 //
 // Two responsibilities, both deterministic and unit-tested (no React, no I/O):
 //   1. deriveStatus() - turn a RuntimeJobHealth aggregate into a coarse
-//      operational status per the rule in the architecture plan (§2.3).
-//   2. joinHealthToJobs() - the honest identity join between scanner job
-//      names and runtime task names. Scanner names and TMC task names do NOT
-//      reliably match (verified on live data), so we try exact -> normalized
-//      -> prefix, aggregate 1:many matches worst-status-wins, and leave
-//      everything unmatched as `unknown`. Health is NEVER fabricated.
+//      operational status, respecting what the row's `liveness` says the
+//      numbers MEAN.
+//   2. joinHealthToJobs() - the honest identity join between scanner design
+//      names and runtime rows. Matching is EXACT-ONLY (on the runtime row's
+//      artifact/design name first, then on the scheduled task name), with a
+//      narrow case+version normalisation as the last tier. Everything
+//      unmatched stays `unknown`. Health is NEVER fabricated.
 
-import type { RuntimeExecutionState, RuntimeJobHealth } from "@/types/runtime";
+import type { RuntimeExecutionState, RuntimeJobHealth, RuntimeLiveness } from "@/types/runtime";
 
 export type JobStatus = "down" | "degraded" | "running" | "healthy" | "unknown";
 
@@ -30,6 +31,12 @@ export interface DeriveStatusInput {
   latestState: RuntimeExecutionState | null | undefined;
   failureRate: number;
   currentFailureStreak: number;
+  /**
+   * What the counters MEAN for this row. Optional: a backend that does not yet
+   * publish it, or a hand-built literal that omits it, keeps the historical
+   * execution semantics exactly.
+   */
+  liveness?: RuntimeLiveness | null;
 }
 
 /**
@@ -44,8 +51,30 @@ export interface DeriveStatusInput {
 // the `healthy` branch either.
 const DOWN_STATES: ReadonlySet<string> = new Set(["failed", "misfired", "timed_out"]);
 
+/**
+ * A DEPLOYMENT row, not a run row.
+ *
+ * `running` is the steady state of a deployed route or data service: it means
+ * "deployed and up", not "busy right now", so it is the HEALTHY answer rather
+ * than the transient one. Verified: 68 of Pluripharm's route rows sit in
+ * `running`, and the execution rule reads every one of them as not-healthy.
+ *
+ * The failure-rate and streak rules are deliberately NOT applied here: for a
+ * lifecycle row the denominator is a redeploy count, so "3 of 10 deployments
+ * failed" says something about release history, not about whether the thing is
+ * up now. `success` / `terminated` mean the deployment ENDED -- which we cannot
+ * distinguish from a deliberate undeploy, so the honest answer is `unknown`
+ * (grey), never `healthy` (green).
+ */
+function deriveLifecycleStatus(latestState: RuntimeExecutionState | null | undefined): JobStatus {
+  if (latestState && DOWN_STATES.has(latestState)) return "down";
+  if (latestState === "running") return "healthy";
+  return "unknown";
+}
+
 export function deriveStatus(input: DeriveStatusInput): JobStatus {
-  const { latestState, failureRate, currentFailureStreak } = input;
+  const { latestState, failureRate, currentFailureStreak, liveness } = input;
+  if (liveness === "lifecycle") return deriveLifecycleStatus(latestState);
   if (latestState && DOWN_STATES.has(latestState)) return "down";
   // latestState is now guaranteed to be none of the DOWN_STATES.
   if (failureRate >= DEGRADED_FAILURE_RATE_THRESHOLD || currentFailureStreak > 0) {
@@ -62,6 +91,10 @@ export function deriveStatusFromHealth(row: RuntimeJobHealth): JobStatus {
     latestState: row.latest_state ?? null,
     failureRate: row.failure_rate,
     currentFailureStreak: row.current_failure_streak,
+    // Deliberately NOT inferred from `executable_kind`: which kinds are
+    // lifecycle-shaped is a backend fact about the vendor API, and guessing it
+    // here would be a second, drifting copy of that rule.
+    liveness: row.liveness ?? null,
   });
 }
 
@@ -87,12 +120,34 @@ export function normalizeJobName(name: string): string {
     .replace(/_v?\d+(?:\.\d+)*$/, "");
 }
 
+/**
+ * How a scan name reached a runtime row. Every value is an EXACT equality on
+ * one of the two identifiers the runtime row carries, modulo case and a
+ * trailing version tag.
+ *
+ * There is deliberately no prefix tier. Measured on the live Pluripharm estate
+ * the old `startsWith` tier produced 25 wrong matches, and wrong is worse than
+ * absent here: `DWH_Facts_001` was painted with `DWH_Facts_Master`'s health,
+ * and `DWH_Facts_Master` was the job that was actually failing, so a healthy
+ * job was rendered red and a reader was sent to the wrong place. Others of the
+ * same shape: a `_old` copy inheriting the live job's health
+ * (`Daily_Queries_6_uur_old`), a `_copy` inheriting the original's
+ * (`WMS_IE_stock_mirror_copy`), and `PC_Run_001_JDE` matching two candidates
+ * with no way to choose.
+ */
+export type JobHealthMatchKind =
+  | "artifact_name"
+  | "artifact_name_normalized"
+  | "exact"
+  | "normalized"
+  | "none";
+
 export interface JobHealthMatch {
   status: JobStatus;
   /** The runtime rows that mapped to this scan job (1:many for TMC deploys). */
   matched: RuntimeJobHealth[];
   /** How the match was made, for transparency/debugging. */
-  matchKind: "exact" | "normalized" | "prefix" | "none";
+  matchKind: JobHealthMatchKind;
   /** Freshest latest_run_at across matched rows (ISO string), or null. */
   latestRunAt: string | null;
 }
@@ -114,27 +169,46 @@ function maxIso(a: string | null, b: string | null | undefined): string | null {
   return b > a ? b : a;
 }
 
+function pushIndexed(
+  index: Map<string, RuntimeJobHealth[]>,
+  key: string,
+  row: RuntimeJobHealth,
+): void {
+  const bucket = index.get(key);
+  if (bucket) bucket.push(row);
+  else index.set(key, [row]);
+}
+
 /**
- * Join scanner job names to runtime health rows. For each scan job we try, in
- * order: exact name equality, normalized equality, then normalized prefix
- * (`scan_` is a prefix of the runtime task, the endpoint-suffixed 1:many
- * case). The first tier that yields rows wins; its rows are aggregated
- * worst-status-wins. No match -> `unknown`.
+ * Join scanner design/job names to runtime health rows.
+ *
+ * Tier order, first non-empty tier wins and its rows aggregate
+ * worst-status-wins:
+ *   1. exact equality with the row's `artifact_name` (the DESIGN the row was
+ *      deployed from -- the identifier a published topology's artifact
+ *      annotations actually carry);
+ *   2. exact equality with the row's `job_name` (the scheduled task name);
+ *   3/4. the same two, after case-folding and stripping a trailing version tag.
+ *
+ * No match -> `unknown`. An absent `artifact_name` (older backend) simply makes
+ * tiers 1 and 3 empty, so the behaviour degrades to the task-name join.
  */
 export function joinHealthToJobs(
   scanJobNames: readonly string[],
   healthRows: readonly RuntimeJobHealth[],
 ): JobHealthJoin {
-  // Index runtime rows for exact and normalized lookups.
+  const byArtifact = new Map<string, RuntimeJobHealth[]>();
+  const byArtifactNormalized = new Map<string, RuntimeJobHealth[]>();
   const byExact = new Map<string, RuntimeJobHealth[]>();
   const byNormalized = new Map<string, RuntimeJobHealth[]>();
-  const normalizedRows: { norm: string; row: RuntimeJobHealth }[] = [];
   for (const row of healthRows) {
-    const exact = row.job_name;
-    (byExact.get(exact) ?? byExact.set(exact, []).get(exact)!).push(row);
-    const norm = normalizeJobName(row.job_name);
-    (byNormalized.get(norm) ?? byNormalized.set(norm, []).get(norm)!).push(row);
-    normalizedRows.push({ norm, row });
+    const artifact = row.artifact_name?.trim();
+    if (artifact) {
+      pushIndexed(byArtifact, artifact, row);
+      pushIndexed(byArtifactNormalized, normalizeJobName(artifact), row);
+    }
+    pushIndexed(byExact, row.job_name, row);
+    pushIndexed(byNormalized, normalizeJobName(row.job_name), row);
   }
 
   const byJob = new Map<string, JobHealthMatch>();
@@ -144,39 +218,22 @@ export function joinHealthToJobs(
 
   for (const scanJob of scanJobNames) {
     const scanNorm = normalizeJobName(scanJob);
+    const tiers: Array<[JobHealthMatchKind, RuntimeJobHealth[] | undefined]> = [
+      ["artifact_name", byArtifact.get(scanJob)],
+      ["exact", byExact.get(scanJob)],
+      ["artifact_name_normalized", scanNorm ? byArtifactNormalized.get(scanNorm) : undefined],
+      ["normalized", scanNorm ? byNormalized.get(scanNorm) : undefined],
+    ];
+    const hit = tiers.find(([, rows]) => rows && rows.length > 0);
 
-    let matched: RuntimeJobHealth[] = [];
-    let matchKind: JobHealthMatch["matchKind"] = "none";
-
-    const exactRows = byExact.get(scanJob);
-    if (exactRows && exactRows.length > 0) {
-      matched = exactRows;
-      matchKind = "exact";
-    } else {
-      const normRows = byNormalized.get(scanNorm);
-      if (normRows && normRows.length > 0) {
-        matched = normRows;
-        matchKind = "normalized";
-      } else if (scanNorm.length > 0) {
-        // Prefix (1:many): one Studio job deployed as several endpoint-suffixed
-        // TMC tasks, e.g. rItem_OnRamp -> rItem_OnRamp_BusinessCentral.
-        const prefix = `${scanNorm}_`;
-        const prefixRows = normalizedRows
-          .filter((entry) => entry.norm.startsWith(prefix))
-          .map((entry) => entry.row);
-        if (prefixRows.length > 0) {
-          matched = prefixRows;
-          matchKind = "prefix";
-        }
-      }
-    }
-
-    if (matched.length === 0) {
+    if (!hit) {
       byJob.set(scanJob, { status: "unknown", matched: [], matchKind: "none", latestRunAt: null });
       statusByJob.set(scanJob, "unknown");
       continue;
     }
 
+    const [matchKind, matchedRows] = hit;
+    const matched = matchedRows!;
     const status = worstStatus(matched.map(deriveStatusFromHealth));
     let jobLatest: string | null = null;
     for (const row of matched) jobLatest = maxIso(jobLatest, row.latest_run_at ?? null);

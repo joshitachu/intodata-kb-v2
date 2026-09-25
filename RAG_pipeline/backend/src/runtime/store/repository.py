@@ -498,6 +498,63 @@ def _ratio(numerator: int | None, denominator: int | None) -> float | None:
     return numerator / denominator
 
 
+#: The only two things a mirrored runtime row can mean. Anything else -- an
+#: undeclared kind, an unknown provider, a provider that has no opinion -- is
+#: `"unknown"`, which is an answer, not a gap to be filled with a guess.
+_LIVENESS_VALUES = frozenset({"execution", "lifecycle"})
+
+
+def _provider_for_source_type(source_type: str | None):
+    """The registered provider a stored `runtime_sources.source_type` belongs to.
+
+    That column holds whatever key was current when the row was written, and a
+    provider keeps its historical keys in `source_type_aliases()` -- TMC mirrors
+    predating self-service source configuration still say `talend_tmc`, not
+    `tmc`. Resolving on `provider_key()` alone would answer "no provider" for a
+    mirror this codebase ships a provider for, which downstream reads as "we
+    cannot say what these rows mean". `elastic_aggregates._elastic_source_types`
+    resolves aliases the same way for the same reason.
+
+    The registry import is deferred because `src.runtime.store.__init__` imports
+    this module, and the registry pulls in provider modules that import
+    `src.runtime.providers`, which imports `src.runtime.store`.
+    `runtime.sync.service` defers the same import for the same reason.
+    """
+    if not source_type:
+        return None
+    from src.runtime.source_registry import all_source_providers, get_source_provider
+
+    provider = get_source_provider(source_type)
+    if provider is not None:
+        return provider
+    for candidate in all_source_providers():
+        if source_type in {str(alias) for alias in candidate.source_type_aliases()}:
+            return candidate
+    return None
+
+
+def _executable_semantics_for(source_type: str | None) -> Mapping[str, str]:
+    """The provider's own declaration of what one of its rows MEANS, per kind.
+
+    Read-only consumption: this reports what the provider declares and derives
+    nothing of its own. An unregistered source type contributes an empty
+    mapping, so each of its kinds resolves to `"unknown"` rather than being
+    assumed to be an execution.
+    """
+    provider = _provider_for_source_type(source_type)
+    if provider is None:
+        return {}
+    return provider.executable_semantics()
+
+
+def _liveness_of(
+    semantics: Mapping[str, str], executable_kind: str | None
+) -> str:
+    """Project a provider declaration onto one row's kind."""
+    value = semantics.get(executable_kind) if executable_kind else None
+    return value if value in _LIVENESS_VALUES else "unknown"
+
+
 #: A captured log at the provider's row ceiling is a conservative truncation
 #: signal. Shared by every diagnostic-coverage aggregate so the two surfaces
 #: (operations console, documentation evidence) cannot report different
@@ -3059,17 +3116,73 @@ class RuntimeStoreRepository:
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_job_run(row) for row in rows]
 
+    async def _executable_semantics_by_source(
+        self, source_keys: set[str]
+    ) -> dict[str, Mapping[str, str]]:
+        """Map each mirrored source key to its provider's kind semantics.
+
+        The `source_key` stamped on a MIRRORED row is the provider's own key,
+        not the `runtime_sources.source_key` of the configured source. Verified
+        on a live mirror: `runtime_jobs.source_key` holds `tmc` (1118 rows),
+        `mock` and `demo-topology`, while the two configured rows are
+        `tmc-ddf1ed37af12` and `tmc-a335fb698715`. The two value spaces do not
+        intersect at all, so resolving only through `runtime_sources` answered
+        "no provider" for every mirrored row and every single one reported
+        `liveness="unknown"` -- which silently restores the very behaviour this
+        field exists to correct, because a consumer then treats a Route
+        deployment as an execution again.
+
+        So the provider key is tried FIRST, and the `runtime_sources` join is
+        kept as a fallback for any writer that does stamp a configured source
+        key. A value that is neither stays unresolved and its kinds stay
+        `"unknown"`.
+        """
+        if not source_keys:
+            return {}
+        # One lookup per distinct provider, not per source.
+        by_type: dict[str, Mapping[str, str]] = {}
+
+        def semantics_for(source_type: str | None) -> Mapping[str, str]:
+            if not source_type:
+                return {}
+            if source_type not in by_type:
+                by_type[source_type] = _executable_semantics_for(source_type)
+            return by_type[source_type]
+
+        resolved: dict[str, Mapping[str, str]] = {}
+        for source_key in source_keys:
+            declared = semantics_for(source_key)
+            if declared:
+                resolved[source_key] = declared
+        unresolved = sorted(source_keys - set(resolved))
+        if not unresolved:
+            return resolved
+        stmt = (
+            select(RuntimeSourceRow.source_key, RuntimeSourceRow.source_type)
+            .where(RuntimeSourceRow.source_key.in_(unresolved))
+            .distinct()
+        )
+        for source_key, source_type in (await self._session.execute(stmt)).all():
+            resolved[source_key] = semantics_for(source_type)
+        return resolved
+
     def _job_label_select(self, scope: ProjectScope, params: ListRuntimeJobsInput):
         """Job inventory rows supplying labels to the job-health surface.
 
         Labels only -- unlike engines, a run is never dropped for having no
         inventory row, so this is a lookup and not a filter.
+
+        `artifact_name` sits one column away from `name` on the same row and was
+        simply not selected, which left every consumer guessing the design a
+        runtime row was deployed from instead of joining on it.
         """
         stmt = select(
             RuntimeJobRow.project_id.label("project_id"),
             RuntimeJobRow.source_key.label("source_key"),
             RuntimeJobRow.job_id.label("job_id"),
             RuntimeJobRow.name.label("name"),
+            RuntimeJobRow.artifact_name.label("artifact_name"),
+            RuntimeJobRow.executable_kind.label("executable_kind"),
             RuntimeJobRow.environment_name.label("environment_name"),
             RuntimeJobRow.workspace_name.label("workspace_name"),
             RuntimeJobRow.engine_name.label("engine_name"),
@@ -3089,8 +3202,12 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeJobRow.workspace_id == params.workspace_id)
         if params.engine_id is not None:
             stmt = stmt.where(RuntimeJobRow.engine_id == params.engine_id)
-        executable_kind = params.executable_kind or RuntimeExecutableKind.JOB
-        return stmt.where(RuntimeJobRow.executable_kind == executable_kind.value)
+        # `None` means EVERY kind, exactly as it does on `list_jobs` /
+        # `count_jobs`. Coercing it to JOB here is what structurally excluded
+        # every route and data service from job health for every provider.
+        if params.executable_kind is not None:
+            stmt = stmt.where(RuntimeJobRow.executable_kind == params.executable_kind.value)
+        return stmt
 
     def _job_run_base(self, scope: ProjectScope, params: ListRuntimeJobsInput):
         """Scoped job-run rows grouped by job, as a subquery."""
@@ -3103,6 +3220,7 @@ class RuntimeStoreRepository:
             RuntimeJobRunRow.environment_name.label("environment_name"),
             RuntimeJobRunRow.workspace_name.label("workspace_name"),
             RuntimeJobRunRow.engine_name.label("engine_name"),
+            RuntimeJobRunRow.executable_kind.label("executable_kind"),
             RuntimeJobRunRow.state.label("state"),
             RuntimeJobRunRow.started_at.label("started_at"),
         )
@@ -3122,10 +3240,11 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeJobRunRow.workspace_id == params.workspace_id)
         if params.engine_id is not None:
             stmt = stmt.where(RuntimeJobRunRow.engine_id == params.engine_id)
-        executable_kind = params.executable_kind or RuntimeExecutableKind.JOB
-        return stmt.where(
-            RuntimeJobRunRow.executable_kind == executable_kind.value
-        ).subquery()
+        if params.executable_kind is not None:
+            stmt = stmt.where(
+                RuntimeJobRunRow.executable_kind == params.executable_kind.value
+            )
+        return stmt.subquery()
 
     async def list_job_health(
         self,
@@ -3156,20 +3275,34 @@ class RuntimeStoreRepository:
                 "environment_name",
                 "workspace_name",
                 "engine_name",
+                "executable_kind",
             ),
             attention_only=attention_only,
             limit=params.limit,
         )
         rows = (await self._session.execute(stmt)).mappings().all()
+        semantics = await self._executable_semantics_by_source(
+            {row["source_key"] for row in rows}
+        )
         summaries: list[RuntimeJobHealth] = []
         for row in rows:
             job = jobs_by_key.get((row["project_id"], row["source_key"], row["job_id"]))
+            # The inventory row is the current state of the executable; the run
+            # row only records what it was when it last ran.
+            executable_kind = (
+                job["executable_kind"] if job is not None else None
+            ) or row["latest_executable_kind"]
             summaries.append(
                 RuntimeJobHealth(
                     project_id=row["project_id"],
                     source_key=row["source_key"],
                     job_id=row["job_id"],
                     job_name=job["name"] if job is not None else row["latest_job_name"],
+                    artifact_name=job["artifact_name"] if job is not None else None,
+                    executable_kind=executable_kind,
+                    liveness=_liveness_of(
+                        semantics.get(row["source_key"], {}), executable_kind
+                    ),
                     environment_name=(job["environment_name"] if job is not None else None)
                     or row["latest_environment_name"],
                     workspace_name=(job["workspace_name"] if job is not None else None)

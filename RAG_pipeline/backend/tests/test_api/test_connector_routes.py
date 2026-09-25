@@ -71,26 +71,41 @@ async def test_owner_can_reuse_existing_nexus_elastic_without_secret_entry(owner
     import src.api.routes.connectors as route
 
     class Bridge:
-        async def prepare_existing_elastic(self, access_token: str):
+        async def prepare_existing_elastic(self, access_token: str, *, connector_id: str, source_ids: list[str]):
             assert access_token == "existing-user-session"
+            assert connector_id == "mcp-connector-1"
+            assert source_ids == ["source-errors", "source-monitoring"]
             return {
                 "connector_id": "mcp-connector-1",
                 "display_name": "Elastic Stack",
                 "source_ids": ["source-errors", "source-monitoring"],
                 "source_labels": ["Errors", "Monitoring"],
+                "source_contexts": [{
+                    "label": "errors-alias",
+                    "search_fields": ["message", "error.message"],
+                    "message_fields": ["message", "error.message"],
+                }],
             }
 
     monkeypatch.setattr(route, "McpConnectorBridge", Bridge)
     response = await owner_client.post(
         "/api/v1/connectors/existing-elastic/use",
         headers={"cookie": "access_token=existing-user-session; csrf_token=t", "X-CSRF-Token": "t"},
-        json={"project_id": "VW_FULL_LANDSCAPE"},
+        json={
+            "project_id": "VW_FULL_LANDSCAPE",
+            "connector_id": "mcp-connector-1",
+            "source_ids": ["source-errors", "source-monitoring"],
+        },
     )
 
     assert response.status_code == 200, response.text
     assert response.json()["provider_key"] == "mcp_elastic"
     assert response.json()["credential_present"] is False
-    assert response.json()["config"]["source_ids"] == ["source-errors", "source-monitoring"]
+    assert response.json()["config"]["project_sources"]["VW_FULL_LANDSCAPE"] == [
+        "source-errors", "source-monitoring",
+    ]
+    contexts = response.json()["config"]["project_source_contexts"]["VW_FULL_LANDSCAPE"]
+    assert contexts[0]["search_fields"] == ["message", "error.message"]
     bindings = await owner_client.get(f"/api/v1/connectors/{response.json()['id']}/bindings")
     assert bindings.status_code == 200
     assert bindings.json()["bindings"][0]["project_ids"] == ["VW_FULL_LANDSCAPE"]
@@ -149,6 +164,40 @@ async def test_owner_preview_is_bound_to_selected_project(owner_client) -> None:
         },
     )
     assert denied.status_code == 422
+
+
+async def test_owner_can_check_elastic_source_freshness(owner_client, monkeypatch) -> None:
+    import datetime as dt
+    import src.api.routes.connectors as route
+    from src.harness.connectors.models import ConnectorFreshnessResult
+
+    class Service:
+        async def check_freshness(self, instance_id, project_id, access_token=None):
+            assert instance_id == 47
+            assert project_id == "pluripharm"
+            assert access_token == "user-session"
+            return ConnectorFreshnessResult(
+                checked_at=dt.datetime(2026, 9, 24, 12, tzinfo=dt.timezone.utc),
+                window_days=7,
+                sources=[{
+                    "source_id": "src-1", "source": "error logs", "status": "available",
+                    "latest_event_at": "2026-09-24T11:00:00Z", "events_in_window": 3,
+                    "total_documents": 20, "timestamped_documents": 20,
+                }],
+            )
+
+    monkeypatch.setattr(route, "_service", lambda _db: Service())
+    response = await owner_client.post(
+        "/api/v1/connectors/47/freshness",
+        headers={"cookie": "access_token=user-session; csrf_token=t", "X-CSRF-Token": "t"},
+        json={"project_id": "pluripharm"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["window_days"] == 7
+    assert body["sources"][0]["latest_event_at"] == "2026-09-24T11:00:00Z"
+    assert body["sources"][0]["events_in_window"] == 3
 
 
 async def test_binding_access_can_change_but_never_become_global(owner_client) -> None:

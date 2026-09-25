@@ -35,6 +35,9 @@ _MAX_SOURCE_EXPRESSION = 100_000
 _RESOLVED_RELATIONS = frozenset({"resolved", "same_root", "global"})
 _INVOCATION_RELATION_TYPES = frozenset({"job_calls_job", "route_invokes_job"})
 _PUBLICATION_APPROVAL_FILENAME = "publication_approval.json"
+#: Approval receipt versions this publisher can read. v2 is a strict superset of
+#: v1 for the fields used here; see `_approved_artifact_hashes`.
+_SUPPORTED_APPROVAL_SCHEMA_VERSIONS = frozenset({1, 2})
 _APPROVED_ARTIFACTS = (
     "scan_result.json",
     "scan/manifest.json",
@@ -98,7 +101,22 @@ def _approved_artifact_hashes(root: Path) -> dict[str, str]:
         raise StaticTopologyRedactionRefusal(
             "static topology publication refused: final scanner approval is missing or invalid"
         ) from exc
-    if receipt.get("schema_version") != 1 or receipt.get("approved") is not True:
+    # Receipt v2 adds `tree` and changes nothing this publisher reads: it uses
+    # only `artifacts`, `verifications`, `approved` and `allow_redaction_failures`,
+    # all of which v2 carries unchanged. The scanner's own note (intodoc
+    # `cli.py::_save_publication_approval`) scopes the "refuse a v1 receipt" rule
+    # to consumers that stage per-design shards and therefore need `tree`; this
+    # one reads the four aggregates. Pinning to `== 1` meant every scan since the
+    # v2 bump silently failed to publish its static topology -- publication is
+    # advisory, so the scan still reported success and the gap only surfaced as
+    # an empty `runtime_static_topology_snapshots` for those projects.
+    if receipt.get("schema_version") not in _SUPPORTED_APPROVAL_SCHEMA_VERSIONS:
+        raise StaticTopologyRedactionRefusal(
+            "static topology publication refused: unsupported scanner approval "
+            f"schema_version {receipt.get('schema_version')!r} "
+            f"(supported: {sorted(_SUPPORTED_APPROVAL_SCHEMA_VERSIONS)})"
+        )
+    if receipt.get("approved") is not True:
         raise StaticTopologyRedactionRefusal(
             "static topology publication refused: final scanner approval is missing"
         )

@@ -70,6 +70,15 @@ class _Provider:
     def discard_evidence_references(self, envelope):
         self.discarded.append(envelope)
 
+    async def check_freshness(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "latest_event_at": "2026-09-24T11:30:00Z",
+            "events_in_window": 7,
+            "total_documents": 100,
+            "timestamped_documents": 98,
+        }
+
 
 @pytest.mark.asyncio
 async def test_labs_search_requires_project_grant_and_returns_normalized_evidence(monkeypatch):
@@ -146,3 +155,45 @@ async def test_labs_search_cannot_expand_project_source_grant(monkeypatch):
     assert raised.value.status_code == 403
     assert provider.calls == []
     assert session.committed is False
+
+
+@pytest.mark.asyncio
+async def test_labs_freshness_is_project_granted_bounded_and_document_free(monkeypatch):
+    from mcp_server.api.routes.connectors import ConnectorEvidenceFreshnessRequest
+
+    session = _Session()
+    repository = _Repository(session)
+    provider = _Provider()
+    monkeypatch.setattr(routes, "async_session_factory", lambda: session)
+    monkeypatch.setattr(routes, "ConnectorRepository", lambda _session: repository)
+    monkeypatch.setattr(routes, "instance_config", lambda instance: instance)
+    monkeypatch.setattr(routes, "source_profile", lambda source, _secrets: source)
+    monkeypatch.setattr(routes.connector_catalog, "provider", lambda _provider_id: provider)
+
+    async def source_grant(_session, *, project_id, connector_id, source_ids):
+        return project_id == "project-1" and connector_id == "connector-1" and source_ids == ["src-approved"]
+
+    monkeypatch.setattr(routes, "_has_labs_source_grant", source_grant)
+
+    async def request_access(_request, _project_id):
+        return None
+
+    monkeypatch.setattr(routes, "require_project_access", request_access)
+    request = SimpleNamespace(state=SimpleNamespace(auth_payload={"sub": "7", "username": "owner"}))
+    response = await routes.check_bound_elastic_freshness(
+        "project-1", "connector-1",
+        ConnectorEvidenceFreshnessRequest(source_ids=["src-approved"], time_window_days=20),
+        request,
+    )
+
+    assert response["window_days"] == 7
+    assert response["sources"] == [{
+        "source_id": "src-approved", "source": "logs", "status": "available",
+        "latest_event_at": "2026-09-24T11:30:00Z", "events_in_window": 7,
+        "total_documents": 100, "timestamped_documents": 98,
+    }]
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["window_days"] == 7
+    assert provider.calls[0]["credential"] == "secret-is-stays-here"
+    assert session.committed is True
+    assert repository.audits[0]["action"] == "connector.evidence.freshness"

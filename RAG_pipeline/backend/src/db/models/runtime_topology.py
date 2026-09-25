@@ -66,5 +66,15 @@ class RuntimeJobScanMapRow(Base):
     # Empty means the mapping is valid for every revision where static_job_id
     # still exists.  A publisher can set this to pin a mapping deliberately.
     scan_revision: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # How this row came to exist.  Two values, and the difference is a rule
+    # rather than a label: ``manual`` is a human's decision and the automatic
+    # resolver must never overwrite it, while ``static_ref:<field>`` records
+    # which provider-declared field resolved it and is therefore free to be
+    # recomputed on every sync.  Without it the resolver cannot tell its own
+    # output from a correction someone made by hand, and re-running would
+    # silently undo the correction.
+    resolved_by: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default="manual"
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)

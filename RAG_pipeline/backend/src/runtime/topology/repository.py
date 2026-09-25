@@ -14,6 +14,7 @@ from src.db.models.runtime_topology import (
     RuntimeStaticTopologySnapshotRow,
 )
 from src.runtime.topology.models import (
+    RESOLVED_BY_MANUAL,
     RuntimeJobScanMap,
     RuntimeJobScanMapCreate,
     RuntimeStaticTopologySnapshotIn,
@@ -171,6 +172,7 @@ class RuntimeTopologyRepository:
                 runtime_job_id=mapping.runtime_job_id,
                 static_job_id=mapping.static_job_id,
                 scan_revision=mapping.scan_revision,
+                resolved_by=mapping.resolved_by,
                 created_at=_as_utc(created_at),
                 created_by=created_by,
             )
@@ -178,9 +180,82 @@ class RuntimeTopologyRepository:
         else:
             row.static_job_id = mapping.static_job_id
             row.scan_revision = mapping.scan_revision
+            # A human editing a row the resolver wrote PROMOTES it to manual,
+            # which is what stops the next sync cycle from reverting the edit.
+            row.resolved_by = mapping.resolved_by
             row.created_by = created_by
         await self._session.flush()
         return _to_map(row)
+
+    async def list_job_scan_map_rows(
+        self, project_id: str, source_key: str
+    ) -> list[RuntimeJobScanMapRow]:
+        """Every mapping row for one project and source, ORM rows included.
+
+        The resolver needs `resolved_by` on the row it is about to overwrite and
+        needs it for the whole source in one query rather than one query per
+        runtime job, so this returns rows rather than the read model.
+        """
+        stmt = select(RuntimeJobScanMapRow).where(
+            RuntimeJobScanMapRow.project_id == project_id,
+            RuntimeJobScanMapRow.source_key == source_key,
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def record_resolved_job_scan_map(
+        self,
+        *,
+        project_id: str,
+        source_key: str,
+        runtime_job_id: str,
+        static_job_id: str,
+        resolved_by: str,
+        existing: RuntimeJobScanMapRow | None,
+        created_at: datetime.datetime | None = None,
+    ) -> str:
+        """Write one automatically resolved mapping; report what happened.
+
+        Returns `manual`, `unchanged`, `updated` or `created`.
+
+        Two deliberate differences from `upsert_job_scan_map`:
+
+        * a `manual` row is never touched. A human who mapped a renamed task by
+          hand has made a statement the resolver cannot check, and overwriting
+          it on the next sync cycle would make manual mapping useless.
+        * `scan_revision` is left NULL. A resolved mapping is derived from a
+          name that is stable across scans, so pinning it to the revision that
+          happened to be latest would expire a correct mapping on the next
+          scan. Pinning stays what it has always been: a deliberate act by a
+          publisher.
+
+        The snapshot is NOT re-validated here. The caller matched
+        `static_job_id` out of the snapshot it indexed, so a second lookup per
+        row would re-prove the same fact N times against the same payload.
+        """
+        if existing is not None and existing.resolved_by == RESOLVED_BY_MANUAL:
+            return "manual"
+        if existing is None:
+            self._session.add(
+                RuntimeJobScanMapRow(
+                    project_id=project_id,
+                    source_key=source_key,
+                    runtime_job_id=runtime_job_id,
+                    static_job_id=static_job_id,
+                    scan_revision=None,
+                    resolved_by=resolved_by,
+                    created_at=_as_utc(created_at),
+                    created_by=None,
+                )
+            )
+            await self._session.flush()
+            return "created"
+        if existing.static_job_id == static_job_id and existing.resolved_by == resolved_by:
+            return "unchanged"
+        existing.static_job_id = static_job_id
+        existing.resolved_by = resolved_by
+        existing.created_by = None
+        await self._session.flush()
+        return "updated"
 
     async def _snapshot_for_mapping(
         self, project_id: str, scan_revision: str | None
@@ -228,6 +303,7 @@ def _to_map(row: RuntimeJobScanMapRow) -> RuntimeJobScanMap:
         runtime_job_id=row.runtime_job_id,
         static_job_id=row.static_job_id,
         scan_revision=row.scan_revision,
+        resolved_by=row.resolved_by,
         created_at=_as_utc(row.created_at),
         created_by=row.created_by,
     )

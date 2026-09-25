@@ -1454,8 +1454,24 @@ async def list_runtime_job_health(
     environment_id: str | None = None,
     workspace_id: str | None = None,
     engine_id: str | None = None,
+    executable_kind: RuntimeExecutableKind | None = None,
     limit: int = Query(default=100, ge=1, le=500),
 ) -> RuntimeJobHealthResponse:
+    """Health per mirrored executable. Omitting `executable_kind` returns EVERY kind.
+
+    It used to return only `job`-kind rows and say nothing about it, so every
+    route and data service was structurally absent from the surface -- on one
+    measured estate that is 50 of 145 stream-bound deployed designs and 14 of 28
+    business streams with nothing to render. Each row now carries its
+    `executable_kind` and the `liveness` its provider declares for that kind, so
+    a caller can tell a run that ended from a deployment that is simply up.
+
+    `executable_kind` is passed EXPLICITLY rather than left to
+    `ListRuntimeJobsInput`, whose default stays `job`: `/runtime/jobs`,
+    `get_estate_overview`, `list_health_summaries` and the `list_runtime_jobs`
+    chat tool all lean on that default, and widening it would silently change
+    four surfaces to fix one.
+    """
     repo = RuntimeStoreRepository(db)
     health = await repo.list_job_health(
         read.scope,
@@ -1465,6 +1481,7 @@ async def list_runtime_job_health(
             environment_id=environment_id,
             workspace_id=workspace_id,
             engine_id=engine_id,
+            executable_kind=executable_kind,
             limit=limit,
             read_terms=read.terms,
         ),

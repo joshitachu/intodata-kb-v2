@@ -9,6 +9,7 @@ this connector protocol to validate credentials and ingest from live sources.
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from typing import Any, Iterable, Literal, Mapping, Protocol, TypedDict, runtime_checkable
 
 from src.runtime.models import RuntimeScopeOption, RuntimeScopeSelection
@@ -20,6 +21,41 @@ class CredentialField(TypedDict, total=False):
     type: Literal["secret", "url", "text"]
     label: str
     required: bool
+
+
+#: Provenance recorded on a mapping a human created through the write route.
+RESOLVED_BY_MANUAL = "manual"
+
+
+@dataclass(frozen=True)
+class StaticRefStrategy:
+    """How this provider names the static (scanned) design behind a runtime task.
+
+    A provider knows which of its own fields carries a reference to the design
+    that was scanned; nothing else does. Shared code reading a field name
+    directly would be reading a provider-specific fact it cannot check: TMC is
+    the only source that publishes ``artifact_name``, and Elasticsearch has no
+    equivalent at all, so the field has to be DECLARED rather than assumed.
+
+    ``match`` is exact-only and deliberately has no other member. A prefix or
+    normalising tier was measured against the Pluripharm estate and produced 25
+    wrong bindings, each of which attaches one job's runtime history to a
+    different, genuinely existing job: ``DWH_Facts_001`` -> ``DWH_Facts_Master``
+    (a separate job, currently failing), ``Daily_Queries_6_uur_old`` -> the live
+    ``Daily_Queries_6_uur``, ``WMS_IE_stock_mirror_copy`` ->
+    ``WMS_IE_stock_mirror``. The two consumers that got here first state the
+    same rule (``RuntimeStoreRepository.doc_evidence_for_units`` and the MCP
+    harness's ``runtime_facts``): a near-miss name is a DIFFERENT job, not the
+    same one spelled loosely.
+    """
+
+    #: Attribute on this provider's ``RuntimeJob`` carrying the static reference.
+    source_field: str
+    match: Literal["exact"] = "exact"
+
+    def resolved_by(self) -> str:
+        """Provenance stamped on every mapping this strategy resolves."""
+        return f"static_ref:{self.source_field}"
 
 
 @runtime_checkable
@@ -38,8 +74,27 @@ class RuntimeSourceProvider(Protocol):
     def container_key_field(self) -> str:
         """Return the entity field that carries the source-agnostic container key."""
 
-    def static_ref_strategy(self) -> None:
-        """Return the static-reference strategy; v1 reserves the slot as ``None``."""
+    def static_ref_strategy(self) -> StaticRefStrategy | None:
+        """Return how to name the scanned design behind a runtime task.
+
+        ``None`` is a first-class answer, not a failure: it means this provider
+        exposes no static reference, so nothing can be bound automatically and
+        the mapping stays a human decision.
+        """
+
+    def executable_semantics(self) -> Mapping[str, Literal["execution", "lifecycle"]]:
+        """What ONE runtime row MEANS, per executable kind.
+
+        ``execution`` -- one row is one run of the thing, with a start and an
+        end. ``lifecycle`` -- one row is a deployment that stays up, so
+        ``state="running"`` means "deployed and up", NOT "busy doing work".
+        Reading a lifecycle row as an execution turns a healthy always-on route
+        into a run that never finished, which is why the distinction is declared
+        by the provider that produced the row instead of inferred downstream.
+
+        Keys are ``RuntimeExecutableKind`` values. A provider that ingests
+        nothing returns an empty mapping.
+        """
 
     def scope_selection(self) -> RuntimeScopeSelection | None:
         """Describe the selectable ingest scope, or ``None`` for whole-source providers."""

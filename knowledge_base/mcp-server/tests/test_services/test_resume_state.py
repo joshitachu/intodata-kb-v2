@@ -163,17 +163,18 @@ def test_the_estate_is_not_reported_complete(run_260: dict) -> None:
     assert run_260["expected_groups_source"] == "manifest"
 
 
-def test_the_stale_bundles_and_docs_are_not_treated_as_finished(tmp_path: Path) -> None:
-    """A bundle or a document written before the pending analyses landed
-    describes an estate that is missing them."""
+def test_a_doc_written_before_the_pending_analyses_is_reported_as_such(
+    tmp_path: Path,
+) -> None:
+    """A document written before the pending analyses landed describes an
+    estate that is missing them, so it is reported alongside an incomplete
+    Phase 2 rather than as finished work."""
     analysed = [g for g in _RUN_260_GROUPS if g not in _RUN_260_MISSING]
     staging = _staging(tmp_path, manifest_groups=_RUN_260_GROUPS, analysed=analysed)
-    (staging / "_analysis" / "_bundle_core.md").write_text("b" * 2000, encoding="utf-8")
     (staging / "00_AGENT_BRIEF.md").write_text("d" * 2000, encoding="utf-8")
 
     state = _detect(staging)
-    assert state["bundles_exist"] is True
-    assert state["bundles_stale"] is True
+    assert state["analysis_complete"] is False
     assert state["completed_docs"] == ["00_AGENT_BRIEF.md"]
 
 
@@ -193,14 +194,22 @@ def test_a_fully_analysed_estate_reports_phase_2_complete(tmp_path: Path) -> Non
     assert len(state["analysis_files"]) == 20
 
 
-def test_a_complete_estate_keeps_its_bundles(tmp_path: Path) -> None:
+def test_an_underscore_artifact_in_the_analysis_dir_is_not_a_group(
+    tmp_path: Path,
+) -> None:
+    """Resume counts GROUPS. A run-time artifact dropped into ``_analysis/``
+    (the shared-library digest, anything a future phase writes) is
+    ``_``-prefixed and must never be mistaken for an analysed group -- that
+    over-count is what made 15 analyses read as 30."""
     staging = _staging(
         tmp_path, manifest_groups=_RUN_260_GROUPS, analysed=_RUN_260_GROUPS,
     )
-    (staging / "_analysis" / "_bundle_core.md").write_text("b" * 2000, encoding="utf-8")
+    (staging / "_analysis" / "_shared_library.md").write_text(
+        "b" * 2000, encoding="utf-8",
+    )
     state = _detect(staging)
-    assert state["bundles_exist"] is True
-    assert state["bundles_stale"] is False
+    assert len(state["analysis_files"]) == 20
+    assert state["analysis_complete"] is True
 
 
 # --------------------------------------------------------------------------

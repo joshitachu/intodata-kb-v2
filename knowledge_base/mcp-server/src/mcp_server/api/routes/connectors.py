@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -62,6 +63,44 @@ class ConnectorEvidenceSearchRequest(BaseModel):
         if len(value) != len(set(value)):
             raise ValueError("A source may only be searched once per request")
         return value
+
+
+class ConnectorEvidenceFreshnessRequest(BaseModel):
+    """Bounded, document-free freshness check for granted Elastic sources."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_ids: list[str] = Field(min_length=1, max_length=3)
+    time_window_days: int = Field(default=7, ge=1, le=30)
+
+    @field_validator("source_ids")
+    @classmethod
+    def unique_source_ids(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("A source may only be checked once per request")
+        return value
+
+
+class ElasticSourceFreshnessResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str
+    source: str
+    status: Literal["available", "unavailable"]
+    latest_event_at: str | None = None
+    events_in_window: int | None = None
+    total_documents: int | None = None
+    timestamped_documents: int | None = None
+    error_code: str | None = None
+    error: str | None = None
+
+
+class ConnectorEvidenceFreshnessResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    checked_at: str
+    window_days: int
+    sources: list[ElasticSourceFreshnessResponse]
 
 
 router = APIRouter(tags=["connectors"])
@@ -361,6 +400,11 @@ async def _has_labs_source_grant(session, *, project_id: str, connector_id: str,
                 continue
         if not isinstance(config, dict) or not isinstance(project_ids, list):
             continue
+        project_sources = config.get("project_sources")
+        allowed_sources = (
+            project_sources.get(project_id, [])
+            if isinstance(project_sources, dict) else config.get("source_ids", [])
+        )
         if (
             row["instance_enabled"] is True
             and row["health_status"] == "healthy"
@@ -368,7 +412,8 @@ async def _has_labs_source_grant(session, *, project_id: str, connector_id: str,
             and row["capability_id"] == "connector.mcp_elastic.search"
             and project_id in project_ids
             and config.get("connector_id") == connector_id
-            and requested.issubset(set(config.get("source_ids", [])))
+            and isinstance(allowed_sources, list)
+            and requested.issubset(set(allowed_sources))
         ):
             return True
     return False
@@ -481,4 +526,88 @@ async def search_bound_elastic_evidence(
             details={"project_id": project_id, "source_count": len(sources), "result_count": len(items)},
         )
         await session.commit()
-        return {"items": items, "truncated": len(items) >= limit}
+        return {
+            "items": items,
+            "truncated": len(items) >= limit,
+            "diagnostics": {
+                "outcome": "matches_found" if items else "freshness_check_required",
+                "query": payload.query,
+                "window_days": window_days,
+                "searched_sources": [source.display_label[:120] for source in sources],
+            },
+        }
+
+
+@router.post(
+    "/projects/{project_id}/connectors/{connector_id}/freshness",
+    response_model=ConnectorEvidenceFreshnessResponse,
+)
+async def check_bound_elastic_freshness(
+    project_id: str,
+    connector_id: str,
+    payload: ConnectorEvidenceFreshnessRequest,
+    request: Request,
+) -> dict[str, object]:
+    """Check latest timestamps and recent document counts, without reading events."""
+    await require_project_access(request, project_id)
+    actor_id, username = _actor(request)
+    async with async_session_factory() as session:
+        repository = ConnectorRepository(session)
+        instance = await repository.get_instance(connector_id)
+        if instance is None:
+            raise HTTPException(status_code=404, detail="Connector was not found")
+        if instance.provider_id != "elastic_stack" or not instance.enabled or instance.status != "connected":
+            raise HTTPException(status_code=409, detail="The existing Elastic connection is not ready")
+        if not await _has_labs_source_grant(
+            session,
+            project_id=project_id,
+            connector_id=connector_id,
+            source_ids=payload.source_ids,
+        ):
+            raise HTTPException(status_code=403, detail="A requested log source is outside this project's access")
+        sources = await repository.get_sources(connector_id, payload.source_ids)
+        if len(sources) != len(set(payload.source_ids)) or any(not source.enabled for source in sources):
+            raise HTTPException(status_code=404, detail="An approved log source is unavailable")
+
+        # Labs itself is deliberately limited to seven days. Keep this diagnostic
+        # aligned with the real question path while also reporting the newest
+        # timestamp from the source's full indexed history.
+        window_days = min(payload.time_window_days, 7)
+        checked_at = dt.datetime.now(dt.timezone.utc)
+        provider = connector_catalog.provider(instance.provider_id)
+        credential = repository.secrets.decrypt_for_provider(instance.credential_ciphertext)
+        results: list[dict[str, object]] = []
+        for source in sources:
+            try:
+                measured = await provider.check_freshness(
+                    instance=instance_config(instance),
+                    source=source_profile(source, repository.secrets),
+                    credential=credential,
+                    checked_at=checked_at,
+                    window_days=window_days,
+                )
+                results.append({
+                    "source_id": source.id,
+                    "source": source.display_label[:120],
+                    "status": "available",
+                    **measured,
+                })
+            except ConnectorError as exc:
+                results.append({
+                    "source_id": source.id,
+                    "source": source.display_label[:120],
+                    "status": "unavailable",
+                    "error_code": exc.code,
+                    "error": exc.message,
+                })
+
+        await repository.audit(
+            user_id=actor_id,
+            username=username,
+            action="connector.evidence.freshness",
+            resource_type="project_connector_binding",
+            resource_id=f"{project_id}:{connector_id}",
+            details={"project_id": project_id, "source_count": len(sources)},
+        )
+        await session.commit()
+        return {"checked_at": checked_at.isoformat(), "window_days": window_days, "sources": results}

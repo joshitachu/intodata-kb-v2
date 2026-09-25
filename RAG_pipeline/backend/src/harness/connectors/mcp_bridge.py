@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -24,35 +25,40 @@ class McpConnectorBridge:
     def __init__(self, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self._transport = transport
 
-    async def existing_elastic(self, access_token: str) -> dict[str, Any] | None:
+    async def connected_elastic_accounts(self, access_token: str) -> list[dict[str, Any]]:
+        """Return every connected Elastic account the signed-in owner may manage."""
         payload = await self._request("GET", "/mcp/connectors", access_token)
-        candidates = [
+        return [
             item for item in payload.get("connectors", [])
             if isinstance(item, dict)
             and item.get("provider_id") == "elastic_stack"
             and item.get("enabled") is True
             and item.get("status") == "connected"
         ]
-        if len(candidates) > 1:
-            raise ExistingElasticUnavailable(
-                "More than one connected Elastic account is available; choose one in the Nexus connector screen first."
-            )
-        return candidates[0] if candidates else None
+
+    async def existing_elastic(self, access_token: str) -> dict[str, Any] | None:
+        """Backward-compatible helper for callers that expect a single account."""
+        accounts = await self.connected_elastic_accounts(access_token)
+        return accounts[0] if accounts else None
 
     async def existing_elastic_sources(
-        self, access_token: str, connector_id: str
+        self, access_token: str, connector_id: str, *, refresh: bool = False
     ) -> list[dict[str, str]]:
         """Return safe display names for the connected account's indexed sources."""
         if not connector_id:
             return []
+        path = f"/mcp/connectors/{quote(connector_id, safe='')}"
         payload = await self._request(
-            "GET", f"/mcp/connectors/{quote(connector_id, safe='')}/sources", access_token
+            "POST" if refresh else "GET",
+            f"{path}/discover" if refresh else f"{path}/sources",
+            access_token,
+            **({"json_body": {}} if refresh else {}),
         )
         rows = payload.get("sources", [])
         if not isinstance(rows, list):
             return []
         sources: list[dict[str, str]] = []
-        for row in rows[:200]:
+        for row in rows:
             if not isinstance(row, dict) or row.get("enabled") is not True:
                 continue
             source_id = row.get("id")
@@ -63,29 +69,35 @@ class McpConnectorBridge:
             sources.append({"id": source_id, "label": label, "type": source_type})
         return sources
 
-    async def prepare_existing_elastic(self, access_token: str) -> dict[str, Any]:
-        connector = await self.existing_elastic(access_token)
+    async def prepare_existing_elastic(
+        self,
+        access_token: str,
+        *,
+        connector_id: str,
+        source_ids: list[str],
+    ) -> dict[str, Any]:
+        accounts = await self.connected_elastic_accounts(access_token)
+        connector = next((item for item in accounts if str(item.get("id", "")) == connector_id), None)
         if connector is None:
             raise ExistingElasticUnavailable("No connected Elastic account was found in Nexus.")
-        connector_id = str(connector.get("id", ""))
-        if not connector_id:
-            raise ExistingElasticUnavailable("The connected Elastic account could not be identified.")
+        selected_ids = list(dict.fromkeys(source_ids))
+        if not selected_ids or len(selected_ids) > 3:
+            raise ExistingElasticUnavailable("Choose between one and three Elastic sources for this project.")
 
         # A real probe runs in the credential-owning service, under this user's
         # authority. It never returns or forwards the Elastic secret.
         test = await self._request("POST", f"/mcp/connectors/{quote(connector_id, safe='')}/test", access_token)
         if test.get("status") != "connected":
             raise ExistingElasticUnavailable("The existing Elastic connection needs attention before Labs can use it.")
-        sources_payload = await self._request(
-            "GET", f"/mcp/connectors/{quote(connector_id, safe='')}/sources", access_token
-        )
-        source_rows = sources_payload.get("sources", [])
-        candidates = _recommended_log_sources(source_rows)
-        if not candidates:
+        available = await self.existing_elastic_sources(access_token, connector_id)
+        available_by_id = {item["id"]: item for item in available}
+        if any(source_id not in available_by_id for source_id in selected_ids):
             raise ExistingElasticUnavailable(
-                "The connected Elastic account has no obvious log or error sources to add to Labs."
+                "One or more selected Elastic sources are unavailable. Refresh the source list and try again."
             )
+        candidates = [available_by_id[source_id] for source_id in selected_ids]
         selected: list[dict[str, Any]] = []
+        source_contexts: list[dict[str, Any]] = []
         denied_count = 0
         unusable_count = 0
         # Source listings can include indices whose fields are hidden from this
@@ -102,25 +114,35 @@ class McpConnectorBridge:
             except ExistingElasticSourceDenied:
                 denied_count += 1
                 continue
-            if not _has_timestamp_profile(discovery, str(candidate["id"])):
+            if not _has_usable_search_profile(discovery, str(candidate["id"])):
                 unusable_count += 1
                 continue
             selected.append(candidate)
-            if len(selected) == 2:
-                break
+            source_contexts.append(_search_context(discovery, str(candidate["id"]), len(selected)))
+        if selected and (denied_count or unusable_count):
+            problems: list[str] = []
+            if denied_count:
+                problems.append(f"{denied_count} could not be read")
+            if unusable_count:
+                problems.append(f"{unusable_count} had no usable timestamp")
+            raise ExistingElasticUnavailable(
+                "Some selected Elastic sources could not be enabled (" + ", ".join(problems) + "). "
+                "Remove those sources or fix their access and field mapping, then retry."
+            )
         if not selected and denied_count:
             raise ExistingElasticUnavailable(
-                "Elastic is connected, but this account cannot read the recommended log sources. "
+                "Elastic is connected, but this account cannot read the selected sources. "
                 "Ask your Elastic administrator to grant read access to at least one log source, then retry."
             )
         if not selected:
             if unusable_count:
                 raise ExistingElasticUnavailable(
-                    "Elastic is connected, but none of the recommended sources has a usable event timestamp. "
+                    "Elastic is connected, but none of the selected sources has both a usable event timestamp "
+                    "and searchable text fields. "
                     "Ask your Elastic administrator to check the log-source fields."
                 )
             raise ExistingElasticUnavailable(
-                "The recommended log sources could not be prepared. Check the connection and retry."
+                "The selected log sources could not be prepared. Check the connection and retry."
             )
         source_ids = [str(item["id"]) for item in selected]
         labels = [str(item.get("display_label", "Log source")) for item in selected]
@@ -130,6 +152,7 @@ class McpConnectorBridge:
             "display_name": str(connector.get("display_name") or "Elastic Stack"),
             "source_ids": source_ids,
             "source_labels": labels,
+            "source_contexts": source_contexts,
         }
 
     async def _request(
@@ -177,36 +200,6 @@ class McpConnectorBridge:
         return value
 
 
-def _recommended_log_sources(rows: Any) -> list[dict[str, Any]]:
-    if not isinstance(rows, list):
-        return []
-    ranked: list[tuple[int, str, dict[str, Any]]] = []
-    for row in rows:
-        if not isinstance(row, dict) or row.get("enabled") is not True:
-            continue
-        label = row.get("display_label")
-        source_id = row.get("id")
-        if not isinstance(label, str) or not isinstance(source_id, str):
-            continue
-        name = label.casefold()
-        if not any(term in name for term in ("log", "error", "monitor")):
-            continue
-        score = 0
-        if row.get("source_type") == "alias":
-            score += 4
-        if "error" in name:
-            score += 3
-        if "monitor" in name:
-            score += 2
-        if "log" in name:
-            score += 1
-        ranked.append((score, name, row))
-    ranked.sort(key=lambda item: (-item[0], item[1]))
-    # A few alternatives let setup skip indices that are listed but not
-    # readable, while keeping permission probes strictly bounded.
-    return [item[2] for item in ranked[:12]]
-
-
 def _api_error_code(response: httpx.Response) -> str | None:
     """Read only the stable machine error code, never provider response text."""
     try:
@@ -218,7 +211,7 @@ def _api_error_code(response: httpx.Response) -> str | None:
     return code if isinstance(code, str) else None
 
 
-def _has_timestamp_profile(discovery: dict[str, Any], source_id: str) -> bool:
+def _has_usable_search_profile(discovery: dict[str, Any], source_id: str) -> bool:
     sources = discovery.get("sources")
     if not isinstance(sources, list):
         return False
@@ -226,7 +219,56 @@ def _has_timestamp_profile(discovery: dict[str, Any], source_id: str) -> bool:
     if source is None:
         return False
     fields = source.get("field_profile")
-    return isinstance(fields, dict) and isinstance(fields.get("timestamp_field"), str)
+    return (
+        isinstance(fields, dict)
+        and isinstance(fields.get("timestamp_field"), str)
+        and isinstance(fields.get("search_fields"), list)
+        and any(isinstance(value, str) and value for value in fields["search_fields"])
+    )
+
+
+_FIELD_NAME = re.compile(r"^[A-Za-z0-9@_.-]{1,128}$")
+_SOURCE_LABEL = re.compile(r"^[A-Za-z0-9._*-]{1,120}$")
+
+
+def _search_context(discovery: dict[str, Any], source_id: str, ordinal: int) -> dict[str, Any]:
+    """Keep only bounded schema names from the trusted field-capability profile."""
+    rows = discovery.get("sources")
+    source = next((
+        item for item in rows
+        if isinstance(item, dict) and item.get("id") == source_id
+    ), None) if isinstance(rows, list) else None
+    profile = source.get("field_profile") if isinstance(source, dict) else None
+    profile = profile if isinstance(profile, dict) else {}
+
+    def field_name(value: Any) -> str | None:
+        return value if isinstance(value, str) and _FIELD_NAME.fullmatch(value) else None
+
+    def field_list(key: str, limit: int) -> list[str]:
+        values = profile.get(key)
+        if not isinstance(values, list):
+            return []
+        return list(dict.fromkeys(
+            item for raw in values[:limit * 2]
+            if (item := field_name(raw)) is not None
+        ))[:limit]
+
+    raw_label = source.get("display_label") if isinstance(source, dict) else None
+    safe_label = "".join(
+        char for char in raw_label if char.isascii() and (char.isalnum() or char in "._*-")
+    )[:120] if isinstance(raw_label, str) else ""
+    if not _SOURCE_LABEL.fullmatch(safe_label):
+        safe_label = f"Elastic source {ordinal}"
+    context: dict[str, Any] = {
+        "label": safe_label,
+        "search_fields": field_list("search_fields", 12),
+        "message_fields": field_list("message_fields", 5),
+    }
+    for key in ("timestamp_field", "service_field", "severity_field", "environment_field"):
+        value = field_name(profile.get(key))
+        if value:
+            context[key] = value
+    return context
 
 
 def _api_base_url() -> str:

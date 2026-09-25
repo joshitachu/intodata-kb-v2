@@ -1,6 +1,6 @@
 import httpx
 
-from src.runtime.providers.base import RuntimeSourceProvider
+from src.runtime.providers.base import RuntimeSourceProvider, StaticRefStrategy
 from src.runtime.providers.talend_tmc import TalendTmcRuntimeProvider
 
 
@@ -11,7 +11,7 @@ def test_tmc_provider_contract_and_schema():
     assert provider.provider_key() == "tmc"
     assert provider.provider_label() == "Talend Management Console"
     assert provider.container_key_field() == "workspace_id"
-    assert provider.static_ref_strategy() is None
+    assert provider.static_ref_strategy() == StaticRefStrategy(source_field="artifact_name")
     assert provider.credential_schema() == [
         {"name": "api_token", "type": "secret", "label": "API token", "required": True},
         {"name": "base_url", "type": "url", "label": "Base URL", "required": True},

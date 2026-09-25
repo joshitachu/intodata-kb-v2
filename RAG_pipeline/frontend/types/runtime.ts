@@ -22,6 +22,16 @@ export type RuntimeExecutionState = z.infer<typeof RuntimeExecutionStateSchema>;
 export const RuntimeExecutableKindSchema = z.enum(["job", "route", "data_service", "unknown"]);
 export type RuntimeExecutableKind = z.infer<typeof RuntimeExecutableKindSchema>;
 
+// What a run row MEANS. An "execution" row is one run of a schedulable unit: it
+// starts, it ends, and `state` is that run's outcome. A "lifecycle" row is a
+// DEPLOYMENT that stays up -- `running` means "deployed and up", not "busy", and
+// its row count is a redeploy count, not a run count. Reading a lifecycle row
+// with execution semantics is how 68 deployed Pluripharm routes read as
+// not-healthy. Absent on an older backend; consumers fall back to execution
+// semantics (see lib/jobHealth.ts deriveStatus).
+export const RuntimeLivenessSchema = z.enum(["execution", "lifecycle", "unknown"]);
+export type RuntimeLiveness = z.infer<typeof RuntimeLivenessSchema>;
+
 export const RuntimeLogSeveritySchema = z.enum([
   "debug",
   "info",
@@ -355,6 +365,19 @@ export const RuntimeJobHealthSchema = z.object({
   current_failure_streak: z.number(),
   latest_run_at: z.string().nullable().optional(),
   latest_state: RuntimeExecutionStateSchema.nullable().optional(),
+  // Additive, and `.optional()` rather than `.default()` on purpose: a
+  // `.default()` is applied at parse time but makes the field REQUIRED in the
+  // inferred type, which breaks every hand-built RuntimeJobHealth literal in
+  // the tests and in lib/businessHealth.ts consumers. See the same note on
+  // `BusinessDataStreamSchema.mechanism` in types/landscape.ts.
+  //
+  // `artifact_name` is the DESIGN the runtime row was deployed from, which is
+  // what a published topology's artifact annotations carry. `job_name` is the
+  // name the scheduler happens to use and the two differ often enough that
+  // matching on the task name alone is the reason the join needed a fuzzy tier.
+  artifact_name: z.string().nullable().optional(),
+  executable_kind: RuntimeExecutableKindSchema.optional(),
+  liveness: RuntimeLivenessSchema.optional(),
 });
 export type RuntimeJobHealth = z.infer<typeof RuntimeJobHealthSchema>;
 

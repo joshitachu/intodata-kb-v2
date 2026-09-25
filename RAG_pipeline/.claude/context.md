@@ -26,6 +26,14 @@ runtime, the runtime-data mirror) and a Next.js frontend (:3000 -- chat, topolog
   `execute_runtime_tool`; `POST /api/v1/runtime/elastic/probe/*` adds 4 read-only Elastic primitives. Both CSRF-exempt (bearer key,
   no cookie). Probe bodies are forced to `size: 0`/`_source: false` and RAISE if documents return; an unmapped field yields `None`,
   never an ambiguous `0`. No read-grant widening yet (0 grant rows) -- fix belongs in `execute_runtime_tool`, not inline. See ADR-035.
+- **Runtime health on the topology** (uncommitted): providers DECLARE how their rows bind to scanned designs
+  (`static_ref_strategy()` -- tmc/mock `artifact_name`, elastic/stored none) and what a row MEANS per kind
+  (`executable_semantics()` -- job=execution, route/data_service=lifecycle). `runtime/topology/binding.py` writes
+  `runtime_job_scan_maps` during sync: exact only, ambiguity refused, `resolved_by="manual"` never overwritten, SAVEPOINT so it
+  cannot fail a mirror cycle (migration 106). `/runtime/job-health` no longer hardcodes `executable_kind='job'` (omitted = ALL) and
+  carries `artifact_name`/`executable_kind`/`liveness`. Business canvas overlay in `lib/businessHealth.ts` propagates
+  source->destination -- the OPPOSITE direction to `lib/healthPropagation.ts` (callee->caller); unmeasured is grey with a reason,
+  never green. Inspection WARN, `.plans/inspection.md`.
 - **Topology**: L1 landscape + L2 drill-down; mirrors match the MCP contract field-for-field (parity tests), every field renders,
   and `get_topology_node` on a stream returns `business_facts` (uncommitted, 2026-09-23).
 - **Sources**: GitHub App, Azure DevOps (organization PAT) and ZIP are first-class; multi-repo projects are selectable from
@@ -53,12 +61,12 @@ decide a `runtime_log_events` retention policy.
 
 ## Unverified
 
-- **Two 2026-08-26 blocks contradict on the runtime outcome-trend chart.** One says it shipped, passed authenticated browser
-  verification at 24h/7d/30d/90d and the frontend image was rebuilt. Another, same date, says live evidence disproved its core
-  assumptions (empty buckets are not proven zero-run periods; the adaptive log rule triggers on p50-vs-p95 spread), that the edit was
-  rolled back before build, and that nothing should be rebuilt until a truth contract is agreed. Which describes the deployed chart
-  cannot be determined from dates; both are in the archive.
-- The archived `## Blockers` section lists a Voyage AI API key placeholder needing a real key; nothing dated since confirms or retires
-  it, so whether reranking is live is unconfirmed.
-- Latest baselines: backend `-k topology` 450 passed (2026-09-23); frontend `tests/lib`+`tests/components` 1147 passed / 59
-  pre-existing jsdom `localStorage.clear` failures (identical on clean HEAD, 2026-09-23).
+- **The runtime outcome-trend chart is in an unknown state.** Two same-day archive blocks contradict: one says it shipped and passed
+  browser verification, the other says live evidence disproved its assumptions (empty buckets are not proven zero-run periods) and the
+  edit was rolled back before build. Dates cannot break the tie; both are in `.claude/archive/`.
+- Whether reranking is live is unconfirmed -- the archived blockers list a Voyage AI key placeholder and nothing since retires it.
+- Latest baselines: backend `pytest tests/ --ignore=tests/test_scripts` 4082 passed / 7 failed, and `tests/test_scripts` cannot be
+  collected at all (`ModuleNotFoundError: No module named 'langchain_openai'`); frontend `npm test -- --run` 1474 passed / 7 failed.
+  Both sets of 7 reproduce on a clean-HEAD worktree. The 59 jsdom `localStorage.clear` failures are GONE: Node 26 declares a
+  `localStorage` global that is `undefined` without `--localstorage-file` and shadows jsdom's, so `tests/setup.ts` now restores an
+  in-memory Storage -- that recovered 52 tests and revealed the 7 that were hidden behind it.

@@ -60,7 +60,7 @@ import ssl
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Literal, Mapping, Sequence
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -555,7 +555,30 @@ class ElasticRuntimeProvider:
         return "workspace_id"
 
     def static_ref_strategy(self) -> None:
+        """No static reference exists on this side, so none is declared.
+
+        Verified against every `RuntimeJob(...)` this module constructs (the
+        interface-run reconstruction in the tier-1 builder): it fills
+        `job_id`/`name` from the log document's own interface identifier and
+        `workspace_id` from the index, and never sets `artifact_name`,
+        `artifact_id` or any other field naming a published design -- there is
+        no such field in an Elasticsearch log document. The scanned design behind
+        one of these interfaces therefore has to be stated by a human, and
+        `None` says exactly that instead of inviting shared code to guess from
+        the interface name.
+        """
         return None
+
+    def executable_semantics(self) -> Mapping[str, Literal["execution", "lifecycle"]]:
+        """Reconstructed interface runs are discrete runs, so `job` only.
+
+        The tier-1 builder deliberately emits `RuntimeExecutableKind.JOB` for
+        every reconstructed interface (see the comment at its `RuntimeJob`
+        construction): these have a start and an end, which is batch semantics.
+        Nothing here is ever a deployment lifecycle, so no other kind is
+        declared.
+        """
+        return {RuntimeExecutableKind.JOB.value: "execution"}
 
     def scope_selection(self) -> RuntimeScopeSelection:
         return RuntimeScopeSelection(

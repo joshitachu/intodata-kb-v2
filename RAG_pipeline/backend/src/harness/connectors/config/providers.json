@@ -25,8 +25,8 @@
         "packs": ["connectors"],
         "activity_label": "Searching approved Elastic logs",
         "semantic_name": "search_existing_elastic_logs",
-        "purpose": "Search a small set of project-approved runtime log sources using the existing Nexus Elastic connection.",
-        "use_when": ["The user asks about recent runtime activity, errors, or monitoring evidence in Elastic."],
+        "purpose": "Search this project's selected Elastic sources with short terms or OR alternatives. Use discovered field roles. Use * only for a recent sample. Empty results include freshness diagnostics for no match, no recent data, and unavailable coverage.",
+        "use_when": ["The user asks about recent runtime activity, errors, or monitoring evidence in Elastic; use the project's selected source fields and report the returned coverage diagnosis when no items match."],
         "do_not_use_when": ["The user asks for design documentation, field mappings, or business rules; search project documentation instead."],
         "preconditions": ["The existing Elastic connection is healthy and the project has an explicit source grant."],
         "failure_recovery": {
@@ -38,7 +38,8 @@
     ],
     "config_schema": {
       "connector_id": "existing Nexus connector ID",
-      "source_ids": "approved source IDs",
+      "project_sources": "approved source IDs per project",
+      "project_source_contexts": "discovered safe field roles per project",
       "max_results": "integer",
       "time_window_days": "integer"
     }

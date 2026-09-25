@@ -503,6 +503,32 @@ class TestRuntimeJobs:
         assert order_health["failure_rate"] == 0.5
         assert order_health["current_failure_streak"] == 1
         assert order_health["latest_state"] == "failed"
+        # Every row now says what it IS and what one of its rows MEANS. The
+        # fixture is a mock source, whose provider declares `job: execution`.
+        assert order_health["executable_kind"] == "job"
+        assert order_health["liveness"] == "execution"
+        # The design the runtime row was deployed from, carried off the
+        # inventory row so a consumer can join on it instead of guessing.
+        assert order_health["artifact_name"] == "esb-order-sync-1.8.4"
+
+    async def test_job_health_defaults_to_every_executable_kind(self, seeded_client):
+        """The default is ALL kinds; a kind is only excluded when asked for.
+
+        The fixture estate is all `job`-kind, so this pins the CONTRACT rather
+        than a count -- `tests/test_runtime/test_job_health_semantics.py` holds
+        the multi-kind estate. A request naming a kind must still narrow.
+        """
+        with _scope([_ESB]):
+            everything = await seeded_client.get("/api/v1/runtime/job-health")
+            jobs_only = await seeded_client.get(
+                "/api/v1/runtime/job-health?executable_kind=job"
+            )
+            routes_only = await seeded_client.get(
+                "/api/v1/runtime/job-health?executable_kind=route"
+            )
+        assert everything.status_code == 200
+        assert jobs_only.json() == everything.json()
+        assert routes_only.json() == {"health": [], "total": 0}
 
     async def test_empty_scope_returns_empty_job_health(self, seeded_client):
         with _scope([]):

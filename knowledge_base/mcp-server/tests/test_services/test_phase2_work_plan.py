@@ -29,6 +29,8 @@ from mcp_server.services.claude_service import (
     resolve_owning_group,
 )
 
+from tests.test_providers.method_source import method
+
 OUTPUT_ROOT = Path(__file__).resolve().parents[3] / "output"
 ETTM = OUTPUT_ROOT / "ettm_fix" / "docs_staging" / "_preprocess"
 TALEND8 = [
@@ -300,77 +302,55 @@ def _waves(worker_count: int) -> int:
     return -(-worker_count // lanes)
 
 
-def _prompt(tmp_path: Path) -> str:
-    from mcp_server.providers.base import DocGenContext
-    from mcp_server.providers.claude_cli import ClaudeCliProvider
-
-    staging = tmp_path / "docs_staging"
-    (staging / "_preprocess").mkdir(parents=True, exist_ok=True)
-    return ClaudeCliProvider._build_prompt(
-        DocGenContext(
-            project_id="p",
-            staging_dir=staging,
-            staging_abs=str(staging),
-            logs_abs=str(tmp_path / "logs"),
-            preprocess_groups=["a", "b"],
-            total_jobs=142,
-            total_groups=20,
-            effective_model="m",
-            write_model="m",
-            platform="talend",
-            analysis_guide_file="_analysis_guide.md",
-            enterprise_mode=False,
-        )
-    )
-
-
-def test_the_prompt_no_longer_asks_for_one_sub_agent_per_group(tmp_path: Path) -> None:
+def test_the_method_no_longer_asks_for_one_sub_agent_per_group() -> None:
     """The instruction that caused the measured serialisation, and the file
-    that replaces it. ``opencode_cli`` returns this prompt verbatim, so this
-    covers both lanes."""
-    prompt = _prompt(tmp_path)
+    that replaces it. Both CLI lanes read the same method."""
+    body = method()
 
-    assert "Spawn one sub-agent per group" not in prompt
-    assert "ONE sub-agent per WORKER" in prompt
-    assert "Do not spawn one per group." in prompt
-    assert "_assessment/phase2_work_plan.md" in prompt
-    assert "_knowledge/decisions.md" in prompt
+    assert "Spawn one sub-agent per group" not in body
+    assert "ONE sub-agent per WORKER" in body
+    assert "Do not spawn one per group." in body
+    assert "_assessment/phase2_work_plan.md" in body
+    assert "_knowledge/decisions.md" in body
     # One analysis per GROUP, whatever a worker's batch looks like. Phase 2
-    # writes it as a directory of section files (plan slice 2); the rule that
-    # a batch never merges two groups into one analysis is unchanged.
-    assert "ONE ANALYSIS DIRECTORY PER GROUP, ALWAYS." in prompt
-    assert "Never\n   merge two groups into one directory" in prompt
+    # writes one file per group with a heading per section; the rule that a
+    # batch never merges two groups into one analysis is unchanged.
+    assert "ONE ANALYSIS FILE PER GROUP, ALWAYS." in body
+    assert "Never merge two groups into one file" in body
 
 
-def test_the_prompt_keeps_the_gate_per_group_not_per_worker(tmp_path: Path) -> None:
-    """A worker that wrote three of its four files passes a per-worker check."""
-    gate = _prompt(tmp_path).split("PHASE 2.5 -- GATE VALIDATION")[1].split("PHASE 2.6")[0]
-    assert "PER GROUP, never per worker" in gate
-    assert "not for\n        the whole batch" in gate
-    assert "separate failures with" in gate
+def test_the_method_keeps_the_coverage_check_per_group_not_per_worker() -> None:
+    """A worker that wrote three of its four analyses passes a per-worker check.
+
+    The Phase 2.5 ``ls | grep -c`` gate is gone with the per-section layout it
+    counted; the question it was asking is now the agent's own, and it is still
+    asked per GROUP.
+    """
+    check = method().split("Coverage, checked by you")[1].split("## 5b.")[0]
+    assert "per GROUP and never per worker" in check
+    assert "not for the whole batch it came from" in check
+    assert "separate failures with separate retries" in check
 
 
-def test_the_prompt_stops_the_agent_deleting_its_own_evidence(tmp_path: Path) -> None:
+def test_the_method_stops_the_agent_deleting_its_own_evidence() -> None:
     """The attribution check reads ``_analysis/`` and ``_preprocess/`` after the
     run, so a Phase 4 that deletes them makes the check unrunnable."""
-    cleanup = _prompt(tmp_path).split("PHASE 4 -- CLEANUP")[1]
+    cleanup = method().split("## 7. Phase 4 -- publish")[1]
     assert "Do NOT delete" in cleanup
-    assert "The server\n     removes both after the run" in cleanup
+    assert "The server removes both after the run" in cleanup
 
 
-def test_the_coverage_obligation_says_what_the_design_count_contains(
-    tmp_path: Path,
-) -> None:
+def test_the_coverage_obligation_says_what_the_design_count_contains() -> None:
     """27 of ETTM's 142 designs are reusable. A writer told only the total
     either drops them silently or pads the table to reach the number."""
-    prompt = _prompt(tmp_path)
-    assert "WHAT THAT COUNT CONTAINS" in prompt
-    assert "reusable ones that exist only to be called by another" in prompt
-    assert "accounted FOR by naming it and what calls it" in prompt.replace(
+    body = method()
+    assert "WHAT THAT COUNT CONTAINS" in body
+    assert "reusable ones that exist only to be called by another" in body
+    assert "accounted FOR by naming it and what calls it" in body.replace(
         "ACCOUNTED FOR", "accounted FOR"
     )
-    assert "Never pad a table with sub-components" in prompt
-    assert "Copy_of_* duplicates and test-named artifacts are the canonical examples" in prompt
+    assert "Never pad a table with sub-components" in body
+    assert "Copy_of_* duplicates and test-named artifacts are the canonical examples" in body
 
 
 @pytest.mark.skipif(not ETTM.is_dir(), reason="ettm_fix artifacts absent")

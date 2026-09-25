@@ -99,6 +99,12 @@ class RuntimeSyncCycleResult:
     insights_built: int = 0
     failure_reason_code: str | None = None
     error_summary: str | None = None
+    #: Every project id this cycle's job rows were actually stamped with. The
+    #: workspace map can re-point a container to a project other than the
+    #: source's estate key, so this is NOT always `{project_id}` -- and the
+    #: static-ref resolver has to run against the project that owns the rows,
+    #: because the topology snapshot it binds to is keyed by project.
+    job_project_ids: tuple[str, ...] = ()
 
 
 class RuntimeSyncAdapter(Protocol):
@@ -223,6 +229,13 @@ async def run_runtime_source_sync_cycle(
         sync_progress.finish(source_id)
     if result.status == RuntimeSyncStatus.SUCCESS:
         await _refresh_source_identity(repo, source_id=source_id, provider=provider, credentials=credentials, batch=batch)
+        await _bind_static_refs(
+            session,
+            provider=provider,
+            source_key=source.source_type,
+            project_ids=result.job_project_ids,
+            now=cycle_at,
+        )
         await repo.record_source_sync_success(
             source_id,
             succeeded_at=result.last_synced_at or cycle_at,
@@ -249,6 +262,71 @@ async def run_runtime_source_sync_cycle(
                 },
             )
     return result
+
+
+async def _bind_static_refs(
+    session: AsyncSession,
+    *,
+    provider,
+    source_key: str,
+    project_ids: tuple[str, ...],
+    now: datetime.datetime,
+) -> None:
+    """Resolve the provider's declared static reference into explicit job maps.
+
+    Runs once per project the cycle's jobs were stamped with, after the batch is
+    persisted, because it reads the stored `runtime_jobs` rows rather than the
+    batch -- which is also what lets a snapshot published between two cycles
+    bind jobs that were mirrored earlier.
+
+    It can NEVER fail the sync. Binding is a derived convenience on top of data
+    that is already safely written; taking a mirror cycle down because a scan
+    snapshot was malformed would trade the valuable thing for the cheap one. The
+    work runs inside a SAVEPOINT so a failure discards only the binding's own
+    writes: catching the exception without one would leave the session's
+    transaction poisoned and the caller's commit -- carrying the whole batch --
+    would fail anyway.
+    """
+    from src.runtime.topology.binding import resolve_static_refs_for_source
+
+    for project_id in project_ids:
+        try:
+            async with session.begin_nested():
+                result = await resolve_static_refs_for_source(
+                    session,
+                    provider=provider,
+                    project_id=project_id,
+                    source_key=source_key,
+                    now=now,
+                )
+        except Exception:
+            logger.exception(
+                "Static-ref binding failed for project=%s source_key=%s; "
+                "the sync itself is unaffected",
+                project_id,
+                source_key,
+            )
+            continue
+        if not result.attempted:
+            logger.debug(
+                "Static-ref binding skipped for project=%s source_key=%s: %s",
+                project_id,
+                source_key,
+                result.reason,
+            )
+            continue
+        logger.info(
+            "Static-ref binding project=%s source_key=%s field=%s bound=%s "
+            "written=%s manual=%s ambiguous=%s unmatched=%s",
+            project_id,
+            source_key,
+            result.source_field,
+            result.bound,
+            result.written,
+            result.already_manual,
+            result.ambiguous,
+            result.unmatched,
+        )
 
 
 async def _refresh_source_identity(
@@ -329,8 +407,10 @@ async def _persist_source_batch_with_project_map(
     for engine in batch.engines:
         project_id, _unmapped = await repo.resolve_project_id(source_id, _container_key(engine, container_key_field))
         await repo.upsert_engine(project_id, engine, source_key, synced_at)
+    job_project_ids: set[str] = {default_project_id}
     for job in batch.jobs:
         project_id, _unmapped = await repo.resolve_project_id(source_id, _container_key(job, container_key_field))
+        job_project_ids.add(project_id)
         await repo.upsert_job(project_id, job, source_key, synced_at)
     for artifact in batch.artifacts:
         project_id, _unmapped = await repo.resolve_project_id(source_id, _container_key(artifact, container_key_field))
@@ -409,6 +489,10 @@ async def _persist_source_batch_with_project_map(
         insights_built=built,
         failure_reason_code=failure_reason,
         error_summary=error_summary,
+        # The estate key is always included, even when this batch carried no
+        # jobs: a snapshot published between two cycles has to be able to bind
+        # jobs that were already mirrored, and those are stamped with it.
+        job_project_ids=tuple(sorted(job_project_ids)),
     )
 
 

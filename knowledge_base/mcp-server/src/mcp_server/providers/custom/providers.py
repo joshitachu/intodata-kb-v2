@@ -211,7 +211,7 @@ STAGING_TOOLS_OPENAI: list[dict[str, Any]] = [
             "description": (
                 "Read a file from the staging directory. "
                 "Path is relative to staging root "
-                "(e.g. '_preprocess/Item.md', '_analysis/_bundle_core.md')."
+                "(e.g. '_preprocess/Item.md', '_analysis/Item.md')."
             ),
                 "parameters": {
                     "type": "object",

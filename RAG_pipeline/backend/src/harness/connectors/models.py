@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -180,6 +180,25 @@ class ConnectorResultItem(BaseModel):
 class ConnectorReadResult(BaseModel):
     items: list[ConnectorResultItem]
     truncated: bool = False
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConnectorFreshnessSource(BaseModel):
+    source_id: str
+    source: str
+    status: Literal["available", "unavailable"]
+    latest_event_at: datetime.datetime | None = None
+    events_in_window: int | None = None
+    total_documents: int | None = None
+    timestamped_documents: int | None = None
+    error_code: str | None = None
+    error: str | None = None
+
+
+class ConnectorFreshnessResult(BaseModel):
+    checked_at: datetime.datetime
+    window_days: int
+    sources: list[ConnectorFreshnessSource]
 
 
 class ConnectorHealthResult(BaseModel):

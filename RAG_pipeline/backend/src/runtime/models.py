@@ -588,10 +588,31 @@ class RuntimeDeployment(BaseModel):
 
 
 class RuntimeJobHealth(BaseModel):
+    """Health of one mirrored runtime executable, whatever kind it is.
+
+    The three additive fields exist because this surface used to answer only for
+    `job`-kind rows and said nothing about it. `executable_kind` states what the
+    row is; `liveness` states what ONE of its rows MEANS, taken from the
+    provider's own `executable_semantics()` declaration and never guessed -- an
+    `execution` row is a run that started and ended, a `lifecycle` row is a
+    deployment state, so `state != success` counts a failure on the first and a
+    healthy deployed route on the second. `unknown` is a real answer, not a
+    fallback: a provider that declares nothing for a kind gets it, because
+    defaulting to `execution` is exactly what makes a live route look failed.
+
+    `artifact_name` is the design name the provider's inventory row carries, so
+    a consumer can join a runtime row to a scanned design by exact equality
+    instead of pattern-matching `job_name`. It is None when the inventory row
+    has no artifact (Elastic) or when there is no inventory row at all.
+    """
+
     project_id: str
     source_key: str
     job_id: str
     job_name: str
+    artifact_name: str | None = None
+    executable_kind: str | None = None
+    liveness: Literal["execution", "lifecycle", "unknown"] = "unknown"
     environment_name: str | None = None
     workspace_name: str | None = None
     engine_name: str | None = None

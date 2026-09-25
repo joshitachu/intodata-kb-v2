@@ -12,6 +12,7 @@ from .models import (
     ConnectorAuthMode,
     ConnectorHealthResult,
     ConnectorHealthStatus,
+    ConnectorFreshnessResult,
     ConnectorInstanceCreate,
     ConnectorInstanceUpdate,
     ConnectorInstanceView,
@@ -162,6 +163,27 @@ class ConnectorService:
                 capability_id, query, row.config, row.credential_reference, project_id
             )
         return ConnectorReadResult.model_validate(redact(result.model_dump(), set(binding.redaction_fields)))
+
+    async def check_freshness(
+        self, instance_id: int, project_id: str, access_token: str | None = None
+    ) -> ConnectorFreshnessResult:
+        """Return governed source freshness only for a project-bound Elastic connector."""
+        row = await self.repository.get_instance(instance_id, bindings=True)
+        capability_id = "connector.mcp_elastic.search"
+        binding = next((item for item in row.capability_bindings if item.capability_id == capability_id), None)
+        if row.provider_key != "mcp_elastic":
+            raise ConnectorPolicyError("Freshness checks are supported only for the existing Elastic connector")
+        if not row.enabled or row.health_status != ConnectorHealthStatus.HEALTHY.value:
+            raise ConnectorPolicyError("Connector is unavailable")
+        if binding is None or not binding.enabled or project_id not in binding.project_ids or binding.domains:
+            raise ConnectorPolicyError("Connector is outside project scope")
+        provider = self.providers.get(row.provider_key)
+        freshness_for_user = getattr(provider, "freshness_for_user", None)
+        if not callable(freshness_for_user):
+            raise ConnectorPolicyError("This connector does not support source freshness checks")
+        if not access_token:
+            raise ConnectorPolicyError("This connector freshness check requires your active session")
+        return await freshness_for_user(row.config, project_id=project_id, access_token=access_token)
 
 
 def instance_view(row) -> ConnectorInstanceView:

@@ -67,7 +67,36 @@ type Connector = {
 };
 
 type ExistingElasticSource = { id: string; label: string; type: string };
-type ExistingElastic = { available: boolean; display_name: string | null; sources: ExistingElasticSource[] };
+type ExistingElasticAccount = {
+  connector_id: string;
+  display_name: string;
+  sources: ExistingElasticSource[];
+};
+type ExistingElastic = { available: boolean; accounts: ExistingElasticAccount[] };
+type ElasticSearchDiagnostics = {
+  outcome?: string;
+  query?: string;
+  window_days?: number;
+  recent_event_count?: number;
+  searched_sources?: string[];
+  unavailable_sources?: string[];
+  coverage_error?: string;
+};
+type ElasticFreshness = {
+  checked_at: string;
+  window_days: number;
+  sources: Array<{
+    source_id: string;
+    source: string;
+    status: "available" | "unavailable";
+    latest_event_at?: string | null;
+    events_in_window?: number | null;
+    total_documents?: number | null;
+    timestamped_documents?: number | null;
+    error_code?: string | null;
+    error?: string | null;
+  }>;
+};
 
 type Binding = {
   id: number;
@@ -189,14 +218,30 @@ function statusTone(status: HealthStatus) {
   return "border-amber-400/25 bg-amber-500/10 text-amber-700 dark:text-amber-300";
 }
 
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function elasticSourcesForProject(config: Record<string, unknown>, projectId: string): string[] {
+  const scopes = config.project_sources;
+  if (scopes && typeof scopes === "object" && !Array.isArray(scopes)) {
+    return stringList((scopes as Record<string, unknown>)[projectId]);
+  }
+  return stringList(config.source_ids);
+}
+
 export default function ConnectorControlPlane() {
   const { isOwner } = usePermissions();
   const projectsQuery = useAdminProjects(isOwner);
   const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [connectors, setConnectors] = useState<Connector[]>([]);
-  const [existingElastic, setExistingElastic] = useState<ExistingElastic>({ available: false, display_name: null, sources: [] });
+  const [existingElastic, setExistingElastic] = useState<ExistingElastic>({ available: false, accounts: [] });
+  const [elasticAccountId, setElasticAccountId] = useState("");
   const [elasticProjectId, setElasticProjectId] = useState("");
+  const [elasticSourceIds, setElasticSourceIds] = useState<string[]>([]);
+  const [elasticSourceFilter, setElasticSourceFilter] = useState("");
+  const [discoveringElastic, setDiscoveringElastic] = useState(false);
   const [usingExistingElastic, setUsingExistingElastic] = useState(false);
   const [bindings, setBindings] = useState<Record<number, Binding[]>>({});
   const [loading, setLoading] = useState(true);
@@ -219,6 +264,10 @@ export default function ConnectorControlPlane() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewComplete, setPreviewComplete] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewDiagnostics, setPreviewDiagnostics] = useState<ElasticSearchDiagnostics | null>(null);
+  const [freshnessResult, setFreshnessResult] = useState<ElasticFreshness | null>(null);
+  const [freshnessLoading, setFreshnessLoading] = useState(false);
+  const [freshnessError, setFreshnessError] = useState<string | null>(null);
   const [expandedSourceProjects, setExpandedSourceProjects] = useState<Record<string, boolean>>({});
   const [expandedConnectorCards, setExpandedConnectorCards] = useState<Record<number, boolean>>({});
 
@@ -236,9 +285,16 @@ export default function ConnectorControlPlane() {
       const connectorData = (await connectorResponse.json()) as { connectors?: Connector[] };
       const existingResponse = await authedFetch("/api/admin/connectors/existing-elastic", { cache: "no-store" });
       if (existingResponse.ok) {
-        setExistingElastic((await existingResponse.json()) as ExistingElastic);
+        const elasticData = (await existingResponse.json()) as ExistingElastic;
+        setExistingElastic(elasticData);
+        setElasticAccountId((current) => (
+          elasticData.accounts.some((account) => account.connector_id === current)
+            ? current
+            : elasticData.accounts[0]?.connector_id ?? ""
+        ));
       } else {
-        setExistingElastic({ available: false, display_name: null, sources: [] });
+        setExistingElastic({ available: false, accounts: [] });
+        setElasticAccountId("");
       }
       const nextConnectors = connectorData.connectors ?? [];
       setProviders(providerData.providers ?? []);
@@ -264,6 +320,37 @@ export default function ConnectorControlPlane() {
   const healthy = connectors.filter((connector) => connector.health_status === "healthy").length;
   const boundProjects = new Set(Object.values(bindings).flat().flatMap((binding) => binding.project_ids)).size;
   const activeCapabilities = Object.values(bindings).flat().filter((binding) => binding.enabled).length;
+  const selectedElasticAccount = existingElastic.accounts.find(
+    (account) => account.connector_id === elasticAccountId,
+  ) ?? null;
+  const elasticSourceLabels = new Map(
+    existingElastic.accounts.flatMap((account) => account.sources.map((source) => [source.id, source.label] as const)),
+  );
+
+  function configuredElasticSources(accountId: string, projectId: string): string[] {
+    const connector = connectors.find((item) => (
+      item.provider_key === "mcp_elastic" && item.config.connector_id === accountId
+    ));
+    return connector && projectId ? elasticSourcesForProject(connector.config, projectId) : [];
+  }
+
+  function chooseElasticAccount(accountId: string) {
+    setElasticAccountId(accountId);
+    setElasticSourceFilter("");
+    setElasticSourceIds(configuredElasticSources(accountId, elasticProjectId));
+  }
+
+  function chooseElasticProject(projectId: string) {
+    setElasticProjectId(projectId);
+    setElasticSourceIds(configuredElasticSources(elasticAccountId, projectId));
+  }
+
+  function toggleElasticSource(sourceId: string) {
+    setElasticSourceIds((current) => {
+      if (current.includes(sourceId)) return current.filter((id) => id !== sourceId);
+      return current.length < 3 ? [...current, sourceId] : current;
+    });
+  }
 
   function chooseProvider(providerKey: string) {
     const provider = providers.find((item) => item.provider_key === providerKey);
@@ -428,7 +515,10 @@ export default function ConnectorControlPlane() {
     setPreviewQuery(connector.provider_key === "mcp_elastic" ? "error OR failed OR exception" : "");
     setPreviewItems([]);
     setPreviewError(null);
+    setPreviewDiagnostics(null);
     setPreviewComplete(false);
+    setFreshnessResult(null);
+    setFreshnessError(null);
   }
 
   async function runPreview(event: FormEvent) {
@@ -450,27 +540,58 @@ export default function ConnectorControlPlane() {
         }),
       });
       if (!response.ok) throw new Error(await errorMessage(response, "Preview failed"));
-      const payload = (await response.json()) as { items?: Array<{ title: string; excerpt: string; source_ref: string }>; truncated?: boolean };
+      const payload = (await response.json()) as {
+        items?: Array<{ title: string; excerpt: string; source_ref: string }>;
+        truncated?: boolean;
+        diagnostics?: ElasticSearchDiagnostics;
+      };
       setPreviewItems(payload.items ?? []);
       setPreviewTruncated(payload.truncated ?? false);
+      setPreviewDiagnostics(payload.diagnostics ?? null);
       setPreviewComplete(true);
     } catch (reason) {
       setPreviewError(reason instanceof Error ? reason.message : "Preview failed");
       setPreviewItems([]);
+      setPreviewDiagnostics(null);
     } finally {
       setPreviewLoading(false);
     }
   }
 
+  async function checkFreshness() {
+    const connector = previewFor;
+    if (!connector || connector.provider_key !== "mcp_elastic" || !previewProjectId) return;
+    setFreshnessLoading(true);
+    setFreshnessError(null);
+    setFreshnessResult(null);
+    try {
+      const response = await authedFetch(`/api/admin/connectors/${connector.id}/freshness`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ project_id: previewProjectId }),
+      });
+      if (!response.ok) throw new Error(await errorMessage(response, "Could not check source freshness"));
+      setFreshnessResult((await response.json()) as ElasticFreshness);
+    } catch (reason) {
+      setFreshnessError(reason instanceof Error ? reason.message : "Could not check source freshness");
+    } finally {
+      setFreshnessLoading(false);
+    }
+  }
+
   async function enableExistingElastic() {
-    if (!elasticProjectId) return;
+    if (!elasticProjectId || !elasticAccountId || elasticSourceIds.length === 0) return;
     setUsingExistingElastic(true);
     setError(null);
     try {
       const response = await authedFetch("/api/admin/connectors/existing-elastic/use", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ project_id: elasticProjectId }),
+        body: JSON.stringify({
+          project_id: elasticProjectId,
+          connector_id: elasticAccountId,
+          source_ids: elasticSourceIds,
+        }),
       });
       if (!response.ok) throw new Error(await errorMessage(response, "Could not enable the existing Elastic connection"));
       await refresh();
@@ -478,6 +599,32 @@ export default function ConnectorControlPlane() {
       setError(reason instanceof Error ? reason.message : "Could not enable the existing Elastic connection");
     } finally {
       setUsingExistingElastic(false);
+    }
+  }
+
+  async function discoverExistingElasticSources() {
+    if (!elasticAccountId) return;
+    setDiscoveringElastic(true);
+    setError(null);
+    try {
+      const response = await authedFetch("/api/admin/connectors/existing-elastic/discover", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ connector_id: elasticAccountId }),
+      });
+      if (!response.ok) throw new Error(await errorMessage(response, "Could not discover Elastic sources"));
+      const account = (await response.json()) as ExistingElasticAccount;
+      setExistingElastic((current) => ({
+        available: true,
+        accounts: current.accounts.map((item) => (
+          item.connector_id === account.connector_id ? account : item
+        )),
+      }));
+      setElasticSourceIds((current) => current.filter((id) => account.sources.some((source) => source.id === id)));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not discover Elastic sources");
+    } finally {
+      setDiscoveringElastic(false);
     }
   }
 
@@ -536,29 +683,45 @@ export default function ConnectorControlPlane() {
 
         {existingElastic.available && (
           <section className="overflow-hidden rounded-2xl border border-cyan-500/20 bg-gradient-to-r from-cyan-500/[0.08] via-card to-primary/[0.06] shadow-elevation-sm">
-            <div className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+            <div className="space-y-5 p-5 sm:p-6">
               <div className="flex min-w-0 items-start gap-3">
                 <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-2.5 text-cyan-700 dark:text-cyan-300"><Database className="h-5 w-5" /></div>
                 <div className="min-w-0">
                   <h2 className="text-sm font-semibold">Elastic is already connected</h2>
-                  <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">Use {existingElastic.display_name ?? "your Nexus Elastic connection"} in Labs. No URL or key to enter. We’ll add only a couple of recommended log sources to the project you choose.</p>
+                  <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">Choose the Elastic account, project, and exact indexes, aliases, or data streams Labs may search. Nexus discovers their fields and gives the agent that context automatically.</p>
                 </div>
               </div>
-              <div className="flex flex-col gap-2 sm:min-w-64 sm:flex-row">
-                <SelectMenu
-                  value={elasticProjectId}
-                  onChange={setElasticProjectId}
-                  options={projects.map((project) => ({ value: project.id, label: project.display_name }))}
-                  placeholder="Choose a project"
-                  ariaLabel="Project to enable Elastic for"
-                  variant="field"
-                  size="md"
-                  className="w-full max-w-none"
-                  disabled={usingExistingElastic}
-                />
-                <Button onClick={() => void enableExistingElastic()} disabled={!elasticProjectId} isLoading={usingExistingElastic}>
-                  <Zap className="h-4 w-4" /> Enable for Labs
-                </Button>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Elastic account">
+                  <SelectMenu value={elasticAccountId} onChange={chooseElasticAccount} options={existingElastic.accounts.map((account) => ({ value: account.connector_id, label: account.display_name }))} placeholder="Choose an Elastic account" ariaLabel="Elastic account" variant="field" size="md" className="w-full max-w-none" disabled={usingExistingElastic || discoveringElastic} />
+                </Field>
+                <Field label="Project">
+                  <SelectMenu value={elasticProjectId} onChange={chooseElasticProject} options={projects.map((project) => ({ value: project.id, label: project.display_name }))} placeholder="Choose a project" ariaLabel="Project to enable Elastic for" variant="field" size="md" className="w-full max-w-none" disabled={usingExistingElastic} />
+                </Field>
+              </div>
+              <div className="rounded-xl border border-cyan-500/20 bg-background/65 p-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-xs font-semibold">Sources this project may search</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">Choose up to three. Any visible source can be used; names are never hardcoded.</p>
+                  </div>
+                  <Button variant="secondary" size="sm" isLoading={discoveringElastic} disabled={!elasticAccountId} onClick={() => void discoverExistingElasticSources()}><RefreshCw className="h-3.5 w-3.5" /> Refresh indexes</Button>
+                </div>
+                <Input className="mt-3" value={elasticSourceFilter} onChange={(event) => setElasticSourceFilter(event.target.value)} placeholder="Filter indexes, aliases, and data streams" disabled={!selectedElasticAccount} />
+                <div className="mt-2 max-h-52 space-y-1 overflow-y-auto rounded-lg border border-border/70 p-1.5">
+                  {(selectedElasticAccount?.sources ?? [])
+                    .filter((source) => source.label.toLocaleLowerCase().includes(elasticSourceFilter.trim().toLocaleLowerCase()))
+                    .map((source) => {
+                      const checked = elasticSourceIds.includes(source.id);
+                      const disabled = !checked && elasticSourceIds.length >= 3;
+                      return <label key={source.id} className={cn("flex items-center gap-3 rounded-md px-2.5 py-2 text-xs transition", disabled ? "cursor-not-allowed opacity-45" : "cursor-pointer hover:bg-muted/60", checked && "bg-cyan-500/10 text-foreground")}><input type="checkbox" className="sr-only" checked={checked} disabled={disabled} onChange={() => toggleElasticSource(source.id)} /><span className={cn("flex h-5 w-5 items-center justify-center rounded border", checked ? "border-primary bg-primary text-primary-foreground" : "border-border")}><Check className={cn("h-3 w-3", !checked && "opacity-0")} /></span><span className="min-w-0 flex-1 truncate font-medium">{source.label}</span><span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{source.type.replaceAll("_", " ")}</span></label>;
+                    })}
+                  {selectedElasticAccount && selectedElasticAccount.sources.length === 0 && <p className="p-3 text-center text-xs text-muted-foreground">No sources are listed yet. Select “Refresh indexes”.</p>}
+                </div>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                  <span className="text-[11px] text-muted-foreground">{elasticSourceIds.length}/3 selected</span>
+                  <Button onClick={() => void enableExistingElastic()} disabled={!elasticProjectId || !elasticAccountId || elasticSourceIds.length === 0} isLoading={usingExistingElastic}><Zap className="h-4 w-4" /> Save for Labs</Button>
+                </div>
               </div>
             </div>
           </section>
@@ -584,12 +747,12 @@ export default function ConnectorControlPlane() {
               const provider = providers.find((item) => item.provider_key === connector.provider_key);
               const connectorBindings = bindings[connector.id] ?? [];
               const projectIds = [...new Set(connectorBindings.flatMap((binding) => binding.project_ids))];
-              const sourceIds = Array.isArray(connector.config.source_ids)
-                ? connector.config.source_ids.filter((id): id is string => typeof id === "string")
-                : [];
-              const sourceLabels = new Map(existingElastic.sources.map((source) => [source.id, source.label]));
+              const sourceIdsByProject = Object.fromEntries(
+                projectIds.map((projectId) => [projectId, elasticSourcesForProject(connector.config, projectId)]),
+              );
+              const sourceIds = [...new Set(Object.values(sourceIdsByProject).flat())];
               const timeWindowDays = typeof connector.config.time_window_days === "number"
-                ? connector.config.time_window_days
+                ? Math.min(connector.config.time_window_days, 7)
                 : 7;
               const isBusy = busyId === connector.id;
               const cardExpanded = Boolean(expandedConnectorCards[connector.id]);
@@ -641,6 +804,7 @@ export default function ConnectorControlPlane() {
                         </div>
                         <div className="mt-3 divide-y divide-border/60">
                           {projectIds.map((projectId) => {
+                            const projectSourceIds = sourceIdsByProject[projectId] ?? [];
                             const projectKey = `${connector.id}:${projectId}`;
                             const expanded = Boolean(expandedSourceProjects[projectKey]);
                             const detailId = `elastic-sources-${connector.id}-${projectId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
@@ -655,13 +819,13 @@ export default function ConnectorControlPlane() {
                                 >
                                   {expanded ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
                                   <span className="min-w-0 flex-1 truncate text-xs font-medium">{projects.find((project) => project.id === projectId)?.display_name ?? projectId}</span>
-                                  <span className="shrink-0 text-[10px] text-muted-foreground">{sourceIds.length} source{sourceIds.length === 1 ? "" : "s"} · {timeWindowDays} days</span>
+                                  <span className="shrink-0 text-[10px] text-muted-foreground">{projectSourceIds.length} source{projectSourceIds.length === 1 ? "" : "s"} · {timeWindowDays} days</span>
                                 </button>
                                 {expanded && (
                                   <div id={detailId} className="flex flex-wrap gap-1.5 px-8 pb-2 pt-1">
-                                    {sourceIds.length ? sourceIds.map((sourceId) => (
+                                    {projectSourceIds.length ? projectSourceIds.map((sourceId) => (
                                       <span key={`${projectId}-${sourceId}`} className="rounded-md border border-cyan-500/20 bg-background/70 px-2 py-1 text-[10px] text-muted-foreground" title={sourceId}>
-                                        {sourceLabels.get(sourceId) ?? "Source name unavailable"}
+                                        {elasticSourceLabels.get(sourceId) ?? "Source name unavailable"}
                                       </span>
                                     )) : <span className="text-[10px] text-muted-foreground">No sources selected</span>}
                                   </div>
@@ -669,7 +833,7 @@ export default function ConnectorControlPlane() {
                               </div>
                             );
                           })}
-                          {!existingElastic.sources.length && sourceIds.length > 0 && (
+                          {!existingElastic.accounts.some((account) => account.sources.length > 0) && sourceIds.length > 0 && (
                             <p className="pt-2 text-[10px] text-muted-foreground">Elastic source names are temporarily unavailable; refresh to try again.</p>
                           )}
                         </div>
@@ -680,7 +844,7 @@ export default function ConnectorControlPlane() {
                   {cardExpanded && <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 bg-muted/15 px-5 py-3 sm:px-6">
                     <div className="flex flex-wrap gap-1.5">{connectorBindings.map((binding) => <span key={binding.id} className="rounded-md border border-border bg-background/70 px-2 py-1 font-mono text-[10px] text-muted-foreground">{binding.capability_id}</span>)}</div>
                     <div className="flex flex-wrap gap-2">
-                      <Button variant="ghost" size="sm" onClick={() => editAccess(connector)}><Fingerprint className="h-3.5 w-3.5" /> Project access</Button>
+                      {connector.provider_key !== "mcp_elastic" && <Button variant="ghost" size="sm" onClick={() => editAccess(connector)}><Fingerprint className="h-3.5 w-3.5" /> Project access</Button>}
                       {connector.provider_key === "http_elastic" && <Button variant="ghost" size="sm" onClick={() => void inspectResources(connector)}><Search className="h-3.5 w-3.5" /> Browse indexes</Button>}
                       <Button variant="ghost" size="sm" disabled={connector.health_status !== "healthy" || connectorBindings.length === 0} onClick={() => openPreview(connector)}><Sparkles className="h-3.5 w-3.5" /> {connector.provider_key === "mcp_elastic" ? "Test search" : "Preview evidence"}</Button>
                       <Button variant="secondary" size="sm" isLoading={isBusy} onClick={() => void perform(connector, () => authedFetch(`/api/admin/connectors/${connector.id}/health`, { method: "POST" }), "Health check failed")}><Gauge className="h-3.5 w-3.5" /> Test connection</Button>
@@ -750,19 +914,36 @@ export default function ConnectorControlPlane() {
         <form className="space-y-4" onSubmit={(event) => void runPreview(event)}>
           <Field label="Project"><SelectMenu value={previewProjectId} onChange={setPreviewProjectId} options={[...new Set((bindings[previewFor?.id ?? -1] ?? []).flatMap((binding) => binding.project_ids))].map((id) => ({ value: id, label: projects.find((project) => project.id === id)?.display_name ?? id }))} ariaLabel="Preview project" variant="field" size="md" className="w-full max-w-none" /></Field>
           {previewFor?.provider_key === "mcp_elastic" && (() => {
-            const ids = Array.isArray(previewFor.config.source_ids)
-              ? previewFor.config.source_ids.filter((id): id is string => typeof id === "string")
-              : [];
-            const windowDays = typeof previewFor.config.time_window_days === "number" ? previewFor.config.time_window_days : 7;
-            const names = ids.map((id) => existingElastic.sources.find((source) => source.id === id)?.label).filter((label): label is string => Boolean(label));
+            const ids = elasticSourcesForProject(previewFor.config, previewProjectId);
+            const windowDays = typeof previewFor.config.time_window_days === "number" ? Math.min(previewFor.config.time_window_days, 7) : 7;
+            const names = ids.map((id) => elasticSourceLabels.get(id)).filter((label): label is string => Boolean(label));
             return <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/[0.04] p-3 text-xs"><span className="font-medium">Search scope:</span> {names.length ? names.join(", ") : "Configured Elastic sources"} · last {windowDays} days</div>;
           })()}
-          <Field label="Search query"><Input value={previewQuery} onChange={(event) => setPreviewQuery(event.target.value)} placeholder="Search for a real record" required /></Field>
-          <Button type="submit" isLoading={previewLoading} disabled={!previewProjectId || !previewQuery.trim()}><Search className="h-4 w-4" /> {previewFor?.provider_key === "mcp_elastic" ? "Run test search" : "Run preview"}</Button>
+          <Field label="Search query" hint={previewFor?.provider_key === "mcp_elastic" ? "Use * to match any event in this window" : undefined}><Input value={previewQuery} onChange={(event) => setPreviewQuery(event.target.value)} placeholder="Search for a real record" required /></Field>
+          <div className="flex flex-wrap gap-2">
+            <Button type="submit" isLoading={previewLoading} disabled={!previewProjectId || !previewQuery.trim()}><Search className="h-4 w-4" /> {previewFor?.provider_key === "mcp_elastic" ? "Run test search" : "Run preview"}</Button>
+            {previewFor?.provider_key === "mcp_elastic" && <Button type="button" variant="secondary" isLoading={freshnessLoading} disabled={!previewProjectId} onClick={() => void checkFreshness()}><Activity className="h-4 w-4" /> Check data freshness</Button>}
+          </div>
         </form>
         {previewError && <p className="mt-4 rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-sm text-destructive">{previewError}</p>}
         {previewItems.length > 0 && <div className="mt-5 space-y-2">{previewItems.map((item, index) => <div key={`${item.source_ref}-${index}`} className="rounded-xl border border-border bg-muted/20 p-3"><div className="text-sm font-medium">{item.title}</div><p className="mt-1 line-clamp-4 whitespace-pre-wrap text-xs leading-5 text-muted-foreground">{item.excerpt}</p><div className="mt-2 truncate font-mono text-[10px] text-muted-foreground">{item.source_ref}</div></div>)}{previewTruncated && <p className="text-xs text-muted-foreground">More results exist. Labs receives a bounded set per call.</p>}</div>}
-        {previewComplete && !previewError && previewQuery && previewItems.length === 0 && <p className="mt-5 text-sm text-muted-foreground">No matching records were returned from the selected sources in this time window.</p>}
+        {previewComplete && !previewError && previewQuery && previewItems.length === 0 && <div className="mt-5 rounded-xl border border-amber-400/25 bg-amber-500/[0.06] p-4 text-sm">
+          <p className="font-medium">{previewDiagnostics?.outcome === "no_matches_in_active_sources" ? "No matching records; the selected sources do contain recent events." : previewDiagnostics?.outcome === "no_recent_events" ? "No recent events exist in the selected sources." : previewDiagnostics?.outcome === "coverage_unavailable" ? "No records were returned and source coverage could not be fully checked." : "No matching records were returned from the selected sources in this time window."}</p>
+          {typeof previewDiagnostics?.recent_event_count === "number" && <p className="mt-1 text-xs text-muted-foreground">Recent events checked: {previewDiagnostics.recent_event_count}</p>}
+          {previewDiagnostics?.coverage_error && <p className="mt-1 text-xs text-muted-foreground">{previewDiagnostics.coverage_error}</p>}
+        </div>}
+        {freshnessError && <p role="alert" className="mt-4 rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-sm text-destructive">Freshness check failed: {freshnessError}</p>}
+        {freshnessResult && <div className="mt-5 space-y-2" aria-live="polite">
+          <p className="text-xs text-muted-foreground">Checked {new Date(freshnessResult.checked_at).toLocaleString()} · recent window: {freshnessResult.window_days} days</p>
+          {freshnessResult.sources.map((source) => <div key={source.source_id} className="rounded-xl border border-border bg-muted/20 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm font-medium">{source.source}</span><span className={cn("text-xs font-medium", source.status === "available" ? "text-emerald-600 dark:text-emerald-400" : "text-destructive")}>{source.status === "available" ? "Checked" : "Unavailable"}</span></div>
+            {source.status === "unavailable" ? <p className="mt-1 text-xs text-destructive">{source.error ?? "This source could not be checked."}</p> : <div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-3">
+              <span>Newest event: {source.latest_event_at ? new Date(source.latest_event_at).toLocaleString() : "none found"}</span>
+              <span>Events in last {freshnessResult.window_days} days: {source.events_in_window ?? 0}</span>
+              <span>Indexed documents: {source.total_documents ?? 0}{(source.timestamped_documents ?? 0) < (source.total_documents ?? 0) ? ` · ${source.total_documents! - source.timestamped_documents!} without timestamps` : ""}</span>
+            </div>}
+          </div>)}
+        </div>}
       </Modal>
     </main>
   );

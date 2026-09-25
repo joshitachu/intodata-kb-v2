@@ -22,7 +22,7 @@ import math
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Literal, Mapping
 
 import httpx
 
@@ -58,7 +58,11 @@ from src.runtime.models import (
     RuntimeWorkspace,
 )
 from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
-from src.runtime.providers.base import CredentialField, compose_tenant_identity
+from src.runtime.providers.base import (
+    CredentialField,
+    StaticRefStrategy,
+    compose_tenant_identity,
+)
 from src.runtime.sync import RuntimeSyncBatch
 
 logger = logging.getLogger(__name__)
@@ -391,8 +395,31 @@ class TalendTmcRuntimeProvider:
     def container_key_field(self) -> str:
         return "workspace_id"
 
-    def static_ref_strategy(self) -> None:
-        return None
+    def static_ref_strategy(self) -> StaticRefStrategy:
+        """`artifact_name` is the DESIGN name; `name`/`job_name` is the TASK name.
+
+        Measured on the Pluripharm estate: `artifact_name` matches 145 of 153
+        deployed artifacts against the scan (94.8%), because it is the name
+        Studio published. The task name is an operator label that carries the
+        scheduler's own structure -- `TMC_TaskDuplicator > AIS_Queue_ZorgSignaal`
+        -- and matches far worse, so it is not the key.
+        """
+        return StaticRefStrategy(source_field="artifact_name")
+
+    def executable_semantics(self) -> Mapping[str, Literal["execution", "lifecycle"]]:
+        """A TMC Job runs and ends; a Route and a Data Service are deployed and stay up.
+
+        `RuntimeExecutableKind` already carries this split (see its docstring);
+        this states the operational consequence. A route reported `running` has
+        been deployed, not observed doing work, so counting it as an execution
+        invents throughput that nobody measured and turns a healthy deployment
+        into a run that never finished.
+        """
+        return {
+            RuntimeExecutableKind.JOB.value: "execution",
+            RuntimeExecutableKind.ROUTE.value: "lifecycle",
+            RuntimeExecutableKind.DATA_SERVICE.value: "lifecycle",
+        }
 
     def physical_source_identity(self, credentials: Mapping[str, Any]) -> str:
         base_url = str(credentials.get("base_url") or "").strip().rstrip("/").lower()

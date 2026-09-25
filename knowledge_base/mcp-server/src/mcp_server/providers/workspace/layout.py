@@ -5,8 +5,10 @@ string concatenation; call sites ask for a typed accessor.
 
 Why this is a module and not a convention: the failure this lane replaces
 happened because three modules (``services/claude_service.py``,
-``providers/claude_cli.py``, ``scripts/bundle_analysis.py``) each carried their
-own idea of the same layout and of the section contract inside it. A producer
+``providers/claude_cli.py``, and the since-deleted ``scripts/bundle_analysis.py``)
+each carried their own idea of the same layout and of the section contract
+inside it -- the bundler was removed precisely because it parsed model prose for
+section headings, which is the seam that can fail silently. A producer
 that wrote ``## COMPONENTS`` and a consumer that read ``### COMPONENTS`` were
 free to disagree for months because no single object could be asked "what is
 the shape here". One owner makes that disagreement a compile-time impossibility

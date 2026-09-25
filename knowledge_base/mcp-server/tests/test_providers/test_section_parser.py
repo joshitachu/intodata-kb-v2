@@ -381,9 +381,10 @@ def test_repeated_parses_are_byte_identical():
 #
 # Recognising names at every level widened an existing hole: under the old
 # h3-only rule a code sample containing "# COMPONENTS" was inert; under the new
-# rule it would open a section and truncate the real one.  The standalone
-# bundler (scripts/bundle_analysis.py) implements the same guard -- these tests
-# pin the two implementations to the same behaviour.
+# rule it would open a section and truncate the real one.  This module is now
+# the ONLY implementation of that guard: the standalone bundler that carried a
+# second copy of it (scripts/bundle_analysis.py) is deleted, along with the
+# Phase 2.8 lane that ran it.
 # --------------------------------------------------------------------------
 
 

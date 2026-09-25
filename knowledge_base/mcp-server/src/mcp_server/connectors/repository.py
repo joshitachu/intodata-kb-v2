@@ -24,7 +24,6 @@ from .domain import (
     ConnectorInstanceConfig,
     ConnectorSourceProfile,
     ProjectConnectorBinding,
-    RunConnectorSnapshot,
 )
 from .secrets import ConnectorSecretService, connector_secrets
 
@@ -130,9 +129,14 @@ class ConnectorRepository:
                 row.source_type = profile.source_type
                 row.display_label = profile.display_label
                 row.locator_ciphertext = self.secrets.encrypt(profile.locator)
-                row.field_profile = dict(profile.fields)
-                row.discovered_at = profile.discovered_at
-                row.discovery_digest = profile.discovery_digest
+                # Broad index discovery carries no field profile. Preserve an
+                # earlier detailed profile until this source is explicitly
+                # described again, so refreshing the source picker cannot make
+                # active Labs searches forget their searchable fields.
+                if profile.fields:
+                    row.field_profile = dict(profile.fields)
+                    row.discovered_at = profile.discovered_at
+                    row.discovery_digest = profile.discovery_digest
                 row.enabled = profile.enabled
             persisted.append(row)
         await self.session.flush()

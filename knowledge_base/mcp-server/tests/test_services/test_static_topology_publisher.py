@@ -115,6 +115,51 @@ def test_compile_refuses_unapproved_redaction_receipt(tmp_path):
         )
 
 
+def _set_approval_schema_version(tmp_path, version) -> None:
+    path = tmp_path / "publication_approval.json"
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    receipt["schema_version"] = version
+    if version == 2:
+        # v2's only addition; the publisher reads the four aggregates, not `tree`.
+        receipt["tree"] = {
+            "algorithm": "sha256", "roots": ["scan"], "excluded_prefixes": [],
+            "file_count": 0, "digest": f"sha256:{'0' * 64}", "files": {},
+        }
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+
+
+def test_compile_accepts_a_version_2_scanner_approval(tmp_path):
+    """v2 receipts must publish.
+
+    The scanner has written ``schema_version: 2`` since it added the ``tree``
+    binding, while this publisher pinned ``== 1``. Because publication is
+    advisory, every scan since that bump reported success and silently shipped
+    no static topology -- which is why the correlation lane had no snapshot for
+    any project that carries runtime data.
+    """
+    _write_completed_scan(tmp_path)
+    _set_approval_schema_version(tmp_path, 2)
+
+    snapshot = StaticTopologyPublisher().compile_snapshot(
+        project_id="topology", output_dir=tmp_path, source_sequence=1,
+    )
+
+    assert [job["static_job_id"] for job in snapshot["jobs"]] == [
+        "root/A::Producer", "root/B::Consumer",
+    ]
+
+
+@pytest.mark.parametrize("version", [0, 3, "2", None])
+def test_compile_refuses_an_unsupported_approval_schema_version(tmp_path, version):
+    _write_completed_scan(tmp_path)
+    _set_approval_schema_version(tmp_path, version)
+
+    with pytest.raises(StaticTopologyRedactionRefusal, match="schema_version"):
+        StaticTopologyPublisher().compile_snapshot(
+            project_id="topology", output_dir=tmp_path, source_sequence=1,
+        )
+
+
 def test_compile_refuses_artifact_changed_after_final_approval(tmp_path):
     _write_completed_scan(tmp_path)
     lineage_path = tmp_path / "scan" / "lineage.json"

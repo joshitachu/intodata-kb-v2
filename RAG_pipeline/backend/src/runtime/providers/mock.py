@@ -7,7 +7,7 @@ validation — never reads env secrets or calls the network.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 from src.runtime.models import (
     DetectFailuresInput,
@@ -20,6 +20,7 @@ from src.runtime.models import (
     RuntimeEngineStatus,
     RuntimeEnvironment,
     RuntimeExecution,
+    RuntimeExecutableKind,
     RuntimeExecutionState,
     RuntimeFailure,
     RuntimeJob,
@@ -35,6 +36,7 @@ from src.runtime.providers.base import (
     CredentialField,
     NoScopeSelectionMixin,
     SingleTenantIdentityMixin,
+    StaticRefStrategy,
 )
 from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
 from src.runtime.sync import RuntimeSyncBatch
@@ -126,8 +128,17 @@ class MockRuntimeProvider(NoScopeSelectionMixin, SingleTenantIdentityMixin):
     def container_key_field(self) -> str:
         return "workspace_id"
 
-    def static_ref_strategy(self) -> None:
-        return None
+    def static_ref_strategy(self) -> StaticRefStrategy:
+        """Declared, because this fixture genuinely sets `artifact_name`.
+
+        It is the only non-TMC exercise of the binding path, which is what keeps
+        that path from quietly becoming TMC-shaped.
+        """
+        return StaticRefStrategy(source_field="artifact_name")
+
+    def executable_semantics(self) -> Mapping[str, Literal["execution", "lifecycle"]]:
+        """The fixture emits one job with a start and an end."""
+        return {RuntimeExecutableKind.JOB.value: "execution"}
 
     def physical_source_identity(self, credentials: Mapping[str, Any]) -> str:
         return "mock"

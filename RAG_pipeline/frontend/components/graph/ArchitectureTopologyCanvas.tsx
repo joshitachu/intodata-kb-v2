@@ -39,6 +39,18 @@ import {
   type StreamLifecycle,
 } from "@/lib/architectureViewModel";
 import { architectureColumnRank, layoutArchitectureNodes } from "@/lib/architectureLayout";
+import {
+  buildBusinessHealthOverlay,
+  streamEffectiveStatus,
+  UNMEASURED_REASON_TEXT,
+  type BusinessHealthFeed,
+  type BusinessHealthOverlay,
+  type ImpactChain,
+  type SystemHealth,
+} from "@/lib/businessHealth";
+import { FAILING_EDGE_COLOR, STATUS_META, worstEffectiveStatus } from "@/lib/healthStatusMeta";
+import type { EffectiveStatus } from "@/lib/healthPropagation";
+import { Activity } from "lucide-react";
 import { FieldPath } from "@/components/graph/FieldPath";
 import { assistantRoleShadow } from "@/lib/nodeStyles";
 import type { BusinessRule, BusinessSystem, BusinessTopology, DeploymentAgreement, ProjectLandscapeResponse, StreamCondition } from "@/types/landscape";
@@ -54,10 +66,97 @@ interface ArchitectureNodeData extends Record<string, unknown> {
   incomingPorts: string[];
   outgoingPorts: string[];
   assistantVisualRole?: string;
+  /** Undefined when the runtime overlay is off; never "assume healthy". */
+  health?: ArchitectureNodeHealth;
 }
 
 interface ArchitectureEdgeData extends Record<string, unknown> {
   pair: ArchitecturePairRelationship;
+}
+
+/* ---------------------------------------------------------------- *
+ * Runtime overlay
+ *
+ * Absence of measurement is rendered as its own thing (grey, with the reason
+ * on the node title and in the detail panel) and NEVER as health. The failure
+ * mode this guards against is a board that is green because nothing is being
+ * measured -- both local runtime sources are currently auto-disabled, so that
+ * is the default state, not an edge case.
+ * ---------------------------------------------------------------- */
+
+interface ArchitectureNodeHealth {
+  status: EffectiveStatus;
+  measured: boolean;
+  /** Why it is unmeasured. Empty when measured. */
+  detail: string;
+  impact: ImpactChain | null;
+}
+
+interface ArchitecturePairHealth {
+  status: EffectiveStatus;
+  measured: boolean;
+}
+
+function nodeHealthFor(
+  node: ArchitectureNode,
+  bySystem: ReadonlyMap<string, SystemHealth>,
+): ArchitectureNodeHealth {
+  const members = node.systemIds
+    .map((id) => bySystem.get(id))
+    .filter((item): item is SystemHealth => Boolean(item));
+  if (members.length === 0) {
+    return { status: "unknown", measured: false, detail: UNMEASURED_REASON_TEXT.no_streams, impact: null };
+  }
+  const measured = members.some((member) => member.measured);
+  return {
+    status: worstEffectiveStatus(members.map((member) => member.status)),
+    measured,
+    detail: measured ? "" : (members.find((member) => member.unmeasuredDetail)?.unmeasuredDetail ?? ""),
+    impact: members.find((member) => member.impact)?.impact ?? null,
+  };
+}
+
+function pairHealthFor(
+  pair: ArchitecturePairRelationship,
+  overlay: BusinessHealthOverlay,
+): ArchitecturePairHealth {
+  const statuses = pair.streamIds.map((id) => streamEffectiveStatus(id, overlay.index.byStream, overlay.impact));
+  return {
+    status: worstEffectiveStatus(statuses),
+    measured: pair.streamIds.some((id) => overlay.index.byStream.get(id)?.measured),
+  };
+}
+
+/** One sentence naming how a failure reached this system, for a title tooltip. */
+function impactSentence(impact: ImpactChain, labelFor: (systemId: string) => string): string {
+  return `Impacted via ${impact.systemPath.map(labelFor).join(" \u2192 ")}`;
+}
+
+function healthTitle(health: ArchitectureNodeHealth, labelFor: (systemId: string) => string): string {
+  const meta = STATUS_META[health.status];
+  if (!health.measured) return `Not measured. ${health.detail}`;
+  if (health.impact) return `${meta.label}. ${impactSentence(health.impact, labelFor)}`;
+  return `${meta.label}. ${meta.description}`;
+}
+
+/**
+ * The status dot + word carried on a node, an edge row or a panel line.
+ * Colour is never the only channel: the label is always rendered beside it.
+ */
+function HealthPill({ status, measured, title }: { status: EffectiveStatus; measured: boolean; title?: string }) {
+  const meta = STATUS_META[status];
+  const label = measured ? meta.label : "Not measured";
+  return (
+    <span
+      title={title}
+      data-testid={`health-pill:${measured ? status : "unmeasured"}`}
+      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-semibold"
+      style={{ color: meta.color, backgroundColor: `${meta.color}1a` }}
+    >
+      <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: meta.color }} />
+      {label}
+    </span>
+  );
 }
 
 const NODE_WIDTH = 244;
@@ -106,10 +205,19 @@ function portTop(index: number, count: number): string {
 function ArchitectureSystemNodeComponent({ data }: { data: ArchitectureNodeData }) {
   const node = data.architectureNode;
   const anchor = node.column === "anchor";
+  const health = data.health;
+  // The ring is only drawn for a MEASURED non-neutral status. An unmeasured
+  // node gets the grey pill and no ring, so "we did not look" can never be
+  // mistaken for "we looked and it is fine".
+  const healthRing = health && health.measured && health.status !== "unknown"
+    ? `0 0 0 3px ${STATUS_META[health.status].color}40`
+    : "";
+  const assistantShadow = assistantRoleShadow(data.assistantVisualRole);
   return (
     <div
       data-assistant-role={data.assistantVisualRole}
-      style={{ boxShadow: assistantRoleShadow(data.assistantVisualRole) }}
+      data-health-status={health ? (health.measured ? health.status : "unmeasured") : undefined}
+      style={{ boxShadow: [assistantShadow, healthRing].filter(Boolean).join(", ") || undefined }}
       className={`relative h-[116px] w-[244px] rounded-2xl border px-4 py-3 shadow-sm transition-all duration-200 ${
         anchor
           ? "border-slate-900 bg-slate-900 text-white shadow-lg"
@@ -151,6 +259,15 @@ function ArchitectureSystemNodeComponent({ data }: { data: ArchitectureNodeData 
       {SHOW_CLAIM_STATUS && <span className={`absolute bottom-3 left-4 rounded px-1.5 py-0.5 text-[9px] font-semibold ${anchor ? "bg-white/10 text-white" : statusClasses(node.status)}`}>
         {statusLabel(node.status)}
       </span>}
+      {health && (
+        <span className="absolute bottom-2.5 right-3">
+          <HealthPill
+            status={health.status}
+            measured={health.measured}
+            title={healthTitle(health, (id) => id)}
+          />
+        </span>
+      )}
     </div>
   );
 }
@@ -235,14 +352,29 @@ export function ArchitectureTopologyCanvas({
   assistantEmphasis,
   assistantFocusRequest,
   onContextChange,
+  health,
 }: {
   landscape: ProjectLandscapeResponse;
   onOpenFlow: (streamId: string) => void;
   assistantEmphasis?: AssistantCanvasEmphasis | null;
   assistantFocusRequest?: AssistantFocusRequest | null;
   onContextChange?: (context: CopilotViewContext) => void;
+  health?: BusinessHealthFeed;
 }) {
   const topology = landscape.business_topology!;
+  // The overlay is derived ONCE here and handed down; nothing below re-joins.
+  // `null` when the user turned it off -- distinct from "on, and nothing bound",
+  // which still renders (every node grey, with the reason).
+  const healthOverlay = useMemo(
+    () =>
+      health?.enabled
+        ? // The evidence catalogue is the artifact->design bridge for GENERATED
+          // topologies; annotations are the bridge for analyst-authored ones.
+          // Passing only the topology grey-outs every generated project.
+          buildBusinessHealthOverlay(topology, health.rows, {}, landscape.topology_evidence)
+        : null,
+    [topology, health?.enabled, health?.rows, landscape.topology_evidence],
+  );
   // The quiet default map caps how many relationships it draws. Opting in is a
   // user choice rather than a larger default, because the omission is only a
   // problem when it is invisible: the cap is announced below and reversible.
@@ -347,10 +479,11 @@ export function ArchitectureTopologyCanvas({
           selected: node.id === selectedSystemId || Boolean(selectedPair && (node.id === selectedPair.first || node.id === selectedPair.second)),
           dimmed: queryDimmed || focusDimmed || (!activeNodeIds && assistantActive && !assistantRole),
           assistantVisualRole: assistantRole,
+          health: healthOverlay ? nodeHealthFor(architectureNode, healthOverlay.bySystem) : undefined,
         },
       };
     });
-  }, [nodes, query, activeNodeIds, selectedSystemId, selectedPair, assistantEmphasis]);
+  }, [nodes, query, activeNodeIds, selectedSystemId, selectedPair, assistantEmphasis, healthOverlay]);
 
   const displayedEdges = useMemo(() => edges.map((edge) => {
     const pair = edge.data!.pair;
@@ -363,17 +496,38 @@ export function ArchitectureTopologyCanvas({
       ?? assistantEmphasis?.edgeRoles.get(aggregatedRelationshipId(pair.first, pair.second))
       ?? assistantEmphasis?.edgeRoles.get(aggregatedRelationshipId(pair.second, pair.first));
     const assistantActive = Boolean(assistantEmphasis?.nodeRoles.size || assistantEmphasis?.edgeRoles.size);
+    // Health colouring only ever REPLACES the claim-status stroke for a
+    // measured, non-neutral status. An unmeasured relationship keeps its
+    // existing neutral slate/violet styling rather than being recoloured into
+    // something that reads as a verdict.
+    const pairHealth = healthOverlay ? pairHealthFor(pair, healthOverlay) : null;
+    const painted = pairHealth && pairHealth.measured && pairHealth.status !== "unknown";
+    const failing = painted && pairHealth.status === "down";
+    const healthStroke = painted
+      ? (failing ? FAILING_EDGE_COLOR : STATUS_META[pairHealth.status].color)
+      : undefined;
+    const baseWidth = selectedPair?.id === pair.id || assistantRole === "primary" ? 3.5 : assistantRole ? 2.8 : 2;
     return {
       ...edge,
+      animated: Boolean(failing),
+      markerEnd: healthStroke && edge.markerEnd && typeof edge.markerEnd === "object"
+        ? { ...edge.markerEnd, color: healthStroke }
+        : edge.markerEnd,
+      // A bidirectional pair carries a marker at both ends; recolouring only
+      // one leaves a red line with a slate arrowhead.
+      markerStart: healthStroke && edge.markerStart && typeof edge.markerStart === "object"
+        ? { ...edge.markerStart, color: healthStroke }
+        : edge.markerStart,
       style: {
         ...edge.style,
+        ...(healthStroke ? { stroke: healthStroke, strokeDasharray: failing ? undefined : edge.style?.strokeDasharray } : {}),
         opacity: active && (!assistantActive || Boolean(assistantRole)) ? 1 : 0.08,
-        strokeWidth: selectedPair?.id === pair.id || assistantRole === "primary" ? 3.5 : assistantRole ? 2.8 : 2,
+        strokeWidth: failing ? Math.max(baseWidth, 3) : baseWidth,
         transition: "opacity 180ms ease, stroke-width 180ms ease",
       },
-      data: { pair, assistantVisualRole: assistantRole },
+      data: { pair, assistantVisualRole: assistantRole, healthStatus: pairHealth?.status, healthMeasured: pairHealth?.measured },
     };
-  }), [edges, selectedPair, selectedSystemId, assistantEmphasis]);
+  }), [edges, selectedPair, selectedSystemId, assistantEmphasis, healthOverlay]);
 
   const selectSystem: NodeMouseHandler<Node<ArchitectureNodeData>> = useCallback((_event, node) => {
     setSelectedSystemId(node.id);
@@ -438,6 +592,7 @@ export function ArchitectureTopologyCanvas({
           <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-blue-700">
             Level: {selectedFlow ? "Technical flow" : selectedPair ? "Relationship" : selectedSystemId ? "System focus" : "Landscape"}
           </span>
+          {health && <HealthOverlayBar feed={health} overlay={healthOverlay} />}
         </div>
         <nav className="mt-2 flex min-h-5 items-center gap-1 overflow-hidden text-[11px] text-slate-500" aria-label="Architecture breadcrumb">
           <button type="button" onClick={clearSelection} className="font-semibold text-slate-700 hover:text-blue-700">Landscape</button>
@@ -491,6 +646,7 @@ export function ArchitectureTopologyCanvas({
           onSelectFlow={selectFlow}
           onBackToPair={() => setSelectedFlowId(null)}
           onOpenFlow={onOpenFlow}
+          healthOverlay={healthOverlay}
         />
       )}
     </div>
@@ -510,6 +666,7 @@ function ArchitectureDetailsPanel({
   onSelectFlow,
   onBackToPair,
   onOpenFlow,
+  healthOverlay,
 }: {
   topology: BusinessTopology;
   model: ArchitectureL1ViewModel;
@@ -523,9 +680,11 @@ function ArchitectureDetailsPanel({
   onSelectFlow: (flow: ArchitectureFlowProjection) => void;
   onBackToPair: () => void;
   onOpenFlow: (streamId: string) => void;
+  healthOverlay: BusinessHealthOverlay | null;
 }) {
   const nodesById = new Map(model.nodes.map((node) => [node.id, node]));
   const systemsById = new Map(topology.systems.map((system) => [system.id, system]));
+  const labelFor = (systemId: string) => systemsById.get(systemId)?.name ?? systemId;
   if (selectedFlow) {
     return (
       <FlowDetailsPanel
@@ -534,6 +693,7 @@ function ArchitectureDetailsPanel({
         onClose={onClose}
         onBackToPair={onBackToPair}
         onOpenFlow={onOpenFlow}
+        healthOverlay={healthOverlay}
       />
     );
   }
@@ -552,7 +712,14 @@ function ArchitectureDetailsPanel({
                 <button key={flow.id} type="button" data-testid={`architecture-flow:${flow.id}`} onClick={() => onSelectFlow(flow)} className="block w-full rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-blue-300 hover:bg-blue-50/40">
                   <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-xs font-bold text-slate-800">{flow.businessObjects.join(", ") || flow.name}</p><p className="mt-0.5 text-[10px] text-slate-500">{systemsById.get(flow.sourceSystemId)?.name} → {systemsById.get(flow.destinationSystemId)?.name}</p></div><ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" /></div>
                   <p className="mt-2 line-clamp-2 text-[10px] leading-relaxed text-slate-500">{flow.summary}</p>
-                  <div className="mt-2 flex flex-wrap gap-1">{flow.integrationSolutions.map((item) => <Tag key={item}>{item}</Tag>)}<StatusBadge status={flow.status} /></div>
+                  <div className="mt-2 flex flex-wrap items-center gap-1">
+                    {healthOverlay && (() => {
+                      const streamHealth = healthOverlay.index.byStream.get(flow.id);
+                      const status = streamEffectiveStatus(flow.id, healthOverlay.index.byStream, healthOverlay.impact);
+                      return <HealthPill status={status} measured={Boolean(streamHealth?.measured)} title={streamHealth?.measured ? STATUS_META[status].description : streamHealth?.unmeasuredDetail} />;
+                    })()}
+                    {flow.integrationSolutions.map((item) => <Tag key={item}>{item}</Tag>)}<StatusBadge status={flow.status} />
+                  </div>
                 </button>
               ))}
             </div>
@@ -569,6 +736,15 @@ function ArchitectureDetailsPanel({
       <div className="space-y-4 p-4">
         <p className="text-xs leading-relaxed text-slate-600">{system?.description}</p>
         <div className="grid grid-cols-2 gap-2"><Fact label="Relationships" value={`${systemPairs.length}`} /><Fact label="Role" value={system ? COLUMN_LABEL[system.column] : ""} /></div>
+        {system && healthOverlay && (
+          <SystemHealthSection
+            health={nodeHealthFor(system, healthOverlay.bySystem)}
+            members={system.systemIds
+              .map((id) => healthOverlay.bySystem.get(id))
+              .filter((item): item is SystemHealth => Boolean(item))}
+            labelFor={labelFor}
+          />
+        )}
         {system && (
           <SystemFacts
             systems={system.systemIds.map((id) => systemsById.get(id)).filter((item): item is BusinessSystem => Boolean(item))}
@@ -583,6 +759,81 @@ function ArchitectureDetailsPanel({
         </Section>
       </div>
     </aside>
+  );
+}
+
+/**
+ * Overlay control + honesty strip.
+ *
+ * Three states, each visually distinct, because the dangerous one is the third:
+ *   - off            -> nothing is painted, the button says so;
+ *   - on + measured  -> freshness chip ("as of HH:MM") + the legend;
+ *   - on + measuring nothing -> an explicit grey warning. Both local runtime
+ *     sources are auto-disabled today, so a board that renders with no
+ *     measurement at all is the DEFAULT state, not a rare one, and it must not
+ *     look like a clean bill of health.
+ */
+function HealthOverlayBar({
+  feed,
+  overlay,
+}: {
+  feed: BusinessHealthFeed;
+  overlay: BusinessHealthOverlay | null;
+}) {
+  const measuring = Boolean(overlay?.active);
+  const emptyMirror = Boolean(overlay && !overlay.active && feed.loaded);
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        onClick={feed.onToggle}
+        data-testid="toggle-business-health-overlay"
+        aria-pressed={feed.enabled}
+        className={`flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[10px] font-semibold transition ${
+          feed.enabled
+            ? "border-blue-300 bg-blue-50 text-blue-800"
+            : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+        }`}
+      >
+        <Activity className="h-3.5 w-3.5" />
+        {feed.enabled ? "Runtime overlay on" : "Runtime overlay off"}
+      </button>
+
+      {feed.enabled && measuring && feed.dataUpdatedAt > 0 && (
+        <span
+          data-testid="business-health-freshness-chip"
+          className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-white/90 px-2.5 py-1 text-[10px] font-medium text-slate-600"
+          title={`${overlay!.index.measuredStreamCount} of ${overlay!.index.byStream.size} flows are bound to a runtime row`}
+        >
+          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+          Runtime data as of {new Date(feed.dataUpdatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          {" \u00b7 "}
+          {overlay!.index.measuredStreamCount}/{overlay!.index.byStream.size} flows measured
+        </span>
+      )}
+
+      {feed.enabled && emptyMirror && (
+        <span
+          data-testid="business-health-unmeasured-note"
+          className="flex items-center gap-1.5 rounded-full border border-slate-300 bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-600"
+          title={UNMEASURED_REASON_TEXT.no_runtime_mirror}
+        >
+          <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
+          Nothing is measured - this view shows no runtime health
+        </span>
+      )}
+
+      {feed.enabled && measuring && (
+        <span className="flex items-center gap-1.5" aria-label="Runtime health legend">
+          {(["down", "impacted", "degraded", "healthy", "unknown"] as const).map((status) => (
+            <span key={status} className="flex items-center gap-1 text-[9px] font-semibold text-slate-500">
+              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: STATUS_META[status].color }} />
+              {status === "unknown" ? "Not measured" : STATUS_META[status].label}
+            </span>
+          ))}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -624,6 +875,50 @@ function severityClasses(severity: string): string {
   if (severity === "critical" || severity === "high") return "bg-red-50 text-red-700";
   if (severity === "medium") return "bg-amber-100 text-amber-800";
   return "bg-slate-100 text-slate-600";
+}
+
+/**
+ * Runtime state of one system, and -- when there is none -- the reason.
+ *
+ * The reason is the point of this block. "Unknown" on its own is what made the
+ * old technical overlay useless: a reader cannot tell a system nobody
+ * instrumented from a system whose mirror is switched off from a system whose
+ * designs are deployed under names the mirror does not report. Each of those
+ * has a different fix, so each gets its own sentence.
+ */
+function SystemHealthSection({
+  health,
+  members,
+  labelFor,
+}: {
+  health: ArchitectureNodeHealth;
+  members: SystemHealth[];
+  labelFor: (systemId: string) => string;
+}) {
+  const measuredStreams = members.reduce((total, member) => total + member.measuredStreamCount, 0);
+  const totalStreams = members.reduce((total, member) => total + member.streamCount, 0);
+  return (
+    <Section title="Runtime">
+      <div className="space-y-2 rounded-lg border border-slate-200 p-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <HealthPill status={health.status} measured={health.measured} />
+          <span className="text-[10px] text-slate-500" data-testid="system-health-coverage">
+            {measuredStreams}/{totalStreams} flows measured
+          </span>
+        </div>
+        {!health.measured && health.detail && (
+          <p className="text-[10px] leading-relaxed text-slate-500" data-testid="system-health-unmeasured-reason">
+            {health.detail}
+          </p>
+        )}
+        {health.impact && (
+          <p className="text-[10px] leading-relaxed text-amber-700" data-testid="system-health-impact">
+            {impactSentence(health.impact, labelFor)}
+          </p>
+        )}
+      </div>
+    </Section>
+  );
 }
 
 /**
@@ -687,13 +982,20 @@ function FlowDetailsPanel({
   onClose,
   onBackToPair,
   onOpenFlow,
+  healthOverlay,
 }: {
   flow: ArchitectureFlowProjection;
   systemsById: Map<string, BusinessSystem>;
   onClose: () => void;
   onBackToPair: () => void;
   onOpenFlow: (streamId: string) => void;
+  healthOverlay: BusinessHealthOverlay | null;
 }) {
+  const streamHealth = healthOverlay?.index.byStream.get(flow.id) ?? null;
+  const streamStatus: EffectiveStatus | null = healthOverlay
+    ? streamEffectiveStatus(flow.id, healthOverlay.index.byStream, healthOverlay.impact)
+    : null;
+  const streamImpact = healthOverlay?.impact.impactedStreams.get(flow.id) ?? null;
   const contract = flow.contractWidth;
   const hasContractNumbers = Boolean(
     contract && [contract.offered, contract.mapped, contract.written].some((value) => typeof value === "number"),
@@ -773,6 +1075,36 @@ function FlowDetailsPanel({
           <div className="flex flex-wrap gap-1.5">
             <StatusBadge status={flow.status} />
             {badges.map((badge) => <Fragment key={badge.key}>{badge.node}</Fragment>)}
+          </div>
+        )}
+
+        {streamHealth && streamStatus && (
+          <div className="space-y-1.5 rounded-xl border border-slate-200 p-2.5" data-testid="flow-runtime-health">
+            <div className="flex items-center justify-between gap-2">
+              <HealthPill status={streamStatus} measured={streamHealth.measured} />
+              <span className="text-[10px] text-slate-500">
+                {streamHealth.boundDesignCount}/{streamHealth.resolvedDesignCount} designs in the runtime mirror
+              </span>
+            </div>
+            {!streamHealth.measured && (
+              <p className="text-[10px] leading-relaxed text-slate-500" data-testid="flow-health-unmeasured-reason">
+                {streamHealth.unmeasuredDetail}
+              </p>
+            )}
+            {streamImpact && (
+              <p className="text-[10px] leading-relaxed text-amber-700">
+                {impactSentence(streamImpact, (id) => systemsById.get(id)?.name ?? id)}
+              </p>
+            )}
+            {streamHealth.latestRunAt && (
+              <p className="text-[10px] text-slate-400">Last run {new Date(streamHealth.latestRunAt).toLocaleString()}</p>
+            )}
+            {streamHealth.unboundDesignNames.length > 0 && (
+              <p className="text-[10px] leading-relaxed text-slate-400" title={streamHealth.unboundDesignNames.join(", ")}>
+                Not in the mirror: {streamHealth.unboundDesignNames.slice(0, 3).join(", ")}
+                {streamHealth.unboundDesignNames.length > 3 ? ` +${streamHealth.unboundDesignNames.length - 3}` : ""}
+              </p>
+            )}
           </div>
         )}
 

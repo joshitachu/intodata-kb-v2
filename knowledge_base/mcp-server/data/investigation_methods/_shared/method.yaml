@@ -1,0 +1,59 @@
+# Platform-AGNOSTIC investigation method, shared by every platform.
+#
+# The per-platform directories beside this one (talend/, ...) carry parsing
+# guidance that is wrong to hand to another platform. These two files are the
+# opposite: they define VOCABULARY and SELF-CHECK, and both upstream files
+# declare `applies to: all platforms` in their own front matter. Filing them
+# under talend/ would have made a Workato run either miss them or inherit
+# Talend parsing rules to get them.
+#
+# Both files are copied VERBATIM from the Integration Suite at the revision
+# below -- the same source and the same revision as the Talend guides, so the
+# two directories cannot describe different methods.
+#
+# `sha256` is computed over the bytes AS STORED IN THIS REPOSITORY.
+# `services/investigation_method.py` verifies every digest at load time and
+# fails closed on a mismatch. Editing a copied file without updating its digest
+# is a hard error, not silent drift.
+#
+# PROVENANCE / PERMISSION. The upstream repository
+# (github.com/santiagopereda/integration-suite) carries CONTRIBUTING.md but no
+# LICENSE file, so no licence is granted explicitly by publication. The Talend
+# guides already here were taken from a colleague's checkout, which suggests an
+# understanding exists; this import was made on an explicit instruction after
+# that gap was raised. It is recorded here rather than left implicit so the
+# decision is auditable and cleanly reversible: delete this directory and the
+# `_shared` entry, and nothing else depends on it.
+
+platform: _shared
+method_version: shared-method-1
+
+source:
+  name: integration-suite
+  repository: https://github.com/santiagopereda/integration-suite
+  revision: 0c68b22633a6d067fcc30e29dd18e86d9ea6d24f
+  path: templates/integration/method
+  adapted_on: "2026-09-24"
+
+files:
+  - name: confidence-model.md
+    role: confidence
+    sha256: c61594135b373f4378bd874f76e72fe65bba678c3ab215607c5c6767a467e937
+  - name: validation-checklist.md
+    role: validation
+    sha256: 2217fa3cdfe369057b217a1130dd3d96f22a8175fa8d04e02b2700ccf9552675
+
+update_log:
+  - date: "2026-09-24"
+    revision: 0c68b22633a6d067fcc30e29dd18e86d9ea6d24f
+    change: >-
+      Initial import of the two platform-agnostic method files. Taken because
+      the confidence vocabulary is stricter and better factored than the
+      ad-hoc evidence rules previously spread through the generation prompt:
+      Basis (Confirmed/Inferred/Unknown) is per finding and mandatory, the
+      document Ceiling is derived from the input class and never hand-set, and
+      aggregation is a minimum rather than a product. Two rules in particular
+      replace Nexus prose that said less precisely the same thing -- "a finding
+      graded Confirmed must carry a locus", and "absence is not Confirmed: a
+      search returning nothing is Confirmed about the search itself, Inferred
+      about the thing's actual absence".

@@ -117,12 +117,33 @@ class RuntimeStaticTopologySnapshotReceipt(BaseModel):
     lineage: int
 
 
+#: Provenance value for a mapping a human created through the write route.
+RESOLVED_BY_MANUAL = "manual"
+
+
+def static_ref_resolved_by(source_field: str) -> str:
+    """Provenance value for a mapping the declared static reference resolved.
+
+    The field name is carried in the value so a stored row says WHICH provider
+    field produced it. When a provider changes the field it declares, the rows
+    the previous one wrote are still identifiable rather than indistinguishable
+    from the new ones.
+    """
+    return f"static_ref:{source_field}"
+
+
 class RuntimeJobScanMapCreate(BaseModel):
     project_id: str = Field(min_length=1, max_length=255)
     source_key: str = Field(min_length=1, max_length=100)
     runtime_job_id: str = Field(min_length=1, max_length=255)
     static_job_id: str = Field(min_length=1, max_length=255)
     scan_revision: str | None = Field(default=None, min_length=8, max_length=128)
+    # Fixed, not merely defaulted. This model is the body of the human write
+    # route, and a mapping created there is manual BY DEFINITION; accepting a
+    # `static_ref:...` value would let a request claim the resolver's
+    # provenance for a row the resolver never produced, which is the one thing
+    # the column exists to distinguish.
+    resolved_by: Literal["manual"] = RESOLVED_BY_MANUAL
 
 
 class RuntimeJobScanMap(BaseModel):
@@ -132,6 +153,8 @@ class RuntimeJobScanMap(BaseModel):
     runtime_job_id: str
     static_job_id: str
     scan_revision: str | None = None
+    #: `manual`, or `static_ref:<provider field>`. See `RuntimeJobScanMapRow`.
+    resolved_by: str = RESOLVED_BY_MANUAL
     created_at: datetime
     created_by: str | None = None
 

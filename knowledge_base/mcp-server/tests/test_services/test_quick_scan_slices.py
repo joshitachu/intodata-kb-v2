@@ -28,6 +28,8 @@ from mcp_server.providers.base import DocGenContext
 from mcp_server.providers.claude_cli import ClaudeCliProvider
 from mcp_server.services.claude_service import DocGenerationCoordinator
 
+from tests.test_providers.method_source import method, method_text
+
 RUN_258_PREPROCESS = (
     Path(__file__).resolve().parents[3]
     / "output"
@@ -180,23 +182,26 @@ def _ctx(staging: Path) -> DocGenContext:
 
 @pytest.mark.parametrize("enabled", [True, False])
 def test_phase_26_follows_the_config_flag(tmp_path: Path, monkeypatch, enabled: bool) -> None:
+    """The flag is a per-run switch, so the BRIEF states which way it is set.
+    METHOD.md describes both branches and is byte-identical either way -- that
+    is the split, and it is why the flag now reaches this lane at all."""
     monkeypatch.setattr(config, "docgen_llm_scorecard_enabled", enabled, raising=False)
     prompt = ClaudeCliProvider._build_prompt(_ctx(tmp_path))
-    assert "{phase26_block}" not in prompt, "template slot left unsubstituted"
+    assert "{scorecard_line}" not in prompt, "template slot left unsubstituted"
     if enabled:
-        assert "PHASE 2.6 -- SCORE & ASSESS" in prompt
-        assert "PHASE 2.6 -- SKIPPED" not in prompt
+        assert "LLM scorecard:     enabled -- run the Phase 2.6 scoring sub-agent" in prompt
+        assert "DISABLED" not in prompt
     else:
-        assert "PHASE 2.6 -- SKIPPED" in prompt
-        assert "PHASE 2.6 -- SCORE & ASSESS" not in prompt
+        assert "LLM scorecard:     DISABLED" in prompt
+        assert "do not spawn a scoring sub-agent" in prompt
+    assert "When it is ENABLED, spawn ONE sub-agent" in method()
+    assert "When it is DISABLED, do not spawn a scoring sub-agent." in method()
 
 
-def test_skip_block_forbids_inventing_scores(tmp_path: Path, monkeypatch) -> None:
+def test_skip_block_forbids_inventing_scores() -> None:
     """Removing the scorecard must not mean documents make numbers up."""
-    monkeypatch.setattr(config, "docgen_llm_scorecard_enabled", False, raising=False)
-    prompt = ClaudeCliProvider._build_prompt(_ctx(tmp_path))
-    assert "Do not invent a number" in prompt
-    assert "scorecard-derived dimensions" in prompt
+    assert "Do not invent a number" in method()
+    assert "scorecard-derived dimensions" in method()
 
 
 def test_omitted_marker_states_absence_explicitly(tmp_path: Path) -> None:
@@ -254,7 +259,13 @@ def test_doc_templates_state_the_ascii_rule_without_violating_it(tmp_path: Path)
     assert "ASCII" in text
 
 
-def test_prompt_is_ascii_and_points_at_the_per_group_slice(tmp_path: Path) -> None:
+def test_prompt_and_method_are_ascii_and_point_at_the_per_group_slice(
+    tmp_path: Path,
+) -> None:
     prompt = ClaudeCliProvider._build_prompt(_ctx(tmp_path))
     assert not any(ord(c) > 127 for c in prompt)
-    assert "quick_scan/{group}.md" in prompt
+    assert not any(ord(c) > 127 for c in method_text())
+    # The steer to the per-group slice is method: it is true of every run, and
+    # it is the whole point of writing 20 slices instead of one 34 KB report.
+    assert "quick_scan/{group}.md" in method_text()
+    assert "a worker needs only those of the groups it owns" in method()

@@ -48,6 +48,7 @@ import {
 import { joinHealthToJobs } from "@/lib/jobHealth";
 import { propagateHealth, callEdgeKey, type EffectiveStatus } from "@/lib/healthPropagation";
 import { worstEffectiveStatus, FAILING_EDGE_COLOR } from "@/lib/healthStatusMeta";
+import type { BusinessHealthFeed } from "@/lib/businessHealth";
 import type { FieldLineageQuery } from "@/types/lineage";
 import { MobileTopBar } from "@/components/mobile/MobileTopBar";
 import { MobileBottomSheet } from "@/components/mobile/MobileBottomSheet";
@@ -512,7 +513,21 @@ function TopologyContent() {
   // auto-hides). Toggle persists across project switches; auto-hide handles
   // projects with no runtime data.
   const [healthOverlayEnabled, setHealthOverlayEnabled] = useState(true);
-  const jobHealthQuery = useJobHealth(selectedProject, healthOverlayEnabled);
+  // `"job"` is passed EXPLICITLY. Omitting `executable_kind` used to mean
+  // "jobs only" server-side and now means "every kind", so leaving it off would
+  // quietly pull routes and data services into a graph whose nodes are scanner
+  // jobs -- rows no node here can ever bind to.
+  const jobHealthQuery = useJobHealth(selectedProject, healthOverlayEnabled, "job");
+  // The business/architecture canvas is the opposite case: a business stream is
+  // implemented by whatever designs deliver it, and on a real Talend estate a
+  // large minority of those are deployed routes. Separate query (own cache key)
+  // and only while that canvas is the one on screen, so the two overlays never
+  // pay for each other's poll.
+  const businessHealthQuery = useJobHealth(
+    selectedProject,
+    healthOverlayEnabled && showLandscapeRoot,
+    "all",
+  );
 
   // Failure-focus: dim everything outside the failing cascade so the down /
   // impacted jobs and the red propagation edges pop. Enabled by default; it is
@@ -692,6 +707,24 @@ function TopologyContent() {
   const handleToggleHealthOverlay = useCallback(() => {
     setHealthOverlayEnabled((v) => !v);
   }, []);
+
+  // One toggle, two canvases. The business canvas renders its own control (the
+  // GraphToolbar that hosts the L3 one is not mounted at this level), but it
+  // writes to the same state, so switching levels does not silently change
+  // whether runtime data is being shown.
+  const businessHealthFeed = useMemo<BusinessHealthFeed>(() => ({
+    enabled: healthOverlayEnabled,
+    onToggle: handleToggleHealthOverlay,
+    rows: businessHealthQuery.data?.health ?? [],
+    dataUpdatedAt: businessHealthQuery.dataUpdatedAt,
+    loaded: businessHealthQuery.isSuccess,
+  }), [
+    healthOverlayEnabled,
+    handleToggleHealthOverlay,
+    businessHealthQuery.data,
+    businessHealthQuery.dataUpdatedAt,
+    businessHealthQuery.isSuccess,
+  ]);
 
   const handleToggleFocusFailures = useCallback(() => {
     setFocusFailures((v) => !v);
@@ -2740,6 +2773,7 @@ function TopologyContent() {
         {showLandscapeRoot && landscapeQuery.data && (
           <LandscapeCanvas
             landscape={landscapeQuery.data}
+            health={businessHealthFeed}
             onExplore={handleExploreLandscape}
             onViewDesigns={handleViewApplicationDesigns}
             assistantEmphasis={landscapeCopilotEmphasis}

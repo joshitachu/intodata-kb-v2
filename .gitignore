@@ -112,6 +112,12 @@ knowledge_base/mcp-server/data/*.pem
 /POC_Werkorder/
 /*.zip
 knowledge_base/mcp-server/data/plugin_packs/swap-pack-starter__vw-reverse-engineering__936afbd014/
+# Phase 2 analysis pulled off a deployed instance for inspection. It is client
+# analysis of a client estate -- job names, SQL, table names, business rules.
+# Credential filtering held on the copy that was checked (only
+# `PASSWORD=[REDACTED]` and Java variable references, no literal secret values),
+# but redaction holding is not a reason to publish: the content is the client's.
+/talend8_phase2_analysis/
 
 # Local DB snapshots (pre-migration safety dumps)
 .backups/

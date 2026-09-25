@@ -177,17 +177,33 @@ def test_manifest_entry_may_not_escape_its_directory(method_library: Path) -> No
 
 
 @pytest.mark.parametrize("platform", ["workato", "lobster", "generic", "mulesoft", "", "  "])
-def test_platforms_without_a_method_load_and_stage_nothing(
+def test_platforms_without_a_method_receive_no_platform_guides(
     platform: str, tmp_path: Path
 ) -> None:
+    """No Talend guides leak sideways, and no empty platform directory appears.
+
+    Narrowed from "stage nothing at all" when the platform-agnostic `_shared`
+    method was added: these platforms now DO receive the confidence model and
+    the validation checklist, which describe no artifact format and are wrong
+    for nobody. What must never reach them is another platform's parsing
+    guidance -- `routes/`, `.item` pairs and `tRunJob` do not exist here, so a
+    model following those guides reports absences that are artefacts of the
+    wrong method. `tests/test_services/test_shared_method.py` owns the shared
+    half of this contract.
+    """
     assert load_investigation_method(platform) is None
     staging = tmp_path / "docs_staging"
     staging.mkdir()
     assert materialize_investigation_method(staging, platform) is None
-    assert method_prompt_index(staging, platform) == ""
-    # Nothing at all, not even an empty directory: an empty `_method/` invites a
-    # model to go looking for guides that do not exist.
-    assert not (staging / STAGED_METHOD_DIRNAME).exists()
+
+    # Not even an empty directory: an empty `_method/<platform>/` invites a
+    # model to go looking for guides that do not exist. Asserted by listing
+    # `_method/` rather than by probing one path, so it also catches a guide
+    # staged under some other name.
+    staged = staging / STAGED_METHOD_DIRNAME
+    assert [path.name for path in staged.iterdir()] == ["_shared"]
+    index = method_prompt_index(staging, platform)
+    assert "talend" not in index.lower()
 
 
 # --- materialisation ----------------------------------------------------------
@@ -272,13 +288,18 @@ def test_prompt_index_lists_the_staged_files_with_roles(tmp_path: Path) -> None:
     assert EXPECTED_REVISION[:12] in index
     for name, role in EXPECTED_FILES.items():
         assert f"{STAGED_METHOD_DIRNAME}/talend/{name} [{role}] -- " in index
-    # One bullet per file, and every bullet is a relative staging path.
+    # One bullet per Talend file, and every bullet is a relative staging path.
     bullets = [line for line in index.splitlines() if line.startswith("- ")]
-    assert len(bullets) == len(EXPECTED_FILES)
-    assert all(f"{STAGED_METHOD_DIRNAME}/talend/" in line for line in bullets)
+    platform_bullets = [
+        line for line in bullets if f"{STAGED_METHOD_DIRNAME}/talend/" in line
+    ]
+    assert len(platform_bullets) == len(EXPECTED_FILES)
+    assert all(line.startswith(f"- {STAGED_METHOD_DIRNAME}/") for line in bullets)
     # The adaptation guide is FIRST: every other file's procedural instructions
     # (write a file, run a shell, fetch a URL) are wrong until it is read.
     assert "nexus-adaptation.md" in bullets[0]
+    # The rest of the list interleaves the platform-agnostic method; its
+    # ordering is pinned in test_shared_method.py.
 
 
 def test_prompt_index_is_empty_before_materialisation(tmp_path: Path) -> None:

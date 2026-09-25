@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import re
 import uuid
 from typing import Any, Mapping
 from urllib.parse import quote
@@ -58,8 +59,9 @@ _CAPABILITIES = (
 # index access; GET /{index} would additionally require metadata privileges.
 _EVENT_FIELD_GROUPS = (
     ("@timestamp", "timestamp", "*time*", "*Time*", "*TIME*", "*date*", "*Date*"),
-    ("*message*", "*Message*", "*MESSAGE*", "*service*", "*job*"),
-    ("*flow*", "*severity*", "*level*", "*environment*", "*env*"),
+    ("*message*", "*Message*", "*MESSAGE*", "*error*", "*exception*", "*stack*", "*reason*"),
+    ("*service*", "*job*", "*flow*", "*severity*", "*level*", "*environment*", "*env*"),
+    ("*failure*", "*log*", "*detail*", "*description*", "*original*"),
 )
 
 
@@ -81,6 +83,13 @@ ELASTICSEARCH_MANIFEST = ConnectorProviderManifest(
 
 def _as_mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def _source_locator(source: ConnectorSourceProfile) -> str:
@@ -274,6 +283,63 @@ class ElasticsearchProvider:
                     ]
         return self._envelope(instance, source, "runtime.events.aggregate", question, run_id, project_id, (), summary)
 
+    async def check_freshness(
+        self,
+        instance: ConnectorInstanceConfig,
+        source: ConnectorSourceProfile,
+        credential: str,
+        *,
+        checked_at: dt.datetime,
+        window_days: int,
+    ) -> dict[str, object]:
+        """Return source-level coverage without retrieving any event documents."""
+        timestamp_field = _timestamp_field(source)
+        max_days = int(source.fields.get("max_time_window_days", 30))
+        if window_days < 1 or window_days > max_days:
+            raise ConnectorError("invalid_query", "Requested freshness window exceeds the approved source profile")
+        window_start = checked_at - dt.timedelta(days=window_days)
+        body = {
+            "size": 0,
+            "track_total_hits": True,
+            "query": {"match_all": {}},
+            "aggs": {
+                "latest_event": {"max": {"field": timestamp_field}},
+                "timestamped_documents": {"value_count": {"field": timestamp_field}},
+                "events_in_window": {"filter": {"range": {timestamp_field: {
+                    "gte": window_start.isoformat(), "lte": checked_at.isoformat(),
+                }}}},
+            },
+        }
+        payload, _ = await self._transport_for(instance).request_json(
+            "POST", f"{self._endpoint(instance)}/{quote(_source_locator(source), safe='*,-_')}/_search",
+            headers=self._headers(instance, credential), json=body,
+        )
+        response = _as_mapping(payload)
+        hits = _as_mapping(response.get("hits"))
+        total = hits.get("total", 0)
+        if isinstance(total, Mapping):
+            total = total.get("value", 0)
+        aggregations = _as_mapping(response.get("aggregations"))
+        latest = _as_mapping(aggregations.get("latest_event"))
+        recent = _as_mapping(aggregations.get("events_in_window"))
+        timestamped = _as_mapping(aggregations.get("timestamped_documents"))
+        latest_at = latest.get("value_as_string")
+        if not isinstance(latest_at, str):
+            raw_latest = latest.get("value")
+            if isinstance(raw_latest, (int, float)):
+                try:
+                    latest_at = dt.datetime.fromtimestamp(raw_latest / 1000, tz=dt.timezone.utc).isoformat()
+                except (OverflowError, OSError, ValueError):
+                    latest_at = None
+            else:
+                latest_at = None
+        return {
+            "latest_event_at": latest_at,
+            "events_in_window": _nonnegative_int(recent.get("doc_count", 0)),
+            "total_documents": _nonnegative_int(total),
+            "timestamped_documents": _nonnegative_int(timestamped.get("value", 0)),
+        }
+
     async def _search(self, instance: ConnectorInstanceConfig, source: ConnectorSourceProfile, credential: str,
                       question: EvidenceQuestion, run_id: int, project_id: str) -> EvidenceEnvelope:
         if not bool(source.fields.get("samples_allowed", True)):
@@ -350,9 +416,26 @@ def _detect_field_profile(capability_fields: Mapping[str, str]) -> dict[str, Any
             if any(candidate.casefold() in name.casefold() for candidate in candidates):
                 return name
         return None
+    string_types = {"text", "match_only_text", "keyword", "wildcard"}
+    searchable = [
+        name for name, field_type in capability_fields.items()
+        if field_type.casefold() in string_types
+    ]
+    searchable.sort(key=lambda name: (
+        0 if any(token in name.casefold() for token in ("message", "error", "exception", "stack", "reason", "failure")) else 1,
+        0 if capability_fields[name].casefold() in {"text", "match_only_text"} else 1,
+        name.casefold(),
+    ))
+    message_fields = [
+        name for name in searchable
+        if any(token in name.casefold() for token in (
+            "message", "error", "exception", "stack", "reason", "failure", "description", "detail", "original",
+        ))
+    ][:5]
     profile: dict[str, Any] = {
         "timestamp_field": pick(("@timestamp", "timestamp", "event.created", "time")),
-        "message_fields": [value for value in (pick(("message", "log.message", "error.message")),) if value],
+        "message_fields": message_fields or [value for value in (pick(("message", "log.message", "error.message")),) if value],
+        "search_fields": searchable[:12],
         "service_field": pick(("service.name", "service", "service_name", "job", "flow")),
         "severity_field": pick(("log.level", "severity", "level", "event.severity")),
         "environment_field": pick(("service.environment", "environment", "env")),
@@ -388,14 +471,34 @@ def _query(source: ConnectorSourceProfile, question: EvidenceQuestion) -> dict[s
     if question.severities and severity_field:
         filters.append({"terms": {severity_field: list(question.severities[:20])}})
     should: list[dict[str, Any]] = []
-    searchable = [field for field in source.approved_fields if field != _timestamp_field(source)][:12]
+    searchable = [
+        field for field in (source.searchable_fields or source.approved_fields)
+        if field != _timestamp_field(source)
+    ][:12]
     for ref in question.entity_refs[:20]:
+        if len(should) >= 20:
+            break
         token = ref.split(":", 1)[-1][:256]
-        if token and searchable:
-            should.append({"multi_match": {"query": token, "fields": searchable, "operator": "and"}})
+        # A lone '*' is the operator's explicit "any event" probe, not a
+        # literal token to search for in message fields.
+        if token == "*":
+            continue
+        alternatives = re.split(r"\s+OR\s+", token, flags=re.IGNORECASE)
+        for alternative in alternatives:
+            if len(should) >= 20:
+                break
+            alternative = alternative.strip()
+            if alternative and searchable:
+                should.append({"multi_match": {
+                    "query": alternative, "fields": searchable, "operator": "and",
+                }})
     bool_query: dict[str, Any] = {"filter": filters}
     if should:
         bool_query.update({"should": should, "minimum_should_match": 1})
+    elif any(ref.split(":", 1)[-1].strip() != "*" for ref in question.entity_refs):
+        # A source with no searchable text fields must never turn a keyword
+        # query into a time-only match that returns unrelated events.
+        bool_query["must"] = [{"match_none": {}}]
     return {"bool": bool_query}
 
 

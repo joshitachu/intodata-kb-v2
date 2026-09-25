@@ -9,8 +9,10 @@ opaque credential reference exists and which broker scheme it uses.
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.api.dependencies import DBSession, OwnerUser
 from src.api.errors import api_error
@@ -27,6 +29,7 @@ from src.harness.connectors.models import (
     CapabilityBindingUpdate,
     CapabilityBindingView,
     ConnectorHealthResult,
+    ConnectorFreshnessResult,
     ConnectorInstanceCreate,
     ConnectorInstanceUpdate,
     ConnectorInstanceView,
@@ -72,15 +75,39 @@ class ConnectorPreviewRequest(BaseModel):
     limit: int = Field(default=5, ge=1, le=10)
 
 
+class ConnectorFreshnessRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project_id: str = Field(min_length=1, max_length=255)
+
+
+class ExistingElasticAccount(BaseModel):
+    connector_id: str
+    display_name: str
+    sources: list[dict[str, str]] = Field(default_factory=list)
+
+
 class ExistingElasticResponse(BaseModel):
     available: bool
-    display_name: str | None = None
-    sources: list[dict[str, str]] = Field(default_factory=list)
+    accounts: list[ExistingElasticAccount] = Field(default_factory=list)
 
 
 class ExistingElasticUseRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_id: str = Field(min_length=1, max_length=255)
+    connector_id: str = Field(min_length=1, max_length=64)
+    source_ids: list[str] = Field(min_length=1, max_length=3)
+
+    @field_validator("source_ids")
+    @classmethod
+    def unique_source_ids(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("Choose each Elastic source once")
+        return values
+
+
+class ExistingElasticDiscoverRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connector_id: str = Field(min_length=1, max_length=64)
 
 
 def _service(db: DBSession) -> ConnectorService:
@@ -136,22 +163,54 @@ async def existing_elastic_connection(
         return ExistingElasticResponse(available=False)
     bridge = McpConnectorBridge()
     try:
-        connector = await bridge.existing_elastic(access_token)
+        connectors = await bridge.connected_elastic_accounts(access_token)
     except ExistingElasticUnavailable:
         return ExistingElasticResponse(available=False)
-    sources: list[dict[str, str]] = []
-    if connector:
+
+    async def account_view(connector: dict) -> ExistingElasticAccount:
+        connector_id = str(connector.get("id", ""))
+        sources: list[dict[str, str]] = []
         try:
-            sources = await bridge.existing_elastic_sources(access_token, str(connector.get("id", "")))
+            sources = await bridge.existing_elastic_sources(access_token, connector_id)
         except ExistingElasticUnavailable:
-            # Connection availability and source-label lookup are separate. Keep
-            # the enable path usable if an older connection lacks source metadata.
-            sources = []
-    return ExistingElasticResponse(
-        available=connector is not None,
-        display_name=str(connector.get("display_name") or "Elastic Stack") if connector else None,
-        sources=sources,
-    )
+            pass
+        return ExistingElasticAccount(
+            connector_id=connector_id,
+            display_name=str(connector.get("display_name") or "Elastic Stack"),
+            sources=sources,
+        )
+
+    accounts = await asyncio.gather(*(account_view(connector) for connector in connectors))
+    return ExistingElasticResponse(available=bool(accounts), accounts=list(accounts))
+
+
+@router.post("/existing-elastic/discover", response_model=ExistingElasticAccount)
+async def discover_existing_elastic_sources(
+    body: ExistingElasticDiscoverRequest,
+    request: Request,
+    owner: OwnerUser,
+) -> ExistingElasticAccount:
+    """Refresh every visible index, alias, and data stream for one Elastic account."""
+    del owner
+    access_token = request.cookies.get("access_token")
+    if not access_token:
+        raise api_error(401, "session_required", "Sign in again to discover Elastic sources")
+    bridge = McpConnectorBridge()
+    try:
+        accounts = await bridge.connected_elastic_accounts(access_token)
+        connector = next((item for item in accounts if str(item.get("id", "")) == body.connector_id), None)
+        if connector is None:
+            raise ExistingElasticUnavailable("The selected Elastic account is unavailable.")
+        sources = await bridge.existing_elastic_sources(
+            access_token, body.connector_id, refresh=True
+        )
+        return ExistingElasticAccount(
+            connector_id=body.connector_id,
+            display_name=str(connector.get("display_name") or "Elastic Stack"),
+            sources=sources,
+        )
+    except ExistingElasticUnavailable as exc:
+        raise api_error(422, "existing_elastic_unavailable", str(exc)) from exc
 
 
 @router.post("/existing-elastic/use", response_model=ConnectorInstanceView)
@@ -161,26 +220,68 @@ async def use_existing_elastic_connection(
     owner: OwnerUser,
     db: DBSession,
 ) -> ConnectorInstanceView:
-    """Add a small, recommended log-source set to one project's Labs scope."""
+    """Grant the owner's selected Elastic sources to one project's Labs scope."""
     access_token = request.cookies.get("access_token")
     if not access_token:
         raise api_error(401, "session_required", "Sign in again to use the existing Elastic connection")
     repository = ConnectorRepository(db)
     service = _service(db)
     try:
-        selected = await McpConnectorBridge().prepare_existing_elastic(access_token)
-        config = {
-            "connector_id": selected["connector_id"],
-            "source_ids": selected["source_ids"],
-            "max_results": 5,
-            "time_window_days": 7,
-        }
+        selected = await McpConnectorBridge().prepare_existing_elastic(
+            access_token,
+            connector_id=body.connector_id,
+            source_ids=body.source_ids,
+        )
         existing = next(
             (row for row in await repository.list_instances()
              if row.provider_key == "mcp_elastic"
              and row.config.get("connector_id") == selected["connector_id"]),
             None,
         )
+
+        project_sources: dict[str, list[str]] = {}
+        project_source_contexts: dict[str, list[dict]] = {}
+        if existing is not None:
+            raw_sources = existing.config.get("project_sources")
+            if isinstance(raw_sources, dict):
+                project_sources = {
+                    str(key): [str(value) for value in values if isinstance(value, str)]
+                    for key, values in raw_sources.items() if isinstance(values, list)
+                }
+            raw_contexts = existing.config.get("project_source_contexts")
+            if isinstance(raw_contexts, dict):
+                project_source_contexts = {
+                    str(key): [value for value in values if isinstance(value, dict)]
+                    for key, values in raw_contexts.items() if isinstance(values, list)
+                }
+            # Convert the original shared-source format the first time an old
+            # connector is edited through the project source picker.
+            legacy_sources = existing.config.get("source_ids")
+            if isinstance(legacy_sources, list) and legacy_sources:
+                legacy_contexts = existing.config.get("source_contexts")
+                bindings = await service.list_bindings(existing.id)
+                for project_id in {
+                    project_id for binding in bindings for project_id in binding.project_ids
+                }:
+                    project_sources.setdefault(
+                        project_id,
+                        [str(value) for value in legacy_sources if isinstance(value, str)],
+                    )
+                    if isinstance(legacy_contexts, list):
+                        project_source_contexts.setdefault(
+                            project_id,
+                            [value for value in legacy_contexts if isinstance(value, dict)],
+                        )
+
+        project_sources[body.project_id] = selected["source_ids"]
+        project_source_contexts[body.project_id] = selected.get("source_contexts", [])
+        config = {
+            "connector_id": selected["connector_id"],
+            "project_sources": project_sources,
+            "project_source_contexts": project_source_contexts,
+            "max_results": 5,
+            "time_window_days": 7,
+        }
         if existing is None:
             row = await service.create(ConnectorInstanceCreate(
                 name=f"{selected['display_name']} (Nexus)",
@@ -361,6 +462,34 @@ async def preview_connector_evidence(
                 "project_id": body.project_id,
                 "result_count": len(result.items),
             },
+        )
+        await db.commit()
+        return result
+    except Exception as exc:
+        await db.rollback()
+        raise _translate_error(exc)
+
+
+@router.post("/{instance_id}/freshness", response_model=ConnectorFreshnessResult)
+async def check_connector_freshness(
+    instance_id: int,
+    body: ConnectorFreshnessRequest,
+    request: Request,
+    owner: OwnerUser,
+    db: DBSession,
+) -> ConnectorFreshnessResult:
+    """Check the latest event timestamp and recent counts without sampling logs."""
+    try:
+        result = await _service(db).check_freshness(
+            instance_id, body.project_id, access_token=request.cookies.get("access_token")
+        )
+        await _audit(
+            db,
+            request,
+            owner=owner,
+            action="check_connector_freshness",
+            resource_id=instance_id,
+            details={"project_id": body.project_id, "source_count": len(result.sources)},
         )
         await db.commit()
         return result

@@ -32,10 +32,27 @@ field mappedness before returning any zero and yields `None` with a five-state
 zero. A genuine mapped-and-empty zero survives as `0` with `resolution=ok`; blurring
 *that* would be the same defect pointing the other way.
 
-**Missing evidence files.** One analysis file per group made "nobody looked at this
-group" and "somebody looked and found nothing" indistinguishable. Phase 2 now writes
-one file per section and a section with no findings still gets a short file saying
-what was checked -- a MISSING file means nobody looked.
+**Missing evidence sections.** One analysis file per group made "nobody looked at
+this group" and "somebody looked and found nothing" indistinguishable. Phase 2 was
+split to one file per section so that a MISSING file meant nobody looked.
+
+That split was REVERSED on 2026-09-24, and the reversal is worth recording because
+it shows what the rule is really about. The per-section layout existed to serve two
+Python consumers -- `bundle_analysis.py` and a `ls | grep -c` coverage gate -- and
+both were deleted when the CLI lane moved to a method file. With nothing counting
+files, 15 fragments per group bought nothing and cost coherence: a business rule was
+written without the SQL that implements it in view. The layout is one
+`_analysis/{group}.md` again, with the sections as H2 headings.
+
+The INVARIANT survived the reversal intact; only its mechanism changed. A section
+with no findings still gets its heading and a short paragraph stating what was
+examined and what was not there. Measured on the run that prompted this
+(`talend8_main`), both outcomes were present in the same estate: honoured --
+"No database table/view or row schema is present. Data objects are files in remote
+FTP directory `/out`... no file header, column type, nullable/key metadata appears";
+degenerate -- a 5-byte file containing the bare word `None`, which records no search
+and supports no grade. The Integration Suite confidence model names the distinction
+exactly: absence is `Confirmed` about the search and `Inferred` about the thing.
 
 ## Consequences
 
@@ -50,4 +67,9 @@ what was checked -- a MISSING file means nobody looked.
 
 - `mcp-server/src/mcp_server/providers/custom/section_parser.py` (module docstring)
 - `RAG_pipeline/backend/src/runtime/elastic_probe.py` (`ProbeResolution`)
-- `mcp-server/src/mcp_server/scripts/bundle_analysis.py` (`BundleRetentionError`)
+- `mcp-server/data/investigation_methods/_shared/confidence-model.md` -- the same
+  rule stated upstream and more precisely: "absence is not Confirmed".
+- `mcp-server/data/generation_method/METHOD.md` -- where the missing-vs-empty rule
+  now lives for the CLI lane, with both the honoured and degenerate examples.
+  (`scripts/bundle_analysis.py` and its `BundleRetentionError` were the original
+  third citation here; the file was deleted on 2026-09-24 with Phase 2.8.)

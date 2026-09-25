@@ -511,14 +511,23 @@ class BoundConnectorEvidenceHandler:
                     **({"uri": safe_uri} if safe_uri else {}),
                 }
             )
+        outcome = result.diagnostics.get("outcome")
+        summary = f"Retrieved {len(result.items)} connector evidence item(s)."
+        if not result.items and isinstance(outcome, str):
+            summary = {
+                "no_matches_in_active_sources": "No matches were found, but the selected sources contain recent events.",
+                "no_recent_events": "No matches were found and the selected sources contain no recent events.",
+                "coverage_unavailable": "No matches were returned and source coverage could not be fully checked.",
+            }.get(outcome, summary)
         return CapabilityObservation(
             capability_id=capability.id,
             status="succeeded",
             output_type=capability.output_type,
-            summary=f"Retrieved {len(result.items)} connector evidence item(s).",
+            summary=summary,
             data={
                 "items": items,
                 "truncated": result.truncated,
+                "diagnostics": result.diagnostics,
             },
             evidence_refs=references,
             safe_details={"evidence_count": len(result.items)},

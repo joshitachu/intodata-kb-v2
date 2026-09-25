@@ -559,8 +559,9 @@ def test_a_truncated_mirror_copy_is_detected(built) -> None:
 def test_a_derived_artifact_without_provenance_is_detected(built) -> None:
     """A consumer-facing file that carries content but names no source.
 
-    This is `scripts/bundle_analysis.py` writing `core_a`: real content, no
-    statement of what it came from or what it left behind.
+    The shape of the defect: a real-content file with no statement of what it
+    came from or what it left behind.  The since-deleted
+    `scripts/bundle_analysis.py` wrote its `_bundle_core_a.md` exactly this way.
     """
     layout = built.layout
     rogue = layout.facts / "transformation_detail.md"
