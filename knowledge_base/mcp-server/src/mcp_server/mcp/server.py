@@ -379,8 +379,13 @@ async def _add_repo(registry: ProjectRegistry, db, args: dict) -> dict:
         repo_url = url
         clone_dir = config.repos_dir / project_id
         if not clone_dir.exists():
+            import asyncio
             import subprocess
-            subprocess.run(
+            # A clone can run for minutes. Called bare from this async def it
+            # blocked the event loop for its whole duration, so every unrelated
+            # request queued behind it.
+            await asyncio.to_thread(
+                subprocess.run,
                 ["git", "clone", url, str(clone_dir)],
                 check=True,
                 capture_output=True,

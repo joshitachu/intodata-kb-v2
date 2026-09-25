@@ -346,7 +346,8 @@ class OpenCodeCliProvider(DocGenerationProvider):
     async def run(self, ctx: DocGenContext, log_cb: LogCallback) -> AgentResult:
         started = time.monotonic()
         try:
-            executable = self._preflight()
+            # subprocess.run blocks; off the event loop so the API keeps serving.
+            executable = await asyncio.to_thread(self._preflight)
         except OpenCodeCompatibilityError as exc:
             return AgentResult(success=False, error=str(exc), model_name=self.model_route or "opencode")
 
@@ -613,7 +614,8 @@ class OpenCodeCompletionProvider:
             )
 
         try:
-            executable = self._session._preflight()
+            # subprocess.run blocks; off the event loop so the API keeps serving.
+            executable = await asyncio.to_thread(self._session._preflight)
         except OpenCodeCompatibilityError as exc:
             return failure(str(exc))
 

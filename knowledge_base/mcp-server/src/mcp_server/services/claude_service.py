@@ -6,6 +6,7 @@ delegates execution to the configured DocGenerationProvider.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -1298,7 +1299,11 @@ class DocGenerationCoordinator:
         logger.debug("Resume state detail: %s", state)
         return state
 
-    async def _preprocess_scan_data(
+    # Deliberately NOT async: the body is pure CPU work over the whole scan
+    # (chunk/group bucketing across every unit) with no await in it. As a
+    # coroutine it never yielded, so a large composite scan froze the entire
+    # API until it finished. The caller runs it on a worker thread.
+    def _preprocess_scan_data(
         self,
         project_id: str,
         staging_dir: Path,
@@ -2407,7 +2412,8 @@ Required sections:
             await self.log_manager.emit(
                 project_id, "Pre-processing scan data...", level="info",
             )
-            preprocess_groups = await self._preprocess_scan_data(
+            preprocess_groups = await asyncio.to_thread(
+                self._preprocess_scan_data,
                 project_id, staging_dir, platform,
                 total_jobs=total_jobs,
                 unit_allowlist=unit_allowlist,

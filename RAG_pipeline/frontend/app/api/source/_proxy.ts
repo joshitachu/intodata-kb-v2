@@ -40,10 +40,36 @@ export async function proxyMcpJson(
     headers.set("Content-Type", "application/json");
   }
 
-  const upstream = await fetch(`${KB_API_URL}${path}`, {
-    ...init,
-    headers,
-  });
+  // Without a deadline this fetch waits forever. When MCP got slow under a
+  // doc-generation run, every project/connector page hung until the browser
+  // gave up (nginx logged 499), so the whole app looked dead rather than
+  // degraded. Fail fast and let the caller render an error instead.
+  const timeoutMs = Number(process.env.MCP_PROXY_TIMEOUT_MS || 20000);
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+  let upstream: Response;
+  try {
+    upstream = await fetch(`${KB_API_URL}${path}`, {
+      ...init,
+      headers,
+      signal: abort.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    const timedOut = err instanceof Error && err.name === "AbortError";
+    return new Response(
+      JSON.stringify({
+        detail: timedOut
+          ? `Upstream did not respond within ${timeoutMs}ms`
+          : "Upstream request failed",
+      }),
+      {
+        status: timedOut ? 504 : 502,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }
+  clearTimeout(timer);
 
   const responseHeaders = new Headers();
   upstream.headers.forEach((value, key) => {

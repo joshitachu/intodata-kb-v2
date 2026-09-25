@@ -61,6 +61,14 @@ server {
         proxy_pass_request_body off;
         proxy_set_header Content-Length "";
         proxy_set_header X-Original-URI $request_uri;
+        # Fail fast. nginx defaults to a 60s read timeout, so while mcp-server is
+        # saturated by a doc-generation run every gated request used to hang for a
+        # minute before 504-ing, which made the whole operator surface look dead.
+        # A 3s ceiling keeps the gate cheap: it is one indexed lookup on users.
+        proxy_connect_timeout 2s;
+        proxy_send_timeout 2s;
+        proxy_read_timeout 3s;
+        proxy_next_upstream off;
     }
 
     location /mcp/ {

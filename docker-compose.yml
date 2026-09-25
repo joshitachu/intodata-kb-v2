@@ -299,6 +299,10 @@ services:
       NODE_ENV: production
       FASTAPI_URL: http://backend:8000
       KB_API_URL: ${KB_API_URL:-http://mcp-server:8002}
+      # Deadline for the app's server-side calls to MCP. Without one a slow MCP
+      # (e.g. under a doc-generation run) hangs every project page until the
+      # browser gives up, which reads as the whole app being down.
+      MCP_PROXY_TIMEOUT_MS: ${MCP_PROXY_TIMEOUT_MS:-20000}
       HOSTNAME: 0.0.0.0
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -468,6 +472,11 @@ services:
         condition: service_healthy
       hindsight:
         condition: service_healthy
+    # Lets py-spy attach to the running server. Diagnosing the event-loop
+    # stall a large composite generation caused meant inferring from
+    # /proc thread states; with this a stack dump is one command.
+    cap_add:
+      - SYS_PTRACE
     mem_limit: 3g
     cpus: 2.0
     restart: unless-stopped
