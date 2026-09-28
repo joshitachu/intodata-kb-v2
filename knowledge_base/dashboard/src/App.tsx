@@ -15,6 +15,8 @@ import HelpPanel from "./components/HelpPanel";
 import FleetPage from "./components/FleetPage";
 import ModelsPage from "./components/ModelsPage";
 import ConnectorsPage from "./components/connectors/ConnectorsPage";
+import LicenceBanner from "./components/LicenceBanner";
+import { LicenceProvider } from "./hooks/useLicence";
 import { useLogStream } from "./hooks/useLogStream";
 import { useProjects } from "./hooks/useProjects";
 import { useAuth, getLoginUrl } from "./hooks/useAuth";
@@ -42,7 +44,13 @@ export default function App() {
     return null;
   }
 
-  return <AppContent isAuthenticated={auth.authenticated} user={auth.user} />;
+  // Inside the auth gate: the status route needs a session. One provider for
+  // the whole app, so the banner and every scan/generate control agree.
+  return (
+    <LicenceProvider>
+      <AppContent isAuthenticated={auth.authenticated} user={auth.user} />
+    </LicenceProvider>
+  );
 }
 
 type DetailTab = "generate" | "scans" | "docs" | "compare" | "settings";
@@ -211,6 +219,8 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
           </div>
         </div>
       </header>
+
+      <LicenceBanner />
 
       {/* Main content */}
       <main className="flex-1 py-6">

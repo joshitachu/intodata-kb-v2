@@ -203,6 +203,7 @@ class ConnectorInstanceConfig:
     status: ConnectorStatus = ConnectorStatus.NOT_CONNECTED
     provider_version: str = ""
     redaction_policy_version: str = "v1"
+    credential_type: str = "none"
 
 
 @dataclass(frozen=True, slots=True)

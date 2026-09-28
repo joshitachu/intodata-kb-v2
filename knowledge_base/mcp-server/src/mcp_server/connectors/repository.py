@@ -41,7 +41,7 @@ class ConnectorRepository:
 
     async def create_instance(
         self, *, provider_id: str, display_name: str, safe_config: Mapping[str, Any], credential_type: str,
-        credential: str, kibana_credential: str | None, user_id: int, account_key: str = "",
+        credential: str | None, kibana_credential: str | None, user_id: int, account_key: str = "",
     ) -> ConnectorInstance:
         instance = ConnectorInstance(
             id=str(uuid.uuid4()), provider_id=provider_id, display_name=display_name.strip(),
@@ -49,7 +49,7 @@ class ConnectorRepository:
             # account field" as one shared key across every such instance.
             account_key=account_key or None,
             safe_config=dict(safe_config), credential_type=credential_type,
-            credential_ciphertext=self.secrets.encrypt(credential),
+            credential_ciphertext=self.secrets.encrypt(credential) if credential else None,
             kibana_credential_ciphertext=self.secrets.encrypt(kibana_credential) if kibana_credential else None,
             created_by_user_id=user_id, updated_by_user_id=user_id,
         )
@@ -134,13 +134,85 @@ class ConnectorRepository:
                 # described again, so refreshing the source picker cannot make
                 # active Labs searches forget their searchable fields.
                 if profile.fields:
-                    row.field_profile = dict(profile.fields)
+                    incoming_fields = dict(profile.fields)
+                    if profile.source_type == "mcp_tool":
+                        unchanged = bool(
+                            row.discovery_digest
+                            and row.discovery_digest == profile.discovery_digest
+                        )
+                        if unchanged:
+                            # A routine rediscovery must not revoke an approved tool.
+                            # Review metadata is owner-authored and is not supplied by
+                            # the remote server, so preserve it separately from the
+                            # refreshed remote description/schema.
+                            for key in (
+                                "review_status",
+                                "approved_purpose",
+                                "approved_risk",
+                                "reviewed_by_user_id",
+                                "reviewed_at",
+                            ):
+                                if key in row.field_profile:
+                                    incoming_fields[key] = row.field_profile[key]
+                        else:
+                            # Tool/schema drift always fails closed. It cannot retain
+                            # an old approval or remain eligible for a project grant.
+                            incoming_fields["review_status"] = (
+                                "changed" if row.discovery_digest else "pending"
+                            )
+                            row.enabled = False
+                    row.field_profile = incoming_fields
                     row.discovered_at = profile.discovered_at
                     row.discovery_digest = profile.discovery_digest
-                row.enabled = profile.enabled
+                if profile.source_type != "mcp_tool":
+                    row.enabled = profile.enabled
             persisted.append(row)
         await self.session.flush()
         return persisted
+
+    async def get_source(self, connector_id: str, source_id: str) -> ConnectorSource | None:
+        return await self.session.scalar(
+            select(ConnectorSource).where(
+                ConnectorSource.id == source_id,
+                ConnectorSource.connector_instance_id == connector_id,
+            )
+        )
+
+    async def review_remote_tool(
+        self,
+        source: ConnectorSource,
+        *,
+        enabled: bool,
+        approved_purpose: str | None,
+        user_id: int,
+    ) -> ConnectorSource:
+        if source.source_type != "mcp_tool":
+            raise ValueError("Only discovered MCP tools can be reviewed")
+        profile = dict(source.field_profile or {})
+        if enabled:
+            if not source.discovery_digest or profile.get("schema_digest") != source.discovery_digest:
+                raise ValueError("Remote MCP tool discovery is stale")
+            if not approved_purpose:
+                raise ValueError("An approved tool purpose is required")
+            profile.update(
+                {
+                    "review_status": "approved",
+                    "approved_purpose": approved_purpose.strip(),
+                    # The first remote-MCP release is intentionally read-only.
+                    # MCP annotations are only hints and never lower this value.
+                    "approved_risk": "read_only",
+                    "reviewed_by_user_id": user_id,
+                    "reviewed_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                }
+            )
+        else:
+            profile["review_status"] = "disabled"
+            profile.pop("approved_purpose", None)
+            profile.pop("approved_risk", None)
+        source.field_profile = profile
+        source.enabled = enabled
+        await self.session.flush()
+        return source
 
     async def get_binding(self, project_id: str, connector_id: str) -> ProjectConnectorBindingModel | None:
         return await self.session.scalar(select(ProjectConnectorBindingModel).where(
@@ -269,6 +341,7 @@ def instance_config(row: ConnectorInstance) -> ConnectorInstanceConfig:
         id=row.id, provider_id=row.provider_id, display_name=row.display_name, safe_config=dict(row.safe_config or {}),
         ownership_scope=row.ownership_scope, enabled=row.enabled, status=ConnectorStatus(row.status),
         provider_version=row.provider_version, redaction_policy_version=row.redaction_policy_version,
+        credential_type=row.credential_type,
     )
 
 

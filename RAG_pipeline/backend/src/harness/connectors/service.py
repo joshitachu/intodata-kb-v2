@@ -10,12 +10,14 @@ from .models import (
     CapabilityBindingUpdate,
     CapabilityBindingView,
     ConnectorAuthMode,
+    ConnectorCapabilityDefinition,
     ConnectorHealthResult,
     ConnectorHealthStatus,
     ConnectorFreshnessResult,
     ConnectorInstanceCreate,
     ConnectorInstanceUpdate,
     ConnectorInstanceView,
+    ConnectorInvocationResult,
     ConnectorQuery,
     ConnectorReadResult,
 )
@@ -67,9 +69,21 @@ class ConnectorService:
 
     async def bind(self, instance_id: int, data: CapabilityBindingCreate):
         row = await self.repository.get_instance(instance_id)
-        manifest = self.providers.manifest(row.provider_key)
-        if data.capability_id not in manifest.capability_ids:
-            raise ConnectorPolicyError("Capability is not provided by this connector")
+        try:
+            capability = self.providers.capability_for_instance(
+                row.provider_key, data.capability_id, row.config
+            )
+        except KeyError as exc:
+            raise ConnectorPolicyError("Capability is not provided by this connector") from exc
+        if row.provider_key != "remote_mcp" and data.risk_tier != capability.risk_tier:
+            raise ConnectorPolicyError("Capability risk does not match its trusted provider definition")
+        if row.provider_key == "remote_mcp" and (
+            capability.risk_tier != "read_only" or data.risk_tier != "read_only"
+        ):
+            raise ConnectorPolicyError(
+                "This MCP tool is not declared read-only. Action tools require the approval "
+                "runtime and are not enabled yet"
+            )
         if not data.project_ids:
             raise ConnectorPolicyError("At least one project is required")
         return await self.repository.add_binding(instance_id, data)
@@ -83,17 +97,56 @@ class ConnectorService:
     ):
         instance = await self.repository.get_instance(instance_id)
         row = await self.repository.get_binding(instance_id, binding_id)
-        if row.capability_id not in self.providers.manifest(instance.provider_key).capability_ids:
-            raise ConnectorPolicyError("Capability is not provided by this connector")
+        try:
+            capability = self.providers.capability_for_instance(
+                instance.provider_key, row.capability_id, instance.config
+            )
+        except KeyError as exc:
+            raise ConnectorPolicyError("Capability is not provided by this connector") from exc
         if "project_ids" in data.model_fields_set and data.project_ids is None:
             raise ConnectorPolicyError("Project scope cannot be null")
         if "enabled" in data.model_fields_set and data.enabled is None:
             raise ConnectorPolicyError("Enabled cannot be null")
+        if "risk_tier" in data.model_fields_set and data.risk_tier is None:
+            raise ConnectorPolicyError("Risk tier cannot be null")
         if data.project_ids is not None and not data.project_ids:
             raise ConnectorPolicyError("At least one project is required")
         if data.project_ids is None and not row.project_ids:
             raise ConnectorPolicyError("At least one project is required")
+        effective_risk = data.risk_tier if data.risk_tier is not None else row.risk_tier
+        if instance.provider_key == "remote_mcp" and (
+            capability.risk_tier != "read_only" or effective_risk != "read_only"
+        ):
+            raise ConnectorPolicyError(
+                "This MCP tool is not declared read-only. Action tools require the approval "
+                "runtime and are not enabled yet"
+            )
+        if instance.provider_key != "remote_mcp" and effective_risk != capability.risk_tier:
+            raise ConnectorPolicyError("Capability risk does not match its trusted provider definition")
         return await self.repository.update_binding(row, data)
+
+    async def discover_capabilities(
+        self, instance_id: int, access_token: str | None = None
+    ) -> tuple[ConnectorCapabilityDefinition, ...]:
+        """Refresh and persist one dynamic provider's reviewed tool snapshot."""
+
+        row = await self.repository.get_instance(instance_id)
+        if not row.enabled:
+            raise ConnectorPolicyError("Connector is disabled")
+        provider = self.providers.get(row.provider_key)
+        discover = getattr(provider, "discover_capabilities_for_user", None)
+        if not callable(discover):
+            return self.providers.capabilities_for_instance(row.provider_key, row.config)
+        if not access_token:
+            raise ConnectorPolicyError("Capability discovery requires your active session")
+        discovered, config = await discover(row.config, access_token)
+        validated_config = provider.validate_config(config)
+        row = await self.repository.replace_config(row, validated_config)
+        await self.repository.set_health(
+            row, ConnectorHealthStatus.HEALTHY.value,
+            f"Discovered {len(discovered)} MCP tool(s)",
+        )
+        return self.providers.capabilities_for_instance(row.provider_key, row.config)
 
     async def delete(self, instance_id: int) -> None:
         row = await self.repository.get_instance(instance_id)
@@ -163,6 +216,45 @@ class ConnectorService:
                 capability_id, query, row.config, row.credential_reference, project_id
             )
         return ConnectorReadResult.model_validate(redact(result.model_dump(), set(binding.redaction_fields)))
+
+    async def invoke(
+        self,
+        instance_id: int,
+        capability_id: str,
+        project_id: str | None,
+        domain: str | None,
+        arguments: dict[str, Any],
+        access_token: str | None = None,
+    ) -> ConnectorInvocationResult:
+        row = await self.repository.get_instance(instance_id, bindings=True)
+        binding = next(
+            (item for item in row.capability_bindings if item.capability_id == capability_id),
+            None,
+        )
+        if not row.enabled or row.health_status != ConnectorHealthStatus.HEALTHY.value:
+            raise ConnectorPolicyError("Connector is unavailable")
+        if binding is None or not binding.enabled:
+            raise ConnectorPolicyError("Connector capability is disabled")
+        if not project_id or project_id not in binding.project_ids:
+            raise ConnectorPolicyError("Connector is outside project scope")
+        if binding.domains and domain not in binding.domains:
+            raise ConnectorPolicyError("Connector is outside domain scope")
+        provider = self.providers.get(row.provider_key)
+        invoke = getattr(provider, "invoke_for_user", None)
+        if not callable(invoke):
+            raise ConnectorPolicyError("Connector does not support direct tool invocation")
+        if not access_token:
+            raise ConnectorPolicyError("Connector invocation requires your active session")
+        result = await invoke(
+            capability_id,
+            arguments,
+            row.config,
+            project_id=project_id,
+            access_token=access_token,
+        )
+        return ConnectorInvocationResult.model_validate(
+            redact(result.model_dump(), set(binding.redaction_fields))
+        )
 
     async def check_freshness(
         self, instance_id: int, project_id: str, access_token: str | None = None

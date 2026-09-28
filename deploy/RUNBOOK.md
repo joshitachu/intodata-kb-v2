@@ -14,6 +14,9 @@ Optional subsystems are configured in the later sections and are all off by
 default: live runtime sources (13), GitHub App repo connection (14), external
 doc-generation providers (15), and the agent runtime v2 rollout flags (16).
 
+The subscription licence (17) is NOT optional: a production instance without a
+valid licence is view-only.
+
 ## 1. Set Deployment Variables
 
 Replace these values for the environment being deployed.
@@ -177,6 +180,13 @@ because runtime source credentials are stored encrypted at rest. Re-running
 `deploy-client.sh` against an env file written by an older revision backfills
 this key (and `MC_PORT` / `MC_API_KEY`) without touching existing secrets.
 
+The script also writes (or backfills) the subscription licence settings
+`LICENCE_ENFORCEMENT=enforce`, `LICENCE_CLIENT_SLUG=<client>`, `LICENCE_DIR`
+and `LICENCE_FILE`, and creates `/etc/intodata-kb/licences/<client>/`
+(`root:1001`, `0750`). Until a licence is installed there it prints
+`NOTICE: no licence installed ...` and the instance is view-only. Install one
+with section 17 before handing the instance over.
+
 If DNS is not ready, add `--no-certbot` to suppress the certbot instruction and
 return to Step 9 after DNS resolves.
 
@@ -191,7 +201,7 @@ sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" up -d
 If the env file existed before this runbook was updated, confirm these values exist and add them if missing:
 
 ```bash
-sudo grep -E '^(REPO_ROOT|PUBLIC_APP_URL|MCP_PUBLIC_URL|MCP_DATABASE_URL|MCP_RAG_BASE_URL|MCP_PROJECT_ROOT|MCP_INTODOC_COMMAND|MCP_PORT|SOURCE_CREDENTIALS_ENCRYPTION_KEY|MC_PORT|MC_API_KEY|TRUSTED_PROXIES|SMTP_HOST|SMTP_PORT)=' "$ENV_FILE"
+sudo grep -E '^(REPO_ROOT|PUBLIC_APP_URL|MCP_PUBLIC_URL|MCP_DATABASE_URL|MCP_RAG_BASE_URL|MCP_PROJECT_ROOT|MCP_INTODOC_COMMAND|MCP_PORT|SOURCE_CREDENTIALS_ENCRYPTION_KEY|MC_PORT|MC_API_KEY|TRUSTED_PROXIES|SMTP_HOST|SMTP_PORT|LICENCE_ENFORCEMENT|LICENCE_CLIENT_SLUG|LICENCE_DIR|LICENCE_FILE)=' "$ENV_FILE"
 ```
 
 `TRUSTED_PROXIES` must include the Compose bridge range
@@ -909,6 +919,147 @@ sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" logs --tail=50 back
 
 A validation failure appears in the backend log at startup, before traffic is
 served.
+
+## 17. Issue or renew a subscription licence
+
+Every client instance runs on a time-boxed, Ed25519-signed licence (see
+`knowledge_base/.agent/decisions/037-subscription-licence-is-a-signed-file.md`).
+While it is valid, users can chat and run generations up to the plan's limit
+(plan `basic`: 3 generations per period). Without a valid licence the instance
+is **view-only**: chat, LLM routes, scans and generations return HTTP 402,
+while login, user management and reading existing documents keep working.
+
+Where things live:
+
+| Item | Location |
+|------|----------|
+| Signing key (private) | Operator machine ONLY, file named by `MC_LICENCE_SIGNING_KEY_FILE` |
+| Current key id | `MC_LICENCE_SIGNING_KID` (currently `nexus-2026-09`) |
+| Plan catalogue | `mission_control/src/mission_control/licensing/plans.json` |
+| Pinned public keys | `RAG_pipeline/backend/src/licensing/keys.py` and `knowledge_base/mcp-server/src/mcp_server/licensing/keys.py` (byte-identical mirrors) |
+| Licence on the VPS | `/etc/intodata-kb/licences/<client>/licence.jwt` (host), mounted read-only at `/etc/intodata-kb/licence/licence.jwt` in `backend` and `mcp-server` |
+| Env vars (client env file) | `LICENCE_ENFORCEMENT`, `LICENCE_CLIENT_SLUG`, `LICENCE_DIR`, `LICENCE_FILE` |
+
+The signing key and `MC_LICENCE_SIGNING_*` must never be put on a client VPS.
+`deploy-client.sh` aborts (exit 3) if it finds any `*SIGNING_KEY*` variable or a
+PEM private key in the client env file, the connectors env file, or the licence
+directory.
+
+### 17a. Issue a licence (operator machine)
+
+```bash
+cd /path/to/intodata-kb-v2/mission_control
+export MC_LICENCE_SIGNING_KEY_FILE=~/.intodata/licence-signing/nexus-2026-09.pem
+export MC_LICENCE_SIGNING_KID=nexus-2026-09
+# Needs Python with PyJWT[crypto] + cryptography, e.g. `pip install -e .`
+PYTHONPATH=src python -m mission_control.licensing issue \
+  --client "$CLIENT_SLUG" --plan basic --months 1 --out "./${CLIENT_SLUG}-licence.jwt"
+PYTHONPATH=src python -m mission_control.licensing inspect "./${CLIENT_SLUG}-licence.jwt"
+```
+
+- `--client` must equal the instance's `LICENCE_CLIENT_SLUG` (the `--client-name`
+  given to `deploy-client.sh`). A mismatch is `licence_invalid`.
+- The period starts now by default. Use `--start` / `--end` (ISO dates, UTC) for
+  a fixed period, e.g. a renewal that starts exactly when the current one ends.
+- `inspect` shows the claims WITHOUT verifying; it is for eyeballing only.
+- A new period resets the generation count (quota is counted within `[nbf, exp)`).
+
+### 17b. Install or renew on the VPS
+
+```bash
+scp "./${CLIENT_SLUG}-licence.jwt" "ops@${FQDN}:/tmp/licence.jwt"
+ssh "ops@${FQDN}" "sudo install -o root -g 1001 -m 0640 /tmp/licence.jwt \
+  /etc/intodata-kb/licences/${CLIENT_SLUG}/licence.jwt && rm /tmp/licence.jwt"
+```
+
+No restart is needed: both services re-read the file when its mtime changes,
+so the next request sees the new licence. The directory (not the file) is
+bind-mounted, which is why replacing the file is picked up.
+
+Verify:
+
+```bash
+# Inside the containers, no login needed:
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" exec backend \
+  python -c "from src.licensing.runtime import get_policy; print(get_policy().status().to_public_dict())"
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" exec mcp-server \
+  python -c "from mcp_server.licensing.runtime import get_policy; print(get_policy().status().to_public_dict())"
+
+# Through the app, as any logged-in user (cookie jar from SMOKE-TEST section 3):
+curl -fsS -b cookies.txt "https://${FQDN}/api/v1/licence/status"
+
+# The startup line each service logs once (reflects the state at start-up):
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" logs backend mcp-server \
+  | grep 'licence: enforcement='
+```
+
+Expected: `state` is `valid`, `plan` is `basic`, `period_end` is the new expiry,
+and the log line reads `licence: enforcement=enforce state=valid ...`.
+
+### 17c. Rollout order for EXISTING clients
+
+The first release with licence enforcement refuses to start in production unless
+`LICENCE_ENFORCEMENT=enforce`, so enforcement switches on with the upgrade
+itself. Install the licence FIRST, or the client drops to view-only on upgrade:
+
+1. Issue a licence for the client (17a).
+2. Create the directory and install the file before upgrading:
+   `sudo install -d -o root -g 1001 -m 0750 /etc/intodata-kb/licences/$CLIENT_SLUG`,
+   then 17b.
+3. Pull the release and re-run `deploy/deploy-client.sh` (section 6). It
+   backfills `LICENCE_ENFORCEMENT=enforce`, `LICENCE_CLIENT_SLUG`,
+   `LICENCE_DIR` and `LICENCE_FILE` without touching existing secrets, and no
+   longer prints the "no licence installed" notice.
+4. Verify as in 17b. Then run SMOKE-TEST section 10.
+
+Guard rails: `deploy-client.sh` aborts (exit 4) when it re-deploys an EXISTING
+client that has no licence file, so step 3 cannot lock a customer out by
+accident; pass `--allow-view-only` only when a view-only instance is intended.
+Restarting the stack on the new release WITHOUT re-running the script is
+still unsafe: compose defaults enforcement to `enforce` (fail closed, no
+crash on the `off` check), but an env file without `LICENCE_CLIENT_SLUG` and
+`MCP_OPS_CLIENT_SLUG` fails the production empty-slug check and both services
+refuse to start. Always upgrade through the script.
+
+### 17d. Signing key rotation
+
+1. On the operator machine: `PYTHONPATH=src python -m mission_control.licensing keygen --out ~/.intodata/licence-signing/<new-kid>.pem`.
+   It prints the public key.
+2. Add `"<new-kid>": "<public PEM>"` to BOTH `keys.py` mirrors, keeping the old
+   kid. The mirror parity test fails if the two copies differ.
+3. Release and deploy to every client.
+4. Only then set `MC_LICENCE_SIGNING_KID=<new-kid>` and
+   `MC_LICENCE_SIGNING_KEY_FILE` to the new key, and issue with it.
+5. Remove the old kid from both mirrors only after every licence signed with it
+   has expired.
+
+If the private key is suspected compromised: do steps 1-2 but REMOVE the old kid
+in the same change, issue new licences for every client with the new kid,
+install them (17b) and deploy the release in the same maintenance window.
+Licences signed with the old kid become `licence_invalid` as soon as the release
+is live.
+
+### 17e. A client is locked out by mistake
+
+Symptoms: users see the licence banner and chat or generation returns 402 with
+`detail.code` one of `licence_missing`, `licence_invalid`, `licence_expired`,
+`licence_not_yet_valid`. Nobody is logged out (402 is never treated as 401).
+
+1. Run the in-container check from 17b; `reason` names the failure.
+2. Common causes and fixes:
+   - `missing`: file not at `/etc/intodata-kb/licences/<client>/licence.jwt`,
+     wrong name, or not readable by gid 1001 (`root:1001`, `0640`; dir `0750`).
+   - `invalid` + subject mismatch: re-issue with `--client` equal to
+     `LICENCE_CLIENT_SLUG` in the env file.
+   - `invalid` + unknown kid / bad signature: the release on the VPS does not
+     pin that kid; deploy the release that does, or re-issue with a pinned kid.
+   - `not_yet_valid`: the VPS clock is behind or `--start` is in the future.
+     Check `timedatectl`; re-issue with an earlier `--start`. Leeway is 60s.
+   - `expired`: issue and install a renewal.
+3. The remedy is always a correct licence. There is no production break-glass
+   that turns enforcement off: `LICENCE_ENFORCEMENT=off` is refused at startup
+   when `APP_ENV=production`, and changing `APP_ENV` also disables the other
+   production secret checks, so do not do that.
 
 ## Gap Capture
 

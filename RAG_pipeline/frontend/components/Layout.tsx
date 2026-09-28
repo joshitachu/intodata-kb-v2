@@ -12,6 +12,8 @@ import { useViewport } from "@/hooks/useViewport";
 import { MobileTopBar } from "./mobile/MobileTopBar";
 import { MobileDrawer } from "./mobile/MobileDrawer";
 import { SidebarContent } from "./mobile/SidebarContent";
+import { LicenceBanner } from "./LicenceBanner";
+import { LicenceProvider } from "@/hooks/useLicence";
 
 interface LayoutProps {
   children: ReactNode;
@@ -52,8 +54,14 @@ export function Layout({ children }: LayoutProps) {
 
   const isChatPage = pathname === "/";
 
+  // One licence status for the whole shell: the banner and every gated control
+  // (chat composer, scan/generate) read it, so they cannot disagree. Only read
+  // once a user is known; the status route requires a session.
+  const licenceEnabled = Boolean(user);
+
   if (isMobile) {
     return (
+      <LicenceProvider enabled={licenceEnabled}>
       <ChatProvider>
         <OnboardingGuard>
           <div className="flex flex-col h-screen">
@@ -61,6 +69,7 @@ export function Layout({ children }: LayoutProps) {
               showMenuButton
               onMenuClick={() => setDrawerOpen(true)}
             />
+            <LicenceBanner />
             <main className="flex-1 overflow-y-auto pb-safe">
               {children}
             </main>
@@ -77,20 +86,28 @@ export function Layout({ children }: LayoutProps) {
           <ProductTour />
         </OnboardingGuard>
       </ChatProvider>
+      </LicenceProvider>
     );
   }
 
   return (
+    <LicenceProvider enabled={licenceEnabled}>
     <ChatProvider>
       <OnboardingGuard>
         <div className="flex h-screen">
           <Sidebar />
-          <main className={cn("flex-1 overflow-y-auto", !isChatPage && "p-6")}>
-            {children}
-          </main>
+          {/* The banner heads the content column rather than the viewport, so it
+              never covers the sidebar and scrolls with nothing. */}
+          <div className="flex min-w-0 flex-1 flex-col">
+            <LicenceBanner />
+            <main className={cn("flex-1 overflow-y-auto", !isChatPage && "p-6")}>
+              {children}
+            </main>
+          </div>
         </div>
         <ProductTour />
       </OnboardingGuard>
     </ChatProvider>
+    </LicenceProvider>
   );
 }

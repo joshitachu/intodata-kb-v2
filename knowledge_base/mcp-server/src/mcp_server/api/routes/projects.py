@@ -38,6 +38,9 @@ from sqlalchemy import func, select, text
 from contextlib import nullcontext
 
 from mcp_server.api.permissions import require_project_access, require_project_management
+from mcp_server.api.routes.licence import require_capability
+from mcp_server.licensing.core import Capability
+from mcp_server.licensing.usage import serialize_generation_admission
 from mcp_server.config import config
 from mcp_server.repositories.doc_rag_hash_repository import DocRagHashRepository
 from mcp_server.db.session import async_session_factory
@@ -781,7 +784,12 @@ async def verify_uploaded_zip_source(req: VerifyZipUploadRequest, request: Reque
     )
 
 
-@router.post("/projects/{project_id}/replace-zip", response_model=ZipReplacementResponse)
+# Licence: the staged ZIP feeds the living-docs patch lane (LLM, no run record).
+@router.post(
+    "/projects/{project_id}/replace-zip",
+    response_model=ZipReplacementResponse,
+    dependencies=[Depends(require_capability(Capability.GENERATION))],
+)
 async def replace_zip_source(
     project_id: str,
     request: Request,
@@ -1381,6 +1389,10 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
 
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
+        # Quota lock BEFORE the project row lock: creating the run takes the
+        # quota lock and then a FOR KEY SHARE on this row (the FK), so the
+        # opposite order deadlocks against a concurrent admission.
+        await serialize_generation_admission(db)
         result = await db.execute(
             select(Project).where(Project.id == req.project_id).with_for_update()
         )
@@ -1491,7 +1503,14 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
     )
 
 
-@router.post("/projects/{project_id}/git-updates/repair-latest", response_model=StatusResponse)
+# Licence: replays through AutoDocUpdateService, whose patch lane spends tokens
+# without creating a run. A regeneration it escalates to is quota-checked at
+# run creation.
+@router.post(
+    "/projects/{project_id}/git-updates/repair-latest",
+    response_model=StatusResponse,
+    dependencies=[Depends(require_capability(Capability.GENERATION))],
+)
 async def repair_latest_git_update(project_id: str, request: Request, background_tasks: BackgroundTasks):
     """Replay the latest stored Git diff through the diff-only patcher."""
     await require_project_access(request, project_id)
@@ -1526,9 +1545,13 @@ async def repair_latest_git_update(project_id: str, request: Request, background
     )
 
 
+# Licence: run creation (in the background task) is the authoritative check;
+# this pre-check exists so the operator gets the 402 instead of a 200 for a job
+# that is then skipped.
 @router.post(
     "/projects/{project_id}/git-updates/full-rebuild",
     response_model=StatusResponse,
+    dependencies=[Depends(require_capability(Capability.GENERATION, quota=True))],
 )
 async def trigger_manual_full_rebuild(
     project_id: str,
@@ -3010,7 +3033,12 @@ async def _sync_internal_layers_for_locations(
     )
 
 
-@router.post("/push-to-rag", response_model=StatusResponse)
+# Licence: a forced re-embed produces new artefacts; any valid licence (SCAN rule).
+@router.post(
+    "/push-to-rag",
+    response_model=StatusResponse,
+    dependencies=[Depends(require_capability(Capability.SCAN))],
+)
 async def push_to_rag(req: PushToRagRequest, request: Request):
     """Push generated .md files from output dir to RAG pipeline."""
     await require_project_access(request, req.project_id)
@@ -3422,6 +3450,7 @@ async def get_doc_content(
 @router.post(
     "/projects/{project_id}/docs/{filename}/chat-patch/preview",
     response_model=ChatDocPatchPreviewResponse,
+    dependencies=[Depends(require_capability(Capability.CHAT))],
 )
 async def preview_chat_doc_patch(
     project_id: str,
@@ -3473,6 +3502,7 @@ async def preview_chat_doc_patch(
 @router.post(
     "/projects/{project_id}/docs/{filename}/chat-patch/activate",
     response_model=ChatDocPatchActivateResponse,
+    dependencies=[Depends(require_capability(Capability.CHAT))],
 )
 async def activate_chat_doc_patch(
     project_id: str,
@@ -3522,6 +3552,7 @@ async def activate_chat_doc_patch(
 @router.post(
     "/projects/{project_id}/docs/{filename}/evidence-update",
     response_model=EvidenceDocUpdateResponse,
+    dependencies=[Depends(require_capability(Capability.CHAT))],
 )
 async def update_doc_from_evidence(
     project_id: str,
@@ -5644,9 +5675,11 @@ async def get_job_lineage(
 # --- AI Summaries ---
 
 
+# Licence: Ollama summaries spend model time without creating a run.
 @router.post(
     "/projects/{project_id}/generate-summaries",
     response_model=GenerateSummariesResponse,
+    dependencies=[Depends(require_capability(Capability.GENERATION))],
 )
 async def generate_summaries(
     project_id: str,

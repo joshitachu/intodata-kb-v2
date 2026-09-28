@@ -10,6 +10,12 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mcp_server.db.models import GenerateRun, Project, ScanRun
+from mcp_server.licensing.usage import (
+    RunAdmission,
+    admit_generation,
+    admit_scan,
+    is_quota_counted,
+)
 from mcp_server.services.model_pricing import calculate_model_cost, load_model_pricing
 
 logger = logging.getLogger(__name__)
@@ -345,6 +351,12 @@ class ProjectRegistry:
         project_id: str,
         triggered_by: str = "api",
     ) -> ScanRun:
+        """Create a running scan record. The licence chokepoint for every scan.
+
+        Raises ``LicenceRefused`` (HTTP 402 via the app handler) before writing
+        anything when the licence does not allow a scan.
+        """
+        admit_scan()
         run = ScanRun(
             project_id=project_id,
             triggered_by=triggered_by,
@@ -388,7 +400,30 @@ class ProjectRegistry:
         model_name: str | None = None,
         partition_name: str | None = None,
         generation_profile: dict | None = None,
+        *,
+        admission: RunAdmission = RunAdmission.NEW,
     ) -> GenerateRun:
+        """Create a running generation record. The licence chokepoint for every run.
+
+        ``admission`` says how the run is admitted (``licensing/usage.py``):
+        ``NEW`` needs a valid licence and a free slot in the period's generation
+        allowance, and consumes one; ``CONTINUATION`` is a composite child or a
+        gate retry of a run that was already admitted, needs a valid licence
+        only, and is never counted. It must agree with the row's own fields --
+        the quota count selects rows by those fields, so a mismatch would either
+        let a run bypass the allowance or charge one that should be free.
+
+        For ``NEW`` the quota lock is taken in this session's transaction and is
+        held until the caller commits the insert. Raises ``LicenceRefused``
+        before writing anything when refused.
+        """
+        counted = is_quota_counted(partition_name=partition_name, triggered_by=triggered_by)
+        if counted != (admission is RunAdmission.NEW):
+            raise ValueError(
+                f"admission={admission.value} disagrees with the run's fields "
+                f"(partition_name={partition_name!r}, triggered_by={triggered_by!r})"
+            )
+        await admit_generation(self.db, admission)
         run = GenerateRun(
             project_id=project_id,
             triggered_by=triggered_by,

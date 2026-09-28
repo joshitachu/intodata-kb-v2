@@ -334,3 +334,40 @@ describe("useStreamMessage", () => {
     expect(result.current.streamState.progressDetail?.phase).toBe("writing_answer");
   });
 });
+
+describe("useStreamMessage licence refusal", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("surfaces a 402 as a licence refusal, not a generic failed turn", async () => {
+    const { resetLicenceRefusedThrottle, onLicenceRefused } = await import("@/lib/licence");
+    resetLicenceRefusedThrottle();
+    const refused = vi.fn();
+    const unsubscribe = onLicenceRefused(refused);
+    const detail = {
+      code: "licence_expired",
+      message: "The licence for this instance has expired.",
+      capability: "chat",
+    };
+    const fetchMock = vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ error: detail.message, code: detail.code, detail, retryable: false }),
+        { status: 402, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const { result } = renderHook(() => useStreamMessage(7));
+    await act(async () => {
+      await result.current.sendMessage({ query: "hello" });
+    });
+
+    expect(result.current.streamState.isStreaming).toBe(false);
+    expect(result.current.streamState.licenceRefusal?.code).toBe("licence_expired");
+    expect(result.current.streamState.error).toBe(detail.message);
+    expect(refused).toHaveBeenCalled();
+    // One request; nothing tried to refresh a session that is not expired.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+});

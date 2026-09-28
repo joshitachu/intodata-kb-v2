@@ -81,6 +81,8 @@ from src.runtime.models import (
     RuntimeConnection,
     RuntimeDependencySummary,
     RuntimeDeployment,
+    RuntimeDeploymentMember,
+    RuntimeDeploymentTarget,
     RuntimeErrorSignature,
     RuntimeExecution,
     RuntimeEngine,
@@ -2933,16 +2935,69 @@ class RuntimeStoreRepository:
         run_stmt = run_stmt.where(RuntimeJobRunRow.executable_kind.in_(kinds))
         run_stmt = run_stmt.order_by(RuntimeJobRunRow.started_at.desc(), RuntimeJobRunRow.id.desc())
         rows = list((await self._session.execute(run_stmt)).scalars().all())
-        latest: dict[tuple[str, str, str], RuntimeJobRunRow] = {}
+        # A clustered Route is ONE task with one deployment per engine, and the
+        # members start seconds apart during a rolling redeploy. Keying without
+        # `engine_id` kept whichever member started last and silently dropped its
+        # siblings, so which engine an operator saw was decided by a race.
+        # Measured on a live two-engine cluster: `sender_sales_orders_to_jde_s001_AI`
+        # started on PRD_RE_02 at 19:13:05 and on PRD_RE_01 at 19:12:29 -- a
+        # 36-second margin that hid 7,210 completed and 167 failed exchanges
+        # behind a "Not supplied" row from the engine that reports no telemetry
+        # at all. `talend_tmc.fetch_runtime_batch` already keys its deployment
+        # log fetch on `engine_id` for exactly this reason; this is the same rule
+        # at the read side, which never received it.
+        # Two versions of one route can be deployed at the same time -- verified
+        # on a live estate, `processor_inther_product_jde_rest_p001` runs V1 on
+        # the cluster and V2 on each engine. Collapsing per engine alone
+        # therefore discards a live deployment, so the version is part of the
+        # key and the supersession rule is applied explicitly below.
+        latest: dict[tuple[str, str, str, str, str], RuntimeJobRunRow] = {}
+        newest_per_engine: dict[tuple[str, str, str, str], RuntimeJobRunRow] = {}
         for row in rows:
-            latest.setdefault((row.project_id, row.source_key, row.job_id), row)
-
-        deployments = [
-            _to_deployment(job, latest.get((job.project_id, job.source_key, job.job_id)))
-            for job in jobs
+            engine_key = (row.project_id, row.source_key, row.job_id, row.engine_id or "")
+            latest.setdefault((*engine_key, row.artifact_version or ""), row)
+            newest_per_engine.setdefault(engine_key, row)
+        # Inventory is what is deployed NOW, not every version this route has
+        # ever been through: keep the newest deployment per engine, plus any
+        # other version that is still open. A superseded version that has
+        # already stopped is history and belongs in the runs view, not here.
+        current = [
+            row
+            for row in latest.values()
+            if row.ended_at is None
+            or newest_per_engine[
+                (row.project_id, row.source_key, row.job_id, row.engine_id or "")
+            ].run_id
+            == row.run_id
         ]
+        members: dict[tuple[str, str, str], list[RuntimeJobRunRow]] = {}
+        for row in current:
+            members.setdefault((row.project_id, row.source_key, row.job_id), []).append(row)
+
+        clusters = await self._engine_clusters(
+            {row.engine_id for row in current if row.engine_id}
+        )
+
+        deployments: list[RuntimeDeployment] = []
+        for job in jobs:
+            job_members = members.get((job.project_id, job.source_key, job.job_id))
+            if not job_members:
+                # An executable the mirror knows but has never observed running
+                # still belongs in the inventory, exactly as before.
+                deployments.append(_to_deployment(job, None))
+                continue
+            deployments.extend(_group_deployment_members(job, job_members, clusters))
         if params.state is not None:
-            deployments = [item for item in deployments if item.state == params.state]
+            # A clustered row carries its members' states too. Filtering only on
+            # the headline would hide a cluster whose second node failed to
+            # deploy -- which is precisely the row an operator filtering on
+            # "failed" is looking for.
+            deployments = [
+                item
+                for item in deployments
+                if item.state == params.state
+                or any(member.state == params.state for member in item.members)
+            ]
         deployments.sort(key=lambda item: item.executable_name.casefold())
         deployments.sort(
             key=lambda item: item.started_at
@@ -2950,6 +3005,40 @@ class RuntimeStoreRepository:
             reverse=True,
         )
         return deployments
+
+    async def _engine_clusters(
+        self, engine_ids: set[str]
+    ) -> dict[str, tuple[str | None, str | None]]:
+        """engine_id -> (cluster_id, cluster_name) for the engines in play.
+
+        Cluster NAMES are not unique across environments, so the id is the
+        grouping key and the name is only a label. An engine the inventory has
+        never seen returns nothing rather than a guess.
+        """
+        if not engine_ids:
+            return {}
+        # One TMC tenant is commonly mirrored by several documenting projects, so
+        # the same physical engine has a row per project. They describe the same
+        # engine, but letting row order decide which one is read would make the
+        # answer depend on how the table happens to be scanned. Order the query
+        # and keep the first row that actually knows its cluster.
+        stmt = (
+            select(
+                RuntimeEngineRow.engine_id,
+                RuntimeEngineRow.cluster_id,
+                RuntimeEngineRow.cluster_name,
+            )
+            .where(RuntimeEngineRow.engine_id.in_(engine_ids))
+            .order_by(RuntimeEngineRow.engine_id, RuntimeEngineRow.id)
+        )
+        resolved: dict[str, tuple[str | None, str | None]] = {}
+        for engine_id, cluster_id, cluster_name in (
+            await self._session.execute(stmt)
+        ).all():
+            existing = resolved.get(engine_id)
+            if existing is None or (existing[0] is None and cluster_id is not None):
+                resolved[engine_id] = (cluster_id, cluster_name)
+        return resolved
 
     async def count_deployments(
         self,
@@ -6349,6 +6438,8 @@ class RuntimeStoreRepository:
         row.raw_status = engine.raw_status
         row.availability = engine.availability
         row.version = engine.version
+        row.cluster_id = engine.cluster_id
+        row.cluster_name = engine.cluster_name
         row.environment_id = engine.environment_id
         row.environment_name = engine.environment_name
         row.workspace_id = engine.workspace_id
@@ -6521,6 +6612,10 @@ class RuntimeStoreRepository:
         row.misfire_reason = run.misfire_reason
         row.execution_type = run.execution_type
         row.executable_kind = run.executable_kind.value
+        row.deployment_target = (
+            run.deployment_target.value if run.deployment_target is not None else None
+        )
+        row.artifact_version = run.artifact_version
         row.environment_id = run.environment_id
         row.environment_name = run.environment_name
         row.workspace_id = run.workspace_id
@@ -7026,6 +7121,160 @@ def _to_job_run(row: RuntimeJobRunRow) -> RuntimeJobRun:
     )
 
 
+def _member_reported_telemetry(row: RuntimeJobRunRow) -> bool:
+    """Did this engine supply any Camel/service counter at all?
+
+    Unmeasured and measured-as-zero are different claims. A cluster member on an
+    engine that ships no logs reports nothing, and summing it as 0 would publish
+    a floor as though it were a total.
+    """
+    return any(
+        value is not None
+        for value in (
+            row.completed_exchanges,
+            row.failed_exchanges,
+            row.total_exchanges,
+            row.service_call_count,
+        )
+    )
+
+
+def _sum_optional(values: Iterable[int | None]) -> int | None:
+    """Sum the members that reported, or None when none of them did."""
+    present = [value for value in values if value is not None]
+    return sum(present) if present else None
+
+
+def _sum_optional_float(values: Iterable[float | None]) -> float | None:
+    present = [value for value in values if value is not None]
+    return sum(present) if present else None
+
+
+def _group_deployment_members(
+    job: RuntimeJobRow,
+    rows: list[RuntimeJobRunRow],
+    clusters: dict[str, tuple[str | None, str | None]],
+) -> list[RuntimeDeployment]:
+    """Turn one executable's per-engine rows into the deployments they represent.
+
+    A task is deployed either to a single Remote Engine or to a Remote Engine
+    Cluster, and TMC records which (`runtime.type`). Cluster members of the same
+    version are ONE deployment whose engines are a property of it -- that is what
+    an operator means by "the route runs on the cluster". Two engine-targeted
+    rows are two independent deployments and stay separate, as do two versions:
+    verified on a live estate, `processor_inther_product_jde_rest_p001` carries a
+    V1 cluster deployment and a V2 deployment on each engine at the same time.
+    """
+    grouped: dict[tuple[str, str], list[RuntimeJobRunRow]] = {}
+    standalone: list[RuntimeJobRunRow] = []
+    for row in rows:
+        if row.deployment_target != RuntimeDeploymentTarget.CLUSTER.value:
+            standalone.append(row)
+            continue
+        cluster_id = (clusters.get(row.engine_id or "") or (None, None))[0] or ""
+        grouped.setdefault((cluster_id, row.artifact_version or ""), []).append(row)
+
+    deployments = [_to_deployment(job, row) for row in standalone]
+    for (cluster_id, _version), member_rows in grouped.items():
+        cluster_name = next(
+            (
+                (clusters.get(row.engine_id or "") or (None, None))[1]
+                for row in member_rows
+                if (clusters.get(row.engine_id or "") or (None, None))[1]
+            ),
+            None,
+        )
+        deployments.append(
+            _to_cluster_deployment(job, member_rows, cluster_id or None, cluster_name)
+        )
+    return sorted(
+        deployments,
+        key=lambda item: (
+            item.started_at or datetime.datetime.min.replace(tzinfo=datetime.UTC),
+            item.engine_name or "",
+        ),
+        reverse=True,
+    )
+
+
+def _to_cluster_deployment(
+    job: RuntimeJobRow,
+    rows: list[RuntimeJobRunRow],
+    cluster_id: str | None,
+    cluster_name: str | None,
+) -> RuntimeDeployment:
+    """One row for a clustered deployment, with its members and its coverage."""
+    ordered = sorted(rows, key=_deployment_recency, reverse=True)
+    newest = ordered[0]
+    reporting = [row for row in ordered if _member_reported_telemetry(row)]
+    # Process times and rates are not summable the way counters are. The rates
+    # ARE additive across members (each engine contributes its own throughput);
+    # the process times describe one engine's work, so they come from the newest
+    # member that actually reported and `members` carries the rest.
+    sample = reporting[0] if reporting else None
+    base = _to_deployment(job, newest)
+    return base.model_copy(
+        update={
+            "deployment_target": RuntimeDeploymentTarget.CLUSTER,
+            "cluster_id": cluster_id,
+            # The task was deployed to the cluster, so the cluster is the thing
+            # this row is about. Without a label, say so rather than silently
+            # naming one arbitrary member.
+            "engine_name": cluster_name or (f"cluster {cluster_id}" if cluster_id else "cluster"),
+            "artifact_version": newest.artifact_version,
+            # An open member means the deployment is open, however many siblings
+            # have stopped.
+            "ended_at": None if any(row.ended_at is None for row in ordered) else base.ended_at,
+            "completed_exchanges": _sum_optional(row.completed_exchanges for row in ordered),
+            "failed_exchanges": _sum_optional(row.failed_exchanges for row in ordered),
+            "total_exchanges": _sum_optional(row.total_exchanges for row in ordered),
+            "service_call_count": _sum_optional(row.service_call_count for row in ordered),
+            "one_minute_rate": _sum_optional_float(row.one_minute_rate for row in ordered),
+            "five_minute_rate": _sum_optional_float(row.five_minute_rate for row in ordered),
+            "fifteen_minute_rate": _sum_optional_float(row.fifteen_minute_rate for row in ordered),
+            "last_process_time_ms": sample.last_process_time_ms if sample else None,
+            "mean_process_time_ms": sample.mean_process_time_ms if sample else None,
+            "metrics_updated_at": _as_utc(sample.metrics_updated_at) if sample else None,
+            "engines_total": len(ordered),
+            "engines_reporting": len(reporting),
+            "silent_engines": sorted(
+                row.engine_name or row.engine_id or "(unnamed engine)"
+                for row in ordered
+                if not _member_reported_telemetry(row)
+            ),
+            "members": [
+                RuntimeDeploymentMember(
+                    deployment_id=row.run_id,
+                    engine_id=row.engine_id,
+                    engine_name=row.engine_name,
+                    state=RuntimeExecutionState(row.state) if row.state else None,
+                    started_at=_as_utc(row.started_at),
+                    ended_at=_as_utc(row.ended_at),
+                    artifact_version=row.artifact_version,
+                    completed_exchanges=row.completed_exchanges,
+                    failed_exchanges=row.failed_exchanges,
+                    total_exchanges=row.total_exchanges,
+                    service_call_count=row.service_call_count,
+                    reported_telemetry=_member_reported_telemetry(row),
+                )
+                for row in ordered
+            ],
+        }
+    )
+
+
+def _deployment_recency(row: RuntimeJobRunRow) -> tuple[datetime.datetime, int]:
+    """Newest-first ordering for the members of one clustered deployment.
+
+    `started_at` is nullable, and `None` must not compare against a datetime.
+    A member the mirror never timestamped sorts oldest rather than raising.
+    """
+    return (
+        _as_utc(row.started_at) or datetime.datetime.min.replace(tzinfo=datetime.UTC),
+        row.id or 0,
+    )
+
+
 def _to_deployment(
     job: RuntimeJobRow,
     row: RuntimeJobRunRow | None,
@@ -7053,6 +7302,12 @@ def _to_deployment(
         mean_process_time_ms=row.mean_process_time_ms if row is not None else None,
         metrics_updated_at=_as_utc(row.metrics_updated_at) if row is not None else None,
         metric_path=(row.metric_path if row is not None else None) or job.metric_path,
+        deployment_target=(
+            RuntimeDeploymentTarget(row.deployment_target)
+            if row is not None and row.deployment_target
+            else RuntimeDeploymentTarget.UNKNOWN
+        ),
+        artifact_version=row.artifact_version if row is not None else None,
         service_call_count=row.service_call_count if row is not None else None,
         one_minute_rate=row.one_minute_rate if row is not None else None,
         five_minute_rate=row.five_minute_rate if row is not None else None,

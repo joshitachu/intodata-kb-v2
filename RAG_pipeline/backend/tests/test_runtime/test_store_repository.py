@@ -34,6 +34,7 @@ from src.runtime.models import (
     ListRuntimePlansInput,
     RuntimeExecution,
     RuntimeEngine,
+    RuntimeDeploymentTarget,
     RuntimeEngineStatus,
     RuntimeEnvironment,
     RuntimeExecutionState,
@@ -726,6 +727,346 @@ class TestPagination:
 
 
 class TestReadFilters:
+    async def _seed_cluster_engines(self, repo):
+        for engine_id, name in (("engine-re01", "PRD_RE_01"), ("engine-re02", "PRD_RE_02")):
+            await repo.upsert_engine(
+                "project-a",
+                RuntimeEngine(
+                    source_key=_SRC,
+                    engine_id=engine_id,
+                    name=name,
+                    status=RuntimeEngineStatus.ONLINE,
+                    version="8.0.1",
+                    cluster_id="cluster-prod",
+                    cluster_name="RE_Cluster_01",
+                    environment_id="env-prod",
+                    environment_name="Production",
+                ),
+                _SRC,
+                _T0,
+            )
+
+    async def test_cluster_members_collapse_into_one_row_that_states_its_coverage(
+        self, db_session
+    ):
+        """A clustered route is ONE deployment, and its coverage is not implied.
+
+        Verified on a live two-engine Talend cluster: one member reported 7,210
+        completed exchanges while the other, on an engine that ships no logs,
+        reported nothing at all. Summing the pair publishes a floor, so the row
+        has to say how many engines it was actually measured on.
+        """
+        repo = RuntimeStoreRepository(db_session)
+        await self._seed_cluster_engines(repo)
+        route = _job(job_id="route-cluster", name="sales_orders_route").model_copy(
+            update={"executable_kind": RuntimeExecutableKind.ROUTE}
+        )
+        measured = _job_run(
+            run_id="re01-v2",
+            job_id="route-cluster",
+            job_name="sales_orders_route",
+            state=RuntimeExecutionState.RUNNING,
+            execution_id="re01-v2",
+        ).model_copy(
+            update={
+                "executable_kind": RuntimeExecutableKind.ROUTE,
+                "deployment_target": RuntimeDeploymentTarget.CLUSTER,
+                "artifact_version": "2.0",
+                "engine_id": "engine-re01",
+                "engine_name": "PRD_RE_01",
+                "ended_at": None,
+                "duration_ms": None,
+                "completed_exchanges": 7210,
+                "failed_exchanges": 167,
+                "total_exchanges": 7377,
+            }
+        )
+        silent = measured.model_copy(
+            update={
+                "run_id": "re02-v2",
+                "execution_id": "re02-v2",
+                "engine_id": "engine-re02",
+                "engine_name": "PRD_RE_02",
+                "started_at": _T0 + datetime.timedelta(seconds=36),
+                "completed_exchanges": None,
+                "failed_exchanges": None,
+                "total_exchanges": None,
+            }
+        )
+        await repo.upsert_job("project-a", route, _SRC, _T0)
+        await repo.upsert_job_run("project-a", measured, _SRC, _T0)
+        await repo.upsert_job_run("project-a", silent, _SRC, _T0)
+
+        deployments = await repo.list_deployments(
+            ["project-a"],
+            ListRuntimeDeploymentsInput(executable_kind=RuntimeExecutableKind.ROUTE),
+        )
+
+        assert len(deployments) == 1, "cluster members are one deployment, not two"
+        row = deployments[0]
+        assert row.deployment_target == RuntimeDeploymentTarget.CLUSTER
+        assert row.engine_name == "RE_Cluster_01", "the row names the cluster, not a member"
+        assert row.cluster_id == "cluster-prod"
+        assert row.artifact_version == "2.0"
+        # Summed over the member that reported; the silent one is not counted as 0.
+        assert row.completed_exchanges == 7210
+        assert row.failed_exchanges == 167
+        assert row.engines_total == 2
+        assert row.engines_reporting == 1
+        assert row.silent_engines == ["PRD_RE_02"]
+        assert {member.engine_name for member in row.members} == {"PRD_RE_01", "PRD_RE_02"}
+        assert [m.reported_telemetry for m in row.members if m.engine_name == "PRD_RE_02"] == [
+            False
+        ]
+
+    async def test_a_superseded_cluster_version_leaves_the_inventory(self, db_session):
+        """The exact production case a client raised, from TMC's own drill-down.
+
+        `processor_inther_product_jde_rest_p001`: V1 was deployed to the CLUSTER
+        in 2024 and has since stopped on both members (Failed on one, Undeployed
+        on the other); V2 was then deployed BY HAND to each engine and is the
+        only thing running. TMC's list view still shows all four as Running with
+        a 654-day duration, which is what made this confusing -- its own detail
+        view disagrees, and the detail view is right.
+
+        So the answer to "what does the API return here" is two rows, both V2,
+        one per engine. Not four, and not one.
+        """
+        repo = RuntimeStoreRepository(db_session)
+        await self._seed_cluster_engines(repo)
+        route = _job(job_id="route-inther", name="inther_product_route").model_copy(
+            update={"executable_kind": RuntimeExecutableKind.ROUTE}
+        )
+        v1 = _job_run(
+            run_id="v1-re01",
+            job_id="route-inther",
+            job_name="inther_product_route",
+            state=RuntimeExecutionState.SUCCESS,
+            execution_id="v1-re01",
+        ).model_copy(
+            update={
+                "executable_kind": RuntimeExecutableKind.ROUTE,
+                "deployment_target": RuntimeDeploymentTarget.CLUSTER,
+                "artifact_version": "1.0",
+                "engine_id": "engine-re01",
+                "engine_name": "PRD_RE_01",
+                "ended_at": _T0 + datetime.timedelta(days=2),
+            }
+        )
+        runs = [
+            v1,
+            v1.model_copy(
+                update={
+                    "run_id": "v1-re02",
+                    "execution_id": "v1-re02",
+                    "state": RuntimeExecutionState.FAILED,
+                    "engine_id": "engine-re02",
+                    "engine_name": "PRD_RE_02",
+                }
+            ),
+            # V2, deployed by hand per engine and still open.
+            v1.model_copy(
+                update={
+                    "run_id": "v2-re01",
+                    "execution_id": "v2-re01",
+                    "state": RuntimeExecutionState.RUNNING,
+                    "deployment_target": RuntimeDeploymentTarget.ENGINE,
+                    "artifact_version": "2.0",
+                    "started_at": _T0 + datetime.timedelta(days=3),
+                    "ended_at": None,
+                }
+            ),
+            v1.model_copy(
+                update={
+                    "run_id": "v2-re02",
+                    "execution_id": "v2-re02",
+                    "state": RuntimeExecutionState.RUNNING,
+                    "deployment_target": RuntimeDeploymentTarget.ENGINE,
+                    "artifact_version": "2.0",
+                    "engine_id": "engine-re02",
+                    "engine_name": "PRD_RE_02",
+                    "started_at": _T0 + datetime.timedelta(days=3, seconds=30),
+                    "ended_at": None,
+                }
+            ),
+        ]
+        await repo.upsert_job("project-a", route, _SRC, _T0)
+        for run in runs:
+            await repo.upsert_job_run("project-a", run, _SRC, _T0)
+
+        deployments = await repo.list_deployments(
+            ["project-a"],
+            ListRuntimeDeploymentsInput(executable_kind=RuntimeExecutableKind.ROUTE),
+        )
+
+        assert len(deployments) == 2, "only the version that is actually running"
+        assert {row.artifact_version for row in deployments} == {"2.0"}
+        assert {row.engine_name for row in deployments} == {"PRD_RE_01", "PRD_RE_02"}
+        assert all(
+            row.deployment_target == RuntimeDeploymentTarget.ENGINE for row in deployments
+        ), "V2 was deployed per engine, so it is not a cluster deployment"
+
+    async def test_a_second_version_deployed_per_engine_stays_a_separate_deployment(
+        self, db_session
+    ):
+        """V1 on the cluster and V2 by hand on each engine are three deployments.
+
+        Verified on a live estate (`processor_inther_product_jde_rest_p001`).
+        Without the version and target, all of them collapse to whichever started
+        last, so a superseded deployment can present itself as the running one.
+        """
+        repo = RuntimeStoreRepository(db_session)
+        await self._seed_cluster_engines(repo)
+        route = _job(job_id="route-two-versions", name="inther_product_route").model_copy(
+            update={"executable_kind": RuntimeExecutableKind.ROUTE}
+        )
+        base = _job_run(
+            run_id="v1-re01",
+            job_id="route-two-versions",
+            job_name="inther_product_route",
+            state=RuntimeExecutionState.RUNNING,
+            execution_id="v1-re01",
+        ).model_copy(
+            update={
+                "executable_kind": RuntimeExecutableKind.ROUTE,
+                "deployment_target": RuntimeDeploymentTarget.CLUSTER,
+                "artifact_version": "1.0",
+                "engine_id": "engine-re01",
+                "engine_name": "PRD_RE_01",
+                "ended_at": None,
+                "duration_ms": None,
+            }
+        )
+        runs = [
+            base,
+            base.model_copy(
+                update={
+                    "run_id": "v1-re02",
+                    "execution_id": "v1-re02",
+                    "engine_id": "engine-re02",
+                    "engine_name": "PRD_RE_02",
+                }
+            ),
+            # Deployed by hand to each engine, so NOT cluster-targeted.
+            base.model_copy(
+                update={
+                    "run_id": "v2-re01",
+                    "execution_id": "v2-re01",
+                    "artifact_version": "2.0",
+                    "deployment_target": RuntimeDeploymentTarget.ENGINE,
+                    "started_at": _T0 + datetime.timedelta(days=1),
+                }
+            ),
+            base.model_copy(
+                update={
+                    "run_id": "v2-re02",
+                    "execution_id": "v2-re02",
+                    "artifact_version": "2.0",
+                    "deployment_target": RuntimeDeploymentTarget.ENGINE,
+                    "engine_id": "engine-re02",
+                    "engine_name": "PRD_RE_02",
+                    "started_at": _T0 + datetime.timedelta(days=1, seconds=30),
+                }
+            ),
+        ]
+        await repo.upsert_job("project-a", route, _SRC, _T0)
+        for run in runs:
+            await repo.upsert_job_run("project-a", run, _SRC, _T0)
+
+        deployments = await repo.list_deployments(
+            ["project-a"],
+            ListRuntimeDeploymentsInput(executable_kind=RuntimeExecutableKind.ROUTE),
+        )
+
+        assert len(deployments) == 3
+        cluster_rows = [
+            item
+            for item in deployments
+            if item.deployment_target == RuntimeDeploymentTarget.CLUSTER
+        ]
+        engine_rows = [
+            item
+            for item in deployments
+            if item.deployment_target == RuntimeDeploymentTarget.ENGINE
+        ]
+        assert len(cluster_rows) == 1
+        assert cluster_rows[0].artifact_version == "1.0"
+        assert cluster_rows[0].engines_total == 2
+        assert len(engine_rows) == 2
+        assert {row.artifact_version for row in engine_rows} == {"2.0"}
+        assert {row.engine_name for row in engine_rows} == {"PRD_RE_01", "PRD_RE_02"}
+
+    async def test_every_cluster_member_is_its_own_deployment_row(self, db_session):
+        """A clustered Route must not lose an engine to a rolling-redeploy race.
+
+        Verified on a live two-engine Talend cluster: the member that reports no
+        telemetry started 36 seconds AFTER the member holding the counters, so a
+        key without `engine_id` published "Not supplied" while 7,210 completed
+        and 167 failed exchanges sat in the row it had just discarded.
+        """
+        repo = RuntimeStoreRepository(db_session)
+        route = _job(job_id="route-cluster", name="sales_orders_route").model_copy(
+            update={"executable_kind": RuntimeExecutableKind.ROUTE}
+        )
+        # The engine that HAS the telemetry started first.
+        measured = _job_run(
+            run_id="deployment-re01",
+            job_id="route-cluster",
+            job_name="sales_orders_route",
+            state=RuntimeExecutionState.RUNNING,
+            execution_id="deployment-re01",
+        ).model_copy(
+            update={
+                "executable_kind": RuntimeExecutableKind.ROUTE,
+                "engine_id": "engine-re01",
+                "engine_name": "PRD_RE_01",
+                "ended_at": None,
+                "duration_ms": None,
+                "completed_exchanges": 7210,
+                "failed_exchanges": 167,
+                "total_exchanges": 7377,
+            }
+        )
+        # The silent engine started 36 seconds later, so it wins a newest-only key.
+        silent = measured.model_copy(
+            update={
+                "run_id": "deployment-re02",
+                "execution_id": "deployment-re02",
+                "engine_id": "engine-re02",
+                "engine_name": "PRD_RE_02",
+                "started_at": _T0 + datetime.timedelta(seconds=36),
+                "completed_exchanges": None,
+                "failed_exchanges": None,
+                "total_exchanges": None,
+            }
+        )
+        await repo.upsert_job("project-a", route, _SRC, _T0)
+        await repo.upsert_job_run("project-a", measured, _SRC, _T0)
+        await repo.upsert_job_run("project-a", silent, _SRC, _T0)
+
+        deployments = await repo.list_deployments(
+            ["project-a"],
+            ListRuntimeDeploymentsInput(executable_kind=RuntimeExecutableKind.ROUTE),
+        )
+
+        by_engine = {item.engine_name: item for item in deployments}
+        assert set(by_engine) == {"PRD_RE_01", "PRD_RE_02"}, (
+            "both cluster members must survive; the later-starting one must not "
+            "displace the one carrying the counters"
+        )
+        assert by_engine["PRD_RE_01"].completed_exchanges == 7210
+        assert by_engine["PRD_RE_01"].failed_exchanges == 167
+        assert by_engine["PRD_RE_02"].total_exchanges is None
+        # Newest first, so the silent member leads -- it is still reported, not hidden.
+        assert deployments[0].engine_name == "PRD_RE_02"
+        assert (
+            await repo.count_deployments(
+                ["project-a"],
+                ListRuntimeDeploymentsInput(executable_kind=RuntimeExecutableKind.ROUTE),
+            )
+            == 2
+        )
+
     async def test_routes_are_separate_deployments_not_job_inventory(self, db_session):
         repo = RuntimeStoreRepository(db_session)
         route = _job(job_id="route-1", name="orders_route").model_copy(

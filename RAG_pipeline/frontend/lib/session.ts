@@ -27,8 +27,12 @@ let inFlightRefresh: Promise<RefreshOutcome> | null = null;
 /**
  * 401 is the only status that means "logged out". Everything else — 429 from a
  * shared rate-limit bucket, 5xx from a restarting or saturated backend, 403
- * from an authorization rule on a perfectly valid session — leaves the session
- * intact and is retried.
+ * from an authorization rule on a perfectly valid session, 402 from a licence
+ * that has expired or run out of quota — leaves the session intact.
+ *
+ * 402 in particular must stay on this side of the line: an expired licence
+ * makes the instance view-only, and a user who is logged out cannot view
+ * anything. The licence refusal is typed separately (`lib/licence.ts`).
  */
 export function classifyAuthFailure(status: number): "unauthenticated" | "unavailable" {
   return status === 401 ? "unauthenticated" : "unavailable";

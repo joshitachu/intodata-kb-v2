@@ -890,6 +890,45 @@ Set `MCP_PIPELINE_DEBUG=1` to materialize the full forensic record under `docs_s
 - Runbook and smoke-test docs are in root `deploy/RUNBOOK.md` and `deploy/SMOKE-TEST.md`.
 - Before marking EP-001 done, validate on a clean reference VPS: seven Docker healthchecks, MCP `/health`, HTTPS/security headers, login/logout, ingest, streaming query, dashboard, and IP allowlist.
 
+## Subscription Licence
+
+ADR: `.agent/decisions/037-subscription-licence-is-a-signed-file.md`. Operator
+procedure: root `deploy/RUNBOOK.md` section 17.
+
+- **Where it lives**: `mcp-server/src/mcp_server/licensing/`. `core.py` holds the verifier and
+  `EntitlementPolicy`. `keys.py` holds the pinned public keys. `runtime.py` holds the process policy and
+  the startup line `licence: enforcement=... state=...`. Settings are
+  `MCP_LICENCE_ENFORCEMENT`, `MCP_LICENCE_FILE` and `MCP_LICENCE_CLIENT_SLUG`. In compose
+  they are fed from the same `LICENCE_*` env-file vars as the RAG backend, so they
+  cannot disagree. Never give them separate values.
+- **Enforcement**: the chokepoint is run *creation*.
+  `ProjectRegistry.create_scan_run` / `create_generate_run` check the policy and
+  raise `LicenceRefused`, which `api/app.py` maps to 402. Every caller goes through them:
+  routes, webhook, ops_control, partition orchestrator, git reingestion and the MCP tool.
+  Background callers (git poller, webhook) log once and skip. They never retry-loop.
+  The generation quota counts top-level runs (`partition_name IS NULL`, not a
+  gate retry) in `[nbf, exp)`, excluding failed runs, under
+  `pg_advisory_xact_lock`. `licensing/usage.py` is the single definition; do not
+  re-count elsewhere. LLM routes
+  that create no run carry the route dependency instead. Never add a run-creation
+  path that bypasses the registry.
+- **402 contract**: HTTP 402 with `detail = {code, message, capability, ...}`.
+  `code` is one of `licence_expired`, `licence_not_yet_valid`, `licence_missing`,
+  `licence_invalid`, `feature_not_in_plan` or `quota_exhausted`. Never 401. The
+  dashboard shows a banner and disables generate/scan without logging out.
+  `GET /mcp/licence/status` reports state plus used/allowed generations.
+- **Mirror rule**: `licensing/core.py`, `licensing/keys.py` and
+  `tests/test_licensing/golden_vectors.json` are byte-identical to
+  `RAG_pipeline/backend/src/licensing/` and
+  `RAG_pipeline/backend/tests/test_licensing/golden_vectors.json`. Change both
+  copies together. The parity test lives in the backend suite
+  (`test_licence_mirror_parity.py`).
+- **Dev**: `MCP_LICENCE_ENFORCEMENT=off` (the Settings default for a bare run; root `docker-compose.yml` defaults to `enforce`, so set `LICENCE_ENFORCEMENT=off` in `.env` for compose dev) disables every check. With
+  `MCP_APP_ENV=production`, startup refuses `off` or an empty slug.
+- **Operator side**: licences are issued with
+  `python -m mission_control.licensing issue` on the operator machine. The signing
+  key (`MC_LICENCE_SIGNING_KEY_FILE`) must never be on a client stack.
+
 ## Project Structure
 
 ```

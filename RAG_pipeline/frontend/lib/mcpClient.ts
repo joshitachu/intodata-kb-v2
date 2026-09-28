@@ -6,6 +6,23 @@
  */
 
 import type { AddSourceResponse, GenerationPlan } from "@/types";
+import { LicenceRefusal, licenceRefusalFromResponse } from "@/lib/licence";
+
+export { LicenceRefusal };
+
+/**
+ * Throw the typed licence refusal when the MCP server answered 402.
+ *
+ * Called first in every failure branch below, so a scan, a generation or any
+ * other gated MCP action refused by the licence reaches the UI as its own
+ * sentence ("All 3 documentation generations for this period have been used")
+ * instead of `"/api/source/generate failed (402): {...raw json...}"`, and the
+ * licence banner re-reads the status.
+ */
+async function throwIfLicenceRefused(res: Response): Promise<void> {
+  const refusal = await licenceRefusalFromResponse(res);
+  if (refusal) throw refusal;
+}
 
 export type { AddSourceResponse, GenerationPlan, GenerationPlanPartition } from "@/types";
 
@@ -173,6 +190,7 @@ export async function scanProject(projectId: string, force = true): Promise<void
     body: JSON.stringify({ project_id: projectId, force }),
   });
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new Error(`/api/source/scan failed (${res.status}): ${await res.text()}`);
   }
 }
@@ -192,6 +210,7 @@ export async function getScanStatus(projectId: string): Promise<ScanStatus> {
     credentials: "include",
   });
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new McpRequestError(
       `/api/source/status/${projectId} failed (${res.status}): ${await res.text()}`,
       res.status,
@@ -339,6 +358,7 @@ export async function generateDocs(
     }),
   });
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new Error(`/api/source/generate failed (${res.status}): ${await res.text()}`);
   }
 }
@@ -351,6 +371,7 @@ export async function pushProjectToRag(projectId: string): Promise<void> {
     body: JSON.stringify({ project_id: projectId }),
   });
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new Error(`/api/source/push-to-rag failed (${res.status}): ${await res.text()}`);
   }
 }
@@ -363,6 +384,7 @@ export async function resetProjectStatus(projectId: string): Promise<void> {
     body: JSON.stringify({ project_id: projectId }),
   });
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new Error(`/api/source/reset-status failed (${res.status}): ${await res.text()}`);
   }
 }
@@ -373,6 +395,7 @@ export async function deleteSourceProject(projectId: string): Promise<void> {
     credentials: "include",
   });
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new Error(`Delete source failed (${res.status}): ${await res.text()}`);
   }
 }
@@ -394,6 +417,7 @@ export async function addGithubSource(args: GithubSourceArgs): Promise<SourcePro
     }),
   });
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new Error(`/api/source/github failed (${res.status}): ${await res.text()}`);
   }
   return res.json();
@@ -485,6 +509,7 @@ export async function createMultiRepoProject(args: {
     }),
   });
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new McpRequestError(
       `/api/source/multi-repo/projects failed (${res.status}): ${await res.text()}`,
       res.status,
@@ -500,6 +525,7 @@ export async function listMultiRepoMembers(projectId: string): Promise<MultiRepo
     { credentials: "include" },
   );
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new McpRequestError(
       `Listing members of ${projectId} failed (${res.status}): ${await res.text()}`,
       res.status,
@@ -539,6 +565,7 @@ export async function addMultiRepoMembers(args: {
     },
   );
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new McpRequestError(
       `Adding members to ${args.projectId} failed (${res.status}): ${await res.text()}`,
       res.status,
@@ -556,6 +583,7 @@ export async function removeMultiRepoMember(
     { method: "DELETE", credentials: "include" },
   );
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new McpRequestError(
       `Removing the member failed (${res.status}): ${await res.text()}`,
       res.status,
@@ -581,6 +609,7 @@ export async function syncMultiRepoProject(
     { method: "POST", credentials: "include" },
   );
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new McpRequestError(
       `Syncing ${projectId} failed (${res.status}): ${await res.text()}`,
       res.status,
@@ -604,6 +633,7 @@ export async function getGenerationPlan(projectId: string): Promise<GenerationPl
     { credentials: "include" },
   );
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new McpRequestError(
       `Reading the generation plan for ${projectId} failed (${res.status}): ${await res.text()}`,
       res.status,
@@ -681,6 +711,7 @@ export async function getGithubAppInstallUrl(projectId?: string): Promise<string
   const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
   const res = await fetch(`/api/source/github/connect${qs}`, { credentials: "include" });
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     // Carries the status so callers can tell "the App is not set up on this
     // deployment" (503) from a genuine failure, and offer the token path.
     throw new McpRequestError(
@@ -702,6 +733,7 @@ export interface GithubAppInstallation {
 export async function listGithubAppInstallations(): Promise<GithubAppInstallation[]> {
   const res = await fetch("/api/source/github/installations", { credentials: "include" });
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new McpRequestError(
       `/api/source/github/installations failed (${res.status}): ${await res.text()}`,
       res.status,
@@ -731,6 +763,7 @@ export async function listGithubAppRepos(
     credentials: "include",
   });
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     // 404 = the installation is gone on GitHub (the server has pruned it);
     // 502 = GitHub unreachable, worth retrying.
     throw new McpRequestError(
@@ -771,6 +804,7 @@ export interface AzureDevOpsRepo {
 async function azureDevOpsRequest(path: string, init?: RequestInit): Promise<unknown> {
   const res = await fetch(path, { credentials: "include", ...init });
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     // The upstream message is user-facing on purpose ("token expired", "needs
     // Code: Read"), so surface it rather than a generic failure.
     const body = await res.text();
@@ -845,6 +879,7 @@ export async function updateGithubToken(
     body: JSON.stringify({ github_token: githubToken }),
   });
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new Error(`GitHub token update failed (${res.status}): ${await res.text()}`);
   }
   return res.json();
@@ -856,6 +891,7 @@ export async function registerGithubWebhook(projectId: string): Promise<SourcePr
     credentials: "include",
   });
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new Error(`Webhook registration failed (${res.status}): ${await res.text()}`);
   }
   return res.json();
@@ -867,6 +903,7 @@ export async function deleteGithubWebhook(projectId: string): Promise<void> {
     credentials: "include",
   });
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new Error(`Webhook deletion failed (${res.status}): ${await res.text()}`);
   }
 }
@@ -879,6 +916,7 @@ export async function checkGithubWebhookStatus(
     { credentials: "include" },
   );
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new Error(`Webhook status check failed (${res.status}): ${await res.text()}`);
   }
   return res.json();
@@ -954,6 +992,7 @@ export async function fetchSourceLogHistory(projectId: string): Promise<SourceLo
     credentials: "include",
   });
   if (!res.ok) {
+    await throwIfLicenceRefused(res);
     throw new Error(`/api/source/log-history failed (${res.status}): ${await res.text()}`);
   }
   return res.json();

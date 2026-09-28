@@ -10,8 +10,10 @@ import {
   type ChangeEvent,
   type ReactNode,
 } from "react";
-import { ArrowUp, FileArchive, ImagePlus, Loader2, Square, X } from "lucide-react";
+import { ArrowUp, FileArchive, ImagePlus, Loader2, Lock, Square, X } from "lucide-react";
 import { uploadZip, type UploadedZipReceipt } from "@/lib/mcpClient";
+import { useLicence } from "@/hooks/useLicence";
+import { capabilityBlockReason } from "@/lib/licence";
 import { cn } from "@/lib/utils";
 import {
   SlashCommandPalette,
@@ -72,6 +74,11 @@ export function ChatInput({
   const [zipProgress, setZipProgress] = useState<number | null>(null);
   const [zipError, setZipError] = useState<string | null>(null);
   const [slashDismissed, setSlashDismissed] = useState(false);
+  // Every composer in the app is this component, so gating chat here gates the
+  // main chat, the page copilot and anything added later in one place.
+  const { status: licenceStatus } = useLicence();
+  const licenceBlockReason = capabilityBlockReason(licenceStatus, "chat");
+  const blocked = Boolean(disabled) || licenceBlockReason !== null;
   const zipAbortRef = useRef<AbortController | null>(null);
   const pendingRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -106,7 +113,7 @@ export function ChatInput({
     e.preventDefault();
     const trimmed = message.trim();
     const hasImages = images.length > 0;
-    if ((trimmed.length > 0 || hasImages) && !isLoading && !disabled) {
+    if ((trimmed.length > 0 || hasImages) && !isLoading && !blocked) {
       const slashMatch = !hasImages ? trimmed.match(/^\/([a-z][a-z0-9_-]*)(?:\s+(.*))?$/i) : null;
       if (slashMatch && onSlashCommand?.(slashMatch[1].toLowerCase(), (slashMatch[2] ?? "").trim())) {
         setMessage("");
@@ -225,7 +232,7 @@ export function ChatInput({
   }
 
   const canSend =
-    (message.trim().length > 0 || images.length > 0) && !isLoading && !disabled;
+    (message.trim().length > 0 || images.length > 0) && !isLoading && !blocked;
 
   return (
     <div
@@ -236,6 +243,16 @@ export function ChatInput({
         <div data-testid="composer-header" className="pb-2">
           {headerContent}
         </div>
+      )}
+      {licenceBlockReason && (
+        <p
+          id="chat-licence-reason"
+          data-testid="chat-licence-reason"
+          className="mb-2 flex items-start gap-1.5 text-xs text-amber-800"
+        >
+          <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>{licenceBlockReason}</span>
+        </p>
       )}
       <form onSubmit={handleSubmit}>
         <div
@@ -312,7 +329,11 @@ export function ChatInput({
               setSlashDismissed(false);
             }}
             onKeyDown={handleKeyDown}
-            placeholder={placeholder ?? "Ask about your documents..."}
+            placeholder={
+              licenceBlockReason
+                ? "Chat is unavailable under the current licence"
+                : placeholder ?? "Ask about your documents..."
+            }
             rows={1}
             className={cn(
               "w-full resize-none bg-transparent px-4 pt-3 pb-2",
@@ -321,7 +342,8 @@ export function ChatInput({
               "disabled:cursor-not-allowed disabled:opacity-50",
               "min-h-[44px] max-h-[120px] sm:max-h-[200px]",
             )}
-            disabled={isLoading || disabled}
+            disabled={isLoading || blocked}
+            aria-describedby={licenceBlockReason ? "chat-licence-reason" : undefined}
             style={{ height: "auto", overflow: "hidden" }}
             onInput={(e) => {
               const target = e.target as HTMLTextAreaElement;
@@ -366,7 +388,7 @@ export function ChatInput({
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={isLoading || disabled || images.length >= MAX_IMAGES}
+                  disabled={isLoading || blocked || images.length >= MAX_IMAGES}
                   aria-label="Attach image"
                   className={cn(
                     "flex shrink-0 items-center justify-center w-7 h-7 rounded-md transition-colors",
@@ -383,7 +405,7 @@ export function ChatInput({
                 <button
                   type="button"
                   onClick={() => zipInputRef.current?.click()}
-                  disabled={isLoading || disabled || zipProgress !== null}
+                  disabled={isLoading || blocked || zipProgress !== null}
                   aria-label="Attach ZIP source"
                   title="Attach ZIP source"
                   className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
@@ -396,6 +418,7 @@ export function ChatInput({
               type="submit"
               disabled={!canSend}
               aria-label="Send message"
+              title={licenceBlockReason ?? undefined}
               className={cn(
                 "flex shrink-0 items-center justify-center w-10 h-10 sm:w-8 sm:h-8 rounded-full transition-colors",
                 canSend

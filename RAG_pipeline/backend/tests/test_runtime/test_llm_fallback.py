@@ -307,3 +307,31 @@ class TestFailSafe:
         assert origin == "llm_fallback"
         assert rc == "Disk volume /data is full on the host"
         assert checks == ["Free disk space", "Add monitoring"]
+
+    async def test_refused_licence_keeps_deterministic_without_calling_llm(self, fallback_on):
+        """Sync route and background poller share this helper; an expired or
+        missing licence must stop the token spend here, not at either caller."""
+        from src.licensing.core import EntitlementPolicy
+        from src.licensing.runtime import set_policy
+
+        class _NoLicence:
+            def read_token(self):
+                return None
+
+        set_policy(EntitlementPolicy(_NoLicence(), public_keys={}, expected_subject="x", enforce=True))
+        try:
+            with patch(_GEN, new_callable=AsyncMock, return_value=_GOOD_LLM_JSON) as gen:
+                rc, checks, origin = await maybe_run_llm_fallback(
+                    "DET",
+                    ["det check"],
+                    confidence="low",
+                    symptom_summary="symptom",
+                    error_code=None,
+                    exception_class=None,
+                    failed_component=None,
+                    excerpts=[("first_error", "disk full")],
+                )
+        finally:
+            set_policy(None)
+        gen.assert_not_called()
+        assert (rc, checks, origin) == ("DET", ["det check"], "deterministic")

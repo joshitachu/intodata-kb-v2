@@ -1,0 +1,7 @@
+{
+  "basic": {
+    "description": "Chat plus up to 3 documentation generations per period.",
+    "features": ["chat", "generation"],
+    "limits": {"generations_per_period": 3}
+  }
+}

@@ -8,10 +8,14 @@ from typing import Any, Mapping
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .catalog import connector_catalog
-from .domain import ConnectorSourceProfile
+from .domain import ConnectorSourceProfile, account_key_for
 from .errors import ConnectorError
 from .providers.elasticsearch import register_elasticsearch_provider
 from .providers.kibana import KibanaDiscoveryProvider
+from .providers.remote_mcp import (
+    REMOTE_MCP_CALL_CAPABILITY,
+    register_remote_mcp_provider,
+)
 from .providers.talend_tmc import register_talend_tmc_provider
 from .repository import ConnectorRepository, instance_config, source_profile
 
@@ -19,6 +23,7 @@ from .repository import ConnectorRepository, instance_config, source_profile
 # Built-in providers are opt-in code imports rather than filesystem discovery.
 register_elasticsearch_provider()
 register_talend_tmc_provider()
+register_remote_mcp_provider()
 
 
 _SECRETISH_CONFIG_KEYS = {"credential", "password", "secret", "token", "authorization", "api_key"}
@@ -48,7 +53,7 @@ class ConnectorService:
         self.repository = repository or ConnectorRepository(session)
 
     async def create_instance(self, *, provider_id: str, display_name: str, safe_config: Mapping[str, Any],
-                              credential_type: str, credential: str, kibana_credential: str | None,
+                              credential_type: str, credential: str | None, kibana_credential: str | None,
                               user_id: int, username: str | None) -> object:
         try:
             manifest = connector_catalog.manifest(provider_id)
@@ -59,6 +64,10 @@ class ConnectorService:
             raise ValueError("Unknown connector provider") from exc
         if credential_type not in manifest.authentication_types:
             raise ValueError("Unsupported connector credential type")
+        if credential_type == "none" and credential is not None:
+            raise ValueError("Unauthenticated connectors cannot store a credential")
+        if credential_type != "none" and not credential:
+            raise ValueError("Connector credential is required")
         account_key = account_key_for(manifest, safe_config)
         if account_key:
             existing = await self.repository.find_by_account_key(provider_id, account_key)
@@ -111,7 +120,7 @@ class ConnectorService:
         provider = connector_catalog.provider(instance.provider_id)
         now = dt.datetime.now(dt.timezone.utc)
         try:
-            credential = self.repository.secrets.decrypt_for_provider(instance.credential_ciphertext)
+            credential = self._credential(instance)
             provider_result = await provider.test(instance_config(instance), credential)
             instance.status = "connected"
             instance.health_code = None
@@ -142,7 +151,7 @@ class ConnectorService:
         if not instance.enabled:
             raise ConnectorError("connector_disabled", "Connector is disabled")
         provider = connector_catalog.provider(instance.provider_id)
-        credential = self.repository.secrets.decrypt_for_provider(instance.credential_ciphertext)
+        credential = self._credential(instance)
         config = instance_config(instance)
         profiles: list[ConnectorSourceProfile]
         if selected_source_ids:
@@ -169,6 +178,105 @@ class ConnectorService:
                                     resource_type="connector", resource_id=connector_id,
                                     details={"source_count": len(rows), "kibana": include_kibana})
         return rows
+
+    async def review_remote_tool(
+        self,
+        connector_id: str,
+        source_id: str,
+        *,
+        enabled: bool,
+        approved_purpose: str | None,
+        user_id: int,
+        username: str | None,
+    ) -> object:
+        instance = await self._required_instance(connector_id)
+        if instance.provider_id != "remote_mcp":
+            raise ConnectorError(
+                "unsupported_provider", "Tool review is available only for remote MCP servers"
+            )
+        source = await self.repository.get_source(connector_id, source_id)
+        if source is None:
+            raise ConnectorError("not_found", "Remote MCP tool was not found")
+        try:
+            row = await self.repository.review_remote_tool(
+                source,
+                enabled=enabled,
+                approved_purpose=approved_purpose,
+                user_id=user_id,
+            )
+        except ValueError as exc:
+            raise ConnectorError("invalid_tool_review", str(exc)) from exc
+        await self.repository.audit(
+            user_id=user_id,
+            username=username,
+            action="connector.tool.review",
+            resource_type="connector_source",
+            resource_id=source_id,
+            details={"connector_id": connector_id, "enabled": enabled},
+        )
+        return row
+
+    async def call_remote_tool(
+        self,
+        *,
+        project_id: str,
+        connector_id: str,
+        source_id: str,
+        arguments: dict[str, Any],
+        user_id: int,
+        username: str | None,
+    ) -> dict[str, Any]:
+        instance = await self._required_instance(connector_id)
+        if (
+            instance.provider_id != "remote_mcp"
+            or not instance.enabled
+            or instance.status != "connected"
+        ):
+            raise ConnectorError("connector_unavailable", "Remote MCP connector is unavailable")
+        binding = await self.repository.get_binding(project_id, connector_id)
+        if (
+            binding is None
+            or not binding.enabled
+            or source_id not in (binding.source_ids or [])
+            or REMOTE_MCP_CALL_CAPABILITY not in (binding.capability_ids or [])
+        ):
+            raise ConnectorError("scope_denied", "Remote MCP tool is outside project scope")
+        source = await self.repository.get_source(connector_id, source_id)
+        profile = dict(source.field_profile or {}) if source is not None else {}
+        if (
+            source is None
+            or source.source_type != "mcp_tool"
+            or not source.enabled
+            or profile.get("review_status") != "approved"
+            or profile.get("approved_risk") != "read_only"
+        ):
+            raise ConnectorError("tool_unavailable", "Remote MCP tool is not approved")
+        provider = connector_catalog.provider(instance.provider_id)
+        result = await provider.call_reviewed_tool(
+            instance_config(instance),
+            source_profile(source, self.repository.secrets),
+            self._credential(instance),
+            arguments,
+        )
+        await self.repository.audit(
+            user_id=user_id,
+            username=username,
+            action="connector.tool.call",
+            resource_type="project_connector_binding",
+            resource_id=binding.id,
+            details={
+                "project_id": project_id,
+                "connector_id": connector_id,
+                "source_id": source_id,
+                "status": "provider_error" if result.get("is_error") else "succeeded",
+            },
+        )
+        return {
+            "connector_id": connector_id,
+            "source_id": source_id,
+            "tool_label": source.display_label[:120],
+            **result,
+        }
 
     async def kibana_spaces(self, connector_id: str) -> list[dict[str, str]]:
         instance = await self._required_instance(connector_id)
@@ -200,6 +308,8 @@ class ConnectorService:
             raise ConnectorError("invalid_source", "Binding contains a source from another connector")
         if not source_ids or not capability_ids:
             raise ValueError("Connector binding requires at least one source and capability")
+        if any(not source.enabled for source in sources):
+            raise ConnectorError("invalid_source", "Binding contains a disabled source")
         for value in budgets.values():
             if not isinstance(value, int) or value < 0:
                 raise ValueError("Connector budgets must be non-negative integers")
@@ -228,3 +338,12 @@ class ConnectorService:
         if instance is None:
             raise ConnectorError("connector_not_found", "Connector was not found")
         return instance
+
+    def _credential(self, instance: object) -> str | None:
+        credential_type = getattr(instance, "credential_type", None)
+        ciphertext = getattr(instance, "credential_ciphertext", None)
+        if credential_type == "none":
+            return None
+        if not isinstance(ciphertext, str) or not ciphertext:
+            raise ConnectorError("credential_unavailable", "Connector credential is unavailable")
+        return self.repository.secrets.decrypt_for_provider(ciphertext)

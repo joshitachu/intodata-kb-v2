@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { backendProxyHeaders } from "@/lib/proxyHeaders";
 import { FASTAPI_URL } from "@/lib/fastapi";
+import { upstreamResponseError } from "@/lib/backendProxy";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -29,11 +30,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   );
 
   if (!res.ok) {
-    const detail = await res.text();
-    return new Response(JSON.stringify({ error: detail }), {
-      status: res.status,
-      headers: { "Content-Type": "application/json" },
-    });
+    // Status and structured detail forwarded intact: a 402 licence refusal must
+    // reach the browser as a refusal, not as a broken turn.
+    return upstreamResponseError("labs/conversations/[id]/messages/stream POST", res, "Failed to send message");
   }
 
   return new Response(res.body, {

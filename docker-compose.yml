@@ -207,6 +207,19 @@ services:
       RUNTIME_SEMANTIC_ENABLED: ${RUNTIME_SEMANTIC_ENABLED:-false}
       TALEND_TMC_BASE_URL: ${TALEND_TMC_BASE_URL:-}
       TALEND_TMC_API_TOKEN_FILE: ${TALEND_TMC_API_TOKEN_FILE:-}
+      # Subscription licence (src/licensing). ONE set of env-file vars feeds both
+      # this service and mcp-server (MCP_LICENCE_* below), so the two sub-systems
+      # can never disagree about enforcement, file or subject. Defaults to
+      # `enforce` (fail closed: an env file that predates licensing comes up
+      # view-only, not crash-looping on the production `off` check); local dev
+      # sets LICENCE_ENFORCEMENT=off with APP_ENV!=production. With
+      # APP_ENV=production both services refuse to start unless enforcement is
+      # `enforce` and the slug is set. The slug falls back to the
+      # ops client slug deploy-client.sh already writes. A missing licence file
+      # does not crash startup: the verifier reports state=missing (view-only).
+      LICENCE_ENFORCEMENT: ${LICENCE_ENFORCEMENT:-enforce}
+      LICENCE_FILE: ${LICENCE_FILE:-/etc/intodata-kb/licence/licence.jwt}
+      LICENCE_CLIENT_SLUG: ${LICENCE_CLIENT_SLUG:-${MCP_OPS_CLIENT_SLUG:-}}
       TALEND_TMC_REQUEST_TIMEOUT: ${TALEND_TMC_REQUEST_TIMEOUT:-10.0}
       # Keep each live import bounded in the local 1 GiB backend container. The
       # dashboard exposes the resulting capture ceiling instead of pretending
@@ -265,6 +278,11 @@ services:
       # filter expression, a SQL lookup or a router condition survives only
       # here. The deep-dive capabilities read it and never write.
       - ./knowledge_base/intodoc-output:/intodoc-output:ro
+      # Licence DIRECTORY, read-only, shared with mcp-server. A directory and not
+      # a single-file bind: renewal replaces the file (new inode), which a file
+      # bind would never see, while the verifier reloads on mtime change. On a
+      # client VPS deploy-client.sh sets LICENCE_DIR and creates it root:1001 0750.
+      - ${LICENCE_DIR:-./deploy/licence}:/etc/intodata-kb/licence:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -436,6 +454,11 @@ services:
       MCP_OPS_TELEMETRY_URL: ${MCP_OPS_TELEMETRY_URL:-}
       MCP_OPS_TELEMETRY_API_KEY: ${MCP_OPS_TELEMETRY_API_KEY:-}
       MCP_OPS_TELEMETRY_INTERVAL_SECONDS: ${MCP_OPS_TELEMETRY_INTERVAL_SECONDS:-300}
+      # Same licence vars as the backend (see the comment there). Do not give
+      # these their own env-file keys: one source is what keeps them in step.
+      MCP_LICENCE_ENFORCEMENT: ${LICENCE_ENFORCEMENT:-enforce}
+      MCP_LICENCE_FILE: ${LICENCE_FILE:-/etc/intodata-kb/licence/licence.jwt}
+      MCP_LICENCE_CLIENT_SLUG: ${LICENCE_CLIENT_SLUG:-${MCP_OPS_CLIENT_SLUG:-}}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       KIMI_API_KEY: ${KIMI_API_KEY:-}
       MCP_PACK_AUTHOR_MODEL: ${MCP_PACK_AUTHOR_MODEL:-kimi/kimi-k2.6}
@@ -453,6 +476,8 @@ services:
       - ./knowledge_base/intodoc-output:/app/intodoc-output
       - ./knowledge_base/output:/app/workspace/output
       - ./knowledge_base/packs:/app/workspace/packs
+      # Same read-only licence directory as the backend.
+      - ${LICENCE_DIR:-./deploy/licence}:/etc/intodata-kb/licence:ro
       # Claude Code OAuth credentials. HOME is /app/.home (baked into the image),
       # so the CLI reads ~/.claude/.credentials.json from here. It is a named
       # volume and NOT a bind mount: an operator runs `claude login` once inside
@@ -479,6 +504,22 @@ services:
       - SYS_PTRACE
     mem_limit: 3g
     cpus: 2.0
+    restart: unless-stopped
+
+  demo-mcp:
+    build:
+      context: ./examples/demo-mcp
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:${DEMO_MCP_PORT:-8765}:8765"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8765), timeout=2).close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    mem_limit: 128m
+    cpus: 0.25
     restart: unless-stopped
 
   mission-control:

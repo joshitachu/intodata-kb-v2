@@ -117,6 +117,8 @@ def _tenant_handler(seen: list[httpx.Request]):
             return httpx.Response(200, json=_envelope(_ENVIRONMENTS))
         if path == "/orchestration/workspaces":
             return httpx.Response(200, json=_envelope(_WORKSPACES))
+        if path == "/processing/runtimes/remote-engine-clusters":
+            return httpx.Response(200, json=_envelope([]))
         if path == "/processing/runtimes/remote-engines":
             return httpx.Response(200, json=_envelope(_ENGINES))
         if path == "/orchestration/artifacts":

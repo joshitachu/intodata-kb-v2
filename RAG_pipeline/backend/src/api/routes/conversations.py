@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import selectinload
 
-from src.api.dependencies import CurrentUser, DBSession, QdrantClient
+from src.api.dependencies import ChatEntitledUser, CurrentUser, DBSession, QdrantClient
 from src.db.models import Conversation, ConversationMessage
 from src.db.models.conversation import ConversationLane
 from src.harness.commands import list_slash_commands
@@ -448,7 +448,7 @@ async def decide_agent_approval(
     request: Request,
     db: DBSession,
     qdrant: QdrantClient,
-    user: CurrentUser,
+    user: ChatEntitledUser,
 ) -> ApprovalDecisionResponse:
     if not settings.agent_runtime_v2_effects_enabled:
         raise api_error(409, "effect_runtime_disabled", "Effect approvals are currently disabled")
@@ -734,7 +734,7 @@ async def send_message(
     request: ConversationMessageRequest,
     http_request: Request,
     db: DBSession,
-    user: CurrentUser,
+    user: ChatEntitledUser,
     qdrant: QdrantClient,
 ) -> MessageResponse:
     """Send a message through the authoritative bounded agent loop."""
@@ -798,7 +798,7 @@ async def send_message_stream(
     request: ConversationMessageRequest,
     http_request: Request,
     db: DBSession,
-    user: CurrentUser,
+    user: ChatEntitledUser,
     qdrant: QdrantClient,
     after_sequence: int = Query(default=0, ge=0),
 ) -> StreamingResponse:

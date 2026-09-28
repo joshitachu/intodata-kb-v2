@@ -65,6 +65,8 @@ from mcp_server.providers.custom.validators import build_facts_manifest
 from mcp_server.providers.custom.enterprise.publication_policy import (
     load_publication_verdict,
 )
+from mcp_server.licensing.core import LicenceRefused
+from mcp_server.licensing.usage import RunAdmission, log_refusal
 from mcp_server.services.atomic_swap import swap_docs
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.rag_bridge import RagBridge
@@ -533,6 +535,10 @@ async def run_partitioned_generation(
 
     outcomes: list[PartitionRunOutcome] = []
     cancelled = False
+    # The parent run was admitted (quota included) when the route created it;
+    # each child still needs a valid licence. A refusal is licence-wide, so the
+    # first one is logged and every later partition is skipped with it.
+    licence_refusal: str | None = None
     for part in plan.partitions:
         subdir = partition_output_subdir(part.name) or part.name
         outcome = PartitionRunOutcome(partition=part.name, subdir=subdir)
@@ -563,13 +569,28 @@ async def run_partitioned_generation(
             )
             continue
 
-        if generate_kwargs.get("generation_profile") is not None:
-            child_run_id = await _create_child_run(
-                project_id, part.name, generation_profile=generate_kwargs["generation_profile"],
-                parent_run_id=run_id,
+        if licence_refusal is not None:
+            outcome.error = licence_refusal
+            continue
+        try:
+            if generate_kwargs.get("generation_profile") is not None:
+                child_run_id = await _create_child_run(
+                    project_id, part.name, generation_profile=generate_kwargs["generation_profile"],
+                    parent_run_id=run_id,
+                )
+            else:
+                child_run_id = await _create_child_run(project_id, part.name)
+        except LicenceRefused as exc:
+            licence_refusal = f"licence_refused: {exc.refusal.code.value}"
+            outcome.error = licence_refusal
+            log_refusal("composite child run", exc, project_id=project_id, partition=part.name)
+            await log_mgr.emit(
+                project_id,
+                f"[{part.name}] not started: {exc.refusal.message} "
+                "(remaining sub-projects are skipped)",
+                level="warning",
             )
-        else:
-            child_run_id = await _create_child_run(project_id, part.name)
+            continue
         outcome.run_id = child_run_id
         await log_mgr.emit(
             project_id,
@@ -1279,13 +1300,22 @@ async def _create_child_run(
             registry = ProjectRegistry(db)
             # The trigger source is "composite"; the partition is its own
             # field (encoding it into triggered_by overflowed the column).
+            # A continuation of the already-admitted parent: licence-checked,
+            # never quota-counted (licensing/usage.py).
             run = await registry.create_generate_run(
-                project_id, triggered_by="composite", partition_name=partition_name
+                project_id,
+                triggered_by="composite",
+                partition_name=partition_name,
+                admission=RunAdmission.CONTINUATION,
             )
             run.generation_profile = generation_profile
             run.parent_run_id = parent_run_id
             await db.commit()
             return run.id
+    except LicenceRefused:
+        # Control flow, not observability: the caller must not generate
+        # without a licence, so this is never downgraded to "no run record".
+        raise
     except Exception:  # noqa: BLE001 - run records are observability, not control flow
         if generation_profile is not None:
             # V2 receipts are control-plane state, not optional telemetry.

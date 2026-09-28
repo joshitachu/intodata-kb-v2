@@ -39,7 +39,10 @@ class ConnectorCapabilityDefinition(BaseModel):
     action: str = Field(pattern=r"^[a-z][a-z0-9_]{1,80}$")
     input_schema: dict[str, Any]
     output_type: str = Field(pattern=r"^[a-z][a-z0-9_]{1,80}$")
-    risk_tier: str = Field(default="read_only", pattern=r"^read_only$")
+    risk_tier: str = Field(
+        default="read_only",
+        pattern=r"^(read_only|reversible_write|triggers_workflow|writes_content|external_side_effect)$",
+    )
     packs: tuple[str, ...] = Field(default=("connectors",), max_length=20)
     activity_label: str = Field(min_length=1, max_length=160)
     semantic_name: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,47}$")
@@ -65,7 +68,9 @@ class ConnectorProviderDefinition(BaseModel):
     description: str = Field(min_length=1, max_length=500)
     adapter_ref: str = Field(pattern=r"^src\.harness\.connectors\.[a-zA-Z0-9_.]+$")
     auth_modes: tuple[ConnectorAuthMode, ...]
-    capabilities: tuple[ConnectorCapabilityDefinition, ...] = Field(min_length=1, max_length=50)
+    # Remote MCP providers discover their capabilities per connector instance.
+    # Code-owned providers continue to declare them statically here.
+    capabilities: tuple[ConnectorCapabilityDefinition, ...] = Field(default=(), max_length=50)
     config_schema: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("capabilities")
@@ -124,7 +129,10 @@ class CapabilityBindingCreate(BaseModel):
     capability_id: str = Field(min_length=1, max_length=160)
     project_ids: list[str] = Field(default_factory=list, max_length=100)
     domains: list[str] = Field(default_factory=list, max_length=50)
-    risk_tier: str = Field(default="read_only", pattern=r"^[a-z_]{1,30}$")
+    risk_tier: str = Field(
+        default="read_only",
+        pattern=r"^(read_only|reversible_write|triggers_workflow|writes_content|external_side_effect)$",
+    )
     redaction_fields: list[str] = Field(default_factory=list, max_length=50)
     enabled: bool = True
 
@@ -135,6 +143,10 @@ class CapabilityBindingUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     project_ids: list[str] | None = Field(default=None, max_length=100)
+    risk_tier: str | None = Field(
+        default=None,
+        pattern=r"^(read_only|reversible_write|triggers_workflow|writes_content|external_side_effect)$",
+    )
     enabled: bool | None = None
 
 
@@ -180,6 +192,15 @@ class ConnectorResultItem(BaseModel):
 class ConnectorReadResult(BaseModel):
     items: list[ConnectorResultItem]
     truncated: bool = False
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConnectorInvocationResult(BaseModel):
+    """Bounded result from one owner-approved dynamic connector tool."""
+
+    content: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    structured_content: dict[str, Any] | list[Any] | None = None
+    is_error: bool = False
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 

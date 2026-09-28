@@ -25,16 +25,16 @@ import json
 import logging
 import os
 import re
-from typing import Any, Final
+from typing import Annotated, Any, Final
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.api.dependencies import DBSession, QdrantClient
+from src.api.dependencies import DBSession, QdrantClient, require_capability
 from src.db.models import Conversation
 from src.harness.agent_chat_runtime import (
     ProductionAgentTurnRuntime,
@@ -59,6 +59,7 @@ from src.labs.contracts import (
     labs_turn_claims,
     labs_turn_modes,
 )
+from src.licensing.core import Capability
 
 logger = logging.getLogger(__name__)
 
@@ -524,7 +525,10 @@ def _visible_capabilities(
             # Admitting this governed provider family keeps every other dynamic
             # capability closed and does not bypass the executor's scope,
             # permission, schema, or risk checks.
-            or capability.provider_id == "nexus.connector"
+            or capability.provider_id in {
+                "nexus.connector",
+                "nexus.connector.remote_mcp",
+            }
         )
         and not _requires_unavailable_precondition(
             capability, turn_claim_bound=turn_claim_bound
@@ -1077,17 +1081,25 @@ async def _handle_tools_call(
 
 # --- Transport -------------------------------------------------------------
 
+# The bridge executes capabilities inside a running labs turn, so it sits behind
+# the same chat entitlement as the turn itself: a licence that lapses mid-turn
+# stops tool execution at the next call. The per-turn bearer is checked first,
+# so an unauthenticated caller still gets the bridge's own 403.
+EntitledLabsScope = Annotated[
+    LabsTurnScope,
+    Depends(require_capability(Capability.CHAT, principal=_authenticate)),
+]
+
 
 @router.post(LABS_MCP_ROUTE)
 @router.post(LABS_MCP_ROUTE + "/{token}")
 async def labs_mcp_endpoint(
     request: Request,
+    scope: EntitledLabsScope,
     db: DBSession,
     qdrant: QdrantClient,
 ) -> Response:
     """MCP Streamable HTTP endpoint backed by the production capability executor."""
-
-    scope = _authenticate(request)
 
     try:
         payload = await request.json()

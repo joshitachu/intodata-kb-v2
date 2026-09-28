@@ -19,6 +19,10 @@ class ExistingElasticSourceDenied(ExistingElasticUnavailable):
     """A listed source is not readable with the connected account's privileges."""
 
 
+class RemoteMcpUnavailable(RuntimeError):
+    """A remote MCP lifecycle or invocation request failed safely."""
+
+
 class McpConnectorBridge:
     """Keep Elastic credentials and source locators inside the MCP service."""
 
@@ -40,6 +44,194 @@ class McpConnectorBridge:
         """Backward-compatible helper for callers that expect a single account."""
         accounts = await self.connected_elastic_accounts(access_token)
         return accounts[0] if accounts else None
+
+    async def create_remote_mcp(
+        self,
+        access_token: str,
+        *,
+        name: str,
+        server_url: str,
+        authentication: str,
+        credential: str | None,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Create, test, and discover a credential-owned remote MCP server."""
+
+        connector: dict[str, Any] | None = None
+        try:
+            connector = await self._request(
+                "POST",
+                "/mcp/connectors",
+                access_token,
+                json_body={
+                    "provider_id": "remote_mcp",
+                    "display_name": name,
+                    "safe_config": {
+                        "endpoint": server_url,
+                        "transport": "streamable_http",
+                        "auth_type": authentication,
+                    },
+                    "credential_type": authentication,
+                    "credential": credential,
+                },
+            )
+            connector_id = connector.get("id")
+            if not isinstance(connector_id, str) or not connector_id:
+                raise RemoteMcpUnavailable("Nexus did not return the new MCP connection.")
+            tested = await self._request(
+                "POST", f"/mcp/connectors/{quote(connector_id, safe='')}/test", access_token
+            )
+            if tested.get("status") != "connected":
+                raise RemoteMcpUnavailable("The MCP server did not pass its connection test.")
+            discovered = await self._request(
+                "POST",
+                f"/mcp/connectors/{quote(connector_id, safe='')}/discover",
+                access_token,
+                json_body={},
+            )
+            sources = discovered.get("sources")
+            if not isinstance(sources, list):
+                raise RemoteMcpUnavailable("The MCP server returned no usable tool catalogue.")
+            return connector, [item for item in sources if isinstance(item, dict)]
+        except ExistingElasticUnavailable as exc:
+            if connector is not None and isinstance(connector.get("id"), str):
+                try:
+                    await self._request(
+                        "DELETE",
+                        f"/mcp/connectors/{quote(str(connector['id']), safe='')}",
+                        access_token,
+                    )
+                except ExistingElasticUnavailable:
+                    pass
+            raise RemoteMcpUnavailable("The remote MCP server could not be connected.") from exc
+        except RemoteMcpUnavailable:
+            if connector is not None and isinstance(connector.get("id"), str):
+                try:
+                    await self._request(
+                        "DELETE",
+                        f"/mcp/connectors/{quote(str(connector['id']), safe='')}",
+                        access_token,
+                    )
+                except ExistingElasticUnavailable:
+                    pass
+            raise
+
+    async def test_remote_mcp(self, access_token: str, connector_id: str) -> dict[str, Any]:
+        try:
+            return await self._request(
+                "POST", f"/mcp/connectors/{quote(connector_id, safe='')}/test", access_token
+            )
+        except ExistingElasticUnavailable as exc:
+            raise RemoteMcpUnavailable("The remote MCP health check failed.") from exc
+
+    async def discover_remote_mcp(
+        self, access_token: str, connector_id: str
+    ) -> list[dict[str, Any]]:
+        try:
+            payload = await self._request(
+                "POST",
+                f"/mcp/connectors/{quote(connector_id, safe='')}/discover",
+                access_token,
+                json_body={},
+            )
+        except ExistingElasticUnavailable as exc:
+            raise RemoteMcpUnavailable("The remote MCP tool catalogue could not be refreshed.") from exc
+        rows = payload.get("sources")
+        if not isinstance(rows, list):
+            raise RemoteMcpUnavailable("The remote MCP server returned an invalid tool catalogue.")
+        return [row for row in rows if isinstance(row, dict)]
+
+    async def call_remote_mcp_tool(
+        self,
+        access_token: str,
+        *,
+        project_id: str,
+        connector_id: str,
+        tool_id: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            return await self._request(
+                "POST",
+                f"/mcp/projects/{quote(project_id, safe='')}/connectors/"
+                f"{quote(connector_id, safe='')}/tools/{quote(tool_id, safe='')}/call",
+                access_token,
+                json_body={"arguments": arguments},
+            )
+        except ExistingElasticUnavailable as exc:
+            raise RemoteMcpUnavailable("The approved MCP tool call failed.") from exc
+
+    async def review_remote_mcp_tool(
+        self,
+        access_token: str,
+        *,
+        connector_id: str,
+        source_id: str,
+        enabled: bool,
+        approved_purpose: str | None,
+    ) -> dict[str, Any]:
+        """Record an owner's explicit review in the credential-owning service."""
+
+        try:
+            return await self._request(
+                "PATCH",
+                f"/mcp/connectors/{quote(connector_id, safe='')}/sources/"
+                f"{quote(source_id, safe='')}",
+                access_token,
+                json_body={
+                    "enabled": enabled,
+                    "approved_purpose": approved_purpose if enabled else None,
+                },
+            )
+        except ExistingElasticUnavailable as exc:
+            raise RemoteMcpUnavailable("The MCP tool review could not be saved.") from exc
+
+    async def bind_remote_mcp_project(
+        self,
+        access_token: str,
+        *,
+        project_id: str,
+        connector_id: str,
+        source_ids: list[str],
+    ) -> dict[str, Any]:
+        """Grant an exact reviewed MCP tool set to one project."""
+
+        try:
+            return await self._request(
+                "PUT",
+                f"/mcp/projects/{quote(project_id, safe='')}/connector-bindings/"
+                f"{quote(connector_id, safe='')}",
+                access_token,
+                json_body={
+                    "source_ids": list(dict.fromkeys(source_ids)),
+                    "capability_ids": ["remote.mcp.call"],
+                    "budgets": {},
+                    "enabled": True,
+                },
+            )
+        except ExistingElasticUnavailable as exc:
+            raise RemoteMcpUnavailable("The MCP project access grant could not be saved.") from exc
+
+    async def unbind_remote_mcp_project(
+        self, access_token: str, *, project_id: str, connector_id: str
+    ) -> None:
+        try:
+            await self._request(
+                "DELETE",
+                f"/mcp/projects/{quote(project_id, safe='')}/connector-bindings/"
+                f"{quote(connector_id, safe='')}",
+                access_token,
+                ignore_not_found=True,
+            )
+        except ExistingElasticUnavailable as exc:
+            raise RemoteMcpUnavailable("The MCP project access grant could not be removed.") from exc
+
+    async def delete_remote_mcp(self, access_token: str, connector_id: str) -> None:
+        try:
+            await self._request(
+                "DELETE", f"/mcp/connectors/{quote(connector_id, safe='')}", access_token
+            )
+        except ExistingElasticUnavailable as exc:
+            raise RemoteMcpUnavailable("The remote MCP connection could not be removed.") from exc
 
     async def existing_elastic_sources(
         self, access_token: str, connector_id: str, *, refresh: bool = False
@@ -162,6 +354,7 @@ class McpConnectorBridge:
         access_token: str,
         *,
         json_body: dict[str, Any] | None = None,
+        ignore_not_found: bool = False,
     ) -> dict[str, Any]:
         try:
             async with httpx.AsyncClient(
@@ -175,6 +368,8 @@ class McpConnectorBridge:
                 )
         except httpx.HTTPError as exc:
             raise ExistingElasticUnavailable("Nexus could not reach its connector service.") from exc
+        if response.status_code == 404 and ignore_not_found:
+            return {}
         if not response.is_success:
             if (
                 method == "POST"
@@ -191,6 +386,8 @@ class McpConnectorBridge:
             if response.status_code == 404:
                 raise ExistingElasticUnavailable("The selected project or Elastic connection was not found.")
             raise ExistingElasticUnavailable("The existing Elastic connection could not be prepared for Labs.")
+        if response.status_code == 204 or not response.content:
+            return {}
         try:
             value = response.json()
         except ValueError as exc:

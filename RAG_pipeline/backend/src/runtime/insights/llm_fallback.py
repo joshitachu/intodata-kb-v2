@@ -178,6 +178,15 @@ async def maybe_run_llm_fallback(
         return deterministic_root_cause, deterministic_next_checks, _DETERMINISTIC
     if confidence != _LOW:
         return deterministic_root_cause, deterministic_next_checks, _DETERMINISTIC
+    # Licence: this is the only token spend on the runtime sync path, and it is
+    # reached from both the sync route and the background poller. Checked here
+    # so neither caller can bypass it; a refusal degrades to the deterministic
+    # result -- the sync itself (mirroring runtime data) stays allowed.
+    from src.licensing.core import Capability
+    from src.licensing.runtime import get_policy
+
+    if get_policy().check(Capability.CHAT) is not None:
+        return deterministic_root_cause, deterministic_next_checks, _DETERMINISTIC
 
     payload = build_fallback_input(
         symptom_summary=symptom_summary,

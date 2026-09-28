@@ -7,7 +7,7 @@ import time
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from src.api.dependencies import CurrentUser, DBSession, QdrantClient
+from src.api.dependencies import ChatEntitledUser, CurrentUser, DBSession, QdrantClient
 from src.api.errors import api_error
 from src.api.routes.auth import limiter
 from src.config import settings
@@ -54,7 +54,7 @@ router = APIRouter(tags=["query"])
 async def query(
     request: Request,
     body: QueryRequest,
-    user: CurrentUser,
+    user: ChatEntitledUser,
     db: DBSession,
     qdrant: QdrantClient,
 ) -> QueryResponse:
@@ -142,7 +142,7 @@ async def query_debug(
 async def query_stream(
     request: Request,
     body: QueryRequest,
-    user: CurrentUser,
+    user: ChatEntitledUser,
     db: DBSession,
     qdrant: QdrantClient,
 ) -> StreamingResponse:

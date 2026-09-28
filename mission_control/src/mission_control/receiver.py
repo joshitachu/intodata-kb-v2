@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .clients import load_client_config
@@ -81,6 +82,31 @@ async def all_snapshots() -> dict[str, Any]:
         except Exception as exc:
             logger.warning("Failed to read snapshot %s: %s", path, exc)
     return result
+
+
+# -- Billing webhook (scaffold, not live) --------------------------------------
+
+@router.post("/billing/webhook", status_code=status.HTTP_501_NOT_IMPLEMENTED)
+async def billing_webhook() -> JSONResponse:
+    """Reserved for the hosted payment provider's webhook. Deliberately inert.
+
+    It reads no body, calls no provider and issues nothing, so leaving it
+    unauthenticated grants nothing. When a provider is integrated, this must
+    verify the provider's signature (``PaymentProvider.parse_webhook``) before
+    acting; an unverified event would mint a licence.
+    """
+    return JSONResponse(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        content={
+            "detail": {
+                "code": "billing_not_live",
+                "message": (
+                    "No payment provider is integrated. Subscriptions are billed "
+                    "manually and licences are issued by the operator."
+                ),
+            }
+        },
+    )
 
 
 # ── Remote trigger proxy ──────────────────────────────────────────────────────

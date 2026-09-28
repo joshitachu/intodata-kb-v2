@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Literal
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -157,6 +158,15 @@ class MCPServerConfig(BaseSettings):
     # Mission Control inbound control key — set this to allow Mission Control to
     # trigger scans and doc generation on this VPS remotely.
     ops_control_key: str = ""
+
+    # Subscription licence (mcp_server/licensing). ``enforce`` makes an expired
+    # or missing licence view-only: no generations, scans or LLM routes, and
+    # generations are capped per licence period. ``off`` is for local dev and is
+    # refused in production. Same file and slug as the RAG backend's LICENCE_*.
+    # MCP_LICENCE_ENFORCEMENT / MCP_LICENCE_FILE / MCP_LICENCE_CLIENT_SLUG
+    licence_enforcement: Literal["enforce", "off"] = "off"
+    licence_file: str = "/etc/intodata-kb/licence/licence.jwt"
+    licence_client_slug: str = ""
 
     # App env (development | staging | production) — toggles hard-fail secret validation
     app_env: str = "development"
@@ -837,6 +847,12 @@ def validate_production_secrets() -> None:
             "MCP_GITHUB_APP_ID, MCP_GITHUB_APP_SLUG, and "
             "MCP_GITHUB_APP_PRIVATE_KEY (or MCP_GITHUB_APP_PRIVATE_KEY_FILE), "
             "or leave all unset to use PAT connection only."
+        )
+    if config.licence_enforcement != "enforce":
+        raise ValueError("CRITICAL: MCP_LICENCE_ENFORCEMENT must be 'enforce' in production.")
+    if not config.licence_client_slug:
+        raise ValueError(
+            "CRITICAL: MCP_LICENCE_CLIENT_SLUG is empty. It must match the licence subject."
         )
 
 

@@ -1,0 +1,64 @@
+{
+  "_comment": "TEST-ONLY key material. Mirrored in knowledge_base/mcp-server/tests/test_licensing/. Regenerate both together.",
+  "expected_subject": "acme",
+  "public_keys": {
+    "test-1": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA9Vb3OdapAnTHfUrJh2Ftj+ffjHL5NElIoZE6LO3SjCY=\n-----END PUBLIC KEY-----\n"
+  },
+  "test_private_key_pem": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIFWg556SiMcXZpj7S9hM7utFzPTs7Za5o4NYxsKp7q3u\n-----END PRIVATE KEY-----\n",
+  "vectors": [
+    {
+      "name": "valid",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InRlc3QtMSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJpbnRvZGF0YS1uZXh1cyIsInN1YiI6ImFjbWUiLCJsaWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJwbGFuIjoiYmFzaWMiLCJmZWF0dXJlcyI6WyJjaGF0IiwiZ2VuZXJhdGlvbiJdLCJsaW1pdHMiOnsiZ2VuZXJhdGlvbnNfcGVyX3BlcmlvZCI6M30sIm5iZiI6MTc5MDgxMjgwMCwiZXhwIjoxNzkzNDkxMjAwLCJpYXQiOjE3OTA1OTE1NDZ9.QZSHmR1Jn3jxR6JkH28rCYqLQIGKefomYK7Q8CwH4uRRnZVxlAey1l_i1ducJR0d-eQefH_dsbl3pIg1B1lhBA",
+      "now": "2026-10-15T00:00:00+00:00",
+      "expected_state": "valid"
+    },
+    {
+      "name": "expired",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InRlc3QtMSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJpbnRvZGF0YS1uZXh1cyIsInN1YiI6ImFjbWUiLCJsaWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJwbGFuIjoiYmFzaWMiLCJmZWF0dXJlcyI6WyJjaGF0IiwiZ2VuZXJhdGlvbiJdLCJsaW1pdHMiOnsiZ2VuZXJhdGlvbnNfcGVyX3BlcmlvZCI6M30sIm5iZiI6MTc5MDgxMjgwMCwiZXhwIjoxNzkzNDkxMjAwLCJpYXQiOjE3OTA1OTE1NDZ9.QZSHmR1Jn3jxR6JkH28rCYqLQIGKefomYK7Q8CwH4uRRnZVxlAey1l_i1ducJR0d-eQefH_dsbl3pIg1B1lhBA",
+      "now": "2026-11-02T00:00:00+00:00",
+      "expected_state": "expired"
+    },
+    {
+      "name": "not_yet_valid",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InRlc3QtMSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJpbnRvZGF0YS1uZXh1cyIsInN1YiI6ImFjbWUiLCJsaWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJwbGFuIjoiYmFzaWMiLCJmZWF0dXJlcyI6WyJjaGF0IiwiZ2VuZXJhdGlvbiJdLCJsaW1pdHMiOnsiZ2VuZXJhdGlvbnNfcGVyX3BlcmlvZCI6M30sIm5iZiI6MTc5MDgxMjgwMCwiZXhwIjoxNzkzNDkxMjAwLCJpYXQiOjE3OTA1OTE1NDZ9.QZSHmR1Jn3jxR6JkH28rCYqLQIGKefomYK7Q8CwH4uRRnZVxlAey1l_i1ducJR0d-eQefH_dsbl3pIg1B1lhBA",
+      "now": "2026-09-20T00:00:00+00:00",
+      "expected_state": "not_yet_valid"
+    },
+    {
+      "name": "wrong_signature",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InRlc3QtMSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJpbnRvZGF0YS1uZXh1cyIsInN1YiI6ImFjbWUiLCJsaWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJwbGFuIjoiYmFzaWMiLCJmZWF0dXJlcyI6WyJjaGF0IiwiZ2VuZXJhdGlvbiJdLCJsaW1pdHMiOnsiZ2VuZXJhdGlvbnNfcGVyX3BlcmlvZCI6M30sIm5iZiI6MTc5MDgxMjgwMCwiZXhwIjoxNzkzNDkxMjAwLCJpYXQiOjE3OTA1OTE1NDZ9.-wr66CpKiUmD4hix6M2gGgtKgW5vLiHi7IpyC-9_PyS4hx-r6TZ8gityj0aoI7HikvsytqLCxaFCbvuzxsK9Dg",
+      "now": "2026-10-15T00:00:00+00:00",
+      "expected_state": "invalid"
+    },
+    {
+      "name": "unknown_kid",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InJvZ3VlIiwidHlwIjoiSldUIn0.eyJpc3MiOiJpbnRvZGF0YS1uZXh1cyIsInN1YiI6ImFjbWUiLCJsaWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJwbGFuIjoiYmFzaWMiLCJmZWF0dXJlcyI6WyJjaGF0IiwiZ2VuZXJhdGlvbiJdLCJsaW1pdHMiOnsiZ2VuZXJhdGlvbnNfcGVyX3BlcmlvZCI6M30sIm5iZiI6MTc5MDgxMjgwMCwiZXhwIjoxNzkzNDkxMjAwLCJpYXQiOjE3OTA1OTE1NDZ9.TgTvp34HihG1AHKlYK1wCRPTfSXjvhH0nDCL7q7fZxuIjuXUUpFCZ_NjpPk0pO3-GBpeP5U1C4dzZfN8hAJCBg",
+      "now": "2026-10-15T00:00:00+00:00",
+      "expected_state": "invalid"
+    },
+    {
+      "name": "wrong_subject",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InRlc3QtMSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJpbnRvZGF0YS1uZXh1cyIsInN1YiI6InNvbWVvbmUtZWxzZSIsImxpZCI6IjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMSIsInBsYW4iOiJiYXNpYyIsImZlYXR1cmVzIjpbImNoYXQiLCJnZW5lcmF0aW9uIl0sImxpbWl0cyI6eyJnZW5lcmF0aW9uc19wZXJfcGVyaW9kIjozfSwibmJmIjoxNzkwODEyODAwLCJleHAiOjE3OTM0OTEyMDAsImlhdCI6MTc5MDU5MTU0Nn0.dirvs14gORmTldt1CIwa2ba53K6zbIlHPiutQa31HQbjrvZfDaN0GQm3AEQSB4oRGjsVScjEHKkZav9H5_UEAQ",
+      "now": "2026-10-15T00:00:00+00:00",
+      "expected_state": "invalid"
+    },
+    {
+      "name": "tampered",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InRlc3QtMSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJpbnRvZGF0YS1uZXh1cyIsInN1YiI6ImFjbWUiLCJsaWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJwbGFuIjoiYmFzaWMiLCJmZWF0dXJlcyI6WyJjaGF0IiwiZ2VuZXJhdGlvbiJdLCJsaW1pdHMiOnsiZ2VuZXJhdGlvbnNfcGVyX3BlcmlvZCI6M30sIm5iZiI6MTc5MDgxMjgwMCwiZXhwIjoxNzkzNDkxMjAwLCJpYXQiOjE3OTA1OTE1NDZ9.QZSHmR1Jn3jxR6JkH28rCYqLQIGKefomYK7Q8CwH4uRRnZVxlAey1l_i1ducJR0d-eQefH_dsbl3pIg1B1AAAA",
+      "now": "2026-10-15T00:00:00+00:00",
+      "expected_state": "invalid"
+    },
+    {
+      "name": "garbage",
+      "token": "not-a-jwt",
+      "now": "2026-10-15T00:00:00+00:00",
+      "expected_state": "invalid"
+    },
+    {
+      "name": "missing",
+      "token": "",
+      "now": "2026-10-15T00:00:00+00:00",
+      "expected_state": "missing"
+    }
+  ]
+}

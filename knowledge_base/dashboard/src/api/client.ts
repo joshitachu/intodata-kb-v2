@@ -1,6 +1,7 @@
 import { type ZodType } from "zod";
 import { getLoginUrl } from "../hooks/useAuth";
 import { ApiError, httpStatusFromError } from "../lib/errors";
+import { LicenceStatusSchema, licenceRefusalFromText, notifyLicenceRefused } from "../lib/licence";
 import {
   AddSourceResponseSchema,
   AssignPluginPackResponseSchema,
@@ -94,6 +95,14 @@ async function request<T>(
 
   if (!res.ok) {
     const detail = await res.text();
+    // 402 is the licence, not the session: the user stays signed in and the
+    // instance is view-only. Typed so callers show the refusal sentence, and
+    // announced so the licence banner re-reads the status.
+    const refusal = licenceRefusalFromText(res.status, detail);
+    if (refusal) {
+      notifyLicenceRefused();
+      throw refusal;
+    }
     // Typed so react-query's retry policy can tell a permanent 4xx from a
     // transient 5xx. `ApiError.message` is still `"{status}: {body}"`, which is
     // what `parseApiError` and every existing caller read.
@@ -138,6 +147,10 @@ export function runtimeSourceRegistrationConflict(
 }
 
 export const api = {
+  /** Licence state, plan and this period's generation usage (`/mcp/licence/status`). */
+  licenceStatus: () =>
+    request("/mcp/licence/status", {}, LicenceStatusSchema),
+
   listProjects: () =>
     request<{ projects: import("../types").Project[]; total: number }>(
       "/mcp/projects",

@@ -4,6 +4,8 @@ import { FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } 
 import {
   Activity,
   ArrowRight,
+  Boxes,
+  Braces,
   Check,
   ChevronDown,
   ChevronRight,
@@ -12,6 +14,7 @@ import {
   ExternalLink,
   Fingerprint,
   Gauge,
+  Globe2,
   KeyRound,
   Link2,
   Loader2,
@@ -23,6 +26,7 @@ import {
   Sparkles,
   Trash2,
   Unplug,
+  Waypoints,
   Zap,
   type LucideIcon,
 } from "lucide-react";
@@ -40,6 +44,10 @@ import { cn } from "@/lib/utils";
 
 type AuthMode = "none" | "credential_reference";
 type HealthStatus = "unknown" | "healthy" | "unhealthy";
+type MarketplaceTab = "connectors" | "plugins";
+type ConnectorView = "installed" | "catalog";
+type CapabilityRisk = "read_only" | "external_side_effect";
+type RemoteMcpAuthentication = "none" | "bearer";
 
 type Provider = {
   provider_key: string;
@@ -113,6 +121,28 @@ type Binding = {
   enabled: boolean;
 };
 
+type DiscoveredCapability = {
+  id: string;
+  label: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  risk_tier: CapabilityRisk;
+};
+
+type PendingMcpSetup = {
+  connector: Connector;
+  capabilities: DiscoveredCapability[];
+  projectIds: string[];
+  selections: Record<string, { selected: boolean; riskTier: CapabilityRisk }>;
+};
+
+type RemoteMcpForm = {
+  name: string;
+  serverUrl: string;
+  authentication: RemoteMcpAuthentication;
+  credential: string;
+};
+
 type SetupState = {
   providerKey: string;
   name: string;
@@ -121,6 +151,56 @@ type SetupState = {
   config: Record<string, string>;
   projectIds: string[];
 };
+
+const PROVIDER_ARTWORK: Record<string, { icon: LucideIcon; badge: string; style: string }> = {
+  fixture_knowledge: {
+    icon: Boxes,
+    badge: "FIX",
+    style: "border-violet-500/20 bg-gradient-to-br from-violet-500/20 via-fuchsia-500/10 to-indigo-500/10 text-violet-700 dark:text-violet-300",
+  },
+  http_elastic: {
+    icon: Globe2,
+    badge: "HTTP",
+    style: "border-cyan-500/20 bg-gradient-to-br from-cyan-500/20 via-sky-500/10 to-blue-500/10 text-cyan-700 dark:text-cyan-300",
+  },
+  openapi_readonly: {
+    icon: Braces,
+    badge: "API",
+    style: "border-emerald-500/20 bg-gradient-to-br from-emerald-500/20 via-teal-500/10 to-green-500/10 text-emerald-700 dark:text-emerald-300",
+  },
+  postgres_readonly: {
+    icon: Database,
+    badge: "PG",
+    style: "border-sky-700/20 bg-gradient-to-br from-sky-700/20 via-blue-500/10 to-indigo-500/10 text-sky-800 dark:text-sky-300",
+  },
+  remote_mcp: {
+    icon: Waypoints,
+    badge: "MCP",
+    style: "border-fuchsia-500/20 bg-gradient-to-br from-fuchsia-500/20 via-violet-500/10 to-indigo-500/10 text-fuchsia-700 dark:text-fuchsia-300",
+  },
+};
+
+function ProviderArtwork({ providerKey, label }: { providerKey: string; label: string }) {
+  const artwork = PROVIDER_ARTWORK[providerKey] ?? {
+    icon: Database,
+    badge: "DATA",
+    style: "border-primary/15 bg-gradient-to-br from-primary/15 to-cyan-500/5 text-primary",
+  };
+  const Icon = artwork.icon;
+  return (
+    <div
+      aria-label={`${label} connector icon`}
+      role="img"
+      className={cn("relative flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-2xl border shadow-sm", artwork.style)}
+    >
+      <span aria-hidden="true" className="absolute -right-2 -top-2 h-8 w-8 rounded-full bg-white/35 blur-md dark:bg-white/10" />
+      <Icon aria-hidden="true" className="relative h-7 w-7 stroke-[1.8]" />
+      <span aria-hidden="true" className="absolute -bottom-0.5 right-1 rounded bg-background/90 px-1 py-0.5 text-[7px] font-black leading-none tracking-wide text-foreground/75 shadow-sm">
+        {artwork.badge}
+      </span>
+    </div>
+  );
+}
 
 const EMPTY_SETUP: SetupState = {
   providerKey: "",
@@ -131,7 +211,15 @@ const EMPTY_SETUP: SetupState = {
   projectIds: [],
 };
 
+const EMPTY_REMOTE_MCP: RemoteMcpForm = {
+  name: "",
+  serverUrl: "",
+  authentication: "none",
+  credential: "",
+};
+
 const FIELD_LABELS: Record<string, string> = {
+  server_url: "MCP server URL",
   base_url: "Endpoint URL",
   allowed_hosts: "Allowed hosts",
   index: "Index",
@@ -250,10 +338,27 @@ function elasticFreshnessLabel(source: ElasticFreshness["sources"][number]) {
   return { label: "Empty", tone: "text-muted-foreground" };
 }
 
+function safeServerUrl(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) return "Endpoint not available";
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "https:") return "Endpoint not available";
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return "Endpoint not available";
+  }
+}
+
+function capabilityRisk(value: unknown): CapabilityRisk {
+  return value === "external_side_effect" ? "external_side_effect" : "read_only";
+}
+
 export default function ConnectorControlPlane() {
   const { isOwner } = usePermissions();
   const projectsQuery = useAdminProjects(isOwner);
   const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
+  const [marketplaceTab, setMarketplaceTab] = useState<MarketplaceTab>("connectors");
+  const [connectorView, setConnectorView] = useState<ConnectorView>("installed");
   const [providers, setProviders] = useState<Provider[]>([]);
   const [connectors, setConnectors] = useState<Connector[]>([]);
   const [existingElastic, setExistingElastic] = useState<ExistingElastic>({ available: false, accounts: [] });
@@ -290,6 +395,12 @@ export default function ConnectorControlPlane() {
   const [freshnessError, setFreshnessError] = useState<string | null>(null);
   const [expandedSourceProjects, setExpandedSourceProjects] = useState<Record<string, boolean>>({});
   const [expandedConnectorCards, setExpandedConnectorCards] = useState<Record<number, boolean>>({});
+  const [pendingMcpSetup, setPendingMcpSetup] = useState<PendingMcpSetup | null>(null);
+  const [bindingMcpTools, setBindingMcpTools] = useState(false);
+  const [remoteMcpOpen, setRemoteMcpOpen] = useState(false);
+  const [remoteMcp, setRemoteMcp] = useState<RemoteMcpForm>(EMPTY_REMOTE_MCP);
+  const [savingRemoteMcp, setSavingRemoteMcp] = useState(false);
+  const [remoteMcpError, setRemoteMcpError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -427,6 +538,7 @@ export default function ConnectorControlPlane() {
       if (!healthResponse.ok) throw new Error(await errorMessage(healthResponse, "Connector created, but health check failed"));
       setSetupOpen(false);
       setSetup(EMPTY_SETUP);
+      setConnectorView("installed");
       await refresh();
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "Connector setup failed";
@@ -438,6 +550,126 @@ export default function ConnectorControlPlane() {
       }
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function createRemoteMcp(event: FormEvent) {
+    event.preventDefault();
+    let endpoint: URL;
+    try {
+      endpoint = new URL(remoteMcp.serverUrl.trim());
+      if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password) throw new Error();
+    } catch {
+      setRemoteMcpError("Custom MCP servers must use a valid HTTPS URL without embedded credentials.");
+      return;
+    }
+    if (!remoteMcp.name.trim() || (remoteMcp.authentication === "bearer" && !remoteMcp.credential)) return;
+    setSavingRemoteMcp(true);
+    setRemoteMcpError(null);
+    const body = {
+      name: remoteMcp.name.trim(),
+      server_url: endpoint.toString(),
+      authentication: remoteMcp.authentication,
+      ...(remoteMcp.authentication === "bearer" ? { credential: remoteMcp.credential } : {}),
+    };
+    // The credential is write-only. Clear it before the request leaves this function
+    // so a failed connection cannot leave a bearer token sitting in React state.
+    setRemoteMcp((current) => ({ ...current, credential: "" }));
+    try {
+      const response = await authedFetch("/api/admin/connectors/remote-mcp", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) throw new Error(await errorMessage(response, "Could not connect to the MCP server"));
+      const payload = (await response.json()) as {
+        connector: Connector;
+        capabilities?: DiscoveredCapability[];
+      };
+      const capabilities = payload.capabilities ?? [];
+      setPendingMcpSetup({
+        connector: payload.connector,
+        capabilities,
+        projectIds: [],
+        selections: Object.fromEntries(capabilities.map((capability) => [
+          capability.id,
+          { selected: false, riskTier: capabilityRisk(capability.risk_tier) },
+        ])),
+      });
+      setRemoteMcpOpen(false);
+      setRemoteMcp(EMPTY_REMOTE_MCP);
+      setConnectorView("installed");
+      await refresh();
+    } catch (reason) {
+      setRemoteMcpError(reason instanceof Error ? reason.message : "Could not connect to the MCP server");
+    } finally {
+      setSavingRemoteMcp(false);
+    }
+  }
+
+  function openRemoteMcpSetup(
+    connector: Connector,
+    capabilities: DiscoveredCapability[],
+  ) {
+    const connectorBindings = bindings[connector.id] ?? [];
+    const byCapability = new Map(connectorBindings.map((binding) => [binding.capability_id, binding]));
+    setPendingMcpSetup({
+      connector,
+      capabilities,
+      projectIds: [...new Set(connectorBindings.flatMap((binding) => binding.project_ids))],
+      selections: Object.fromEntries(capabilities.map((capability) => {
+        const binding = byCapability.get(capability.id);
+        return [capability.id, {
+          selected: Boolean(binding?.enabled) && capability.risk_tier === "read_only",
+          riskTier: binding?.risk_tier === "external_side_effect" ? "external_side_effect" : "read_only",
+        }];
+      })),
+    });
+  }
+
+  async function refreshRemoteMcpTools(connector: Connector) {
+    setBusyId(connector.id);
+    setError(null);
+    try {
+      const response = await authedFetch(`/api/admin/connectors/${connector.id}/capabilities/discover`, {
+        method: "POST",
+      });
+      if (!response.ok) throw new Error(await errorMessage(response, "Could not refresh MCP tools"));
+      const payload = (await response.json()) as { capabilities?: DiscoveredCapability[] };
+      openRemoteMcpSetup(connector, payload.capabilities ?? []);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not refresh MCP tools");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function saveRemoteMcpTools() {
+    const pending = pendingMcpSetup;
+    if (!pending || pending.projectIds.length === 0) return;
+    const selected = pending.capabilities.filter((capability) => pending.selections[capability.id]?.selected);
+    if (selected.length === 0) return;
+    setBindingMcpTools(true);
+    setError(null);
+    try {
+      const response = await authedFetch(
+        `/api/admin/connectors/remote-mcp/${pending.connector.id}/grants`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            capability_ids: selected.map((capability) => capability.id),
+            project_ids: pending.projectIds,
+          }),
+        },
+      );
+      if (!response.ok) throw new Error(await errorMessage(response, "Could not save the reviewed MCP tool access"));
+      setPendingMcpSetup(null);
+      await refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not enable MCP tools");
+    } finally {
+      setBindingMcpTools(false);
     }
   }
 
@@ -666,18 +898,18 @@ export default function ConnectorControlPlane() {
                 <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">
                   <Sparkles className="h-3.5 w-3.5" /> Agent capability fabric
                 </div>
-                <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Connector control plane</h1>
+                <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Capability marketplace</h1>
                 <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-                  Bring live evidence into Labs. Every connector is health-checked, read-only, and explicitly scoped to the projects that may use it.
+                  Connect trusted services, remote MCP tools, and documentation plugins. Every tool is health-checked and explicitly scoped before Labs can use it.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button variant="secondary" onClick={() => void refresh()} isLoading={loading}>
+                {marketplaceTab === "connectors" && <Button variant="secondary" onClick={() => void refresh()} isLoading={loading}>
                   <RefreshCw className="h-4 w-4" /> Refresh
-                </Button>
-                <Button onClick={() => setSetupOpen(true)}>
-                  <Plus className="h-4 w-4" /> Add connector
-                </Button>
+                </Button>}
+                {marketplaceTab === "connectors" && <Button onClick={() => { setRemoteMcpError(null); setRemoteMcpOpen(true); }}>
+                  <Plus className="h-4 w-4" /> Add custom MCP
+                </Button>}
               </div>
             </div>
           </div>
@@ -695,13 +927,74 @@ export default function ConnectorControlPlane() {
           </div>
         </header>
 
+        <nav aria-label="Capability marketplace" className="flex items-center gap-1 rounded-xl border border-border bg-card/80 p-1 shadow-elevation-sm">
+          {([[
+            "connectors",
+            "Connectors",
+          ], [
+            "plugins",
+            "Plugins",
+          ]] satisfies Array<[MarketplaceTab, string]>).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-current={marketplaceTab === value ? "page" : undefined}
+              onClick={() => setMarketplaceTab(value)}
+              className={cn(
+                "rounded-lg px-4 py-2 text-sm font-medium transition",
+                marketplaceTab === value
+                  ? "bg-primary text-primary-foreground shadow-elevation-xs"
+                  : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+
         {error && (
           <div className="flex items-start gap-3 rounded-xl border border-destructive/25 bg-destructive/5 p-4 text-sm text-destructive">
             <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" /><span>{error}</span>
           </div>
         )}
 
-        {existingElastic.available && (
+        {marketplaceTab === "plugins" && (
+          <section className="overflow-hidden rounded-2xl border border-border bg-card/85 p-6 shadow-elevation-sm sm:p-8">
+            <div className="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
+              <div className="max-w-2xl">
+                <div className="mb-3 inline-flex rounded-full border border-primary/20 bg-primary/5 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-primary">Documentation plugins</div>
+                <h2 className="text-xl font-semibold">Shape how Nexus investigates and documents a project</h2>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">Browse shared plugins, create a private plugin, or publish one for review. Plugins change documentation generation; external systems and MCP tools stay under Connectors.</p>
+              </div>
+              <Link href="/pack" className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-md bg-primary px-5 text-sm font-medium text-primary-foreground shadow-elevation-xs transition hover:bg-primary/90">
+                Open plugin library <ArrowRight className="h-4 w-4" />
+              </Link>
+            </div>
+            <div className="mt-6 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-xl border border-border bg-muted/20 p-4"><p className="text-sm font-medium">Shared</p><p className="mt-1 text-xs leading-5 text-muted-foreground">Reviewed plugin packs available to everyone in the deployment.</p></div>
+              <div className="rounded-xl border border-border bg-muted/20 p-4"><p className="text-sm font-medium">Personal</p><p className="mt-1 text-xs leading-5 text-muted-foreground">Private drafts you can refine before proposing them to the shared library.</p></div>
+            </div>
+          </section>
+        )}
+
+        {marketplaceTab === "connectors" && (
+          <div className="flex items-center justify-between gap-3">
+            <div role="tablist" aria-label="Connector marketplace view" className="inline-flex rounded-lg border border-border bg-card/80 p-1">
+              {([[
+                "installed",
+                "Installed",
+              ], [
+                "catalog",
+                "Catalog",
+              ]] satisfies Array<[ConnectorView, string]>).map(([value, label]) => (
+                <button key={value} type="button" role="tab" aria-selected={connectorView === value} onClick={() => setConnectorView(value)} className={cn("rounded-md px-3 py-1.5 text-xs font-medium transition", connectorView === value ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground")}>{label}</button>
+              ))}
+            </div>
+            {connectorView === "catalog" && <Button size="sm" onClick={() => { setRemoteMcpError(null); setRemoteMcpOpen(true); }}><Plus className="h-3.5 w-3.5" /> Custom MCP</Button>}
+          </div>
+        )}
+
+        {marketplaceTab === "connectors" && connectorView === "catalog" && existingElastic.available && (
           <section className="overflow-hidden rounded-2xl border border-cyan-500/20 bg-gradient-to-r from-cyan-500/[0.08] via-card to-primary/[0.06] shadow-elevation-sm">
             <div className="space-y-5 p-5 sm:p-6">
               <div className="flex min-w-0 items-start gap-3">
@@ -747,7 +1040,29 @@ export default function ConnectorControlPlane() {
           </section>
         )}
 
-        <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
+        {marketplaceTab === "connectors" && connectorView === "catalog" && (
+          <section>
+            <div className="mb-3"><h2 className="text-sm font-semibold">Trusted connector catalog</h2><p className="text-xs text-muted-foreground">Installed provider types are reviewed by the deployment. Custom MCP servers remain private to this Nexus instance.</p></div>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {providers.filter((provider) => provider.provider_key !== "remote_mcp").map((provider) => (
+                <article key={provider.provider_key} className="group flex min-h-48 flex-col rounded-2xl border border-border bg-card/85 p-5 shadow-elevation-sm transition hover:-translate-y-0.5 hover:border-primary/25 hover:shadow-elevation-md">
+                  <div className="flex items-start justify-between gap-3"><ProviderArtwork providerKey={provider.provider_key} label={provider.display_name} /><span className="rounded-full border border-emerald-400/25 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">Trusted</span></div>
+                  <h3 className="mt-4 text-sm font-semibold">{provider.display_name}</h3>
+                  <p className="mt-1 flex-1 text-xs leading-5 text-muted-foreground">{provider.description}</p>
+                  <div className="mt-4 flex items-center justify-between gap-3"><span className="text-[10px] text-muted-foreground">{provider.capability_ids.length} tool{provider.capability_ids.length === 1 ? "" : "s"}</span><Button size="sm" variant="secondary" onClick={() => { chooseProvider(provider.provider_key); setSetupOpen(true); }}>Configure</Button></div>
+                </article>
+              ))}
+              <article className="flex min-h-48 flex-col rounded-2xl border border-dashed border-primary/30 bg-primary/[0.035] p-5 transition hover:-translate-y-0.5 hover:bg-primary/[0.055] hover:shadow-elevation-sm">
+                <ProviderArtwork providerKey="remote_mcp" label="Custom MCP server" />
+                <h3 className="mt-4 text-sm font-semibold">Custom MCP server</h3>
+                <p className="mt-1 flex-1 text-xs leading-5 text-muted-foreground">Connect a trusted remote HTTPS MCP server, inspect its tools, then approve each tool and project explicitly.</p>
+                <div className="mt-4 flex justify-end"><Button size="sm" onClick={() => { setRemoteMcpError(null); setRemoteMcpOpen(true); }}>Add MCP</Button></div>
+              </article>
+            </div>
+          </section>
+        )}
+
+        {marketplaceTab === "connectors" && connectorView === "installed" && <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div><h2 className="text-sm font-semibold">Live connectors</h2><p className="text-xs text-muted-foreground">Only healthy, bound capabilities are offered to the agent.</p></div>
@@ -761,7 +1076,7 @@ export default function ConnectorControlPlane() {
                 <div className="relative mb-5"><div className="absolute inset-0 rounded-full bg-primary/25 blur-xl" /><div className="relative rounded-2xl border border-primary/20 bg-primary/10 p-4 text-primary"><Unplug className="h-7 w-7" /></div></div>
                 <h3 className="font-semibold">Your capability fabric is empty</h3>
                 <p className="mt-1 max-w-sm text-sm text-muted-foreground">Try the fixture end to end, or connect a project-scoped search index, approved database view, or reviewed API.</p>
-                <Button className="mt-5" onClick={() => setSetupOpen(true)}><Plus className="h-4 w-4" /> Configure first connector</Button>
+                <Button className="mt-5" onClick={() => setConnectorView("catalog")}><Plus className="h-4 w-4" /> Browse connectors</Button>
               </div>
             ) : connectors.map((connector) => {
               const provider = providers.find((item) => item.provider_key === connector.provider_key);
@@ -791,12 +1106,12 @@ export default function ConnectorControlPlane() {
                         <div className={cn("relative shrink-0 rounded-xl p-2.5", connector.provider_key === "mcp_elastic" ? "border border-border bg-white" : "border border-primary/15 bg-gradient-to-br from-primary/15 to-cyan-500/5 text-primary")}>
                           {connector.provider_key === "mcp_elastic"
                             ? <Image src="/elastic-logo.png" alt="Elastic" width={40} height={40} className="h-10 w-10 object-contain" />
-                            : connector.provider_key === "http_elastic" ? <Search className="h-5 w-5" /> : <Database className="h-5 w-5" />}
+                            : connector.provider_key === "http_elastic" ? <Search className="h-5 w-5" /> : connector.provider_key === "remote_mcp" ? <Link2 className="h-5 w-5" /> : <Database className="h-5 w-5" />}
                           <span className={cn("absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2 border-card", connector.health_status === "healthy" ? "bg-emerald-500" : connector.health_status === "unhealthy" ? "bg-rose-500" : "bg-amber-400")} />
                         </div>
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2"><h3 className="truncate font-semibold">{connector.name}</h3><span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide", statusTone(connector.health_status))}>{connector.health_status}</span></div>
-                          {cardExpanded && <p className="mt-1 text-sm text-muted-foreground">{provider?.description ?? connector.provider_key}</p>}
+                          {cardExpanded && <p className="mt-1 text-sm text-muted-foreground">{provider?.description ?? (connector.provider_key === "remote_mcp" ? "Remote MCP server" : connector.provider_key)}</p>}
                         </div>
                         {cardExpanded ? <ChevronDown className="ml-auto h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-muted-foreground" />}
                       </button>
@@ -811,8 +1126,15 @@ export default function ConnectorControlPlane() {
                       <div className="grid gap-3 sm:grid-cols-3">
                         <InfoTile icon={ShieldCheck} label="Health" value={connector.health_summary ?? "Awaiting first probe"} detail={relativeDate(connector.health_checked_at)} />
                         <InfoTile icon={Link2} label="Project scope" value={projectIds.length ? projectIds.map((id) => projects.find((project) => project.id === id)?.display_name ?? id).join(", ") : "Not bound"} detail={`${connectorBindings.length} capability binding${connectorBindings.length === 1 ? "" : "s"}`} />
-                        <InfoTile icon={KeyRound} label="Credentials" value={connector.credential_present ? "Server secret reference attached" : "No credential reference"} detail={connector.auth_mode === "none" ? "No authentication" : connector.credential_reference_type ?? "Opaque reference"} />
+                        <InfoTile icon={KeyRound} label="Credentials" value={connector.credential_present ? (connector.provider_key === "remote_mcp" ? "Stored bearer credential" : "Server secret reference attached") : "No credential reference"} detail={connector.auth_mode === "none" ? "No authentication" : connector.provider_key === "remote_mcp" ? "Write-only; never returned" : connector.credential_reference_type ?? "Opaque reference"} />
                       </div>
+                      {connector.provider_key === "remote_mcp" && (
+                        <div className="rounded-xl border border-primary/15 bg-primary/[0.035] p-4">
+                          <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Remote HTTPS endpoint</div>
+                          <div className="mt-1 truncate font-mono text-xs text-foreground" title={safeServerUrl(connector.config.server_url)}>{safeServerUrl(connector.config.server_url)}</div>
+                          <div className="mt-3 flex flex-wrap gap-1.5">{connectorBindings.length ? connectorBindings.map((binding) => <span key={binding.id} className="rounded-md border border-border bg-background/70 px-2 py-1 text-[10px] text-muted-foreground">{binding.capability_id} · {binding.risk_tier.replaceAll("_", " ")}</span>) : <span className="text-xs text-amber-700 dark:text-amber-300">No tools enabled yet. Refresh tools to finish setup.</span>}</div>
+                        </div>
+                      )}
                       {connector.provider_key === "mcp_elastic" && (
                       <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/[0.04] p-4">
                         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -862,11 +1184,12 @@ export default function ConnectorControlPlane() {
                     </div>}
                   </div>
                   {cardExpanded && <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 bg-muted/15 px-5 py-3 sm:px-6">
-                    <div className="flex flex-wrap gap-1.5">{connectorBindings.map((binding) => <span key={binding.id} className="rounded-md border border-border bg-background/70 px-2 py-1 font-mono text-[10px] text-muted-foreground">{binding.capability_id}</span>)}</div>
+                    <div className="flex flex-wrap gap-1.5">{connector.provider_key !== "remote_mcp" && connectorBindings.map((binding) => <span key={binding.id} className="rounded-md border border-border bg-background/70 px-2 py-1 font-mono text-[10px] text-muted-foreground">{binding.capability_id}</span>)}</div>
                     <div className="flex flex-wrap gap-2">
-                      {connector.provider_key !== "mcp_elastic" && <Button variant="ghost" size="sm" onClick={() => editAccess(connector)}><Fingerprint className="h-3.5 w-3.5" /> Project access</Button>}
+                      {connector.provider_key !== "mcp_elastic" && connector.provider_key !== "remote_mcp" && <Button variant="ghost" size="sm" onClick={() => editAccess(connector)}><Fingerprint className="h-3.5 w-3.5" /> Project access</Button>}
                       {connector.provider_key === "http_elastic" && <Button variant="ghost" size="sm" onClick={() => void inspectResources(connector)}><Search className="h-3.5 w-3.5" /> Browse indexes</Button>}
-                      <Button variant="ghost" size="sm" disabled={connector.health_status !== "healthy" || connectorBindings.length === 0} onClick={() => openPreview(connector)}><Sparkles className="h-3.5 w-3.5" /> {connector.provider_key === "mcp_elastic" ? "Test search" : "Preview evidence"}</Button>
+                      {connector.provider_key === "remote_mcp" && <Button variant="ghost" size="sm" isLoading={isBusy} onClick={() => void refreshRemoteMcpTools(connector)}><RefreshCw className="h-3.5 w-3.5" /> Refresh tools</Button>}
+                      {connector.provider_key !== "remote_mcp" && <Button variant="ghost" size="sm" disabled={connector.health_status !== "healthy" || connectorBindings.length === 0} onClick={() => openPreview(connector)}><Sparkles className="h-3.5 w-3.5" /> {connector.provider_key === "mcp_elastic" ? "Test search" : "Preview evidence"}</Button>}
                       <Button variant="secondary" size="sm" isLoading={isBusy} onClick={() => void perform(connector, () => authedFetch(`/api/admin/connectors/${connector.id}/health`, { method: "POST" }), "Health check failed")}><Gauge className="h-3.5 w-3.5" /> Test connection</Button>
                     </div>
                   </div>}
@@ -890,17 +1213,17 @@ export default function ConnectorControlPlane() {
               <p className="mt-1 text-xs leading-5 text-muted-foreground">TMC and Elasticsearch ingestion remain in Runtime Sources. Agent connectors are query-time evidence links.</p>
             </Link>
             <div className="rounded-2xl border border-dashed border-border bg-muted/20 p-5">
-              <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">On the horizon</div>
-              <p className="mt-2 text-sm font-medium">Custom MCP & approved actions</p><p className="mt-1 text-xs leading-5 text-muted-foreground">Coming after per-tool scope and approval controls. Database and reviewed API searches are available above.</p>
+              <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">MCP safety</div>
+              <p className="mt-2 text-sm font-medium">Every tool is an explicit grant</p><p className="mt-1 text-xs leading-5 text-muted-foreground">Read-only and side-effecting tools are classified separately. A connected server receives no project access until you select its tools.</p>
             </div>
           </aside>
-        </section>
+        </section>}
       </div>
 
       <Modal open={setupOpen} title="Add an agent connector" description="Configure, scope, and verify a live evidence source in one flow." onClose={closeSetup} size="lg" footer={<><Button variant="secondary" onClick={closeSetup} disabled={saving}>Cancel</Button><Button type="submit" form="connector-setup" isLoading={saving} disabled={!selectedProvider || !setup.name.trim() || setup.projectIds.length === 0}>Connect & verify <ArrowRight className="h-4 w-4" /></Button></>}>
         <form id="connector-setup" className="space-y-5" onSubmit={(event) => void createConnector(event)}>
           <Field label="Connector type" hint="Only installed, trusted providers appear here.">
-            <SelectMenu value={setup.providerKey} onChange={chooseProvider} options={providers.map((provider) => ({ value: provider.provider_key, label: provider.display_name, hint: provider.description }))} placeholder="Choose a provider" ariaLabel="Connector type" variant="field" size="md" className="w-full max-w-none" />
+            <SelectMenu value={setup.providerKey} onChange={chooseProvider} options={providers.filter((provider) => provider.provider_key !== "remote_mcp").map((provider) => ({ value: provider.provider_key, label: provider.display_name, hint: provider.description }))} placeholder="Choose a provider" ariaLabel="Connector type" variant="field" size="md" className="w-full max-w-none" />
           </Field>
           {selectedProvider && <>
             <div className="rounded-xl border border-primary/15 bg-primary/5 p-4"><div className="flex items-center gap-2 text-sm font-medium text-primary"><Sparkles className="h-4 w-4" /> {selectedProvider.display_name}</div><p className="mt-1 text-xs leading-5 text-muted-foreground">{selectedProvider.description}</p></div>
@@ -915,6 +1238,61 @@ export default function ConnectorControlPlane() {
             </Field>
           </>}
         </form>
+      </Modal>
+
+      <Modal
+        open={remoteMcpOpen}
+        title="Add custom MCP server"
+        description="Connect one trusted remote MCP endpoint, then choose exactly which tools and projects Labs may use."
+        onClose={() => {
+          if (savingRemoteMcp) return;
+          setRemoteMcpOpen(false);
+          setRemoteMcp(EMPTY_REMOTE_MCP);
+          setRemoteMcpError(null);
+        }}
+        size="lg"
+        footer={<><Button variant="secondary" onClick={() => { setRemoteMcpOpen(false); setRemoteMcp(EMPTY_REMOTE_MCP); setRemoteMcpError(null); }} disabled={savingRemoteMcp}>Cancel</Button><Button type="submit" form="remote-mcp-setup" isLoading={savingRemoteMcp} disabled={!remoteMcp.name.trim() || !remoteMcp.serverUrl.trim() || (remoteMcp.authentication === "bearer" && !remoteMcp.credential)}>Connect & discover <ArrowRight className="h-4 w-4" /></Button></>}
+      >
+        <form id="remote-mcp-setup" className="space-y-4" onSubmit={(event) => void createRemoteMcp(event)}>
+          <div className="rounded-xl border border-amber-400/25 bg-amber-500/[0.06] p-3 text-xs leading-5 text-muted-foreground"><span className="font-medium text-foreground">Remote HTTPS only.</span> OAuth, local commands, and tunnel connections are not available yet. Only connect servers you trust.</div>
+          <Field label="Name"><Input value={remoteMcp.name} onChange={(event) => setRemoteMcp((current) => ({ ...current, name: event.target.value }))} placeholder="Customer support MCP" required /></Field>
+          <Field label="Server URL" hint="HTTPS endpoint; credentials must not be embedded in the URL"><Input type="url" value={remoteMcp.serverUrl} onChange={(event) => setRemoteMcp((current) => ({ ...current, serverUrl: event.target.value }))} placeholder="https://mcp.example.com/mcp" required /></Field>
+          <Field label="Authentication">
+            <SelectMenu value={remoteMcp.authentication} onChange={(value) => setRemoteMcp((current) => ({ ...current, authentication: value as RemoteMcpAuthentication, credential: "" }))} options={[{ value: "none", label: "No authentication" }, { value: "bearer", label: "Bearer token" }]} ariaLabel="MCP authentication" variant="field" size="md" className="w-full max-w-none" />
+          </Field>
+          {remoteMcp.authentication === "bearer" && <Field label="Bearer token" hint="Write-only. It is encrypted by the server and never returned to this page."><Input type="password" autoComplete="off" value={remoteMcp.credential} onChange={(event) => setRemoteMcp((current) => ({ ...current, credential: event.target.value }))} required /></Field>}
+          {remoteMcpError && <p role="alert" className="rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-sm text-destructive">{remoteMcpError}</p>}
+        </form>
+      </Modal>
+
+      <Modal
+        open={Boolean(pendingMcpSetup)}
+        title="Approve MCP tools"
+        description={pendingMcpSetup ? `${pendingMcpSetup.connector.name} exposed ${pendingMcpSetup.capabilities.length} tool${pendingMcpSetup.capabilities.length === 1 ? "" : "s"}. Select only what Labs should receive.` : undefined}
+        onClose={() => { if (!bindingMcpTools) setPendingMcpSetup(null); }}
+        size="lg"
+        footer={<><Button variant="secondary" onClick={() => setPendingMcpSetup(null)} disabled={bindingMcpTools}>Finish later</Button><Button isLoading={bindingMcpTools} disabled={!pendingMcpSetup || pendingMcpSetup.projectIds.length === 0 || !pendingMcpSetup.capabilities.some((capability) => pendingMcpSetup.selections[capability.id]?.selected)} onClick={() => void saveRemoteMcpTools()}>Enable selected tools</Button></>}
+      >
+        {pendingMcpSetup && <div className="space-y-5">
+          <div>
+            <div className="mb-2 flex items-center justify-between"><h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Tools</h3><span className="text-[11px] text-muted-foreground">{pendingMcpSetup.capabilities.filter((capability) => pendingMcpSetup.selections[capability.id]?.selected).length} selected</span></div>
+            {pendingMcpSetup.capabilities.length === 0 ? <div className="rounded-xl border border-amber-400/25 bg-amber-500/[0.06] p-4 text-sm text-muted-foreground">The server did not expose any tools. The connection is saved, but nothing can be granted to Labs.</div> : <div className="max-h-72 space-y-2 overflow-y-auto pr-1">{pendingMcpSetup.capabilities.map((capability) => {
+              const selection = pendingMcpSetup.selections[capability.id] ?? { selected: false, riskTier: "read_only" as CapabilityRisk };
+              const selectable = capability.risk_tier === "read_only";
+              return <div key={capability.id} className={cn("rounded-xl border p-3 transition", selection.selected ? "border-primary/25 bg-primary/[0.04]" : "border-border bg-muted/15")}>
+                <div className="flex items-start gap-3">
+                  <button type="button" aria-label={`Select ${capability.label}`} aria-pressed={selection.selected} disabled={!selectable} onClick={() => setPendingMcpSetup((current) => current ? { ...current, selections: { ...current.selections, [capability.id]: { ...selection, selected: !selection.selected } } } : current)} className={cn("mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border", selection.selected ? "border-primary bg-primary text-primary-foreground" : "border-border", !selectable && "cursor-not-allowed opacity-40")}><Check className={cn("h-3.5 w-3.5", !selection.selected && "opacity-0")} /></button>
+                  <div className="min-w-0 flex-1"><div className="text-sm font-medium">{capability.label}</div><p className="mt-0.5 text-xs leading-5 text-muted-foreground">{capability.description || capability.id}</p><div className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{capability.id}</div>{!selectable && <p className="mt-2 text-[11px] font-medium text-amber-700 dark:text-amber-300">Action tool · approval controls coming next</p>}</div>
+                  <span className={cn("rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide", selectable ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "border-amber-400/25 bg-amber-500/10 text-amber-700 dark:text-amber-300")}>{selectable ? "Read only" : "Action"}</span>
+                </div>
+              </div>;
+            })}</div>}
+          </div>
+          <Field label="Project access" hint="The selected tools appear only in these project chats.">
+            <div className="max-h-44 space-y-1 overflow-y-auto rounded-xl border border-border p-2">{projects.map((project) => { const checked = pendingMcpSetup.projectIds.includes(project.id); return <label key={project.id} className={cn("flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition", checked ? "bg-primary/8 text-foreground" : "text-muted-foreground hover:bg-muted/60")}><input type="checkbox" className="sr-only" checked={checked} onChange={() => setPendingMcpSetup((current) => current ? { ...current, projectIds: checked ? current.projectIds.filter((id) => id !== project.id) : [...current.projectIds, project.id] } : current)} /><span className={cn("flex h-5 w-5 items-center justify-center rounded-md border", checked ? "border-primary bg-primary text-primary-foreground" : "border-border")}><Check className={cn("h-3.5 w-3.5", !checked && "opacity-0")} /></span><span className="min-w-0 flex-1 truncate font-medium">{project.display_name}</span></label>; })}</div>
+          </Field>
+          <p className="rounded-lg border border-border bg-muted/20 p-3 text-[11px] leading-5 text-muted-foreground">This first release admits only tools the server explicitly declares read-only. Action tools remain visible, but cannot be enabled until per-call approval controls are available.</p>
+        </div>}
       </Modal>
 
       <Modal open={Boolean(deleteTarget)} title="Remove connector?" description="This removes its project bindings too. Labs will stop receiving these capabilities immediately." onClose={() => setDeleteTarget(null)} size="sm" footer={<><Button variant="secondary" onClick={() => setDeleteTarget(null)}>Cancel</Button><Button variant="destructive" isLoading={busyId === deleteTarget?.id} onClick={() => { const target = deleteTarget; if (!target) return; setDeleteTarget(null); void perform(target, () => authedFetch(`/api/admin/connectors/${target.id}`, { method: "DELETE" }), "Could not remove connector"); }}>Remove connector</Button></>}><p className="text-sm text-muted-foreground">You are removing <span className="font-medium text-foreground">{deleteTarget?.name}</span>. This cannot be undone.</p></Modal>

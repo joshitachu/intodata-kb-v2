@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from mcp_server.config import config
+from mcp_server.licensing.core import Capability, LicenceRefused
+from mcp_server.licensing.usage import check_capability, log_refusal
 from mcp_server.db.session import async_session_factory
 from mcp_server.services.git_diff_patcher import (
     DiffPatchResult,
@@ -926,6 +928,15 @@ class AutoDocUpdateService:
         lock = ProjectRunLock(output)
         journal = RunJournal(output)
         run_id = journal.start(before_sha, after_sha, trigger)
+        # Licence: every git-triggered entry (webhook, poller, repair-latest)
+        # lands here, and the patch lane spends tokens without a run record, so
+        # the run-creation chokepoint alone would miss it. "deferred" leaves the
+        # baseline where it is, so the push is replayed once a licence is back.
+        refusal = await check_capability(Capability.GENERATION)
+        if refusal is not None:
+            log_refusal("auto_doc_update", LicenceRefused(refusal), project_id=project_id, trigger=trigger)
+            journal.finish(run_id, {"action": "deferred", "reason": f"licence refused: {refusal.code.value}"})
+            return False
         # Persist receipt before waiting. Polling retries timed-out events from
         # the last successful baseline, including all intervening commits.
         for _ in range(1200):

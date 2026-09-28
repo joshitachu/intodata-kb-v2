@@ -398,3 +398,50 @@ describe("API client", () => {
   });
 
 });
+
+describe("API client licence refusal", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("throws a LicenceRefusal on 402 and does not redirect to login", async () => {
+    const { LicenceRefusal, httpStatusFromError, parseApiError } = await import("../lib/errors");
+    const { onLicenceRefused, resetLicenceRefusedThrottle } = await import("../lib/licence");
+    const { shouldRetryQuery } = await import("../lib/queryClient");
+    resetLicenceRefusedThrottle();
+    const refused = vi.fn();
+    const unsubscribe = onLicenceRefused(refused);
+
+    const originalLocation = window.location;
+    const href = "http://localhost:5173/dashboard/";
+    Object.defineProperty(window, "location", {
+      writable: true,
+      value: { ...originalLocation, href, hostname: "localhost", protocol: "http:" },
+    });
+
+    const detail = {
+      code: "quota_exhausted",
+      message: "All 3 documentation generations for this period have been used.",
+      capability: "generation",
+      used: 3,
+      limit: 3,
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail }), { status: 402 }),
+    );
+
+    const failure = await api.scan("p").catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(LicenceRefusal);
+    expect((failure as InstanceType<typeof LicenceRefusal>).detail.limit).toBe(3);
+    expect(parseApiError(failure)).toBe(detail.message);
+    expect(httpStatusFromError(failure)).toBe(402);
+    expect(shouldRetryQuery(0, failure)).toBe(false);
+    // Still on the page: a licence refusal is never a logout.
+    expect(window.location.href).toBe(href);
+    expect(refused).toHaveBeenCalled();
+
+    unsubscribe();
+    Object.defineProperty(window, "location", { writable: true, value: originalLocation });
+  });
+});

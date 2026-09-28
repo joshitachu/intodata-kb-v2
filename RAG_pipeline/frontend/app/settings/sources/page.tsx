@@ -52,6 +52,8 @@ import { ProjectConnectorBindings } from "./ProjectConnectorBindings";
 import { SimpleConnectorPanel } from "./SimpleConnectorPanel";
 import { ProjectLiveSource, useProjectLiveSources } from "./liveSources";
 import { applyGenerateChoice, GeneratePackDialog } from "./GeneratePackDialog";
+import { useMcpLicenceStatus } from "@/hooks/useLicence";
+import { capabilityBlockReason, generationUsage, isLicenceRefusal } from "@/lib/licence";
 
 /**
  * An operation this tab is watching -- not the project's state, which is
@@ -510,11 +512,15 @@ export default function SourcesSettingsPage() {
       patchRow(platformId, { stage: "complete", progress: STAGE_PROGRESS.complete });
     } catch (err) {
       removePersistedPipeline(projectId);
-      patchRow(platformId, {
-        stage: "failed",
-        progress: STAGE_PROGRESS.failed,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      // A licence refusal is not a failed run: nothing started, so the row
+      // returns to rest and carries the refusal sentence instead of a red bar.
+      patchRow(platformId, isLicenceRefusal(err)
+        ? { stage: "pending", progress: 0, error: err.message, logsOpen: false }
+        : {
+            stage: "failed",
+            progress: STAGE_PROGRESS.failed,
+            error: err instanceof Error ? err.message : String(err),
+          });
     } finally {
       sub.stop?.();
       activePipelineRefs.current.delete(projectId);
@@ -1212,6 +1218,18 @@ function SourceRow({
   const nextStep = NEXT_STEP[lifecycle];
   const busyLifecycle = lifecycle === "scanning" || lifecycle === "generating";
   const sourceStatus = source ? LIFECYCLE_SHORT_LABELS[lifecycle] : STAGE_LABELS[stage];
+  // The MCP server is the authority for scans and generations and the only
+  // status that counts this period's generations. Unknown never blocks.
+  const { data: mcpLicence } = useMcpLicenceStatus();
+  const scanBlockReason = capabilityBlockReason(mcpLicence, "scan");
+  const generateBlockReason = capabilityBlockReason(mcpLicence, "generation");
+  const generations = mcpLicence?.enforcement === "enforce" ? generationUsage(mcpLicence) : null;
+  const nextStepBlockReason =
+    nextStep?.action === "scan"
+      ? scanBlockReason
+      : nextStep?.action === "generate"
+        ? generateBlockReason
+        : null;
 
   async function runAction(name: string, action: () => Promise<unknown>) {
     try {
@@ -1426,6 +1444,8 @@ function SourceRow({
                 <Button
                   size="sm"
                   isLoading={actionBusy === nextStep.action}
+                  disabled={nextStepBlockReason !== null}
+                  title={nextStepBlockReason ?? undefined}
                   onClick={() => {
                     if (nextStep.action === "scan") {
                       runAction("scan", async () => onScanExisting());
@@ -1451,6 +1471,8 @@ function SourceRow({
                   size="sm"
                   variant="secondary"
                   isLoading={actionBusy === "rescan"}
+                  disabled={scanBlockReason !== null}
+                  title={scanBlockReason ?? undefined}
                   onClick={() => runAction("rescan", async () => onScanExisting())}
                 >
                   Scan again
@@ -1461,12 +1483,24 @@ function SourceRow({
                   size="sm"
                   variant="secondary"
                   isLoading={actionBusy === "generate"}
+                  disabled={generateBlockReason !== null}
+                  title={generateBlockReason ?? undefined}
                   onClick={() => setPackDialogOpen(true)}
                 >
                   Generate again
                 </Button>
               )}
             </div>
+            {!busyLifecycle && (scanBlockReason || generateBlockReason) && (
+              <p className="mt-2 text-xs text-amber-800" data-testid="source-licence-reason">
+                {nextStepBlockReason ?? generateBlockReason ?? scanBlockReason}
+              </p>
+            )}
+            {generations && (
+              <p className="mt-1 text-xs text-muted-foreground" data-testid="generation-usage">
+                Generations: {generations.used}/{generations.limit} this period
+              </p>
+            )}
           </div>
 
           <div>

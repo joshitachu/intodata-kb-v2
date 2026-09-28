@@ -22,6 +22,10 @@ runtime, the runtime-data mirror) and a Next.js frontend (:3000 -- chat, topolog
   access approval, and the tour is a custom engine (driver.js removed) with per-role steps and a `using` / `running` split of `/guide`.
 - **Runtime mirror**: TMC sources choose their ingest scope at connect time; doc read scope is a separate per-project setting. Poll
   interval defaults rose 60s -> 1800s after the scheduler was measured pinning a CPU core. `/admin/logs` is the hub + drill-down console.
+- **Clustered deployments (UNCOMMITTED, 2026-09-28)**: a clustered route is ONE row naming the cluster, with `members[]` and
+  `engines_reporting`/`silent_engines`; counters sum reporting members only, so a partial estate reads as a floor. Keyed on engine AND
+  `artifact_version` (migration 107) -- it kept whichever member started last, a race that hid a live engine's telemetry. Group on
+  `cluster_id`, never the name (`RE_Cluster_01` exists in PROD and UAT). Needs a sync to populate the new columns.
 - **Runtime tools for doc runs** (uncommitted): `GET/POST /api/v1/runtime/tools*` exposes the 25-tool registry via
   `execute_runtime_tool`; `POST /api/v1/runtime/elastic/probe/*` adds 4 read-only Elastic primitives. Both CSRF-exempt (bearer key,
   no cookie). Probe bodies are forced to `size: 0`/`_source: false` and RAISE if documents return; an unmapped field yields `None`,
@@ -38,6 +42,9 @@ runtime, the runtime-data mirror) and a Next.js frontend (:3000 -- chat, topolog
   and `get_topology_node` on a stream returns `business_facts` (uncommitted, 2026-09-23).
 - **Sources**: GitHub App, Azure DevOps (organization PAT) and ZIP are first-class; multi-repo projects are selectable from
   `/settings/sources` with branch pinning. Model: `kimi/kimi-k2.6` (k2.5 was retired by the provider).
+- **Subscription licence (UNCOMMITTED, 2026-09-28)**: `src/licensing/` (ADR 037). Every LLM route carries `require_capability(CHAT)`
+  (402, never 401), pinned by `tests/test_api/test_route_inventory.py`; `GET /api/v1/licence/status`. Frontend treats 402 as a typed
+  `LicenceRefusal` (banner, disabled composer). Compose defaults `LICENCE_ENFORCEMENT=enforce`; local `.env` needs `off`. Inspection WARN.
 
 ## Active work
 
@@ -51,11 +58,15 @@ runtime, the runtime-data mirror) and a Next.js frontend (:3000 -- chat, topolog
 - No lease heartbeat: a genuinely crashed turn now blocks its conversation for 330s instead of 90s. The cheap mitigation (sweep
   `claimed` rows to `abandoned` at startup) is not implemented.
 - `runtime_log_events` is ~868 MB / 424k rows with no retention policy, and polling still runs inside the API process.
+- One engine of a live two-node PROD cluster has never uploaded a log line to Talend Cloud (0 of 72 route deployments and 0 of 36
+  sampled DI-job runs; its sibling returns 850k+). Host-side, not ours. Every failed route deployment in that estate is on the blind
+  node, so 24 of 49 routes have no throughput figure and the rest are single-node floors.
 - EP-001 acceptance still needs the runbook executed on a clean reference VPS. `inspect` was skipped on several changes in critical
   areas (`src/rbac/`, the read-only agent runtime) by explicit instruction.
 
 ## Next step
 
+Licence: user sets plan `verdict: PASS`, scoped commit, browser smoke (SMOKE-TEST section 10). Then:
 Authenticated browser pass over the walkthrough and the admin consoles, then narrow each runtime source's environment scope and
 decide a `runtime_log_events` retention policy.
 

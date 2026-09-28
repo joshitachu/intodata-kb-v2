@@ -8,7 +8,7 @@ import json
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from src.api.dependencies import CurrentUser, DBSession
+from src.api.dependencies import ChatEntitledUser, CurrentUser, DBSession
 from src.harness import HarnessRunNotFoundError, HarnessWorkflowRepository, default_capability_registry
 from src.harness.registry import base_capability_registry
 from src.harness.manifest import (
@@ -248,7 +248,7 @@ async def resume_workflow_run(
     run_id: int,
     payload: WorkflowResumeRequest,
     request: Request,
-    user: CurrentUser,
+    user: ChatEntitledUser,
     db: DBSession,
 ) -> WorkflowActionResponse:
     repo = HarnessWorkflowRepository(db)

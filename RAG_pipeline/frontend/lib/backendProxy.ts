@@ -69,6 +69,70 @@ function transportFailure(error: unknown): "timeout" | "network" | null {
 }
 
 /**
+ * The body a proxied backend error is forwarded with.
+ *
+ * `error` is always the human sentence. When the backend sent a *structured*
+ * detail -- an object carrying a machine `code`, such as the licence refusal
+ * `{ code: "quota_exhausted", message, used, limit, ... }` -- that object is
+ * forwarded whole as `detail` as well. Reducing it to `{ error, code }`, which
+ * this layer used to do, dropped every field beside the message, so the
+ * browser could say "refused" but not "3 of 3 generations used, renews on ...".
+ * A plain-string detail stays reduced to `error` exactly as before.
+ */
+export function proxyErrorBody(
+  detail: unknown,
+  fallbackError: string,
+  retryable: boolean,
+): Record<string, unknown> {
+  const structured =
+    detail && typeof detail === "object" && !Array.isArray(detail) &&
+    typeof (detail as { code?: unknown }).code === "string"
+      ? (detail as Record<string, unknown> & { code: string })
+      : null;
+  return {
+    error: apiErrorMessage(detail, fallbackError),
+    ...(structured ? { code: structured.code, detail: structured } : {}),
+    retryable,
+  };
+}
+
+/** Whether a backend error status is worth repeating verbatim. 402 is not: the licence decides. */
+function retryableStatus(status: number): boolean {
+  return status >= 500 || status === 408 || status === 429;
+}
+
+/**
+ * Forward a non-2xx backend `Response` with its status and structured body intact.
+ *
+ * For handlers that hold a raw `Response` rather than a thrown
+ * `BackendResponseError` -- the SSE stream proxies, which cannot use
+ * `fastapiFetch` because they must pipe the success body through untouched.
+ * Those handlers used to answer `{ error: "<the raw upstream text>" }`, so a
+ * 402 licence refusal arrived in the browser as a JSON string inside a string
+ * and was shown as a broken turn.
+ */
+export async function upstreamResponseError(
+  context: string,
+  res: Response,
+  fallbackError = "Request failed",
+): Promise<NextResponse> {
+  const text = await res.text().catch(() => "");
+  let detail: unknown = undefined;
+  if (text) {
+    try {
+      detail = (JSON.parse(text) as { detail?: unknown }).detail;
+    } catch {
+      // Not JSON: keep the generic message rather than leak raw upstream text.
+    }
+  }
+  console.error(`[proxy] ${context}: backend ${res.status}`);
+  return NextResponse.json(
+    proxyErrorBody(detail, fallbackError, retryableStatus(res.status)),
+    { status: res.status },
+  );
+}
+
+/**
  * Turn a caught error into a logged, correctly-classified response.
  *
  * Three outcomes, and the distinction between them is the whole point:
@@ -92,17 +156,8 @@ export function upstreamErrorResponse(
 ): NextResponse {
   if (error instanceof BackendResponseError) {
     console.error(`[proxy] ${context}: backend ${error.status} (${error.path})`);
-    const detail = error.detail;
-    const code =
-      detail && typeof detail === "object" && typeof (detail as { code?: unknown }).code === "string"
-        ? (detail as { code: string }).code
-        : undefined;
     return NextResponse.json(
-      {
-        error: apiErrorMessage(detail, fallbackError),
-        ...(code ? { code } : {}),
-        retryable: error.retryable,
-      },
+      proxyErrorBody(error.detail, fallbackError, error.retryable),
       { status: error.status },
     );
   }
@@ -201,19 +256,14 @@ export async function proxyJson(
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
 
     if (!res.ok) {
-      const detail = data.detail;
-      const code =
-        detail && typeof detail === "object" && typeof (detail as { code?: unknown }).code === "string"
-          ? (detail as { code: string }).code
-          : undefined;
       return forwardSetCookies(
         res,
         NextResponse.json(
-          {
-            error: apiErrorMessage(detail, fallbackError),
-            ...(code ? { code } : {}),
-            retryable: res.status !== 401 && res.status !== 403,
-          },
+          proxyErrorBody(
+            data.detail,
+            fallbackError,
+            res.status !== 401 && res.status !== 402 && res.status !== 403,
+          ),
           { status: res.status },
         ),
       );

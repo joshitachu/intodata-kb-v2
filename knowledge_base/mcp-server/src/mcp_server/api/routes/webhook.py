@@ -14,6 +14,8 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
+from mcp_server.licensing.core import Capability, LicenceRefused, Refusal
+from mcp_server.licensing.usage import check_capability, log_refusal
 from mcp_server.services.auto_doc_update import AutoDocUpdateService
 from mcp_server.services.git_reingestion import (  # noqa: F401 - re-exported for helper tests
     ChangedFile,
@@ -179,6 +181,32 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
                 "project_id": project.id,
             }
 
+        # A push feeds the living-docs patch lane (LLM, no run record) or a
+        # regeneration; a pull request starts a scan. Both need a licence.
+        # Refused deliveries are ACKNOWLEDGED with a 2xx skip, never an error:
+        # GitHub retries non-2xx deliveries, and a retry cannot fix a licence.
+        refusal = await check_capability(Capability.GENERATION if is_push else Capability.SCAN)
+        if refusal is not None:
+            return await _licence_skip(
+                registry, db, project.id, refusal,
+                event=event, clone_url=clone_url, delivery_id=delivery_id,
+                before_sha=before_sha if is_push else None,
+                after_sha=after_sha if is_push else None,
+            )
+
+        if event == "pull_request":
+            try:
+                run = await registry.create_scan_run(project.id, triggered_by="webhook")
+            except LicenceRefused as exc:
+                # The licence changed between the check above and run creation.
+                return await _licence_skip(
+                    registry, db, project.id, exc.refusal,
+                    event=event, clone_url=clone_url, delivery_id=delivery_id,
+                )
+            await registry.update_status(project.id, "scanning")
+            run_id = run.id
+        else:
+            run_id = 0
         await registry.record_webhook_observation(
             project.id,
             _webhook_observation(
@@ -192,14 +220,7 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
                 is_first_push=is_first_push if is_push else None,
             ),
         )
-        if event == "pull_request":
-            await registry.update_status(project.id, "scanning")
-            run = await registry.create_scan_run(project.id, triggered_by="webhook")
-            await db.commit()
-            run_id = run.id
-        else:
-            await db.commit()
-            run_id = 0
+        await db.commit()
 
     log_mgr = request.app.state.log_manager
     background_tasks.add_task(
@@ -212,6 +233,46 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     )
 
     return {"status": "webhook_triggered", "project_id": project_id}
+
+
+async def _licence_skip(
+    registry: ProjectRegistry,
+    db,
+    project_id: str,
+    refusal: Refusal,
+    *,
+    event: str,
+    clone_url: str,
+    delivery_id: str | None,
+    before_sha: str | None = None,
+    after_sha: str | None = None,
+) -> dict[str, object]:
+    """Record and acknowledge a delivery the licence does not allow (2xx)."""
+    log_refusal("webhook", LicenceRefused(refusal), project_id=project_id, event=event)
+    await registry.record_webhook_observation(
+        project_id,
+        _webhook_observation(
+            event=event,
+            clone_url=clone_url,
+            delivery_id=delivery_id,
+            project_id=project_id,
+            status="ignored",
+            reason="licence_refused",
+            before_sha=before_sha,
+            after_sha=after_sha,
+        ),
+        error=f"licence_refused: {refusal.code.value}",
+        set_error=True,
+    )
+    await db.commit()
+    return {
+        "status": "ignored",
+        "reason": "licence_refused",
+        "project_id": project_id,
+        # Code only: GitHub keeps delivery responses visible to every repo
+        # admin, so plan, usage and period stay out of them.
+        "licence": {"code": refusal.code.value},
+    }
 
 
 async def _find_plugin_pack_by_clone_url(

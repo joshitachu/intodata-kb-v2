@@ -176,3 +176,6 @@ docs/screenshots/
 # knowledge_base/intodoc/, so the cache the scanner actually writes to
 # knowledge_base/ (482 files, 77 MB) was never ignored.
 .intodoc_cache/
+
+# Local dev licence mount (docker-compose LICENCE_DIR default); licences are per-client secrets
+deploy/licence/

@@ -10,6 +10,7 @@ import asyncio
 import ipaddress
 import socket
 import ssl
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
@@ -218,3 +219,102 @@ class ConnectorTransport:
                 raise ConnectorError("response_too_large", "Provider response exceeded configured limit")
             chunks.append(chunk)
         return b"".join(chunks)
+
+
+class _BoundedResponseStream(httpx.AsyncByteStream):
+    """Cap all bytes received during one remote MCP session."""
+
+    def __init__(self, stream: httpx.AsyncByteStream, maximum: int) -> None:
+        self._stream = stream
+        self._maximum = maximum
+        self._total = 0
+
+    async def __aiter__(self):  # type: ignore[override]
+        async for chunk in self._stream:
+            self._total += len(chunk)
+            if self._total > self._maximum:
+                raise ConnectorError(
+                    "response_too_large", "Provider response exceeded configured limit"
+                )
+            yield chunk
+
+    async def aclose(self) -> None:
+        await self._stream.aclose()
+
+
+class PinnedConnectorTransport(httpx.AsyncBaseTransport):
+    """Keep a streaming MCP session on the validated HTTPS origin and IP."""
+
+    def __init__(
+        self,
+        *,
+        endpoint: str,
+        hostname: str,
+        address: str,
+        policy: OutboundPolicy,
+    ) -> None:
+        parsed = urlsplit(endpoint)
+        self._scheme = parsed.scheme
+        self._hostname = hostname.casefold()
+        self._port = parsed.port
+        self._max_response_bytes = policy.max_response_bytes
+        self._address = address
+        self._delegate = httpx.AsyncHTTPTransport(verify=policy.tls_verify(), retries=0)
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if (
+            request.url.scheme != self._scheme
+            or (request.url.host or "").casefold() != self._hostname
+            or request.url.port != self._port
+            or request.method not in {"GET", "POST", "DELETE"}
+        ):
+            raise ConnectorError("endpoint_denied", "Connector request escaped its approved endpoint")
+        host_header = self._hostname
+        if self._port and self._port not in {80, 443}:
+            host_header = f"{host_header}:{self._port}"
+        request.headers["Host"] = host_header
+        request.extensions["sni_hostname"] = self._hostname
+        request.url = request.url.copy_with(host=self._address)
+        response = await self._delegate.handle_async_request(request)
+        if 300 <= response.status_code < 400:
+            await response.aclose()
+            raise ConnectorError("redirect_denied", "Connector endpoint redirect was denied")
+        response.stream = _BoundedResponseStream(
+            response.stream, self._max_response_bytes
+        )
+        return response
+
+    async def aclose(self) -> None:
+        await self._delegate.aclose()
+
+
+@asynccontextmanager
+async def pinned_http_client(
+    url: str,
+    *,
+    policy: OutboundPolicy,
+    headers: Mapping[str, str] | None = None,
+):
+    """Yield an HTTP client suitable for one bounded Streamable HTTP MCP session."""
+
+    endpoint, hostname, address = await _validated_endpoint_address(url, policy)
+    safe_headers = {str(key): str(value) for key, value in (headers or {}).items()}
+    safe_headers.pop("Host", None)
+    timeout = httpx.Timeout(
+        timeout=policy.total_timeout_seconds,
+        connect=policy.connect_timeout_seconds,
+        read=policy.read_timeout_seconds,
+    )
+    async with httpx.AsyncClient(
+        transport=PinnedConnectorTransport(
+            endpoint=endpoint,
+            hostname=hostname,
+            address=address,
+            policy=policy,
+        ),
+        headers=safe_headers,
+        timeout=timeout,
+        follow_redirects=False,
+        trust_env=False,
+    ) as client:
+        yield endpoint, client

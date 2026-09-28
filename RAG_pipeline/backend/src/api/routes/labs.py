@@ -34,7 +34,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import selectinload
 
-from src.api.dependencies import CurrentUser, DBSession
+from src.api.dependencies import ChatEntitledUser, CurrentUser, DBSession
 from src.api.errors import api_error
 from src.db.models import Conversation, ConversationMessage
 from src.db.models.conversation import ConversationLane
@@ -419,7 +419,7 @@ async def send_labs_message_stream(
     request: ConversationMessageRequest,
     http_request: Request,
     db: DBSession,
-    user: CurrentUser,
+    user: ChatEntitledUser,
 ) -> StreamingResponse:
     """Run one OpenCode turn and project it as the production SSE envelope.
 

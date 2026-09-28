@@ -42,6 +42,13 @@ Optional:
                              not ready yet or on CI.
   --env-dir <path>           Directory for rendered env files.
                              Default: /etc/intodata-kb/envs
+  --allow-view-only          Re-deploy an EXISTING client even though no licence
+                             is installed (the instance comes up view-only).
+                             Without it the script aborts, so a live customer
+                             is never locked out by an upgrade.
+  --licence-root <path>      Parent of the per-client licence directories.
+                             The licence goes in <path>/<slug>/licence.jwt.
+                             Default: /etc/intodata-kb/licences
   --nginx-sites-available    Path to nginx sites-available.
                              Default: /etc/nginx/sites-available
   --nginx-sites-enabled      Path to nginx sites-enabled.
@@ -59,6 +66,8 @@ ADMIN_EMAIL="support@intodata.nl"
 INITIAL_ADMIN_EMAIL=""
 RUN_CERTBOT=1
 ENV_DIR="/etc/intodata-kb/envs"
+LICENCE_ROOT="/etc/intodata-kb/licences"
+ALLOW_VIEW_ONLY=0
 NGINX_AVAILABLE="/etc/nginx/sites-available"
 NGINX_ENABLED="/etc/nginx/sites-enabled"
 REPO_ROOT=""
@@ -75,6 +84,8 @@ while [[ $# -gt 0 ]]; do
         --initial-admin-email) INITIAL_ADMIN_EMAIL="$2"; shift 2 ;;
         --no-certbot) RUN_CERTBOT=0; shift ;;
         --env-dir) ENV_DIR="$2"; shift 2 ;;
+        --licence-root) LICENCE_ROOT="$2"; shift 2 ;;
+        --allow-view-only) ALLOW_VIEW_ONLY=1; shift ;;
         --nginx-sites-available) NGINX_AVAILABLE="$2"; shift 2 ;;
         --nginx-sites-enabled) NGINX_ENABLED="$2"; shift 2 ;;
         --repo-root) REPO_ROOT="$2"; shift 2 ;;
@@ -126,6 +137,12 @@ export MCP_PORT=$(( 8002 + PORT_OFFSET ))
 # mission-control binds 127.0.0.1 only, but it still needs the offset so two
 # stacks on one host don't collide on 9100.
 export MC_PORT=$(( 9100 + PORT_OFFSET ))
+
+# Subscription licence. The directory (not the file) is bind-mounted read-only
+# into backend and mcp-server at /etc/intodata-kb/licence, so dropping in a
+# renewed licence.jwt is picked up on the next request without a restart.
+LICENCE_DIR="$LICENCE_ROOT/$CLIENT"
+LICENCE_FILE_HOST="$LICENCE_DIR/licence.jwt"
 
 # --- Render (or merge) the env file ---
 mkdir -p "$ENV_DIR"
@@ -194,6 +211,16 @@ MCP_OPS_TELEMETRY_URL=
 MCP_OPS_TELEMETRY_API_KEY=
 MCP_OPS_TELEMETRY_INTERVAL_SECONDS=300
 
+# Subscription licence. ONE set of vars; docker-compose.yml maps it onto both
+# the backend (LICENCE_*) and mcp-server (MCP_LICENCE_*). Production refuses to
+# start unless enforcement is 'enforce'. LICENCE_FILE is the path INSIDE the
+# containers; LICENCE_DIR is the host directory mounted there read-only.
+# The operator's signing key must NEVER be added here (deploy aborts if it is).
+LICENCE_ENFORCEMENT=enforce
+LICENCE_CLIENT_SLUG=$CLIENT
+LICENCE_DIR=$LICENCE_DIR
+LICENCE_FILE=/etc/intodata-kb/licence/licence.jwt
+
 # Ports
 POSTGRES_PORT=$POSTGRES_PORT
 QDRANT_HTTP_PORT=$QDRANT_HTTP_PORT
@@ -243,6 +270,7 @@ EOF
     echo "Wrote $ENV_FILE (chmod 600)"
 else
     echo "Env file already exists at $ENV_FILE — leaving secrets in place"
+    EXISTING_CLIENT=1
 fi
 
 # --- Backfill keys added after the env file was first generated ---
@@ -263,6 +291,43 @@ ensure_env_var() {
 ensure_env_var SOURCE_CREDENTIALS_ENCRYPTION_KEY "$(fernet_key)"
 ensure_env_var MC_PORT "$MC_PORT"
 ensure_env_var MC_API_KEY "$(rand_hex 32)"
+ensure_env_var LICENCE_ENFORCEMENT enforce
+ensure_env_var LICENCE_CLIENT_SLUG "$CLIENT"
+ensure_env_var LICENCE_DIR "$LICENCE_DIR"
+ensure_env_var LICENCE_FILE /etc/intodata-kb/licence/licence.jwt
+
+# --- The licence signing key must never reach a client stack ---
+# Licences are signed on the operator machine only. If the private key (or the
+# variable pointing at it) is in any file this stack reads, anyone with access
+# to this VPS could mint licences for every client. Abort, loudly.
+signing_key_leaks() {
+    local file
+    for file in "$@"; do
+        [[ -f "$file" ]] || continue
+        if grep -Eiq '^[[:space:]]*(export[[:space:]]+)?[A-Z0-9_]*SIGNING_KEY[A-Z0-9_]*[[:space:]]*=' "$file"; then
+            echo "$file: contains a *SIGNING_KEY* variable" >&2
+            return 0
+        fi
+        if grep -q -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' "$file"; then
+            echo "$file: contains a PEM private key" >&2
+            return 0
+        fi
+    done
+    return 1
+}
+CONNECTOR_ENV_FILE="$(grep -E '^NEXUS_CONNECTOR_ENV_FILE=' "$ENV_FILE" | tail -n1 | cut -d= -f2- || true)"
+CONNECTOR_ENV_FILE="${CONNECTOR_ENV_FILE:-$REPO_ROOT/deploy/connectors.env}"
+if signing_key_leaks "$ENV_FILE" "$CONNECTOR_ENV_FILE" "$LICENCE_DIR"/*; then
+    cat >&2 <<LEAK
+ABORTING: licence signing material found in a file this client stack reads.
+The licence signing key (any *SIGNING_KEY* variable, e.g.
+MC_LICENCE_SIGNING_KEY_FILE, and the PEM itself) belongs on the operator
+machine only. Remove it from the
+file named above, rotate the key if it was ever deployed (deploy/RUNBOOK.md,
+"Issue or renew a subscription licence"), then re-run this script.
+LEAK
+    exit 3
+fi
 
 # --- Render nginx server block ---
 NGINX_TEMPLATE="$SCRIPT_DIR/nginx/nexus-client.conf.template"
@@ -306,6 +371,42 @@ if [[ "$(id -u)" -eq 0 ]]; then
         "$REPO_ROOT/knowledge_base/output"
 fi
 
+# --- Prepare the licence directory (mounted read-only into two containers) ---
+# root-owned, group 1001 (the appgroup gid of the backend and mcp-server
+# images), 0750: the containers can read it, other host users cannot.
+mkdir -p "$LICENCE_DIR"
+if [[ "$(id -u)" -eq 0 ]]; then
+    chown root:1001 "$LICENCE_DIR"
+    chmod 0750 "$LICENCE_DIR"
+    if [[ -f "$LICENCE_FILE_HOST" ]]; then
+        chown root:1001 "$LICENCE_FILE_HOST"
+        chmod 0640 "$LICENCE_FILE_HOST"
+    fi
+else
+    echo "WARNING: not running as root; set $LICENCE_DIR to root:1001 0750 by hand." >&2
+fi
+if [[ ! -s "$LICENCE_FILE_HOST" && "${EXISTING_CLIENT:-0}" == 1 && "$ALLOW_VIEW_ONLY" != 1 ]]; then
+    cat >&2 <<ABORT
+
+ABORTING: $CLIENT is an existing client and no licence is installed at
+$LICENCE_FILE_HOST. This release enforces the subscription licence, so
+bringing the stack up now would make a live customer view-only.
+Install the licence first (deploy/RUNBOOK.md section 17c), or pass
+--allow-view-only if a view-only instance is intended.
+ABORT
+    exit 4
+fi
+if [[ ! -s "$LICENCE_FILE_HOST" ]]; then
+    cat <<NOTICE
+
+NOTICE: no licence installed at $LICENCE_FILE_HOST.
+The instance will be view-only until a licence is installed: chat and
+generations return HTTP 402, existing documents stay readable. Issue one on
+the operator machine and copy it here (deploy/RUNBOOK.md, "Issue or renew a
+subscription licence"); no restart is needed.
+NOTICE
+fi
+
 # --- Bring up the Docker stack ---
 echo ""
 echo "Bringing up docker-compose stack (project=$CLIENT) ..."
@@ -329,4 +430,5 @@ The stack's ports (on localhost):
 
 Env file:   $ENV_FILE
 Nginx conf: $NGINX_DEST
+Licence:    $LICENCE_FILE_HOST
 EOF

@@ -317,6 +317,31 @@ export const RuntimeJobRunSchema = z.object({
 });
 export type RuntimeJobRun = z.infer<typeof RuntimeJobRunSchema>;
 
+export const RuntimeDeploymentTargetSchema = z.enum(["engine", "cluster", "unknown"]);
+export type RuntimeDeploymentTarget = z.infer<typeof RuntimeDeploymentTargetSchema>;
+
+/** One engine's share of a clustered deployment.
+ *
+ * `reported_telemetry: false` means this engine supplied no counters at all,
+ * which is a different claim from "processed nothing" and must render
+ * differently -- one live cluster has an engine that ships no logs, so summing
+ * it as zero would publish a floor as though it were a total. */
+export const RuntimeDeploymentMemberSchema = z.object({
+  deployment_id: z.string().nullable().optional(),
+  engine_id: z.string().nullable().optional(),
+  engine_name: z.string().nullable().optional(),
+  state: RuntimeExecutionStateSchema.nullable().optional(),
+  started_at: z.string().nullable().optional(),
+  ended_at: z.string().nullable().optional(),
+  artifact_version: z.string().nullable().optional(),
+  completed_exchanges: z.number().nullable().optional(),
+  failed_exchanges: z.number().nullable().optional(),
+  total_exchanges: z.number().nullable().optional(),
+  service_call_count: z.number().nullable().optional(),
+  reported_telemetry: z.boolean().default(false),
+});
+export type RuntimeDeploymentMember = z.infer<typeof RuntimeDeploymentMemberSchema>;
+
 export const RuntimeDeploymentSchema = z.object({
   project_id: z.string(),
   source_key: z.string(),
@@ -342,6 +367,17 @@ export const RuntimeDeploymentSchema = z.object({
   one_minute_rate: z.number().nullable().optional(),
   five_minute_rate: z.number().nullable().optional(),
   fifteen_minute_rate: z.number().nullable().optional(),
+  // A clustered route is ONE row whose engines live in `members`; `engine_name`
+  // then names the cluster. These fields are declared because this schema is
+  // strict -- an undeclared field is stripped, so the panel would silently
+  // render a cluster as though it had no members at all.
+  deployment_target: RuntimeDeploymentTargetSchema.default("unknown"),
+  cluster_id: z.string().nullable().optional(),
+  artifact_version: z.string().nullable().optional(),
+  members: z.array(RuntimeDeploymentMemberSchema).default([]),
+  engines_total: z.number().default(0),
+  engines_reporting: z.number().default(0),
+  silent_engines: z.array(z.string()).default([]),
 });
 export type RuntimeDeployment = z.infer<typeof RuntimeDeploymentSchema>;
 

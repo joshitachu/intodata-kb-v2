@@ -62,7 +62,8 @@ Read the ones touching your area before changing it. Grouped by theme:
 - **Packs & connections** -- `011` git credentials centralized, `012` one pack format
 - **Security & deployment** -- `016` RBAC duplicated across services,
   `024` one VPS per client, `025` production secrets hard-fail,
-  `026` IP allowlist before ProxyHeaders
+  `026` IP allowlist before ProxyHeaders, `037` subscription licence is a signed
+  file verified offline
 
 New decisions continue the numbering. One decision per file; do not add a count to
 this heading -- a hardcoded number here would drift the moment a file is added.

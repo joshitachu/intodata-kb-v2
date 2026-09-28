@@ -13,6 +13,8 @@ from mcp.types import TextContent, Tool
 
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
+from mcp_server.licensing.core import Capability, LicenceRefused
+from mcp_server.licensing.usage import check_capability, log_refusal
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services import memory_service
 from mcp_server.services.project_registry import ProjectRegistry
@@ -436,8 +438,12 @@ async def _trigger_scan(registry: ProjectRegistry, db, args: dict) -> dict:
     if not project:
         return {"error": f"Project not found: {project_id}"}
 
+    try:
+        run = await registry.create_scan_run(project_id, triggered_by="mcp")
+    except LicenceRefused as exc:
+        log_refusal("mcp trigger_scan", exc, project_id=project_id)
+        return _licence_error(exc.refusal.to_detail())
     await registry.update_status(project_id, "scanning")
-    run = await registry.create_scan_run(project_id, triggered_by="mcp")
     await db.commit()
 
     # Use per-project output directory to avoid overwriting scans
@@ -497,6 +503,11 @@ async def _get_scan_status(registry: ProjectRegistry, args: dict) -> dict:
     }
 
 
+def _licence_error(detail: dict) -> dict:
+    """Tool result for a licence refusal (the tool-level twin of HTTP 402)."""
+    return {"error": str(detail.get("message") or "Licence refused"), "licence": detail}
+
+
 async def _insert_to_rag(registry: ProjectRegistry, db, args: dict) -> dict:
     project_id = args["project_id"]
     docs = args.get("docs")
@@ -504,6 +515,12 @@ async def _insert_to_rag(registry: ProjectRegistry, db, args: dict) -> dict:
     project = await registry.get_project(project_id)
     if not project:
         return {"error": f"Project not found: {project_id}"}
+
+    # Same rule as POST /mcp/push-to-rag: re-embedding produces new artefacts.
+    refusal = await check_capability(Capability.SCAN)
+    if refusal is not None:
+        log_refusal("mcp insert_to_rag", LicenceRefused(refusal), project_id=project_id)
+        return _licence_error(refusal.to_detail())
 
     output_dir = project.output_dir or str(config.intodoc_output_dir)
     result = await rag_bridge.push_docs(
@@ -593,9 +610,20 @@ async def _recall_project_memory(args: dict) -> dict:
     return {"memories": memories, "count": len(memories)}
 
 
+async def _hindsight_retain_refusal(where: str) -> dict | None:
+    """Hindsight runs its own model on retain, so a retain is token spend."""
+    refusal = await check_capability(Capability.GENERATION)
+    if refusal is None:
+        return None
+    log_refusal(where, LicenceRefused(refusal))
+    return _licence_error(refusal.to_detail())
+
+
 async def _retain_findings(args: dict) -> dict:
     if not config.hindsight_enabled:
         return {"note": "Hindsight memory is disabled"}
+    if (refused := await _hindsight_retain_refusal("mcp retain_findings")) is not None:
+        return refused
     project_id = args["project_id"]
     findings = args["findings"]
     context = args.get("context", "analysis-findings")
@@ -607,6 +635,8 @@ async def _retain_findings(args: dict) -> dict:
 async def _retain_process_lesson(args: dict) -> dict:
     if not config.hindsight_enabled:
         return {"note": "Hindsight memory is disabled"}
+    if (refused := await _hindsight_retain_refusal("mcp retain_process_lesson")) is not None:
+        return refused
     lesson = args["lesson"]
     context = args.get("context", "process-lesson")
     await memory_service.ensure_process_bank()

@@ -7,15 +7,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from src.api.dependencies import AuditViewer, DBSession
+from src.api.dependencies import AuditViewer, DBSession, require_capability, require_permission
 from src.config import settings
 from src.db.models import User
 from src.db.models.user import ProjectAssignment
+from src.licensing.core import Capability
 from src.memory.hindsight_client import (
     QUALITY_BANK,
     CORRECTIONS_BANK,
@@ -30,6 +32,15 @@ from src.memory.hindsight_client import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/memory", tags=["memory"])
+
+# Hindsight's reflect and mental-model creation run its LLM, so they spend tokens
+# and are refused (402) on an expired licence. The permission check runs first.
+ReflectingAuditor = Annotated[
+    User,
+    Depends(
+        require_capability(Capability.CHAT, principal=require_permission("view_audit_logs"))
+    ),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +64,7 @@ class ReflectPatternsRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.post("/mental-models")
-async def create_mental_model(body: MentalModelRequest, _user: AuditViewer) -> dict:
+async def create_mental_model(body: MentalModelRequest, _user: ReflectingAuditor) -> dict:
     """Create a mental model (pre-computed answer) for a project bank.
 
     Requires view_audit_logs permission.
@@ -68,7 +79,7 @@ async def create_mental_model(body: MentalModelRequest, _user: AuditViewer) -> d
 
 
 @router.post("/reflect-patterns")
-async def reflect_patterns(body: ReflectPatternsRequest, _user: AuditViewer) -> dict:
+async def reflect_patterns(body: ReflectPatternsRequest, _user: ReflectingAuditor) -> dict:
     """Trigger pattern reflection for a project bank.
 
     Uses Hindsight's agentic reflect to synthesize patterns across project memory.
@@ -177,7 +188,7 @@ async def get_bank_memories(
 @router.get("/banks/{bank_id}/reflect")
 async def reflect_bank(
     bank_id: str,
-    _user: AuditViewer,
+    _user: ReflectingAuditor,
     query: str | None = Query(default=None),
 ) -> dict:
     """Run pattern reflection on a memory bank."""

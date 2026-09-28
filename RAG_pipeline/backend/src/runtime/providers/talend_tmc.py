@@ -36,6 +36,7 @@ from src.runtime.models import (
     RuntimeComponentMetric,
     RuntimeConnection,
     RuntimeEngine,
+    RuntimeDeploymentTarget,
     RuntimeEngineStatus,
     RuntimeEnvironment,
     RuntimeExecution,
@@ -805,6 +806,25 @@ class TalendTmcRuntimeProvider:
         environments_raw = await self._get_all_pages("/orchestration/environments", max_items=_DEFAULT_FETCH_LIMIT)
         workspaces_raw = await self._get_all_pages("/orchestration/workspaces", max_items=_DEFAULT_FETCH_LIMIT)
         engines_raw = await self._get_all_pages("/processing/runtimes/remote-engines", max_items=_DEFAULT_FETCH_LIMIT)
+        # Engines carry `clusterId`; only this endpoint carries the cluster's
+        # name. A tenant without ESB clustering simply has none, so a failure
+        # here degrades the LABEL and never the membership -- `cluster_id` is
+        # what the read side groups on.
+        cluster_names: dict[str, str] = {}
+        try:
+            for item in await self._get_all_pages(
+                "/processing/runtimes/remote-engine-clusters", max_items=_DEFAULT_FETCH_LIMIT
+            ):
+                cluster_id = _str_field(item, "id", "cluster_id")
+                name = _str_field(item, "name")
+                if cluster_id and name:
+                    cluster_names[cluster_id] = name
+        except RuntimeProviderError as exc:
+            logger.warning(
+                "TMC remote-engine-cluster labels unavailable (%s); clustered "
+                "deployments stay grouped by id but are shown unnamed",
+                _sanitize_tmc_error(str(exc)),
+            )
         artifacts_raw = await self._get_all_pages("/orchestration/artifacts", max_items=_DEFAULT_FETCH_LIMIT)
         connections_raw = await self._get_all_pages("/orchestration/connections", max_items=_DEFAULT_FETCH_LIMIT)
         tasks_raw = await self._fetch_executables("/orchestration/executables/tasks")
@@ -812,7 +832,9 @@ class TalendTmcRuntimeProvider:
 
         all_environments = [_to_environment(item, source_key, synced_at) for item in environments_raw]
         all_workspaces = [_to_workspace(item, source_key, synced_at) for item in workspaces_raw]
-        all_engines = [_to_engine(item, source_key, synced_at) for item in engines_raw]
+        all_engines = [
+            _to_engine(item, source_key, synced_at, cluster_names) for item in engines_raw
+        ]
         all_artifacts = [_to_artifact(item, source_key, synced_at) for item in artifacts_raw]
         all_connections = [_to_connection(item, source_key, synced_at) for item in connections_raw]
         all_artifacts_by_id = {artifact.artifact_id: artifact for artifact in all_artifacts}
@@ -1808,11 +1830,19 @@ def _to_workspace(item: dict[str, Any], source_key: str, synced_at: datetime) ->
     )
 
 
-def _to_engine(item: dict[str, Any], source_key: str, synced_at: datetime) -> RuntimeEngine:
+def _to_engine(
+    item: dict[str, Any],
+    source_key: str,
+    synced_at: datetime,
+    cluster_names: Mapping[str, str] | None = None,
+) -> RuntimeEngine:
     workspace = _dict_field(item, "workspace")
     environment = _dict_field(workspace, "environment")
     raw_status = _str_field(item, "status")
     availability = _str_field(item, "availability")
+    # Cluster NAMES are not unique -- this tenant has `RE_Cluster_01` in both
+    # UAT and PROD -- so the id is the identity and the name is only a label.
+    cluster_id = _str_field(item, "clusterId", "cluster_id")
     return RuntimeEngine(
         source_key=source_key,
         engine_id=_required_str(item, "id", "engine_id"),
@@ -1821,6 +1851,8 @@ def _to_engine(item: dict[str, Any], source_key: str, synced_at: datetime) -> Ru
         raw_status=raw_status,
         availability=availability,
         version=_str_field(item, "esbCompatibilityVersion", "version"),
+        cluster_id=cluster_id,
+        cluster_name=(cluster_names or {}).get(cluster_id or ""),
         environment_id=_str_field(environment, "id", "environment_id"),
         environment_name=_str_field(environment, "name", "environment_name"),
         last_seen_at=synced_at,
@@ -2213,6 +2245,25 @@ def _connection_ids(item: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(ids))
 
 
+def _deployment_target(runtime: dict[str, Any]) -> RuntimeDeploymentTarget:
+    """Classify `runtime.type` without inventing a value when it is missing.
+
+    Talend reports `REMOTE_ENGINE_CLUSTER` for a cluster deployment and
+    `REMOTE_ENGINE` for a single engine. Anything else -- including nothing at
+    all -- is UNKNOWN, because reading a missing field as "single engine" would
+    make a clustered route look like two unrelated deployments, which is the
+    exact confusion this field exists to remove.
+    """
+    raw = (_str_field(runtime, "type", "runtimeType", "runtime_type") or "").strip().upper()
+    if not raw:
+        return RuntimeDeploymentTarget.UNKNOWN
+    if "CLUSTER" in raw:
+        return RuntimeDeploymentTarget.CLUSTER
+    if "ENGINE" in raw:
+        return RuntimeDeploymentTarget.ENGINE
+    return RuntimeDeploymentTarget.UNKNOWN
+
+
 def _to_job_run(
     item: dict[str, Any],
     source_key: str,
@@ -2247,6 +2298,11 @@ def _to_job_run(
         workspace_name=job.workspace_name if job else None,
         engine_id=engine_id,
         engine_name=engine.name if engine is not None else (job.engine_name if job else None),
+        # `runtime.type` is TMC's own statement of what the task was deployed
+        # onto. Sibling CLUSTER rows are one logical deployment; two ENGINE rows
+        # are two independent ones. Absent means absent -- never assume ENGINE.
+        deployment_target=_deployment_target(runtime),
+        artifact_version=_str_field(item, "taskVersion", "task_version", "version"),
         started_at=started,
         ended_at=ended,
         duration_ms=_duration_ms(started, ended),

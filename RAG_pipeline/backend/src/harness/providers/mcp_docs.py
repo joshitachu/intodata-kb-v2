@@ -205,6 +205,21 @@ class McpDocumentationProviderError(Exception):
         self.safe_message = safe_message
 
 
+class McpLicenceRefusedError(McpDocumentationProviderError):
+    """MCP refused the request under the subscription licence (HTTP 402).
+
+    A subclass so every existing ``except McpDocumentationProviderError`` site
+    still surfaces ``safe_message`` -- which here is MCP's own refusal message,
+    not "provider returned HTTP 402" -- while callers that care can branch on
+    ``code`` (``licence_expired``, ``quota_exhausted``, ...) and ``detail``.
+    """
+
+    def __init__(self, *, code: str, message: str, detail: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.code = code
+        self.detail = detail
+
+
 class McpDocumentationProvider:
     """HTTP client for triggering MCP documentation generation."""
 
@@ -283,6 +298,7 @@ class McpDocumentationProvider:
                 _safe_error("Documentation generation provider could not be reached", str(exc))
             ) from exc
 
+        _raise_if_licence_refused(response)
         if response.status_code >= 400:
             raise McpDocumentationProviderError(
                 _safe_error(
@@ -341,6 +357,7 @@ class McpDocumentationProvider:
                 _safe_error("Documentation provider could not be reached", str(exc))
             ) from exc
 
+        _raise_if_licence_refused(response)
         if response.status_code >= 400:
             raise McpDocumentationProviderError(
                 _safe_error(
@@ -421,6 +438,7 @@ class McpDocumentationProvider:
                 status_path=f"/mcp/generate-runs/{project_id}",
                 docs_path=f"/projects/{project_id}/docs",
             )
+        _raise_if_licence_refused(response)
         if response.status_code >= 400:
             raise McpDocumentationProviderError(
                 _safe_error(
@@ -520,6 +538,7 @@ class McpDocumentationProvider:
                 status="not_cancellable",
                 message=_safe_text(_response_error_text(response) or "Workflow is not cancellable."),
             )
+        _raise_if_licence_refused(response)
         if response.status_code >= 400:
             raise McpDocumentationProviderError(
                 _safe_error(
@@ -564,6 +583,7 @@ class McpDocumentationProvider:
                 _safe_error("Documentation provider could not be reached", str(exc))
             ) from exc
 
+        _raise_if_licence_refused(response)
         if response.status_code >= 400:
             raise McpDocumentationProviderError(
                 _safe_error(
@@ -670,6 +690,7 @@ class McpDocumentationProvider:
             raise McpDocumentationProviderError(
                 _safe_error("Documentation provider could not be reached", str(exc))
             ) from exc
+        _raise_if_licence_refused(response)
         if response.status_code >= 400:
             raise McpDocumentationProviderError(
                 _safe_error(
@@ -755,6 +776,7 @@ class McpDocumentationProvider:
             raise McpDocumentationProviderError(
                 _safe_error("Documentation provider could not be reached", str(exc))
             ) from exc
+        _raise_if_licence_refused(response)
         if response.status_code >= 400:
             raise McpDocumentationProviderError(
                 _safe_error(
@@ -820,6 +842,7 @@ class McpDocumentationProvider:
                 _safe_error("Documentation provider could not be reached", str(exc))
             ) from exc
 
+        _raise_if_licence_refused(response)
         if response.status_code >= 400:
             raise McpDocumentationProviderError(
                 _safe_error(
@@ -883,6 +906,7 @@ class McpDocumentationProvider:
             raise McpDocumentationProviderError(
                 _safe_error("Documentation provider could not be reached", str(exc))
             ) from exc
+        _raise_if_licence_refused(response)
         if response.status_code >= 400:
             raise McpDocumentationProviderError(
                 _safe_error(
@@ -937,6 +961,7 @@ class McpDocumentationProvider:
             raise McpDocumentationProviderError(
                 _safe_error("Documentation provider could not be reached", str(exc))
             ) from exc
+        _raise_if_licence_refused(response)
         if response.status_code >= 400:
             raise McpDocumentationProviderError(
                 _safe_error(
@@ -992,6 +1017,7 @@ class McpDocumentationProvider:
             raise McpDocumentationProviderError(
                 _safe_error("Documentation provider could not be reached", str(exc))
             ) from exc
+        _raise_if_licence_refused(response)
         if response.status_code >= 400:
             raise McpDocumentationProviderError(
                 _safe_error(
@@ -1129,6 +1155,7 @@ class McpDocumentationProvider:
             raise McpDocumentationProviderError(
                 _safe_error("Documentation provider could not be reached", str(exc))
             ) from exc
+        _raise_if_licence_refused(response)
         if response.status_code >= 400:
             raise McpDocumentationProviderError(_safe_error(
                 f"Documentation provider returned HTTP {response.status_code}",
@@ -1260,6 +1287,36 @@ def _json_array(response: httpx.Response) -> list[Any]:
             "Documentation provider returned an invalid response."
         )
     return data
+
+
+_LICENCE_REFUSED_STATUS = 402
+_LICENCE_DETAIL_KEYS = frozenset({"code", "message", "capability", "plan", "used", "limit", "period_end"})
+
+
+def _raise_if_licence_refused(response: httpx.Response) -> None:
+    """Turn MCP's HTTP 402 licence refusal into ``McpLicenceRefusedError``.
+
+    Called before every generic ``>= 400`` branch so a refusal is never reported
+    as an opaque provider failure. Only the documented refusal fields are kept;
+    a body that does not parse still yields a typed refusal with a safe message.
+    """
+    if response.status_code != _LICENCE_REFUSED_STATUS:
+        return
+    try:
+        data = response.json()
+    except ValueError:
+        data = None
+    raw = data.get("detail") if isinstance(data, dict) else None
+    if not isinstance(raw, dict):
+        raw = data if isinstance(data, dict) and "code" in data else {}
+    detail = {key: raw[key] for key in _LICENCE_DETAIL_KEYS if key in raw}
+    code = _safe_text(str(detail.get("code") or "licence_refused"))
+    message = _safe_text(
+        str(detail.get("message") or "The subscription licence does not allow this action.")
+    )
+    detail["code"] = code
+    detail["message"] = message
+    raise McpLicenceRefusedError(code=code, message=message, detail=detail)
 
 
 def _response_error_text(response: httpx.Response) -> str:

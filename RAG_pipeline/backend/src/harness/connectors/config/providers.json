@@ -1,5 +1,18 @@
 [
   {
+    "provider_key": "remote_mcp",
+    "display_name": "Custom MCP server",
+    "description": "Connect a trusted remote HTTPS MCP server, review its tools, and scope each tool to projects.",
+    "adapter_ref": "src.harness.connectors.remote_mcp.RemoteMcpConnector",
+    "auth_modes": ["none"],
+    "capabilities": [],
+    "config_schema": {
+      "connector_id": "Nexus credential-store connector ID",
+      "server_url": "HTTPS MCP server URL",
+      "tools": "reviewed discovered tool snapshots"
+    }
+  },
+  {
     "provider_key": "mcp_elastic",
     "display_name": "Existing Elastic Stack",
     "description": "Search logs through the Elastic connection already managed by Nexus.",

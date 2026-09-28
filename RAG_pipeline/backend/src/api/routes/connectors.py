@@ -10,9 +10,10 @@ opaque credential reference exists and which broker scheme it uses.
 from __future__ import annotations
 
 import asyncio
+from typing import Literal
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.api.dependencies import DBSession, OwnerUser
 from src.api.errors import api_error
@@ -23,11 +24,16 @@ from src.harness.connectors import (
     ConnectorService,
     default_connector_provider_registry,
 )
-from src.harness.connectors.mcp_bridge import ExistingElasticUnavailable, McpConnectorBridge
+from src.harness.connectors.mcp_bridge import (
+    ExistingElasticUnavailable,
+    McpConnectorBridge,
+    RemoteMcpUnavailable,
+)
 from src.harness.connectors.models import (
     CapabilityBindingCreate,
     CapabilityBindingUpdate,
     CapabilityBindingView,
+    ConnectorCapabilityDefinition,
     ConnectorHealthResult,
     ConnectorFreshnessResult,
     ConnectorInstanceCreate,
@@ -38,6 +44,7 @@ from src.harness.connectors.models import (
     ConnectorReadResult,
 )
 from src.harness.connectors.service import binding_view, instance_view
+from src.harness.connectors.remote_mcp import remote_mcp_config
 from src.services.audit_service import AuditService
 
 router = APIRouter(prefix="/connectors", tags=["connectors"])
@@ -59,6 +66,56 @@ class ConnectorBindingListResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     bindings: list[CapabilityBindingView]
     total: int
+
+
+class ConnectorCapabilityListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    capabilities: list[ConnectorCapabilityDefinition]
+    total: int
+
+
+class RemoteMcpCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=120)
+    server_url: str = Field(min_length=8, max_length=2048)
+    authentication: Literal["none", "bearer"] = "none"
+    credential: str | None = Field(default=None, min_length=1, max_length=20_000, repr=False)
+
+    @field_validator("credential")
+    @classmethod
+    def reject_multiline_secret(cls, value: str | None) -> str | None:
+        if value is not None and ("\r" in value or "\n" in value):
+            raise ValueError("Credential contains invalid characters")
+        return value
+
+    @model_validator(mode="after")
+    def validate_authentication(self) -> "RemoteMcpCreateRequest":
+        if self.authentication == "bearer" and not self.credential:
+            raise ValueError("A bearer token is required")
+        if self.authentication == "none" and self.credential is not None:
+            raise ValueError("Credential is not allowed without authentication")
+        return self
+
+
+class RemoteMcpCreateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connector: ConnectorInstanceView
+    capabilities: list[ConnectorCapabilityDefinition]
+
+
+class RemoteMcpGrantRequest(BaseModel):
+    """One owner decision for the complete Labs-visible MCP tool set."""
+
+    model_config = ConfigDict(extra="forbid")
+    capability_ids: list[str] = Field(min_length=1, max_length=100)
+    project_ids: list[str] = Field(min_length=1, max_length=100)
+
+    @field_validator("capability_ids", "project_ids")
+    @classmethod
+    def unique_values(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("Choose each item once")
+        return values
 
 
 class ConnectorResourceListResponse(BaseModel):
@@ -140,6 +197,72 @@ async def _audit(
         details=details or {},
         ip_address=request.client.host if request.client else None,
     )
+
+
+def _remote_mcp_tools(row: object) -> dict[str, dict]:
+    config = getattr(row, "config", None)
+    raw_tools = config.get("tools") if isinstance(config, dict) else None
+    if not isinstance(raw_tools, list):
+        return {}
+    tools: dict[str, dict] = {}
+    for raw in raw_tools:
+        if not isinstance(raw, dict):
+            continue
+        capability_id = raw.get("capability_id")
+        source_id = raw.get("source_id")
+        if isinstance(capability_id, str) and isinstance(source_id, str):
+            tools[capability_id] = raw
+    return tools
+
+
+async def _apply_remote_mcp_grant(
+    bridge: McpConnectorBridge,
+    access_token: str,
+    *,
+    connector_id: str,
+    tools: dict[str, dict],
+    capability_ids: set[str],
+    project_ids: set[str],
+    previous_capability_ids: set[str],
+    previous_project_ids: set[str],
+) -> None:
+    """Synchronize an exact reviewed read-only grant to the secret-owning service."""
+
+    source_ids = [str(tools[item]["source_id"]) for item in sorted(capability_ids)]
+    for capability_id in sorted(capability_ids):
+        tool = tools[capability_id]
+        label = str(tool.get("label") or tool.get("name") or capability_id)[:120]
+        await bridge.review_remote_mcp_tool(
+            access_token,
+            connector_id=connector_id,
+            source_id=str(tool["source_id"]),
+            enabled=True,
+            approved_purpose=(
+                f"Allow the reviewed read-only tool '{label}' in the explicitly selected "
+                "Nexus projects."
+            )[:500],
+        )
+    for project_id in sorted(project_ids):
+        await bridge.bind_remote_mcp_project(
+            access_token,
+            project_id=project_id,
+            connector_id=connector_id,
+            source_ids=source_ids,
+        )
+    for project_id in sorted(previous_project_ids - project_ids):
+        await bridge.unbind_remote_mcp_project(
+            access_token, project_id=project_id, connector_id=connector_id
+        )
+    for capability_id in sorted(previous_capability_ids - capability_ids):
+        tool = tools.get(capability_id)
+        if tool is not None:
+            await bridge.review_remote_mcp_tool(
+                access_token,
+                connector_id=connector_id,
+                source_id=str(tool["source_id"]),
+                enabled=False,
+                approved_purpose=None,
+            )
 
 
 @router.get("/providers", response_model=ConnectorProviderListResponse)
@@ -338,6 +461,197 @@ async def list_connector_instances(
     return ConnectorInstanceListResponse(connectors=connectors, total=len(connectors))
 
 
+@router.post("/remote-mcp", response_model=RemoteMcpCreateResponse, status_code=201)
+async def create_remote_mcp_connector(
+    body: RemoteMcpCreateRequest,
+    request: Request,
+    owner: OwnerUser,
+    db: DBSession,
+) -> RemoteMcpCreateResponse:
+    """Store the secret upstream, snapshot tools, and create a secret-free Labs link."""
+
+    access_token = request.cookies.get("access_token")
+    if not access_token:
+        raise api_error(401, "session_required", "Sign in again to connect an MCP server")
+    bridge = McpConnectorBridge()
+    upstream_id: str | None = None
+    try:
+        upstream, sources = await bridge.create_remote_mcp(
+            access_token,
+            name=body.name,
+            server_url=body.server_url,
+            authentication=body.authentication,
+            credential=body.credential,
+        )
+        upstream_id = str(upstream["id"])
+        service = _service(db)
+        row = await service.create(
+            ConnectorInstanceCreate(
+                name=body.name,
+                provider_key="remote_mcp",
+                config=remote_mcp_config(
+                    connector_id=upstream_id,
+                    server_url=body.server_url,
+                    sources=sources,
+                ),
+                enabled=True,
+            )
+        )
+        await service.repository.set_health(
+            row, "healthy", f"Connected remote MCP server with {len(sources)} discovered tool(s)"
+        )
+        capabilities = list(
+            service.providers.capabilities_for_instance(row.provider_key, row.config)
+        )
+        await _audit(
+            db,
+            request,
+            owner=owner,
+            action="create_remote_mcp_connector",
+            resource_id=row.id,
+            details={"tool_count": len(capabilities), "authentication": body.authentication},
+        )
+        await db.commit()
+        return RemoteMcpCreateResponse(connector=instance_view(row), capabilities=capabilities)
+    except RemoteMcpUnavailable as exc:
+        await db.rollback()
+        raise api_error(422, "remote_mcp_unavailable", str(exc)) from exc
+    except Exception as exc:
+        await db.rollback()
+        if upstream_id:
+            try:
+                await bridge.delete_remote_mcp(access_token, upstream_id)
+            except RemoteMcpUnavailable:
+                pass
+        raise _translate_error(exc)
+
+
+@router.put(
+    "/remote-mcp/{instance_id}/grants",
+    response_model=ConnectorBindingListResponse,
+)
+async def replace_remote_mcp_grants(
+    instance_id: int,
+    body: RemoteMcpGrantRequest,
+    request: Request,
+    owner: OwnerUser,
+    db: DBSession,
+) -> ConnectorBindingListResponse:
+    """Review and project-bind the complete selected MCP tool set in one owner action."""
+
+    access_token = request.cookies.get("access_token")
+    if not access_token:
+        raise api_error(401, "session_required", "Sign in again to approve MCP tools")
+    service = _service(db)
+    bridge = McpConnectorBridge()
+    previous_capability_ids: set[str] = set()
+    previous_project_ids: set[str] = set()
+    selected_ids = set(body.capability_ids)
+    project_ids = set(body.project_ids)
+    upstream_id = ""
+    tools: dict[str, dict] = {}
+    try:
+        connector = await service.repository.get_instance(instance_id)
+        if connector.provider_key != "remote_mcp":
+            raise ConnectorPolicyError("This endpoint accepts only remote MCP connectors")
+        config = connector.config if isinstance(connector.config, dict) else {}
+        upstream_id = str(config.get("connector_id") or "")
+        if not upstream_id:
+            raise ConnectorPolicyError("Remote MCP connector identity is missing")
+        tools = _remote_mcp_tools(connector)
+        missing = selected_ids - set(tools)
+        if missing:
+            raise ConnectorPolicyError("Refresh the MCP tool catalogue before approving tools")
+        if any(tools[item].get("risk_tier") != "read_only" for item in selected_ids):
+            raise ConnectorPolicyError(
+                "Only tools explicitly declared read-only can be enabled. MCP actions are coming "
+                "after approval controls"
+            )
+
+        existing = await service.list_bindings(instance_id)
+        previous_capability_ids = {
+            binding.capability_id for binding in existing if binding.enabled
+        }
+        previous_project_ids = {
+            project_id
+            for binding in existing
+            if binding.enabled
+            for project_id in binding.project_ids
+        }
+        by_capability = {binding.capability_id: binding for binding in existing}
+        for capability_id in sorted(selected_ids):
+            current = by_capability.get(capability_id)
+            if current is None:
+                await service.bind(
+                    instance_id,
+                    CapabilityBindingCreate(
+                        capability_id=capability_id,
+                        project_ids=sorted(project_ids),
+                        risk_tier="read_only",
+                        enabled=True,
+                    ),
+                )
+            else:
+                await service.update_binding(
+                    instance_id,
+                    current.id,
+                    CapabilityBindingUpdate(
+                        project_ids=sorted(project_ids),
+                        risk_tier="read_only",
+                        enabled=True,
+                    ),
+                )
+        for current in existing:
+            if current.capability_id not in selected_ids and current.enabled:
+                await service.update_binding(
+                    instance_id, current.id, CapabilityBindingUpdate(enabled=False)
+                )
+
+        await _apply_remote_mcp_grant(
+            bridge,
+            access_token,
+            connector_id=upstream_id,
+            tools=tools,
+            capability_ids=selected_ids,
+            project_ids=project_ids,
+            previous_capability_ids=previous_capability_ids,
+            previous_project_ids=previous_project_ids,
+        )
+        await _audit(
+            db,
+            request,
+            owner=owner,
+            action="replace_remote_mcp_grants",
+            resource_id=instance_id,
+            details={
+                "capability_count": len(selected_ids),
+                "project_ids": sorted(project_ids),
+            },
+        )
+        await db.commit()
+        bindings = [binding_view(row) for row in await service.list_bindings(instance_id)]
+        return ConnectorBindingListResponse(bindings=bindings, total=len(bindings))
+    except Exception as exc:
+        await db.rollback()
+        if upstream_id and tools:
+            try:
+                await _apply_remote_mcp_grant(
+                    bridge,
+                    access_token,
+                    connector_id=upstream_id,
+                    tools=tools,
+                    capability_ids=previous_capability_ids,
+                    project_ids=previous_project_ids,
+                    previous_capability_ids=selected_ids,
+                    previous_project_ids=project_ids,
+                )
+            except RemoteMcpUnavailable:
+                pass
+        if isinstance(exc, RemoteMcpUnavailable):
+            raise api_error(422, "remote_mcp_unavailable", str(exc)) from exc
+        raise _translate_error(exc)
+
+
 @router.post("", response_model=ConnectorInstanceView, status_code=201)
 async def create_connector_instance(
     body: ConnectorInstanceCreate,
@@ -395,7 +709,29 @@ async def delete_connector_instance(
     db: DBSession,
 ) -> None:
     try:
-        await _service(db).delete(instance_id)
+        service = _service(db)
+        row = await service.repository.get_instance(instance_id)
+        upstream_id = (
+            row.config.get("connector_id")
+            if row.provider_key == "remote_mcp" and isinstance(row.config, dict)
+            else None
+        )
+        if isinstance(upstream_id, str) and upstream_id:
+            access_token = request.cookies.get("access_token")
+            if not access_token:
+                raise ConnectorPolicyError("Deleting an MCP server requires your active session")
+            bridge = McpConnectorBridge()
+            project_ids = {
+                project_id
+                for binding in await service.list_bindings(instance_id)
+                for project_id in binding.project_ids
+            }
+            for project_id in sorted(project_ids):
+                await bridge.unbind_remote_mcp_project(
+                    access_token, project_id=project_id, connector_id=upstream_id
+                )
+            await bridge.delete_remote_mcp(access_token, upstream_id)
+        await service.delete(instance_id)
         await _audit(
             db,
             request,
@@ -404,6 +740,9 @@ async def delete_connector_instance(
             resource_id=instance_id,
         )
         await db.commit()
+    except RemoteMcpUnavailable as exc:
+        await db.rollback()
+        raise api_error(422, "remote_mcp_unavailable", str(exc)) from exc
     except Exception as exc:
         await db.rollback()
         raise _translate_error(exc)
@@ -428,6 +767,44 @@ async def check_connector_health(
         )
         await db.commit()
         return result
+    except Exception as exc:
+        await db.rollback()
+        raise _translate_error(exc)
+
+
+@router.post(
+    "/{instance_id}/capabilities/discover",
+    response_model=ConnectorCapabilityListResponse,
+)
+async def discover_connector_capabilities(
+    instance_id: int,
+    request: Request,
+    owner: OwnerUser,
+    db: DBSession,
+) -> ConnectorCapabilityListResponse:
+    """Refresh a dynamic connector's bounded tool snapshot without enabling tools."""
+
+    try:
+        capabilities = list(
+            await _service(db).discover_capabilities(
+                instance_id, request.cookies.get("access_token")
+            )
+        )
+        await _audit(
+            db,
+            request,
+            owner=owner,
+            action="discover_connector_capabilities",
+            resource_id=instance_id,
+            details={"capability_count": len(capabilities)},
+        )
+        await db.commit()
+        return ConnectorCapabilityListResponse(
+            capabilities=capabilities, total=len(capabilities)
+        )
+    except RemoteMcpUnavailable as exc:
+        await db.rollback()
+        raise api_error(422, "remote_mcp_unavailable", str(exc)) from exc
     except Exception as exc:
         await db.rollback()
         raise _translate_error(exc)
@@ -554,7 +931,13 @@ async def create_connector_binding(
             "At least one project_id is required for an agent connector binding",
         )
     try:
-        row = await _service(db).bind(instance_id, body)
+        service = _service(db)
+        connector = await service.repository.get_instance(instance_id)
+        if connector.provider_key == "remote_mcp":
+            raise ConnectorPolicyError(
+                "Use the MCP tool approval screen to update all reviewed project grants together"
+            )
+        row = await service.bind(instance_id, body)
         await _audit(
             db,
             request,
@@ -583,7 +966,13 @@ async def delete_connector_binding(
     db: DBSession,
 ) -> None:
     try:
-        await _service(db).unbind(instance_id, binding_id)
+        service = _service(db)
+        connector = await service.repository.get_instance(instance_id)
+        if connector.provider_key == "remote_mcp":
+            raise ConnectorPolicyError(
+                "Use the MCP tool approval screen to update all reviewed project grants together"
+            )
+        await service.unbind(instance_id, binding_id)
         await _audit(
             db,
             request,
@@ -612,7 +1001,13 @@ async def update_connector_binding(
     if body.project_ids is not None and not body.project_ids:
         raise api_error(422, "project_scope_required", "At least one project_id is required")
     try:
-        row = await _service(db).update_binding(instance_id, binding_id, body)
+        service = _service(db)
+        connector = await service.repository.get_instance(instance_id)
+        if connector.provider_key == "remote_mcp":
+            raise ConnectorPolicyError(
+                "Use the MCP tool approval screen to update all reviewed project grants together"
+            )
+        row = await service.update_binding(instance_id, binding_id, body)
         await _audit(
             db,
             request,

@@ -17,6 +17,46 @@ export class ApiError extends Error {
   }
 }
 
+/** The fields a 402 licence refusal carries (`detail` of the MCP server's body). */
+export interface LicenceRefusalDetail {
+  code:
+    | "licence_expired"
+    | "licence_not_yet_valid"
+    | "licence_missing"
+    | "licence_invalid"
+    | "feature_not_in_plan"
+    | "quota_exhausted";
+  message: string;
+  capability?: "chat" | "generation" | "scan" | null;
+  used?: number | null;
+  limit?: number | null;
+  period_end?: string | null;
+  plan?: string | null;
+}
+
+/**
+ * A request the licence refused (HTTP 402).
+ *
+ * An `ApiError` so status-based policy keeps working -- `httpStatusFromError`
+ * reads 402 and `shouldRetryQuery` never repeats it -- but with the server's
+ * sentence as `message` rather than `"402: {json}"`, so every surface that
+ * prints an error prints the refusal a user can act on. It is never an auth
+ * failure: only a 401 sends the user to login (`api/client.ts`).
+ *
+ * Lives here, beside `ApiError`, so `lib/licence.ts` and `parseApiError` can
+ * both use it without an import cycle.
+ */
+export class LicenceRefusal extends ApiError {
+  readonly code: LicenceRefusalDetail["code"];
+
+  constructor(readonly detail: LicenceRefusalDetail, body: string) {
+    super(402, body);
+    this.name = "LicenceRefusal";
+    this.message = detail.message;
+    this.code = detail.code;
+  }
+}
+
 /**
  * HTTP status behind an error, or null when it is not an HTTP failure.
  *
@@ -35,6 +75,7 @@ export function httpStatusFromError(err: unknown): number | null {
 
 export function parseApiError(err: unknown): string {
   if (!(err instanceof Error)) return "An unexpected error occurred";
+  if (err instanceof LicenceRefusal) return err.message;
   const match = err.message.match(/^(\d{3}):\s*(.*)$/s);
   if (match) {
     const fallback = `Request failed (${match[1]})`;

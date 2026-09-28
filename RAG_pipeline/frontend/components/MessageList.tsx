@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { AlertTriangle, ArrowDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MessageBubble } from "./MessageBubble";
+import { LicenceRefusalNotice } from "./LicenceBanner";
 import { SUGGESTIONS } from "@/lib/constants";
 import { STREAM_REVEAL_KEY, messageRevealKey } from "@/lib/answerReveal";
 import type { MessageResponse } from "@/types";
@@ -189,8 +190,15 @@ export function MessageList({
           />
         )}
 
+        {/* A turn the licence refused never opened a stream: show the refusal
+            itself, not a failed answer with a retry that cannot succeed. */}
+        {streamingMessage?.licenceRefusal && !streamingMessage.isStreaming && (
+          <LicenceRefusalNotice refusal={streamingMessage.licenceRefusal} />
+        )}
+
         {/* Streaming assistant message */}
         {streamingMessage &&
+          !streamingMessage.licenceRefusal &&
           !liveErrorHasPersistedMessage &&
           (streamingMessage.isStreaming ||
             streamingMessage.content ||

@@ -69,8 +69,8 @@ class ConnectorCreateRequest(BaseModel):
     provider_id: StrippedStr = Field(..., min_length=1, max_length=100)
     display_name: StrippedStr = Field(..., min_length=1, max_length=255)
     safe_config: dict[str, object] = Field(default_factory=dict)
-    credential_type: Literal["api_key", "basic"] = "api_key"
-    credential: str = Field(..., min_length=1, max_length=20_000, repr=False)
+    credential_type: Literal["none", "api_key", "basic", "bearer"] = "api_key"
+    credential: str | None = Field(None, min_length=1, max_length=20_000, repr=False)
     kibana_credential: str | None = Field(None, min_length=1, max_length=20_000, repr=False)
 
 
@@ -82,7 +82,7 @@ class ConnectorUpdateRequest(BaseModel):
 
 class ConnectorRotateCredentialRequest(BaseModel):
     credential: str = Field(..., min_length=1, max_length=20_000, repr=False)
-    credential_type: Literal["api_key", "basic"] | None = None
+    credential_type: Literal["api_key", "basic", "bearer"] | None = None
     kibana_credential: str | None = Field(None, min_length=1, max_length=20_000, repr=False)
     reuse_elasticsearch_credential: bool = True
 
@@ -130,6 +130,36 @@ class ConnectorSourceListResponse(BaseModel):
     connector_instance_id: str
     sources: list[ConnectorSourceResponse]
     total: int = 0
+
+
+class ConnectorSourceReviewRequest(BaseModel):
+    """Owner acknowledgement required before a discovered remote tool can be bound."""
+
+    enabled: bool
+    approved_purpose: StrippedStr | None = Field(None, min_length=1, max_length=500)
+
+
+class RemoteMcpToolCallRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class RemoteMcpToolContent(BaseModel):
+    type: Literal["text"] = "text"
+    text: str
+
+
+class RemoteMcpToolCallResponse(BaseModel):
+    connector_id: str
+    source_id: str
+    tool_label: str
+    is_error: bool = False
+    content: list[RemoteMcpToolContent] = Field(default_factory=list)
+    structured_content: dict[str, Any] | None = None
+    redaction_count: int = 0
+    truncated: bool = False
+    omitted_content_types: list[str] = Field(default_factory=list)
 
 
 class ConnectorDiscoverRequest(BaseModel):

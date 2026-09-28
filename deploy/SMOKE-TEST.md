@@ -315,6 +315,92 @@ Pass criteria:
 - No token value appears in `docker compose logs backend`.
 - The internal Talend runtime service is not reachable on a public host port.
 
+## 10. Subscription Licence
+
+Run with `LICENCE_ENFORCEMENT=enforce` (the production default written by
+`deploy-client.sh`). Licences are issued on the operator machine (RUNBOOK 17a)
+and installed as in RUNBOOK 17b; no restart is needed between steps. Reuse the
+variables and cookie jar from section 7 (`FRONTEND_URL`, `BACKEND_URL`,
+`COOKIE_JAR`, `CONVERSATION_ID`). Keep the currently installed licence aside
+and put it back at the end.
+
+```bash
+export LICENCE_HOST_FILE="/etc/intodata-kb/licences/${CLIENT_SLUG}/licence.jwt"
+sudo cp -p "$LICENCE_HOST_FILE" /root/licence.jwt.smoke-backup
+licence_status() { curl -fsS -b "$COOKIE_JAR" "${BACKEND_URL}/licence/status" | jq .; }
+```
+
+### 10a. Valid licence: chat works
+
+On the operator machine, issue a 1-day licence
+(`issue --client "$CLIENT_SLUG" --plan basic --start <now> --end <now + 1 day>`),
+install it, then:
+
+```bash
+licence_status
+curl -fsS -N -b "$COOKIE_JAR" -H "Content-Type: application/json" \
+  -d '{"query":"What does this project do?"}' \
+  "${FRONTEND_URL}/api/conversations/${CONVERSATION_ID}/messages/stream" | head -c 400
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" logs backend mcp-server \
+  | grep 'licence: enforcement=' | tail -n 2
+```
+
+Pass criteria:
+
+- `licence/status` returns `state: "valid"`, `plan: "basic"`,
+  `near_expiry: true`, `days_remaining` 0 or 1.
+- The chat stream starts and completes.
+- The UI shows the near-expiry banner.
+- Each service logged `licence: enforcement=enforce state=...` once at start-up.
+
+### 10b. Expired licence: view-only, still logged in
+
+Issue an already-expired licence (`--start` and `--end` both in the past),
+install it, and within one request:
+
+```bash
+licence_status
+curl -sS -o /tmp/licence_402.json -w '%{http_code}\n' -b "$COOKIE_JAR" \
+  -H "Content-Type: application/json" -d '{"query":"hello"}' \
+  "${FRONTEND_URL}/api/conversations/${CONVERSATION_ID}/messages/stream"
+jq . /tmp/licence_402.json
+curl -fsS -o /dev/null -w '%{http_code}\n' -b "$COOKIE_JAR" "${FRONTEND_URL}/api/conversations"
+```
+
+Pass criteria:
+
+- `licence/status` returns `state: "expired"`.
+- The chat POST returns HTTP `402` with `detail.code == "licence_expired"`
+  (no SSE stream opens, no half-broken turn).
+- Listing conversations still returns `200`.
+- In the browser: the user stays logged in (no redirect to `/login`), the
+  banner shows the subscription as expired, the composer is disabled with a
+  reason, and existing conversations and generated documents still open.
+- Generate and scan buttons in the dashboard are disabled or refused with 402.
+
+### 10c. Quota: the 4th generation is refused
+
+Install a fresh valid `basic` licence (new period, so the count starts at 0).
+Start three generations on a small test project from the dashboard or via
+`POST /mcp/generate`, then a fourth. Read the used/allowed count from the
+dashboard's generate action, or from `GET /mcp/licence/status` authenticated
+the same way as any other `/mcp` route.
+
+Pass criteria:
+
+- Generations 1-3 start; the used/allowed count reads 1/3, 2/3, 3/3.
+- The 4th returns HTTP `402` with `detail.code == "quota_exhausted"`.
+- A generation that FAILED does not consume a slot (optional: cancel or break
+  one run and confirm the count does not move).
+- Chat keeps working while the generation quota is exhausted.
+
+Restore the original licence afterwards:
+
+```bash
+sudo install -o root -g 1001 -m 0640 /root/licence.jwt.smoke-backup "$LICENCE_HOST_FILE"
+licence_status   # back to the client's real period
+```
+
 ## Sign-Off
 
 ```text
@@ -333,5 +419,6 @@ Developer surface locked down: PASS/FAIL
 Capability-aware chat planner: PASS/FAIL
 IP allowlist: PASS/FAIL
 Talend TMC runtime (if enabled): PASS/FAIL/N-A
+Licence valid / expired / quota: PASS/FAIL
 Notes:
 ```

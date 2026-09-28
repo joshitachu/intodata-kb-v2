@@ -4,6 +4,14 @@ import {
   refreshSession,
   requestSessionRevalidation,
 } from "@/lib/session";
+import {
+  LicenceRefusal,
+  isLicenceRefusal,
+  licenceRefusalFromBody,
+  notifyLicenceRefused,
+} from "@/lib/licence";
+
+export { LicenceRefusal, isLicenceRefusal };
 
 /**
  * The one authenticated fetch for browser-side data calls.
@@ -54,7 +62,13 @@ export class ApiRequestError extends Error {
   }
 }
 
-/** True for any failure that repeating the request cannot fix. */
+/**
+ * True when the request was refused for authentication.
+ *
+ * A licence refusal (402, `LicenceRefusal`) is deliberately NOT an auth error:
+ * the session is valid and the instance is view-only. Treating it as one would
+ * send a signed-in user to /login because their subscription lapsed.
+ */
 export function isAuthError(error: unknown): boolean {
   return (
     error instanceof SessionExpiredError ||
@@ -73,6 +87,8 @@ export function isAuthError(error: unknown): boolean {
  */
 export function retryTransientOnly(failureCount: number, error: unknown): boolean {
   if (isAuthError(error)) return false;
+  // The licence decides, and it will not change between two attempts.
+  if (isLicenceRefusal(error)) return false;
   if (error instanceof ApiRequestError && !error.retryable) return false;
   return failureCount < 3;
 }
@@ -111,6 +127,12 @@ function passthroughFetch(url: string, init?: RequestInit): Promise<Response> {
  */
 export async function authedFetch(url: string, init?: RequestInit): Promise<Response> {
   const response = await passthroughFetch(url, init);
+  // 402 is a licence verdict, never a session one: no refresh, no replay, no
+  // revalidation. It only tells the licence banner to re-read the status.
+  if (response.status === 402) {
+    notifyLicenceRefused();
+    return response;
+  }
   if (response.status !== 401) return response;
 
   // A `ReadableStream` body cannot be sent twice; do not pretend otherwise.
@@ -131,6 +153,7 @@ export async function authedFetch(url: string, init?: RequestInit): Promise<Resp
     requestSessionRevalidation();
     throw new SessionExpiredError(url);
   }
+  if (replayed.status === 402) notifyLicenceRefused();
   return replayed;
 }
 
@@ -173,7 +196,10 @@ interface ProxyErrorBody {
 }
 
 /** Read the error body once, for both the message and the retryable verdict. */
-async function requestError(response: Response, fallback: string): Promise<ApiRequestError> {
+async function requestError(
+  response: Response,
+  fallback: string,
+): Promise<ApiRequestError | LicenceRefusal> {
   const text = await response.text().catch(() => "");
   let body: ProxyErrorBody | null = null;
   if (text) {
@@ -183,6 +209,9 @@ async function requestError(response: Response, fallback: string): Promise<ApiRe
       // Not JSON — the generic message is more useful to a user than raw HTML.
     }
   }
+
+  const refusal = licenceRefusalFromBody(response.status, body);
+  if (refusal) return refusal;
 
   let message = fallback;
   for (const candidate of [body?.error, body?.detail]) {

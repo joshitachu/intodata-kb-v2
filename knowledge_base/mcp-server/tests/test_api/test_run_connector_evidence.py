@@ -14,6 +14,7 @@ import json
 import pytest
 
 from mcp_server.config import config
+from mcp_server.licensing.usage import RunAdmission
 from mcp_server.services.project_registry import ProjectRegistry
 
 
@@ -37,6 +38,7 @@ async def _make_run(
             project_id,
             triggered_by="composite" if partition_name else "api",
             partition_name=partition_name,
+            admission=RunAdmission.CONTINUATION if partition_name else RunAdmission.NEW,
         )
         run_id = run.id
         await session.commit()

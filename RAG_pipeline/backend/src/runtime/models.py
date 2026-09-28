@@ -42,6 +42,23 @@ class RuntimeEngineStatus(str, Enum):
     STALE = "stale"
 
 
+class RuntimeDeploymentTarget(str, Enum):
+    """What a task was deployed onto.
+
+    The distinction is structural, not cosmetic: sibling `CLUSTER` rows for one
+    task are ONE logical deployment whose members happen to run on different
+    engines, while two `ENGINE` rows are two independent deployments that may
+    even carry different versions. Collapsing the two cases is how a route
+    deployed to a two-node cluster came to be reported as a single engine.
+    `UNKNOWN` is for rows mirrored before the provider recorded this, and must
+    never be silently read as `ENGINE`.
+    """
+
+    ENGINE = "engine"
+    CLUSTER = "cluster"
+    UNKNOWN = "unknown"
+
+
 class RuntimeExecutableKind(str, Enum):
     """Operational semantics of a TMC executable, independent of its API shape."""
 
@@ -450,6 +467,10 @@ class RuntimeEngine(BaseModel):
     raw_status: str | None = None
     availability: str | None = None
     version: str | None = None
+    # Cluster membership, when the provider reports it. `None` is "not
+    # recorded", never "standalone".
+    cluster_id: str | None = None
+    cluster_name: str | None = None
     environment_id: str | None = None
     environment_name: str | None = None
     workspace_id: str | None = None
@@ -556,6 +577,32 @@ class RuntimeJobRun(RuntimeOutcomeProvenance):
     one_minute_rate: float | None = None
     five_minute_rate: float | None = None
     fifteen_minute_rate: float | None = None
+    deployment_target: RuntimeDeploymentTarget | None = None
+    artifact_version: str | None = None
+
+
+class RuntimeDeploymentMember(BaseModel):
+    """One engine's share of a clustered deployment.
+
+    Telemetry is per member and is NOT interchangeable between them: on a live
+    two-engine cluster one member reported 7,210 completed exchanges while the
+    other reported nothing at all, because that engine ships no logs. A member
+    with `reported_telemetry=False` is unmeasured, which is a different claim
+    from measured-as-zero and has to stay distinguishable downstream.
+    """
+
+    deployment_id: str | None = None
+    engine_id: str | None = None
+    engine_name: str | None = None
+    state: RuntimeExecutionState | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    artifact_version: str | None = None
+    completed_exchanges: int | None = None
+    failed_exchanges: int | None = None
+    total_exchanges: int | None = None
+    service_call_count: int | None = None
+    reported_telemetry: bool = False
 
 
 class RuntimeDeployment(BaseModel):
@@ -585,6 +632,20 @@ class RuntimeDeployment(BaseModel):
     one_minute_rate: float | None = None
     five_minute_rate: float | None = None
     fifteen_minute_rate: float | None = None
+    # A clustered route is ONE row here, with its engines under `members`.
+    # `engine_name` then names the cluster, because that is the thing the task
+    # was deployed to; the individual engines are a property of it, not a
+    # choice between them.
+    deployment_target: RuntimeDeploymentTarget = RuntimeDeploymentTarget.UNKNOWN
+    cluster_id: str | None = None
+    artifact_version: str | None = None
+    members: list[RuntimeDeploymentMember] = Field(default_factory=list)
+    # Coverage, stated rather than implied. An aggregate summed over 1 of 2
+    # members is a floor, not a total, and a consumer cannot tell that from the
+    # number alone.
+    engines_total: int = 0
+    engines_reporting: int = 0
+    silent_engines: list[str] = Field(default_factory=list)
 
 
 class RuntimeJobHealth(BaseModel):

@@ -22,6 +22,7 @@ from src.harness.connectors.models import (
     ConnectorQuery,
 )
 from src.harness.connectors.repository import ConnectorRepository
+from src.harness.connectors.remote_mcp import remote_mcp_config
 from src.harness.connectors.service import (
     ConnectorPolicyError,
     ConnectorService,
@@ -118,6 +119,44 @@ async def test_invalid_config_and_binding_are_rejected(service):
 
 
 @pytest.mark.asyncio
+async def test_remote_mcp_actions_cannot_be_enabled_as_read_only(service):
+    source = {
+        "id": "tool-source",
+        "display_label": "Create ticket",
+        "field_profile": {
+            "remote_description": "Creates a ticket",
+            "input_schema": {"type": "object", "properties": {}},
+            "annotations": {"readOnlyHint": False},
+        },
+        "discovery_digest": "sha256:action",
+    }
+    row = await service.create(
+        ConnectorInstanceCreate(
+            name="support",
+            provider_key="remote_mcp",
+            config=remote_mcp_config(
+                connector_id="upstream",
+                server_url="https://mcp.example.test/mcp",
+                sources=[source],
+            ),
+        )
+    )
+    capability = service.providers.capabilities_for_instance(
+        row.provider_key, row.config
+    )[0]
+
+    with pytest.raises(ConnectorPolicyError, match="approval runtime"):
+        await service.bind(
+            row.id,
+            CapabilityBindingCreate(
+                capability_id=capability.id,
+                project_ids=["alpha"],
+                risk_tier="read_only",
+            ),
+        )
+
+
+@pytest.mark.asyncio
 async def test_legacy_empty_scope_binding_is_not_discoverable_or_readable(service):
     row = await service.create(
         ConnectorInstanceCreate(name="legacy", provider_key="fixture_knowledge")
@@ -202,6 +241,7 @@ def test_connector_types_and_capabilities_are_loaded_from_validated_catalog_data
         "postgres_readonly",
         "openapi_readonly",
         "mcp_elastic",
+        "remote_mcp",
     }.issubset({definition.provider_key for definition in catalog})
     capability = registry.capability("http_elastic", "connector.http_elastic.search")
     assert capability.action == "read_connector_evidence"

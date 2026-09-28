@@ -59,6 +59,26 @@ class ConnectorProviderRegistry:
                 return capability
         raise KeyError(f"Unknown connector capability: {capability_id}")
 
+    def capabilities_for_instance(
+        self, provider_key: str, config: dict
+    ) -> tuple[ConnectorCapabilityDefinition, ...]:
+        """Return the attested capability snapshot for one connector instance."""
+
+        definition = self.definition(provider_key)
+        dynamic = getattr(self.get(provider_key), "capabilities_for_instance", None)
+        if callable(dynamic):
+            values = dynamic(config)
+            return tuple(ConnectorCapabilityDefinition.model_validate(value) for value in values)
+        return definition.capabilities
+
+    def capability_for_instance(
+        self, provider_key: str, capability_id: str, config: dict
+    ) -> ConnectorCapabilityDefinition:
+        for capability in self.capabilities_for_instance(provider_key, config):
+            if capability.id == capability_id:
+                return capability
+        raise KeyError(f"Unknown connector capability: {capability_id}")
+
     def provider_keys(self) -> frozenset[str]:
         return frozenset(self._providers)
 

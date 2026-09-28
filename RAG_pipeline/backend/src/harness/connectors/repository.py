@@ -100,6 +100,19 @@ class ConnectorRepository:
         await self.db.refresh(row)
         return row
 
+    async def replace_config(
+        self, row: HarnessConnectorInstanceRow, config: dict
+    ) -> HarnessConnectorInstanceRow:
+        """Persist a provider-validated discovery snapshot and require a new probe."""
+
+        row.config = config
+        row.health_status = "unknown"
+        row.health_summary = None
+        row.health_checked_at = None
+        await self.db.flush()
+        await self.db.refresh(row)
+        return row
+
     async def delete_instance(self, row: HarnessConnectorInstanceRow) -> None:
         await self.db.delete(row)
         await self.db.flush()
@@ -145,6 +158,8 @@ class ConnectorRepository:
         changes = data.model_dump(exclude_unset=True)
         if "project_ids" in changes:
             row.project_ids = changes["project_ids"]
+        if "risk_tier" in changes:
+            row.risk_tier = changes["risk_tier"]
         if "enabled" in changes:
             row.enabled = changes["enabled"]
         await self.db.flush()
@@ -156,6 +171,11 @@ class ConnectorRepository:
         row.health_summary = summary[:500]
         row.health_checked_at = datetime.datetime.now(datetime.UTC)
         await self.db.flush()
+        # updated_at is maintained by the database's on-update expression. A
+        # flush can expire that server-generated attribute; refresh explicitly
+        # so async callers can safely serialize the row without triggering
+        # implicit (and unsupported) lazy IO outside SQLAlchemy's greenlet.
+        await self.db.refresh(row)
 
     async def eligible_bindings(
         self, project_id: str | None, domain: str | None = None

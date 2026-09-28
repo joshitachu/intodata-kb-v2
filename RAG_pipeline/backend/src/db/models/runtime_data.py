@@ -459,6 +459,10 @@ class RuntimeEngineRow(Base):
     raw_status: Mapped[str | None] = mapped_column(String(120), nullable=True)
     availability: Mapped[str | None] = mapped_column(String(120), nullable=True)
     version: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # Cluster membership. NULL means "not recorded", which is NOT the same as
+    # "standalone engine" -- rows mirrored before migration 107 cannot know.
+    cluster_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    cluster_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     environment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     environment_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     workspace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -643,6 +647,14 @@ class RuntimeJobRunRow(Base):
     misfire_reason: Mapped[str | None] = mapped_column(String(_MISFIRE_REASON_LEN), nullable=True)
     execution_type: Mapped[str | None] = mapped_column(String(_EXECUTION_TYPE_LEN), nullable=True)
     executable_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="job")
+    # Which runtime the task was deployed to: a single Remote Engine, or a
+    # Remote Engine Cluster (in which case sibling rows are ONE logical
+    # deployment). Verbatim provider vocabulary, lower-cased; NULL = unrecorded.
+    deployment_target: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The task version this deployment published. Two versions of one route
+    # can be deployed at once, so without it a superseded deployment is
+    # indistinguishable from the current one.
+    artifact_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
     environment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     environment_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     workspace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)

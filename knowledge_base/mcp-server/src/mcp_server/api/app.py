@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
 from sqlalchemy import inspect, update
@@ -32,6 +32,8 @@ from mcp_server.services.atomic_swap import (
     gc_abandoned_staging,
     recover_stale_backups,
 )
+from mcp_server.licensing.core import LicenceRefused
+from mcp_server.licensing.runtime import log_startup_state
 from mcp_server.services.generation_run_state import lock_path, read_json_file
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.git_poller import git_polling_loop
@@ -264,6 +266,9 @@ async def lifespan(app: FastAPI):
     """Startup / shutdown."""
     logging.basicConfig(level=getattr(logging, config.log_level))
     logger.info("Starting intodoc MCP Server API")
+    # One line naming the licence state, so a lockout is diagnosable from the
+    # container log without making a request.
+    log_startup_state()
     # Auto-create tables on first run, skip if they already exist
     async with engine.begin() as conn:
         existing = set(
@@ -392,6 +397,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+@app.exception_handler(LicenceRefused)
+async def _licence_refused_handler(_request: Request, exc: LicenceRefused) -> JSONResponse:
+    """Run-creation refusals (scan/generate chokepoint) become HTTP 402.
+
+    Same body as ``HTTPException(402, detail=...)``, which the route gates and
+    the RAG backend use, so every client parses one shape. Never 401: only a
+    real 401 may log a user out.
+    """
+    return JSONResponse(status_code=402, content={"detail": exc.refusal.to_detail()})
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response: Response = await call_next(request)
@@ -424,7 +441,7 @@ app.add_middleware(
 
 # Import and register routes
 from mcp_server.api.permissions import require_superadmin as require_superadmin_dep  # noqa: E402
-from mcp_server.api.routes import azure_devops, connectors, discovery, estimate as estimate_routes, generate_runs, health, instance_settings, logs, ops_control, plugins, projects, repo_sources as repo_sources_routes, runtime_sources, webhook  # noqa: E402
+from mcp_server.api.routes import azure_devops, connectors, discovery, estimate as estimate_routes, generate_runs, health, instance_settings, licence as licence_routes, logs, ops_control, plugins, projects, repo_sources as repo_sources_routes, runtime_sources, webhook  # noqa: E402
 
 @app.get("/internal/authz/superadmin", include_in_schema=False)
 async def _authz_superadmin(request: Request, _auth: dict = Depends(require_auth)) -> Response:
@@ -501,6 +518,12 @@ app.include_router(
 )
 app.include_router(
     estimate_routes.router,
+    prefix="/mcp",
+    dependencies=[Depends(require_auth)],
+)
+# Any authenticated user; must stay readable on an expired instance.
+app.include_router(
+    licence_routes.router,
     prefix="/mcp",
     dependencies=[Depends(require_auth)],
 )

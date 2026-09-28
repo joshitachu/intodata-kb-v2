@@ -35,6 +35,7 @@ from mcp_server.schemas import (
     ConnectorResponse,
     ConnectorRotateCredentialRequest,
     ConnectorSourceListResponse,
+    ConnectorSourceReviewRequest,
     ConnectorSourceResponse,
     ConnectorTestResponse,
     ConnectorUpdateRequest,
@@ -45,6 +46,8 @@ from mcp_server.schemas import (
     ProjectConnectorBindingListResponse,
     ProjectConnectorBindingRequest,
     ProjectConnectorBindingResponse,
+    RemoteMcpToolCallRequest,
+    RemoteMcpToolCallResponse,
 )
 
 
@@ -441,6 +444,36 @@ async def discover_connector(
         _raise_connector_error(exc)
 
 
+@router.patch(
+    "/connectors/{connector_id}/sources/{source_id}",
+    response_model=ConnectorSourceResponse,
+)
+async def review_connector_source(
+    connector_id: str,
+    source_id: str,
+    payload: ConnectorSourceReviewRequest,
+    request: Request,
+):
+    """Approve or disable one discovered remote MCP tool snapshot."""
+
+    await require_connector_management(request)
+    user_id, username = _actor(request)
+    try:
+        async with async_session_factory() as session:
+            row = await ConnectorService(session).review_remote_tool(
+                connector_id,
+                source_id,
+                enabled=payload.enabled,
+                approved_purpose=payload.approved_purpose,
+                user_id=user_id,
+                username=username,
+            )
+            await session.commit()
+            return _source_response(row)
+    except ConnectorError as exc:
+        _raise_connector_error(exc)
+
+
 @router.get("/connectors/{connector_id}/kibana/spaces", response_model=KibanaSpaceListResponse)
 async def list_kibana_spaces(connector_id: str, request: Request):
     await require_connector_management(request)
@@ -551,6 +584,37 @@ async def project_available_connectors(project_id: str, request: Request):
                 )
             )
         return {"connectors": available}
+
+
+@router.post(
+    "/projects/{project_id}/connectors/{connector_id}/tools/{source_id}/call",
+    response_model=RemoteMcpToolCallResponse,
+)
+async def call_bound_remote_mcp_tool(
+    project_id: str,
+    connector_id: str,
+    source_id: str,
+    payload: RemoteMcpToolCallRequest,
+    request: Request,
+):
+    """Call one reviewed read-only tool through its exact project grant."""
+
+    await require_project_access(request, project_id)
+    user_id, username = _actor(request)
+    try:
+        async with async_session_factory() as session:
+            result = await ConnectorService(session).call_remote_tool(
+                project_id=project_id,
+                connector_id=connector_id,
+                source_id=source_id,
+                arguments=payload.arguments,
+                user_id=user_id,
+                username=username,
+            )
+            await session.commit()
+            return RemoteMcpToolCallResponse.model_validate(result)
+    except ConnectorError as exc:
+        _raise_connector_error(exc)
 
 
 async def _has_labs_source_grant(

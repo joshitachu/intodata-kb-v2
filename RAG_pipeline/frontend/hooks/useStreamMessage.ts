@@ -10,6 +10,11 @@ import {
   PublicAgentEventSchema,
 } from "@/types";
 import { parseAgentProgress, type StreamProgress } from "@/lib/agentProgress";
+import {
+  licenceRefusalFromBody,
+  notifyLicenceRefused,
+  type LicenceRefusalDetail,
+} from "@/lib/licence";
 
 /**
  * Ceiling on retained `agentEvents`. Tool/plan/run events number in the tens
@@ -141,6 +146,16 @@ export interface StreamState {
    * an empty string.
    */
   reasoning?: string;
+  /**
+   * Set when the turn was refused by the licence (HTTP 402) before the stream
+   * opened. `error` carries the same sentence so every host that already
+   * reacts to a failed turn (clearing the optimistic message, re-reading the
+   * thread) keeps doing so; hosts that know this field render it as a notice
+   * instead of a broken turn with a retry, because retrying cannot succeed.
+   *
+   * Optional like the other additive fields on this state.
+   */
+  licenceRefusal?: LicenceRefusalDetail | null;
 }
 
 const INITIAL_STATE: StreamState = {
@@ -157,6 +172,7 @@ const INITIAL_STATE: StreamState = {
   agentEvents: [],
   deltaSource: null,
   reasoning: "",
+  licenceRefusal: null,
 };
 
 /**
@@ -249,6 +265,7 @@ export function useStreamMessage(
         progressDetail: sameTurn ? prev.progressDetail : null,
         deltaSource: sameTurn ? prev.deltaSource : null,
         reasoning: sameTurn ? prev.reasoning : "",
+        licenceRefusal: null,
         lastSequence: lastSequenceRef.current,
         // A resumed turn keeps the events already delivered (the `seenEventIds`
         // set is preserved too, so the replay cannot double-append them).
@@ -273,16 +290,25 @@ export function useStreamMessage(
 
         if (!res.ok) {
           const text = await res.text();
+          let body: unknown = null;
           let message = "Failed to send message";
           try {
-            message = JSON.parse(text).error || message;
+            body = JSON.parse(text);
+            const candidate = (body as { error?: unknown } | null)?.error;
+            if (typeof candidate === "string" && candidate.trim()) message = candidate;
           } catch {
             // ignore parse error
           }
+          // A licence refusal is a verdict about the instance, not a failed
+          // turn and never a logout: surface its sentence and tell the licence
+          // banner to re-read the status.
+          const refusal = licenceRefusalFromBody(res.status, body);
+          if (refusal) notifyLicenceRefused();
           setStreamState((prev) => ({
             ...prev,
             isStreaming: false,
-            error: message,
+            error: refusal ? refusal.message : message,
+            licenceRefusal: refusal ? refusal.detail : null,
           }));
           return;
         }

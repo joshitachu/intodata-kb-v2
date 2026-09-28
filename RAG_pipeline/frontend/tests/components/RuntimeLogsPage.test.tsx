@@ -151,6 +151,90 @@ function setDefaults() {
 describe("RuntimeLogsPage", () => {
   beforeEach(() => { vi.clearAllMocks(); setDefaults(); });
 
+  it("names the cluster and states its telemetry coverage", () => {
+    // Verified on a live two-engine Talend cluster: the member that reports no
+    // logs started 36 seconds after the one holding the counters, so a panel
+    // that picks one engine picked the silent one and published "Not supplied"
+    // over 7,210 completed and 167 failed exchanges.
+    mocks.useRuntimeDeployments.mockReturnValue(queryState({
+      deployments: [{
+        project_id: "pluripharm",
+        source_key: "tmc",
+        deployment_id: "re01-v2",
+        executable_id: "route-cluster",
+        executable_name: "sales_orders_route",
+        executable_kind: "route",
+        state: "running",
+        environment_name: "PROD",
+        engine_name: "RE_Cluster_01",
+        started_at: "2026-09-18T19:12:29Z",
+        deployment_target: "cluster",
+        cluster_id: "cluster-prod",
+        artifact_version: "6.6",
+        completed_exchanges: 7210,
+        failed_exchanges: 167,
+        total_exchanges: 7377,
+        engines_total: 2,
+        engines_reporting: 1,
+        silent_engines: ["PRD_RE_02"],
+        members: [
+          { deployment_id: "re01-v2", engine_name: "PRD_RE_01", reported_telemetry: true },
+          { deployment_id: "re02-v2", engine_name: "PRD_RE_02", reported_telemetry: false },
+        ],
+      }],
+      total: 1,
+    }));
+    renderPage(RuntimeRoutesPage);
+
+    // The row is about the cluster; the engines are a property of it.
+    expect(screen.getByText("PROD / RE_Cluster_01 (PRD_RE_01, PRD_RE_02)")).toBeTruthy();
+    // The counters are shown, AND so is the fact that they cover one engine.
+    expect(
+      screen.getByText(
+        /7,210 completed · 167 failed · 7,377 total · measured on 1 of 2 engines \(no telemetry from PRD_RE_02\)/,
+      ),
+    ).toBeTruthy();
+    // The deployed version is visible, so a superseded one cannot pass as current.
+    expect(screen.getByText(/v6\.6/)).toBeTruthy();
+  });
+
+  it("says so when only one node of a cluster was observed", () => {
+    // The commonest shape on the live estate: 22 of 60 rows are a cluster
+    // deployment with a single observed member that supplies no telemetry. A
+    // bare "Not supplied" there reads as no traffic, which is the misreading
+    // this column exists to prevent.
+    mocks.useRuntimeDeployments.mockReturnValue(queryState({
+      deployments: [{
+        project_id: "pluripharm",
+        source_key: "tmc",
+        deployment_id: "re02-only",
+        executable_id: "route-solo",
+        executable_name: "collector_bvg_sales_orders_c001",
+        executable_kind: "route",
+        state: "running",
+        environment_name: "PROD",
+        engine_name: "RE_Cluster_01",
+        started_at: "2026-09-24T10:00:00Z",
+        deployment_target: "cluster",
+        artifact_version: "2.2",
+        engines_total: 1,
+        engines_reporting: 0,
+        silent_engines: ["PRD_RE_02"],
+        members: [
+          { deployment_id: "re02-only", engine_name: "PRD_RE_02", reported_telemetry: false },
+        ],
+      }],
+      total: 1,
+    }));
+    renderPage(RuntimeRoutesPage);
+
+    expect(
+      screen.getByText(
+        /Not supplied · only PRD_RE_02 of this cluster observed, and it supplies no telemetry/,
+      ),
+    ).toBeTruthy();
+  });
+
   it("renders Routes and Data services as deployment views", () => {
     mocks.useRuntimeDeployments.mockReturnValue(queryState({
       deployments: [{

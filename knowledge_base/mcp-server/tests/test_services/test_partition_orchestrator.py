@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from mcp_server.config import config
+from mcp_server.licensing.usage import RunAdmission
 from mcp_server.providers.custom import partition_planner as pp
 from mcp_server.providers.custom.models import FactsManifest, UnitFact
 from mcp_server.services import partition_orchestrator as po
@@ -125,14 +126,20 @@ class _FakeRegistry:
     """Records registry interactions; shared across sessions via `calls`."""
 
     calls: list[tuple] = []
+    admissions: list = []
+    refuse_with: Exception | None = None
     _next_run_id = 100
 
     def __init__(self, db):
         pass
 
     async def create_generate_run(
-        self, project_id, triggered_by="api", model_name=None, partition_name=None
+        self, project_id, triggered_by="api", model_name=None, partition_name=None,
+        *, admission=None,
     ):
+        _FakeRegistry.admissions.append(admission)
+        if _FakeRegistry.refuse_with is not None:
+            raise _FakeRegistry.refuse_with
         _FakeRegistry._next_run_id += 1
         run_id = _FakeRegistry._next_run_id
         label = f"{triggered_by}:{partition_name}" if partition_name else triggered_by
@@ -233,6 +240,8 @@ class _FakeCoordinator:
 @pytest.fixture
 def orchestration_env(monkeypatch, tmp_path):
     _FakeRegistry.calls = []
+    _FakeRegistry.admissions = []
+    _FakeRegistry.refuse_with = None
     _FakeBridge.pushed = []
     _FakeBridge.internal_deleted = []
     _FakeBridge.deleted_docs = []
@@ -301,6 +310,36 @@ async def test_composite_orchestration_runs_each_partition_and_publishes(orchest
     assert orch[3]["cost_usd"] == 3.0
 
     assert all(o.success for o in outcomes)
+    # Children are continuations of the admitted parent run: licence-checked at
+    # creation, never quota-counted (licensing/usage.py).
+    assert _FakeRegistry.admissions == [RunAdmission.CONTINUATION] * 2
+
+
+async def test_licence_refusal_skips_every_partition_and_logs_once(orchestration_env, caplog):
+    """A refused child is never generated without a run record, and the refusal
+    (licence-wide) stops the remaining partitions with one warning line."""
+    from mcp_server.licensing.core import Capability, LicenceRefused, Refusal, RefusalCode
+
+    tmp_path = orchestration_env
+    facts = _composite_facts("proj")
+    plan = pp.plan_partitions(facts)
+    coordinator = _FakeCoordinator(tmp_path / "output" / "proj")
+    log_mgr = _FakeLogMgr()
+    _FakeRegistry.refuse_with = LicenceRefused(
+        Refusal(RefusalCode.LICENCE_EXPIRED, "expired", Capability.GENERATION)
+    )
+
+    with caplog.at_level("WARNING", logger="mcp_server.licensing.usage"):
+        outcomes = await po.run_partitioned_generation(
+            "proj", 1, log_mgr, coordinator, plan=plan, facts=facts, resume=True,
+        )
+
+    assert coordinator.calls == []  # no tokens spent
+    assert len(_FakeRegistry.admissions) == 1  # later partitions not even attempted
+    assert [o.error for o in outcomes] == ["licence_refused: licence_expired"] * 2
+    assert len([r for r in caplog.records if "licence refused" in r.getMessage()]) == 1
+    orch = next(c for c in _FakeRegistry.calls if c[0] == "complete_run" and c[1] == 1)
+    assert orch[2] == "failed"
 
 
 async def test_failing_client_readiness_verdict_holds_one_subproject_only(orchestration_env):

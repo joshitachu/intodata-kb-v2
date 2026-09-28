@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { useScan, usePushToRag, useResetStatus, useDeleteProject } from "../hooks/useProjects";
 import GenerateDialog from "./GenerateDialog";
+import { useLicence } from "../hooks/useLicence";
+import { capabilityBlockReason } from "../lib/licence";
+import { parseApiError } from "../lib/errors";
 import type { Project } from "../types";
 
 interface Props {
@@ -20,14 +23,20 @@ export default function ActionButtons({ project, status, onAction, onManageRunti
   const [generateOpen, setGenerateOpen] = useState(false);
 
   const busy = status === "scanning" || status === "generating";
+  const { status: licence } = useLicence();
+  const scanBlockReason = capabilityBlockReason(licence, "scan");
+  const generateBlockReason = capabilityBlockReason(licence, "generation");
+  // A scan refused by the server (a 402 that raced the status poll) used to
+  // fail silently here; its sentence is shown instead.
+  const scanError = scan.isError ? parseApiError(scan.error) : null;
 
   return (
     <div className="card-actions flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
       {/* Scan */}
       <button
         className="btn-icon-action"
-        disabled={busy || scan.isPending}
-        title="Re-scan"
+        disabled={busy || scan.isPending || scanBlockReason !== null}
+        title={scanBlockReason ?? "Re-scan"}
         onClick={() => { onAction(projectId); scan.mutate({ projectId, force: true }); }}
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -38,8 +47,8 @@ export default function ActionButtons({ project, status, onAction, onManageRunti
       {/* Generate */}
       <button
         className="btn-icon-action"
-        disabled={busy}
-        title="Generate Docs (choose the engine, pack, and models)"
+        disabled={busy || generateBlockReason !== null}
+        title={generateBlockReason ?? "Generate Docs (choose the engine, pack, and models)"}
         onClick={(e) => { e.stopPropagation(); onAction(projectId); setGenerateOpen(true); }}
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -92,6 +101,12 @@ export default function ActionButtons({ project, status, onAction, onManageRunti
             <line x1="6" y1="6" x2="18" y2="18" />
           </svg>
         </button>
+      )}
+
+      {scanError && (
+        <span role="alert" className="text-xs text-red-400 max-w-[16rem] truncate" title={scanError}>
+          {scanError}
+        </span>
       )}
 
       <GenerateDialog

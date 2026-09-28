@@ -12,6 +12,8 @@ from pathlib import Path
 
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
+from mcp_server.licensing.core import LicenceRefused
+from mcp_server.licensing.usage import GATE_RETRY_TRIGGER_SUFFIX, RunAdmission, log_refusal
 from mcp_server.services.doc_version_history import record_push_outcome
 from mcp_server.services.git_credentials import provider_for_project
 from mcp_server.services.git_diff_patcher import _is_ignored_path
@@ -120,8 +122,16 @@ async def run_git_reingestion(
             logger.warning("Git re-ingestion ignored; project not found: %s", project_id)
             return False
 
+        try:
+            run = await registry.create_scan_run(project_id, triggered_by=triggered_by)
+        except LicenceRefused as exc:
+            # Nothing was written; the commit marker stays put, so the next
+            # push/poll retries once the licence is renewed. One line per
+            # attempt -- the poller only fires at its configured hours.
+            log_refusal("git re-ingestion scan", exc, project_id=project_id, trigger=triggered_by)
+            _mark(skipped=False, held_reason_code=exc.refusal.code.value)
+            return False
         await registry.update_status(project_id, "scanning")
-        run = await registry.create_scan_run(project_id, triggered_by=triggered_by)
         await db.commit()
 
         local_path = project.local_path
@@ -384,11 +394,23 @@ async def run_git_reingestion(
 
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
+        try:
+            gen_run = await registry.create_generate_run(
+                project_id, triggered_by=triggered_by,
+                generation_profile=generation_profile,
+            )
+        except LicenceRefused as exc:
+            # The scan above already completed and left the project "ready";
+            # the commit marker is not advanced, so the update is retried later.
+            log_refusal("git re-ingestion generation", exc, project_id=project_id, trigger=triggered_by)
+            await log_mgr.emit(
+                project_id,
+                f"Automatic regeneration not started: {exc.refusal.message}",
+                level="warning",
+            )
+            _mark(skipped=False, held_reason_code=exc.refusal.code.value)
+            return False
         await registry.update_status(project_id, "generating")
-        gen_run = await registry.create_generate_run(
-            project_id, triggered_by=triggered_by,
-            generation_profile=generation_profile,
-        )
         await db.commit()
         gen_run_id = gen_run.id
 
@@ -428,6 +450,7 @@ async def run_git_reingestion(
     )
 
     gate_held = bool(last_outcome and not last_outcome[0].passed)
+    retry_run_id: int | None = None
     if gate_held:
         # Retry the failing analysis + docs exactly ONCE before holding the
         # commit. The resume re-run regenerates the absent/empty group analyses
@@ -437,16 +460,25 @@ async def run_git_reingestion(
             "Correctness gate failed; retrying generation once before holding the commit",
             level="warning",
         )
-        last_outcome.clear()
         async with async_session_factory() as db:
             registry = ProjectRegistry(db)
-            await registry.update_status(project_id, "generating")
-            retry_run = await registry.create_generate_run(
-                project_id, triggered_by=f"{triggered_by}:gate_retry",
-                generation_profile=generation_profile,
-            )
-            await db.commit()
-            retry_run_id = retry_run.id
+            try:
+                # The retry is the same update as the run it retries: a
+                # continuation (licence-checked, not counted against quota).
+                retry_run = await registry.create_generate_run(
+                    project_id, triggered_by=f"{triggered_by}{GATE_RETRY_TRIGGER_SUFFIX}",
+                    generation_profile=generation_profile,
+                    admission=RunAdmission.CONTINUATION,
+                )
+            except LicenceRefused as exc:
+                # Fall through to the hold below with the first outcome intact.
+                log_refusal("git re-ingestion gate retry", exc, project_id=project_id, trigger=triggered_by)
+            else:
+                await registry.update_status(project_id, "generating")
+                await db.commit()
+                retry_run_id = retry_run.id
+    if gate_held and retry_run_id is not None:
+        last_outcome.clear()
         _currently_generating.add(project_id)
         await _run_generate_background(
             project_id,

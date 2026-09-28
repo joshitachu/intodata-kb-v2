@@ -4,7 +4,13 @@ import httpx
 import pytest
 
 from mcp_server.connectors.errors import ConnectorError
-from mcp_server.connectors.transport import ConnectorTransport, OutboundPolicy, normalize_endpoint, validate_endpoint
+from mcp_server.connectors.transport import (
+    ConnectorTransport,
+    OutboundPolicy,
+    PinnedConnectorTransport,
+    normalize_endpoint,
+    validate_endpoint,
+)
 
 
 def test_endpoint_rejects_embedded_credentials_and_non_https():
@@ -67,3 +73,26 @@ async def test_transport_sanitizes_streamed_authentication_failure(monkeypatch):
     assert caught.value.status_code == 401
     assert "must not leak" not in str(caught.value)
     assert response.is_closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "url"),
+    [
+        ("PUT", "https://mcp.example.test/mcp"),
+        ("POST", "https://attacker.example.test/mcp"),
+        ("POST", "http://mcp.example.test/mcp"),
+    ],
+)
+async def test_streaming_mcp_transport_cannot_escape_approved_origin(method, url):
+    transport = PinnedConnectorTransport(
+        endpoint="https://mcp.example.test/mcp",
+        hostname="mcp.example.test",
+        address="203.0.113.10",
+        policy=OutboundPolicy(require_https=True),
+    )
+    try:
+        with pytest.raises(ConnectorError, match="approved endpoint"):
+            await transport.handle_async_request(httpx.Request(method, url))
+    finally:
+        await transport.aclose()

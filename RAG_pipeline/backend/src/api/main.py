@@ -3,6 +3,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -40,6 +41,9 @@ from src.api.routes import harness as harness_routes
 from src.api.routes import agent_traces as agent_trace_routes
 from src.api.routes import guidance as guidance_routes
 from src.api.routes import connectors as connector_routes
+from src.api.routes import licence as licence_routes
+from src.licensing.core import LicenceRefused
+from src.licensing.runtime import log_startup_state
 
 # Experimental labs lane (OpenCode chat brain). Guarded so a failure inside the
 # spike can never take the production app down with it.
@@ -61,6 +65,9 @@ async def lifespan(app: FastAPI):
     """Startup / shutdown events."""
     configure_logging(settings.log_level)
     logger.info("Starting IntoData KB API")
+    # One line with the licence state so a lockout (wrong slug, missing mount,
+    # expired file) is diagnosable from the boot log without a request.
+    log_startup_state()
     runtime_scheduler = None
     documentation_reconciliation_scheduler = None
 
@@ -202,6 +209,15 @@ from src.api.routes.auth import limiter  # noqa: E402
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+
+# Licence refusals raised at a chokepoint (``EntitlementPolicy.require``) get the
+# same 402 body as the ``require_capability`` route gate, so both frontends parse
+# one shape. Never 401: only a real 401 may log a user out.
+@app.exception_handler(LicenceRefused)
+async def _licence_refused_handler(_request: Request, exc: LicenceRefused) -> JSONResponse:
+    return JSONResponse(status_code=402, content={"detail": exc.refusal.to_detail()})
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response: Response = await call_next(request)
@@ -301,6 +317,7 @@ app.include_router(harness_routes.router, prefix="/api/v1")
 app.include_router(agent_trace_routes.router, prefix="/api/v1")
 app.include_router(guidance_routes.router, prefix="/api/v1")
 app.include_router(connector_routes.router, prefix="/api/v1")
+app.include_router(licence_routes.router, prefix="/api/v1")
 if labs_routes is not None and labs_mcp is not None:
     app.include_router(labs_routes.router, prefix="/api/v1")
     app.include_router(labs_mcp.router, prefix="/api/v1")

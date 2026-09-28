@@ -1012,6 +1012,53 @@ function JobRunsPanel({ scope, since, onDetail }: Pick<ViewProps, "scope" | "sin
   );
 }
 
+/** What the task was deployed onto, named rather than reduced to one member.
+ *
+ * A clustered route is one deployment whose engines are a property of it. Naming
+ * a single member there is what made a two-engine cluster read as one engine,
+ * and it was the SILENT engine that won, because the rows were picked by
+ * whichever started last. */
+function deploymentEngine(deployment: RuntimeDeployment): string {
+  const environment = deployment.environment_name ?? "-";
+  if (deployment.deployment_target !== "cluster" || deployment.members.length === 0) {
+    return `${environment} / ${deployment.engine_name ?? "-"}`;
+  }
+  const engines = deployment.members
+    .map((member) => member.engine_name ?? member.engine_id ?? "?")
+    .join(", ");
+  return `${environment} / ${deployment.engine_name ?? "cluster"} (${engines})`;
+}
+
+/** Telemetry coverage, stated instead of implied.
+ *
+ * An aggregate summed over one of two cluster members is a floor, not a total,
+ * and nothing in the number itself says so. "Not supplied" for the whole row
+ * when one engine simply never reports is the same failure in the other
+ * direction: it reads as no traffic rather than as not measured. */
+function deploymentCoverage(deployment: RuntimeDeployment): string {
+  if (deployment.deployment_target !== "cluster" || deployment.engines_total === 0) {
+    return "";
+  }
+  const silent = deployment.silent_engines.join(", ");
+  // Seeing ONE node of something deployed to a cluster is itself the finding,
+  // and it is the commonest shape on a live estate: 22 of 60 rows are a single
+  // observed member that reported nothing. Suppressing the note below two
+  // engines left exactly those rows as a bare "Not supplied", which reads as no
+  // traffic -- the misreading this whole column exists to prevent.
+  if (deployment.engines_total === 1) {
+    const only = deployment.members[0]?.engine_name ?? deployment.members[0]?.engine_id ?? "one engine";
+    return deployment.engines_reporting === 0
+      ? ` · only ${only} of this cluster observed, and it supplies no telemetry`
+      : ` · only ${only} of this cluster observed`;
+  }
+  if (deployment.engines_reporting === deployment.engines_total) {
+    return "";
+  }
+  return ` · measured on ${deployment.engines_reporting} of ${deployment.engines_total} engines${
+    silent ? ` (no telemetry from ${silent})` : ""
+  }`;
+}
+
 /** Legible label for every state value, whether the deployment is still open or not. */
 const DEPLOYMENT_OUTCOME_LABELS: Partial<Record<RuntimeExecutionState, string>> = {
   failed: "failed",
@@ -1076,19 +1123,22 @@ function Deployments({
                 "Metrics",
               ]}
               rows={rows}
-              rowKey={(deployment) => deployment.deployment_id ?? `${deployment.source_key}:${deployment.executable_id}`}
+              rowKey={(deployment) =>
+                deployment.deployment_id ??
+                `${deployment.source_key}:${deployment.executable_id}:${deployment.engine_name ?? ""}`
+              }
               onClick={(deployment) => onDetail({ kind: "deployment", item: deployment })}
               cells={(deployment) => [
                 deployment.executable_name,
-                `${deployment.environment_name ?? "-"} / ${deployment.engine_name ?? "-"}`,
-                `${deploymentState(deployment)}${deployment.started_at ? ` · ${deployment.ended_at ? formatDuration(deployment.duration_ms) : `since ${formatAge(Date.now() - new Date(deployment.started_at).getTime())}`}` : ""}`,
+                deploymentEngine(deployment),
+                `${deploymentState(deployment)}${deployment.started_at ? ` · ${deployment.ended_at ? formatDuration(deployment.duration_ms) : `since ${formatAge(Date.now() - new Date(deployment.started_at).getTime())}`}` : ""}${deployment.artifact_version ? ` · v${deployment.artifact_version}` : ""}`,
                 kind === "route"
                   ? deployment.total_exchanges == null
-                    ? "Not supplied"
-                    : `${formatCompact(deployment.completed_exchanges ?? 0)} completed · ${formatCompact(deployment.failed_exchanges ?? 0)} failed · ${formatCompact(deployment.total_exchanges)} total`
+                    ? `Not supplied${deploymentCoverage(deployment)}`
+                    : `${formatCompact(deployment.completed_exchanges ?? 0)} completed · ${formatCompact(deployment.failed_exchanges ?? 0)} failed · ${formatCompact(deployment.total_exchanges)} total${deploymentCoverage(deployment)}`
                   : deployment.service_call_count == null
-                    ? "Not supplied"
-                    : `${formatCompact(deployment.service_call_count)} calls`,
+                    ? `Not supplied${deploymentCoverage(deployment)}`
+                    : `${formatCompact(deployment.service_call_count)} calls${deploymentCoverage(deployment)}`,
                 kind === "route"
                   ? deployment.mean_process_time_ms == null && deployment.last_process_time_ms == null
                     ? "Not supplied"

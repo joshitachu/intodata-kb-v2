@@ -62,3 +62,51 @@ async def test_binding_version_increments_and_snapshot_is_frozen(db_session):
     assert snapshot.snapshot["instance_safe_config"] == {"endpoint": "https://elastic.example"}
     assert snapshot.snapshot["credential_ciphertext"] == "enc:secret"
     assert snapshot.snapshot["source_profiles"][0]["locator_ciphertext"] == "enc:logs-*"
+
+
+@pytest.mark.asyncio
+async def test_remote_mcp_tool_drift_revokes_previous_review(db_session):
+    from mcp_server.connectors.domain import ConnectorSourceProfile
+
+    repository = ConnectorRepository(db_session, FakeSecrets())
+    instance = await repository.create_instance(
+        provider_id="remote_mcp",
+        display_name="Support MCP",
+        safe_config={"endpoint": "https://mcp.example.test/mcp"},
+        credential_type="none",
+        credential=None,
+        kibana_credential=None,
+        user_id=1,
+    )
+
+    def profile(digest: str) -> ConnectorSourceProfile:
+        return ConnectorSourceProfile(
+            id="remote-tool",
+            connector_instance_id=instance.id,
+            source_type="mcp_tool",
+            display_label="Search tickets",
+            locator="search_tickets",
+            fields={
+                "input_schema": {"type": "object", "properties": {}},
+                "schema_digest": digest,
+                "review_status": "pending",
+            },
+            enabled=False,
+            discovery_digest=digest,
+        )
+
+    row = (await repository.upsert_sources([profile("sha256:one")]))[0]
+    await repository.review_remote_tool(
+        row,
+        enabled=True,
+        approved_purpose="Search the approved ticket workspace",
+        user_id=1,
+    )
+    unchanged = (await repository.upsert_sources([profile("sha256:one")]))[0]
+    assert unchanged.enabled is True
+    assert unchanged.field_profile["review_status"] == "approved"
+
+    changed = (await repository.upsert_sources([profile("sha256:two")]))[0]
+    assert changed.enabled is False
+    assert changed.field_profile["review_status"] == "changed"
+    assert "approved_purpose" not in changed.field_profile

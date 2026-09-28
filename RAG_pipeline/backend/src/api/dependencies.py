@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated
+from typing import Annotated, Any, Callable
 
 from fastapi import Cookie, Depends, HTTPException, Request
 from jwt import InvalidTokenError as JWTError
@@ -13,6 +13,8 @@ from src.auth.security import decode_token
 from src.config import settings
 from src.db.session import get_db
 from src.db.models import User
+from src.licensing.core import Capability
+from src.licensing.runtime import get_policy
 from src.rbac.permissions import (
     RUNTIME_SOURCES_READ,
     RUNTIME_SOURCES_WRITE,
@@ -162,6 +164,51 @@ def require_permission(codename: str):
         return user
 
     return _check
+
+
+# --- Subscription licence ------------------------------------------------------
+#
+# Every route that starts an LLM call (spends tokens) declares one of these. It
+# is a dependency, not a check inside the handler, so it runs before a
+# StreamingResponse exists: a refusal is a plain 402, never a broken SSE turn.
+# 402 (not 401/403) because only a real 401 may log a user out.
+#
+# `tests/test_api/test_route_inventory.py` walks every mutating route and fails
+# unless it carries this dependency or sits on a reviewed allowlist; it finds the
+# gate through the `__licence_capability__` attribute set below.
+
+LICENCE_CAPABILITY_ATTR = "__licence_capability__"
+
+
+def require_capability(
+    capability: Capability,
+    *,
+    principal: Callable[..., Any] = get_current_user,
+) -> Callable[..., Any]:
+    """Dependency factory: refuse with 402 unless the licence grants ``capability``.
+
+    ``principal`` is resolved first, so an unauthenticated caller still gets the
+    principal's own 401/403 and learns nothing about the licence. The resolved
+    principal is returned, so a route can take it from this dependency. Machine
+    entries with their own credential (the labs MCP bridge) pass their
+    authenticator here instead of the cookie user.
+    """
+
+    async def _check_capability(subject: Any = Depends(principal)) -> Any:
+        refusal = get_policy().check(capability)
+        if refusal is not None:
+            raise HTTPException(status_code=402, detail=refusal.to_detail())
+        return subject
+
+    setattr(_check_capability, LICENCE_CAPABILITY_ATTR, capability)
+    _check_capability.__name__ = f"require_{capability.value}_capability"
+    return _check_capability
+
+
+#: For ``dependencies=[ChatEntitled]`` on a route that needs no user value.
+ChatEntitled = Depends(require_capability(Capability.CHAT))
+#: The authenticated user, admitted only while the licence includes chat.
+ChatEntitledUser = Annotated[User, ChatEntitled]
 
 
 ManagerUser = Annotated[User, Depends(require_permission("manage_users"))]

@@ -405,6 +405,7 @@ class TestRuntimeBatchMapping:
                 ],
                 "total": 1,
             },
+            "/processing/runtimes/remote-engine-clusters": {"items": [], "total": 0},
             "/processing/runtimes/remote-engines": {
                 "items": [
                     {
@@ -668,6 +669,7 @@ class TestRuntimeBatchMapping:
                     "environment": {"id": "env-prod", "name": "PROD"},
                 },
             ],
+            "/processing/runtimes/remote-engine-clusters": [],
             "/processing/runtimes/remote-engines": [
                 {"id": "eng-1", "name": "engine", "status": "RUNNING"}
             ],
@@ -825,6 +827,7 @@ class TestRuntimeBatchMapping:
                     "environment": {"id": "env-prod", "name": "PROD"},
                 }
             ],
+            "/processing/runtimes/remote-engine-clusters": [],
             "/processing/runtimes/remote-engines": [
                 {"id": "eng-1", "name": "PRD_RE_01", "status": "RUNNING"},
                 {"id": "eng-2", "name": "PRD_RE_02", "status": "RUNNING"},
@@ -1017,6 +1020,7 @@ class TestBareArrayResponses:
                     "environment": {"id": "env-prod", "name": "PROD"},
                 }
             ],
+            "/processing/runtimes/remote-engine-clusters": [],
             "/processing/runtimes/remote-engines": [
                 {
                     "id": "eng-1",

@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -509,6 +511,14 @@ class Settings(BaseSettings):
     def is_dev(self) -> bool:
         return self.app_env == "development"
 
+    # Subscription licence (src/licensing). ``enforce`` makes an expired or
+    # missing licence view-only: no chat/LLM turns. ``off`` is for local dev and
+    # is refused in production. The same file and slug are mounted into the
+    # mcp-server, which enforces generations and scans.
+    licence_enforcement: Literal["enforce", "off"] = "off"
+    licence_file: str = "/etc/intodata-kb/licence/licence.jwt"
+    licence_client_slug: str = ""
+
     def validate_production_secrets(self) -> None:
         """In production mode, ensure secrets are not left at default values."""
         if self.app_env != "production":
@@ -536,6 +546,14 @@ class Settings(BaseSettings):
         if "localhost" in self.public_app_url or "127.0.0.1" in self.public_app_url:
             raise ValueError(
                 "CRITICAL: PUBLIC_APP_URL must be a real HTTPS app URL in production."
+            )
+        if self.licence_enforcement != "enforce":
+            raise ValueError(
+                "CRITICAL: LICENCE_ENFORCEMENT must be 'enforce' in production."
+            )
+        if not self.licence_client_slug:
+            raise ValueError(
+                "CRITICAL: LICENCE_CLIENT_SLUG is empty. It must match the licence subject."
             )
 
 

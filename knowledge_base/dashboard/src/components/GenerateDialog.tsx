@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useAssignPluginPack, useGenerate, usePluginPacks } from "../hooks/useProjects";
+import { useLicence } from "../hooks/useLicence";
+import { capabilityBlockReason, generationUsage } from "../lib/licence";
 import { useModels } from "../hooks/useDiscovery";
 import { useModalDialog } from "../hooks/useModalDialog";
 import {
@@ -74,6 +76,9 @@ export default function GenerateDialog({
   const { data: modelsData } = useModels();
   const pluginPacksQuery = usePluginPacks();
   const assignPluginPack = useAssignPluginPack();
+  const { status: licence } = useLicence();
+  const licenceBlockReason = capabilityBlockReason(licence, "generation");
+  const generations = licence?.enforcement === "enforce" ? generationUsage(licence) : null;
 
   const [resume, setResume] = useState(true);
   // Gates the mirrored runtime lane only. Checked by default because it can
@@ -260,6 +265,8 @@ export default function GenerateDialog({
     );
   }
 
+  // `submitError.message` is the server's refusal sentence for a 402
+  // (`LicenceRefusal`), not "402: {json}".
   const submitError = generate.error as Error | null;
   const submitFailed = generate.isError;
   const submitPending = generate.isPending;
@@ -614,6 +621,18 @@ export default function GenerateDialog({
             Resume from staging checkpoint
           </label>
 
+          {generations && (
+            <p className="text-xs text-slate-400" data-testid="generation-usage">
+              Generations: {generations.used}/{generations.limit} this period
+            </p>
+          )}
+
+          {licenceBlockReason && (
+            <p className="text-sm text-amber-400" data-testid="generate-licence-reason">
+              {licenceBlockReason}
+            </p>
+          )}
+
           {submitFailed && (
             <p
               role="alert"
@@ -640,8 +659,10 @@ export default function GenerateDialog({
             disabled={
               submitPending ||
               assignPluginPack.isPending ||
+              licenceBlockReason !== null ||
               (usesOpenCode && !runAnalysisModel)
             }
+            title={licenceBlockReason ?? undefined}
           >
             {submitPending
               ? "Starting..."

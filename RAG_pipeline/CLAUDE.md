@@ -179,6 +179,39 @@ npm test                             # Frontend tests
 - Backend `/health` is part of EP-001 acceptance and should verify database, Qdrant, Ollama, and Hindsight state.
 - EP-001 remains open until the generic runbook is executed on a clean reference VPS.
 
+## Subscription Licence
+
+ADR: `knowledge_base/.agent/decisions/037-subscription-licence-is-a-signed-file.md`.
+Operator procedure: root `deploy/RUNBOOK.md` section 17.
+
+- **Where it lives**: `backend/src/licensing/`. `core.py` holds the verifier, `EntitlementPolicy`
+  and `FileLicenceSource`. `keys.py` holds the pinned public keys. `runtime.py` holds the process policy
+  and the startup log line `licence: enforcement=... state=...`. The licence file is
+  `LICENCE_FILE` (default `/etc/intodata-kb/licence/licence.jwt`, mounted read-only
+  from the host). It is re-read when its mtime changes.
+- **Enforcement**: every route that spends LLM tokens declares
+  `require_capability(Capability.CHAT)` (`ChatEntitled` / `ChatEntitledUser` in
+  `src/api/dependencies.py`). It is a dependency, so it refuses before an SSE stream
+  opens. `tests/test_api/test_route_inventory.py` fails when a mutating route has
+  no gate and is not on the reviewed allowlist. A new LLM route must add the gate.
+  Do not extend the allowlist to get past the test.
+- **402 contract**: a refusal is HTTP 402 with
+  `detail = {code, message, capability, ...}`. `code` is one of `licence_expired`,
+  `licence_not_yet_valid`, `licence_missing`, `licence_invalid`,
+  `feature_not_in_plan` or `quota_exhausted`. Never 401: the frontend classifies 402 as
+  `licence` and must not log the user out. `GET /api/v1/licence/status` is open
+  to any authenticated user.
+- **Mirror rule**: `src/licensing/core.py`, `src/licensing/keys.py` and
+  `tests/test_licensing/golden_vectors.json` are byte-identical to the mcp-server
+  copies (`knowledge_base/mcp-server/src/mcp_server/licensing/`,
+  `knowledge_base/mcp-server/tests/test_licensing/`). Edit both in the same change.
+  `tests/test_licensing/test_licence_mirror_parity.py` fails otherwise.
+  `runtime.py` is service-specific and not mirrored.
+- **Dev**: `LICENCE_ENFORCEMENT=off` (the Settings default for a bare `uvicorn` run; root `docker-compose.yml` defaults to `enforce`, so set `off` in `.env` with `APP_ENV=development`) disables every gate. To exercise
+  enforcement locally, set `LICENCE_ENFORCEMENT=enforce` and `LICENCE_CLIENT_SLUG=<slug>`,
+  and put a licence issued for that slug in `LICENCE_DIR` (compose default
+  `./deploy/licence`). With `APP_ENV=production`, startup refuses `off` or an empty slug.
+
 ## Environment
 ```bash
 # backend/.env

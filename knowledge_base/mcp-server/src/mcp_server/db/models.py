@@ -334,7 +334,7 @@ class ConnectorInstance(Base):
     ownership_scope: Mapped[str] = mapped_column(String(32), default="workspace", nullable=False)
     safe_config: Mapped[dict] = mapped_column(JSONB().with_variant(JSON(), "sqlite"), default=dict, nullable=False)
     credential_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    credential_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    credential_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     kibana_credential_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="not_connected", nullable=False)
@@ -360,7 +360,9 @@ class ConnectorSource(Base):
     locator_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
     field_profile: Mapped[dict] = mapped_column(JSONB().with_variant(JSON(), "sqlite"), default=dict, nullable=False)
     discovered_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    discovery_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Remote MCP discovery fingerprints include a `sha256:` prefix plus the
+    # 64-character hex digest, so this cannot be a 64-character column.
+    discovery_digest: Mapped[str | None] = mapped_column(String(128), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 

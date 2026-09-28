@@ -27,7 +27,11 @@ async def build_request_capability_registry(
     for binding in rows:
         instance = binding.connector_instance
         try:
-            configured = providers.capability(instance.provider_key, binding.capability_id)
+            configured = providers.capability_for_instance(
+                instance.provider_key,
+                binding.capability_id,
+                getattr(instance, "config", {}),
+            )
         except KeyError:
             # Catalog changes must not revive a persisted binding with an unknown type.
             continue
@@ -49,6 +53,10 @@ async def build_request_capability_registry(
                 "One terminal Elastic observation for the exact query, including "
                 "per-source freshness and coverage; no automatic retry or provider fallback."
             )
+        effective_risk = HarnessRiskTier(
+            getattr(binding, "risk_tier", configured.risk_tier)
+        )
+        is_remote_mcp = instance.provider_key == "remote_mcp"
         registry.register(
             capability := CapabilityDefinition(
                 id=runtime_id,
@@ -59,11 +67,11 @@ async def build_request_capability_registry(
                 failure_recovery=dict(configured.failure_recovery),
                 shadow_safe=configured.shadow_safe,
                 provider_type=HarnessProviderType.SOURCE,
-                provider_id="nexus.connector",
+                provider_id=("nexus.connector.remote_mcp" if is_remote_mcp else "nexus.connector"),
                 action=configured.action,
                 input_schema=configured.input_schema,
                 output_type=configured.output_type,
-                risk_tier=HarnessRiskTier(configured.risk_tier),
+                risk_tier=effective_risk,
                 packs=list(configured.packs),
                 use_when=list(configured.use_when),
                 do_not_use_when=list(configured.do_not_use_when),
@@ -78,6 +86,10 @@ async def build_request_capability_registry(
                     "connector_domain_required": bool(binding.domains),
                     "activity_label": configured.activity_label,
                     "evidence_output": True,
+                    "connector_execution_mode": "invoke" if is_remote_mcp else "read",
+                    "requires_explicit_approval": effective_risk is not HarnessRiskTier.READ_ONLY,
+                    "requires_approval": effective_risk is not HarnessRiskTier.READ_ONLY,
+                    "remote_content_is_untrusted": is_remote_mcp,
                 },
             ),
             _bound_connector_handler(capability),

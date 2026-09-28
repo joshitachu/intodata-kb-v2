@@ -44,13 +44,15 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import or_ as sa_or
 from sqlalchemy import select
 
 from mcp_server.api.permissions import require_pack_management, require_project_access
+from mcp_server.api.routes.licence import require_capability
 from mcp_server.config import config
+from mcp_server.licensing.core import Capability
 from mcp_server.db.models import PluginPack, Project
 from mcp_server.db.session import async_session_factory
 from mcp_server.services import pack_architect
@@ -1154,6 +1156,8 @@ async def get_pack_architect_session(session_id: str, request: Request):
     "/plugins/architect/sessions/{session_id}/messages",
     response_model=PackArchitectSessionOut,
     status_code=202,
+    # Each turn is a model call (pack_architect.run_turn -> provider.complete).
+    dependencies=[Depends(require_capability(Capability.GENERATION))],
 )
 async def run_pack_architect_turn(
     session_id: str, body: PackArchitectTurnRequest, request: Request
