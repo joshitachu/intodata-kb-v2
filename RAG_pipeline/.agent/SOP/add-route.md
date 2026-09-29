@@ -14,20 +14,16 @@ Use an existing route file as a template (e.g., `documents.py` or `feedback.py`)
 Standard structure:
 
 ```python
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter
 
-from ..dependencies import get_db, CurrentUser
-from ...schemas import MyRequestSchema, MyResponseSchema
+from src.api.dependencies import CurrentUser, DBSession
+from src.schemas import MyRequestSchema, MyResponseSchema
 
-router = APIRouter(prefix="/api/v1/<domain>", tags=["<domain>"])
+router = APIRouter(prefix="/<domain>", tags=["<domain>"])  # /api/v1 is added in main.py
 
 
-@router.get("/", response_model=list[MyResponseSchema])
-async def list_items(
-    current_user: CurrentUser,
-    db: AsyncSession = Depends(get_db),
-) -> list[MyResponseSchema]:
+@router.get("", response_model=list[MyResponseSchema])
+async def list_items(current_user: CurrentUser, db: DBSession) -> list[MyResponseSchema]:
     ...
 ```
 
@@ -37,6 +33,9 @@ Rules:
 - All errors: specific exceptions, logged with `exc_info=True`, re-raised as `HTTPException`
 - RBAC: apply project/permission filter on any data access (see `src/rbac/permissions.py`)
 - Never `any` — use typed returns
+- A route that spends LLM tokens must use `ChatEntitledUser` / `ChatEntitled`
+  (`src/api/dependencies.py`); `tests/test_api/test_route_inventory.py` fails for a
+  mutating route with no gate that is not on the reviewed allowlist
 
 ---
 
@@ -45,8 +44,8 @@ Rules:
 In `backend/src/api/main.py`, add the import and `app.include_router()` call:
 
 ```python
-from .routes.<domain> import router as <domain>_router
-app.include_router(<domain>_router)
+from src.api.routes import <domain> as <domain>_routes
+app.include_router(<domain>_routes.router, prefix="/api/v1")
 ```
 
 ---
@@ -82,20 +81,24 @@ If the route needs a new table:
 
 ## Step 5: Write tests
 
-Create `backend/tests/test_<domain>.py`:
+Create `backend/tests/test_api/test_<domain>.py`. There are no shared `client` /
+`auth_headers` fixtures; follow `tests/test_api/test_runtime_status.py`, which overrides
+`get_db` and `get_current_user` via `app.dependency_overrides` and calls the app through
+`httpx.AsyncClient(transport=ASGITransport(app=app))`:
 
 ```python
-import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 
-@pytest.mark.asyncio
-async def test_list_items(client: AsyncClient, auth_headers: dict) -> None:
-    response = await client.get("/api/v1/<domain>/", headers=auth_headers)
+from src.api.main import app
+
+
+async def test_list_items(mock_deps) -> None:  # fixture sets dependency_overrides
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/v1/<domain>")
     assert response.status_code == 200
-    assert isinstance(response.json(), list)
 ```
 
-Run: `pytest tests/test_<domain>.py -v`
+Run: `pytest tests/test_api/test_<domain>.py -v`
 
 ---
 
@@ -108,12 +111,12 @@ frontend/app/api/<domain>/route.ts
 ```
 
 ```typescript
-import { fastapiClient } from '@/lib/fastapi';
+import { fastapiFetch } from '@/lib/fastapi';
 import { MyResponseSchema } from '@/types';
 
 export async function GET(request: Request) {
   try {
-    const data = await fastapiClient.get('/api/v1/<domain>/');
+    const data = await fastapiFetch<unknown>('/api/v1/<domain>');
     return Response.json(MyResponseSchema.array().parse(data));
   } catch (error) {
     console.error('<domain> fetch failed:', error);
@@ -129,4 +132,3 @@ export async function GET(request: Request) {
 1. Add the new endpoint to `RAG_pipeline/.agent/system/api-reference.md`
 2. If it's a significant new domain, add a section to `system/subsystems.md`
 3. Update `RAG_pipeline/CLAUDE.md` routes list if the domain is new
-4. Run `/doc-gap` to check nothing is missed

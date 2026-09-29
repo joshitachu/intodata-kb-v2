@@ -55,48 +55,30 @@ alembic upgrade head
 
 The MCP server also auto-creates tables on first startup, but Alembic is required for schema upgrades.
 
-## Step 5: Start Services (3 terminals)
+## Step 5: Start Services
 
-```bash
-# Terminal 1: RAG pipeline (port 8000)
-cd RAG_pipeline/backend
-python -m uvicorn src.api.main:app --port 8000
-
-# Terminal 2: MCP REST API (port 8001)
-cd knowledge_base/mcp-server
-python -m mcp_server --serve
-
-# Terminal 3: Dashboard (port 5173)
-cd knowledge_base/dashboard
-npm run dev
-```
+Follow the "Start Services" section of the root `readme.md` (the single quickstart).
+Ports: RAG backend 8000, MCP REST API 8002 (`python -m mcp_server --serve` default),
+dashboard dev server 5173.
 
 ## Step 6: Verify
 
 ```bash
-# Health check
-curl http://localhost:8001/health
-
-# List projects (requires auth cookie -- use dashboard login instead)
-open http://localhost:5173
+curl http://localhost:8002/health
+open http://localhost:5173    # log in through the dashboard for authenticated calls
 ```
 
 Default dashboard credentials: `admin` / `admin`
 
-## Step 7: Optional MCP stdio configuration
+## Step 7: Optional MCP stdio server
 
-The `.mcp.json` file in `knowledge_base/` configures the optional MCP stdio server.
-Normal dashboard-driven doc generation uses the REST API plus the custom harness, so
-Claude Code is not required.
-
-Test with:
-```
-> Use the intodoc MCP tools to list projects
-```
+`cd knowledge_base/mcp-server && python -m mcp_server --mcp` runs the optional/debug MCP
+stdio server; point a local (untracked) MCP client config at that command. Normal
+dashboard-driven doc generation uses the REST API plus the custom harness.
 
 ## Notes
 
 - The MCP server (stdio mode) is optional/debug; the dashboard uses the REST API server
-- The REST API server (port 8001) must be started manually for the dashboard
+- The REST API server (port 8002) must be started manually for the dashboard
 - Ollama must be running with `nomic-embed-text` pulled for RAG embeddings
 - Ollama is also used directly by the MCP server if `MCP_DOC_GENERATION_PROVIDER=ollama`

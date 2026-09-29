@@ -1,26 +1,28 @@
 # SOP: Local Dev Setup
 
 Follow these steps to get the full RAG pipeline running locally from scratch.
+Start commands and ports are canonical in root `readme.md`; this SOP adds the
+RAG-specific configuration and checks.
 
 ## Prerequisites
 
 - Docker Desktop running
-- Ollama installed (`brew install ollama` on Mac)
 - Python 3.11+ and Node 18+
+- API keys for the default providers (`KIMI_API_KEY` for chat, `VOYAGE_API_KEY` for
+  embeddings + reranker), or Ollama on the host (`brew install ollama`) as the local option
 - `gh` CLI authenticated (for PR workflows)
 
 ---
 
 ## Step 1: Clone and configure environment
 
-```bash
-cd intodata-kb-v2
-cp RAG_pipeline/backend/.env.template RAG_pipeline/backend/.env
-```
-
-Edit `backend/.env` — the defaults work for local dev except:
-- Set a strong `JWT_SECRET_KEY` (any random string for local is fine)
+There is no backend env template. Create `RAG_pipeline/backend/.env` with the
+minimum from the "Environment" section of `RAG_pipeline/CLAUDE.md`; every other
+setting has a default in `backend/src/config.py`. For local dev:
+- Set `DATABASE_URL` with the Postgres password you gave Compose
+- Set a `JWT_SECRET_KEY` (any random string for local is fine)
 - Leave `COOKIE_DOMAIN` empty and `COOKIE_SECURE=false`
+- `LICENCE_ENFORCEMENT=off` (the Settings default) so chat is not refused with 402
 
 ---
 
@@ -40,12 +42,15 @@ All three should show `healthy` or `running`.
 
 ---
 
-## Step 3: Pull Ollama models
+## Step 3: Pull Ollama models (only if using the local provider)
 
 ```bash
 ollama pull nomic-embed-text
-ollama pull gemma3:12b
+ollama pull gemma3:4b
 ```
+
+Ollama embeddings are 768-dim, Voyage 1024-dim; a Qdrant collection must use one
+dimension throughout, so switching providers requires re-indexing.
 
 Verify:
 ```bash
@@ -74,24 +79,21 @@ Should show the latest revision as `(head)`.
 
 ## Step 5: Bootstrap admin user
 
-The first user is created from `ADMIN_DEFAULT_PASSWORD` in `.env` on startup.
-Default: `admin` / `admin`. Change in `.env` before starting if you want something else.
+With `APP_ENV=development` the backend seeds user `admin` with password
+`ADMIN_DEFAULT_PASSWORD` (default `admin`) on startup (`src/api/main.py`). In
+production no user is seeded; the first admin is created via
+`POST /api/v1/auth/bootstrap-admin`.
 
 ---
 
 ## Step 6: Start backend
 
-```bash
-cd RAG_pipeline/backend
-uvicorn src.api.main:app --reload --port 8000
-```
-
-Verify health:
+Start the backend as in root `readme.md` (port 8000). Verify health:
 ```bash
 curl http://localhost:8000/health
 ```
 
-All components should show `"status": "ok"`.
+Database, Qdrant and Ollama are core checks; Hindsight down only degrades the overall status.
 
 ---
 
@@ -99,10 +101,10 @@ All components should show `"status": "ok"`.
 
 ```bash
 cd RAG_pipeline/frontend
-cp .env.local.template .env.local   # or create manually with FASTAPI_URL=http://localhost:8000
-npm install
-npm run dev
+cp .env.example .env.local   # FASTAPI_URL=http://localhost:8000
 ```
+
+Then install and start it as in root `readme.md` (port 3000).
 
 Open http://localhost:3000. Log in with `admin` / `admin` (or your configured password).
 
@@ -120,7 +122,7 @@ Open http://localhost:3000. Log in with `admin` / `admin` (or your configured pa
 ## Common First-Run Issues
 
 - **`alembic upgrade head` fails**: Postgres container not ready yet — wait 10s and retry.
-- **`nomic-embed-text` connection refused**: Ollama not running. Start with `ollama serve`.
+- **Embedding connection refused**: check `VOYAGE_API_KEY`, or, when using Ollama, that `ollama serve` is running.
 - **Frontend 500 on login**: `FASTAPI_URL` not set in `frontend/.env.local`.
 - **Empty search results**: Document ingestion failed or Qdrant collection not created. Check backend logs.
 

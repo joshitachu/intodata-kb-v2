@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted 2026-09-08
+Superseded by ADR-032 (contract retired; see RETIRED_CONTRACTS in mcp-server/src/mcp_server/services/generation_profile.py). Originally: Accepted 2026-09-08
 
 ## Context
 

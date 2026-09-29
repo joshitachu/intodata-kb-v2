@@ -9,11 +9,11 @@ Read the relevant section when working on that area. Not loaded at session start
 JWT httpOnly cookie authentication with token rotation:
 
 - **Access token**: 60min expiry, stored in httpOnly cookie on `/`
-- **Refresh token**: 7-day expiry, stored in httpOnly cookie on `/api/v1/auth/refresh`, rotated on use
+- **Refresh token**: 14-day expiry (`REFRESH_TOKEN_EXPIRE_DAYS`), stored in httpOnly cookie on `/`, rotated on use
 - **Endpoints**: `POST /auth/login`, `POST /auth/logout`, `POST /auth/refresh`, `GET /auth/me`
 - **Dependencies**: `CurrentUser`, `AdminUser`, `ProjectManager`, `ManagerUser` (in `src/api/dependencies.py`)
 - **Cookie settings**: `COOKIE_DOMAIN`, `COOKIE_SECURE`, `samesite=lax`
-- **Rate limiting**: 5/min login, 10/min refresh (via slowapi)
+- **Rate limiting**: 5/min login, 60/min refresh (via slowapi; see `system/api-reference.md` Auth)
 - **Password hashing**: bcrypt
 - **Token storage**: Refresh token SHA-256 hashes in `refresh_tokens` table
 
@@ -37,10 +37,10 @@ Role-based access control with 3 default roles and 9 permissions:
 Automatic token usage and cost tracking for all LLM interactions:
 
 - **Model**: `QueryUsage` in `src/db/models/query_usage.py` (15 fields: user_id, interface, query_text, model_name, provider, input/output/embedding tokens, cost_usd, latency/embedding/search/llm ms, project_id, conversation_id)
-- **Persistence**: Automatic on all query paths:
-  - Non-streaming RAG query (`rag_chain.py:run_rag_query()`)
-  - Non-streaming conversation (`conversational_rag.py:run_conversational_rag()`)
-  - Streaming conversation (`conversational_rag.py:run_conversational_rag_stream()`)
+- **Persistence**: Automatic on all query paths (`QueryUsage(` creation sites):
+  - RAG query (`src/generation/rag_chain.py`, `src/api/routes/query.py`)
+  - Agent chat turns (`src/harness/agent_chat_runtime.py`; labs lane `src/labs/runtime.py`)
+  - External usage (`src/api/routes/usage.py`)
 - **Usage tracking**: `UsageStats` / `StreamUsageStats` dataclasses in `src/generation/usage.py`
 - **Cost calculation**: `MODEL_PRICING` table with per-million-token pricing (Kimi, Ollama, Voyage)
 - **SSE event**: `event: usage` emitted after stream completes (input_tokens, output_tokens, model, provider, cost_usd, latency_ms)
@@ -64,7 +64,7 @@ The KB MCP server posts usage records for doc generation to the RAG backend:
 
 - **Storage**: Thread-local `_last_embed_tokens` in `src/retrieval/embedder.py`
 - **Access**: `get_last_embed_tokens()` — returns token count from most recent embedding call
-- **Populated**: All 4 `QueryUsage` creation sites include `embedding_tokens=get_last_embed_tokens()`
+- **Populated**: the RAG query sites (`src/api/routes/query.py`, `src/generation/rag_chain.py`) set `embedding_tokens=get_last_embed_tokens()`; the harness and external-usage sites do not
 
 ---
 

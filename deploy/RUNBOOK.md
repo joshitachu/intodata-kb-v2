@@ -8,7 +8,7 @@ This runbook is the canonical EP-001 deployment path for a clean Ubuntu VPS or s
 - nginx + certbot for HTTPS
 - UFW and app-level allowlists for approved CIDRs
 
-Older Caddy assets remain in the repo for legacy/reference use, but nginx/certbot is the canonical EP-001 path.
+nginx/certbot is the only supported HTTPS path.
 
 Optional subsystems are configured in the later sections and are all off by
 default: live runtime sources (13), GitHub App repo connection (14), external
@@ -271,9 +271,8 @@ sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" up -d mcp-server
 
 MCP runs as a Compose service, so env changes need `up -d` (which recreates the
 container with the new environment), not `restart` and not `systemctl`. The
-`deploy/mcp-server@.service` unit is the retired host-virtualenv path
-(`$REPO_ROOT/venv/bin/python`); `deploy-client.sh` never installs it, and step 3
-of this runbook states no host virtualenv is required. Do not use it.
+old host-virtualenv systemd units have been removed; `deploy-client.sh` never
+installed them, and step 3 of this runbook states no host virtualenv is required.
 
 Doc-generation packs are read from the host directory mounted at
 `/app/workspace/packs`, i.e. `$REPO_ROOT/knowledge_base/packs`. The script

@@ -13,7 +13,7 @@ How to register and scan a new integration project for documentation generation.
    ```
    Or via REST API:
    ```bash
-   curl -X POST http://localhost:8001/mcp/add-repo \
+   curl -X POST http://localhost:8002/mcp/add-repo \
      -H "Content-Type: application/json" \
      -d '{"url": "<path>", "project_id": "<id>", "platform": "talend"}'
    ```

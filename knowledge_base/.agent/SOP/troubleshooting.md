@@ -4,42 +4,17 @@ Common issues and fixes for the intodoc platform.
 
 ## Scanner Issues
 
-### Windows encoding (cp1252 vs UTF-8)
-**Symptom**: `UnicodeEncodeError` or garbled characters in output.
-**Fix**: Use ASCII-only text in all CLI output and generated documents.
-Avoid em-dashes, arrows, and other Unicode characters.
-
-### Token bloat in scan data
-**Symptom**: Chunks exceed context window limits; analysis is truncated.
-**Fix**: The tMap distiller must strip noise BEFORE chunking. Ensure
-`field_type` filtering is active in the distiller pipeline.
-
-### ENDPOINT preservation
-**Symptom**: REST/OData API endpoints missing from scan data.
-**Fix**: Don't strip URL-related parameters in the distiller. Endpoints
-like REST URLs are semantically important and must be preserved.
-
-### Connection matching failures
-**Symptom**: Jobs don't link to their database connections.
-**Fix**: Use component `REPOSITORY_PROPERTY_TYPE` references for matching,
-NOT region-name heuristics.
-
-### hatchling build errors
-**Symptom**: `pip install -e .` fails with setuptools errors.
-**Fix**: intodoc uses hatchling, not setuptools. Ensure `pyproject.toml`
-has `build-system.build-backend = "hatchling.build"`.
-
-### Budget exceeded (legacy CLI)
-**Symptom**: Analyzer stops mid-run with budget error.
-**Fix**: Default limit is $5. Increase with `--budget` flag. 18 passes
-on 9 chunks can exceed $5 with larger models.
+The scanner's known pitfalls (cp1252 encoding, token bloat, ENDPOINT preservation,
+connection matching, hatchling) are listed once in `knowledge_base/CLAUDE.md`
+"Known Pitfalls".
 
 ## MCP Server Issues
 
 ### MCP server not connecting
 **Symptom**: An MCP client can't find intodoc MCP tools.
-**Fix**: Verify `.mcp.json` exists in the working directory and points to the
-correct `mcp-server/` path. Restart the MCP client to reload MCP config.
+**Fix**: Verify the client's (local, untracked) MCP config runs
+`python -m mcp_server --mcp` with `cwd` set to `knowledge_base/mcp-server/`. Restart the
+MCP client to reload its config.
 
 ### "Project not found" errors
 **Symptom**: MCP tools return `{"error": "Project not found: ..."}`.
@@ -80,12 +55,12 @@ satisfied.
 
 ### Dashboard shows API errors (500s)
 **Symptom**: Dashboard actions fail with server errors.
-**Fix**: Check Terminal 2 (MCP REST API) for Python tracebacks. Common causes:
+**Fix**: Check the MCP REST API terminal for Python tracebacks. Common causes:
 database connection issues, missing project, scan in progress.
 
 ### Dashboard can't connect to API
 **Symptom**: Network errors in browser console.
-**Fix**: Ensure MCP REST API is running on port 8001:
+**Fix**: Ensure MCP REST API is running on port 8002 (the `--serve` default):
 `cd mcp-server && python -m mcp_server --serve`
 
 ## RAG Pipeline Issues

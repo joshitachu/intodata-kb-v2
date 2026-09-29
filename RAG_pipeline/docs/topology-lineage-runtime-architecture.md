@@ -5,8 +5,7 @@
 > Chat-on-topology is explicitly deferred by the requester ("maybe first the topology") —
 > it is noted as a later phase only, not designed here.
 
-Status: **S0/S1/S2/S4/S5 implemented (uncommitted, working tree); S3/S6 not started.**
-Last updated 2026-07-17.
+Status: **S0/S1/S2/S4/S5 implemented; S3/S6 not started.**
 
 ---
 
@@ -42,7 +41,7 @@ Four capabilities on the existing topology view (`/topology` in the RAG frontend
 | Runtime dependencies | `RuntimeJobDependencyRow` (`db/models/runtime_data.py:413`): job→**artifact/connection** edges only (`dependency_type` constrained `^(artifact\|connection)$`, `runtime/models.py:598`), populated from live TMC telemetry. **No job→job dependency exists on the runtime side**; job→job structure lives only in scanner `trunjob_refs`/`manifest.job_calls` |
 | Failure diagnostics | `runtime/insights/builder.py` — per-execution root cause / incident signatures. **No dependency-aware rollup or propagation exists anywhere** |
 
-Verified sample of real tMap expressions (`reverse_engineer_VW/.../Maximo2AssetCheck_SendLocation.json`):
+Verified sample of real tMap expressions (a real Talend estate's per-job scan JSON):
 column references appear as `row17.message`, `Var.Message`; dynamic references as
 `((String)globalMap.get("tFileOutputDelimited_1_FILE_NAME"))`; plus nested ternaries and
 string literals. Also verified: `Component.incoming_connections`/`outgoing_connections` can be
@@ -73,26 +72,23 @@ from `connections`, not from the per-component lists**.
 
 ### 1.4 S0 Spike Findings
 
-All three checks complete. Findings below.
+The S0 spike (run against real local scan and TMC-mirror data) concluded **go**, with
+these outcomes folded into scope:
 
----
-
-**S0 spike findings (real local data)**
-
-**1. Tokenizer hit rate: 79% fully resolved, 100% partially resolved (n=48).**
-All tMap expressions on disk come from the VW estate (`reverse_engineer_VW`, 12 tMap instances, 48 non-empty entry+var expressions). Applying the §2.2 tokenizer (string/comment-stripped, `id.field` pairs scoped to declared `input_tables` + `Var`): 38/48 (79.2%) resolve entirely to input-row/Var refs; 10/48 (20.8%) are mixed (resolved refs plus flagged `globalMap`/`context` dynamics); 0 dynamic-only, 0 constants. Every expression yields at least one resolved ref. Dynamic idents seen: `globalMap` (10), `context` (6), `Long` (2, routine-style). Caveat: single estate; and **cdc's `sjItem_OnRamp` contains a `tMap` component but `tmap_data` is `[]`** — the known tMap-extraction scanner gap shrinks lineage coverage before the tokenizer even runs.
-
-**2. Name matching: 0% exact — override map is required scope.**
-No live TMC call was made, but Postgres holds genuinely TMC-synced data (`runtime_sources`: `talend_tmc` for `cdc` and `alitalend`; 202 `runtime_jobs`). Exact + case/trim-normalized match rate of scanner job names vs runtime names: **0/2 (cdc), 0/7 (cdc_reverse), 0/10 (alitalend/VW)**. Patterns: TMC deploys one Studio job as multiple endpoint-suffixed tasks (`rItem_OnRamp` → `rItem_OnRamp_BusinessCentral`, `rItem_OnRamp_Salesforce` — prefix match works but is 1:many), and scanned repos cover small slices of much larger workspaces (69–78 distinct task names). §2.3's "if needed" `runtime_job_scan_map` should become required; prefix matching needs 1:many semantics.
-
-**3. Identifying param keys (verified in scan JSON; `params` is a list of `{name,value,field_type}`):**
-- DB: `TABLE`, `QUERY`, `DBNAME`, `DB_SCHEMA`, `CONNECTION`, `USE_EXISTING_CONNECTION` (tMSSqlInput/tMSSqlOutput); `HOST`/`PORT`/`DBNAME` on tMSSqlConnection
-- Files: `FILENAME` (tFileInputDelimited/Raw, tFileOutputDelimited, cFile), `DESTINATION` (tFileCopy)
-- Messaging (best cross-job signal): cJMS `DESTINATION` + `TYPE` — e.g. `rItem_OnRamp` publishes `"VirtualTopic.items"`, `rItem_OffRamp_DB` consumes `"Consumer.DB.VirtualTopic.items"`; some are dynamic (`"queue_placeholder_setInHeader"`, `context.Monitoring_Queue`)
-- HTTP: `REST_ENDPOINT` (tRESTRequest), `URL` (cREST/tHttpRequest)
-- `metadata_connection_ref` is sparse: set only on tMSSqlConnection (8) and tMSSqlOutput (3)
-
-Scripts: `/private/tmp/claude-501/-Users-joshuakabel-Documents-repos-nexus-intodata-kb-v2/18fa64a3-f630-4cdb-82dd-ec60e02b8c86/scratchpad/{tokenizer_spike.py,name_match.py,param_keys.py}`. Verdict: **go**, with the tMap-extraction gap and mandatory name-override map folded into scope.
+- **Tokenizer hit rate:** about 79% of sampled tMap expressions resolved entirely to
+  input-row/`Var` references; every expression yielded at least one resolved reference.
+  Dynamic identifiers seen were `globalMap`, `context`, and routine-style calls. The
+  known tMap-extraction scanner gap (a `tMap` component with empty `tmap_data`) shrinks
+  lineage coverage before the tokenizer runs.
+- **Name matching:** exact scanner-name vs TMC-task-name matching was 0%. TMC deploys one
+  Studio job as several endpoint-suffixed tasks, so prefix matching is 1:many, and scanned
+  repos cover small slices of larger workspaces. The `runtime_job_scan_map` override is
+  therefore required, not optional.
+- **Identifying param keys** (`params` is a list of `{name,value,field_type}`):
+  DB `TABLE`, `QUERY`, `DBNAME`, `DB_SCHEMA`, `CONNECTION`, `USE_EXISTING_CONNECTION`
+  (and `HOST`/`PORT`/`DBNAME` on connection components); files `FILENAME`, `DESTINATION`;
+  messaging (best cross-job signal) cJMS `DESTINATION` + `TYPE`, sometimes dynamic;
+  HTTP `REST_ENDPOINT`, `URL`. `metadata_connection_ref` is sparse.
 
 ---
 
@@ -358,7 +354,7 @@ credential-filter stage the lineage output must pass through).
 
 - **Runtime Logs Redesign coordination — resolved.** The Runtime Logs Redesign (`runtime/store/repository.py`,
   `api/routes/runtime.py`, `runtime/models.py`, `db/models/runtime_data.py`, `runtime/semantic/`, migration
-  `060_runtime_logs_storage`; see `RAG_pipeline/docs/runtime-logs-redesign.md`) is now **committed**
+  `060_runtime_logs_storage`) is now **committed**
   (`61cdacc feat(runtime): redesign runtime logs pipeline with dedupe and semantic recall`). The
   precondition for S3/S6 ("do not start until that work is committed and its migration landed")
   is therefore satisfied — S3/S6 remain unbuilt for scheduling reasons only, not this blocker.

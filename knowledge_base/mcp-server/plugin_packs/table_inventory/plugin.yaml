@@ -23,7 +23,7 @@ docs:
       - Evidence Sources and Coverage
       - Database Connections
       - Environment Baseline and ACC vs PRD Caveats
-      - Table Inventor
+      - Table Inventory
       - Table Definitions
       - SQL-to-Table Traceability
       - Field Usage Matrix

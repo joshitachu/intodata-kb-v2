@@ -1,5 +1,8 @@
 # ADR-031: Goal-driven investigation is independent and provider-neutral
 
+## Status
+Superseded by ADR-032 (contract retired; see RETIRED_CONTRACTS in mcp-server/src/mcp_server/services/generation_profile.py).
+
 ## Decision
 
 `integration-intelligence-v1` is a separate documentation pipeline. Nexus always inventories,

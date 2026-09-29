@@ -1,14 +1,14 @@
 # IntoData KB -- Integration Intelligence Platform
 
 > Multi-project platform: scans integration codebases, generates documentation,
-> and provides RAG-powered knowledge search with local LLMs.
+> and provides RAG-powered knowledge search over configurable LLM providers.
 
 ## Quick Facts
 
-- **Stack**: Python (FastAPI), React + TypeScript, PostgreSQL, Qdrant, Ollama
+- **Stack**: Python (FastAPI), React + TypeScript, PostgreSQL, Qdrant. Model providers are configurable; the RAG backend defaults to Kimi for chat and Voyage for embeddings/reranking, with Ollama on the host as the local option (`RAG_pipeline/backend/src/config.py`)
 - **Sub-projects**: `knowledge_base/` (intodoc scanner + MCP + dashboard), `RAG_pipeline/` (RAG backend + frontend)
-- **Start all**: `docker-compose up -d`
-- **Test**: `cd RAG_pipeline/backend && pytest` | `cd knowledge_base/dashboard && npm test`
+- **Start, ports, tests**: `readme.md` (human quickstart; the only home for start commands)
+- **Architecture**: `ARCHITECTURE.md`
 
 ## Before You Start
 
@@ -22,23 +22,25 @@ decisions live in `knowledge_base/.agent/decisions/`.
 ```
 intodata-kb/
 ├── CLAUDE.md                          -- This file
-├── docker-compose.yml                 -- Full stack (8 services; 7 in the health boundary)
+├── docker-compose.yml                 -- Full stack (10 services; 7 in the health boundary)
 ├── .env.production.template           -- Production env vars
 ├── knowledge_base/                    -- intodoc code intelligence platform
 │   ├── CLAUDE.md                      -- Sub-project docs (read for KB tasks)
 │   ├── .agent/                        -- Agent context docs (SOPs, system, decisions, tasks)
 │   ├── intodoc/                       -- Scanner CLI (Talend, Workato, Generic)
-│   ├── mcp-server/                    -- MCP + REST API (port 8001)
-│   ├── dashboard/                     -- React control panel (port 5173/8001)
+│   ├── mcp-server/                    -- MCP + REST API (port 8002)
+│   ├── dashboard/                     -- React control panel (dev 5173, container 8001)
 │   ├── intodoc-output/                -- Scan cache (read-only JSON)
 │   └── output/                        -- Generated docs (Markdown)
 ├── RAG_pipeline/                      -- RAG knowledge base system
 │   ├── CLAUDE.md                      -- Sub-project docs (read for RAG tasks)
 │   ├── backend/                       -- FastAPI + Qdrant + Ollama (port 8000)
 │   └── frontend/                      -- Next.js UI (port 3000)
-├── deploy/                            -- Deployment scripts + systemd services
+├── deploy/                            -- deploy-client.sh, nginx template, runbook, smoke test
 ├── scripts/                           -- Utility scripts
-└── mission_control/                   -- Heartbeat aggregator (operator-side; 8th Compose service)
+├── examples/demo-mcp/                 -- Fictional read-only demo MCP server (Compose `demo-mcp`)
+├── labs/opencode/                     -- Experimental OpenCode lane (Compose profile `labs`)
+└── mission_control/                   -- Heartbeat aggregator (operator-side Compose service)
 ```
 
 Client source trees and sample codebases are deliberately NOT in the repo. They
@@ -50,12 +52,13 @@ and any local copies live outside it in `../intodata-kb-archive/client-source/`.
 Two independent sub-systems sharing infrastructure:
 
 **1. intodoc (knowledge_base/)**: Source Code -> Scanner CLI (Talend/Workato/Generic) -> JSON Cache -> MCP Server -> custom harness generates docs
-**2. RAG Pipeline (RAG_pipeline/)**: Documents -> Ingest -> Chunk -> Embed (Ollama) -> Qdrant -> Query -> LLM -> Answer
+**2. RAG Pipeline (RAG_pipeline/)**: Documents -> Ingest -> Chunk -> Embed (Voyage, Ollama fallback) -> Qdrant -> Query -> LLM (selected provider) -> Answer
 
 ## Services (docker-compose.yml)
 
-Eight services are defined. Seven are the EP-001 Compose health boundary;
-`mission-control` is the exception (see below).
+Ten services are defined. Seven are the EP-001 Compose health boundary.
+`mission-control` and `demo-mcp` also start with `docker compose up -d` but are
+outside it; `opencode-labs` starts only with `--profile labs`.
 
 | Service | Image/Build | Port | Purpose |
 |---------|------------|------|---------|
@@ -67,17 +70,19 @@ Eight services are defined. Seven are the EP-001 Compose health boundary;
 | mcp-server | knowledge_base/mcp-server | `${MCP_PORT:-8002}` | MCP + REST API (nginx webhooks, operator tunnels) |
 | dashboard | knowledge_base/dashboard | 8001 | intodoc control panel |
 | mission-control | mission_control/ | `${MC_PORT:-9100}` (127.0.0.1) | Aggregates heartbeat snapshots from customer instances. NOT part of the health boundary -- it is an operator-side aggregator, not a per-client service. |
+| demo-mcp | examples/demo-mcp | `${DEMO_MCP_PORT:-8765}` | Read-only MCP server with invented work-order data, for demonstrating project-scoped MCP calls. Not in the health boundary. |
+| opencode-labs | labs/opencode | none (compose network, 4096) | Experimental OpenCode loop behind `/labs/chat`. Profile `labs` only; not in the health boundary. |
 
 `RAG_pipeline/docker-compose.yml` is a **dev-only** file that redefines four of
 these (`postgres`, `qdrant`, `hindsight`, `backend`) so the RAG stack can run
-without the full eight. It is not the production topology; this file is. Its
+without the full stack. It is not the production topology; this file is. Its
 port and Hindsight-model values are hardcoded where the root file parameterises
 them, so treat root as authoritative on any disagreement.
 
 ## Deployment Foundation Status (EP-001)
 
 - EP-001 is now **Deployment Foundation**, generic rather than customer-specific.
-- Canonical deploy path is `deploy/deploy-client.sh` + `deploy/nginx/nexus-client.conf.template` + certbot. Caddy files remain legacy/deferred unless a future story revives them.
+- Canonical deploy path is `deploy/deploy-client.sh` + `deploy/nginx/nexus-client.conf.template` + certbot. nginx/certbot is the only supported path.
 - Seven Docker services are the Compose health boundary: `postgres`, `qdrant`, `hindsight`, `backend`, `frontend`, `mcp-server`, `dashboard`.
 - MCP API runs as the `mcp-server` Compose service and publishes the VPS-local `${MCP_PORT:-8002}` port for nginx webhooks and operator SSH tunnels.
 - Deployment docs now live in `deploy/RUNBOOK.md` and `deploy/SMOKE-TEST.md`.
@@ -85,33 +90,7 @@ them, so treat root as authoritative on any disagreement.
 
 ## Quick Commands
 
-```bash
-# Full stack
-docker-compose up -d                           # Start all services
-docker-compose down                            # Stop all
-
-# RAG backend (local dev)
-cd RAG_pipeline/backend && uvicorn src.api.main:app --reload
-
-# RAG frontend (local dev)
-cd RAG_pipeline/frontend && npm run dev
-
-# intodoc MCP server (stdio mode; optional/debug)
-cd knowledge_base/mcp-server && python -m mcp_server --mcp
-
-# intodoc REST API (for dashboard)
-cd knowledge_base/mcp-server && python -m mcp_server --serve
-
-# intodoc dashboard
-cd knowledge_base/dashboard && npm run dev
-
-# Run a scan
-cd knowledge_base/intodoc && intodoc scan <source-dir> --platform talend --output-dir ../intodoc-output
-
-# Tests
-cd RAG_pipeline/backend && pytest
-cd knowledge_base/dashboard && npm test
-```
+Start commands, ports, smoke tests, and test commands live in `readme.md`.
 
 ## Sub-Project Docs
 
@@ -119,7 +98,7 @@ Each sub-project has its own detailed CLAUDE.md. **Read the relevant one before 
 
 - **`knowledge_base/CLAUDE.md`** -- intodoc scanner, MCP server, dashboard rules & conventions
 - **`RAG_pipeline/CLAUDE.md`** -- RAG backend/frontend, logging rules, code style, environment config
-- **`knowledge_base/intodoc/CLAUDE.md`** -- Scanner CLI internals (prompts, phases, IR format)
+- **`knowledge_base/intodoc/CLAUDE.md`** -- Scanner CLI internals (architecture, layout, known pitfalls)
 
 ## Key Rules
 
@@ -128,7 +107,7 @@ Each sub-project has its own detailed CLAUDE.md. **Read the relevant one before 
 3. **Never hardcode** group names -- use API results
 4. **Credential safety** -- never send raw credentials to LLMs
 5. **No intermediate files** -- only final docs in output/{project_id}/docs/
-6. **Doc generation uses staging** -- the custom harness writes to `docs_staging/`, server swaps to `docs/` on success (see `knowledge_base/CLAUDE.md` for details)
+6. **Doc generation uses staging** -- the custom harness writes to `docs_staging/`, server swaps to `docs/` on success; on failure `docs_staging/` is preserved for resume and `docs/` stays intact (see `knowledge_base/CLAUDE.md` for details)
 7. **ALWAYS document changes** -- update the sub-project CLAUDE.md and `.agent/` docs when architecture or behaviour changes; stale docs are worse than no docs
 8. **Python builds**: hatchling not setuptools; **Testing**: pytest (Python), Vitest (frontend)
 9. **No workarounds** -- fixes must address the root cause, not suppress symptoms. If a proper fix requires broader changes, make them. Never ship a narrow patch when the defect pattern exists elsewhere in the codebase.

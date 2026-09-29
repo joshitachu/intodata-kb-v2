@@ -1,5 +1,8 @@
 # 029: Talend analysis uses lossless semantic scopes
 
+## Status
+Superseded by ADR-032 (contract retired; see RETIRED_CONTRACTS in mcp-server/src/mcp_server/services/generation_profile.py).
+
 ## Decision
 
 For newly created `talend-landscape-v2` OpenCode runs, analysis version 3 keeps the

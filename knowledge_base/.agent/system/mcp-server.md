@@ -7,8 +7,8 @@ keeps optional MCP tooling available, and provides a REST API for the dashboard.
 
 The server runs in two modes via `python -m mcp_server`:
 
-- `--mcp` -- MCP stdio server for optional/debug tool access (configured in `.mcp.json`)
-- `--serve` -- REST API on port 8001 for the dashboard
+- `--mcp` -- MCP stdio server for optional/debug tool access
+- `--serve` -- REST API on port 8002 (`--port` default in `__main__.py`) for the dashboard
 
 ## MCP Tools (14 tools)
 
@@ -48,7 +48,6 @@ All endpoints are under `/mcp/` prefix:
 | POST | `/mcp/upload-zip` | Upload ZIP, unpack, register |
 | GET | `/mcp/plugins/starter` | Return Swap Pack starter repo metadata |
 | GET | `/mcp/plugins/starter.zip` | Download bundled Swap Pack starter (compatibility) |
-| POST | `/mcp/plugins/upload` | Upload and register a Swap Pack ZIP (compatibility) |
 | POST | `/mcp/plugins/discover` | Discover valid Swap Pack branches in a GitHub repo |
 | POST | `/mcp/plugins` | Register a Swap Pack from local path or GitHub repo branch |
 | POST | `/mcp/scan` | Trigger scan (background task) |
@@ -91,20 +90,6 @@ Azure DevOps specifics:
 - Auto-reingestion for Azure DevOps repositories runs through the git poller. No
   service hook is registered (Azure DevOps service hooks have no HMAC signature).
 
-## Configuration (.mcp.json)
-
-```json
-{
-  "mcpServers": {
-    "intodoc": {
-      "command": "python",
-      "args": ["-m", "mcp_server", "--mcp"],
-      "cwd": "<platform-root>/mcp-server"
-    }
-  }
-}
-```
-
 ## Source Structure
 
 ```
@@ -132,8 +117,9 @@ mcp-server/src/mcp_server/
     model_pricing.py, ops_telemetry.py, validation_service.py
   providers/           -- Doc generation backends
     base.py            -- Abstract provider interface
-    claude_cli/        -- Legacy unsupported Claude Code CLI path retained in source
-    custom/            -- Current API-based harness (agent_runtime.py, harness.py)
+    claude_cli.py      -- Canonical CLI generation provider (four-phase METHOD.md workflow)
+    opencode_cli.py    -- OpenCode transport adapter for the same workflow (ADR-032)
+    custom/            -- API-based custom harness (pipeline/, harness.py, agent_runtime.py)
   db/
     models.py          -- SQLAlchemy models (Project, ScanRun, GenerateRun, PluginPack)
     session.py         -- Async session factory
@@ -141,11 +127,12 @@ mcp-server/src/mcp_server/
 
 Note: all `/mcp/*` routes require JWT cookie auth. The GitHub webhook route explicitly bypasses JWT and uses HMAC verification instead.
 
-## OpenCode Reingestion
+## Living-Doc Reingestion (candidate lane)
 
 When `MCP_LIVING_DOC_PATCHING_ENABLED=true`, every Git push that survives the
 cheap non-document filter bypasses the legacy path-to-scan-group router and runs
-through one bounded OpenCode candidate session:
+through one bounded candidate (`services/auto_doc_update.py` ->
+`services/living_docs/git_patch_coordinator.py`):
 
 1. The webhook revision is reconciled from `last_ingested_commit_sha`, not
    blindly from the webhook's `before` value. Queued pushes therefore cannot
@@ -155,23 +142,26 @@ through one bounded OpenCode candidate session:
 3. `GitPatchCoordinator.create_agent_candidate()` binds the candidate to the
    exact before/after SHAs and makes the Git diff the deterministic evidence
    floor. Candidate IDs are idempotent per project and after SHA.
-4. `OpenCodeReingestionExecutor` gives OpenCode a credential-redacted diff, the
-   changed-file list, existing doc hashes, and a read-only candidate docs copy.
-   The only permitted write is `_reingestion/patch_report.json` through the
-   artifact-submission MCP facade. OpenCode has no active-doc or RAG tool.
+4. The candidate is executed by `TruePatchExecutor`
+   (`services/true_patch_executor.py`, satisfying the `CandidatePatchExecutor`
+   protocol); its report lands at `_reingestion/patch_report.json`.
 5. Nexus verifies every operation's path, base/content hash, evidence citation,
    secret scan, uniqueness, and blast-radius limit before applying it inside the
    candidate workspace.
 6. `CandidatePublisher` stages only changed/deleted logical IDs, validates the
    complete membership, then activates the RAG revision and matching docs tree.
-   A replay returns the already-active candidate before starting OpenCode.
+   A replay returns the already-active candidate before executing again.
 
 Append-only receipts live under
 `data/living_docs/audit/{project_id}.jsonl` and include Git SHAs, candidate and
-knowledge revisions, changed/deleted artifacts, embedding reuse, OpenCode usage,
+knowledge revisions, changed/deleted artifacts, embedding reuse, model usage,
 files read, duration, and reason codes. The legacy deterministic patch and
 targeted-regeneration paths remain available only when living-doc patching is
 disabled.
+
+The per-step contract of the Git-driven update lane (locking, recovery, analysis /
+editing / review contracts, run journal) is in
+`knowledge_base/mcp-server/docs/git-document-updates.md`.
 
 ## Swap Pack Starter
 
@@ -214,6 +204,8 @@ Operational meaning:
   findings (missing dossier, mapping table not embedded in full, internal-path leakage,
   undisclosed contradiction, unplaced design, open review finding). Nothing was swapped or
   pushed to RAG; the previous baseline stays published. Fix the findings and resume the run.
+  The `talend-enterprise-v1` contract is retired (ADR-032, `RETIRED_CONTRACTS`); the
+  verdict value is still written by the publication path and read for historical runs.
   An enterprise run that stops on a budget ceiling or an incomplete phase is `failed` with
   `_assessment/enterprise_run_receipt.json` naming the stop reason; resuming continues from
   the durable ledgers under `_evidence_registry/enterprise/`.

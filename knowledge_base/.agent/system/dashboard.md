@@ -75,14 +75,6 @@ structured verdict. Treat `client_ready` as the only positive delivery signal.
 
 ## Running
 
-```bash
-cd knowledge_base/dashboard
-npm install
-npm run dev    # Dev server on http://localhost:5173
-```
-
-Requires the MCP REST API server running on port 8001:
-```bash
-cd knowledge_base/mcp-server
-python -m mcp_server --serve
-```
+Start commands are in the root `readme.md` ("Start Services"). The dev server runs on
+http://localhost:5173 and requires the MCP REST API (`python -m mcp_server --serve`,
+port 8002).

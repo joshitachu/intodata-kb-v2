@@ -1,7 +1,10 @@
 # IntoData KB - Platform Architecture Document
 
-RAG Knowledge Base + Code Intelligence Dashboard
-May 2026 | Confidential
+RAG Knowledge Base + Code Intelligence Dashboard | Confidential
+
+Services and ports: root `CLAUDE.md`. Start commands: `readme.md`. Parameter defaults:
+`RAG_pipeline/backend/src/config.py` and `knowledge_base/mcp-server/src/mcp_server/config.py`
+(the code wins over this document).
 
 ---
 
@@ -30,15 +33,15 @@ IntoData KB is a production-grade platform composed of two tightly integrated su
 
 The RAG subsystem handles document upload, semantic chunking, hybrid vector search (dense + sparse), reranking, and LLM-powered answer generation with streaming responses. The dashboard subsystem provides a control plane for scanning code repositories (Talend, Workato, Lobster, and generic platforms), triggering documentation generation via a configurable AI agent, and pushing generated docs into the RAG pipeline.
 
-The platform is containerized via Docker Compose (6 services), fronted by an nginx reverse proxy on the VPS with SSL termination, and secured with JWT-based authentication, MFA support, role-based access control (RBAC), and project-level document filtering enforced at the vector search layer.
+The platform is containerized via Docker Compose (seven services in the health boundary; full list in the root `CLAUDE.md` services table), fronted by an nginx reverse proxy on the VPS with SSL termination, and secured with JWT-based authentication, MFA support, role-based access control (RBAC), and project-level document filtering enforced at the vector search layer.
 
 ### Key Capabilities
 
 - Multi-format document ingestion (PDF, DOCX, PPTX, XLSX, Markdown)
-- Semantic chunking preserving meaning boundaries (~500 tokens per chunk)
+- Semantic and heading-aware chunking preserving meaning boundaries (max 512 tokens per chunk)
 - Hybrid vector search: dense embeddings (1024-dim) + hash-based BM25 sparse vectors (30,000-dim)
-- Model-agnostic LLM inference: configurable provider chain with local Ollama fallback
-- Multi-turn conversational RAG with full conversation history (8,000-token context window)
+- Model-agnostic LLM inference: one selected `provider/model` per instance, optional explicitly approved fallbacks, Ollama as the local option
+- Multi-turn agent chat (harness agent runtime) with conversation history, bounded tool budgets, and grounded citations
 - RBAC with 3 roles, 9 permissions, and project-level access filtering enforced at the vector layer
 - TOTP MFA, email OTP, invite-based onboarding, and access-request flows
 - Code intelligence scanning for Talend, Workato, Lobster, and generic platforms
@@ -55,7 +58,7 @@ The platform is containerized via Docker Compose (6 services), fronted by an ngi
 
 ## 2. System Architecture Overview
 
-The platform follows a microservices-inspired architecture with seven containerized services orchestrated by Docker Compose. All external traffic enters through an nginx reverse proxy on the VPS which handles TLS termination, security headers, and path-based routing to the appropriate upstream service.
+The platform follows a microservices-inspired architecture with seven containerized application services (the EP-001 health boundary) orchestrated by Docker Compose. All external traffic enters through an nginx reverse proxy on the VPS which handles TLS termination, security headers, and path-based routing to the appropriate upstream service.
 
 ### High-Level Architecture Diagram
 
@@ -92,7 +95,7 @@ The two frontend applications communicate with their respective backends via RES
 
 Cross-subsystem communication occurs when the MCP Server pushes generated documentation into the RAG pipeline via `POST /api/v1/ingest/md`, authenticated with a shared API key (`MCP_INGEST_API_KEY`). Both backends share the same PostgreSQL instance for user and project data.
 
-The dashboard container runs its own internal nginx instance that serves the static Vite build and proxies API calls to the MCP server and RAG backend on the host via `host.docker.internal`. This means there are two nginx layers: one at the VPS edge for external traffic, and one inside the dashboard container for internal routing.
+The dashboard container runs its own internal nginx instance that serves the static Vite build and proxies API calls to the MCP server (`mcp-server:8002`) and RAG backend (`backend:8000`) over the Compose network. This means there are two nginx layers: one at the VPS edge for external traffic, and one inside the dashboard container for internal routing.
 
 ### End-to-End Data Flow
 
@@ -103,7 +106,7 @@ Code Repo --> intodoc scan --> MCP Server --> AI agent (doc gen) --> Markdown
                                                     v
 User uploads docs ----> RAG Backend --> parse --> chunk --> embed --> Qdrant
                                                                         |
-User asks question ---> intent classify --> hybrid search (dense+BM25) -+
+User asks question ---> agent chat runtime --> hybrid search (dense+BM25) -+
                                                     |
                         rerank --> LLM gen --> SSE stream --> answer + sources
 ```
@@ -116,25 +119,28 @@ User asks question ---> intent classify --> hybrid search (dense+BM25) -+
 
 | Component | Technology | Version | Purpose |
 |-----------|-----------|---------|---------|
+| Language | Python | 3.11+ | Backend services |
 | API Framework | FastAPI + Uvicorn | 0.115+ | REST API, SSE streaming |
-| ORM | SQLAlchemy | 2.0+ | Async database abstraction |
-| Validation | Pydantic | 2.0+ | Request/response schemas |
+| ORM | SQLAlchemy (async, asyncpg driver) | 2.0+ | Async database abstraction |
+| Validation / settings | Pydantic v2 + pydantic-settings | 2.0+ | Request/response schemas, env config |
 | Migrations | Alembic | - | Schema versioning |
-| Auth | JWT (httpOnly cookies) | - | Session management |
+| Auth | JWT via PyJWT (httpOnly cookies) | - | Session management |
 | MFA | TOTP via pyotp | - | Two-factor authentication |
 | Password Hash | bcrypt | - | Credential security |
-| Rate Limiting | slowapi | - | Login/refresh rate limits |
-| Build | Poetry / hatchling | - | Python dependency management |
-| Testing | pytest | - | Backend test suite |
+| Rate Limiting | slowapi | - | Per-route auth rate limits |
+| Build | `pyproject.toml` (RAG backend: setuptools backend) | - | Python packaging |
+| Testing | pytest + pytest-asyncio (`asyncio_mode = "auto"`) | - | Backend test suite |
 
 ### 3.2 Frontend
 
 | Component | Technology | Version | Purpose |
 |-----------|-----------|---------|---------|
-| RAG Frontend | Next.js + React | 15.1 / 19 | Server-rendered RAG chat UI |
+| RAG Frontend | Next.js (App Router, BFF route handlers) + React | 15.1 / 19 | Server-rendered RAG chat UI |
 | Dashboard | Vite + React | 6 / 19 | Client-side KB control panel |
-| Styling | Tailwind CSS | 3.4 | Utility-first CSS framework |
+| Language | TypeScript (strict) | - | No `any` |
+| Styling | Tailwind CSS + Radix UI primitives (shadcn/ui) | 3.4 | Utility-first CSS, components |
 | Data Fetching | TanStack React Query | 5.60 | Server state management |
+| Validation | Zod | 3 (RAG) / 4 (dashboard) | API response and input schemas |
 | Visualization | Recharts + XYFlow | - | Charts and topology graphs |
 | Build | npm | - | JS package management |
 | Testing | Vitest | 2.1 | Frontend test suite |
@@ -143,25 +149,25 @@ User asks question ---> intent classify --> hybrid search (dense+BM25) -+
 
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
-| Embeddings (primary) | Configurable dense provider — 1024-dim | Dense vector embeddings |
-| Embeddings (fallback) | Ollama nomic-embed-text — 768-dim | Local embedding fallback |
-| Sparse Embeddings | Hash-based BM25 — 30,000-dim (pure Python) | Keyword matching vectors |
-| LLM inference | Configurable provider chain (`LLM_PROVIDERS`) | Answer generation |
-| LLM fallback | Ollama (local) | Offline / cost-free fallback |
-| Reranker | Configurable reranker provider | Result re-scoring |
+| Embeddings (primary) | Voyage `voyage-4-large`, 1024-dim (`EMBEDDING_PROVIDERS`) | Dense vector embeddings |
+| Embeddings (fallback) | Ollama `nomic-embed-text`, 768-dim | Local embedding fallback |
+| Sparse Embeddings | Hash-based BM25, 30,000-dim (pure Python) | Keyword matching vectors |
+| Chat / answer LLM | Selected `provider/model` (`RAG_DEFAULT_MODEL`, default `kimi/kimi-k2.6`; superadmin override) | Answer generation |
+| LLM fallback | Only models listed in `RAG_APPROVED_FALLBACK_MODELS` (empty by default); Ollama (`gemma3:4b`) is selectable, not a silent fallback | Explicit, contract-compatible fallback |
+| Reranker | Voyage `rerank-2.5` | Result re-scoring |
 | Memory | Hindsight | Long-context user memory |
 | Code Scanner | intodoc (custom CLI) | Talend/Workato/Lobster/generic parsing |
-| Doc Generation | Configurable AI agent (`MCP_DOC_GENERATION_PROVIDER`) | AI-powered doc writing |
+| Doc Generation | Configurable provider (`MCP_DOC_GENERATION_PROVIDER`, default `custom` harness) | AI-powered doc writing |
 
 ### 3.4 Infrastructure
 
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
 | Database | PostgreSQL 16 | Relational data (auth, docs, usage, audit) |
-| Vector Store | Qdrant | Dense + sparse vector search |
-| Reverse Proxy | nginx | HTTPS/SSL, routing, security headers |
-| Containers | Docker Compose | 7-service orchestration |
-| Local LLM Runtime | Ollama | Model inference on host |
+| Vector Store | Qdrant (REST 6333, gRPC 6334) | Dense + sparse vector search |
+| Reverse Proxy | nginx + certbot | HTTPS/SSL, routing, security headers |
+| Containers | Docker Compose | Service orchestration (see root `CLAUDE.md`) |
+| Local LLM Runtime | Ollama (on the host, optional) | Local model inference |
 
 ---
 
@@ -182,7 +188,7 @@ Both endpoints are project-scoped: every document is assigned to a `project_id`.
 
 | Format | Library | Extraction Method |
 |--------|---------|-------------------|
-| PDF | PyPDF2 | Page-by-page text extraction |
+| PDF | pypdf | Page-by-page text extraction |
 | DOCX | python-docx | Paragraph and metadata extraction |
 | PPTX | python-pptx | Slide text frame extraction |
 | XLSX | openpyxl | Cell data as structured text |
@@ -192,16 +198,16 @@ Both endpoints are project-scoped: every document is assigned to a `project_id`.
 
 Rather than splitting text at arbitrary character counts, the semantic chunker detects natural boundaries (paragraphs, headings, section breaks) to create chunks that preserve meaning.
 
-- Target chunk size: ~500 tokens with 50-token overlap between consecutive chunks
-- Boundary detection: paragraph breaks, heading patterns, section separators
-- Fallback: fixed-size chunking (`chunker.py`) if semantic chunking fails
+- Maximum chunk size: 512 tokens (`DEFAULT_MAX_TOKENS`); oversized paragraphs are split mechanically with overlap (`chunker.py`)
+- Markdown is split on headings (`markdown_chunker.py`); small sibling sections are merged up to the maximum
+- Sections named in `CHUNK_EXCLUDED_SECTIONS` (default: "Evidence Register") are dropped at chunk time
 - Metadata preserved per chunk: source filename, position index, `document_id`
 
 ### 4.4 Embedding Pipeline (`embedder.py` + `sparse_embedder.py`)
 
 **Dense Embeddings**
 
-- Primary: configurable dense embedding provider — 1024-dimensional vectors. Batch processing up to 128 texts per request for throughput.
+- Primary: Voyage (`voyage-4-large`) — 1024-dimensional vectors. Batch processing up to 128 texts per request for throughput.
 - Fallback: Ollama `nomic-embed-text` — 768-dimensional vectors. Used when the primary provider is unavailable or during local development.
 - Token usage tracked via thread-local storage for cost monitoring.
 
@@ -216,29 +222,26 @@ Each chunk is upserted to Qdrant with the following payload:
 | Field | Type | Purpose |
 |-------|------|---------|
 | `document_id` | integer | Links back to PostgreSQL document record |
-| `chunk_text` | string | The actual text content of the chunk |
+| `text` | string | The actual text content of the chunk |
 | `filename` | string | Source document filename |
+| `chunk_index` | integer | Position within the document |
 | `allowed_groups` | list[string] | RBAC: groups permitted to access this chunk |
 | `project_id` | string | Multi-tenant scoping identifier |
 
-Payload indexes on `allowed_groups` (KEYWORD), `document_id` (INTEGER), and `project_id` enable efficient filtered search. The document record is also persisted in PostgreSQL with `chunk_count` and `status` for the admin dashboard.
+Further caller metadata (`source_layer`, `document_role`, `knowledge_revision_id`, `artifact_id`, `unit`, `section`) is merged in; the base fields always win. Payload indexes cover all of these keys (`src/retrieval/vector_store.py`). The document record is also persisted in PostgreSQL with `chunk_count` and `status` for the admin dashboard.
 
 ---
 
 ## 5. RAG Pipeline - Query & Retrieval
 
-### 5.1 Intent Classification (`intent_classifier.py`)
+### 5.1 Query Routing
 
-A heuristic-based classifier (with LLM fallback) routes queries to the appropriate handler at minimal cost.
-
-| Intent | Detection Method | Handler |
-|--------|-----------------|---------|
-| SEARCH | Default / keyword patterns | Full RAG pipeline (search + generate) |
-| METADATA | Project/document question patterns | Direct database query (no LLM) |
-| GREETING | Hi/hello/thanks patterns | Static response |
-| GENERIC | Off-topic detection | Polite redirect |
-
-METADATA sub-intents: PROJECT_LIST, PROJECT_DETAIL, DOCUMENT_STATS, DOCUMENT_LIST, SYSTEM_OVERVIEW, MY_PROFILE, SUMMARY, CONVERSATION_SUMMARY.
+There is no intent classifier. Conversation turns run through the harness agent
+runtime (`RAG_pipeline/backend/src/harness/`), which chooses tools (documentation
+answers, metadata, topology, runtime evidence) within bounded budgets. The
+`/api/v1/query*` endpoints run the RAG chain directly (`src/generation/rag_chain.py`).
+Project and document metadata questions are served by
+`src/retrieval/metadata_retriever.py` when `METADATA_QUERIES_ENABLED` is on.
 
 ### 5.2 Memory Recall (`hindsight_client.py`)
 
@@ -270,16 +273,11 @@ Optional stage running in parallel with search (non-blocking). Retrieves user-sp
 
 **RBAC Filtering at Search Time**
 
-Access control is enforced at the Qdrant query level via `_build_search_filter()` — not via post-hoc Python filtering.
-
-- Superadmin: no filter applied.
-- Admin: sees all chunks, or scoped to specified `project_ids`.
-- Manager: filtered to assigned `project_id` values.
-- Developer: filtered by both `project_id` AND `allowed_groups`.
+Access control is enforced at the Qdrant query level via `_build_search_filter()` (`src/retrieval/search.py`) — not via post-hoc Python filtering. Users in the `admin` group skip the `allowed_groups` condition; everyone else is matched on `allowed_groups` against their role groups plus assigned project ids (no groups and no assignments means no results). Project scope, corpus layer, document role, and the active knowledge revision per project are added as further conditions.
 
 ### 5.4 Reranking (`reranker.py`)
 
-Optional stage using a configurable reranker to re-score initial search results for higher precision.
+Optional stage (`RERANKER_ENABLED`, default on) using Voyage `rerank-2.5` to re-score initial search results for higher precision.
 
 - Takes top-30 candidates from the search stage
 - Re-scores each candidate against the original query text
@@ -292,9 +290,9 @@ Optional stage using a configurable reranker to re-score initial search results 
 
 ### 6.1 Answer Generation (`rag_chain.py` + `llm_client.py`)
 
-**LLM Provider Chain**
+**Model Selection**
 
-The LLM client implements a chain-based failover configured via the `LLM_PROVIDERS` environment variable (e.g., `["provider-a", "ollama"]`). It tries each provider in order, falling back to the next on error. The final entry is a locally-hosted Ollama model, ensuring the system remains operational without external API access. Provider models, temperatures, and timeouts are individually configurable via environment variables.
+Answer generation calls exactly the selected model: `RAG_DEFAULT_MODEL` (default `kimi/kimi-k2.6`), overridable by a superadmin via the `rag_chat_model` instance setting. The provider is resolved from the `provider/` prefix by the provider registry. Documentation answers may retry on models listed in `RAG_APPROVED_FALLBACK_MODELS` (empty by default); a local Ollama model is never treated as an equivalent silently. Provider models, temperatures, and timeouts are configurable via environment variables; one output ceiling (`LLM_MAX_OUTPUT_TOKENS`, default 8192) applies to every provider.
 
 **Prompt Construction**
 
@@ -303,23 +301,20 @@ The RAG chain assembles the final prompt from:
 1. System prompt — defines the assistant's role, response format, citation rules
 2. Retrieved chunks — top-K search results with source attribution metadata
 3. Memory context — Hindsight recall results (if available)
-4. Conversation history — prior messages in the current conversation (max 8,000 tokens)
+4. Conversation history — prior messages in the current conversation
 5. User query — the original question
 
 **Credential Filtering**
 
-Before chunks enter the generation prompt, a two-layer system redacts sensitive data:
-
-- Layer 1 (Regex): pattern matching for API keys, passwords, tokens, connection strings, and other known credential formats.
-- Layer 2 (Structural): analyzes document structure for credential-like key-value pairs that regex alone might miss.
+Credentials are redacted at scan time by intodoc (two layers, see 7.1), so generated docs do not carry them into the index. On the chat path the harness applies `redact_credentials` (`src/runtime/redaction.py`) to evidence previews.
 
 ### 6.2 Streaming (SSE)
 
-The primary query endpoint (`POST /api/v1/query/stream`) uses Server-Sent Events for real-time token-by-token streaming.
+`POST /api/v1/query/stream` uses Server-Sent Events for real-time token-by-token streaming. Chat turns stream through `POST /api/v1/conversations/{id}/messages/stream` (harness progress and answer events).
 
 | SSE Event | Payload | Purpose |
 |-----------|---------|---------|
-| `data` | Token text | Incremental answer content |
+| `token` | Token text | Incremental answer content |
 | `sources` | JSON array | Source documents with filenames |
 | `usage` | JSON object | Token counts, cost, latency |
 | `done` | Empty | Stream completion signal |
@@ -327,13 +322,13 @@ The primary query endpoint (`POST /api/v1/query/stream`) uses Server-Sent Events
 
 A non-streaming endpoint (`POST /api/v1/query`) is also available for programmatic use.
 
-### 6.3 Conversational RAG (`conversational_rag.py`)
+### 6.3 Conversational Chat (harness agent runtime)
 
 - Conversations tracked in PostgreSQL (`conversations` + `conversation_messages`)
-- Query rephrasing: uses conversation history to contextualize follow-up questions
-- Source tracking across turns: citations maintained per message
+- Each turn runs in `src/harness/agent_chat_runtime.py` with bounded iterations, tool calls, deadlines, and cost (`AGENT_CHAT_*`, `AGENT_RUNTIME_V2_*` settings in `config.py`)
+- Answers carry grounded citations; source tracking is per message
 - Session isolation: each conversation belongs to a single user
-- Max history: 8,000 tokens per turn
+- Rollout and operation: `RAG_pipeline/docs/agent-chat-cutover-runbook.md`, `RAG_pipeline/docs/agent-runtime-canary-runbook.md`
 
 ### 6.4 Token & Cost Tracking
 
@@ -377,12 +372,11 @@ The MCP Server is a FastAPI application running as the `mcp-server` Docker Compo
 
 - Project registry: manages code repositories and their metadata
 - Scan orchestration: triggers intodoc scans and tracks status/progress
-- Documentation generation: invokes the configured AI doc-generation provider with scan output + versioned templates
+- Documentation generation: invokes the configured AI doc-generation provider with scan output and the selected pack
 - Custom bounded agent runtime (`agent_runtime.py`): multi-phase doc generation (Phases 2-3) with persisted task contracts, validation reports, and configurable concurrency (`MCP_AGENT_PHASE2_CONCURRENCY`, `MCP_AGENT_PHASE3_CONCURRENCY`)
 - RAG integration: server-side push of generated docs via `POST /api/v1/ingest/md` on successful generation
 - Log streaming: SSE endpoint for real-time scan/generation output
 - GitHub webhooks: receives push events to trigger automatic re-scans
-- Template management: versioned doc templates with assignment profiles
 
 ### 7.3 Documentation Generation Flow
 
@@ -391,11 +385,11 @@ The MCP Server is a FastAPI application running as the `mcp-server` Docker Compo
 3. Phase 2.6 scorecard + Phase 3 document agents write to `docs_staging/`
 4. Validation checks coverage; targeted repair tasks created for gaps before failure
 5. **On success:** `docs_staging/` atomically swapped to `docs/`; server pushes to RAG via `POST /api/v1/ingest/md`
-6. **On failure:** `docs_staging/` deleted; existing `docs/` remains intact
+6. **On failure:** `docs_staging/` is preserved so the next Generate resumes from the checkpoint; existing `docs/` remains intact
 
 Real-time logs stream via SSE throughout generation. User can review docs in DocPreview before or after push.
 
-### 7.4 Dashboard UI (Vite + React, port 8001)
+### 7.4 Dashboard UI (Vite + React; dev 5173, container 8001)
 
 | Component | Purpose |
 |-----------|---------|
@@ -409,7 +403,6 @@ Real-time logs stream via SSE throughout generation. User can review docs in Doc
 | `ScanHistory.tsx` | Past scan executions |
 | `QualityHistoryPanel.tsx` | Quality metrics over time |
 | `ValidationReviewPanel.tsx` | Validation results review |
-| `TemplateManager` | CRUD interface for versioned doc templates + profiles |
 | `ProjectSettings.tsx` | Advanced project configuration |
 
 The dashboard container runs nginx internally (`proxy_buffering off`, `proxy_read_timeout 600s` for SSE).
@@ -420,125 +413,30 @@ The dashboard container runs nginx internally (`proxy_buffering off`, `proxy_rea
 
 ### 8.1 RAG Backend API (port 8000)
 
-**Authentication**
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/v1/auth/login` | POST | JWT login (rate limited: 5/min) |
-| `/api/v1/auth/logout` | POST | Revoke refresh token + clear cookies |
-| `/api/v1/auth/refresh` | POST | Token rotation (rate limited: 10/min) |
-| `/api/v1/auth/me` | GET | Current user info + permissions |
-| `/api/v1/auth/bootstrap-admin` | POST | Create first admin (no-users guard) |
-| `/api/v1/auth/bootstrap-status` | GET | Check whether any admin exists |
-| `/api/v1/auth/request-access` | POST | Submit access request |
-| `/api/v1/auth/invite/start` | POST | Initiate invite flow |
-| `/api/v1/auth/invite/validate` | GET | Validate invite token |
-| `/api/v1/auth/invite/accept` | POST | Accept invite & set password |
-| `/api/v1/auth/otp/send` | POST | Send email OTP code |
-| `/api/v1/auth/otp/verify` | POST | Verify email OTP |
-| `/api/v1/auth/verify-mfa` | POST | Verify MFA challenge during login |
-| `/api/v1/auth/totp/setup` | POST | Setup TOTP 2FA (returns QR URI) |
-| `/api/v1/auth/totp/verify` | POST | Confirm TOTP setup |
-| `/api/v1/auth/totp/disable` | POST | Disable TOTP MFA |
-
-**Query**
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/v1/query` | POST | Single RAG query (non-streaming) |
-| `/api/v1/query/stream` | POST | RAG query with SSE streaming |
-| `/api/v1/query/debug` | POST | Debug: search scores without threshold |
-
-**Conversations**
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/v1/conversations` | POST/GET | Create / list conversations |
-| `/api/v1/conversations/{id}` | GET/PATCH/DELETE | Get / update / delete conversation |
-| `/api/v1/conversations/{id}/messages` | POST | Add message (non-streaming) |
-| `/api/v1/conversations/{id}/messages/stream` | POST | Add message (SSE streaming) |
-
-**Documents & Ingest**
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/v1/ingest` | POST | File upload (multipart, max 50 MB) |
-| `/api/v1/ingest/md` | POST | Markdown ingestion (MCP API key auth) |
-| `/api/v1/documents` | GET | List documents (RBAC-filtered) |
-| `/api/v1/documents/{id}` | DELETE | Remove document + Qdrant vectors |
-
-**Admin**
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/v1/admin/users` | CRUD | User management |
-| `/api/v1/admin/users/{id}/reset-password` | POST | Admin password reset |
-| `/api/v1/admin/roles` | CRUD | Role management |
-| `/api/v1/admin/permissions` | GET | List all permissions |
-| `/api/v1/admin/project-assignments` | GET/POST/DEL | User-project access control |
-| `/api/v1/admin/access-requests/{id}/approve` | POST | Approve access request |
-| `/api/v1/admin/access-requests/{id}/reject` | POST | Reject access request |
-| `/api/v1/admin/invites/{id}/resend` | POST | Resend invite email |
-| `/api/v1/admin/invites/{id}/revoke` | POST | Revoke invite |
-| `/api/v1/admin/audit-logs` | GET | Query audit trail (filterable) |
-| `/api/v1/admin/usage/summary` | GET | Usage stats by model/day/interface |
-| `/api/v1/admin/usage/recent` | GET | Paginated individual usage records |
-| `/api/v1/admin/usage/by-user` | GET | Usage breakdown per user |
-| `/api/v1/admin/usage/daily-by-user` | GET | Daily per-user usage |
-
-**Other Routes**
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/v1/projects` | GET | List projects accessible to the user |
-| `/api/v1/memory/banks` | GET | List Hindsight memory banks |
-| `/api/v1/notifications` | GET | List notifications |
-| `/api/v1/notifications/unread-count` | GET | Unread count |
-| `/api/v1/notifications/{id}/read` | PUT | Mark notification read |
-| `/api/v1/onboarding/status` | GET | User onboarding progress |
-| `/api/v1/onboarding/complete` | POST | Complete onboarding wizard |
-| `/api/v1/feedback` | POST | Submit feedback |
-| `/api/v1/tenant/config` | GET | Tenant branding config (public) |
-| `/api/v1/benchmark/runs` | GET | List/view benchmark evaluation runs |
-| `/api/v1/usage/record` | POST | Record external usage (MCP API key auth) |
-| `/health` | GET | Health check (DB, Qdrant, Ollama, Hindsight) |
+Route reference: `RAG_pipeline/.agent/system/api-reference.md`. The routers in
+`RAG_pipeline/backend/src/api/routes/` are authoritative; everything except
+`/health` is mounted under `/api/v1`.
 
 ### 8.2 MCP Server API (port 8002)
 
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/add-repo` | POST | Register project from URL/path/zip |
-| `/upload-zip` | POST | Upload ZIP file as project source |
-| `/scan` | POST | Trigger intodoc code scan |
-| `/generate` | POST | Trigger documentation generation |
-| `/push-to-rag` | POST | Push generated docs to RAG backend |
-| `/projects` | GET | List accessible projects |
-| `/projects/{id}` | PATCH/DELETE | Update / delete project |
-| `/status/{project_id}` | GET | Scan/generation status and progress |
-| `/scan-runs/{project_id}` | GET | Scan execution history |
-| `/generate-runs/{id}/compare` | GET | Compare two generation runs |
-| `/logs/stream` | GET (SSE) | Real-time scan/generation logs |
-| `/platforms` | GET | List supported scanner platforms |
-| `/models` | GET | List available LLM models |
-| `/templates` | GET/POST | Doc generation template management |
-| `/templates/versions` | GET/POST | Template versioning |
-| `/templates/profiles` | CRUD | Template assignment profiles |
-| `/webhook/github/webhook` | POST | GitHub push webhook receiver |
-| `/health` | GET | Service health check |
+Route reference: `knowledge_base/.agent/system/mcp-server.md` ("REST API
+Endpoints"). Project, scan, generation and discovery routes are mounted under
+`/mcp` and require the RAG backend's `access_token` cookie; `/health`,
+`/logs/stream` and `/webhook/github/webhook` are outside that prefix.
 
 ### 8.3 nginx Reverse Proxy Routing
 
-Port values are environment-variable-driven (`nexus-client.conf.template`) — not hardcoded.
+Rendered per client from `deploy/nginx/nexus-client.conf.template` (the template is authoritative); ports come from environment variables.
 
 | Path Pattern | Upstream | Notes |
 |-------------|----------|-------|
-| `/api/v1/*` | `localhost:${BACKEND_PORT}` | RAG API |
-| `/health` | `localhost:${BACKEND_PORT}` | Health check |
-| `/dashboard/*` | `localhost:${DASHBOARD_PORT}` | Dashboard (nginx container) |
-| `/mcp/*` | `localhost:${MCP_PORT}` | MCP server container, max_body 500 MB |
-| `/logs/*` | `localhost:${MCP_PORT}` | SSE logs, buffering off, 24 h timeout |
-| `/webhook/*` | `localhost:${MCP_PORT}` | GitHub webhooks |
-| `/` (catch-all) | `localhost:${FRONTEND_PORT}` | Next.js RAG UI, WebSocket upgrade |
+| `/api/v1/*`, `= /health` | `127.0.0.1:${BACKEND_PORT}` | RAG API |
+| `/webhook/*` | `127.0.0.1:${MCP_PORT}` | GitHub webhooks |
+| `/ops/control/*` | `127.0.0.1:${MCP_PORT}` | Mission Control triggers; path allowlist, `OPS_CONTROL_ALLOW` rules, 64k body |
+| `/mcp/*`, `/logs/*` | `127.0.0.1:${MCP_PORT}` | Superadmin-gated (`auth_request`); `/logs/` unbuffered, 600s timeout |
+| `/dashboard/*`, `/assets/*` | `127.0.0.1:${DASHBOARD_PORT}` | Superadmin-gated |
+| `/auth/*`, `/nexus-api/*` | `127.0.0.1:${BACKEND_PORT}` | Rewritten to `/api/v1/auth/*` and `/api/v1/*`; superadmin-gated |
+| `/` (catch-all) | `127.0.0.1:${FRONTEND_PORT}` | Next.js RAG UI, WebSocket upgrade |
 
 ---
 
@@ -557,7 +455,7 @@ PostgreSQL 16 serves as the relational data store for both subsystems. Schema is
 | `role_permissions` | role_id, permission_id | M2M: roles ↔ permissions |
 | `refresh_tokens` | id, user_id, token_hash, expires_at | Belongs to: user |
 | `project_assignments` | user_id, project_id | M2M: users ↔ projects |
-| `projects` | project_id, platform, doc_count | Has many: docs, assignments |
+| `projects` | project_id, platform, doc_count | Owned by the MCP server models; has many: docs, assignments |
 | `documents` | id, filename, file_type, chunk_count, project_id, uploaded_by | Belongs to: user |
 | `ingestion_jobs` | id, document_id, status, chunks_created | Belongs to: document |
 | `conversations` | id, user_id, title, created_at | Has many: messages |
@@ -595,9 +493,10 @@ Qdrant serves as the vector database. It supports both local Docker deployment a
 |----------|-------|
 | Collection name | `documents` (configurable via `QDRANT_COLLECTION`) |
 | Distance metric | Cosine |
-| Dense vector dimension | 1024 (primary provider) or 768 (Ollama fallback) |
+| Named vectors | `dense` (cosine) and `sparse` |
+| Dense vector dimension | 1024 (Voyage) or 768 (Ollama fallback) |
 | Sparse vectors | Hash-based BM25, 30,000 dimensions |
-| Payload indexes | `allowed_groups` (KEYWORD), `document_id` (INTEGER), `project_id` |
+| Payload indexes | `allowed_groups`, `document_id`, `project_id`, `chunk_index`, `source_layer`, `document_role`, `knowledge_revision_id`, `artifact_id`, `unit`, `section` |
 
 ### 10.2 Hybrid Search Flow
 
@@ -609,7 +508,7 @@ Qdrant serves as the vector database. It supports both local Docker deployment a
 
 ### 10.3 RBAC-Aware Vector Search
 
-Access control is enforced inside the Qdrant query via `_build_search_filter()` — it is impossible for users to receive chunks outside their access scope, regardless of semantic relevance. Superadmins bypass all filters; admins see all chunks or scope to specified `project_ids`; managers filter by `project_id`; developers filter by `project_id` AND `allowed_groups`.
+Access control is enforced inside the Qdrant query via `_build_search_filter()` — users cannot receive chunks outside their access scope, regardless of semantic relevance. The filter rules are in 5.3.
 
 ---
 
@@ -620,12 +519,12 @@ Access control is enforced inside the Qdrant query via `_build_search_filter()` 
 Authentication uses JWT tokens in httpOnly cookies to prevent XSS-based token theft, with token rotation on every refresh.
 
 **Login**
-- `POST /auth/login` (rate limited: 5/min) → bcrypt validation → access token (60 min) + refresh token (7 days)
-- Tokens stored as httpOnly cookies (`Secure=true` in prod, `SameSite=lax`); refresh token hash stored in PostgreSQL
+- `POST /auth/login` (rate limited: 5/min) → bcrypt validation → access token (60 min) + refresh token (14 days)
+- Tokens stored as httpOnly cookies (`Secure=true` in prod, `SameSite=lax`); refresh token hash stored in PostgreSQL; a non-httpOnly `csrf_token` cookie backs the double-submit CSRF check
 - If TOTP MFA is enabled: login returns a temporary challenge; client must call `POST /auth/verify-mfa`
 
 **Token Refresh**
-- `POST /auth/refresh` (rate limited: 10/min) → validate + revoke old refresh token → issue new token pair
+- `POST /auth/refresh` (rate limited: 60/min) → validate + revoke old refresh token → issue new token pair
 
 **Logout**
 - `POST /auth/logout` → revoke refresh token in DB → clear cookies
@@ -634,7 +533,7 @@ Authentication uses JWT tokens in httpOnly cookies to prevent XSS-based token th
 - Setup: `POST /auth/totp/setup` returns secret + QR code URI
 - Verification: `POST /auth/totp/verify` confirms setup
 - Hashed backup codes stored in DB for account recovery
-- Disable: `POST /auth/totp/disable` requires current TOTP code
+- Disable: `POST /auth/totp/disable` requires the account password (when set) and a current TOTP or backup code
 
 **Email OTP**
 - `POST /auth/otp/send` → generates time-limited code, sends via SMTP
@@ -685,9 +584,9 @@ Two-layer access model:
 - MFA: TOTP (RFC 6238) with hashed backup codes; optional email OTP
 - Credential redaction: two-layer filtering prevents secrets from reaching the LLM
 - Audit logging: all admin actions recorded with user_id, action, details, timestamp
-- Rate limiting: login 5/min, token refresh 10/min (slowapi)
+- Rate limiting: login 5/min, token refresh 60/min (slowapi)
 - Cookie security: httpOnly, Secure (HTTPS), SameSite=lax
-- nginx security headers: HSTS, X-Content-Type-Options, X-Frame-Options, CSP, Referrer-Policy
+- nginx security headers: HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy (the template sets no CSP)
 - IP allowlist: optional `ALLOWED_IPS` (comma-separated CIDRs)
 - Trusted proxies: `TRUSTED_PROXIES` setting for correct client IP resolution behind reverse proxy
 
@@ -697,15 +596,8 @@ Two-layer access model:
 
 ### 12.1 Docker Compose Services
 
-| Service | Image | Port | Memory | Health Check |
-|---------|-------|------|--------|-------------|
-| postgres | postgres:16-alpine | 127.0.0.1:5432 | 512 MB | pg_isready |
-| qdrant | qdrant/qdrant:latest | 127.0.0.1:6333, 6334 | 1 GB | curl /healthz |
-| hindsight | ghcr.io/vectorize-io/hindsight:latest | 127.0.0.1:8888, 9999 | 2 GB | wget /health |
-| backend | Custom (FastAPI) | 127.0.0.1:8000 | 1 GB | curl /health |
-| frontend | Custom (Next.js) | 127.0.0.1:3000 | 512 MB | curl / |
-| mcp-server | Custom (FastAPI) | 127.0.0.1:8002 | 1 GB | curl /health |
-| dashboard | Custom (Vite+nginx) | 127.0.0.1:8001 | 256 MB | curl /health |
+Services, images, ports, and the health boundary: root `CLAUDE.md` services table.
+Memory limits and health checks: `docker-compose.yml`.
 
 All internal ports are bound to `127.0.0.1` only. Only ports 22 (SSH), 80, and 443 are exposed externally via UFW. External access routes exclusively through the VPS nginx proxy.
 
@@ -717,18 +609,19 @@ The MCP server runs as a Docker Compose service on port 8002 with bind mounts fo
 
 - Handles all external HTTPS traffic; port values configurable via environment variables
 - SSL/TLS termination (Let's Encrypt / certbot)
-- Path-based routing to four upstream services
-- Security headers: HSTS, CSP, X-Frame-Options, X-Content-Type-Options
-- SSE support: `proxy_buffering off` for `/logs/*` (24-hour read timeout)
+- Path-based routing to backend, MCP server, dashboard, and frontend (table in 8.3)
+- Operator surfaces (`/mcp`, `/logs`, `/dashboard`, `/auth`, `/nexus-api`, `/assets`) gated to superadmins via `auth_request`
+- Security headers: HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy
+- SSE support: `proxy_buffering off` for `/logs/*` (600s read timeout)
 - WebSocket upgrade support for the Next.js frontend
 
 **Layer 2: Dashboard Container nginx**
 
 - Serves the Vite static build; SPA fallback to `index.html`
-- Proxies `/mcp/`, `/logs/`, `/webhook/` to `mcp-server:8002`
-- Proxies `/auth/` to `host.docker.internal:8000/api/v1/auth/`
+- Proxies `/mcp/`, `/logs/`, `/webhook/`, `/health` to `mcp-server:8002` and `/mc/` to `mission-control:9100`
+- Proxies `/auth/` and `/nexus-api/` to `backend:8000` (rewritten to `/api/v1/auth/` and `/api/v1/`)
 - SSE: `proxy_buffering off`, `proxy_read_timeout 600s`
-- Max upload body: 500 MB
+- Max upload body: 3072 MB (`knowledge_base/dashboard/nginx.conf`)
 
 ### 12.3 MCP Server Deployment (Docker Compose)
 
@@ -741,7 +634,7 @@ The MCP server is deployed as the `mcp-server` service in the root Docker Compos
 - Restart: unless-stopped
 - Mounted state: MCP data, intodoc scan output, generated docs, instruction packs
 
-Running on the host (not in Docker) is intentional: the MCP server requires direct filesystem access to scan source code directories and invoke the AI doc-generation CLI.
+It runs in Docker, not on the host; source trees, scan output, and packs reach it through those bind mounts.
 
 ---
 
@@ -751,22 +644,22 @@ Running on the host (not in Docker) is intentional: the MCP server requires dire
 |---------|---------|-----------|------|
 | Dense embedding provider | 1024-dim vector embeddings | Yes (Ollama fallback) | API key |
 | Reranker provider | Result re-scoring | Yes | API key |
-| Primary LLM provider(s) | Answer generation | Yes (Ollama fallback) | API key |
+| Chat LLM provider (default Kimi) | Answer generation | No (fallbacks only if listed in `RAG_APPROVED_FALLBACK_MODELS`) | API key |
 | AI doc-generation provider | Documentation writing | Yes (configurable) | API key / CLI |
-| Ollama | Local LLM + embedding fallback | No | Local |
+| Ollama | Local LLM option + embedding fallback | Yes, but a core backend `/health` check | Local |
 | Qdrant | Vector database (Cloud or Docker) | No | API key (Cloud) |
 | PostgreSQL 16 | Relational database | No | Password |
 | Hindsight | Long-context user memory | Yes | None |
 | GitHub Webhooks | Auto-trigger scans on push | Yes | Webhook secret (HMAC) |
 | SMTP | Email invites, OTP codes | Yes | SMTP credentials |
 
-### 13.1 LLM Provider Failover
+### 13.1 LLM Provider Selection
 
-The LLM client implements a chain configured via `LLM_PROVIDERS`. It tries each provider in order and falls back on error. The final entry should always be a locally-hosted Ollama model to guarantee availability without external API access. All provider parameters (model name, temperature, timeout, base URL, API key) are independently configurable via environment variables.
+See 6.1. There is no implicit provider chain for answers: the selected model is called, and only explicitly approved fallback models are tried after it. (`LLM_PROVIDERS` exists in `config.py` but is read only by the benchmark runner to label runs.)
 
 ### 13.2 Embedding Provider Failover
 
-Embeddings use a configurable primary provider (1024-dim) with Ollama `nomic-embed-text` (768-dim) as fallback. The vector dimension must be consistent within a Qdrant collection — switching providers mid-collection requires full re-indexing.
+Embeddings walk `EMBEDDING_PROVIDERS` (default Voyage 1024-dim, then Ollama `nomic-embed-text` 768-dim) and use the first that succeeds. The vector dimension must be consistent within a Qdrant collection — switching providers mid-collection requires full re-indexing.
 
 ### 13.3 Doc Generation Provider
 
@@ -774,7 +667,7 @@ Documentation generation is decoupled from the query-time LLM. It is configured 
 
 ### 13.4 Benchmarking Framework
 
-A built-in framework evaluates RAG quality. Benchmarks run via CLI (`python -m benchmark run|list|show|compare`) or API.
+A built-in framework evaluates RAG quality. Benchmarks run via CLI (`python -m benchmark run|list|show|compare`); the API (`/api/v1/benchmark/runs`) only lists and shows runs.
 
 | Metric | Description | Method |
 |--------|-------------|--------|
@@ -790,28 +683,12 @@ Results stored in PostgreSQL (`benchmark_runs`, JSONB). Run comparison diffs tra
 
 ## 14. Key Architectural Decisions
 
-| Decision | Rationale |
-|----------|-----------|
-| No LangChain | Full control over every RAG stage; fewer dependencies; easier debugging |
-| Model-agnostic provider chains | Swap embedding/LLM/reranker via env vars without code changes |
-| Hybrid search (dense + BM25) | Semantic understanding + keyword precision combined |
-| Pure-Python hash-based BM25 (30K-dim) | No external dependency; deterministic; integrates natively with Qdrant sparse vectors |
-| Semantic chunking | Preserves meaning boundaries vs arbitrary character splits |
-| Optional Hindsight memory | Personalization value without adding critical-path risk |
-| Multi-provider LLM chain with local fallback | Cloud provider for quality; local Ollama for availability and zero marginal cost |
-| JWT httpOnly cookies | Prevents XSS token theft vs localStorage approach |
-| RBAC enforced in Qdrant filters | Access control at the DB layer — impossible to bypass via application bugs |
-| nginx with env-variable port template | Per-client deployment flexibility without config file changes |
-| Staging directory for docs | Atomic doc generation: failure leaves existing docs intact |
-| PostgreSQL shared by both services | Single DB to manage; shared user/project data |
-| MCP server in Docker Compose | Same lifecycle and health boundary as the rest of the application stack |
-| Two-layer nginx | Edge SSL termination + container-level SPA routing |
-| Bounded agent runtime with task persistence | Reliable multi-phase doc gen: resumes incomplete tasks, retries failed ones, never loses accepted output |
-| Configurable doc-gen provider | Decouple batch documentation writing from the query-time LLM chain |
-| TOTP MFA + invite + access-request flows | Enterprise-grade auth without an external identity provider |
-| Tenant config API | White-label branding per deployment without code changes |
-| Per-client compose project | Multi-tenant deployment with isolated env files, networks, ports, and volumes per client |
+Decision records: `knowledge_base/.agent/decisions/` (for example 002 staging swap,
+003 server-side RAG push, 022 no LangChain / configurable providers, 024 one VPS
+per client, 037 subscription licence). The rationale for choices without an ADR
+(hybrid BM25, semantic chunking, RBAC in Qdrant filters, httpOnly JWT cookies,
+two-layer nginx) is stated in the relevant section above.
 
 ---
 
-*This document reflects the platform state as of May 2026. For implementation details, refer to the source code and inline documentation in the referenced modules.*
+*For implementation details, the source code and inline documentation in the referenced modules are authoritative.*

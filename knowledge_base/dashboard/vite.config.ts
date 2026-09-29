@@ -7,10 +7,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/mcp": "http://localhost:8001",
-      "/github": "http://localhost:8001",
-      "/health": "http://localhost:8001",
-      "/logs": "http://localhost:8001",
+      // MCP REST API: `python -m mcp_server --serve` and compose both publish 8002.
+      "/mcp": "http://localhost:8002",
+      "/github": "http://localhost:8002",
+      "/health": "http://localhost:8002",
+      "/logs": "http://localhost:8002",
       "/mc": {
         target: "http://localhost:9100",
         changeOrigin: true,

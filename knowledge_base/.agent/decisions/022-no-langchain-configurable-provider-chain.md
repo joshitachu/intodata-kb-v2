@@ -25,7 +25,28 @@ swappable at runtime. Anthropic partnership (token resale) requires Claude suppo
 architecture must not be Claude-only; tool-use implementation uses OpenAI function-calling
 format which all three cloud providers support."
 
+Further reasons recorded when the decision was first taken (Feb 2026):
+
+- **Debugging opacity**: a framework hides the HTTP calls, prompt construction and
+  retrieval logic; failures trace into framework internals rather than our code.
+- **Version instability**: LangChain shipped frequent breaking API changes in 2024-2025.
+- **Token and cost visibility**: direct calls let us control and log exactly what is sent,
+  and count tokens precisely.
+- **Readability**: the whole pipeline can be traced in our own code.
+
+## Alternatives Considered
+
+- **Keep LangChain**: rejected for debugging friction and version instability.
+- **LlamaIndex**: same concerns.
+- **Haystack**: mature, but the same opacity trade-off.
+
 ## Consequences
+
+- We own the full implementation of parsing, chunking, embedding, Qdrant calls, RBAC
+  filters, prompt building and LLM streaming. Extending the pipeline (reranker, query
+  expander, new retrieval strategy) is code, not chain configuration. The modular split
+  (separate embedder, vector store, search and LLM client modules) keeps a future swap
+  possible if the opacity and stability problems are ever solved.
 
 - Client-facing material must describe the models as a configurable provider chain with a
   data-residency note, and must NEVER claim "no external APIs / all data stays local" --
@@ -39,4 +60,5 @@ format which all three cloud providers support."
 
 ## Source
 Promoted from `RAG_pipeline/.claude/PROJECT_MEMORY.md -- Architecture Decisions` on 2026-09-04. The original file is preserved verbatim under the
-owning sub-project's `.claude/archive/PROJECT_MEMORY.md`.
+owning sub-project's `.claude/archive/PROJECT_MEMORY.md`. Absorbs the former
+`RAG_pipeline/.agent/decisions/001-no-langchain.md`.

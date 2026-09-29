@@ -37,6 +37,11 @@ The service-owned cache at `{data_dir}/opencode_cache` is shared between runs
 and checked for write access during preflight. Temporary state is removed after
 the child process and its process group have been reaped.
 
+`docker compose exec` runs as root. Anything that invokes OpenCode inside the
+container must use `-u appuser`, or it leaves root-owned state behind. The XDG
+isolation above makes a run survive that, but the ambient home is still shared
+with `opencode auth`/CLI use.
+
 OpenCode Go routes use `opencode-go/<model-id>` and require
 `MCP_OPENCODE_GO_API_KEY`. Nexus writes that key to a per-run 0600 `auth.json`;
 it is not placed in the prompt. OpenRouter routes accept either

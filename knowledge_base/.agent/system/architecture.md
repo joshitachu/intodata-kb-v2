@@ -2,12 +2,10 @@
 
 ## Overview
 
-intodoc is a multi-project, multi-platform code intelligence tool built in phases:
+intodoc is a multi-project, multi-platform code intelligence tool:
 
 1. **Scan & Parse** -- Extract structured data from integration codebases
 2. **Document** -- Generate comprehensive documentation (business + technical)
-3. **Normalize** -- Convert platform-specific models to universal IR
-4. **Migrate** -- Auto-generate code for target platforms (planned)
 
 ## Architecture
 
@@ -28,18 +26,20 @@ The platform operates in two modes:
   `opencode-cli` receive the same prepared staging workspace and exact prompt;
   they differ only in CLI transport and event parsing. OpenCode has no
   scheduler, workspace contract, or goal-driven route.
-- Phase 1: Setup (load scan data via MCP)
-- Phase 2: Group Analysis (parallel per-group tasks, configurable concurrency via `MCP_AGENT_PHASE2_CONCURRENCY`)
-- Phase 3: Write Docs (parallel per-document tasks via `MCP_AGENT_PHASE3_CONCURRENCY`)
-- Phase 4: Enterprise gates + publish (`enterprise_gates.json`, `_audit/`, `index.json`, run log; RAG push is handled server-side via `RagBridge.push_docs()`)
-- Task artifacts persisted in `docs_staging/_agent_tasks/{phase}/{target_id}/` (contract.json, output.md, validation_report.json)
+- The custom API harness runs the phase pipeline listed in `mcp-workflow.md` (the one
+  place the phase table is kept). RAG push is handled server-side via `RagBridge.push_docs()`.
+- Task artifacts persisted in `docs_staging/_agent_tasks/{phase}/{target_id}/` (see
+  `mcp-workflow.md` "Debug Forensics" for which files are always-on)
 - Custom provider requires API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, etc.)
-- Publishable runs default to enterprise mode. Failed gates preserve `docs_staging/` for repair/resume and block swap to `docs/`.
+- Enterprise publish gates are advisory: failures surface as warnings and the swap proceeds
+  (see `mcp-workflow.md` "Evidence Traceability").
 
 ### Supporting Services
 
 - Dashboard (`dashboard/`) -- React + Vite control panel (:5173)
 - RAG Pipeline (`../RAG_pipeline/`) -- FastAPI + Qdrant for doc search (:8000)
+
+Technology stack and versions: root `ARCHITECTURE.md`.
 
 ## Multi-Project Architecture
 
@@ -50,9 +50,9 @@ is designed to manage multiple projects simultaneously through the dashboard or 
 ## Multi-Platform Support
 
 The scanner uses a platform plugin architecture (`src/intodoc/platforms/<name>/`). Each
-platform plugin is self-contained with its own parser, prompts, and best practices. Current
-production platforms include Talend, Workato, Generic, and Lobster; the architecture still
-supports adding MuleSoft, dbt, and other integration platforms.
+platform plugin is self-contained with its own parser, prompts, and best practices. The
+implemented platforms are Talend, Workato, Lobster and Generic (`platforms/registry.py`);
+new ones are added per `intodoc/.agent/sop/add-platform.md` (ADR-027).
 
 ## Data Pipeline
 
@@ -73,19 +73,16 @@ Source Code (XML, properties, configs, etc.)
 ```
 knowledge_base/                     -- Platform root
   .agent/                           -- Agent context docs
-    system/                         -- Architecture, workflow, tech stack
+    system/                         -- Architecture, workflow, server, dashboard
     SOP/                            -- Standard operating procedures
-    tasks/                          -- Phase FRDs
     decisions/                      -- Architecture Decision Records
-  .claude/                          -- legacy agent settings + session logs
-  .mcp.json                         -- MCP server configuration
-  CLAUDE.md                         -- Platform rules and quick reference
+  CLAUDE.md                         -- Platform rules
   mcp-server/                       -- MCP + REST API server
     src/mcp_server/
       mcp/server.py                 -- 14 MCP tools
       api/                          -- REST API routes (FastAPI, JWT auth on /mcp/*)
       services/                     -- 25+ service files
-      providers/                    -- claude_cli + custom API harness
+      providers/                    -- claude_cli, opencode_cli, custom API harness
       db/                           -- SQLAlchemy models + session
   dashboard/                        -- React control panel
     src/
@@ -99,7 +96,8 @@ knowledge_base/                     -- Platform root
       models.py                     -- 30+ Pydantic data models
       scanner/                      -- File walking, credential filter
       platforms/                    -- talend, workato, generic, lobster plugins
-      ir/                           -- Universal Intermediate Representation
+      lineage.py, landscape.py      -- Deterministic lineage + landscape passes
+      mapping_accounting.py, capability_ledger.py -- Coverage ledgers
     reference-docs/                 -- 9 format/structure specifications
   intodoc-output/                   -- Scan cache (read-only during doc generation)
   output/                           -- Agent output (docs + logs only)
@@ -108,15 +106,7 @@ knowledge_base/                     -- Platform root
 ## Integration Points
 
 - **MCP Server** -- Exposes scan data to the custom harness and optional MCP tools
-- **REST API** -- Dashboard communicates with MCP server via REST (:8001)
+- **REST API** -- Dashboard communicates with MCP server via REST (:8002)
 - **Dashboard** -- React control panel for project lifecycle management
 - **RAG Pipeline** -- Ingests generated markdown docs for knowledge base search
   - Uses nomic-embed-text (768-dim) + BM25 hybrid search via Qdrant
-
-## Current State (Feb 2026)
-
-- Phase 0 complete (cleanup + knowledge base)
-- Phase 1 complete (21 analysis passes, 32 templates, 3 new passes P19-P21)
-- Phase 2 complete (Universal IR: 99.4% expression parse rate)
-- MCP-based doc generation operational (12 output documents)
-- Phase 3 (migration code generator) not yet started

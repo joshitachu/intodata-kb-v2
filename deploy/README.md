@@ -69,9 +69,10 @@ table and shows the **"create first admin"** form, which calls
 `POST /api/v1/auth/bootstrap-admin`. After the admin is created, the standard
 7-step wizard runs; ZIP uploads in the Source step stream to
 source upload and live logs go through the customer-facing Next.js API
-(`/api/source/*`). Public customer domains do not expose `/dashboard/`,
-`/mcp/*`, or `/logs/*`; MCP remains reachable on the VPS-local port for the
-frontend container and operator SSH tunnels.
+(`/api/source/*`). On public customer domains `/dashboard/`, `/mcp/*`, and
+`/logs/*` are gated to superadmins by nginx `auth_request`
+(`nginx/nexus-client.conf.template`); MCP also remains reachable on the
+VPS-local port for the frontend container and operator SSH tunnels.
 
 ## Ansible compatibility notes
 
@@ -105,9 +106,10 @@ Infra roles should still handle the following outside the app repo:
 |---|---|
 | `RUNBOOK.md` | Canonical EP-001 fresh VPS deployment runbook using Docker Compose, host Ollama, and nginx/certbot. |
 | `SMOKE-TEST.md` | End-to-end deployment smoke checklist for health, HTTPS, auth, ingest, streaming, developer-route lockdown, and IP allowlisting. |
+| `WEBHOOK-SETUP.md` | GitHub webhook setup for automatic re-scans on push. |
 | `deploy-client.sh` | Main deploy entry point. |
 | `docker-compose.yml` (root) | Compose file, ports parameterized via env vars. |
 | `nginx/nexus-client.conf.template` | Rendered per client by envsubst. |
-| `mcp-server@.service` | Legacy systemd template unit retained for reference. |
-| `mcp-server.service` | Legacy single-tenant systemd unit retained for reference. |
+| `operator/` | Operator-machine compose overlays and client registry example for licence issuing (`RUNBOOK.md` section 17). |
+| `monitoring/` | Prometheus scrape config and Grafana dashboard provisioning. |
 | `.env.production.template` (root) | Reference for every env var a stack needs. |

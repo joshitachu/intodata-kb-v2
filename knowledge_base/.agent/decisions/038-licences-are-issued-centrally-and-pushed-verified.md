@@ -1,7 +1,7 @@
 # ADR-038: Licences Are Issued Centrally And Pushed, And The Instance Verifies Before Storing
 
 ## Status
-Accepted 2026-09-28 (plan `.plans/plan.md`, feature `licence-issuing-ui`). Extends ADR-037.
+Accepted 2026-09-28 (internal plan, not in repo; feature `licence-issuing-ui`). Extends ADR-037.
 
 ## Context
 

@@ -1,7 +1,7 @@
 # ADR-037: The Subscription Licence Is A Signed File, Verified Offline
 
 ## Status
-Accepted 2026-09-28 (plan `.plans/plan.md`, feature `subscription-licence`)
+Accepted 2026-09-28 (internal plan, not in repo; feature `subscription-licence`)
 
 ## Context
 
@@ -35,7 +35,9 @@ payment. The entitlement checks must survive that move unchanged.
 4. **The verifier is mirrored, not shared.** `core.py`, `keys.py` and the
    `golden_vectors.json` fixture are byte-identical between
    `RAG_pipeline/backend/src/licensing/` and
-   `knowledge_base/mcp-server/src/mcp_server/licensing/`. A parity test enforces
+   `knowledge_base/mcp-server/src/mcp_server/licensing/` (fixtures under each
+   service's `tests/test_licensing/`). Change both copies together; the parity
+   test (`test_licence_mirror_parity.py`, backend suite) enforces
    this. This follows ADR-016 (duplicated RBAC) and the pending polyrepo split.
 5. **Refusal is HTTP 402** with
    `detail = {code, message, capability, ...}`, where `code` is one of
@@ -85,5 +87,5 @@ payment. The entitlement checks must survive that move unchanged.
   needs enforcing does need a redeploy.
 
 ## Source
-`.plans/plan.md` (subscription-licence), 2026-09-28. Runbook:
+Internal plan, not in repo (subscription-licence), 2026-09-28. Runbook:
 `deploy/RUNBOOK.md` section 17. Smoke test: `deploy/SMOKE-TEST.md` section 10.

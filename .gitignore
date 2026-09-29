@@ -91,7 +91,7 @@ knowledge_base/mcp-server/packs/
 knowledge_base/mcp-server/data/logs/
 mission_control/clients.json
 mission_control/snapshots/
-knowledge_base/dashboard/tsconfig.tsbuildinfo
+*.tsbuildinfo
 
 # Local database dumps — may contain client data, and are far too large for git
 /.backups/

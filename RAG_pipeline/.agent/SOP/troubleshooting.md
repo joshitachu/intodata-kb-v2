@@ -4,15 +4,27 @@ Common failures and fixes for the RAG pipeline.
 
 ---
 
-## Ollama Issues
+## Model Provider Issues
+
+Defaults (`backend/src/config.py`): chat `kimi/kimi-k2.6`, embeddings Voyage then
+Ollama, reranker Voyage. The Ollama sections below apply only when Ollama is in use.
+
+### Chat fails with a provider or 404 model error
+**Check**: `KIMI_API_KEY` is set and `RAG_DEFAULT_MODEL` (or the superadmin
+`rag_chat_model` override) names a model the provider still serves. Chat does not
+silently fall back to another provider unless `RAG_APPROVED_FALLBACK_MODELS` lists it.
+
+### Chat returns 402
+**Cause**: licence enforcement. Set `LICENCE_ENFORCEMENT=off` for local dev; see
+`RAG_pipeline/CLAUDE.md` "Subscription Licence".
 
 ### Ollama not responding
 **Symptom**: `curl http://localhost:11434/api/tags` times out or connection refused.
 **Fix**: Ollama runs on the host, not in Docker. Start it: `ollama serve` (or it should auto-start as a daemon after install). Verify: `ollama list`.
 
 ### Model not found
-**Symptom**: `model "gemma3:12b" not found` in backend logs.
-**Fix**: `ollama pull gemma3:12b && ollama pull nomic-embed-text`. Check `ollama list` to confirm.
+**Symptom**: `model "gemma3:4b" not found` in backend logs.
+**Fix**: pull the configured models (`OLLAMA_LLM_MODEL`, default `gemma3:4b`; `OLLAMA_EMBED_MODEL`, default `nomic-embed-text`): `ollama pull gemma3:4b && ollama pull nomic-embed-text`. Check `ollama list` to confirm.
 
 ### Slow first query
 **Cause**: Model is loading into GPU/CPU memory. First query after startup takes 10-30s.
@@ -83,7 +95,7 @@ Then re-run `alembic upgrade head`.
 ### Document ingestion stuck in `processing`
 **Symptom**: IngestionJob stays in `processing` state indefinitely.
 **Fix**: Check backend logs for the background task error. Common causes:
-- Ollama not responding (embedding step fails)
+- Embedding provider failing (Voyage key/rate limit, or Ollama not responding)
 - Document parser failing (unsupported format or corrupt file)
 - Qdrant connection refused
 
@@ -104,7 +116,7 @@ Note: this is a server-only variable. No `NEXT_PUBLIC_` prefix.
 
 ### React Query stale data after login/logout
 **Cause**: React Query cache persists across auth state changes.
-**Fix**: `queryClient.clear()` must be called in both login and logout handlers. See `contexts/auth.tsx`.
+**Fix**: `queryClient.clear()` must be called in both login and logout handlers. See `hooks/useAuth.ts`.
 
 ### TypeScript build errors after pulling changes
 **Fix**: `cd frontend && npm install` — dependencies may have changed.

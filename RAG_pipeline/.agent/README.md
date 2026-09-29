@@ -8,28 +8,25 @@
 | Looking up an API endpoint                         | `system/api-reference.md`                                   |
 | Working on Auth / RBAC / Onboarding                | `system/subsystems.md` (Auth, RBAC, Onboarding sections)    |
 | Working on Token Tracking / Benchmarking           | `system/subsystems.md` (Token/Cost, Benchmarking sections)  |
-| Looking up the tech stack or model params          | `system/tech-stack.md`                                      |
+| Looking up the tech stack or model params          | root `ARCHITECTURE.md` section 3, `backend/src/config.py`   |
 | Setting up local dev for the first time            | `SOP/setup-dev.md`                                          |
 | Diagnosing a runtime error or service issue        | `SOP/troubleshooting.md`                                    |
 | Adding a new API endpoint                          | `SOP/add-route.md`                                          |
-| Checking architecture decisions                    | `decisions/` + `knowledge_base/.agent/decisions/`           |
+| Checking architecture decisions                    | `knowledge_base/.agent/decisions/`                          |
 
 ## Directory Contents
 
 ### system/
-- `architecture.md` -- Full system architecture: services, RAG flow, auth flow, data models, Qdrant schema
-- `tech-stack.md` -- Stack reference: models, parameters, library versions, key constraints
-- `api-reference.md` -- All API routes grouped by domain
+- `architecture.md` -- RAG-specific notes (auth flow, data models, Qdrant payload, frontend BFF); the full flow is in root `ARCHITECTURE.md`
+- `api-reference.md` -- Main API routes grouped by domain (`backend/src/api/routes/` is authoritative)
 - `subsystems.md` -- Auth, RBAC, Token/Cost Tracking, Benchmarking, Onboarding (detailed reference)
 
 ### SOP/ -- How to do things
 - `setup-dev.md` -- Get the full stack running locally from scratch
-- `troubleshooting.md` -- Common failures and fixes (Ollama, Qdrant, migrations, JWT)
+- `troubleshooting.md` -- Common failures and fixes (model providers, Qdrant, migrations, JWT)
 - `add-route.md` -- How to add a new API endpoint end-to-end
 
-### decisions/ -- Architecture Decision Records
-- `001-no-langchain.md` -- Why direct implementation over LangChain
-
 ## Related Documentation
-- `CLAUDE.md` -- Platform rules, quick commands, code style, critical rules
+- `CLAUDE.md` -- RAG rules, code style, environment, licence enforcement
+- root `readme.md` -- start commands and ports
 - `knowledge_base/.agent/decisions/` -- Architecture decision records (shared across sub-projects)
