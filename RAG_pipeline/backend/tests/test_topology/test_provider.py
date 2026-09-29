@@ -32,33 +32,33 @@ from tests.test_topology.conftest import (
 
 class TestIdentityForwarding:
     async def test_forwards_access_token_cookie_and_reads_the_landscape_path(
-        self, alitalend
+        self, talend_demo
     ) -> None:
-        transport = json_transport(alitalend)
+        transport = json_transport(talend_demo)
         provider = make_provider(transport)
 
-        await provider.get_landscape(project_id="alitalend", access_token="user-jwt")
+        await provider.get_landscape(project_id="talend_demo", access_token="user-jwt")
 
         request = transport.requests[0]
-        assert request.url.path == "/mcp/projects/alitalend/landscape"
+        assert request.url.path == "/mcp/projects/talend_demo/landscape"
         assert request.method == "GET"
         # MCP performs the authoritative project-access check from this cookie.
         # If this assertion ever has to be deleted, access control moved.
         assert request.headers.get("cookie") == "access_token=user-jwt"
 
-    async def test_sends_no_cookie_when_there_is_no_token(self, alitalend) -> None:
-        transport = json_transport(alitalend)
+    async def test_sends_no_cookie_when_there_is_no_token(self, talend_demo) -> None:
+        transport = json_transport(talend_demo)
         provider = make_provider(transport)
 
-        await provider.get_landscape(project_id="alitalend")
+        await provider.get_landscape(project_id="talend_demo")
 
         assert transport.requests[0].headers.get("cookie") is None
 
-    async def test_never_puts_the_token_in_the_url_or_body(self, alitalend) -> None:
-        transport = json_transport(alitalend)
+    async def test_never_puts_the_token_in_the_url_or_body(self, talend_demo) -> None:
+        transport = json_transport(talend_demo)
         provider = make_provider(transport)
 
-        await provider.get_landscape(project_id="alitalend", access_token="user-jwt")
+        await provider.get_landscape(project_id="talend_demo", access_token="user-jwt")
 
         request = transport.requests[0]
         assert "user-jwt" not in str(request.url)
@@ -90,7 +90,7 @@ class TestOutcomes:
         provider = make_provider(transport)
 
         with pytest.raises(TopologyProviderError) as caught:
-            await provider.get_landscape(project_id="alitalend")
+            await provider.get_landscape(project_id="talend_demo")
 
         assert caught.value.safe_message == "Topology provider returned HTTP 500."
         assert "hunter2" not in caught.value.safe_message
@@ -103,7 +103,7 @@ class TestOutcomes:
         provider = make_provider(transport)
 
         with pytest.raises(TopologyPayloadError) as caught:
-            await provider.get_landscape(project_id="alitalend")
+            await provider.get_landscape(project_id="talend_demo")
 
         assert caught.value.safe_message == "Topology provider returned an invalid response."
         assert "hunter2" not in caught.value.safe_message
@@ -113,7 +113,7 @@ class TestOutcomes:
         provider = make_provider(transport)
 
         with pytest.raises(TopologyPayloadError):
-            await provider.get_landscape(project_id="alitalend")
+            await provider.get_landscape(project_id="talend_demo")
 
     async def test_structurally_invalid_artifact_is_a_payload_error(self) -> None:
         # `systems` is required to be a list of objects with an id; a scalar
@@ -122,7 +122,7 @@ class TestOutcomes:
         provider = make_provider(transport)
 
         with pytest.raises(TopologyPayloadError) as caught:
-            await provider.get_landscape(project_id="alitalend")
+            await provider.get_landscape(project_id="talend_demo")
 
         assert "rescan" in caught.value.safe_message
 
@@ -133,7 +133,7 @@ class TestOutcomes:
         provider = make_provider(RecordingTransport(responder))
 
         with pytest.raises(TopologyProviderTimeoutError) as caught:
-            await provider.get_landscape(project_id="alitalend")
+            await provider.get_landscape(project_id="talend_demo")
 
         assert not isinstance(caught.value, TopologyProviderError)
         assert "timed out after 5s" in caught.value.safe_message
@@ -145,21 +145,21 @@ class TestOutcomes:
         provider = make_provider(RecordingTransport(responder))
 
         with pytest.raises(TopologyProviderError) as caught:
-            await provider.get_landscape(project_id="alitalend")
+            await provider.get_landscape(project_id="talend_demo")
 
         assert caught.value.safe_message == "Topology provider could not be reached."
 
-    async def test_unconfigured_base_url_never_issues_a_request(self, alitalend) -> None:
-        transport = json_transport(alitalend)
+    async def test_unconfigured_base_url_never_issues_a_request(self, talend_demo) -> None:
+        transport = json_transport(talend_demo)
         provider = make_provider(transport)
         provider._base_url = ""
 
         with pytest.raises(TopologyProviderError, match="not configured"):
-            await provider.get_landscape(project_id="alitalend")
+            await provider.get_landscape(project_id="talend_demo")
         assert transport.call_count == 0
 
-    async def test_traversal_project_id_is_rejected_before_any_request(self, alitalend) -> None:
-        transport = json_transport(alitalend)
+    async def test_traversal_project_id_is_rejected_before_any_request(self, talend_demo) -> None:
+        transport = json_transport(talend_demo)
         provider = make_provider(transport)
 
         with pytest.raises(TopologyProviderError, match="Invalid project id"):
@@ -168,12 +168,12 @@ class TestOutcomes:
 
 
 class TestCaching:
-    async def test_second_read_inside_the_ttl_is_served_from_cache(self, alitalend) -> None:
-        transport = json_transport(alitalend)
+    async def test_second_read_inside_the_ttl_is_served_from_cache(self, talend_demo) -> None:
+        transport = json_transport(talend_demo)
         provider = make_provider(transport, cache_ttl_seconds=60.0)
 
-        first = await provider.get_landscape(project_id="alitalend")
-        second = await provider.get_landscape(project_id="alitalend")
+        first = await provider.get_landscape(project_id="talend_demo")
+        second = await provider.get_landscape(project_id="talend_demo")
 
         assert transport.call_count == 1
         # The parsed document, not its wrapper: four artifact families now share
@@ -181,36 +181,36 @@ class TestCaching:
         # that matters is that a multi-megabyte document is validated once.
         assert second.landscape is first.landscape
 
-    async def test_each_project_is_cached_separately(self, alitalend, werkorder) -> None:
+    async def test_each_project_is_cached_separately(self, talend_demo, workorders_demo) -> None:
         def responder(request: httpx.Request) -> httpx.Response:
-            payload = werkorder if "werkorder" in request.url.path else alitalend
+            payload = workorders_demo if "workorders_demo" in request.url.path else talend_demo
             return httpx.Response(200, json=payload)
 
         transport = RecordingTransport(responder)
         provider = make_provider(transport)
 
-        await provider.get_landscape(project_id="alitalend")
-        await provider.get_landscape(project_id="werkorder")
-        await provider.get_landscape(project_id="alitalend")
+        await provider.get_landscape(project_id="talend_demo")
+        await provider.get_landscape(project_id="workorders_demo")
+        await provider.get_landscape(project_id="talend_demo")
 
         assert transport.call_count == 2
 
-    async def test_unchanged_fingerprint_reuses_the_parsed_artifact(self, alitalend) -> None:
-        transport = json_transport(alitalend)
+    async def test_unchanged_fingerprint_reuses_the_parsed_artifact(self, talend_demo) -> None:
+        transport = json_transport(talend_demo)
         provider = make_provider(transport, cache_ttl_seconds=0.0)
 
-        first = await provider.get_landscape(project_id="alitalend")
-        second = await provider.get_landscape(project_id="alitalend")
+        first = await provider.get_landscape(project_id="talend_demo")
+        second = await provider.get_landscape(project_id="talend_demo")
 
         assert transport.call_count == 2
         # Refetched, but the identical artifact is not re-parsed.
         assert second.landscape is first.landscape
 
-    async def test_changed_fingerprint_replaces_the_cached_artifact(self, alitalend) -> None:
+    async def test_changed_fingerprint_replaces_the_cached_artifact(self, talend_demo) -> None:
         republished = {
-            **alitalend,
+            **talend_demo,
             "business_topology": {
-                **alitalend["business_topology"],
+                **talend_demo["business_topology"],
                 "scan_fingerprint": "f" * 64,
                 "systems": [
                     {
@@ -224,7 +224,7 @@ class TestCaching:
                 ],
             },
         }
-        payloads = [alitalend, republished]
+        payloads = [talend_demo, republished]
 
         def responder(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json=payloads.pop(0) if payloads else republished)
@@ -232,8 +232,8 @@ class TestCaching:
         transport = RecordingTransport(responder)
         provider = make_provider(transport, cache_ttl_seconds=0.0)
 
-        first = await provider.get_landscape(project_id="alitalend")
-        second = await provider.get_landscape(project_id="alitalend")
+        first = await provider.get_landscape(project_id="talend_demo")
+        second = await provider.get_landscape(project_id="talend_demo")
 
         assert transport.call_count == 2
         assert second is not first
@@ -241,7 +241,7 @@ class TestCaching:
         assert [item.name for item in second.landscape.business_topology.systems] == ["Renamed"]
 
     async def test_overlay_republished_against_the_same_scan_still_invalidates(
-        self, alitalend
+        self, talend_demo
     ) -> None:
         """The scan fingerprint alone is not a sufficient cache key.
 
@@ -249,33 +249,33 @@ class TestCaching:
         so identity includes the artifact content digest.
         """
         republished = {
-            **alitalend,
+            **talend_demo,
             "business_topology": {
-                **alitalend["business_topology"],
+                **talend_demo["business_topology"],
                 "data_streams": [],
             },
         }
-        payloads = [alitalend, republished]
+        payloads = [talend_demo, republished]
 
         def responder(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json=payloads.pop(0) if payloads else republished)
 
         provider = make_provider(RecordingTransport(responder), cache_ttl_seconds=0.0)
 
-        first = await provider.get_landscape(project_id="alitalend")
-        second = await provider.get_landscape(project_id="alitalend")
+        first = await provider.get_landscape(project_id="talend_demo")
+        second = await provider.get_landscape(project_id="talend_demo")
 
         assert first.fingerprint.scan == second.fingerprint.scan
         assert first.fingerprint.content != second.fingerprint.content
         assert second.landscape.business_topology.data_streams == []
 
-    async def test_clear_cache_forces_a_refetch(self, alitalend) -> None:
-        transport = json_transport(alitalend)
+    async def test_clear_cache_forces_a_refetch(self, talend_demo) -> None:
+        transport = json_transport(talend_demo)
         provider = make_provider(transport)
 
-        await provider.get_landscape(project_id="alitalend")
+        await provider.get_landscape(project_id="talend_demo")
         provider.clear_cache()
-        await provider.get_landscape(project_id="alitalend")
+        await provider.get_landscape(project_id="talend_demo")
 
         assert transport.call_count == 2
 
@@ -289,34 +289,34 @@ class TestGraphManifestFamily:
     """The three design endpoints, same discipline as the landscape read."""
 
     async def test_each_family_reads_its_own_path_and_forwards_the_cookie(
-        self, werkorder_graph, quintiq_job_graph, richest_component_graph
+        self, workorders_demo_graph, quintiq_job_graph, richest_component_graph
     ) -> None:
         transport = RoutedTransport(
             {
-                project_graph_path("werkorder"): werkorder_graph,
-                job_graph_path("werkorder", QUINTIQ_JOB): quintiq_job_graph,
-                component_graph_path("werkorder", MAPPING_JOB, MAPPING_COMPONENT): (
+                project_graph_path("workorders_demo"): workorders_demo_graph,
+                job_graph_path("workorders_demo", QUINTIQ_JOB): quintiq_job_graph,
+                component_graph_path("workorders_demo", MAPPING_JOB, MAPPING_COMPONENT): (
                     richest_component_graph
                 ),
             }
         )
         provider = make_provider(transport)
 
-        await provider.get_project_graph(project_id="werkorder", access_token="user-jwt")
+        await provider.get_project_graph(project_id="workorders_demo", access_token="user-jwt")
         await provider.get_job_graph(
-            project_id="werkorder", job_name=QUINTIQ_JOB, access_token="user-jwt"
+            project_id="workorders_demo", job_name=QUINTIQ_JOB, access_token="user-jwt"
         )
         await provider.get_component_graph(
-            project_id="werkorder",
+            project_id="workorders_demo",
             job_name=MAPPING_JOB,
             component_name=MAPPING_COMPONENT,
             access_token="user-jwt",
         )
 
         assert transport.paths == [
-            "/mcp/projects/werkorder/graph",
-            f"/mcp/projects/werkorder/jobs/{QUINTIQ_JOB}/graph",
-            f"/mcp/projects/werkorder/jobs/{MAPPING_JOB}/components/{MAPPING_COMPONENT}/graph",
+            "/mcp/projects/workorders_demo/graph",
+            f"/mcp/projects/workorders_demo/jobs/{QUINTIQ_JOB}/graph",
+            f"/mcp/projects/workorders_demo/jobs/{MAPPING_JOB}/components/{MAPPING_COMPONENT}/graph",
         ]
         for request in transport.requests:
             assert request.headers.get("cookie") == "access_token=user-jwt"
@@ -358,7 +358,7 @@ class TestGraphManifestFamily:
         provider = make_provider(transport)
 
         await provider.get_job_graph(
-            project_id="p1", job_name="Assetcheck.__intodoc_zip__::LogConnection"
+            project_id="p1", job_name="Inspecthub.__intodoc_zip__::LogConnection"
         )
 
         assert transport.call_count == 1
@@ -399,27 +399,27 @@ class TestGraphManifestFamily:
             )
 
     async def test_the_families_share_one_cache_without_colliding(
-        self, alitalend, werkorder_graph, quintiq_job_graph
+        self, talend_demo, workorders_demo_graph, quintiq_job_graph
     ) -> None:
         transport = RoutedTransport(
             {
-                landscape_path("werkorder"): alitalend,
-                project_graph_path("werkorder"): werkorder_graph,
-                job_graph_path("werkorder", QUINTIQ_JOB): quintiq_job_graph,
+                landscape_path("workorders_demo"): talend_demo,
+                project_graph_path("workorders_demo"): workorders_demo_graph,
+                job_graph_path("workorders_demo", QUINTIQ_JOB): quintiq_job_graph,
             }
         )
         provider = make_provider(transport)
 
-        landscape = await provider.get_landscape(project_id="werkorder")
-        graph = await provider.get_project_graph(project_id="werkorder")
-        job = await provider.get_job_graph(project_id="werkorder", job_name=QUINTIQ_JOB)
+        landscape = await provider.get_landscape(project_id="workorders_demo")
+        graph = await provider.get_project_graph(project_id="workorders_demo")
+        job = await provider.get_job_graph(project_id="workorders_demo", job_name=QUINTIQ_JOB)
         # Second pass: all three served from cache, none confused for another.
-        assert (await provider.get_landscape(project_id="werkorder")).landscape is (
+        assert (await provider.get_landscape(project_id="workorders_demo")).landscape is (
             landscape.landscape
         )
-        assert (await provider.get_project_graph(project_id="werkorder")).graph is graph.graph
+        assert (await provider.get_project_graph(project_id="workorders_demo")).graph is graph.graph
         assert (
-            await provider.get_job_graph(project_id="werkorder", job_name=QUINTIQ_JOB)
+            await provider.get_job_graph(project_id="workorders_demo", job_name=QUINTIQ_JOB)
         ).graph is job.graph
         assert transport.call_count == 3
 
@@ -428,15 +428,15 @@ class TestGraphManifestFamily:
     ) -> None:
         transport = RoutedTransport(
             {
-                job_graph_path("werkorder", QUINTIQ_JOB): quintiq_job_graph,
-                job_graph_path("werkorder", RICHEST_JOB): richest_job_graph,
+                job_graph_path("workorders_demo", QUINTIQ_JOB): quintiq_job_graph,
+                job_graph_path("workorders_demo", RICHEST_JOB): richest_job_graph,
             }
         )
         provider = make_provider(transport)
 
-        await provider.get_job_graph(project_id="werkorder", job_name=QUINTIQ_JOB)
-        await provider.get_job_graph(project_id="werkorder", job_name=RICHEST_JOB)
-        await provider.get_job_graph(project_id="werkorder", job_name=QUINTIQ_JOB)
+        await provider.get_job_graph(project_id="workorders_demo", job_name=QUINTIQ_JOB)
+        await provider.get_job_graph(project_id="workorders_demo", job_name=RICHEST_JOB)
+        await provider.get_job_graph(project_id="workorders_demo", job_name=QUINTIQ_JOB)
 
         assert transport.call_count == 2
 

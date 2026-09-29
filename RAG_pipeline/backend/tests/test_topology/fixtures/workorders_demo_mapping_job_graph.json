@@ -1,7 +1,7 @@
 {
- "project_id": "werkorder",
- "job_name": "VISE_SP_VIP_OTL",
- "group": "VolkerVessels_Workorder/Talend exports/Assetcheck.__intodoc_zip__/ASSETCHECK/VoorbeeldJobs",
+ "project_id": "workorders_demo",
+ "job_name": "QADB_SP_VIP_OTL",
+ "group": "ClientA_Workorder/Talend exports/Inspecthub.__intodoc_zip__/INSPECTHUB/VoorbeeldJobs",
  "nodes": [
   {
    "unique_name": "tFileInputXML_2",
@@ -15,7 +15,7 @@
    "param_summary": {
     "DIE_ON_ERROR": "false",
     "ENCODING": "\"UTF-8\"",
-    "FILENAME": "context.processedDirectory +(String)globalMap.get(\"globalFileName\") + \"_vise_get_output.xml\""
+    "FILENAME": "context.processedDirectory +(String)globalMap.get(\"globalFileName\") + \"_qadb_get_output.xml\""
    },
    "has_code": false,
    "description": ""
@@ -72,7 +72,7 @@
    "connection_ref": "",
    "param_summary": {
     "ENCODING": "\"UTF-8\"",
-    "FILENAME": "context.inProgressDirectory +\"Temp//\"+ (String)globalMap.get(\"globalFileName\") + \"_vise_method_temp_\" + (String)globa..."
+    "FILENAME": "context.inProgressDirectory +\"Temp//\"+ (String)globalMap.get(\"globalFileName\") + \"_qadb_method_temp_\" + (String)globa..."
    },
    "has_code": false,
    "description": ""
@@ -111,7 +111,7 @@
    "role": "transform",
    "has_subgraph": false,
    "subjob_target": null,
-   "connection_ref": "VolkerVessels_Workorder/Talend exports/Assetcheck.__intodoc_zip__/ASSETCHECK::LogConnection",
+   "connection_ref": "ClientA_Workorder/Talend exports/Inspecthub.__intodoc_zip__/INSPECTHUB::LogConnection",
    "param_summary": {
     "DBNAME": "context.connection_logDB_Database",
     "ENCODING": "\"ISO-8859-15\"",
@@ -133,7 +133,7 @@
    "role": "input",
    "has_subgraph": false,
    "subjob_target": null,
-   "connection_ref": "VolkerVessels_Workorder/Talend exports/Assetcheck.__intodoc_zip__/ASSETCHECK::LogConnection",
+   "connection_ref": "ClientA_Workorder/Talend exports/Inspecthub.__intodoc_zip__/INSPECTHUB::LogConnection",
    "param_summary": {
     "DBNAME": "context.logDBName",
     "ENCODING": "\"ISO-8859-15\"",
@@ -306,7 +306,7 @@
   },
   {
    "unique_name": "tSOAP_1",
-   "display_label": "VISEGet",
+   "display_label": "QADBGet",
    "component_type": "tSOAP",
    "type_explanation": "Processes data using the Talend tSOAP component.",
    "role": "transform",
@@ -314,7 +314,7 @@
    "subjob_target": null,
    "connection_ref": "",
    "param_summary": {
-    "ENDPOINT": "(String)row1.VISEURL"
+    "ENDPOINT": "(String)row1.QADBURL"
    },
    "has_code": false,
    "description": ""
@@ -530,7 +530,7 @@
     "DESTINATION": "context.failedDirectory + (String)globalMap.get(\"globalVariable\") + \"\\\\\" + ((String)globalMap.get(\"row1.OperationName\"))",
     "ENABLE_COPY_DIRECTORY": "false",
     "FAILON": "true",
-    "FILENAME": "context.processedDirectory +(String)globalMap.get(\"globalFileName\") + \"_vise_get_output.xml\"",
+    "FILENAME": "context.processedDirectory +(String)globalMap.get(\"globalFileName\") + \"_qadb_get_output.xml\"",
     "REMOVE_FILE": "false",
     "REPLACE_FILE": "true",
     "SOURCE_DERECTORY": "\"D:/Talend Project New WorkSpace\""
@@ -582,7 +582,7 @@
     "DESTINATION": "context.failedDirectory + (String)globalMap.get(\"globalVariable\") + \"\\\\\" + ((String)globalMap.get(\"row1.OperationName\"))",
     "ENABLE_COPY_DIRECTORY": "false",
     "FAILON": "true",
-    "FILENAME": "context.inProgressDirectory + (String)globalMap.get(\"globalFileName\") + \"_vise_get_input.xml\"",
+    "FILENAME": "context.inProgressDirectory + (String)globalMap.get(\"globalFileName\") + \"_qadb_get_input.xml\"",
     "REMOVE_FILE": "false",
     "REPLACE_FILE": "true",
     "SOURCE_DERECTORY": "\"D:/Talend Project New WorkSpace\""
@@ -646,7 +646,7 @@
    "role": "transform",
    "has_subgraph": false,
    "subjob_target": null,
-   "connection_ref": "VolkerVessels_Workorder/Talend exports/Assetcheck.__intodoc_zip__/ASSETCHECK::LogConnection",
+   "connection_ref": "ClientA_Workorder/Talend exports/Inspecthub.__intodoc_zip__/INSPECTHUB::LogConnection",
    "param_summary": {
     "COMMIT_EVERY": "10000",
     "DBNAME": "\"\"",
@@ -730,12 +730,12 @@
   },
   {
    "unique_name": "tRunJob_1",
-   "display_label": "CheckViseCode",
+   "display_label": "CheckQadbCode",
    "component_type": "tRunJob",
    "type_explanation": "Starts another Talend Job.",
    "role": "orchestration",
    "has_subgraph": false,
-   "subjob_target": "CheckViseCode_VIP_OTL",
+   "subjob_target": "CheckQadbCode_VIP_OTL",
    "connection_ref": "",
    "param_summary": {
     "DIE_ON_CHILD_ERROR": "false",
@@ -787,12 +787,12 @@
   },
   {
    "unique_name": "tRunJob_2",
-   "display_label": "UpdateViseSharepoint",
+   "display_label": "UpdateQadbSharepoint",
    "component_type": "tRunJob",
    "type_explanation": "Starts another Talend Job.",
    "role": "orchestration",
    "has_subgraph": false,
-   "subjob_target": "UpdateViseSharepoint_VIP_OTL",
+   "subjob_target": "UpdateQadbSharepoint_VIP_OTL",
    "connection_ref": "",
    "param_summary": {
     "DIE_ON_CHILD_ERROR": "true",
@@ -831,12 +831,12 @@
   },
   {
    "unique_name": "tRunJob_3",
-   "display_label": "InsertViseSharepoint",
+   "display_label": "InsertQadbSharepoint",
    "component_type": "tRunJob",
    "type_explanation": "Starts another Talend Job.",
    "role": "orchestration",
    "has_subgraph": false,
-   "subjob_target": "CreateViseSharepoint_VIP_OTL",
+   "subjob_target": "CreateQadbSharepoint_VIP_OTL",
    "connection_ref": "",
    "param_summary": {
     "DIE_ON_CHILD_ERROR": "true",
@@ -928,7 +928,7 @@
     "DESTINATION": "context.processedDirectory + (String)globalMap.get(\"globalVariable\") + \"\\\\\" + ((String)globalMap.get(\"row1.OperationN...",
     "ENABLE_COPY_DIRECTORY": "false",
     "FAILON": "true",
-    "FILENAME": "context.inProgressDirectory +\"Temp//\"+ (String)globalMap.get(\"globalFileName\") + \"_vise_method_temp_\" + (String)globa...",
+    "FILENAME": "context.inProgressDirectory +\"Temp//\"+ (String)globalMap.get(\"globalFileName\") + \"_qadb_method_temp_\" + (String)globa...",
     "REMOVE_FILE": "false",
     "REPLACE_FILE": "true",
     "SOURCE_DERECTORY": "\"D:/Talend Projects\""
@@ -1009,7 +1009,7 @@
    "param_summary": {
     "DIE_ON_ERROR": "false",
     "ENCODING": "\"UTF-8\"",
-    "FILENAME": "context.processedDirectory +(String)globalMap.get(\"globalFileName\") + \"_vise_get_output.xml\""
+    "FILENAME": "context.processedDirectory +(String)globalMap.get(\"globalFileName\") + \"_qadb_get_output.xml\""
    },
    "has_code": false,
    "description": ""
@@ -1029,7 +1029,7 @@
   },
   {
    "unique_name": "tRunJob_4",
-   "display_label": "SyncViseDate",
+   "display_label": "SyncQadbDate",
    "component_type": "tRunJob",
    "type_explanation": "Starts another Talend Job.",
    "role": "orchestration",
@@ -1057,7 +1057,7 @@
    "param_summary": {
     "DIE_ON_ERROR": "false",
     "ENCODING": "\"UTF-8\"",
-    "FILENAME": "context.processedDirectory +(String)globalMap.get(\"globalFileName\") + \"_vise_get_output.xml\""
+    "FILENAME": "context.processedDirectory +(String)globalMap.get(\"globalFileName\") + \"_qadb_get_output.xml\""
    },
    "has_code": false,
    "description": ""
@@ -1163,7 +1163,7 @@
    "type_explanation": "Starts another Talend Job.",
    "role": "orchestration",
    "has_subgraph": false,
-   "subjob_target": "VISE2SP_ExtraRun_VIP_OTL",
+   "subjob_target": "QADB2SP_ExtraRun_VIP_OTL",
    "connection_ref": "",
    "param_summary": {
     "DIE_ON_CHILD_ERROR": "true",
@@ -1217,7 +1217,7 @@
     "FILENAME": "context.logsDirectory+context.processCode+\"_\"+((String)globalMap.get(\"globalVariable\"))+\"_log.csv\"",
     "REMOVE_FILE": "false",
     "REPLACE_FILE": "true",
-    "SOURCE_DERECTORY": "\"D:/ViseWokspace\""
+    "SOURCE_DERECTORY": "\"D:/QadbWokspace\""
    },
    "has_code": false,
    "description": ""
@@ -1251,7 +1251,7 @@
     "DESTINATION": "context.failedDirectory + (String)globalMap.get(\"globalVariable\") + \"\\\\\" + ((String)globalMap.get(\"row1.OperationName\"))",
     "ENABLE_COPY_DIRECTORY": "false",
     "FAILON": "true",
-    "FILENAME": "context.inProgressDirectory +\"Temp//\"+ (String)globalMap.get(\"globalFileName\") + \"_vise_method_temp_\" + (String)globa...",
+    "FILENAME": "context.inProgressDirectory +\"Temp//\"+ (String)globalMap.get(\"globalFileName\") + \"_qadb_method_temp_\" + (String)globa...",
     "REMOVE_FILE": "false",
     "REPLACE_FILE": "true",
     "SOURCE_DERECTORY": "\"D:/Talend Project New WorkSpace\""

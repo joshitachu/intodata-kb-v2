@@ -108,7 +108,7 @@ All admin endpoints require the relevant permission (see `system/subsystems.md` 
 `POST /admin/access-requests/{id}/approve` body (all fields optional):
 
 ```json
-{ "role_id": 3, "project_ids": ["werkorder"], "welcome_note": "..." }
+{ "role_id": 3, "project_ids": ["workorders_demo"], "welcome_note": "..." }
 ```
 
 - `role_id` -- role the invitee arrives with. Owner-named roles are rejected

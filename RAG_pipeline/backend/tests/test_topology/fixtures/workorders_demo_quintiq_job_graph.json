@@ -1,7 +1,7 @@
 {
- "project_id": "werkorder",
- "job_name": "Quintiq2Maximo_WorkOrderPickedUpXML",
- "group": "VolkerVessels_Workorder/Talend exports/VQ_Quintiq2MX.__intodoc_zip__/VQ_QUINTIQ2MX/Quintiq2Maximo",
+ "project_id": "workorders_demo",
+ "job_name": "Quintiq2AssetSys_WorkOrderPickedUpXML",
+ "group": "ClientA_Workorder/Talend exports/PQ_Quintiq2MX.__intodoc_zip__/PQ_QUINTIQ2MX/Quintiq2AssetSys",
  "nodes": [
   {
    "unique_name": "tMSSqlInput_1",
@@ -11,7 +11,7 @@
    "role": "input",
    "has_subgraph": false,
    "subjob_target": null,
-   "connection_ref": "VolkerVessels_Workorder/Talend exports/VQ_Quintiq2MX.__intodoc_zip__/VQ_QUINTIQ2MX::LogDBConnection",
+   "connection_ref": "ClientA_Workorder/Talend exports/PQ_Quintiq2MX.__intodoc_zip__/PQ_QUINTIQ2MX::LogDBConnection",
    "param_summary": {
     "DBNAME": "\"\"",
     "ENCODING": "\"ISO-8859-15\"",
@@ -46,7 +46,7 @@
    "role": "transform",
    "has_subgraph": false,
    "subjob_target": null,
-   "connection_ref": "VolkerVessels_Workorder/Talend exports/VQ_Quintiq2MX.__intodoc_zip__/VQ_QUINTIQ2MX::LogDBConnection",
+   "connection_ref": "ClientA_Workorder/Talend exports/PQ_Quintiq2MX.__intodoc_zip__/PQ_QUINTIQ2MX::LogDBConnection",
    "param_summary": {
     "COMMIT_EVERY": "10000",
     "DBNAME": "\"\"",
@@ -81,7 +81,7 @@
    "role": "output",
    "has_subgraph": false,
    "subjob_target": null,
-   "connection_ref": "VolkerVessels_Workorder/Talend exports/VQ_Quintiq2MX.__intodoc_zip__/VQ_QUINTIQ2MX::LogDBConnection",
+   "connection_ref": "ClientA_Workorder/Talend exports/PQ_Quintiq2MX.__intodoc_zip__/PQ_QUINTIQ2MX::LogDBConnection",
    "param_summary": {
     "BATCH_SIZE": "10000",
     "COMMIT_EVERY": "10000",
@@ -103,7 +103,7 @@
    "role": "input",
    "has_subgraph": false,
    "subjob_target": null,
-   "connection_ref": "VolkerVessels_Workorder/Talend exports/VQ_Quintiq2MX.__intodoc_zip__/VQ_QUINTIQ2MX::LogDBConnection",
+   "connection_ref": "ClientA_Workorder/Talend exports/PQ_Quintiq2MX.__intodoc_zip__/PQ_QUINTIQ2MX::LogDBConnection",
    "param_summary": {
     "DBNAME": "\"\"",
     "ENCODING": "\"ISO-8859-15\"",
@@ -138,7 +138,7 @@
    "role": "input",
    "has_subgraph": false,
    "subjob_target": null,
-   "connection_ref": "VolkerVessels_Workorder/Talend exports/VQ_Quintiq2MX.__intodoc_zip__/VQ_QUINTIQ2MX::QuintiqDBConnection",
+   "connection_ref": "ClientA_Workorder/Talend exports/PQ_Quintiq2MX.__intodoc_zip__/PQ_QUINTIQ2MX::QuintiqDBConnection",
    "param_summary": {
     "DBNAME": "\"\"",
     "ENCODING": "\"ISO-8859-15\"",
@@ -160,7 +160,7 @@
    "role": "input",
    "has_subgraph": false,
    "subjob_target": null,
-   "connection_ref": "VolkerVessels_Workorder/Talend exports/VQ_Quintiq2MX.__intodoc_zip__/VQ_QUINTIQ2MX::LogDBConnection",
+   "connection_ref": "ClientA_Workorder/Talend exports/PQ_Quintiq2MX.__intodoc_zip__/PQ_QUINTIQ2MX::LogDBConnection",
    "param_summary": {
     "DBNAME": "\"\"",
     "ENCODING": "\"ISO-8859-15\"",
@@ -263,7 +263,7 @@
    "role": "output",
    "has_subgraph": false,
    "subjob_target": null,
-   "connection_ref": "VolkerVessels_Workorder/Talend exports/VQ_Quintiq2MX.__intodoc_zip__/VQ_QUINTIQ2MX::LogDBConnection",
+   "connection_ref": "ClientA_Workorder/Talend exports/PQ_Quintiq2MX.__intodoc_zip__/PQ_QUINTIQ2MX::LogDBConnection",
    "param_summary": {
     "BATCH_SIZE": "10000",
     "COMMIT_EVERY": "10000",
@@ -339,7 +339,7 @@
    "role": "output",
    "has_subgraph": false,
    "subjob_target": null,
-   "connection_ref": "VolkerVessels_Workorder/Talend exports/VQ_Quintiq2MX.__intodoc_zip__/VQ_QUINTIQ2MX::LogDBConnection",
+   "connection_ref": "ClientA_Workorder/Talend exports/PQ_Quintiq2MX.__intodoc_zip__/PQ_QUINTIQ2MX::LogDBConnection",
    "param_summary": {
     "BATCH_SIZE": "10000",
     "COMMIT_EVERY": "10000",
@@ -387,7 +387,7 @@
    "role": "transform",
    "has_subgraph": false,
    "subjob_target": null,
-   "connection_ref": "VolkerVessels_Workorder/Talend exports/VQ_Quintiq2MX.__intodoc_zip__/VQ_QUINTIQ2MX::LogDBConnection",
+   "connection_ref": "ClientA_Workorder/Talend exports/PQ_Quintiq2MX.__intodoc_zip__/PQ_QUINTIQ2MX::LogDBConnection",
    "param_summary": {
     "DBNAME": "context.connection_logDB_Database",
     "ENCODING": "\"ISO-8859-15\"",
@@ -409,7 +409,7 @@
    "role": "transform",
    "has_subgraph": false,
    "subjob_target": null,
-   "connection_ref": "VolkerVessels_Workorder/Talend exports/VQ_Quintiq2MX.__intodoc_zip__/VQ_QUINTIQ2MX::QuintiqDBConnection",
+   "connection_ref": "ClientA_Workorder/Talend exports/PQ_Quintiq2MX.__intodoc_zip__/PQ_QUINTIQ2MX::QuintiqDBConnection",
    "param_summary": {
     "DBNAME": "context.connection_quintiqDB_Database",
     "ENCODING": "\"ISO-8859-15\"",

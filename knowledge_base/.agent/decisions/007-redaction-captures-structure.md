@@ -6,7 +6,7 @@ Accepted 2026-07-14 / 2026-07-29; still current
 ## Context
 
 Two opposite failures were observed on real customer source. Cleartext credentials
-(`MaximoPassword`, `AES_Key`) reached a published document because sensitivity matching
+(`AssetSysPassword`, `AES_Key`) reached a published document because sensitivity matching
 was keyed on an underscore-suffix heuristic that camelCase names bypass. Separately,
 over-eager redaction rewrote `xmlns` declaration URIs, which silently dropped tMap
 MapperData from every job because the namespaced `xsi:type` lookup then failed.

@@ -3,118 +3,118 @@
   "note": "AUTHORED BY HAND. Not a system output and never will be. This file answers the question 'does the scorer accept a correct answer?' -- without it, a scorer that fails everything would look like a scorer that works. Every answer here is written from the ground truth in suite/core.yaml; the suite must score this file at 100% pass. If a change to the scorer makes a case here fail, the scorer got stricter than correct, not the system worse.",
   "answers": [
     {
-      "case_id": "vw-maximo-workorder-consumers",
+      "case_id": "clienta-assetsys-workorder-consumers",
       "provenance": "handwritten_reference",
-      "answer": "Maximo publiceert de WerkOrder aan negen afnemers [1]. Acht daarvan staan als actief: 4PS / Dynamics 365, Ortec, RHM, Smartflow (via RHM), Quintiq, AssetCheck / VISE, VRONTV (inkoop) en Infor LN. De negende, Flex / FlexInspect, staat als stilgevallen. Elk van die negen interfacedocumenten verwijst voor de bronzijde terug naar het bronkoppelvlakdocument en beschrijft zelf alleen de stap gemeenschappelijk model naar doelsysteem.",
+      "answer": "AssetSys publiceert de WorkOrder aan negen afnemers [1]. Acht daarvan staan als actief: 4FS / Dynamics 365, RoutePlan, RHM, Smartflow (via RHM), Quintiq, InspectHub / QADB, VRONTV (inkoop) en Infor LN. De negende, Flex / FlexInspect, staat als stilgevallen. Elk van die negen interfacedocumenten verwijst voor de bronzijde terug naar het bronkoppelvlakdocument en beschrijft zelf alleen de stap gemeenschappelijk model naar doelsysteem.",
       "sources": [
         {
-          "filename": "VolkerWessels - Maximo WerkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "filename": "ClientA - AssetSys WorkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.91,
-          "text": "1.2 De negen afnemers. Maximo publiceert de WerkOrder aan negen bestemmingen: 4PS / Dynamics 365 actief; Ortec actief; RHM actief; Smartflow (via RHM) actief; Quintiq actief; AssetCheck / VISE actief; VRONTV (inkoop) actief; Infor LN actief; Flex / FlexInspect stilgevallen."
+          "text": "1.2 De negen afnemers. AssetSys publiceert de WorkOrder aan negen bestemmingen: 4FS / Dynamics 365 actief; RoutePlan actief; RHM actief; Smartflow (via RHM) actief; Quintiq actief; InspectHub / QADB actief; VRONTV (inkoop) actief; Infor LN actief; Flex / FlexInspect stilgevallen."
         }
       ]
     },
     {
-      "case_id": "vw-maximo-publication-forms",
+      "case_id": "clienta-assetsys-publication-forms",
       "provenance": "handwritten_reference",
-      "answer": "Vijf berichtvormen [1]. PublishVLWO (wortel VLWOSet/WORKORDER) naar 4PS, ongeveer 400 elementen. PublishACWO (wortel ACWOSet/WORKORDER) naar AssetCheck, 851 bladelementen waarvan 282 ooit gevuld. InvokeASSIGNDETAIL (wortel ASSIGNDETAILSet/ASSIGNMENT) naar Ortec, FO 4.1. PublishASSIGNSTATUS (wortel ASSIGNSTATUSSet/ASSIGNMENT) naar Ortec FO 4.6 en Infor LN FO 4.7. En een platte REST JSON naar RHM (13 velden) en Quintiq (19 velden).",
+      "answer": "Vijf berichtvormen [1]. PublishVLWO (wortel VLWOSet/WORKORDER) naar 4FS, ongeveer 400 elementen. PublishACWO (wortel ACWOSet/WORKORDER) naar InspectHub, 851 bladelementen waarvan 282 ooit gevuld. InvokeASSIGNDETAIL (wortel ASSIGNDETAILSet/ASSIGNMENT) naar RoutePlan, FO 4.1. PublishASSIGNSTATUS (wortel ASSIGNSTATUSSet/ASSIGNMENT) naar RoutePlan FO 4.6 en Infor LN FO 4.7. En een platte REST JSON naar RHM (13 velden) en Quintiq (19 velden).",
       "sources": [
         {
-          "filename": "VolkerWessels - Maximo WerkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "filename": "ClientA - AssetSys WorkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.89,
-          "text": "Maximo publiceert de WerkOrder in vijf verschillende vormen, afhankelijk van de afnemer. PublishVLWO, VLWOSet/WORKORDER, 4PS, ~400 elementen. PublishACWO, ACWOSet/WORKORDER, AssetCheck, 851 bladelementen, 282 ooit gevuld. InvokeASSIGNDETAIL, ASSIGNDETAILSet/ASSIGNMENT, Ortec (FO 4.1). PublishASSIGNSTATUS, ASSIGNSTATUSSet/ASSIGNMENT, Ortec (FO 4.6), Infor LN (FO 4.7). REST JSON, RHM (13 velden), Quintiq (19 velden), plat."
+          "text": "AssetSys publiceert de WorkOrder in vijf verschillende vormen, afhankelijk van de afnemer. PublishVLWO, VLWOSet/WORKORDER, 4FS, ~400 elementen. PublishACWO, ACWOSet/WORKORDER, InspectHub, 851 bladelementen, 282 ooit gevuld. InvokeASSIGNDETAIL, ASSIGNDETAILSet/ASSIGNMENT, RoutePlan (FO 4.1). PublishASSIGNSTATUS, ASSIGNSTATUSSet/ASSIGNMENT, RoutePlan (FO 4.6), Infor LN (FO 4.7). REST JSON, RHM (13 velden), Quintiq (19 velden), plat."
         }
       ]
     },
     {
-      "case_id": "vw-fo41-target-field-count",
+      "case_id": "clienta-fo41-target-field-count",
       "provenance": "handwritten_reference",
-      "answer": "31 doelvelden [1]. De veldmappingtabel voor FO 4.1 nummert de rijen 1 tot en met 31, van Envelope/Body/SendMessage/commandName tot Envelope/Header/To. Zes daarvan zijn constanten of envelop-elementen, zodat 25 velden daadwerkelijk een gegeven uit Maximo dragen [2]. Let op: het contractbreedte-overzicht in 01_ANTWOORDEN_OP_DE_VRAGEN.md noteert voor deze interface 30; de genummerde tabel is de controleerbare telling.",
+      "answer": "31 doelvelden [1]. De veldmappingtabel voor FO 4.1 nummert de rijen 1 tot en met 31, van Envelope/Body/SendMessage/commandName tot Envelope/Header/To. Zes daarvan zijn constanten of envelop-elementen, zodat 25 velden daadwerkelijk een gegeven uit AssetSys dragen [2]. Let op: het contractbreedte-overzicht in 01_ANTWOORDEN_OP_DE_VRAGEN.md noteert voor deze interface 30; de genummerde tabel is de controleerbare telling.",
       "sources": [
         {
           "filename": "05_VELDMAPPINGS_COMPLEET.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.85,
-          "text": "Maximo -> Ortec, ongeplande werkorder, dit document, FO 4.1 Maximo -> Ortec, 31 rijen. 28 werkbon, m:ASSIGNMENTID, direct. 29 Envelope/Header/Action, constant. 30 Envelope/Header/ReplyTo/Address, constant. 31 Envelope/Header/To, constant."
+          "text": "AssetSys -> RoutePlan, ongeplande workorder, dit document, FO 4.1 AssetSys -> RoutePlan, 31 rijen. 28 werkbon, m:ASSIGNMENTID, direct. 29 Envelope/Header/Action, constant. 30 Envelope/Header/ReplyTo/Address, constant. 31 Envelope/Header/To, constant."
         },
         {
-          "filename": "17_DEMARCATIE_WERKORDER_MELDING.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "filename": "17_DEMARCATIE_WORKORDER_MELDING.md",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 2,
           "score": 0.7,
-          "text": "Het planningsbericht telt 31 doelvelden, waarvan zes constanten en envelop-elementen. Van de 25 velden die een gegeven uit Maximo dragen, komen er negen uit de melding."
+          "text": "Het planningsbericht telt 31 doelvelden, waarvan zes constanten en envelop-elementen. Van de 25 velden die een gegeven uit AssetSys dragen, komen er negen uit de melding."
         }
       ]
     },
     {
-      "case_id": "vw-assetcheck-contract-width",
+      "case_id": "clienta-inspecthub-contract-width",
       "provenance": "handwritten_reference",
-      "answer": "PublishACWO telt 851 bladelementen, waarvan er 282 ooit gevuld zijn [1]. De gevulde set bevat complete blokken MXFLEX* (19 velden), VR_* (45), VW_* (7), PLUSC*/PLUSP* (11) en PMCHG* (9). Dat is het volledige interne objectmodel als koppelvlak: de breedste vorm is tegelijk de slechtste.",
+      "answer": "PublishACWO telt 851 bladelementen, waarvan er 282 ooit gevuld zijn [1]. De gevulde set bevat complete blokken MXFLEX* (19 velden), VR_* (45), ClientA_* (7), PLUSC*/PLUSP* (11) en PMCHG* (9). Dat is het volledige interne objectmodel als koppelvlak: de breedste vorm is tegelijk de slechtste.",
       "sources": [
         {
-          "filename": "VolkerWessels - Maximo WerkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "filename": "ClientA - AssetSys WorkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.9,
-          "text": "Van de 851 bladelementen in PublishACWO zijn er 282 ooit gevuld. De gevulde set bevat complete blokken MXFLEX* (19 velden), VR_* (45), VW_* (7), PLUSC* / PLUSP* (11) en PMCHG* (9)."
+          "text": "Van de 851 bladelementen in PublishACWO zijn er 282 ooit gevuld. De gevulde set bevat complete blokken MXFLEX* (19 velden), VR_* (45), ClientA_* (7), PLUSC* / PLUSP* (11) en PMCHG* (9)."
         }
       ]
     },
     {
-      "case_id": "vw-4ps-produced-vs-arrived",
+      "case_id": "clienta-4fs-produced-vs-arrived",
       "provenance": "handwritten_reference",
       "answer": "De transformatie produceert 12 velden; daarvan bereiken er 5 de doeltoepassing [1]. De overige 7 bestaan alleen binnen de keten. Het interfaceregister noteert dit als 12 gemapt tegenover 5 geschreven, en het is de reden dat contractbreedte en feitelijke levering in dit landschap uit elkaar gehouden moeten worden.",
       "sources": [
         {
           "filename": "01_ANTWOORDEN_OP_DE_VRAGEN.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.83,
-          "text": "Maximo -> 4PS: 12 gemapt, 5 geschreven. De transformatie produceert twaalf velden, waarvan er vijf de doeltoepassing bereiken; de overige zeven bestaan alleen binnen de keten."
+          "text": "AssetSys -> 4FS: 12 gemapt, 5 geschreven. De transformatie produceert twaalf velden, waarvan er vijf de doeltoepassing bereiken; de overige zeven bestaan alleen binnen de keten."
         }
       ]
     },
     {
-      "case_id": "vw-fo41-field-count-contradiction",
+      "case_id": "clienta-fo41-field-count-contradiction",
       "provenance": "handwritten_reference",
-      "answer": "Ja, de documenten spreken elkaar tegen. 05_VELDMAPPINGS_COMPLEET.md nummert voor FO 4.1 Maximo naar Ortec 31 doelvelden, en 17_DEMARCATIE_WERKORDER_MELDING.md paragraaf 3.2 bevestigt dat met 31 doelvelden waarvan zes constanten [1]. Het contractbreedte-overzicht in 01_ANTWOORDEN_OP_DE_VRAGEN.md zegt daarentegen 30 velden, zowel als contractbreedte als als feitelijk geschreven [2]. Dertig tegenover eenendertig dus. De genummerde tabel is narekenbaar en wijst op 31; het overzicht in 01 is een samenvattende telling en is vermoedelijk niet bijgewerkt.",
+      "answer": "Ja, de documenten spreken elkaar tegen. 05_VELDMAPPINGS_COMPLEET.md nummert voor FO 4.1 AssetSys naar RoutePlan 31 doelvelden, en 17_DEMARCATIE_WORKORDER_MELDING.md paragraaf 3.2 bevestigt dat met 31 doelvelden waarvan zes constanten [1]. Het contractbreedte-overzicht in 01_ANTWOORDEN_OP_DE_VRAGEN.md zegt daarentegen 30 velden, zowel als contractbreedte als als feitelijk geschreven [2]. Dertig tegenover eenendertig dus. De genummerde tabel is narekenbaar en wijst op 31; het overzicht in 01 is een samenvattende telling en is vermoedelijk niet bijgewerkt.",
       "sources": [
         {
           "filename": "05_VELDMAPPINGS_COMPLEET.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.82,
-          "text": "Maximo -> Ortec, ongeplande werkorder, FO 4.1 Maximo -> Ortec, 31. De tabel nummert 31 rijen."
+          "text": "AssetSys -> RoutePlan, ongeplande workorder, FO 4.1 AssetSys -> RoutePlan, 31. De tabel nummert 31 rijen."
         },
         {
           "filename": "01_ANTWOORDEN_OP_DE_VRAGEN.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 2,
           "score": 0.76,
-          "text": "Maximo -> Ortec (FO 4.1) | 30 velden | 30"
+          "text": "AssetSys -> RoutePlan (FO 4.1) | 30 velden | 30"
         }
       ]
     },
     {
-      "case_id": "vw-klantorder-source-contradiction",
+      "case_id": "clienta-klantorder-source-contradiction",
       "provenance": "handwritten_reference",
-      "answer": "Dat is een open vraag, en de bronnen wijzen twee kanten op. De omgevingsgebonden kopieen van 4.1_Ongeplande_directe_activiteit_Maximo2Ortec.xsl voor productie, test en acceptatie lezen alle drie WORKORDER/WOLO9; WO2 komt daarin niet voor [1]. Er bestaat daarnaast een tweede kopie in de mappingverzameling, zonder omgevingsaanduiding, die WO2 leest en vier elementen meer opbouwt: bezoeknaam, melder, opmerkingen en installatietype [2]. De aanwijzingen wijzen niet dezelfde kant op. WO2 is over 153 productieberichten in geen enkel bericht gevuld, terwijl klantorder wel gevuld wordt waargenomen, en dat pleit voor WOLO9. Welke kopie feitelijk draait is van buiten niet te bepalen; dit staat als open vraag voor Maximo functioneel beheer.",
+      "answer": "Dat is een open vraag, en de bronnen wijzen twee kanten op. De omgevingsgebonden kopieen van 4.1_Ongeplande_directe_activiteit_AssetSys2RoutePlan.xsl voor productie, test en acceptatie lezen alle drie WORKORDER/WOLO9; WO2 komt daarin niet voor [1]. Er bestaat daarnaast een tweede kopie in de mappingverzameling, zonder omgevingsaanduiding, die WO2 leest en vier elementen meer opbouwt: bezoeknaam, melder, opmerkingen en installatietype [2]. De aanwijzingen wijzen niet dezelfde kant op. WO2 is over 153 productieberichten in geen enkel bericht gevuld, terwijl klantorder wel gevuld wordt waargenomen, en dat pleit voor WOLO9. Welke kopie feitelijk draait is van buiten niet te bepalen; dit staat als open vraag voor AssetSys functioneel beheer.",
       "sources": [
         {
           "filename": "05_VELDMAPPINGS_COMPLEET.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.84,
           "text": "14 klantorder, m:WORKORDER/m:WOLO9, direct, customer. Let op de afwijking met doc 03. Het transformatiebestand leest WOLO9; WO2 komt er niet in voor."
         },
         {
           "filename": "12_ONTWERP_VERSUS_IMPLEMENTATIE.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 2,
           "score": 0.8,
           "text": "Ontwerp 4.1 WOLO9. Transformatiebestand, kopieen voor productie, test en acceptatie: WOLO9, alle drie identiek; WO2 komt er niet in voor. Transformatiebestand, tweede kopie in de mappingverzameling, zonder omgevingsaanduiding: WO2, en bouwt daarnaast vier elementen meer op (bezoeknaam, melder, opmerkingen, installatietype). WO2 komt over 153 productieberichten in geen enkel bericht gevuld voor."
@@ -122,83 +122,83 @@
       ]
     },
     {
-      "case_id": "vw-workorder-concept-inventory",
+      "case_id": "clienta-workorder-concept-inventory",
       "provenance": "handwritten_reference",
-      "answer": "61 canonieke begrippen, verdeeld over vier segmenten: B1 20, B2 10, B3 13 en B4 18 [1]. Van die 61 hebben er 21 geen plaats in het doelmodel (34 procent). Verder passen er 3 zonder omzetting (5 procent), 28 met transformatie (46 procent) en 9 horen bij een ander object (15 procent). Eenendertig begrippen hebben daarmee een plaats op het WerkOrder-object, en veertig als het IncidentReport wordt meegeteld.",
+      "answer": "61 canonieke begrippen, verdeeld over vier segmenten: B1 20, B2 10, B3 13 en B4 18 [1]. Van die 61 hebben er 21 geen plaats in het doelmodel (34 procent). Verder passen er 3 zonder omzetting (5 procent), 28 met transformatie (46 procent) en 9 horen bij een ander object (15 procent). Eenendertig begrippen hebben daarmee een plaats op het WorkOrder-object, en veertig als het IncidentReport wordt meegeteld.",
       "sources": [
         {
-          "filename": "03_INFORMATIEMODEL_WERKORDER.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "filename": "03_INFORMATIEMODEL_WORKORDER.md",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.92,
-          "text": "Over alle 61 begrippen uit B1 tot en met B4 samen: past 3 (5%); past met transformatie 28 (46%); ander object 9 (15%); geen plaats 21 (34%); Totaal 20 10 13 18 = 61. Eenendertig begrippen (51%) hebben een plaats op het WerkOrder-object, veertig (66%) hebben ergens een plaats als het IncidentReport wordt meegeteld."
+          "text": "Over alle 61 begrippen uit B1 tot en met B4 samen: past 3 (5%); past met transformatie 28 (46%); ander object 9 (15%); geen plaats 21 (34%); Totaal 20 10 13 18 = 61. Eenendertig begrippen (51%) hebben een plaats op het WorkOrder-object, veertig (66%) hebben ergens een plaats als het IncidentReport wordt meegeteld."
         }
       ]
     },
     {
-      "case_id": "vw-ortec-worktype-lists",
+      "case_id": "clienta-routeplan-worktype-lists",
       "provenance": "handwritten_reference",
-      "answer": "Gemeten aan de Maximo-kant: INS (103), WUI (45), SO (24), VMW (5), POH (2), RUS (1) en PRD (1) [1]. Gemeten aan de Ortec-kant: SO (104), INDIRECT (66), POH (11), PRD (7) en PRK (6). De lijsten zijn niet dezelfde lijst: INS, WUI, VMW en RUS bestaan alleen aan de bronkant, INDIRECT en PRK alleen aan de Ortec-kant. Waar de vertaling tussen beide zit is niet vastgesteld.",
+      "answer": "Gemeten aan de AssetSys-kant: INS (103), WUI (45), SO (24), VMW (5), POH (2), RUS (1) en PRD (1) [1]. Gemeten aan de RoutePlan-kant: SO (104), INDIRECT (66), POH (11), PRD (7) en PRK (6). De lijsten zijn niet dezelfde lijst: INS, WUI, VMW en RUS bestaan alleen aan de bronkant, INDIRECT en PRK alleen aan de RoutePlan-kant. Waar de vertaling tussen beide zit is niet vastgesteld.",
       "sources": [
         {
-          "filename": "VolkerWessels - Maximo WerkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "filename": "ClientA - AssetSys WorkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.87,
-          "text": "Gemeten: aan de Maximo-kant komen INS (103), WUI (45), SO (24), VMW (5), POH (2), RUS (1) en PRD (1) voor; aan de Ortec-kant SO (104), INDIRECT (66), POH (11), PRD (7) en PRK (6). INS, WUI, VMW en RUS bestaan alleen aan de bronkant; INDIRECT en PRK alleen aan de Ortec-kant. Waar de vertaling zit is niet vastgesteld."
+          "text": "Gemeten: aan de AssetSys-kant komen INS (103), WUI (45), SO (24), VMW (5), POH (2), RUS (1) en PRD (1) voor; aan de RoutePlan-kant SO (104), INDIRECT (66), POH (11), PRD (7) en PRK (6). INS, WUI, VMW en RUS bestaan alleen aan de bronkant; INDIRECT en PRK alleen aan de RoutePlan-kant. Waar de vertaling zit is niet vastgesteld."
         }
       ]
     },
     {
-      "case_id": "pp-domain-inventory",
+      "case_id": "pharma-domain-inventory",
       "provenance": "handwritten_reference",
-      "answer": "Tien benoemde domeinen plus een restgroep [1]. Datawarehouse en rapportage 128 onderdelen, Artikel, assortiment en Z-Index 104, Order- en verzendketen 91, Beheer, raamwerk en bewaking 42, Magazijn en uitleverketen 27, Apotheekgegevens 21, Klantkanalen en Mendix 20, Mailing en communicatie 16, Prijsafspraken 4 en Geneesmiddelenverificatie (FMD) 4. Daarbovenop staan 25 onderdelen zonder domein: de test-, demo- en oefenonderdelen. Twee mappen zijn nadrukkelijk geen domein: Pluripharm_Data_Integratie valt uiteen over vier domeinen en Processors over zes.",
+      "answer": "Tien benoemde domeinen plus een restgroep [1]. Datawarehouse en rapportage 128 onderdelen, Artikel, assortiment en Z-Index 104, Order- en verzendketen 91, Beheer, raamwerk en bewaking 42, Magazijn en uitleverketen 27, Apotheekgegevens 21, Klantkanalen en Mendix 20, Mailing en communicatie 16, Prijsafspraken 4 en Geneesmiddelenverificatie (SVD) 4. Daarbovenop staan 25 onderdelen zonder domein: de test-, demo- en oefenonderdelen. Twee mappen zijn nadrukkelijk geen domein: PharmaDemo_Data_Integratie valt uiteen over vier domeinen en Processors over zes.",
       "sources": [
         {
           "filename": "01_LANDSCHAPSKAART.md",
-          "project_id": "PLURIPHARM",
+          "project_id": "PHARMA_DEMO",
           "reference_number": 1,
           "score": 0.93,
-          "text": "Datawarehouse en rapportage 128. Artikel, assortiment en Z-Index 104. Order- en verzendketen 91. Beheer, raamwerk en bewaking 42. Magazijn en uitleverketen 27. Apotheekgegevens 21. Klantkanalen en Mendix 20. Mailing en communicatie 16. Prijsafspraken 4. Geneesmiddelenverificatie (FMD) 4. Zonder domein -- proef en oefening 25. Twee grote mappen zijn geen domein: Pluripharm_Data_Integratie (102 onderdelen) valt uiteen over vier domeinen en Processors (98) over zes."
+          "text": "Datawarehouse en rapportage 128. Artikel, assortiment en Z-Index 104. Order- en verzendketen 91. Beheer, raamwerk en bewaking 42. Magazijn en uitleverketen 27. Apotheekgegevens 21. Klantkanalen en Mendix 20. Mailing en communicatie 16. Prijsafspraken 4. Geneesmiddelenverificatie (SVD) 4. Zonder domein -- proef en oefening 25. Twee grote mappen zijn geen domein: PharmaDemo_Data_Integratie (102 onderdelen) valt uiteen over vier domeinen en Processors (98) over zes."
         }
       ]
     },
     {
-      "case_id": "pp-fmd-customer-selection-rule",
+      "case_id": "pharma-svd-customer-selection-rule",
       "provenance": "handwritten_reference",
-      "answer": "Dit kan ik niet beantwoorden uit de geindexeerde documentatie, en dat is een uitspraak over die documentatie, niet over de inrichting. Wat de documentatie over FMD bevat is het domein Geneesmiddelenverificatie (vier onderdelen) en de plaats waar de verificatiecode wordt samengesteld [1]; een selectieregel op klantniveau is daarin niet beschreven. Daaruit volgt niet dat er geen selectie plaatsvindt. De plek waar dat wel te bepalen is, is de Talend-scan: de processor-jobs onder de groep Processors bevatten de SQL van de uitgaande koppelvlakken, en die staan niet in de documentatieset. Voorstel: de scan van de shipping-confirmation-processors erbij halen, of de vraag voorleggen aan functioneel beheer.",
+      "answer": "Dit kan ik niet beantwoorden uit de geindexeerde documentatie, en dat is een uitspraak over die documentatie, niet over de inrichting. Wat de documentatie over SVD bevat is het domein Geneesmiddelenverificatie (vier onderdelen) en de plaats waar de verificatiecode wordt samengesteld [1]; een selectieregel op klantniveau is daarin niet beschreven. Daaruit volgt niet dat er geen selectie plaatsvindt. De plek waar dat wel te bepalen is, is de Talend-scan: de processor-jobs onder de groep Processors bevatten de SQL van de uitgaande koppelvlakken, en die staan niet in de documentatieset. Voorstel: de scan van de shipping-confirmation-processors erbij halen, of de vraag voorleggen aan functioneel beheer.",
       "sources": [
         {
           "filename": "04_BUSINESSREGELS.md",
-          "project_id": "PLURIPHARM",
+          "project_id": "PHARMA_DEMO",
           "reference_number": 1,
           "score": 0.57,
-          "text": "3.1 De FMD-verificatiecode wordt hier samengesteld. Gemeten: het FMD-domein telt vier onderdelen waarvan er een in de uitrol is aangetroffen."
+          "text": "3.1 De SVD-verificatiecode wordt hier samengesteld. Gemeten: het SVD-domein telt vier onderdelen waarvan er een in de uitrol is aangetroffen."
         }
       ]
     },
     {
-      "case_id": "vw-source-to-common-model-field-table",
+      "case_id": "clienta-source-to-common-model-field-table",
       "provenance": "handwritten_reference",
-      "answer": "Die tabel is er nog niet, en dat is een bewuste keuze die in de set zelf wordt verantwoord. Het bronkoppelvlakdocument zegt in paragraaf 1.3 met zoveel woorden dat de veld-voor-veldtabel bron naar gemeenschappelijk model ontbreekt [1]: van de 61 begrippen die Maximo publiceert hebben er 21 in geen van beide VWIIM-objecten een plaats, waarvan vijf samen de financiele toerekening vormen, zodat ruwweg de helft van de rijen vandaag een lege bestemmingskolom zou krijgen. De tabel hoort eenmaal voor de hele set gemaakt te worden nadat over de kostendragerrol is besloten. Wat wel bestaat en dezelfde vraag grotendeels beantwoordt: de afbeelding per begrip in 18_AANSLUITING_OP_HET_DOELMODEL.md en de veldinventaris in 03_INFORMATIEMODEL_WERKORDER.md paragraaf B.",
+      "answer": "Die tabel is er nog niet, en dat is een bewuste keuze die in de set zelf wordt verantwoord. Het bronkoppelvlakdocument zegt in paragraaf 1.3 met zoveel woorden dat de veld-voor-veldtabel bron naar gemeenschappelijk model ontbreekt [1]: van de 61 begrippen die AssetSys publiceert hebben er 21 in geen van beide CAIM-objecten een plaats, waarvan vijf samen de financiele toerekening vormen, zodat ruwweg de helft van de rijen vandaag een lege bestemmingskolom zou krijgen. De tabel hoort eenmaal voor de hele set gemaakt te worden nadat over de kostendragerrol is besloten. Wat wel bestaat en dezelfde vraag grotendeels beantwoordt: de afbeelding per begrip in 18_AANSLUITING_OP_HET_DOELMODEL.md en de veldinventaris in 03_INFORMATIEMODEL_WORKORDER.md paragraaf B.",
       "sources": [
         {
-          "filename": "VolkerWessels - Maximo WerkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "filename": "ClientA - AssetSys WorkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.81,
-          "text": "Wat hier nog steeds niet staat, is de veld-voor-veldtabel bron -> gemeenschappelijk model. Van de 61 begrippen die Maximo over de werkorder publiceert hebben er eenentwintig in geen van beide objecten een plaats, en vijf daarvan vormen samen de financiele toerekening. Zij hoort eenmaal te worden gemaakt, voor de hele set tegelijk, nadat over de kostendragerrol een besluit is genomen. De afbeelding per begrip staat in 18_AANSLUITING_OP_HET_DOELMODEL.md."
+          "text": "Wat hier nog steeds niet staat, is de veld-voor-veldtabel bron -> gemeenschappelijk model. Van de 61 begrippen die AssetSys over de workorder publiceert hebben er eenentwintig in geen van beide objecten een plaats, en vijf daarvan vormen samen de financiele toerekening. Zij hoort eenmaal te worden gemaakt, voor de hele set tegelijk, nadat over de kostendragerrol een besluit is genomen. De afbeelding per begrip staat in 18_AANSLUITING_OP_HET_DOELMODEL.md."
         }
       ]
     },
     {
-      "case_id": "pp-access-rights",
+      "case_id": "pharma-access-rights",
       "provenance": "handwritten_reference",
       "answer": "Toegangsrechten zijn in deze set niet beoordeeld, en dat is expliciet vastgelegd als bewijsgrens: rechten staan niet in de broncode, dus een scan van de broncode kan er niets over zeggen [1]. Uit het ontbreken van een autorisatiemodel in de code volgt niets over de feitelijke rechten in de omgevingen. Wat wel is vastgesteld op het snijvlak security is het voorkomen van hardcoded referenties in enkele transformatiebestanden. Voor de vraag zelf is de platform- of omgevingsbeheerder de juiste bron: de rechten liggen in de Talend-omgevingsconfiguratie en in de databaseautorisatie, niet in de code.",
       "sources": [
         {
           "filename": "14_BEWIJSGRENZEN_EN_CORRECTIELOG.md",
-          "project_id": "PLURIPHARM",
+          "project_id": "PHARMA_DEMO",
           "reference_number": 1,
           "score": 0.68,
           "text": "A3. Waar het bewijs ophoudt. Toegangsrechten | Staan niet in de broncode | Niet beoordeeld. Netwerkversleuteling | De schakelaars in componenten zeggen niets over het netwerk | Niet beoordeeld."
@@ -206,13 +206,13 @@
       ]
     },
     {
-      "case_id": "pp-records-processed-per-run",
+      "case_id": "pharma-records-processed-per-run",
       "provenance": "handwritten_reference",
       "answer": "Dat is uit dit materiaal niet te beantwoorden. De bewijsgrenzen leggen twee dingen vast [1]: de doorvoervelden zijn leeg voor alle 100 route-uitvoeringen, en de registratiekolommen voor aantallen verwerkte records blijven eveneens leeg. Een gemiddelde zou dus niet uit de registratie komen maar uit een schatting, en die zou hier als getal worden gelezen. Wat nodig is om de vraag wel te beantwoorden: rijaantallen per uitvoering laten wegschrijven door de betrokken componenten, of de doorvoermeting op de berichtroutes aanzetten. Tot dat moment is alleen de uitvoeringsfrequentie vast te stellen, niet het volume.",
       "sources": [
         {
           "filename": "14_BEWIJSGRENZEN_EN_CORRECTIELOG.md",
-          "project_id": "PLURIPHARM",
+          "project_id": "PHARMA_DEMO",
           "reference_number": 1,
           "score": 0.71,
           "text": "Berichtvolume per route | Alle doorvoervelden zijn leeg voor alle 100 route-uitvoeringen | Hoeveel berichten een route verwerkte is niet vast te stellen. Aantallen verwerkte records | De registratiekolommen blijven leeg | Niet uit de eigen registratie te beantwoorden. Rijen die een filter passeren | Wordt nergens geteld."

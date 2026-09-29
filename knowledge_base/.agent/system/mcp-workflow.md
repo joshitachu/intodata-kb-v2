@@ -233,14 +233,14 @@ traces; do not enable it for production runs (output bloat).
     `extractors/lobster.py` `add_api_surface`) and simply absent on Talend, where no
     extractor emits them. They stay in the name lists; absence is logged at debug.
   * FIXED with this: `_bounded_values` sorted a set on `casefold` alone, so casefold-equal
-    values (werkorder really has `VISE2AssetCheck` and `Vise2AssetCheck`) kept SET
+    values (workorders_demo really has `QADB2InspectHub` and `Qadb2InspectHub`) kept SET
     ITERATION order and the change-impact view was NOT byte-stable across processes --
     measured, four runs of identical input gave three different 47,760-byte views, i.e. a
     silent prompt-cache miss on every 08 call. `_markdown_table_rows` is also now
     section-aware, so a grouped map's repeated per-section headers no longer parse as rows.
 - **Phase 3 evidence lane** (`providers/custom/target_evidence.py`): unit-scoped docs (per-job expansion via `_per_job_doc_units`) get a deterministic `_analysis/_evidence_{doc}.md` bundle built straight from the intodoc scan cache -- component inventory with high-signal params, ALL code bodies / tMap expressions / SQL verbatim (top-level `code` preferred, `params[].CODE` fallback), context variables per environment with provenance tags (`job-embedded` vs `shared group '{name}'` vs Default) and DIVERGES flags, callers/callees. The bundle is FIRST in the doc writer's context; the Phase 2 doc pack is interpretation, not the fact source. Size knob `MCP_PHASE3_TARGET_EVIDENCE_BYTES` (default 120000): derived niceties (wiring, param detail) trim first, verbatim evidence is never silently cut. For these docs, large derived fact maps (`dependency_map.md` etc.) are delivered as unit-filtered copies (boundary-aware so `X_GetLocation` never matches `X_GetLocations`), capped by `MCP_PHASE3_FILTERED_MAP_BYTES` (default 24000). Group-level docs keep the previous flow.
 - **Fabrication validators** (`providers/custom/fabrication_validators.py`), run pre-acceptance in the agent-task validation ladder (errors land in `validation_gaps` and drive the repair attempt; publish gates stay advisory): (1) component-echo -- `tXxx_N` references in output must exist in the evidence given to that agent (target bundle for Phase 3, task evidence file + investigation context for Phase 2 tasks); (2) no-unavailability -- claims that code/tMap/SQL/context evidence is "unavailable"/"not captured"/etc. fail validation when the bundle demonstrably contains that category (runtime facts like throughput stay legitimately unavailable). Both were built from verified run-50 failures (invented `tSetGlobalVar_3`; "code unavailable" with the code in context).
-- **Job-scoped component-echo for bin-packed Phase 2 tasks** (`job_scoped_component_reference_errors`, wired via `_merge_component_ref_errors(..., job_refs=...)`): verified failure (reversEngineer_ALI run 51) -- a bin-packed task covering several sibling jobs in one call can misattribute a component real for one job to a different job in the same batch (`tMSSqlOutput_1`, real only for `AssetCheck_GetLocation`, attributed to sibling `AssetCheck_GetWorkOrder`, which actually uses `tDBOutput_1`); checking the whole task output against the *combined* evidence of every job in the batch lets that pass, since the name is real somewhere in the batch. For any task with `len(task.units) > 1`, `evidence_tasks.job_section_texts()` recovers each unit's own `## Job:` evidence text from the task file, and output is split on the model's own `#### <job>` sub-headings (verified reliable in production without a prompt change) into per-job-attributed spans, each checked against only that job's own evidence; content under a heading that names no known unit (cross-job table/business-rule summaries, e.g. `#### Table: LogInfo` listing which jobs write to it) is unattributed and falls back to the combined task-wide check, so genuine cross-job synthesis is not wrongly rejected -- that specific fallback case still relies on the task-wide check alone and is a known open gap, not a false-negative in this mechanism. Single-job tasks are unaffected (no job-scoping overhead). The no-unavailability check is Phase-3-only; it was never wired into Phase 2, so it has no equivalent scoping bug to fix there.
+- **Job-scoped component-echo for bin-packed Phase 2 tasks** (`job_scoped_component_reference_errors`, wired via `_merge_component_ref_errors(..., job_refs=...)`): verified failure (reversEngineer_ALI run 51) -- a bin-packed task covering several sibling jobs in one call can misattribute a component real for one job to a different job in the same batch (`tMSSqlOutput_1`, real only for `InspectHub_GetLocation`, attributed to sibling `InspectHub_GetWorkOrder`, which actually uses `tDBOutput_1`); checking the whole task output against the *combined* evidence of every job in the batch lets that pass, since the name is real somewhere in the batch. For any task with `len(task.units) > 1`, `evidence_tasks.job_section_texts()` recovers each unit's own `## Job:` evidence text from the task file, and output is split on the model's own `#### <job>` sub-headings (verified reliable in production without a prompt change) into per-job-attributed spans, each checked against only that job's own evidence; content under a heading that names no known unit (cross-job table/business-rule summaries, e.g. `#### Table: LogInfo` listing which jobs write to it) is unattributed and falls back to the combined task-wide check, so genuine cross-job synthesis is not wrongly rejected -- that specific fallback case still relies on the task-wide check alone and is a known open gap, not a false-negative in this mechanism. Single-job tasks are unaffected (no job-scoping overhead). The no-unavailability check is Phase-3-only; it was never wired into Phase 2, so it has no equivalent scoping bug to fix there.
 
 ## Phase 4: `_rag_support/` Package
 
@@ -261,7 +261,7 @@ traces; do not enable it for production runs (output bloat).
   run start from the ACTUAL bin-packed work plan (`harness._plan_call_budget`, using
   `evidence_tasks.count_evidence_tasks`) -- base + phase1 tasks + phase2 claim tasks +
   scorecard/doc slice allowances -- not the old `20 + groups*4` heuristic (which
-  under-counted job-dense groups ~7x; verified werkorder budget_exhaustion). The output
+  under-counted job-dense groups ~7x; verified workorders_demo budget_exhaustion). The output
   budget is sized per doc-task via per-doc-type ceilings (`_doc_output_ceiling`:
   unit docs 6K, briefs 14K, inventory scales with units). `docgen_max_run_calls` (250)
   stays a hard ceiling; the partition planner (`estimate_partition_calls`) sizes/splits
@@ -269,7 +269,7 @@ traces; do not enable it for production runs (output bloat).
   size-splits back to zip level for the cross-project index.
 - **True-ceiling budget + late-phase floors (R2.1, 2026-08)**: the plan sum is a GUIDE,
   never the enforcement ceiling -- the enforced cap is `docgen_max_run_calls` (verified
-  Assetcheck failure: run blocked Phase 3 at plan=179 while cap=250 had ~71 calls
+  Inspecthub failure: run blocked Phase 3 at plan=179 while cap=250 had ~71 calls
   unused; real consumption ~197). `_reserve_model_budget(phase=...)` classifies calls
   (`_budget_class`: phase3 / business_topology / shared) and blocks a call only when it
   would exceed ceiling minus the still-unused floors reserved for OTHER classes
@@ -296,7 +296,7 @@ traces; do not enable it for production runs (output bloat).
   (`doc_slice_merge.merge_sliced_doc_outputs`: one title, one TOC, each H2 once,
   duplicate blocks dropped); `duplicate_heading_errors` is the post-assembly guard and
   `dedupe_document` the deterministic last-resort repair in `_final_doc_content`
-  (verified fix for the VQ docs that shipped the same structure 11x). Slice prompts are
+  (verified fix for the PQ docs that shipped the same structure 11x). Slice prompts are
   byte-stable; the per-slice instruction is a TAIL context file (provider prefix cache).
 - **Phase 3 input-partitioned slicing (R2.5, 2026-08)**: for `phase3*` calls whose
   context exceeds the hard ceiling, `phase3_slices.plan_phase3_slices` (wired in
@@ -324,7 +324,7 @@ traces; do not enable it for production runs (output bloat).
 - **Phase-2 claims density floor (P3.10, relaxed by R2.4, 2026-08)**: the prompt still
   REQUIRES verbatim backticked citations for code-bearing sections
   (TRANSFORMATION_DETAIL/SOURCE_SQL/CUSTOM_CODE), but validation no longer fails the
-  whole bin-packed batch for one uncited claim (verified: 21/73 Assetcheck tasks -- 29%
+  whole bin-packed batch for one uncited claim (verified: 21/73 Inspecthub tasks -- 29%
   -- were rejected whole, stubbing every unit in the task to unknown and producing
   phantom-absence warnings). `validate_claim_batch` fails only STRUCTURAL errors (bad
   JSON, section/unit outside contract, duplicate ids, claim ceilings); evidential gaps
@@ -369,17 +369,17 @@ traces; do not enable it for production runs (output bloat).
   OpenCode -- which reuses the CONSUMER (`_phase3_context_files`) but could not reuse the
   producer -- silently shipped zero runtime facts. Producer writes files; consumers read files.
   * **Two identifier keys, always.** `FactsManifest.unit_names()` returns `job_id`
-    (`validators.py:184`), NOT the display name TMC schedules under; 79 of werkorder's 429
+    (`validators.py:184`), NOT the display name TMC schedules under; 79 of workorders_demo's 429
     job rows differ. The fetch sends `unit.name` AND `unit.display_name` and keys `by_unit`
     on the manifest name. Verified live: manifest-key-only matches 4 units, both keys match
-    6. Do NOT add a normaliser or fuzzy matcher -- `AssetCheck_GetLocation` and
-    `AssetCheck_GetLocations` are both real, separately-scheduled jobs.
+    6. Do NOT add a normaliser or fuzzy matcher -- `InspectHub_GetLocation` and
+    `InspectHub_GetLocations` are both real, separately-scheduled jobs.
   * **Rollup goes to group/summary docs ONLY** (after `_cross_cutting_facts.md`, plus an
     explicit attach for `09_EXECUTIVE_SUMMARY`, which early-returns before that append).
     Unit docs keep their own per-unit section. A project-wide failure census names other
     units' components, and Phase 3 component-echo validates a unit doc against its own
     bundle -- attaching it there manufactures fabrication rejections, and costs ~1.3M extra
-    input tokens on werkorder with unit docs enabled.
+    input tokens on workorders_demo with unit docs enabled.
   * `phase3_runtime_profile_bytes` (12,000) is CLAMPED at config load to
     `phase3_shared_context_file_bytes - 1`: `plan_phase3_slices` classifies context files
     as SHARED purely by size, so an oversized rollup would be bin-packed and slice 1 would
@@ -389,14 +389,14 @@ traces; do not enable it for production runs (output bloat).
   * **Absence is always stated.** The rollup is written unconditionally in one of three
     modes (`data`/`opted_out`/`unavailable`) with independent `partial` and
     `scope_mismatch` flags, and the coverage artifact is written even when the fetch fails.
-    Low coverage is CORRECT, not a defect: TMC schedules tasks, so werkorder's 6 of 429 is
+    Low coverage is CORRECT, not a defect: TMC schedules tasks, so workorders_demo's 6 of 429 is
     right -- the rest are `tRunJob` children and joblets. Never accuse a project of a bad
     binding from match ratio alone; report the runtime-side orphan ratio as an observation.
   * The once-per-run guard is keyed on `(run_id, staging_dir)` **in memory**. An on-disk
     check would make a resumed run adopt a failed run's snapshot and pin `unavailable`.
   * Cadence is classified in Python from server-supplied gap quantiles (per environment,
     named by `environments[0]`), never from `runs_per_day`: the mean gap for
-    `Maximo2RHM_Workorders` is 2202 s against a true median of 1801 s, so a mean-fed
+    `AssetSys2RHM_Workorders` is 2202 s against a true median of 1801 s, so a mean-fed
     classifier downgrades a 30-minute schedule to "ad hoc".
   * KNOWN LIMITS: the living-docs patch lane (`services/true_patch_executor.py`) never
     reads `_phase3_context_files`, so patched documents gain no runtime prose; the
@@ -425,7 +425,7 @@ traces; do not enable it for production runs (output bloat).
     `_scoped_execution_base`; failures join through the same id; environments and gap
     quantiles filter `runtime_job_runs` directly. Filtering per-aggregate instead would
     let one number describe PROD while its neighbour described PROD+TST.
-  * **Why it matters, measured on the live werkorder mirror**: unscoped, the estate
+  * **Why it matters, measured on the live workorders_demo mirror**: unscoped, the estate
     reports 3392 runs / 785 failures = 23.1% failure rate. That figure describes no
     environment that exists -- PROD alone is 2122 runs / 17 failures (0.8%), ACC is 1266
     / 768 (60.7%). Same defect class as the pooled-cadence bug that
@@ -593,7 +593,7 @@ traces; do not enable it for production runs (output bloat).
 - **Phase 3.7 asks the model for the ARCHITECTURE, never the bookkeeping.** The old
   single-shot contract asked one call for semantics AND ids, `ClaimStatus` enums,
   20-char `artifact:` hashes, identity cross-links and coverage, then rejected the
-  whole object when any of it was wrong. Verified werkorder run: 8 partitions, **0**
+  whole object when any of it was wrong. Verified workorders_demo run: 8 partitions, **0**
   published an LLM topology -- 2 died on a prose preamble before the JSON while the
   model reported "tool budget exhausted", 3 returned 0-byte output, and 3 produced
   valid rich JSON that failed semantic validation. `ETTM_part2` had 14 systems / 8
@@ -611,7 +611,7 @@ traces; do not enable it for production runs (output bloat).
 - **Stage B** (`assembly.py`) owns every field the model kept failing: ids, alias
   folding, status/confidence, `artifact:` resolution, the directional edge lookup and
   its identity cross-links, delivery segments + `step:` refs, coverage. It is a
-  generalisation of `output/werkorder/topology/build_evidence_topology.py` with that
+  generalisation of `output/workorders_demo/topology/build_evidence_topology.py` with that
   script's two hardcoded tables REMOVED -- alias folding derives from the scanner
   landscape rows plus extraction-declared aliases, and the solution name comes from
   the partition.
@@ -636,7 +636,7 @@ traces; do not enable it for production runs (output bloat).
   but the flow's own implementing designs are scanner-proven at BOTH endpoints) stays
   `inferred` with UNCAPPED confidence; documentation-only is capped at 0.6. The middle
   tier exists because the scanner landscape models `App -> System` edges while
-  documentation describes `System -> System` business flows -- on werkorder there are
+  documentation describes `System -> System` business flows -- on workorders_demo there are
   no system-to-system edges at all, so without it every flow reads as guesswork.
 - **Partial acceptance** (`pruning.py::prune_to_valid`): a claim-local validation
   error drops that claim plus the references that would dangle, and the rest
@@ -658,20 +658,20 @@ traces; do not enable it for production runs (output bloat).
   18 unlabelled scanner edges.
 - **The composite org merge no longer flattens the business layer**
   (`composite.py`). Streams key on (source, destination, **business object**) --
-  keying on the pair alone reduced werkorder's org view to 18 unlabelled edges where
+  keying on the pair alone reduced workorders_demo's org view to 18 unlabelled edges where
   the curated file has 72 named ones -- and business objects, delivery paths (segments
   re-pointed onto org ids, `step:` refs rewritten) and transformations now travel to
   the org level. A partition's stronger status survives instead of being flattened to
   `inferred`, and the org solution carries its artifact ids so L1 drills down to code.
 - KNOWN LIMITS: Stage A recall is model-dependent and not yet exercised in a live run;
   delivery-path richness depends on Stage A filling `technical_path`; the upstream
-  scanner landscape is thin (werkorder: 25 edges over 429 jobs, with `Log` / `Common` /
+  scanner landscape is thin (workorders_demo: 25 edges over 429 jobs, with `Log` / `Common` /
   `Talend` appearing as "systems"), which is the deeper reason the deterministic
   overlay always looked wrong and is a separate scanner-side follow-up.
 
 ### Parity with the curated baseline (2026-09-23)
 
-The hand-curated `output/VW_FULL_LANDSCAPE/topology/business_topology.curated.json` is the
+The hand-curated `output/CLIENTA_FULL_LANDSCAPE/topology/business_topology.curated.json` is the
 quality baseline. Before this change no generator filled any of the structured stream
 facts, business rules, controls, risks, conflicts or runtime observations it carries, and
 only the custom harness produced a topology at all.
@@ -713,11 +713,11 @@ only the custom harness produced a topology at all.
   (declared in all three schema mirrors -- the frontend schema is `.strict()`).
 - **Copilot**: `get_topology_node` on a business stream returns `business_facts`.
 - **Measure it**: `scripts/topology_parity.py --candidate ... --baseline ...`
-  (`parity.py`). Offline VW probe, deterministic floor + enrichment only, no LLM, no
+  (`parity.py`). Offline ClientA probe, deterministic floor + enrichment only, no LLM, no
   runtime payload: overall 0.238 -> 0.366.
 - KNOWN LIMITS: deployment needs `artifact_version` on `GET /runtime/doc-evidence`;
-  filter/trigger conditions and `offered` need a rescan with the current scanner; VW's
-  runtime rows live under project id `alitalend`, so a live VW run records absence
+  filter/trigger conditions and `offered` need a rescan with the current scanner; ClientA's
+  runtime rows live under project id `talend_demo`, so a live ClientA run records absence
   unless that binding is fixed; OpenCode's honouring of the inline `permission` key is
   unverified on a live run.
 
@@ -769,8 +769,8 @@ only the custom harness produced a topology at all.
   `cross_project_refs.md` (engineering-fact context for Phase 2/3 -- external references
   without sibling content) and `_topology/cross_project_index.json` (consumed by the
   business-topology starter pack).
-- **Case-colliding groups**: Talend groups differing only in case (werkorder:
-  `VISE2AssetCheck` vs `Vise2AssetCheck`) clobbered each other's `_preprocess/{group}.md`
+- **Case-colliding groups**: Talend groups differing only in case (workorders_demo:
+  `QADB2InspectHub` vs `Qadb2InspectHub`) clobbered each other's `_preprocess/{group}.md`
   on case-insensitive filesystems (macOS). `_preprocess_scan_data` now writes later
   colliders as `{group}_part_ci{k}.md`; the existing `_part*` slice->group resolvers map
   them back.

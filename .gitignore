@@ -173,3 +173,6 @@ deploy/licence/
 # Central Mission Control operator config (control keys, operator secrets)
 deploy/operator/clients.json
 deploy/operator/operator.env
+
+# Local map from the anonymised eval evidence paths to the real client corpus
+RAG_pipeline/backend/evals/suite/evidence_aliases.local.json

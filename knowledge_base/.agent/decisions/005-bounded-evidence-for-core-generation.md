@@ -5,7 +5,7 @@ Accepted 2026-05-28; still current
 
 ## Context
 
-The `Steven_inventory` incident: generic staging tools (`list_artifacts`,
+The `ClientB_inventory` incident: generic staging tools (`list_artifacts`,
 `read_artifact`) were exposed to Phase 2 core generation, and the model browsed staging
 until the accumulated input tokens ran away.
 
@@ -18,7 +18,7 @@ accumulated input-token ceilings.
 
 ## Rationale
 
-"As of 2026-05-28, the `Steven_inventory` incident established that generic staging tools
+"As of 2026-05-28, the `ClientB_inventory` incident established that generic staging tools
 (`list_artifacts`, `read_artifact`) must not be exposed to Phase 2/3 core generation
 without hard byte caps and accumulated input-token caps. Phase 2 core generation uses
 bounded `context_files` by default; pack-specific depth should come from curated evidence

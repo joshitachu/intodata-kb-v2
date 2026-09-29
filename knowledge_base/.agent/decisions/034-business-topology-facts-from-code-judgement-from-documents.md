@@ -6,7 +6,7 @@
 
 ## Context
 
-The analyst-curated `output/VW_FULL_LANDSCAPE/topology/business_topology.curated.json`
+The analyst-curated `output/CLIENTA_FULL_LANDSCAPE/topology/business_topology.curated.json`
 is the quality bar for the business topology. It was built by hand from sixteen
 verified documents plus ~500 KB of human-written constants. The contract
 (`services/business_topology/models.py`) grew to hold everything that file carries,

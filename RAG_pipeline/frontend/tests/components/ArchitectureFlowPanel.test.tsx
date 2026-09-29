@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
-import rawWerkorderTopology from "../fixtures/werkorder_org_business_topology.json";
+import rawWorkorderTopology from "../fixtures/workorders_demo_org_business_topology.json";
 import { ArchitectureTopologyCanvas } from "@/components/graph/ArchitectureTopologyCanvas";
 import { ProjectLandscapeResponseSchema } from "@/types/landscape";
 
@@ -102,21 +102,21 @@ function structuredTopology() {
   return {
     schema_version: "business-topology-v1",
     scan_fingerprint: "scan:synthetic",
-    metadata: { project_id: "werkorder", scan_fingerprint: "scan:synthetic", generated_by: "test", model_name: "" },
+    metadata: { project_id: "workorders_demo", scan_fingerprint: "scan:synthetic", generated_by: "test", model_name: "" },
     systems: [
-      { ...claim, id: "sys-maximo", name: "Maximo", kind: "software_system", aliases: [] },
-      { ...claim, id: "sys-4ps", name: "4PS", kind: "software_system", aliases: [] },
+      { ...claim, id: "sys-assetsys", name: "AssetSys", kind: "software_system", aliases: [] },
+      { ...claim, id: "sys-4fs", name: "4FS", kind: "software_system", aliases: [] },
     ],
     integration_solutions: [],
     business_objects: [{ ...claim, id: "obj-wo", name: "WorkOrder", aliases: [] }],
     data_streams: [{
       ...claim,
       id: "ds-wo",
-      source_system_id: "sys-maximo",
-      destination_system_id: "sys-4ps",
-      name: "Werkorders",
+      source_system_id: "sys-assetsys",
+      destination_system_id: "sys-4fs",
+      name: "Workorders",
       business_object_ids: ["obj-wo"],
-      business_summary: "Maximo levert werkorders aan 4PS.",
+      business_summary: "AssetSys levert workorders aan 4FS.",
       integration_solution_ids: [],
       protocols: ["JMS"],
       artifact_ids: ["artifact:1"],
@@ -130,12 +130,12 @@ function structuredTopology() {
       conditions: [{ kind: "trigger", statement: "Alleen bij status GEREED.", evidence_note: "tJava_2" }],
       key_form: "WO-nummer",
       verdict: "Actief en in gebruik.",
-      document_refs: ["03_INTEGRATION_CATALOG.md#werkorders"],
+      document_refs: ["03_INTEGRATION_CATALOG.md#workorders"],
     }],
     delivery_paths: [],
     transformations: [
       {
-        ...claim, id: "tr-fields", name: "Werkorder velden", kind: "field_mapping",
+        ...claim, id: "tr-fields", name: "Workorder velden", kind: "field_mapping",
         stream_ids: ["ds-wo"], integration_solution_ids: [], artifact_ids: [],
         mappings: [{ source: "WORKORDER.WONUM", target: "serviceOrders.orderNo", mapping_type: "direct", reaches_target: "yes" }],
       },
@@ -149,7 +149,7 @@ function structuredTopology() {
       ...claim, id: "br-status", name: "Statusvertaling", kind: "value_mapping",
       statement: "GGK wordt In Process.", inputs: ["WORKORDER.STATUS"], output: "serviceOrders.status",
       stream_ids: ["ds-wo"], transformation_ids: ["tr-status"],
-      owner: "Servicedesk 4PS", owner_question: "Klopt het dat GGK In Process moet worden?",
+      owner: "Servicedesk 4FS", owner_question: "Klopt het dat GGK In Process moet worden?",
     }],
     controls: [], risks: [], unknowns: [], conflicts: [],
     runtime_observations: [{
@@ -177,7 +177,7 @@ async function openFirstFlow(landscape: ReturnType<typeof landscapeFor>) {
 
 describe("architecture flow side panel", () => {
   it("renders no additive section for a topology published before those slots existed", async () => {
-    const panel = await openFirstFlow(landscapeFor(rawWerkorderTopology));
+    const panel = await openFirstFlow(landscapeFor(rawWorkorderTopology));
 
     // The panel is really open -- otherwise the absence assertions below pass
     // for the wrong reason.
@@ -259,7 +259,7 @@ describe("architecture flow side panel", () => {
     fireEvent.click(within(panel).getByTestId("disclosure:Businessregels"));
     expect(within(panel).getByText("Waardevertaling")).toBeInTheDocument();
     expect(within(panel).getByText("GGK wordt In Process.")).toBeInTheDocument();
-    expect(within(panel).getByText("Servicedesk 4PS")).toBeInTheDocument();
+    expect(within(panel).getByText("Servicedesk 4FS")).toBeInTheDocument();
     expect(within(panel).getByText("Klopt het dat GGK In Process moet worden?")).toBeInTheDocument();
     expect(within(panel).queryByText("serviceOrders.orderNo")).toBeNull();
 
@@ -297,7 +297,7 @@ describe("architecture flow side panel", () => {
     topology.data_streams[0] = {
       ...topology.data_streams[0],
       requiredness: "conditional",
-      description: "Alleen de open werkorders.",
+      description: "Alleen de open workorders.",
       control_ids: ["ct-1"],
       risk_ids: ["rk-1"],
       conflict_ids: ["cf-1"],
@@ -309,7 +309,7 @@ describe("architecture flow side panel", () => {
       ...claim, id: "dp-1", name: "Pad", description: "Via de berichtenbus.", stream_id: "ds-other",
       segments: [{
         ...claim, id: "seg-1", name: "Naar de bus", description: "Wordt per bericht verstuurd.", sequence: 1,
-        source_ref: "sys-maximo", destination_ref: "sys-4ps", mechanism: "queue", protocol: "JMS",
+        source_ref: "sys-assetsys", destination_ref: "sys-4fs", mechanism: "queue", protocol: "JMS",
         resource: "", component: "cJMS_1", artifact_ids: [], mode: "buffered",
       }],
     }];
@@ -345,7 +345,7 @@ describe("architecture flow side panel", () => {
     expect(within(panel).getByText("Frequentie")).toBeInTheDocument();
 
     fireEvent.click(within(panel).getByTestId("disclosure:Techniek"));
-    expect(within(panel).getByText("Alleen de open werkorders.")).toBeInTheDocument();
+    expect(within(panel).getByText("Alleen de open workorders.")).toBeInTheDocument();
   });
 
   it("shows a system's owner, purpose and aliases on the system focus panel", async () => {
@@ -353,15 +353,15 @@ describe("architecture flow side panel", () => {
     topology.systems[1] = {
       ...topology.systems[1],
       description: "ERP",
-      purpose: "Financiele afhandeling van werkorders.",
+      purpose: "Financiele afhandeling van workorders.",
       owner: "Team Financien",
-      aliases: ["4PS", "Dynamics"],
+      aliases: ["4FS", "Dynamics"],
     };
     render(<ArchitectureTopologyCanvas landscape={landscapeFor(topology)} onOpenFlow={vi.fn()} />);
-    const node = await waitFor(() => screen.getByTestId("node:system:sys-4ps"));
+    const node = await waitFor(() => screen.getByTestId("node:system:sys-4fs"));
     fireEvent.click(node);
     const panel = screen.getByLabelText("System focus details");
-    expect(within(panel).getByText("Financiele afhandeling van werkorders.")).toBeInTheDocument();
+    expect(within(panel).getByText("Financiele afhandeling van workorders.")).toBeInTheDocument();
     expect(within(panel).getByText("Team Financien")).toBeInTheDocument();
     // The system's own name is not repeated as an alias.
     expect(within(panel).getByText("Dynamics")).toBeInTheDocument();

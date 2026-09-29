@@ -1316,6 +1316,16 @@ sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" \
 
 Then fix the migration file, rebuild, and run `alembic upgrade head` again.
 
+### Nightly backups
+
+`deploy/backup-postgres.sh <client>` dumps the client database to
+`/var/backups/intodata-kb/` (14-day retention). Schedule it once per client:
+
+```bash
+echo "0 2 * * * root $REPO_ROOT/deploy/backup-postgres.sh $CLIENT_SLUG >> /var/log/intodata-backup.log 2>&1" | \
+  sudo tee /etc/cron.d/intodata-backup-$CLIENT_SLUG
+```
+
 ### If Postgres data is corrupted
 
 Restore from the most recent backup (see `backup-postgres.sh`):
@@ -1324,10 +1334,11 @@ Restore from the most recent backup (see `backup-postgres.sh`):
 # List available backups
 ls -lht /var/backups/intodata-kb/
 
-# Stop the stack
-sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" down
+# Stop everything, then start only postgres: the restore needs it running
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" stop
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" start postgres
 
-# Restore
+# Restore (the dump drops and recreates each object)
 gunzip -c /var/backups/intodata-kb/<backup-file>.sql.gz | \
   sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" \
   exec -T postgres psql -U admin "intodata_kb_${CLIENT_SLUG}"

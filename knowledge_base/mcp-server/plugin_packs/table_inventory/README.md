@@ -3,7 +3,7 @@
 This pack produces one focused `TABLE_INVENTORY` document for codebases where
 the main question is: which database tables and fields are actually used?
 
-It is designed for Steven Knolle's Kruitbosch webservices analysis:
+It is designed for a client webservices analysis led by the integration consultant:
 
 - extract SQL from `.cs`, `.cshtml`, and config-driven source evidence;
 - capture ServiceStack OrmLite usage and implicit POCO table writes;
@@ -23,12 +23,12 @@ Expected output:
 - SQL-to-table traceability showing which SQL statement proves each table/field;
 - ORM/implicit table usage;
 - DDL alignment and gap list;
-- blocking questions for Kruitbosch.
+- blocking questions for ClientB.
 - DDL rebuild script document for the new environment, marked RUNNABLE, PARTIAL,
   or DRAFT ONLY depending on available DDL evidence.
 
 The pack should never present a usage-derived table as authoritative DDL. If
-Kruitbosch supplies full DDLs, the generated rebuild scripts can preserve types,
+ClientB supplies full DDLs, the generated rebuild scripts can preserve types,
 nullability, keys, constraints, and indexes. If DDLs are missing, the output must
 show blockers and draft placeholders instead.
 

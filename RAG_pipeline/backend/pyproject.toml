@@ -55,8 +55,15 @@ dev = [
 hindsight = ["hindsight-client>=0.1.0"]
 
 [build-system]
-requires = ["setuptools>=70.0"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# The code imports itself as `src.*` (e.g. `uvicorn src.api.main:app`), so the
+# importable package is `src` itself. setuptools' src-layout auto-discovery
+# instead installed src's children (api, db, config, ...) as top-level
+# site-packages names that nothing imports.
+packages = ["src"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

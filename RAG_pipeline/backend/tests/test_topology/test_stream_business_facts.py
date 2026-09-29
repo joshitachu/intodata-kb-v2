@@ -18,7 +18,7 @@ from src.topology.models import GetTopologyNodeInput
 from src.topology.tools import get_topology_node
 from tests.test_topology.conftest import json_transport, make_provider
 
-STREAM_ID = "stream:assetcheck-to-log-0"
+STREAM_ID = "stream:inspecthub-to-log-0"
 EDGE_KEY = f"business-stream{EDGE_KEY_SEPARATOR}{STREAM_ID}"
 
 pytestmark = pytest.mark.asyncio
@@ -67,7 +67,7 @@ def _enriched(landscape: dict[str, Any]) -> dict[str, Any]:
 
 async def _relationship(payload: dict[str, Any]) -> dict[str, Any]:
     result = await get_topology_node(
-        GetTopologyNodeInput(project_id="alitalend", name_or_id=EDGE_KEY),
+        GetTopologyNodeInput(project_id="talend_demo", name_or_id=EDGE_KEY),
         provider=make_provider(json_transport(payload)),
         access_token=None,
     )
@@ -75,8 +75,8 @@ async def _relationship(payload: dict[str, Any]) -> dict[str, Any]:
     return result.content
 
 
-async def test_business_stream_relationship_carries_overlay_facts(alitalend) -> None:
-    content = await _relationship(_enriched(alitalend))
+async def test_business_stream_relationship_carries_overlay_facts(talend_demo) -> None:
+    content = await _relationship(_enriched(talend_demo))
     facts = content["business_facts"]
 
     assert facts["stream_id"] == STREAM_ID
@@ -91,9 +91,9 @@ async def test_business_stream_relationship_carries_overlay_facts(alitalend) -> 
     assert content["relationship"]["mechanism"].startswith("Talend DI job")
 
 
-async def test_rules_and_conflicts_link_as_the_canvas_links_them(alitalend) -> None:
+async def test_rules_and_conflicts_link_as_the_canvas_links_them(talend_demo) -> None:
     """Rules via a stream's transformations; conflicts via subject_refs."""
-    payload = _enriched(alitalend)
+    payload = _enriched(talend_demo)
     business = payload["business_topology"]
     business["transformations"] = [
         {"id": "tr:1", "name": "Status mapping", "status": "inferred", "confidence": 0.6,
@@ -117,8 +117,8 @@ async def test_rules_and_conflicts_link_as_the_canvas_links_them(alitalend) -> N
     assert [conflict["name"] for conflict in facts["conflicts"]] == ["Docs disagree"]
 
 
-async def test_absent_facts_are_omitted_not_reported_as_unknown(alitalend) -> None:
-    content = await _relationship(alitalend)
+async def test_absent_facts_are_omitted_not_reported_as_unknown(talend_demo) -> None:
+    content = await _relationship(talend_demo)
     facts = content["business_facts"]
 
     assert facts["stream_id"] == STREAM_ID

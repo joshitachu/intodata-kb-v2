@@ -1,5 +1,5 @@
 {
- "project_id": "pluripharm",
+ "project_id": "pharma_demo",
  "job_name": "collector_jde_shipping_notification_from_db_c006_mediq",
  "group": "Talend8.__intodoc_repo__/TALEND8/Collectors",
  "nodes": [

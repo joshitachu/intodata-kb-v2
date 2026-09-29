@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import rawWerkorderTopology from "../fixtures/werkorder_org_business_topology.json";
+import rawWorkorderTopology from "../fixtures/workorders_demo_org_business_topology.json";
 import { BusinessTopologySchema } from "@/types/landscape";
 
 /** Mirrors `BusinessTopology.model_dump()` including inherited claim fields. */
@@ -87,13 +87,13 @@ describe("BusinessTopologySchema", () => {
         ...claim,
         id: "rule:1",
         kind: "precedence",
-        statement: "The 4PS value wins over the Maximo value.",
+        statement: "The 4FS value wins over the AssetSys value.",
         inputs: ["WORKORDER.STATUS", "serviceOrders.status"],
         output: "serviceOrders.status",
         stream_ids: ["stream:1"],
         transformation_ids: ["transformation:1"],
         owner: "Service desk",
-        owner_question: "Should 4PS keep overriding the Maximo status?",
+        owner_question: "Should 4FS keep overriding the AssetSys status?",
       }],
       controls: [],
       risks: [],
@@ -139,7 +139,7 @@ describe("BusinessTopologySchema", () => {
     expect(topology.business_rules?.[0]).toMatchObject({
       kind: "precedence",
       owner: "Service desk",
-      owner_question: "Should 4PS keep overriding the Maximo status?",
+      owner_question: "Should 4FS keep overriding the AssetSys status?",
       inputs: ["WORKORDER.STATUS", "serviceOrders.status"],
       output: "serviceOrders.status",
     });
@@ -155,7 +155,7 @@ describe("BusinessTopologySchema", () => {
    * its producer never asserted.
    */
   it("still accepts a topology published before the additive slots existed", () => {
-    const topology = BusinessTopologySchema.parse(rawWerkorderTopology);
+    const topology = BusinessTopologySchema.parse(rawWorkorderTopology);
 
     expect(topology.data_streams.length).toBeGreaterThan(0);
     const stream = topology.data_streams[0];

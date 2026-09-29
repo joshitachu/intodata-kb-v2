@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { ProjectLandscapeResponseSchema } from "@/types/landscape";
 import { findLandscapeEdge, landscapeToFlow } from "@/lib/landscapeTransform";
-import werkorderOrgTopology from "../fixtures/werkorder_org_business_topology.json";
+import workorders_demoOrgTopology from "../fixtures/workorders_demo_org_business_topology.json";
 
 /**
  * Verifies the hub-and-spoke radial layout (`layoutBusinessLandscape`) and
- * the default infrastructure/logging filter on the REAL curated werkorder
- * fixture (16 systems, 19 data streams; Maximo `sys-maximo` is the hub;
+ * the default infrastructure/logging filter on the REAL curated workorders_demo
+ * fixture (16 systems, 19 data streams; AssetSys `sys-assetsys` is the hub;
  * `sys-log`/`sys-logdb`/`sys-monitoring`/`sys-ldap` are logging/monitoring/
  * auth sinks). Fixture-wrapping mirrors compositeBusinessTopology.test.ts.
  */
@@ -18,7 +18,7 @@ function buildLandscape(showInfrastructure?: boolean) {
     channels: [],
     interfaces: [],
     diagnostics: [],
-    business_topology: werkorderOrgTopology,
+    business_topology: workorders_demoOrgTopology,
     topology_state: {
       available: true,
       validated: true,
@@ -42,7 +42,7 @@ describe("business landscape hub-and-spoke layout", () => {
   });
 
   it("never overlaps two system nodes (rings grow to fit their node count)", () => {
-    // The real regression: Maximo has ~12 direct neighbours; a fixed-radius
+    // The real regression: AssetSys has ~12 direct neighbours; a fixed-radius
     // ring crammed them into an overlapping pile. Assert no two node bounding
     // boxes intersect (a small shared border is allowed).
     const { flow } = buildLandscape(true);
@@ -61,20 +61,20 @@ describe("business landscape hub-and-spoke layout", () => {
     }
   });
 
-  it("puts Maximo at the center of its component -- every other connected node sits at least one ring out", () => {
-    // showInfrastructure so Maximo's full component (including nodes only
+  it("puts AssetSys at the center of its component -- every other connected node sits at least one ring out", () => {
+    // showInfrastructure so AssetSys's full component (including nodes only
     // reachable through logging/monitoring edges) is present for this check.
     const { flow } = buildLandscape(true);
     const nodeById = new Map(flow.nodes.map((node) => [node.id, node]));
-    const maximo = nodeById.get("sys-maximo");
-    expect(maximo).toBeDefined();
-    const maximoCenter = {
-      x: maximo!.position.x + (maximo!.width ?? 0) / 2,
-      y: maximo!.position.y + (maximo!.height ?? 0) / 2,
+    const assetsys = nodeById.get("sys-assetsys");
+    expect(assetsys).toBeDefined();
+    const assetsysCenter = {
+      x: assetsys!.position.x + (assetsys!.width ?? 0) / 2,
+      y: assetsys!.position.y + (assetsys!.height ?? 0) / 2,
     };
 
     // Reconstruct undirected connectivity from the rendered edges to find
-    // every node in Maximo's connected component.
+    // every node in AssetSys's connected component.
     const adjacency = new Map<string, Set<string>>();
     for (const node of flow.nodes) adjacency.set(node.id, new Set());
     for (const edge of flow.edges) {
@@ -82,8 +82,8 @@ describe("business landscape hub-and-spoke layout", () => {
       adjacency.get(edge.target)?.add(edge.source);
     }
     const component = new Set<string>();
-    const queue = ["sys-maximo"];
-    component.add("sys-maximo");
+    const queue = ["sys-assetsys"];
+    component.add("sys-assetsys");
     while (queue.length > 0) {
       const current = queue.shift()!;
       for (const neighbor of adjacency.get(current) ?? []) {
@@ -102,11 +102,11 @@ describe("business landscape hub-and-spoke layout", () => {
     // node in its component is placed at least one RING_GAP (360) out.
     const RING_GAP_FLOOR = 300; // below the 360 ring gap, allows for float slack
     for (const id of component) {
-      if (id === "sys-maximo") continue;
+      if (id === "sys-assetsys") continue;
       const node = nodeById.get(id);
       if (!node) continue;
       const center = { x: node.position.x + (node.width ?? 0) / 2, y: node.position.y + (node.height ?? 0) / 2 };
-      const distance = Math.hypot(center.x - maximoCenter.x, center.y - maximoCenter.y);
+      const distance = Math.hypot(center.x - assetsysCenter.x, center.y - assetsysCenter.y);
       expect(distance).toBeGreaterThanOrEqual(RING_GAP_FLOOR);
     }
   });
@@ -125,7 +125,7 @@ describe("business landscape hub-and-spoke layout", () => {
 });
 
 describe("business landscape infrastructure/logging filter", () => {
-  // The evidence-grounded werkorder fixture excludes logging/monitoring/auth as
+  // The evidence-grounded workorders_demo fixture excludes logging/monitoring/auth as
   // infrastructure UPSTREAM (at doc-extraction time), so it has no infra sink
   // systems. The infra display-filter is still generic logic, so exercise it on
   // a small synthetic topology that DOES contain an audit-log sink.
@@ -148,10 +148,10 @@ describe("business landscape infrastructure/logging filter", () => {
       business_topology: {
         schema_version: "1.0", scan_fingerprint: "test",
         metadata: { project_id: "t", scan_fingerprint: "test", generated_by: "test", model_name: "" },
-        systems: [sys("sys-maximo", "Maximo"), sys("sys-rhm", "RHM"), sys("sys-log", "Log")],
+        systems: [sys("sys-assetsys", "AssetSys"), sys("sys-rhm", "RHM"), sys("sys-log", "Log")],
         integration_solutions: [], business_objects: [], data_streams: [
-          stream("ds-wo", "sys-maximo", "sys-rhm", "Work orders: Maximo -> RHM"),
-          stream("ds-log", "sys-maximo", "sys-log", "Writes audit log"),
+          stream("ds-wo", "sys-assetsys", "sys-rhm", "Work orders: AssetSys -> RHM"),
+          stream("ds-log", "sys-assetsys", "sys-log", "Writes audit log"),
         ],
         delivery_paths: [], controls: [], risks: [], unknowns: [],
         artifact_annotations: [], component_annotations: [], lineage_annotations: [],
@@ -183,7 +183,7 @@ describe("business landscape infrastructure/logging filter", () => {
 
 /**
  * L1 readability: `businessLandscapeToFlow` must emit ONE aggregated edge per
- * directed system pair, not one per stream (the werkorder org fixture has
+ * directed system pair, not one per stream (the workorders_demo org fixture has
  * 72 raw data_streams and would otherwise render 72 crossing arrows).
  */
 describe("business landscape L1 edge aggregation by system pair", () => {

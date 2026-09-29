@@ -19,7 +19,12 @@ import sys
 from pathlib import Path
 
 from evals.answers import FixtureProvider, HttpProvider, dump_answers
-from evals.cases import default_suite_path, load_eval_set
+from evals.cases import (
+    default_suite_path,
+    load_eval_set,
+    load_evidence_aliases,
+    resolve_evidence_path,
+)
 from evals.judge import get_judge
 from evals.report import render_json, render_text
 from evals.runner import Runner
@@ -64,12 +69,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _cmd_validate(args: argparse.Namespace) -> int:
     eval_set = load_eval_set(args.suite)
+    aliases = load_evidence_aliases()
     problems: list[str] = []
     for case in eval_set.cases:
         if not case.evidence:
             problems.append(f"{case.id}: no evidence declared")
         for ref in case.evidence:
-            if not (REPO_ROOT / ref.path).exists():
+            if not resolve_evidence_path(ref, REPO_ROOT, aliases).exists():
                 problems.append(f"{case.id}: missing evidence file {ref.path}")
         # An unanswerable case must point at evidence that is out of corpus,
         # otherwise it is mislabelled and will teach the system the wrong lesson.

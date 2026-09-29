@@ -2,9 +2,9 @@
 
 The failure this wave exists to fix was caught by real data and missed by
 synthetic data: the landscape rollup for a real composite upload has 43 systems
-and NO jobs, so a question about `Quintiq2Maximo_WorkOrderPickedUpXML` found
+and NO jobs, so a question about `Quintiq2AssetSys_WorkOrderPickedUpXML` found
 nothing and was answered from the document corpus instead. Every test here uses
-the real werkorder (composite, 14 source roots) or alitalend (single root)
+the real workorders_demo (composite, 14 source roots) or talend_demo (single root)
 artifacts for that reason.
 """
 
@@ -44,12 +44,12 @@ from tests.test_topology.conftest import (
     COLLECTOR_ROUTING_COMPONENT,
     MAPPING_COMPONENT,
     MAPPING_JOB,
-    PLURIPHARM_PROJECT,
+    PHARMA_DEMO_PROJECT,
     QUINTIQ_JOB,
     QUINTIQ_SOURCE_ROOT,
     RICHEST_JOB,
     make_provider,
-    werkorder_routes,
+    workorders_demo_routes,
 )
 
 
@@ -58,18 +58,18 @@ def payload_size(payload) -> int:  # noqa: ANN001 - TopologyToolPayload
 
 
 @pytest.fixture
-def werkorder_provider(
-    werkorder,
-    werkorder_graph,
+def workorders_demo_provider(
+    workorders_demo,
+    workorders_demo_graph,
     quintiq_job_graph,
     richest_job_graph,
     mapping_job_graph,
     richest_component_graph,
 ):
-    """Every werkorder artifact this wave reads, on its real URL."""
-    transport = werkorder_routes(
-        landscape=werkorder,
-        project_graph=werkorder_graph,
+    """Every workorders_demo artifact this wave reads, on its real URL."""
+    transport = workorders_demo_routes(
+        landscape=workorders_demo,
+        project_graph=workorders_demo_graph,
         job_graphs={
             QUINTIQ_JOB: quintiq_job_graph,
             RICHEST_JOB: richest_job_graph,
@@ -80,14 +80,14 @@ def werkorder_provider(
     return transport, make_provider(transport)
 
 
-class TestTheQuintiqToMaximoQuestion:
+class TestTheQuintiqToAssetSysQuestion:
     """The exact question that fell through to the document corpus."""
 
-    async def test_the_job_is_findable_at_all(self, werkorder_provider) -> None:
-        _transport, provider = werkorder_provider
+    async def test_the_job_is_findable_at_all(self, workorders_demo_provider) -> None:
+        _transport, provider = workorders_demo_provider
 
         result = await find_topology_node(
-            FindTopologyNodeInput(project_id="werkorder", query="Quintiq2Maximo"),
+            FindTopologyNodeInput(project_id="workorders_demo", query="Quintiq2AssetSys"),
             provider=provider,
             access_token=None,
         )
@@ -97,28 +97,28 @@ class TestTheQuintiqToMaximoQuestion:
         assert "job" in result.content["matched_kinds"]
 
     async def test_a_prose_question_finds_the_design_as_a_candidate(
-        self, werkorder_provider
+        self, workorders_demo_provider
     ) -> None:
-        """'the Quintiq to Maximo implementation' shares no substring with the name."""
-        _transport, provider = werkorder_provider
+        """'the Quintiq to AssetSys implementation' shares no substring with the name."""
+        _transport, provider = workorders_demo_provider
 
         result = await find_topology_node(
-            FindTopologyNodeInput(project_id="werkorder", query="Quintiq to Maximo"),
+            FindTopologyNodeInput(project_id="workorders_demo", query="Quintiq to AssetSys"),
             provider=provider,
             access_token=None,
         )
 
         jobs = {item["name"] for item in result.content["candidates"] if item["entity"] == "job"}
         assert jobs, result.content["candidates"]
-        assert any("Quintiq" in name and "Maximo" in name for name in jobs)
+        assert any("Quintiq" in name and "AssetSys" in name for name in jobs)
 
     async def test_the_answer_now_comes_from_the_design_manifest_and_says_so(
-        self, werkorder_provider
+        self, workorders_demo_provider
     ) -> None:
-        transport, provider = werkorder_provider
+        transport, provider = workorders_demo_provider
 
         result = await get_job_detail(
-            GetJobDetailInput(project_id="werkorder", name_or_id=QUINTIQ_JOB),
+            GetJobDetailInput(project_id="workorders_demo", name_or_id=QUINTIQ_JOB),
             provider=provider,
             access_token=None,
         )
@@ -133,16 +133,16 @@ class TestTheQuintiqToMaximoQuestion:
         assert result.content["connection_count"] == 37
         # And it was read from that job's own document.
         assert transport.paths_matching("/jobs/") == [
-            f"/mcp/projects/werkorder/jobs/{QUINTIQ_JOB}/graph"
+            f"/mcp/projects/workorders_demo/jobs/{QUINTIQ_JOB}/graph"
         ]
 
-    async def test_the_landscape_rollup_alone_cannot_answer_it(self, werkorder) -> None:
+    async def test_the_landscape_rollup_alone_cannot_answer_it(self, workorders_demo) -> None:
         """Why the depth tools exist: the rollup has no node for this job."""
-        landscape_only = werkorder_routes(landscape=werkorder)
+        landscape_only = workorders_demo_routes(landscape=workorders_demo)
         provider = make_provider(landscape_only)
 
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="werkorder", name_or_id=QUINTIQ_JOB),
+            GetTopologyNodeInput(project_id="workorders_demo", name_or_id=QUINTIQ_JOB),
             provider=provider,
             access_token=None,
         )
@@ -152,11 +152,11 @@ class TestTheQuintiqToMaximoQuestion:
 
 
 class TestNameResolutionWithoutARoundTrip:
-    async def test_job_detail_resolves_a_name_without_a_find_call(self, werkorder_provider) -> None:
-        transport, provider = werkorder_provider
+    async def test_job_detail_resolves_a_name_without_a_find_call(self, workorders_demo_provider) -> None:
+        transport, provider = workorders_demo_provider
 
         result = await get_job_detail(
-            GetJobDetailInput(project_id="werkorder", name_or_id=QUINTIQ_JOB),
+            GetJobDetailInput(project_id="workorders_demo", name_or_id=QUINTIQ_JOB),
             provider=provider,
             access_token=None,
         )
@@ -165,18 +165,18 @@ class TestNameResolutionWithoutARoundTrip:
         # Two artifact reads, no iteration spent on a separate lookup: the design
         # manifest resolves the name and the job graph supplies the components.
         assert transport.paths == [
-            "/mcp/projects/werkorder/graph",
-            f"/mcp/projects/werkorder/jobs/{QUINTIQ_JOB}/graph",
+            "/mcp/projects/workorders_demo/graph",
+            f"/mcp/projects/workorders_demo/jobs/{QUINTIQ_JOB}/graph",
         ]
 
     async def test_component_detail_resolves_both_names_in_one_call(
-        self, werkorder_provider
+        self, workorders_demo_provider
     ) -> None:
-        _transport, provider = werkorder_provider
+        _transport, provider = workorders_demo_provider
 
         result = await get_component_detail(
             GetComponentDetailInput(
-                project_id="werkorder", job=MAPPING_JOB, component=MAPPING_COMPONENT
+                project_id="workorders_demo", job=MAPPING_JOB, component=MAPPING_COMPONENT
             ),
             provider=provider,
             access_token=None,
@@ -186,12 +186,12 @@ class TestNameResolutionWithoutARoundTrip:
         assert result.content["component"]["name"] == MAPPING_COMPONENT
 
     async def test_a_partial_job_name_still_resolves_when_it_is_unambiguous(
-        self, werkorder_provider
+        self, workorders_demo_provider
     ) -> None:
-        _transport, provider = werkorder_provider
+        _transport, provider = workorders_demo_provider
 
         result = await get_job_detail(
-            GetJobDetailInput(project_id="werkorder", name_or_id="forSuppliersFourpsVendor"),
+            GetJobDetailInput(project_id="workorders_demo", name_or_id="forSuppliersFourfsVendor"),
             provider=provider,
             access_token=None,
         )
@@ -211,27 +211,27 @@ class TestLazyFetch:
         ["overview", "node", "dependencies", "find"],
     )
     async def test_no_deep_endpoint_is_called_for_a_landscape_question(
-        self, werkorder_provider, call_name
+        self, workorders_demo_provider, call_name
     ) -> None:
-        transport, provider = werkorder_provider
+        transport, provider = workorders_demo_provider
         calls = {
             "overview": lambda: get_topology_overview(
-                GetTopologyOverviewInput(project_id="werkorder"),
+                GetTopologyOverviewInput(project_id="workorders_demo"),
                 provider=provider,
                 access_token=None,
             ),
             "node": lambda: get_topology_node(
-                GetTopologyNodeInput(project_id="werkorder", name_or_id="Maximo"),
+                GetTopologyNodeInput(project_id="workorders_demo", name_or_id="AssetSys"),
                 provider=provider,
                 access_token=None,
             ),
             "dependencies": lambda: list_topology_dependencies(
-                ListTopologyDependenciesInput(project_id="werkorder", name_or_id="Maximo"),
+                ListTopologyDependenciesInput(project_id="workorders_demo", name_or_id="AssetSys"),
                 provider=provider,
                 access_token=None,
             ),
             "find": lambda: find_topology_node(
-                FindTopologyNodeInput(project_id="werkorder", query="Maximo"),
+                FindTopologyNodeInput(project_id="workorders_demo", query="AssetSys"),
                 provider=provider,
                 access_token=None,
             ),
@@ -242,24 +242,24 @@ class TestLazyFetch:
         assert transport.paths_matching("/jobs/") == []
         assert transport.paths_matching("/components/") == []
 
-    async def test_the_overview_reads_only_the_landscape(self, werkorder_provider) -> None:
-        transport, provider = werkorder_provider
+    async def test_the_overview_reads_only_the_landscape(self, workorders_demo_provider) -> None:
+        transport, provider = workorders_demo_provider
 
         await get_topology_overview(
-            GetTopologyOverviewInput(project_id="werkorder"),
+            GetTopologyOverviewInput(project_id="workorders_demo"),
             provider=provider,
             access_token=None,
         )
 
-        assert transport.paths == ["/mcp/projects/werkorder/landscape"]
+        assert transport.paths == ["/mcp/projects/workorders_demo/landscape"]
 
     async def test_component_search_only_opens_a_job_when_scoped_to_one(
-        self, werkorder_provider
+        self, workorders_demo_provider
     ) -> None:
-        transport, provider = werkorder_provider
+        transport, provider = workorders_demo_provider
 
         unscoped = await find_topology_node(
-            FindTopologyNodeInput(project_id="werkorder", query="tMap_1"),
+            FindTopologyNodeInput(project_id="workorders_demo", query="tMap_1"),
             provider=provider,
             access_token=None,
         )
@@ -270,12 +270,12 @@ class TestLazyFetch:
         )
 
         scoped = await find_topology_node(
-            FindTopologyNodeInput(project_id="werkorder", query="tMap_1", job=MAPPING_JOB),
+            FindTopologyNodeInput(project_id="workorders_demo", query="tMap_1", job=MAPPING_JOB),
             provider=provider,
             access_token=None,
         )
         assert transport.paths_matching("/jobs/") == [
-            f"/mcp/projects/werkorder/jobs/{MAPPING_JOB}/graph"
+            f"/mcp/projects/workorders_demo/jobs/{MAPPING_JOB}/graph"
         ]
         assert (
             scoped.content["design_coverage"]["component_scope"] == ComponentScope.JOB_GRAPH.value
@@ -287,12 +287,12 @@ class TestCapsOnTheRichestRealArtifacts:
     """The caps, not the size backstop, must be what bounds a depth answer."""
 
     async def test_the_richest_real_job_stays_inside_the_result_ceiling(
-        self, werkorder_provider
+        self, workorders_demo_provider
     ) -> None:
-        transport, provider = werkorder_provider
+        transport, provider = workorders_demo_provider
 
         result = await get_job_detail(
-            GetJobDetailInput(project_id="werkorder", name_or_id=RICHEST_JOB),
+            GetJobDetailInput(project_id="workorders_demo", name_or_id=RICHEST_JOB),
             provider=provider,
             access_token=None,
         )
@@ -306,13 +306,13 @@ class TestCapsOnTheRichestRealArtifacts:
         assert len(result.as_data()["targets"]) <= MAX_TARGETS
 
     async def test_the_richest_real_mapping_component_stays_inside_the_ceiling(
-        self, werkorder_provider
+        self, workorders_demo_provider
     ) -> None:
-        _transport, provider = werkorder_provider
+        _transport, provider = workorders_demo_provider
 
         result = await get_component_detail(
             GetComponentDetailInput(
-                project_id="werkorder", job=MAPPING_JOB, component=MAPPING_COMPONENT
+                project_id="workorders_demo", job=MAPPING_JOB, component=MAPPING_COMPONENT
             ),
             provider=provider,
             access_token=None,
@@ -325,18 +325,18 @@ class TestCapsOnTheRichestRealArtifacts:
         assert size < settings.runtime_tool_result_max_chars, f"{size} chars"
 
     async def test_resolved_depth_subjects_are_primary_with_supporting_context(
-        self, werkorder_provider
+        self, workorders_demo_provider
     ) -> None:
-        _transport, provider = werkorder_provider
+        _transport, provider = workorders_demo_provider
 
         job = await get_job_detail(
-            GetJobDetailInput(project_id="werkorder", name_or_id=QUINTIQ_JOB),
+            GetJobDetailInput(project_id="workorders_demo", name_or_id=QUINTIQ_JOB),
             provider=provider,
             access_token=None,
         )
         component = await get_component_detail(
             GetComponentDetailInput(
-                project_id="werkorder", job=MAPPING_JOB, component=MAPPING_COMPONENT
+                project_id="workorders_demo", job=MAPPING_JOB, component=MAPPING_COMPONENT
             ),
             provider=provider,
             access_token=None,
@@ -348,13 +348,13 @@ class TestCapsOnTheRichestRealArtifacts:
         assert component.targets[1]["visual_role"] == "supporting"
 
     async def test_mapping_visual_detail_is_bounded_and_scanner_authored(
-        self, werkorder_provider
+        self, workorders_demo_provider
     ) -> None:
-        _transport, provider = werkorder_provider
+        _transport, provider = workorders_demo_provider
 
         result = await get_component_detail(
             GetComponentDetailInput(
-                project_id="werkorder", job=MAPPING_JOB, component=MAPPING_COMPONENT
+                project_id="workorders_demo", job=MAPPING_JOB, component=MAPPING_COMPONENT
             ),
             provider=provider,
             access_token=None,
@@ -373,14 +373,14 @@ class TestCapsOnTheRichestRealArtifacts:
         assert all(set(edge) == {"target_table", "target_column"} for edge in detail["edges"])
 
     async def test_component_without_mapping_has_no_visual_detail(
-        self, werkorder_provider, quintiq_job_graph
+        self, workorders_demo_provider, quintiq_job_graph
     ) -> None:
-        _transport, provider = werkorder_provider
+        _transport, provider = workorders_demo_provider
         plain = next(node for node in quintiq_job_graph["nodes"] if not node["has_subgraph"])
 
         result = await get_component_detail(
             GetComponentDetailInput(
-                project_id="werkorder", job=QUINTIQ_JOB, component=plain["unique_name"]
+                project_id="workorders_demo", job=QUINTIQ_JOB, component=plain["unique_name"]
             ),
             provider=provider,
             access_token=None,
@@ -389,14 +389,14 @@ class TestCapsOnTheRichestRealArtifacts:
         assert "visual_detail" not in result.targets[0]
 
     async def test_mapping_columns_are_a_string_not_a_list_at_that_depth(
-        self, werkorder_provider
+        self, workorders_demo_provider
     ) -> None:
         """A leaf list this deep is replaced by a depth marker in the envelope."""
-        _transport, provider = werkorder_provider
+        _transport, provider = workorders_demo_provider
 
         result = await get_component_detail(
             GetComponentDetailInput(
-                project_id="werkorder", job=MAPPING_JOB, component=MAPPING_COMPONENT
+                project_id="workorders_demo", job=MAPPING_JOB, component=MAPPING_COMPONENT
             ),
             provider=provider,
             access_token=None,
@@ -406,11 +406,11 @@ class TestCapsOnTheRichestRealArtifacts:
             assert isinstance(table["columns"], str)
             assert isinstance(table["column_count"], int)
 
-    async def test_a_job_answer_reports_the_real_totals_it_elided(self, werkorder_provider) -> None:
-        _transport, provider = werkorder_provider
+    async def test_a_job_answer_reports_the_real_totals_it_elided(self, workorders_demo_provider) -> None:
+        _transport, provider = workorders_demo_provider
 
         result = await get_job_detail(
-            GetJobDetailInput(project_id="werkorder", name_or_id=RICHEST_JOB),
+            GetJobDetailInput(project_id="workorders_demo", name_or_id=RICHEST_JOB),
             provider=provider,
             access_token=None,
         )
@@ -433,13 +433,13 @@ class TestComponentSettingsAreReadable:
     """
 
     async def test_the_routing_criterion_comes_back_from_one_component_call(
-        self, pluripharm_provider
+        self, pharma_demo_provider
     ) -> None:
-        _transport, provider = pluripharm_provider
+        _transport, provider = pharma_demo_provider
 
         result = await get_component_detail(
             GetComponentDetailInput(
-                project_id=PLURIPHARM_PROJECT,
+                project_id=PHARMA_DEMO_PROJECT,
                 job=COLLECTOR_JOB,
                 component=COLLECTOR_ROUTING_COMPONENT,
             ),
@@ -454,18 +454,18 @@ class TestComponentSettingsAreReadable:
         assert any("AN8_CHECK" in row and "SZAN8" in row for row in rows), rows
 
     async def test_a_component_whose_whole_config_is_rows_is_not_reported_as_empty(
-        self, pluripharm_provider
+        self, pharma_demo_provider
     ) -> None:
         """`cSetHeader_5` has an EMPTY param_summary: all of it is in rows.
 
         Testing the scalar half alone reports exactly the components that hold
         the answer as having nothing configured.
         """
-        _transport, provider = pluripharm_provider
+        _transport, provider = pharma_demo_provider
 
         result = await get_component_detail(
             GetComponentDetailInput(
-                project_id=PLURIPHARM_PROJECT,
+                project_id=PHARMA_DEMO_PROJECT,
                 job=COLLECTOR_JOB,
                 component=COLLECTOR_ROUTING_COMPONENT,
             ),
@@ -479,10 +479,10 @@ class TestComponentSettingsAreReadable:
         assert component["parameter_tables"]
 
     async def test_one_batched_page_replaces_a_component_by_component_sweep(
-        self, pluripharm_provider
+        self, pharma_demo_provider
     ) -> None:
         """Four paged calls cover all 41 components' settings, not 41 calls."""
-        _transport, provider = pluripharm_provider
+        _transport, provider = pharma_demo_provider
 
         offset: int | None = 0
         pages = 0
@@ -490,7 +490,7 @@ class TestComponentSettingsAreReadable:
         while offset is not None:
             page = await get_job_detail(
                 GetJobDetailInput(
-                    project_id=PLURIPHARM_PROJECT,
+                    project_id=PHARMA_DEMO_PROJECT,
                     name_or_id=COLLECTOR_JOB,
                     include_parameters=True,
                     offset=offset,
@@ -514,12 +514,12 @@ class TestComponentSettingsAreReadable:
         assert "cJMS_1" in settings_by_component
 
     async def test_a_plain_listing_points_at_the_batch_instead_of_a_sweep(
-        self, pluripharm_provider
+        self, pharma_demo_provider
     ) -> None:
-        _transport, provider = pluripharm_provider
+        _transport, provider = pharma_demo_provider
 
         result = await get_job_detail(
-            GetJobDetailInput(project_id=PLURIPHARM_PROJECT, name_or_id=COLLECTOR_JOB),
+            GetJobDetailInput(project_id=PHARMA_DEMO_PROJECT, name_or_id=COLLECTOR_JOB),
             provider=provider,
             access_token=None,
         )
@@ -530,15 +530,15 @@ class TestComponentSettingsAreReadable:
         assert any(item["has_settings"] for item in result.content["components"])
 
     async def test_every_batched_page_of_the_richest_designs_fits_the_ceiling(
-        self, werkorder_provider, pluripharm_provider
+        self, workorders_demo_provider, pharma_demo_provider
     ) -> None:
         """Overrunning is not a soft failure: the backstop drops every list."""
-        _transport, werkorder = werkorder_provider
-        _pluri_transport, pluripharm = pluripharm_provider
+        _transport, workorders_demo = workorders_demo_provider
+        _pluri_transport, pharma_demo = pharma_demo_provider
         calls = [
-            (werkorder, "werkorder", RICHEST_JOB),
-            (werkorder, "werkorder", QUINTIQ_JOB),
-            (pluripharm, PLURIPHARM_PROJECT, COLLECTOR_JOB),
+            (workorders_demo, "workorders_demo", RICHEST_JOB),
+            (workorders_demo, "workorders_demo", QUINTIQ_JOB),
+            (pharma_demo, PHARMA_DEMO_PROJECT, COLLECTOR_JOB),
         ]
 
         for provider, project_id, job_name in calls:
@@ -559,7 +559,7 @@ class TestComponentSettingsAreReadable:
                 )
 
     async def test_settings_that_do_not_fit_are_counted_not_dropped(
-        self, pluripharm_graph, collector_job_graph
+        self, pharma_demo_graph, collector_job_graph
     ) -> None:
         """Forty rows on every component of a 41-component design."""
         rows = [
@@ -588,17 +588,17 @@ class TestComponentSettingsAreReadable:
             ],
         }
         provider = make_provider(
-            werkorder_routes(
+            workorders_demo_routes(
                 landscape={},
-                project_graph=pluripharm_graph,
+                project_graph=pharma_demo_graph,
                 job_graphs={COLLECTOR_JOB: overloaded},
-                project_id=PLURIPHARM_PROJECT,
+                project_id=PHARMA_DEMO_PROJECT,
             )
         )
 
         result = await get_job_detail(
             GetJobDetailInput(
-                project_id=PLURIPHARM_PROJECT, name_or_id=COLLECTOR_JOB, include_parameters=True
+                project_id=PHARMA_DEMO_PROJECT, name_or_id=COLLECTOR_JOB, include_parameters=True
             ),
             provider=provider,
             access_token=None,
@@ -615,7 +615,7 @@ class TestComponentSettingsAreReadable:
             assert note.endswith("of 40 rows shown"), note
 
     async def test_a_truncated_table_says_so_rather_than_reading_as_a_short_one(
-        self, pluripharm_graph, collector_job_graph
+        self, pharma_demo_graph, collector_job_graph
     ) -> None:
         rows = [{"NAME": f'"VAR_{index}"', "VALUE": f'"v{index}"'} for index in range(40)]
         node = {
@@ -632,17 +632,17 @@ class TestComponentSettingsAreReadable:
             ],
         }
         provider = make_provider(
-            werkorder_routes(
+            workorders_demo_routes(
                 landscape={},
-                project_graph=pluripharm_graph,
+                project_graph=pharma_demo_graph,
                 job_graphs={COLLECTOR_JOB: {**collector_job_graph, "nodes": [node]}},
-                project_id=PLURIPHARM_PROJECT,
+                project_id=PHARMA_DEMO_PROJECT,
             )
         )
 
         result = await get_component_detail(
             GetComponentDetailInput(
-                project_id=PLURIPHARM_PROJECT,
+                project_id=PHARMA_DEMO_PROJECT,
                 job=COLLECTOR_JOB,
                 component=node["unique_name"],
             ),
@@ -661,7 +661,7 @@ class TestComponentSettingsAreReadable:
         )
 
     async def test_the_richest_mapping_component_with_tables_fits_the_ceiling(
-        self, werkorder, werkorder_graph, mapping_job_graph, richest_component_graph
+        self, workorders_demo, workorders_demo_graph, mapping_job_graph, richest_component_graph
     ) -> None:
         """Worst case for the single-component read: 27 KB of mapping + tables."""
         rows = [
@@ -691,9 +691,9 @@ class TestComponentSettingsAreReadable:
             ],
         }
         provider = make_provider(
-            werkorder_routes(
-                landscape=werkorder,
-                project_graph=werkorder_graph,
+            workorders_demo_routes(
+                landscape=workorders_demo,
+                project_graph=workorders_demo_graph,
                 job_graphs={MAPPING_JOB: overloaded},
                 component_graphs={(MAPPING_JOB, MAPPING_COMPONENT): richest_component_graph},
             )
@@ -701,7 +701,7 @@ class TestComponentSettingsAreReadable:
 
         result = await get_component_detail(
             GetComponentDetailInput(
-                project_id="werkorder", job=MAPPING_JOB, component=MAPPING_COMPONENT
+                project_id="workorders_demo", job=MAPPING_JOB, component=MAPPING_COMPONENT
             ),
             provider=provider,
             access_token=None,
@@ -714,7 +714,7 @@ class TestComponentSettingsAreReadable:
         assert result.content["mapping_available"] is True
 
     async def test_rows_survive_the_envelope_depth_limit_in_a_batched_page(
-        self, pluripharm_provider
+        self, pharma_demo_provider
     ) -> None:
         """The deepest shape this package produces, through the real sanitizer.
 
@@ -725,10 +725,10 @@ class TestComponentSettingsAreReadable:
         """
         from src.harness.semantic_tools import _sanitize_value
 
-        _transport, provider = pluripharm_provider
+        _transport, provider = pharma_demo_provider
         result = await get_job_detail(
             GetJobDetailInput(
-                project_id=PLURIPHARM_PROJECT,
+                project_id=PHARMA_DEMO_PROJECT,
                 name_or_id=COLLECTOR_JOB,
                 include_parameters=True,
                 # The page `_component_order` puts cSetHeader_5 on (index 32).
@@ -751,14 +751,14 @@ class TestComponentSettingsAreReadable:
         assert any("AN8_CHECK" in row and "SZAN8" in row for row in rows), rows
 
     async def test_a_design_whose_scan_predates_the_field_still_answers(
-        self, werkorder_provider
+        self, workorders_demo_provider
     ) -> None:
         """MCP may publish no `param_tables` at all; that is not an error."""
-        _transport, provider = werkorder_provider
+        _transport, provider = workorders_demo_provider
 
         result = await get_job_detail(
             GetJobDetailInput(
-                project_id="werkorder", name_or_id=QUINTIQ_JOB, include_parameters=True
+                project_id="workorders_demo", name_or_id=QUINTIQ_JOB, include_parameters=True
             ),
             provider=provider,
             access_token=None,
@@ -772,12 +772,12 @@ class TestComponentSettingsAreReadable:
 
 class TestAmbiguityAcrossEntityKinds:
     async def test_candidates_name_their_kind_and_their_source_root(
-        self, werkorder_provider
+        self, workorders_demo_provider
     ) -> None:
-        _transport, provider = werkorder_provider
+        _transport, provider = workorders_demo_provider
 
         result = await find_topology_node(
-            FindTopologyNodeInput(project_id="werkorder", query="Maximo"),
+            FindTopologyNodeInput(project_id="workorders_demo", query="AssetSys"),
             provider=provider,
             access_token=None,
         )
@@ -791,12 +791,12 @@ class TestAmbiguityAcrossEntityKinds:
                 # only one copy" rather than "this scan is flat".
                 assert "source_root" in item
 
-    async def test_one_kind_cannot_monopolise_the_candidate_list(self, werkorder_provider) -> None:
-        """115 designs match "maximo"; the systems must not be buried by them."""
-        _transport, provider = werkorder_provider
+    async def test_one_kind_cannot_monopolise_the_candidate_list(self, workorders_demo_provider) -> None:
+        """115 designs match "assetsys"; the systems must not be buried by them."""
+        _transport, provider = workorders_demo_provider
 
         result = await find_topology_node(
-            FindTopologyNodeInput(project_id="werkorder", query="Maximo"),
+            FindTopologyNodeInput(project_id="workorders_demo", query="AssetSys"),
             provider=provider,
             access_token=None,
         )
@@ -805,12 +805,12 @@ class TestAmbiguityAcrossEntityKinds:
         assert "system" in kinds
         assert "job" in kinds
 
-    async def test_the_composite_partitions_are_distinguishable(self, werkorder_provider) -> None:
+    async def test_the_composite_partitions_are_distinguishable(self, workorders_demo_provider) -> None:
         """ "References" is a real group name in five of the 14 source roots."""
-        _transport, provider = werkorder_provider
+        _transport, provider = workorders_demo_provider
 
         result = await find_topology_node(
-            FindTopologyNodeInput(project_id="werkorder", query="REFERENCES"),
+            FindTopologyNodeInput(project_id="workorders_demo", query="REFERENCES"),
             provider=provider,
             access_token=None,
         )
@@ -820,15 +820,15 @@ class TestAmbiguityAcrossEntityKinds:
         assert len({item["name"] for item in groups}) == len(groups)
 
     async def test_a_source_root_pins_which_copy_of_a_design_is_meant(
-        self, werkorder_provider
+        self, workorders_demo_provider
     ) -> None:
-        _transport, provider = werkorder_provider
+        _transport, provider = workorders_demo_provider
 
         wrong_root = await get_job_detail(
             GetJobDetailInput(
-                project_id="werkorder",
+                project_id="workorders_demo",
                 name_or_id=QUINTIQ_JOB,
-                source_root="VolkerVessels_Workorder/Talend exports/ETTM.__intodoc_zip__/ERP_TO_THE_MAX",
+                source_root="ClientA_Workorder/Talend exports/ETTM.__intodoc_zip__/ERP_TO_THE_MAX",
             ),
             provider=provider,
             access_token=None,
@@ -838,7 +838,7 @@ class TestAmbiguityAcrossEntityKinds:
 
         right_root = await get_job_detail(
             GetJobDetailInput(
-                project_id="werkorder", name_or_id=QUINTIQ_JOB, source_root=QUINTIQ_SOURCE_ROOT
+                project_id="workorders_demo", name_or_id=QUINTIQ_JOB, source_root=QUINTIQ_SOURCE_ROOT
             ),
             provider=provider,
             access_token=None,
@@ -846,15 +846,15 @@ class TestAmbiguityAcrossEntityKinds:
         assert right_root.content["resolved"] is True
 
     async def test_two_scanner_systems_with_one_name_still_both_appear(
-        self, alitalend, alitalend_graph
+        self, talend_demo, talend_demo_graph
     ) -> None:
-        """The single-root case: alitalend has two distinct systems named "Log"."""
-        transport = werkorder_routes(
-            landscape=alitalend, project_graph=alitalend_graph, project_id="alitalend"
+        """The single-root case: talend_demo has two distinct systems named "Log"."""
+        transport = workorders_demo_routes(
+            landscape=talend_demo, project_graph=talend_demo_graph, project_id="talend_demo"
         )
 
         result = await find_topology_node(
-            FindTopologyNodeInput(project_id="alitalend", query="Log"),
+            FindTopologyNodeInput(project_id="talend_demo", query="Log"),
             provider=make_provider(transport),
             access_token=None,
         )
@@ -865,12 +865,12 @@ class TestAmbiguityAcrossEntityKinds:
 
 class TestTargetsForTheDeeperLevels:
     async def test_a_component_target_carries_job_component_and_source_root(
-        self, werkorder_provider
+        self, workorders_demo_provider
     ) -> None:
-        _transport, provider = werkorder_provider
+        _transport, provider = workorders_demo_provider
 
         result = await get_job_detail(
-            GetJobDetailInput(project_id="werkorder", name_or_id=QUINTIQ_JOB),
+            GetJobDetailInput(project_id="workorders_demo", name_or_id=QUINTIQ_JOB),
             provider=provider,
             access_token=None,
         )
@@ -883,11 +883,11 @@ class TestTargetsForTheDeeperLevels:
         assert component["level"]["sourceRoot"] == QUINTIQ_SOURCE_ROOT
         assert set(component["level"]) == {"kind", "jobName", "componentName", "sourceRoot"}
 
-    async def test_a_job_target_uses_the_manifest_name_and_root(self, werkorder_provider) -> None:
-        _transport, provider = werkorder_provider
+    async def test_a_job_target_uses_the_manifest_name_and_root(self, workorders_demo_provider) -> None:
+        _transport, provider = workorders_demo_provider
 
         result = await get_job_detail(
-            GetJobDetailInput(project_id="werkorder", name_or_id=QUINTIQ_JOB),
+            GetJobDetailInput(project_id="workorders_demo", name_or_id=QUINTIQ_JOB),
             provider=provider,
             access_token=None,
         )
@@ -898,12 +898,12 @@ class TestTargetsForTheDeeperLevels:
             "sourceRoot": QUINTIQ_SOURCE_ROOT,
         }
 
-    async def test_a_group_target_uses_the_canvas_group_name(self, werkorder_provider) -> None:
+    async def test_a_group_target_uses_the_canvas_group_name(self, workorders_demo_provider) -> None:
         """`topologyGroupForJob`'s value, not the source root or a display label."""
-        _transport, provider = werkorder_provider
+        _transport, provider = workorders_demo_provider
 
         result = await get_job_detail(
-            GetJobDetailInput(project_id="werkorder", name_or_id=QUINTIQ_JOB),
+            GetJobDetailInput(project_id="workorders_demo", name_or_id=QUINTIQ_JOB),
             provider=provider,
             access_token=None,
         )
@@ -913,17 +913,17 @@ class TestTargetsForTheDeeperLevels:
         assert group["level"]["sourceRoot"] == QUINTIQ_SOURCE_ROOT
 
     async def test_an_absent_source_root_is_omitted_never_null(
-        self, alitalend, alitalend_graph, alitalend_job_graph
+        self, talend_demo, talend_demo_graph, talend_demo_job_graph
     ) -> None:
-        transport = werkorder_routes(
-            landscape=alitalend,
-            project_graph=alitalend_graph,
-            job_graphs={"AssetCheck_SendWorkOrderUpdate": alitalend_job_graph},
-            project_id="alitalend",
+        transport = workorders_demo_routes(
+            landscape=talend_demo,
+            project_graph=talend_demo_graph,
+            job_graphs={"InspectHub_SendWorkOrderUpdate": talend_demo_job_graph},
+            project_id="talend_demo",
         )
 
         result = await get_job_detail(
-            GetJobDetailInput(project_id="alitalend", name_or_id="AssetCheck_SendWorkOrderUpdate"),
+            GetJobDetailInput(project_id="talend_demo", name_or_id="InspectHub_SendWorkOrderUpdate"),
             provider=make_provider(transport),
             access_token=None,
         )
@@ -934,7 +934,7 @@ class TestTargetsForTheDeeperLevels:
             assert None not in level.values()
 
     async def test_a_run_job_portal_offers_the_child_design(
-        self, werkorder_provider, mapping_job_graph
+        self, workorders_demo_provider, mapping_job_graph
     ) -> None:
         """A tRunJob component IS a hop to another design; offer that design.
 
@@ -942,12 +942,12 @@ class TestTargetsForTheDeeperLevels:
         its target carries no source root — which is correct: declaring one the
         manifest cannot confirm would filter the canvas to nothing.
         """
-        _transport, provider = werkorder_provider
+        _transport, provider = workorders_demo_provider
         portal = next(node for node in mapping_job_graph["nodes"] if node.get("subjob_target"))
 
         result = await get_component_detail(
             GetComponentDetailInput(
-                project_id="werkorder", job=MAPPING_JOB, component=portal["unique_name"]
+                project_id="workorders_demo", job=MAPPING_JOB, component=portal["unique_name"]
             ),
             provider=provider,
             access_token=None,
@@ -961,12 +961,12 @@ class TestTargetsForTheDeeperLevels:
 
 
 class TestRelationshipTargets:
-    async def test_a_system_pair_view_is_produced_and_well_formed(self, werkorder) -> None:
-        """ "go back to the view between Maximo and Quintiq" needs this variant."""
-        provider = make_provider(werkorder_routes(landscape=werkorder))
+    async def test_a_system_pair_view_is_produced_and_well_formed(self, workorders_demo) -> None:
+        """ "go back to the view between AssetSys and Quintiq" needs this variant."""
+        provider = make_provider(workorders_demo_routes(landscape=workorders_demo))
 
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="werkorder", name_or_id="Maximo"),
+            GetTopologyNodeInput(project_id="workorders_demo", name_or_id="AssetSys"),
             provider=provider,
             access_token=None,
         )
@@ -984,11 +984,11 @@ class TestRelationshipTargets:
             assert all(isinstance(key, str) and key for key in selection["streamKeys"])
             assert target["intent"] == "reference"
 
-    async def test_the_quintiq_maximo_pair_is_one_of_them(self, werkorder) -> None:
-        provider = make_provider(werkorder_routes(landscape=werkorder))
+    async def test_the_quintiq_assetsys_pair_is_one_of_them(self, workorders_demo) -> None:
+        provider = make_provider(workorders_demo_routes(landscape=workorders_demo))
 
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="werkorder", name_or_id="Maximo"),
+            GetTopologyNodeInput(project_id="workorders_demo", name_or_id="AssetSys"),
             provider=provider,
             access_token=None,
         )
@@ -1000,7 +1000,7 @@ class TestRelationshipTargets:
 
         assert any("Quintiq" in label for label in labels), labels
 
-    async def test_no_pair_view_in_the_scanner_view(self, werkorder) -> None:
+    async def test_no_pair_view_in_the_scanner_view(self, workorders_demo) -> None:
         """The canvas only aggregates pairs in the overlay view.
 
         A pair target built from the scanner view would point at a node the
@@ -1008,13 +1008,13 @@ class TestRelationshipTargets:
         overlay id while the scanner graph is rendered.
         """
         scanner = {
-            **werkorder,
-            "topology_state": {**werkorder["topology_state"], "validated": False},
+            **workorders_demo,
+            "topology_state": {**workorders_demo["topology_state"], "validated": False},
         }
-        provider = make_provider(werkorder_routes(landscape=scanner))
+        provider = make_provider(workorders_demo_routes(landscape=scanner))
 
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="werkorder", name_or_id="Maximo"),
+            GetTopologyNodeInput(project_id="workorders_demo", name_or_id="AssetSys"),
             provider=provider,
             access_token=None,
         )
@@ -1023,12 +1023,12 @@ class TestRelationshipTargets:
             target["level"]["selection"]["kind"] != "relationship" for target in result.targets
         )
 
-    async def test_pair_views_survive_the_target_cap_on_a_hub(self, werkorder) -> None:
+    async def test_pair_views_survive_the_target_cap_on_a_hub(self, workorders_demo) -> None:
         """A hub has more edges than the cap; the pair views must not be dropped."""
-        provider = make_provider(werkorder_routes(landscape=werkorder))
+        provider = make_provider(workorders_demo_routes(landscape=workorders_demo))
 
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="werkorder", name_or_id="Maximo"),
+            GetTopologyNodeInput(project_id="workorders_demo", name_or_id="AssetSys"),
             provider=provider,
             access_token=None,
         )
@@ -1038,11 +1038,11 @@ class TestRelationshipTargets:
 
 
 class TestNavigationIntent:
-    async def test_the_default_is_reference(self, werkorder_provider) -> None:
-        _transport, provider = werkorder_provider
+    async def test_the_default_is_reference(self, workorders_demo_provider) -> None:
+        _transport, provider = workorders_demo_provider
 
         result = await get_job_detail(
-            GetJobDetailInput(project_id="werkorder", name_or_id=QUINTIQ_JOB),
+            GetJobDetailInput(project_id="workorders_demo", name_or_id=QUINTIQ_JOB),
             provider=provider,
             access_token=None,
         )
@@ -1050,13 +1050,13 @@ class TestNavigationIntent:
         assert all(target["intent"] == "reference" for target in result.targets)
 
     async def test_navigate_is_stamped_on_every_target_of_the_call(
-        self, werkorder_provider
+        self, workorders_demo_provider
     ) -> None:
-        _transport, provider = werkorder_provider
+        _transport, provider = workorders_demo_provider
 
         result = await get_job_detail(
             GetJobDetailInput(
-                project_id="werkorder", name_or_id=QUINTIQ_JOB, navigation_intent="navigate"
+                project_id="workorders_demo", name_or_id=QUINTIQ_JOB, navigation_intent="navigate"
             ),
             provider=provider,
             access_token=None,
@@ -1073,36 +1073,36 @@ class TestNavigationIntent:
         """Coerced, not rejected: a rejection would cost a loop iteration, and a
         coercion to navigate would move the user's canvas unbidden."""
         params = GetJobDetailInput(
-            project_id="werkorder", name_or_id=QUINTIQ_JOB, navigation_intent=value
+            project_id="workorders_demo", name_or_id=QUINTIQ_JOB, navigation_intent=value
         )
 
         assert params.navigation_intent is NavigationIntent.REFERENCE
 
     def test_the_exact_string_is_accepted(self) -> None:
         params = GetJobDetailInput(
-            project_id="werkorder", name_or_id=QUINTIQ_JOB, navigation_intent="navigate"
+            project_id="workorders_demo", name_or_id=QUINTIQ_JOB, navigation_intent="navigate"
         )
 
         assert params.navigation_intent is NavigationIntent.NAVIGATE
 
     def test_omitting_it_yields_reference(self) -> None:
         assert (
-            GetTopologyOverviewInput(project_id="werkorder").navigation_intent
+            GetTopologyOverviewInput(project_id="workorders_demo").navigation_intent
             is NavigationIntent.REFERENCE
         )
 
 
 class TestHonestyAboutEmptySources:
     async def test_a_component_without_a_mapping_graph_says_so_explicitly(
-        self, werkorder_provider, quintiq_job_graph
+        self, workorders_demo_provider, quintiq_job_graph
     ) -> None:
         """Most components have no deeper graph. That is not "no transformations"."""
-        _transport, provider = werkorder_provider
+        _transport, provider = workorders_demo_provider
         plain = next(node for node in quintiq_job_graph["nodes"] if not node["has_subgraph"])
 
         result = await get_component_detail(
             GetComponentDetailInput(
-                project_id="werkorder", job=QUINTIQ_JOB, component=plain["unique_name"]
+                project_id="workorders_demo", job=QUINTIQ_JOB, component=plain["unique_name"]
             ),
             provider=provider,
             access_token=None,
@@ -1114,18 +1114,18 @@ class TestHonestyAboutEmptySources:
         assert "no column-level mapping graph" in result.content["mapping_note"]
 
     async def test_the_documented_upstream_fallback_is_not_an_error(
-        self, werkorder, werkorder_graph, mapping_job_graph
+        self, workorders_demo, workorders_demo_graph, mapping_job_graph
     ) -> None:
         """Upstream signals "no deeper graph" as a 404 with a fallback body."""
-        transport = werkorder_routes(
-            landscape=werkorder,
-            project_graph=werkorder_graph,
+        transport = workorders_demo_routes(
+            landscape=workorders_demo,
+            project_graph=workorders_demo_graph,
             job_graphs={MAPPING_JOB: mapping_job_graph},
         )
         # The component graph route is deliberately absent, so it 404s.
         result = await get_component_detail(
             GetComponentDetailInput(
-                project_id="werkorder", job=MAPPING_JOB, component=MAPPING_COMPONENT
+                project_id="workorders_demo", job=MAPPING_JOB, component=MAPPING_COMPONENT
             ),
             provider=make_provider(transport),
             access_token=None,
@@ -1135,12 +1135,12 @@ class TestHonestyAboutEmptySources:
         assert result.content["mapping_available"] is False
         assert result.content["mapping_reason"] in {"no_deeper_graph", "unreadable"}
 
-    async def test_a_missing_design_manifest_is_reported_not_papered_over(self, werkorder) -> None:
+    async def test_a_missing_design_manifest_is_reported_not_papered_over(self, workorders_demo) -> None:
         """No manifest means no jobs. Never answer from the rollup instead."""
-        provider = make_provider(werkorder_routes(landscape=werkorder))
+        provider = make_provider(workorders_demo_routes(landscape=workorders_demo))
 
         result = await get_job_detail(
-            GetJobDetailInput(project_id="werkorder", name_or_id=QUINTIQ_JOB),
+            GetJobDetailInput(project_id="workorders_demo", name_or_id=QUINTIQ_JOB),
             provider=provider,
             access_token=None,
         )
@@ -1151,12 +1151,12 @@ class TestHonestyAboutEmptySources:
         assert result.targets == []
 
     async def test_find_still_answers_from_the_landscape_and_declares_the_gap(
-        self, werkorder
+        self, workorders_demo
     ) -> None:
-        provider = make_provider(werkorder_routes(landscape=werkorder))
+        provider = make_provider(workorders_demo_routes(landscape=workorders_demo))
 
         result = await find_topology_node(
-            FindTopologyNodeInput(project_id="werkorder", query="Maximo"),
+            FindTopologyNodeInput(project_id="workorders_demo", query="AssetSys"),
             provider=provider,
             access_token=None,
         )
@@ -1167,12 +1167,12 @@ class TestHonestyAboutEmptySources:
         assert "cannot be searched" in coverage["reason"]
 
     async def test_a_named_design_that_is_not_in_the_scan_is_not_found(
-        self, werkorder_provider
+        self, workorders_demo_provider
     ) -> None:
-        _transport, provider = werkorder_provider
+        _transport, provider = workorders_demo_provider
 
         result = await get_job_detail(
-            GetJobDetailInput(project_id="werkorder", name_or_id="NoSuchDesign_v9"),
+            GetJobDetailInput(project_id="workorders_demo", name_or_id="NoSuchDesign_v9"),
             provider=provider,
             access_token=None,
         )
@@ -1182,12 +1182,12 @@ class TestHonestyAboutEmptySources:
 
 
 class TestHealthRelevantDesignFacts:
-    async def test_design_facts_are_labelled_as_design_time_only(self, werkorder_provider) -> None:
+    async def test_design_facts_are_labelled_as_design_time_only(self, workorders_demo_provider) -> None:
         """Structure is not observed state; conflating them is the labelling defect."""
-        _transport, provider = werkorder_provider
+        _transport, provider = workorders_demo_provider
 
         result = await get_job_detail(
-            GetJobDetailInput(project_id="werkorder", name_or_id=QUINTIQ_JOB),
+            GetJobDetailInput(project_id="workorders_demo", name_or_id=QUINTIQ_JOB),
             provider=provider,
             access_token=None,
         )
@@ -1199,8 +1199,8 @@ class TestHealthRelevantDesignFacts:
 
 
 class TestDesignIndex:
-    def test_group_naming_mirrors_the_canvas_rule(self, werkorder_graph) -> None:
-        graph = ProjectGraph.model_validate(werkorder_graph)
+    def test_group_naming_mirrors_the_canvas_rule(self, workorders_demo_graph) -> None:
+        graph = ProjectGraph.model_validate(workorders_demo_graph)
         index = build_design_index(graph)
 
         job = index.job(QUINTIQ_JOB)
@@ -1208,8 +1208,8 @@ class TestDesignIndex:
         assert job.group == graph.manifest.job_groups[QUINTIQ_JOB]
         assert job.source_root == QUINTIQ_SOURCE_ROOT
 
-    def test_a_flat_scan_yields_jobs_without_source_roots(self, alitalend_graph) -> None:
-        index = build_design_index(ProjectGraph.model_validate(alitalend_graph))
+    def test_a_flat_scan_yields_jobs_without_source_roots(self, talend_demo_graph) -> None:
+        index = build_design_index(ProjectGraph.model_validate(talend_demo_graph))
 
         assert index.jobs
         assert all(job.group for job in index.jobs)

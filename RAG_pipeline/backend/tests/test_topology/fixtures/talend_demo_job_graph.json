@@ -1,7 +1,7 @@
 {
- "project_id": "alitalend",
- "job_name": "AssetCheck_SendWorkOrderUpdate",
- "group": "AssetCheck_Interface",
+ "project_id": "talend_demo",
+ "job_name": "InspectHub_SendWorkOrderUpdate",
+ "group": "InspectHub_Interface",
  "nodes": [
   {
    "unique_name": "tMSSqlConnection_1",
@@ -184,7 +184,7 @@
     "FILENAME": "context.WorkOrderUpdateTemp+(String)globalMap.get(\"FileName\")+\".xml\"",
     "REMOVE_FILE": "true",
     "REPLACE_FILE": "true",
-    "SOURCE_DERECTORY": "\"Z:/WorkSpace/Maximo2AssestChecks/trunk\""
+    "SOURCE_DERECTORY": "\"Z:/WorkSpace/AssetSys2AssestChecks/trunk\""
    },
    "has_code": false,
    "description": ""
@@ -206,7 +206,7 @@
     "FILENAME": "context.Temp+(String)globalMap.get(\"FileName\")+\".xml\"",
     "REMOVE_FILE": "true",
     "REPLACE_FILE": "true",
-    "SOURCE_DERECTORY": "\"Z:/WorkSpace/Maximo2AssestChecks/trunk\""
+    "SOURCE_DERECTORY": "\"Z:/WorkSpace/AssetSys2AssestChecks/trunk\""
    },
    "has_code": false,
    "description": ""
@@ -333,7 +333,7 @@
   },
   {
    "unique_name": "tHttpRequest_1",
-   "display_label": "Send Work order update to maximo",
+   "display_label": "Send Work order update to assetsys",
    "component_type": "tHttpRequest",
    "type_explanation": "Processes data using the Talend tHttpRequest component.",
    "role": "transform",
@@ -342,7 +342,7 @@
    "connection_ref": "",
    "param_summary": {
     "DIE_ON_ERROR": "false",
-    "URI": "context.connection_MAS_URL+ \"queue/ASSETCHECK/ACWO\""
+    "URI": "context.connection_MAS_URL+ \"queue/INSPECTHUB/ACWO\""
    },
    "has_code": false,
    "description": ""
@@ -397,7 +397,7 @@
   },
   {
    "unique_name": "tJava_4",
-   "display_label": "Unable to connect maximo",
+   "display_label": "Unable to connect assetsys",
    "component_type": "tJava",
    "type_explanation": "Processes data using the Talend tJava component.",
    "role": "transform",
@@ -436,7 +436,7 @@
   },
   {
    "unique_name": "tJava_5",
-   "display_label": "Invalid response from Maximo",
+   "display_label": "Invalid response from AssetSys",
    "component_type": "tJava",
    "type_explanation": "Processes data using the Talend tJava component.",
    "role": "transform",

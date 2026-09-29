@@ -25,8 +25,8 @@ there is no configuration switch that reactivates legacy chat.
 ## Deployment authority gate
 
 Do not deploy Slice 8 or apply migration 069 until an operator attaches and
-signs a completed
-`.plans/agentic-chatbot-cleanup/slice_8_retirement_evidence.md`.
+signs a completed copy of
+[`agent-chat-retirement-evidence-template.md`](./agent-chat-retirement-evidence-template.md).
 The blank template is not evidence and must fail review.
 
 The signed record must prove, from the deployed Slice 7 full-agent release:

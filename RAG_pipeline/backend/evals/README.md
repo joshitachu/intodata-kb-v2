@@ -36,7 +36,7 @@ python -m evals run --fixtures evals/fixtures/always_declines.json
 python -m evals run --format json > eval-result.json
 
 # one case, with per-case detail
-python -m evals run --case pp-fmd-customer-selection-rule --verbose
+python -m evals run --case pharma-svd-customer-selection-rule --verbose
 
 # check the suite is well-formed and every evidence file still exists
 python -m evals validate
@@ -176,17 +176,17 @@ file will be all `live_capture` and the banner will flip.
    counts. `evidence[].path` is relative to the repository root and
    `python -m evals validate` fails if it moves.
 2. **Decide `answerable` honestly.** It means *"a correct system can answer this
-   from the retrievable document corpus"* — not *"the fact is true"*. The FMD
+   from the retrievable document corpus"* — not *"the fact is true"*. The SVD
    case is `answerable: false` even though the rule definitely exists, because it
    lives in `knowledge_base/intodoc-output/.../scan/jobs/*.json` and not in
-   `knowledge_base/output/PLURIPHARM/docs/`. Mark the out-of-corpus evidence
+   `knowledge_base/output/PHARMA_DEMO/docs/`. Mark the out-of-corpus evidence
    `in_corpus: false`; the validator enforces that every unanswerable case has at
    least one.
 3. **Pick the assertions that match the failure you are guarding against:**
 
 ```yaml
 - id: my-case
-  project: VW_FULL_LANDSCAPE
+  project: CLIENTA_FULL_LANDSCAPE
   answer_type: enumeration      # enumeration | count | lookup | explanation | contradiction
   answerable: true
   question: >-
@@ -199,7 +199,7 @@ file will be all `live_capture` and the banner will flip.
       in_corpus: true
   expected_sources: ["doc"]     # filename substrings, all must be retrieved
   expected_entities:            # -> coverage
-    - {name: "4PS", aliases: ["Dynamics 365"]}
+    - {name: "4FS", aliases: ["Dynamics 365"]}
   min_coverage: 1.0
   expected_counts: {things: 9}  # -> count_accuracy
   forbidden_counts: {things: [5]}
@@ -217,7 +217,7 @@ Notes that will save you an hour:
 - Patterns are matched against **normalised** text: lowercased, accents stripped,
   and markdown punctuation (`* _ ` # > |`) removed. A pattern containing a table
   pipe can never match.
-- `aliases` are not optional polish. Without `"Dynamics 365"` on the `4PS`
+- `aliases` are not optional polish. Without `"Dynamics 365"` on the `4FS`
   entity, a correct answer scores as a coverage miss and the metric becomes
   noise.
 - `forbidden_counts` only fires when the *correct* value is absent. That is

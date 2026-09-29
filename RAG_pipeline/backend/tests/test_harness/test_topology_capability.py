@@ -103,12 +103,12 @@ TARGET = {
     },
 }
 EDGE_TARGET = {
-    "label": "Maximo -> SAP ERP",
+    "label": "AssetSys -> SAP ERP",
     "level": {
         "kind": "integration",
         "selection": {
             "kind": "edge",
-            "edgeKey": "landscape-system:maximo|landscape-system:sap-erp",
+            "edgeKey": "landscape-system:assetsys|landscape-system:sap-erp",
         },
     },
 }
@@ -516,25 +516,25 @@ class TestTheSelectionSurvivesTheCanvasIdSpaces:
         """
         scope = {
             "surface": "topology",
-            "project_id": "werkorder",
+            "project_id": "workorders_demo",
             "level": {
                 "kind": "integration",
                 "selection": {
                     "kind": "edge",
-                    "edgeKey": "business-stream\x1fds-ettm-maximo--4ps-invoice",
+                    "edgeKey": "business-stream\x1fds-ettm-assetsys--4fs-invoice",
                 },
             },
             "selected_entity": {
                 "kind": "edge",
                 "label": "Flow",
-                "entity_id": "integration:edge:business-stream\x1fds-ettm-maximo--4ps-invoice",
+                "entity_id": "integration:edge:business-stream\x1fds-ettm-assetsys--4fs-invoice",
             },
         }
 
         hint = describe_page_scope(scope)
 
         assert hint is not None
-        assert "business-stream\x1fds-ettm-maximo--4ps-invoice" in hint
+        assert "business-stream\x1fds-ettm-assetsys--4fs-invoice" in hint
         assert "integration:edge:" not in hint
         # The level must not be described as the bare enum: "the integration
         # level" told the model nothing about the depth on screen.
@@ -548,11 +548,11 @@ class TestTheSelectionSurvivesTheCanvasIdSpaces:
         key at all would have shipped a corrupted one and resolved to nothing --
         the same observable failure, one layer down.
         """
-        key = "business-stream\x1fds-ettm-maximo--4ps-invoice"
+        key = "business-stream\x1fds-ettm-assetsys--4fs-invoice"
         hint = describe_page_scope(
             {
                 "surface": "topology",
-                "project_id": "werkorder",
+                "project_id": "workorders_demo",
                 "level": {"kind": "integration", "selection": {"kind": "edge", "edgeKey": key}},
             }
         )
@@ -569,14 +569,14 @@ class TestTheSelectionSurvivesTheCanvasIdSpaces:
         """
         scope = {
             "surface": "topology",
-            "project_id": "werkorder",
+            "project_id": "workorders_demo",
             "level": {"kind": "integration", "selection": {"kind": "edge", "edgeKey": "k"}},
             "selected_entity": {
                 "kind": "job",
-                "label": "maximoFourpsInvoice",
+                "label": "assetsysFourfsInvoice",
                 "entity_id": (
-                    "VolkerVessels_Workorder/Talend exports/"
-                    "ETTM.__intodoc_zip__/ERP_TO_THE_MAX::maximoFourpsInvoice"
+                    "ClientA_Workorder/Talend exports/"
+                    "ETTM.__intodoc_zip__/ERP_TO_THE_MAX::assetsysFourfsInvoice"
                 ),
             },
         }
@@ -584,7 +584,7 @@ class TestTheSelectionSurvivesTheCanvasIdSpaces:
         hint = describe_page_scope(scope)
 
         assert hint is not None
-        assert "maximoFourpsInvoice" in hint
+        assert "assetsysFourfsInvoice" in hint
         assert "__intodoc_zip__" not in hint
 
     def test_a_system_pair_is_rendered_as_two_resolvable_endpoints(self) -> None:
@@ -595,12 +595,12 @@ class TestTheSelectionSurvivesTheCanvasIdSpaces:
         """
         scope = {
             "surface": "topology",
-            "project_id": "werkorder",
+            "project_id": "workorders_demo",
             "level": {"kind": "project"},
             "selected_entity": {
                 "kind": "relationship",
-                "label": "AFAS ↔ Maximo",
-                "entity_id": "pair:system:sys-afas<->system:sys-maximo",
+                "label": "AFAS ↔ AssetSys",
+                "entity_id": "pair:system:sys-afas<->system:sys-assetsys",
             },
         }
 
@@ -608,7 +608,7 @@ class TestTheSelectionSurvivesTheCanvasIdSpaces:
 
         assert hint is not None
         assert "sys-afas" in hint
-        assert "sys-maximo" in hint
+        assert "sys-assetsys" in hint
         assert "pair:" not in hint
 
     def test_a_focused_system_is_not_described_as_the_whole_project(self) -> None:
@@ -621,7 +621,7 @@ class TestTheSelectionSurvivesTheCanvasIdSpaces:
         hint = describe_page_scope(
             {
                 "surface": "topology",
-                "project_id": "werkorder",
+                "project_id": "workorders_demo",
                 "level": {"kind": "project"},
                 "selected_entity": {
                     "kind": "system",
@@ -644,7 +644,7 @@ class TestTheSelectionSurvivesTheCanvasIdSpaces:
         after the user had navigated back to the landscape.
         """
         hint = describe_page_scope(
-            {"surface": "topology", "project_id": "werkorder", "level": {"kind": "project"}}
+            {"surface": "topology", "project_id": "workorders_demo", "level": {"kind": "project"}}
         )
 
         assert hint is not None
@@ -661,8 +661,8 @@ class TestTheSelectionSurvivesTheCanvasIdSpaces:
         """
         scope = {
             "surface": "topology",
-            "project_id": "werkorder",
-            "level": {"kind": "job", "jobName": "maximo_call"},
+            "project_id": "workorders_demo",
+            "level": {"kind": "job", "jobName": "assetsys_call"},
         }
 
         guidance = topology_turn_guidance(scope)
@@ -1025,13 +1025,13 @@ class TestPublicPayloadSanitizer:
         # Real regression: topology edge keys join endpoints with a unit
         # separator, which `str.split()` treats as whitespace. Folding it
         # rewrote the key and the client navigated nowhere.
-        edge_key = "business-stream\x1fds-assetcheck--maximo-servicerequest"
+        edge_key = "business-stream\x1fds-inspecthub--assetsys-servicerequest"
         payload = {
             "tool_label": "read topology structure",
             "status": "succeeded",
             "targets": [
                 {
-                    "label": "AssetCheck -> Maximo",
+                    "label": "InspectHub -> AssetSys",
                     "level": {
                         "kind": "integration",
                         "selection": {"kind": "edge", "edgeKey": edge_key},
@@ -1232,9 +1232,9 @@ class TestAgainstTheRealArtifact:
     """One end-to-end pass over a real published artifact, no dispatcher stub."""
 
     @pytest.fixture
-    def werkorder(self) -> dict:
+    def workorders_demo(self) -> dict:
         """A real composite published artifact; every cap in the tools is exceeded."""
-        return load_fixture("werkorder_composite_landscape")
+        return load_fixture("workorders_demo_composite_landscape")
 
     @pytest.fixture
     def installed(self, monkeypatch):
@@ -1245,9 +1245,9 @@ class TestAgainstTheRealArtifact:
         return install
 
     async def test_a_hub_answer_stays_inside_the_model_facing_bounds(
-        self, installed, werkorder
+        self, installed, workorders_demo
     ) -> None:
-        installed(werkorder)
+        installed(workorders_demo)
         snapshot = build_semantic_tool_snapshot(
             default_capability_registry(),
             scope=ManifestScope(include_bounded_loop_only=True),
@@ -1256,10 +1256,10 @@ class TestAgainstTheRealArtifact:
         observation = await _execute(
             {
                 "operation": "list_topology_dependencies",
-                "project_id": "werkorder",
-                "name_or_id": "Maximo",
+                "project_id": "workorders_demo",
+                "name_or_id": "AssetSys",
             },
-            project_scope=["werkorder"],
+            project_scope=["workorders_demo"],
         )
         envelope = project_capability_observation(
             observation, capability=snapshot.tool_for_name(SEMANTIC_NAME)
@@ -1274,9 +1274,9 @@ class TestAgainstTheRealArtifact:
         assert "content" in envelope.data
 
     async def test_real_targets_reach_the_public_payload_unrewritten(
-        self, installed, werkorder
+        self, installed, workorders_demo
     ) -> None:
-        installed(werkorder)
+        installed(workorders_demo)
         snapshot = build_semantic_tool_snapshot(
             default_capability_registry(),
             scope=ManifestScope(include_bounded_loop_only=True),
@@ -1285,10 +1285,10 @@ class TestAgainstTheRealArtifact:
         observation = await _execute(
             {
                 "operation": "get_topology_node",
-                "project_id": "werkorder",
-                "name_or_id": "Maximo",
+                "project_id": "workorders_demo",
+                "name_or_id": "AssetSys",
             },
-            project_scope=["werkorder"],
+            project_scope=["workorders_demo"],
         )
         envelope = project_capability_observation(
             observation, capability=snapshot.tool_for_name(SEMANTIC_NAME)
@@ -1330,21 +1330,21 @@ class TestAgainstTheRealArtifact:
     # stops either being lowered again — a truncated key is a chip that
     # navigates nowhere, which is invisible until a user clicks it.
     async def test_relationship_stream_keys_survive_the_public_payload(
-        self, installed, werkorder
+        self, installed, workorders_demo
     ) -> None:
-        installed(werkorder)
+        installed(workorders_demo)
 
         observation = await _execute(
             {
                 "operation": "get_topology_node",
-                "project_id": "werkorder",
-                "name_or_id": "Maximo",
+                "project_id": "workorders_demo",
+                "name_or_id": "AssetSys",
             },
-            project_scope=["werkorder"],
+            project_scope=["workorders_demo"],
         )
         produced = topology_targets(observation.data)
         relationships = [target for target in produced if not _is_flat_selection(target)]
-        assert relationships, "Maximo is a hub in the overlay view and must offer pair views"
+        assert relationships, "AssetSys is a hub in the overlay view and must offer pair views"
 
         public = sanitize_public_payload(
             "tool.completed", {"targets": relationships, "status": "succeeded"}
@@ -1619,7 +1619,7 @@ class TestDepthOperationsOnTheCapability:
     @pytest.mark.parametrize(
         ("operation", "extra"),
         [
-            ("get_job_detail", {"name_or_id": "Quintiq2Maximo_WorkOrderPickedUpXML"}),
+            ("get_job_detail", {"name_or_id": "Quintiq2AssetSys_WorkOrderPickedUpXML"}),
             (
                 "get_job_detail",
                 {"name_or_id": "j", "source_root": "root/a", "navigation_intent": "navigate"},
@@ -1958,7 +1958,7 @@ class TestSchemaContract:
         validator = Draft202012Validator(TOPOLOGY_STRUCTURE_CAPABILITY.input_schema)
         arguments = {
             "operation": operation,
-            "project_id": "werkorder",
+            "project_id": "workorders_demo",
             "job": "j" * job_length,
         }
         if operation == "get_component_detail":
@@ -1991,8 +1991,8 @@ class TestSchemaContract:
     @pytest.mark.parametrize(
         "extra",
         [
-            {"job": "Quintiq2Maximo_WorkOrderPickedUpXML"},
-            {"group": "Werkorder"},
+            {"job": "Quintiq2AssetSys_WorkOrderPickedUpXML"},
+            {"group": "Workorder"},
             {"job": "j", "offset": 40, "source_root": "root/a"},
         ],
     )

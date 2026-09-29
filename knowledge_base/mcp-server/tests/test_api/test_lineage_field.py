@@ -1,10 +1,10 @@
 """Tests for GET /mcp/projects/{id}/lineage/field (S4 field-lineage query API).
 
-The golden-fixture test uses `tests/fixtures/lineage/vw_maximo2assetcheck_sendlocation_lineage.json`,
+The golden-fixture test uses `tests/fixtures/lineage/clienta_assetsys2inspecthub_sendlocation_lineage.json`,
 a verbatim `intodoc.lineage.build_lineage_matrix()` output run over the same
 real, credential-filtered scan fixture
-(`knowledge_base/intodoc/tests/fixtures/lineage/Maximo2AssetCheck_SendLocation.json`)
-that `knowledge_base/intodoc/tests/test_lineage/test_golden_vw.py` pins as its
+(`knowledge_base/intodoc/tests/fixtures/lineage/AssetSys2InspectHub_SendLocation.json`)
+that `knowledge_base/intodoc/tests/test_lineage/test_golden_clienta.py` pins as its
 scanner-side golden expectations -- see that file for the hand-verified
 values this test asserts against (9 entries, row17 -> logVariables via
 tStatCatcher_1 -> tSetGlobalVar_4, all "likely" confidence).
@@ -21,10 +21,10 @@ import pytest
 from tests.test_api.test_rbac import non_owner_client  # noqa: F401
 
 PROJECT_ID = "vwlineageproj"
-JOB_NAME = "Maximo2AssetCheck_SendLocation"
+JOB_NAME = "AssetSys2InspectHub_SendLocation"
 
 _FIXTURE_PATH = (
-    Path(__file__).parent.parent / "fixtures" / "lineage" / "vw_maximo2assetcheck_sendlocation_lineage.json"
+    Path(__file__).parent.parent / "fixtures" / "lineage" / "clienta_assetsys2inspecthub_sendlocation_lineage.json"
 )
 
 

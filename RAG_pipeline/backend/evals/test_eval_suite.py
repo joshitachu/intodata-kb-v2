@@ -23,7 +23,13 @@ from pathlib import Path
 import pytest
 
 from evals.answers import FixtureProvider, RecordedAnswer
-from evals.cases import EvalCase, default_suite_path, load_eval_set
+from evals.cases import (
+    EvalCase,
+    default_suite_path,
+    load_eval_set,
+    load_evidence_aliases,
+    resolve_evidence_path,
+)
 from evals.judge import HeuristicJudge, get_judge
 from evals.runner import Runner
 from evals.scoring import (
@@ -63,12 +69,18 @@ def test_suite_has_enough_cases_and_a_real_unanswerable_class(eval_set) -> None:
 
 
 def test_every_evidence_path_still_exists(eval_set) -> None:
-    missing = [
-        f"{case.id}: {ref.path}"
+    aliases = load_evidence_aliases()
+    resolved = [
+        (case.id, ref.path, resolve_evidence_path(ref, REPO_ROOT, aliases))
         for case in eval_set.cases
         for ref in case.evidence
-        if not (REPO_ROOT / ref.path).exists()
     ]
+    if not aliases and not any(real.exists() for _, _, real in resolved):
+        pytest.skip(
+            "client evidence corpus is not on this machine (gitignored output "
+            "dirs); add evals/suite/evidence_aliases.local.json to check it"
+        )
+    missing = [f"{case_id}: {path}" for case_id, path, real in resolved if not real.exists()]
     assert not missing, f"evidence files moved or were deleted: {missing}"
 
 
@@ -112,9 +124,9 @@ def test_reference_ideal_is_not_reported_as_a_measurement(eval_set) -> None:
 
 def test_baseline_detects_silent_partial_coverage(eval_set) -> None:
     result = _run(eval_set, "observed_baseline.json")
-    score = next(r.score for r in result.results if r.case.id == "vw-maximo-workorder-consumers")
+    score = next(r.score for r in result.results if r.case.id == "clienta-assetsys-workorder-consumers")
     assert score.coverage is not None
-    assert score.coverage.found == ("4PS", "Ortec", "Quintiq", "AssetCheck", "Infor LN")
+    assert score.coverage.found == ("4FS", "RoutePlan", "Quintiq", "InspectHub", "Infor LN")
     assert score.coverage.undisclosed_partial is True
     assert not score.passed
 
@@ -122,7 +134,7 @@ def test_baseline_detects_silent_partial_coverage(eval_set) -> None:
 def test_baseline_detects_fabricated_absence(eval_set) -> None:
     result = _run(eval_set, "observed_baseline.json")
     score = next(
-        r.score for r in result.results if r.case.id == "pp-fmd-customer-selection-rule"
+        r.score for r in result.results if r.case.id == "pharma-svd-customer-selection-rule"
     )
     # The decisive property: it reported absence-from-corpus as absence-in-reality.
     assert score.unqualified_absence
@@ -133,7 +145,7 @@ def test_baseline_detects_fabricated_absence(eval_set) -> None:
 
 def test_baseline_detects_table_truncation(eval_set) -> None:
     result = _run(eval_set, "observed_baseline.json")
-    score = next(r.score for r in result.results if r.case.id == "vw-fo41-target-field-count")
+    score = next(r.score for r in result.results if r.case.id == "clienta-fo41-target-field-count")
     assert score.counts_correct is False
     assert any("31" in w for w in score.wrong_counts)
     # And the invented number is caught independently by numeric grounding: the
@@ -143,7 +155,7 @@ def test_baseline_detects_table_truncation(eval_set) -> None:
 
 def test_baseline_detects_silent_contradiction_resolution(eval_set) -> None:
     result = _run(eval_set, "observed_baseline.json")
-    for case_id in ("vw-fo41-field-count-contradiction", "vw-klantorder-source-contradiction"):
+    for case_id in ("clienta-fo41-field-count-contradiction", "clienta-klantorder-source-contradiction"):
         score = next(r.score for r in result.results if r.case.id == case_id)
         assert score.contradiction_disclosed is False, case_id
         assert score.missing_contradiction_sides, case_id
@@ -210,7 +222,7 @@ def test_absence_scoping_is_sentence_local() -> None:
 
 
 def test_hedging_inside_a_substantive_answer_is_not_over_abstention(eval_set) -> None:
-    case = eval_set.by_id("vw-klantorder-source-contradiction")
+    case = eval_set.by_id("clienta-klantorder-source-contradiction")
     assert case is not None
     recorded = RecordedAnswer(
         case_id=case.id,

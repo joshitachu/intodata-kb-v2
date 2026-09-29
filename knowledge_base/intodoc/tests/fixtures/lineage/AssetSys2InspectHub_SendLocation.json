@@ -1,6 +1,6 @@
 {
-  "name": "Maximo2AssetCheck_SendLocation",
-  "path": "Maximo2AssetCheck/Maximo2AssetCheck_SendLocation_1.4.item",
+  "name": "AssetSys2InspectHub_SendLocation",
+  "path": "AssetSys2InspectHub/AssetSys2InspectHub_SendLocation_1.4.item",
   "purpose": "",
   "author": "",
   "version": "1.4",
@@ -1026,7 +1026,7 @@
         },
         {
           "name": "SOURCE_DERECTORY",
-          "value": "\"Z:/WorkSpace/Maximo2AssestChecks/trunk\"",
+          "value": "\"Z:/WorkSpace/AssetSys2AssestChecks/trunk\"",
           "field_type": "DIRECTORY"
         },
         {
@@ -1628,77 +1628,77 @@
           "name": "Failed",
           "type": "id_String",
           "values": {
-            "DEV": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Failed\\\\",
-            "TST": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Failed\\\\",
-            "ACC": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Failed\\\\",
-            "PROD": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Failed\\\\",
-            "Default": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Failed\\\\"
+            "DEV": "C:\\\\Talend-test\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Failed\\\\",
+            "TST": "D:\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Failed\\\\",
+            "ACC": "D:\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Failed\\\\",
+            "PROD": "D:\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Failed\\\\",
+            "Default": "C:\\\\Talend-test\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Failed\\\\"
           }
         },
         {
           "name": "Input",
           "type": "id_String",
           "values": {
-            "DEV": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Input\\\\",
-            "TST": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Input\\\\",
-            "ACC": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Input\\\\",
-            "PROD": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Input\\\\",
-            "Default": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Input\\\\"
+            "DEV": "C:\\\\Talend-test\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Process\\\\Input\\\\",
+            "TST": "D:\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Process\\\\Input\\\\",
+            "ACC": "D:\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Process\\\\Input\\\\",
+            "PROD": "D:\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Process\\\\Input\\\\",
+            "Default": "C:\\\\Talend-test\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Process\\\\Input\\\\"
           }
         },
         {
           "name": "LocationData",
           "type": "id_String",
           "values": {
-            "DEV": "//[HOSTNAME]/Integratie_Shares$/Interfaces/Maximo2AssetCheck/LocationData/Process/LocationData/",
-            "TST": "//[HOSTNAME]/Integratie_Shares$/Interfaces/Maximo2AssetCheck/LocationData/Process/LocationData/",
-            "ACC": "//[HOSTNAME]/Integratie_Shares$/Interfaces/Maximo2AssetCheck/LocationData/Process/LocationData/",
-            "PROD": "//[HOSTNAME]/Integratie_Shares$/Interfaces/Maximo2AssetCheck/LocationData/Process/LocationData/",
-            "Default": "//[HOSTNAME]/Integratie_Shares$/Interfaces/Maximo2AssetCheck/LocationData/Process/LocationData/"
+            "DEV": "//[HOSTNAME]/Integratie_Shares$/Interfaces/AssetSys2InspectHub/LocationData/Process/LocationData/",
+            "TST": "//[HOSTNAME]/Integratie_Shares$/Interfaces/AssetSys2InspectHub/LocationData/Process/LocationData/",
+            "ACC": "//[HOSTNAME]/Integratie_Shares$/Interfaces/AssetSys2InspectHub/LocationData/Process/LocationData/",
+            "PROD": "//[HOSTNAME]/Integratie_Shares$/Interfaces/AssetSys2InspectHub/LocationData/Process/LocationData/",
+            "Default": "//[HOSTNAME]/Integratie_Shares$/Interfaces/AssetSys2InspectHub/LocationData/Process/LocationData/"
           }
         },
         {
           "name": "Proccessed",
           "type": "id_String",
           "values": {
-            "DEV": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Processed\\\\",
-            "TST": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Processed\\\\",
-            "ACC": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Processed\\\\",
-            "PROD": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Processed\\\\",
-            "Default": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Processed\\\\"
+            "DEV": "C:\\\\Talend-test\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Process\\\\Processed\\\\",
+            "TST": "D:\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Process\\\\Processed\\\\",
+            "ACC": "D:\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Process\\\\Processed\\\\",
+            "PROD": "D:\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Process\\\\Processed\\\\",
+            "Default": "C:\\\\Talend-test\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Process\\\\Processed\\\\"
           }
         },
         {
           "name": "Receving",
           "type": "id_String",
           "values": {
-            "DEV": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Receving\\\\",
-            "TST": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Receving\\\\",
-            "ACC": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Receving\\\\",
-            "PROD": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Receving\\\\",
-            "Default": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Receving\\\\"
+            "DEV": "C:\\\\Talend-test\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Process\\\\Receving\\\\",
+            "TST": "D:\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Process\\\\Receving\\\\",
+            "ACC": "D:\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Process\\\\Receving\\\\",
+            "PROD": "D:\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Process\\\\Receving\\\\",
+            "Default": "C:\\\\Talend-test\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Process\\\\Receving\\\\"
           }
         },
         {
           "name": "Temp",
           "type": "id_String",
           "values": {
-            "DEV": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Temp\\\\",
-            "TST": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Temp\\\\",
-            "ACC": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Temp\\\\",
-            "PROD": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Temp\\\\",
-            "Default": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Temp\\\\"
+            "DEV": "C:\\\\Talend-test\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Temp\\\\",
+            "TST": "D:\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Temp\\\\",
+            "ACC": "D:\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Temp\\\\",
+            "PROD": "D:\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Temp\\\\",
+            "Default": "C:\\\\Talend-test\\\\Talend\\\\AssetSys2InspectHub\\\\LocationData\\\\Temp\\\\"
           }
         },
         {
           "name": "AES_Key",
           "type": "id_String",
           "values": {
-            "DEV": "VISE2AC",
-            "TST": "VISE2AC",
-            "ACC": "VISE2AC",
-            "PROD": "VISE2AC",
-            "Default": "VISE2AC"
+            "DEV": "QADB2AC",
+            "TST": "QADB2AC",
+            "ACC": "QADB2AC",
+            "PROD": "QADB2AC",
+            "Default": "QADB2AC"
           }
         },
         {
@@ -1790,7 +1790,7 @@
           }
         },
         {
-          "name": "MaximoPassword",
+          "name": "AssetSysPassword",
           "type": "id_String",
           "values": {
             "DEV": "\"46+iAcv5wcZ7tJZdhK3%gmR=sn\"",
@@ -1801,7 +1801,7 @@
           }
         },
         {
-          "name": "MaximoUser",
+          "name": "AssetSysUser",
           "type": "id_String",
           "values": {
             "DEV": "\"ISN-SA-MA-P-TALEND\"",
@@ -1815,11 +1815,11 @@
           "name": "ProcessCode",
           "type": "id_String",
           "values": {
-            "DEV": "mx2assetcheck",
-            "TST": "mx2assetcheck",
-            "ACC": "mx2assetcheck",
-            "PROD": "mx2assetcheck",
-            "Default": "mx2assetcheck"
+            "DEV": "mx2inspecthub",
+            "TST": "mx2inspecthub",
+            "ACC": "mx2inspecthub",
+            "PROD": "mx2inspecthub",
+            "Default": "mx2inspecthub"
           }
         },
         {
@@ -2023,7 +2023,7 @@
     "SQLike",
     "TalendStringUtil"
   ],
-  "group": "Maximo2AssetCheck",
+  "group": "AssetSys2InspectHub",
   "subgroup": "",
   "active": true,
   "is_esb_route": false,

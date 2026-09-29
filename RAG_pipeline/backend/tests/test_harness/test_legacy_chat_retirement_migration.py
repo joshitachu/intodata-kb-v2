@@ -35,7 +35,7 @@ def test_blank_operator_retirement_template_is_explicitly_deployment_blocking() 
     repository_root = Path(__file__).parents[4]
     template = (
         repository_root
-        / ".plans/agentic-chatbot-cleanup/slice_8_retirement_evidence.md"
+        / "RAG_pipeline/docs/agent-chat-retirement-evidence-template.md"
     ).read_text()
     runbook = (
         repository_root / "RAG_pipeline/docs/agent-chat-cutover-runbook.md"

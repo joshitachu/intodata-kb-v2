@@ -19,9 +19,9 @@ from src.topology.provider import TopologyProvider
 FIXTURES = Path(__file__).parents[1] / "test_topology" / "fixtures"
 
 
-def _werkorder_provider() -> TopologyProvider:
-    landscape = json.loads((FIXTURES / "werkorder_composite_landscape.json").read_text())
-    project_graph = json.loads((FIXTURES / "werkorder_project_graph.json").read_text())
+def _workorders_demo_provider() -> TopologyProvider:
+    landscape = json.loads((FIXTURES / "workorders_demo_composite_landscape.json").read_text())
+    project_graph = json.loads((FIXTURES / "workorders_demo_project_graph.json").read_text())
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/landscape"):
@@ -48,24 +48,24 @@ def _provider_for(landscape: dict, project_graph: dict) -> TopologyProvider:
 
 
 @pytest.mark.asyncio
-async def test_real_quintiq_maximo_fixture_adds_design_and_source_root_terms() -> None:
+async def test_real_quintiq_assetsys_fixture_adds_design_and_source_root_terms() -> None:
     hints = await resolve_topology_retrieval_hints(
-        query="How does Quintiq send planned work orders to Maximo?",
-        project_ids=["werkorder"],
+        query="How does Quintiq send planned work orders to AssetSys?",
+        project_ids=["workorders_demo"],
         access_token="request-token",
-        provider=_werkorder_provider(),
+        provider=_workorders_demo_provider(),
     )
 
     assert hints is not None
-    assert hints.project_id == "werkorder"
+    assert hints.project_id == "workorders_demo"
     assert hints.strength is TopologyHintStrength.EXACT
     assert hints.exclusive_filter_allowed is False
-    assert set(hints.matched_entity_names) == {"Maximo", "Quintiq"}
-    assert "VQ_Quintiq2MX" in hints.artifact_names
-    assert "Quintiq2Maximo_PlannedWorkOrder" in hints.job_names
-    assert any("VQ_Quintiq2MX" in root for root in hints.source_roots)
-    enriched = hints.enriched_query("How does Quintiq send planned work orders to Maximo?")
-    assert "Quintiq2Maximo_PlannedWorkOrder" in enriched
+    assert set(hints.matched_entity_names) == {"AssetSys", "Quintiq"}
+    assert "PQ_Quintiq2MX" in hints.artifact_names
+    assert "Quintiq2AssetSys_PlannedWorkOrder" in hints.job_names
+    assert any("PQ_Quintiq2MX" in root for root in hints.source_roots)
+    enriched = hints.enriched_query("How does Quintiq send planned work orders to AssetSys?")
+    assert "Quintiq2AssetSys_PlannedWorkOrder" in enriched
     assert len(enriched) <= MAX_ENRICHED_QUERY_CHARS
 
 
@@ -86,7 +86,7 @@ async def test_hints_require_one_authorized_project_and_request_identity(
     provider = AsyncMock(spec=TopologyProvider)
 
     hints = await resolve_topology_retrieval_hints(
-        query="Tell me about Maximo",
+        query="Tell me about AssetSys",
         project_ids=project_ids,
         access_token=access_token,
         provider=provider,
@@ -104,7 +104,7 @@ async def test_topology_failure_degrades_to_normal_document_retrieval() -> None:
     provider.get_project_graph.side_effect = RuntimeError("provider unavailable")
 
     hints = await resolve_topology_retrieval_hints(
-        query="Tell me about Maximo",
+        query="Tell me about AssetSys",
         project_ids=["allowed"],
         access_token="request-token",
         provider=provider,

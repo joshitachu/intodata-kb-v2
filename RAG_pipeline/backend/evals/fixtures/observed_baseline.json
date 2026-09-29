@@ -1,67 +1,67 @@
 {
   "name": "observed-baseline",
-  "note": "READ THIS BEFORE QUOTING ANY NUMBER FROM A RUN OVER THIS FILE. These answers were NOT captured from a run of the deployed system. Two of them (pp-fmd-customer-selection-rule, vw-fo41-target-field-count) are reconstructions of answers observed during a real incident -- the wording of the decisive sentence is the observed wording, the surrounding prose is not. The rest are authored by hand to exercise one failure mode each. Their purpose is to prove the scorer detects the four measured failure modes; they are not a measurement of answer quality. To produce a real baseline, run `python -m evals run --live --record evals/fixtures/live_<date>.json` against a deployed stack; every answer in that file will carry provenance=live_capture and the report banner will switch to 'this is a measurement'. Retrieved-source excerpts below are real text from the named documents, deliberately clipped the way a top-N chunk retrieval clips them.",
+  "note": "READ THIS BEFORE QUOTING ANY NUMBER FROM A RUN OVER THIS FILE. These answers were NOT captured from a run of the deployed system. Two of them (pharma-svd-customer-selection-rule, clienta-fo41-target-field-count) are reconstructions of answers observed during a real incident -- the wording of the decisive sentence is the observed wording, the surrounding prose is not. The rest are authored by hand to exercise one failure mode each. Their purpose is to prove the scorer detects the four measured failure modes; they are not a measurement of answer quality. To produce a real baseline, run `python -m evals run --live --record evals/fixtures/live_<date>.json` against a deployed stack; every answer in that file will carry provenance=live_capture and the report banner will switch to 'this is a measurement'. Retrieved-source excerpts below are real text from the named documents, deliberately clipped the way a top-N chunk retrieval clips them.",
   "answers": [
     {
-      "case_id": "vw-maximo-workorder-consumers",
+      "case_id": "clienta-assetsys-workorder-consumers",
       "provenance": "handwritten_negative",
       "notes": "Failure mode 1: silent partial coverage. Five of nine named, no disclosure.",
-      "answer": "Maximo publiceert de WerkOrder aan vijf afnemers: 4PS (Dynamics 365), Ortec, Quintiq, AssetCheck en Infor LN. Elk van deze koppelingen is punt-naar-punt ingericht: Maximo wordt per afnemer rechtstreeks op dat doelsysteem afgebeeld. De koppelingen naar 4PS en Ortec zijn de breedste; AssetCheck ontvangt een ongefilterde dump.",
+      "answer": "AssetSys publiceert de WorkOrder aan vijf afnemers: 4FS (Dynamics 365), RoutePlan, Quintiq, InspectHub en Infor LN. Elk van deze koppelingen is punt-naar-punt ingericht: AssetSys wordt per afnemer rechtstreeks op dat doelsysteem afgebeeld. De koppelingen naar 4FS en RoutePlan zijn de breedste; InspectHub ontvangt een ongefilterde dump.",
       "sources": [
         {
-          "filename": "VolkerWessels - Maximo WerkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "filename": "ClientA - AssetSys WorkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.71,
-          "text": "In de huidige inrichting zijn de werkorderkoppelingen punt-naar-punt: Maximo wordt per afnemer rechtstreeks op dat doelsysteem afgebeeld. In de beoogde architectuur valt elke koppeling uiteen in twee stappen."
+          "text": "In de huidige inrichting zijn de workorderkoppelingen punt-naar-punt: AssetSys wordt per afnemer rechtstreeks op dat doelsysteem afgebeeld. In de beoogde architectuur valt elke koppeling uiteen in twee stappen."
         },
         {
-          "filename": "VolkerWessels - Maximo WerkOrder naar 4PS - Interface Documentation.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "filename": "ClientA - AssetSys WorkOrder naar 4FS - Interface Documentation.md",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 2,
           "score": 0.64,
-          "text": "Maximo -> 4PS: 12 gemapt, 5 geschreven. De transformatie produceert twaalf velden, waarvan er vijf de doeltoepassing bereiken."
+          "text": "AssetSys -> 4FS: 12 gemapt, 5 geschreven. De transformatie produceert twaalf velden, waarvan er vijf de doeltoepassing bereiken."
         },
         {
-          "filename": "VolkerWessels - Maximo WerkOrder naar Ortec - Interface Documentation.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "filename": "ClientA - AssetSys WorkOrder naar RoutePlan - Interface Documentation.md",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 3,
           "score": 0.61,
-          "text": "Maximo publiceert naar Ortec via InvokeASSIGNDETAIL (FO 4.1) en PublishASSIGNSTATUS (FO 4.6)."
+          "text": "AssetSys publiceert naar RoutePlan via InvokeASSIGNDETAIL (FO 4.1) en PublishASSIGNSTATUS (FO 4.6)."
         }
       ]
     },
     {
-      "case_id": "vw-maximo-publication-forms",
+      "case_id": "clienta-assetsys-publication-forms",
       "provenance": "handwritten_negative",
       "notes": "Control: a correct enumeration, so the suite is not all-failures.",
-      "answer": "Maximo publiceert de WerkOrder in vijf berichtvormen. PublishVLWO met wortel VLWOSet/WORKORDER gaat naar 4PS en telt ongeveer 400 elementen. PublishACWO met wortel ACWOSet/WORKORDER gaat naar AssetCheck en telt 851 bladelementen waarvan er 282 ooit gevuld zijn. InvokeASSIGNDETAIL gaat naar Ortec (FO 4.1). PublishASSIGNSTATUS gaat naar Ortec (FO 4.6) en Infor LN (FO 4.7). Daarnaast is er een platte REST JSON voor RHM (13 velden) en Quintiq (19 velden).",
+      "answer": "AssetSys publiceert de WorkOrder in vijf berichtvormen. PublishVLWO met wortel VLWOSet/WORKORDER gaat naar 4FS en telt ongeveer 400 elementen. PublishACWO met wortel ACWOSet/WORKORDER gaat naar InspectHub en telt 851 bladelementen waarvan er 282 ooit gevuld zijn. InvokeASSIGNDETAIL gaat naar RoutePlan (FO 4.1). PublishASSIGNSTATUS gaat naar RoutePlan (FO 4.6) en Infor LN (FO 4.7). Daarnaast is er een platte REST JSON voor RHM (13 velden) en Quintiq (19 velden).",
       "sources": [
         {
-          "filename": "VolkerWessels - Maximo WerkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "filename": "ClientA - AssetSys WorkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.82,
-          "text": "Maximo publiceert de WerkOrder in vijf verschillende vormen, afhankelijk van de afnemer. PublishVLWO, wortel VLWOSet/WORKORDER, naar 4PS, ~400 elementen. PublishACWO, wortel ACWOSet/WORKORDER, naar AssetCheck, 851 bladelementen, 282 ooit gevuld. InvokeASSIGNDETAIL, wortel ASSIGNDETAILSet/ASSIGNMENT, naar Ortec (FO 4.1). PublishASSIGNSTATUS, wortel ASSIGNSTATUSSet/ASSIGNMENT, naar Ortec (FO 4.6) en Infor LN (FO 4.7). REST JSON naar RHM (13 velden) en Quintiq (19 velden), plat."
+          "text": "AssetSys publiceert de WorkOrder in vijf verschillende vormen, afhankelijk van de afnemer. PublishVLWO, wortel VLWOSet/WORKORDER, naar 4FS, ~400 elementen. PublishACWO, wortel ACWOSet/WORKORDER, naar InspectHub, 851 bladelementen, 282 ooit gevuld. InvokeASSIGNDETAIL, wortel ASSIGNDETAILSet/ASSIGNMENT, naar RoutePlan (FO 4.1). PublishASSIGNSTATUS, wortel ASSIGNSTATUSSet/ASSIGNMENT, naar RoutePlan (FO 4.6) en Infor LN (FO 4.7). REST JSON naar RHM (13 velden) en Quintiq (19 velden), plat."
         }
       ]
     },
     {
-      "case_id": "vw-fo41-target-field-count",
+      "case_id": "clienta-fo41-target-field-count",
       "provenance": "reconstructed_from_incident",
       "notes": "Failure mode 3: table truncation. The count '30' is the observed wrong answer; the table has 31 numbered rows.",
-      "answer": "De transformatie FO 4.1 Maximo naar Ortec bouwt 30 doelvelden op. Daaronder vallen de envelop-elementen commandName en message, de vialis_service-velden zoals activiteitsduur, bezoekadres, callaannemer, contract, klantnaam, omschrijving, responsetijd en de SLA-momenten, en de header-elementen Action en ReplyTo/Address.",
+      "answer": "De transformatie FO 4.1 AssetSys naar RoutePlan bouwt 30 doelvelden op. Daaronder vallen de envelop-elementen commandName en message, de vialis_service-velden zoals activiteitsduur, bezoekadres, callaannemer, contract, klantnaam, omschrijving, responsetijd en de SLA-momenten, en de header-elementen Action en ReplyTo/Address.",
       "sources": [
         {
           "filename": "05_VELDMAPPINGS_COMPLEET.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.77,
-          "text": "FO 4.1 Maximo -> Ortec (ongeplande werkorder) -- bestand 4.1_Ongeplande_directe_activiteit_Maximo2Ortec.xsl. 1 Envelope/Body/SendMessage/commandName, Import, constant. 2 Envelope/Body/SendMessage/message, concat. 3 activiteitsduur, round(m:LABORHRS * 60), expression. 4 alternatief_serienummer, conditional. 5 berichtsoort, nieuw, constant. 6 bezoekadres, conditional. 7 bezoekpostcode, direct. 8 bezoekwoonplaats, conditional. 9 callaannemer, m:WORKORDER/m:WONUM, direct. 10 contract, direct. 11 installatiebreedtegraad, conditional. 12 installatielengtegraad, conditional. 13 klantnaam, direct. 14 klantorder, m:WORKORDER/m:WOLO9, direct."
+          "text": "FO 4.1 AssetSys -> RoutePlan (ongeplande workorder) -- bestand 4.1_Ongeplande_directe_activiteit_AssetSys2RoutePlan.xsl. 1 Envelope/Body/SendMessage/commandName, Import, constant. 2 Envelope/Body/SendMessage/message, concat. 3 activiteitsduur, round(m:LABORHRS * 60), expression. 4 alternatief_serienummer, conditional. 5 berichtsoort, nieuw, constant. 6 bezoekadres, conditional. 7 bezoekpostcode, direct. 8 bezoekwoonplaats, conditional. 9 callaannemer, m:WORKORDER/m:WONUM, direct. 10 contract, direct. 11 installatiebreedtegraad, conditional. 12 installatielengtegraad, conditional. 13 klantnaam, direct. 14 klantorder, m:WORKORDER/m:WOLO9, direct."
         },
         {
           "filename": "05_VELDMAPPINGS_COMPLEET.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 2,
           "score": 0.69,
           "text": "15 omschrijving, direct. 16 responsetijd, conditional. 17 responsetijd_gerealiseerd, direct. 18 serienummer, direct. 19 servicetype, direct. 20 streefdatum_tot, direct. 21 streefdatum_vanaf, direct. 22 uit_def_herstel, conditional."
@@ -69,66 +69,66 @@
       ]
     },
     {
-      "case_id": "vw-assetcheck-contract-width",
+      "case_id": "clienta-inspecthub-contract-width",
       "provenance": "handwritten_negative",
       "notes": "Control: correct counts, grounded in the retrieved chunk.",
-      "answer": "Het koppelvlak Maximo naar AssetCheck (PublishACWO) telt 851 bladelementen. Daarvan zijn er 282 ooit gevuld. De gevulde set bevat complete blokken MXFLEX* (19 velden), VR_* (45), VW_* (7), PLUSC*/PLUSP* (11) en PMCHG* (9): het volledige interne objectmodel als koppelvlak.",
+      "answer": "Het koppelvlak AssetSys naar InspectHub (PublishACWO) telt 851 bladelementen. Daarvan zijn er 282 ooit gevuld. De gevulde set bevat complete blokken MXFLEX* (19 velden), VR_* (45), ClientA_* (7), PLUSC*/PLUSP* (11) en PMCHG* (9): het volledige interne objectmodel als koppelvlak.",
       "sources": [
         {
-          "filename": "VolkerWessels - Maximo WerkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "filename": "ClientA - AssetSys WorkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.86,
-          "text": "De breedste vorm is tegelijk de slechtste. Van de 851 bladelementen in PublishACWO zijn er 282 ooit gevuld. De gevulde set bevat complete blokken MXFLEX* (19 velden), VR_* (45), VW_* (7), PLUSC* / PLUSP* (11) en PMCHG* (9) -- Maximo-interne uitbreidingskolommen en klantspecifieke velden."
+          "text": "De breedste vorm is tegelijk de slechtste. Van de 851 bladelementen in PublishACWO zijn er 282 ooit gevuld. De gevulde set bevat complete blokken MXFLEX* (19 velden), VR_* (45), ClientA_* (7), PLUSC* / PLUSP* (11) en PMCHG* (9) -- AssetSys-interne uitbreidingskolommen en klantspecifieke velden."
         }
       ]
     },
     {
-      "case_id": "vw-4ps-produced-vs-arrived",
+      "case_id": "clienta-4fs-produced-vs-arrived",
       "provenance": "handwritten_negative",
       "notes": "Control: correct counts.",
-      "answer": "De werkorderkoppeling naar 4PS produceert 12 velden. Daarvan bereiken er 5 de doeltoepassing; de overige 7 bestaan alleen binnen de keten. Het interfaceregister noteert dit als 12 gemapt tegenover 5 geschreven.",
+      "answer": "De workorderkoppeling naar 4FS produceert 12 velden. Daarvan bereiken er 5 de doeltoepassing; de overige 7 bestaan alleen binnen de keten. Het interfaceregister noteert dit als 12 gemapt tegenover 5 geschreven.",
       "sources": [
         {
           "filename": "01_ANTWOORDEN_OP_DE_VRAGEN.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.79,
-          "text": "Maximo -> 4PS | 12 gemapt | 5 geschreven. Bij de werkorderkoppeling naar 4PS produceert de transformatie twaalf velden, waarvan er vijf de doeltoepassing bereiken; de overige zeven bestaan alleen binnen de keten."
+          "text": "AssetSys -> 4FS | 12 gemapt | 5 geschreven. Bij de workorderkoppeling naar 4FS produceert de transformatie twaalf velden, waarvan er vijf de doeltoepassing bereiken; de overige zeven bestaan alleen binnen de keten."
         }
       ]
     },
     {
-      "case_id": "vw-fo41-field-count-contradiction",
+      "case_id": "clienta-fo41-field-count-contradiction",
       "provenance": "handwritten_negative",
       "notes": "Failure mode 4: picks one side of a documented contradiction and never mentions the other. Also a retrieval miss -- the register document was never retrieved.",
-      "answer": "De transformatie FO 4.1 Maximo naar Ortec telt 31 doelvelden. De tabel in 05_VELDMAPPINGS_COMPLEET.md nummert de rijen 1 tot en met 31, van commandName tot Envelope/Header/To. Zes daarvan zijn constanten of envelop-elementen.",
+      "answer": "De transformatie FO 4.1 AssetSys naar RoutePlan telt 31 doelvelden. De tabel in 05_VELDMAPPINGS_COMPLEET.md nummert de rijen 1 tot en met 31, van commandName tot Envelope/Header/To. Zes daarvan zijn constanten of envelop-elementen.",
       "sources": [
         {
           "filename": "05_VELDMAPPINGS_COMPLEET.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.74,
-          "text": "| Maximo -> Ortec, ongeplande werkorder | dit document, FO 4.1 Maximo -> Ortec | 31 | 04 keten 2 |"
+          "text": "| AssetSys -> RoutePlan, ongeplande workorder | dit document, FO 4.1 AssetSys -> RoutePlan | 31 | 04 keten 2 |"
         },
         {
-          "filename": "17_DEMARCATIE_WERKORDER_MELDING.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "filename": "17_DEMARCATIE_WORKORDER_MELDING.md",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 2,
           "score": 0.66,
-          "text": "Het planningsbericht telt 31 doelvelden, waarvan zes constanten en envelop-elementen. Van de 25 velden die een gegeven uit Maximo dragen, komen er negen uit de melding."
+          "text": "Het planningsbericht telt 31 doelvelden, waarvan zes constanten en envelop-elementen. Van de 25 velden die een gegeven uit AssetSys dragen, komen er negen uit de melding."
         }
       ]
     },
     {
-      "case_id": "vw-klantorder-source-contradiction",
+      "case_id": "clienta-klantorder-source-contradiction",
       "provenance": "handwritten_negative",
       "notes": "Failure mode 4 again, on a lookup: answers WOLO9 flatly and drops both the competing WO2 reading and the open question.",
-      "answer": "Het Maximo-bronveld voor klantorder in de Ortec-mapping is WORKORDER/WOLO9. Dat is het veld dat de transformatie 4.1_Ongeplande_directe_activiteit_Maximo2Ortec.xsl uitleest om het doelveld klantorder te vullen.",
+      "answer": "Het AssetSys-bronveld voor klantorder in de RoutePlan-mapping is WORKORDER/WOLO9. Dat is het veld dat de transformatie 4.1_Ongeplande_directe_activiteit_AssetSys2RoutePlan.xsl uitleest om het doelveld klantorder te vullen.",
       "sources": [
         {
           "filename": "05_VELDMAPPINGS_COMPLEET.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.8,
           "text": "14 | Envelope/Body/SendMessage/message/vialis_service/klantorder | m:WORKORDER/m:WOLO9 | direct | customer"
@@ -136,96 +136,96 @@
       ]
     },
     {
-      "case_id": "vw-workorder-concept-inventory",
+      "case_id": "clienta-workorder-concept-inventory",
       "provenance": "handwritten_negative",
       "notes": "Control: correct counts, both stated.",
-      "answer": "De geconsolideerde veldinventaris telt 61 canonieke begrippen over vier segmenten (B1 20, B2 10, B3 13, B4 18). Van die 61 hebben er 21 geen plaats in het doelmodel. Verder passen er 3 zonder omzetting, 28 passen met transformatie, en 9 horen bij een ander object. Eenendertig begrippen hebben daarmee een plaats op het WerkOrder-object.",
+      "answer": "De geconsolideerde veldinventaris telt 61 canonieke begrippen over vier segmenten (B1 20, B2 10, B3 13, B4 18). Van die 61 hebben er 21 geen plaats in het doelmodel. Verder passen er 3 zonder omzetting, 28 passen met transformatie, en 9 horen bij een ander object. Eenendertig begrippen hebben daarmee een plaats op het WorkOrder-object.",
       "sources": [
         {
-          "filename": "03_INFORMATIEMODEL_WERKORDER.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "filename": "03_INFORMATIEMODEL_WORKORDER.md",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.88,
-          "text": "Over alle 61 begrippen uit B1 tot en met B4 samen: past 1 2 0 0 = 3 (5%); past met transformatie 8 6 8 6 = 28 (46%); ander object 0 0 0 9 = 9 (15%); geen plaats 11 2 5 3 = 21 (34%); Totaal 20 10 13 18 = 61. Eenendertig begrippen (51%) hebben een plaats op het WerkOrder-object."
+          "text": "Over alle 61 begrippen uit B1 tot en met B4 samen: past 1 2 0 0 = 3 (5%); past met transformatie 8 6 8 6 = 28 (46%); ander object 0 0 0 9 = 9 (15%); geen plaats 11 2 5 3 = 21 (34%); Totaal 20 10 13 18 = 61. Eenendertig begrippen (51%) hebben een plaats op het WorkOrder-object."
         }
       ]
     },
     {
-      "case_id": "vw-ortec-worktype-lists",
+      "case_id": "clienta-routeplan-worktype-lists",
       "provenance": "handwritten_negative",
       "notes": "Failure mode 1 again, on a two-sided enumeration: the rare worktypes fall off the end of the chunk and nothing says so.",
-      "answer": "Aan de Maximo-kant komen de werksoorten INS, WUI, SO en POH voor. Aan de Ortec-kant komen SO, INDIRECT en PRD voor. De lijsten overlappen dus maar gedeeltelijk.",
+      "answer": "Aan de AssetSys-kant komen de werksoorten INS, WUI, SO en POH voor. Aan de RoutePlan-kant komen SO, INDIRECT en PRD voor. De lijsten overlappen dus maar gedeeltelijk.",
       "sources": [
         {
-          "filename": "VolkerWessels - Maximo WerkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "filename": "ClientA - AssetSys WorkOrder - Bronkoppelvlak naar het gemeenschappelijk model.md",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.72,
-          "text": "Gemeten: aan de Maximo-kant komen INS (103), WUI (45), SO (24), VMW (5), POH (2), RUS (1) en PRD (1) voor; aan de Ortec-kant SO (104), INDIRECT (66), POH (11), PRD (7) en PRK (6)."
+          "text": "Gemeten: aan de AssetSys-kant komen INS (103), WUI (45), SO (24), VMW (5), POH (2), RUS (1) en PRD (1) voor; aan de RoutePlan-kant SO (104), INDIRECT (66), POH (11), PRD (7) en PRK (6)."
         }
       ]
     },
     {
-      "case_id": "pp-domain-inventory",
+      "case_id": "pharma-domain-inventory",
       "provenance": "handwritten_negative",
       "notes": "Control: full enumeration with counts.",
-      "answer": "De landschapskaart onderscheidt tien domeinen plus een restgroep. Datawarehouse en rapportage telt 128 onderdelen, Artikel, assortiment en Z-Index 104, Order- en verzendketen 91, Beheer, raamwerk en bewaking 42, Magazijn en uitleverketen 27, Apotheekgegevens 21, Klantkanalen en Mendix 20, Mailing en communicatie 16, Prijsafspraken 4 en Geneesmiddelenverificatie (FMD) 4. Daarnaast staan 25 onderdelen zonder domein: de test-, demo- en oefenonderdelen.",
+      "answer": "De landschapskaart onderscheidt tien domeinen plus een restgroep. Datawarehouse en rapportage telt 128 onderdelen, Artikel, assortiment en Z-Index 104, Order- en verzendketen 91, Beheer, raamwerk en bewaking 42, Magazijn en uitleverketen 27, Apotheekgegevens 21, Klantkanalen en Mendix 20, Mailing en communicatie 16, Prijsafspraken 4 en Geneesmiddelenverificatie (SVD) 4. Daarnaast staan 25 onderdelen zonder domein: de test-, demo- en oefenonderdelen.",
       "sources": [
         {
           "filename": "01_LANDSCHAPSKAART.md",
-          "project_id": "PLURIPHARM",
+          "project_id": "PHARMA_DEMO",
           "reference_number": 1,
           "score": 0.9,
-          "text": "Datawarehouse en rapportage 128 58%. Artikel, assortiment en Z-Index 104 16%. Order- en verzendketen 91 37%. Beheer, raamwerk en bewaking 42 21%. Magazijn en uitleverketen 27 41%. Apotheekgegevens 21 24%. Klantkanalen en Mendix 20 5%. Mailing en communicatie 16 56%. Prijsafspraken 4 0%. Geneesmiddelenverificatie (FMD) 4 25%. Zonder domein -- proef en oefening 25 0%."
+          "text": "Datawarehouse en rapportage 128 58%. Artikel, assortiment en Z-Index 104 16%. Order- en verzendketen 91 37%. Beheer, raamwerk en bewaking 42 21%. Magazijn en uitleverketen 27 41%. Apotheekgegevens 21 24%. Klantkanalen en Mendix 20 5%. Mailing en communicatie 16 56%. Prijsafspraken 4 0%. Geneesmiddelenverificatie (SVD) 4 25%. Zonder domein -- proef en oefening 25 0%."
         }
       ]
     },
     {
-      "case_id": "pp-fmd-customer-selection-rule",
+      "case_id": "pharma-svd-customer-selection-rule",
       "provenance": "reconstructed_from_incident",
       "notes": "Failure mode 2, the originating incident. The decisive sentence is the observed wording. The rule exists in the Talend scan; the corpus searched was documentation only, and the answer never says so.",
-      "answer": "In de beschikbare stukken over de FMD-stroom is geen filter vastgelegd op klantniveau. Het FMD-domein telt vier onderdelen en de verificatiecode wordt samengesteld in de keten processor_complete_desadv_fmd_insert. Er is geen selectieregel die bepaalt welke klanten meedoen; het lijkt erop dat alle klanten door dezelfde stroom lopen. Dit is het bevestigen waard bij de business.",
+      "answer": "In de beschikbare stukken over de SVD-stroom is geen filter vastgelegd op klantniveau. Het SVD-domein telt vier onderdelen en de verificatiecode wordt samengesteld in de keten processor_complete_desadv_svd_insert. Er is geen selectieregel die bepaalt welke klanten meedoen; het lijkt erop dat alle klanten door dezelfde stroom lopen. Dit is het bevestigen waard bij de business.",
       "sources": [
         {
           "filename": "04_BUSINESSREGELS.md",
-          "project_id": "PLURIPHARM",
+          "project_id": "PHARMA_DEMO",
           "reference_number": 1,
           "score": 0.58,
-          "text": "3.1 De FMD-verificatiecode wordt hier samengesteld. Gemeten: het FMD-domein telt vier onderdelen waarvan er een in de uitrol is aangetroffen."
+          "text": "3.1 De SVD-verificatiecode wordt hier samengesteld. Gemeten: het SVD-domein telt vier onderdelen waarvan er een in de uitrol is aangetroffen."
         },
         {
           "filename": "02_ARTEFACTENREGISTER.md",
-          "project_id": "PLURIPHARM",
+          "project_id": "PHARMA_DEMO",
           "reference_number": 2,
           "score": 0.52,
-          "text": "Talend8 / FMD -- 3 onderdelen. copyPostGres2MSSQL, keten, FMD, 0.1. processor_complete_desadv_fmd_insert_oci, keten, FMD, 0.5. service_system_fmd, keten, FMD, 0.6."
+          "text": "Talend8 / SVD -- 3 onderdelen. copyPostGres2MSSQL, keten, SVD, 0.1. processor_complete_desadv_svd_insert_oci, keten, SVD, 0.5. service_system_svd, keten, SVD, 0.6."
         }
       ]
     },
     {
-      "case_id": "vw-source-to-common-model-field-table",
+      "case_id": "clienta-source-to-common-model-field-table",
       "provenance": "handwritten_negative",
       "notes": "Fabrication under pressure: asked for a table that the corpus says was deliberately not produced, the answer produces one anyway.",
-      "answer": "Hier is de veld-voor-veldtabel bron naar gemeenschappelijk model voor de WerkOrder. WONUM landt op core.workOrderNumber. DESCRIPTION landt op core.description. WORKTYPE landt op core.workType. ORGID landt op core.responsibleOrganisationUnitId. SITEID landt op core.executionSiteId. ASSETNUM landt op assetContext.assetId en assetContext.assetNumber. LOCATION landt op locationContext.locationId en locationContext.locationCode. PLUSPCUSTOMER landt op contractContext.customerId en contractContext.customerName.",
+      "answer": "Hier is de veld-voor-veldtabel bron naar gemeenschappelijk model voor de WorkOrder. WONUM landt op core.workOrderNumber. DESCRIPTION landt op core.description. WORKTYPE landt op core.workType. ORGID landt op core.responsibleOrganisationUnitId. SITEID landt op core.executionSiteId. ASSETNUM landt op assetContext.assetId en assetContext.assetNumber. LOCATION landt op locationContext.locationId en locationContext.locationCode. PLUSPCUSTOMER landt op contractContext.customerId en contractContext.customerName.",
       "sources": [
         {
-          "filename": "03_INFORMATIEMODEL_WERKORDER.md",
-          "project_id": "VW_FULL_LANDSCAPE",
+          "filename": "03_INFORMATIEMODEL_WORKORDER.md",
+          "project_id": "CLIENTA_FULL_LANDSCAPE",
           "reference_number": 1,
           "score": 0.63,
-          "text": "WerkOrder-nummer (sleutel) WONUM -> core.workOrderNumber, past met transformatie. Omschrijving DESCRIPTION -> core.description, past. Werksoort WORKTYPE -> core.workType, past met transformatie."
+          "text": "WorkOrder-nummer (sleutel) WONUM -> core.workOrderNumber, past met transformatie. Omschrijving DESCRIPTION -> core.description, past. Werksoort WORKTYPE -> core.workType, past met transformatie."
         }
       ]
     },
     {
-      "case_id": "pp-access-rights",
+      "case_id": "pharma-access-rights",
       "provenance": "handwritten_negative",
       "notes": "Fabricated absence again, on a security question -- the most expensive place for it.",
       "answer": "Er zijn geen beperkingen op de toegang tot de Talend-omgevingen aangetroffen. De componenten laten geen autorisatiemodel zien en er is geen rolverdeling vastgelegd, dus iedereen heeft in de praktijk toegang tot dezelfde omgevingen en databases.",
       "sources": [
         {
           "filename": "07_KWALITEIT_SECURITY_RISICO.md",
-          "project_id": "PLURIPHARM",
+          "project_id": "PHARMA_DEMO",
           "reference_number": 1,
           "score": 0.49,
           "text": "Hardcoded referenties komen op een aantal plaatsen voor. De schakelaars in componenten zeggen niets over het netwerk."
@@ -233,17 +233,17 @@
       ]
     },
     {
-      "case_id": "pp-records-processed-per-run",
+      "case_id": "pharma-records-processed-per-run",
       "provenance": "handwritten_negative",
       "notes": "A number invented out of nothing: the throughput columns are empty for all 100 route executions.",
       "answer": "De keten verwerkt gemiddeld 12500 records per uitvoering. Dat volgt uit de uitvoeringsstatistieken over het meetvenster, waarin de dagelijkse ladingen ongeveer 12500 regels per run tellen.",
       "sources": [
         {
           "filename": "12_UITVOERING_EN_PLANNING.md",
-          "project_id": "PLURIPHARM",
+          "project_id": "PHARMA_DEMO",
           "reference_number": 1,
           "score": 0.44,
-          "text": "Geneesmiddelenverificatie (FMD) 4 1 25%. De planning telt 100 route-uitvoeringen in het venster."
+          "text": "Geneesmiddelenverificatie (SVD) 4 1 25%. De planning telt 100 route-uitvoeringen in het venster."
         }
       ]
     }

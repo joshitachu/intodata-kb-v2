@@ -2,19 +2,19 @@
  "schema_version": "business-topology-v1",
  "scan_fingerprint": "ef3f69690c620ae6e55155afb1e2cd5e99b21d891fdc03e70180e9f85625d486",
  "metadata": {
-  "project_id": "werkorder",
+  "project_id": "workorders_demo",
   "scan_fingerprint": "ef3f69690c620ae6e55155afb1e2cd5e99b21d891fdc03e70180e9f85625d486",
   "generated_by": "analyst_evidence_grounded",
   "model_name": "evidence_extraction_from_docs"
  },
  "systems": [
   {
-   "id": "sys-4ps",
-   "name": "4PS",
+   "id": "sys-4fs",
+   "name": "4FS",
    "aliases": [],
    "kind": "software_system",
-   "description": "4PS ERP (Microsoft Dynamics 365 Business Central / NAV) accessed via REST API; target for Maximo transactional data, source of master-data change events pushed to Maximo, and counterpart in For Suppliers vendor synchronization.",
-   "purpose": "4PS ERP (Microsoft Dynamics 365 Business Central / NAV) accessed via REST API; target for Maximo transactional data, source of master-data change events pushed to Maximo, and counterpart in For Suppliers vendor synchronization.",
+   "description": "4FS ERP (Microsoft Dynamics 365 Business Central / NAV) accessed via REST API; target for AssetSys transactional data, source of master-data change events pushed to AssetSys, and counterpart in For Suppliers vendor synchronization.",
+   "purpose": "4FS ERP (Microsoft Dynamics 365 Business Central / NAV) accessed via REST API; target for AssetSys transactional data, source of master-data change events pushed to AssetSys, and counterpart in For Suppliers vendor synchronization.",
    "owner": "",
    "status": "confirmed",
    "confidence": 0.85,
@@ -37,16 +37,16 @@
    "name": "ActiveMQ",
    "aliases": [],
    "kind": "external_service",
-   "description": "JMS message broker routing AssetCheck<->VISE messages (forms, KTA create/update, error reports)",
-   "purpose": "JMS message broker routing AssetCheck<->VISE messages (forms, KTA create/update, error reports)",
+   "description": "JMS message broker routing InspectHub<->QADB messages (forms, KTA create/update, error reports)",
+   "purpose": "JMS message broker routing InspectHub<->QADB messages (forms, KTA create/update, error reports)",
    "owner": "",
    "status": "confirmed",
    "confidence": 0.85,
    "evidence_ids": []
   },
   {
-   "id": "sys-assetcheck",
-   "name": "AssetCheck",
+   "id": "sys-inspecthub",
+   "name": "InspectHub",
    "aliases": [],
    "kind": "software_system",
    "description": "Field/office asset-inspection application; consumes location, work-order and asset data via REST, submits service requests and KTA/forms, receives KTA/MMD results and error reports",
@@ -61,8 +61,8 @@
    "name": "Centric",
    "aliases": [],
    "kind": "data_system",
-   "description": "Oracle-based system used in a minor parallel realization export inside RHM2Maximo_RealizationEmployee",
-   "purpose": "Oracle-based system used in a minor parallel realization export inside RHM2Maximo_RealizationEmployee",
+   "description": "Oracle-based system used in a minor parallel realization export inside RHM2AssetSys_RealizationEmployee",
+   "purpose": "Oracle-based system used in a minor parallel realization export inside RHM2AssetSys_RealizationEmployee",
    "owner": "",
    "status": "confirmed",
    "confidence": 0.85,
@@ -97,8 +97,8 @@
    "name": "EnterpriseServiceBus",
    "aliases": [],
    "kind": "external_service",
-   "description": "Sibling Talend sub-project acting as a shared message relay/broker for Maximo-originated events and centralized monitoring topics. The generated docs assert conflicting directionality for the ETTM<->ESB edge (see flow notes).",
-   "purpose": "Sibling Talend sub-project acting as a shared message relay/broker for Maximo-originated events and centralized monitoring topics. The generated docs assert conflicting directionality for the ETTM<->ESB edge (see flow notes).",
+   "description": "Sibling Talend sub-project acting as a shared message relay/broker for AssetSys-originated events and centralized monitoring topics. The generated docs assert conflicting directionality for the ETTM<->ESB edge (see flow notes).",
+   "purpose": "Sibling Talend sub-project acting as a shared message relay/broker for AssetSys-originated events and centralized monitoring topics. The generated docs assert conflicting directionality for the ETTM<->ESB edge (see flow notes).",
    "owner": "",
    "status": "confirmed",
    "confidence": 0.85,
@@ -121,8 +121,8 @@
    "name": "ForSuppliers",
    "aliases": [],
    "kind": "external_service",
-   "description": "External vendor self-service portal exchanging vendor master data (categories, bank accounts, certificates, WKA checks, order addresses) and link/invite lifecycle data with 4PS.",
-   "purpose": "External vendor self-service portal exchanging vendor master data (categories, bank accounts, certificates, WKA checks, order addresses) and link/invite lifecycle data with 4PS.",
+   "description": "External vendor self-service portal exchanging vendor master data (categories, bank accounts, certificates, WKA checks, order addresses) and link/invite lifecycle data with 4FS.",
+   "purpose": "External vendor self-service portal exchanging vendor master data (categories, bank accounts, certificates, WKA checks, order addresses) and link/invite lifecycle data with 4FS.",
    "owner": "",
    "status": "confirmed",
    "confidence": 0.85,
@@ -133,16 +133,16 @@
    "name": "Irissys",
    "aliases": [],
    "kind": "external_service",
-   "description": "Newly-identified system receiving Maximo ultrasonic/NDT inspection reports (not in original canonical list)",
-   "purpose": "Newly-identified system receiving Maximo ultrasonic/NDT inspection reports (not in original canonical list)",
+   "description": "Newly-identified system receiving AssetSys ultrasonic/NDT inspection reports (not in original canonical list)",
+   "purpose": "Newly-identified system receiving AssetSys ultrasonic/NDT inspection reports (not in original canonical list)",
    "owner": "",
    "status": "confirmed",
    "confidence": 0.85,
    "evidence_ids": []
   },
   {
-   "id": "sys-maximo",
-   "name": "Maximo",
+   "id": "sys-assetsys",
+   "name": "AssetSys",
    "aliases": [],
    "kind": "software_system",
    "description": "Enterprise Asset Management (EAM) system; source of work orders and locations, receives service requests and work-order status updates",
@@ -153,24 +153,24 @@
    "evidence_ids": []
   },
   {
-   "id": "sys-ortec",
-   "name": "Ortec",
+   "id": "sys-routeplan",
+   "name": "RoutePlan",
    "aliases": [],
    "kind": "external_service",
-   "description": "Work-order planning system; exchanges planned/modified/cancelled work orders and status tickets with Maximo via ESB",
-   "purpose": "Work-order planning system; exchanges planned/modified/cancelled work orders and status tickets with Maximo via ESB",
+   "description": "Work-order planning system; exchanges planned/modified/cancelled work orders and status tickets with AssetSys via ESB",
+   "purpose": "Work-order planning system; exchanges planned/modified/cancelled work orders and status tickets with AssetSys via ESB",
    "owner": "",
    "status": "confirmed",
    "confidence": 0.85,
    "evidence_ids": []
   },
   {
-   "id": "sys-prorail",
-   "name": "Prorail",
+   "id": "sys-railco",
+   "name": "RailCo",
    "aliases": [],
    "kind": "external_service",
-   "description": "Dutch rail infrastructure manager; file-based feed into Maximo (ILS/PROSAP variants, scanner-limited)",
-   "purpose": "Dutch rail infrastructure manager; file-based feed into Maximo (ILS/PROSAP variants, scanner-limited)",
+   "description": "Dutch rail infrastructure manager; file-based feed into AssetSys (ILS/PROSAP variants, scanner-limited)",
+   "purpose": "Dutch rail infrastructure manager; file-based feed into AssetSys (ILS/PROSAP variants, scanner-limited)",
    "owner": "",
    "status": "confirmed",
    "confidence": 0.85,
@@ -193,8 +193,8 @@
    "name": "RHM",
    "aliases": [],
    "kind": "external_service",
-   "description": "Peripheral system exchanging realization/machine data with Maximo (file-trigger only, scanner-limited)",
-   "purpose": "Peripheral system exchanging realization/machine data with Maximo (file-trigger only, scanner-limited)",
+   "description": "Peripheral system exchanging realization/machine data with AssetSys (file-trigger only, scanner-limited)",
+   "purpose": "Peripheral system exchanging realization/machine data with AssetSys (file-trigger only, scanner-limited)",
    "owner": "",
    "status": "confirmed",
    "confidence": 0.85,
@@ -205,8 +205,8 @@
    "name": "Relatics",
    "aliases": [],
    "kind": "external_service",
-   "description": "Requirements/asset data management SOAP service; GetResult lookups feed KTA/WID enrichment and drive the VISE-SharePoint sync dataset",
-   "purpose": "Requirements/asset data management SOAP service; GetResult lookups feed KTA/WID enrichment and drive the VISE-SharePoint sync dataset",
+   "description": "Requirements/asset data management SOAP service; GetResult lookups feed KTA/WID enrichment and drive the QADB-SharePoint sync dataset",
+   "purpose": "Requirements/asset data management SOAP service; GetResult lookups feed KTA/WID enrichment and drive the QADB-SharePoint sync dataset",
    "owner": "",
    "status": "confirmed",
    "confidence": 0.85,
@@ -217,8 +217,8 @@
    "name": "SharePoint",
    "aliases": [],
    "kind": "external_service",
-   "description": "Document and managed-metadata store synchronized from VISE/Relatics via the VIP_OTL job set",
-   "purpose": "Document and managed-metadata store synchronized from VISE/Relatics via the VIP_OTL job set",
+   "description": "Document and managed-metadata store synchronized from QADB/Relatics via the VIP_OTL job set",
+   "purpose": "Document and managed-metadata store synchronized from QADB/Relatics via the VIP_OTL job set",
    "owner": "",
    "status": "confirmed",
    "confidence": 0.85,
@@ -237,8 +237,8 @@
    "evidence_ids": []
   },
   {
-   "id": "sys-vise",
-   "name": "VISE",
+   "id": "sys-qadb",
+   "name": "QADB",
    "aliases": [],
    "kind": "software_system",
    "description": "Asset-inspection / work-order management system exposed via the DataExchange SOAP service; receives forms, KTA updates and sync-date pushes, source of KTA results",
@@ -251,9 +251,9 @@
  ],
  "integration_solutions": [
   {
-   "id": "int-sol-assetcheck",
-   "name": "Assetcheck",
-   "description": "Integration sub-project 'Assetcheck'.",
+   "id": "int-sol-inspecthub",
+   "name": "Inspecthub",
+   "description": "Integration sub-project 'Inspecthub'.",
    "platform": "Talend",
    "role": "execution",
    "status": "confirmed",
@@ -284,9 +284,9 @@
    "evidence_ids": []
   },
   {
-   "id": "int-sol-vq-mq2rhm",
-   "name": "VQ_MQ2RHM",
-   "description": "Integration sub-project 'VQ_MQ2RHM'.",
+   "id": "int-sol-pq-mq2rhm",
+   "name": "PQ_MQ2RHM",
+   "description": "Integration sub-project 'PQ_MQ2RHM'.",
    "platform": "Talend",
    "role": "execution",
    "status": "confirmed",
@@ -295,9 +295,9 @@
    "evidence_ids": []
   },
   {
-   "id": "int-sol-vq-quintiq2mx",
-   "name": "VQ_Quintiq2MX",
-   "description": "Integration sub-project 'VQ_Quintiq2MX'.",
+   "id": "int-sol-pq-quintiq2mx",
+   "name": "PQ_Quintiq2MX",
+   "description": "Integration sub-project 'PQ_Quintiq2MX'.",
    "platform": "Talend",
    "role": "execution",
    "status": "confirmed",
@@ -306,9 +306,9 @@
    "evidence_ids": []
   },
   {
-   "id": "int-sol-vq-rhm2sf",
-   "name": "VQ_RHM2SF",
-   "description": "Integration sub-project 'VQ_RHM2SF'.",
+   "id": "int-sol-pq-rhm2sf",
+   "name": "PQ_RHM2SF",
+   "description": "Integration sub-project 'PQ_RHM2SF'.",
    "platform": "Talend",
    "role": "execution",
    "status": "confirmed",
@@ -717,17 +717,17 @@
  ],
  "data_streams": [
   {
-   "id": "ds-assetcheck-maximo--assetcheck-workorder",
-   "source_system_id": "sys-maximo",
-   "destination_system_id": "sys-assetcheck",
-   "name": "Maximo -> AssetCheck: Work Order ingestion",
-   "description": "Work order XML (Authorization + Body) received via REST, staged as a file, then served to the AssetCheck app via the /AssetCheckInterface facade (mechanism: REST (ingest) + File staging + REST (serve))",
+   "id": "ds-inspecthub-assetsys--inspecthub-workorder",
+   "source_system_id": "sys-assetsys",
+   "destination_system_id": "sys-inspecthub",
+   "name": "AssetSys -> InspectHub: Work Order ingestion",
+   "description": "Work order XML (Authorization + Body) received via REST, staged as a file, then served to the InspectHub app via the /InspectHubInterface facade (mechanism: REST (ingest) + File staging + REST (serve))",
    "business_object_ids": [
     "bo-workorder"
    ],
-   "business_summary": "Work order XML (Authorization + Body) received via REST, staged as a file, then served to the AssetCheck app via the /AssetCheckInterface facade (mechanism: REST (ingest) + File staging + REST (serve))",
+   "business_summary": "Work order XML (Authorization + Body) received via REST, staged as a file, then served to the InspectHub app via the /InspectHubInterface facade (mechanism: REST (ingest) + File staging + REST (serve))",
    "integration_solution_ids": [
-    "int-sol-assetcheck"
+    "int-sol-inspecthub"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -738,7 +738,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "03_DATA_FLOWS_AND_LINEAGE.md - 'Maximo-to-AssetCheck Flows (REST/File Ingestion)' and 'AssetCheck Interface Flows (REST Orchestration)'"
+    "03_DATA_FLOWS_AND_LINEAGE.md - 'AssetSys-to-InspectHub Flows (REST/File Ingestion)' and 'InspectHub Interface Flows (REST Orchestration)'"
    ],
    "artifact_ids": [
     "artifact:b4e461475a3e5e04a763",
@@ -749,17 +749,17 @@
    ]
   },
   {
-   "id": "ds-assetcheck-maximo--assetcheck-location",
-   "source_system_id": "sys-maximo",
-   "destination_system_id": "sys-assetcheck",
-   "name": "Maximo -> AssetCheck: Location ingestion",
-   "description": "Location XML received via REST, staged as a file in context.LocationData, then served to the AssetCheck app via the /AssetCheckInterface facade (mechanism: REST (ingest) + File staging + REST (serve))",
+   "id": "ds-inspecthub-assetsys--inspecthub-location",
+   "source_system_id": "sys-assetsys",
+   "destination_system_id": "sys-inspecthub",
+   "name": "AssetSys -> InspectHub: Location ingestion",
+   "description": "Location XML received via REST, staged as a file in context.LocationData, then served to the InspectHub app via the /InspectHubInterface facade (mechanism: REST (ingest) + File staging + REST (serve))",
    "business_object_ids": [
     "bo-location"
    ],
-   "business_summary": "Location XML received via REST, staged as a file in context.LocationData, then served to the AssetCheck app via the /AssetCheckInterface facade (mechanism: REST (ingest) + File staging + REST (serve))",
+   "business_summary": "Location XML received via REST, staged as a file in context.LocationData, then served to the InspectHub app via the /InspectHubInterface facade (mechanism: REST (ingest) + File staging + REST (serve))",
    "integration_solution_ids": [
-    "int-sol-assetcheck"
+    "int-sol-inspecthub"
    ],
    "delivery_path_id": null,
    "status": "inferred",
@@ -770,7 +770,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "03_DATA_FLOWS_AND_LINEAGE.md - 'Maximo-to-AssetCheck Flows' and 'Location Lineage'; internal flow of AssetCheck_GetLocation/AssetCheck_GetLocations noted as LOW confidence in 01_ARCHITECTURE_MAP.md due to validation failures"
+    "03_DATA_FLOWS_AND_LINEAGE.md - 'AssetSys-to-InspectHub Flows' and 'Location Lineage'; internal flow of InspectHub_GetLocation/InspectHub_GetLocations noted as LOW confidence in 01_ARCHITECTURE_MAP.md due to validation failures"
    ],
    "artifact_ids": [
     "artifact:b4e461475a3e5e04a763",
@@ -781,17 +781,17 @@
    ]
   },
   {
-   "id": "ds-assetcheck-assetcheck--maximo-servicerequest",
-   "source_system_id": "sys-assetcheck",
-   "destination_system_id": "sys-maximo",
-   "name": "AssetCheck -> Maximo: Service Request submission",
-   "description": "Uniquely-named XML service request POSTed to Maximo queue ASSETCHECK/ACSR at context.connection_MAS_URL; response validated for <SyncACSRResponse> (mechanism: REST)",
+   "id": "ds-inspecthub-inspecthub--assetsys-servicerequest",
+   "source_system_id": "sys-inspecthub",
+   "destination_system_id": "sys-assetsys",
+   "name": "InspectHub -> AssetSys: Service Request submission",
+   "description": "Uniquely-named XML service request POSTed to AssetSys queue INSPECTHUB/ACSR at context.connection_MAS_URL; response validated for <SyncACSRResponse> (mechanism: REST)",
    "business_object_ids": [
     "bo-servicerequest"
    ],
-   "business_summary": "Uniquely-named XML service request POSTed to Maximo queue ASSETCHECK/ACSR at context.connection_MAS_URL; response validated for <SyncACSRResponse> (mechanism: REST)",
+   "business_summary": "Uniquely-named XML service request POSTed to AssetSys queue INSPECTHUB/ACSR at context.connection_MAS_URL; response validated for <SyncACSRResponse> (mechanism: REST)",
    "integration_solution_ids": [
-    "int-sol-assetcheck"
+    "int-sol-inspecthub"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -802,7 +802,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "03_DATA_FLOWS_AND_LINEAGE.md - 'AssetCheck Interface Flows (REST Orchestration)', AssetCheck_SendServiceRequest description"
+    "03_DATA_FLOWS_AND_LINEAGE.md - 'InspectHub Interface Flows (REST Orchestration)', InspectHub_SendServiceRequest description"
    ],
    "artifact_ids": [
     "artifact:5294265eb9697f6220ff",
@@ -810,17 +810,17 @@
    ]
   },
   {
-   "id": "ds-assetcheck-assetcheck--maximo-workorder",
-   "source_system_id": "sys-assetcheck",
-   "destination_system_id": "sys-maximo",
-   "name": "AssetCheck -> Maximo: Work Order update",
-   "description": "Uniquely-named XML work-order update POSTed to Maximo queue ASSETCHECK/ACWO at context.connection_MAS_URL; response validated for <UpdateACWOResponse> (mechanism: REST)",
+   "id": "ds-inspecthub-inspecthub--assetsys-workorder",
+   "source_system_id": "sys-inspecthub",
+   "destination_system_id": "sys-assetsys",
+   "name": "InspectHub -> AssetSys: Work Order update",
+   "description": "Uniquely-named XML work-order update POSTed to AssetSys queue INSPECTHUB/ACWO at context.connection_MAS_URL; response validated for <UpdateACWOResponse> (mechanism: REST)",
    "business_object_ids": [
     "bo-workorder"
    ],
-   "business_summary": "Uniquely-named XML work-order update POSTed to Maximo queue ASSETCHECK/ACWO at context.connection_MAS_URL; response validated for <UpdateACWOResponse> (mechanism: REST)",
+   "business_summary": "Uniquely-named XML work-order update POSTed to AssetSys queue INSPECTHUB/ACWO at context.connection_MAS_URL; response validated for <UpdateACWOResponse> (mechanism: REST)",
    "integration_solution_ids": [
-    "int-sol-assetcheck"
+    "int-sol-inspecthub"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -831,7 +831,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "03_DATA_FLOWS_AND_LINEAGE.md - 'AssetCheck Interface Flows (REST Orchestration)', AssetCheck_SendWorkOrderUpdate description"
+    "03_DATA_FLOWS_AND_LINEAGE.md - 'InspectHub Interface Flows (REST Orchestration)', InspectHub_SendWorkOrderUpdate description"
    ],
    "artifact_ids": [
     "artifact:5294265eb9697f6220ff",
@@ -839,17 +839,17 @@
    ]
   },
   {
-   "id": "ds-assetcheck-external-unspecified--assetcheck-asset",
+   "id": "ds-inspecthub-external-unspecified--inspecthub-asset",
    "source_system_id": "sys-external-unspecified",
-   "destination_system_id": "sys-assetcheck",
-   "name": "Asset Update retrieval (source not evidenced) -> AssetCheck",
-   "description": "Asset update files read from context.AssetLookupFolder, transformed CSV->XML (Dom4j), validated via XSLT/XSD, and served to the AssetCheck app via the asset-update retrieval endpoints (mechanism: File + REST (serve))",
+   "destination_system_id": "sys-inspecthub",
+   "name": "Asset Update retrieval (source not evidenced) -> InspectHub",
+   "description": "Asset update files read from context.AssetLookupFolder, transformed CSV->XML (Dom4j), validated via XSLT/XSD, and served to the InspectHub app via the asset-update retrieval endpoints (mechanism: File + REST (serve))",
    "business_object_ids": [
     "bo-asset"
    ],
-   "business_summary": "Asset update files read from context.AssetLookupFolder, transformed CSV->XML (Dom4j), validated via XSLT/XSD, and served to the AssetCheck app via the asset-update retrieval endpoints (mechanism: File + REST (serve))",
+   "business_summary": "Asset update files read from context.AssetLookupFolder, transformed CSV->XML (Dom4j), validated via XSLT/XSD, and served to the InspectHub app via the asset-update retrieval endpoints (mechanism: File + REST (serve))",
    "integration_solution_ids": [
-    "int-sol-assetcheck"
+    "int-sol-inspecthub"
    ],
    "delivery_path_id": null,
    "status": "proposed",
@@ -860,7 +860,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "03_DATA_FLOWS_AND_LINEAGE.md - 'AssetCheck Interface Flows (REST Orchestration)' and 'Asset Update Lineage'; no evidence of who writes to AssetLookupFolder"
+    "03_DATA_FLOWS_AND_LINEAGE.md - 'InspectHub Interface Flows (REST Orchestration)' and 'Asset Update Lineage'; no evidence of who writes to AssetLookupFolder"
    ],
    "artifact_ids": [
     "artifact:39f772acfbeaa1821845",
@@ -869,17 +869,17 @@
    ]
   },
   {
-   "id": "ds-assetcheck-assetcheck--vise-form",
-   "source_system_id": "sys-assetcheck",
-   "destination_system_id": "sys-vise",
-   "name": "AssetCheck -> VISE: Form submission",
-   "description": "Form / FormType payload, Base64-encoded, with OperationName, WID and ViseEntryCode mapped from context/input, sent to the VISE DataExchange SOAP service Import method (mechanism: JMS (ActiveMQ) + SOAP)",
+   "id": "ds-inspecthub-inspecthub--qadb-form",
+   "source_system_id": "sys-inspecthub",
+   "destination_system_id": "sys-qadb",
+   "name": "InspectHub -> QADB: Form submission",
+   "description": "Form / FormType payload, Base64-encoded, with OperationName, WID and QadbEntryCode mapped from context/input, sent to the QADB DataExchange SOAP service Import method (mechanism: JMS (ActiveMQ) + SOAP)",
    "business_object_ids": [
     "bo-form"
    ],
-   "business_summary": "Form / FormType payload, Base64-encoded, with OperationName, WID and ViseEntryCode mapped from context/input, sent to the VISE DataExchange SOAP service Import method (mechanism: JMS (ActiveMQ) + SOAP)",
+   "business_summary": "Form / FormType payload, Base64-encoded, with OperationName, WID and QadbEntryCode mapped from context/input, sent to the QADB DataExchange SOAP service Import method (mechanism: JMS (ActiveMQ) + SOAP)",
    "integration_solution_ids": [
-    "int-sol-assetcheck"
+    "int-sol-inspecthub"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -890,7 +890,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "03_DATA_FLOWS_AND_LINEAGE.md - 'AssetCheck-to-VISE Flows (JMS Routing)' and 'JMS to SOAP Transformation (AssetCheck2VISE Group)' table"
+    "03_DATA_FLOWS_AND_LINEAGE.md - 'InspectHub-to-QADB Flows (JMS Routing)' and 'JMS to SOAP Transformation (InspectHub2QADB Group)' table"
    ],
    "artifact_ids": [
     "artifact:77dd1b3e942abae95103",
@@ -901,17 +901,17 @@
    ]
   },
   {
-   "id": "ds-assetcheck-assetcheck--vise-kta",
-   "source_system_id": "sys-assetcheck",
-   "destination_system_id": "sys-vise",
-   "name": "AssetCheck -> VISE: KTA result creation and update",
-   "description": "KTA create-result and update messages; Base64-encoded body with ViseOperation/ViseWID/ViseEntryCode sent to DataExchange.Import SOAP method; sync-date payload POSTed to context.ViseSyncDateURL (mechanism: JMS (ActiveMQ) + SOAP + REST)",
+   "id": "ds-inspecthub-inspecthub--qadb-kta",
+   "source_system_id": "sys-inspecthub",
+   "destination_system_id": "sys-qadb",
+   "name": "InspectHub -> QADB: KTA result creation and update",
+   "description": "KTA create-result and update messages; Base64-encoded body with QadbOperation/QadbWID/QadbEntryCode sent to DataExchange.Import SOAP method; sync-date payload POSTed to context.QadbSyncDateURL (mechanism: JMS (ActiveMQ) + SOAP + REST)",
    "business_object_ids": [
     "bo-kta"
    ],
-   "business_summary": "KTA create-result and update messages; Base64-encoded body with ViseOperation/ViseWID/ViseEntryCode sent to DataExchange.Import SOAP method; sync-date payload POSTed to context.ViseSyncDateURL (mechanism: JMS (ActiveMQ) + SOAP + REST)",
+   "business_summary": "KTA create-result and update messages; Base64-encoded body with QadbOperation/QadbWID/QadbEntryCode sent to DataExchange.Import SOAP method; sync-date payload POSTed to context.QadbSyncDateURL (mechanism: JMS (ActiveMQ) + SOAP + REST)",
    "integration_solution_ids": [
-    "int-sol-assetcheck"
+    "int-sol-inspecthub"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -922,7 +922,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "03_DATA_FLOWS_AND_LINEAGE.md - 'AssetCheck-to-VISE Flows (JMS Routing)' and 'VISE-to-AssetCheck Flows (SOAP/REST/File)' (AssetCheck2Vise_* job descriptions), 'KTA Result Lineage'"
+    "03_DATA_FLOWS_AND_LINEAGE.md - 'InspectHub-to-QADB Flows (JMS Routing)' and 'QADB-to-InspectHub Flows (SOAP/REST/File)' (InspectHub2Qadb_* job descriptions), 'KTA Result Lineage'"
    ],
    "artifact_ids": [
     "artifact:7cb532863578b62bacb9",
@@ -932,17 +932,17 @@
    ]
   },
   {
-   "id": "ds-assetcheck-vise--assetcheck-errorreport",
-   "source_system_id": "sys-vise",
-   "destination_system_id": "sys-assetcheck",
-   "name": "VISE -> AssetCheck: Error report",
-   "description": "Failed VISE call context (response code/message, original message) reported back to AssetCheck's push service and emailed to administrators; failed messages routed to a DLQ (mechanism: JMS (ActiveMQ) + REST + SMTP)",
+   "id": "ds-inspecthub-qadb--inspecthub-errorreport",
+   "source_system_id": "sys-qadb",
+   "destination_system_id": "sys-inspecthub",
+   "name": "QADB -> InspectHub: Error report",
+   "description": "Failed QADB call context (response code/message, original message) reported back to InspectHub's push service and emailed to administrators; failed messages routed to a DLQ (mechanism: JMS (ActiveMQ) + REST + SMTP)",
    "business_object_ids": [
     "bo-errorreport"
    ],
-   "business_summary": "Failed VISE call context (response code/message, original message) reported back to AssetCheck's push service and emailed to administrators; failed messages routed to a DLQ (mechanism: JMS (ActiveMQ) + REST + SMTP)",
+   "business_summary": "Failed QADB call context (response code/message, original message) reported back to InspectHub's push service and emailed to administrators; failed messages routed to a DLQ (mechanism: JMS (ActiveMQ) + REST + SMTP)",
    "integration_solution_ids": [
-    "int-sol-assetcheck"
+    "int-sol-inspecthub"
    ],
    "delivery_path_id": null,
    "status": "inferred",
@@ -953,7 +953,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "03_DATA_FLOWS_AND_LINEAGE.md - 'Error Reporting Pipeline' and 'AssetCheck-to-VISE Flows (JMS Routing)' rAssetCheck_ErrorReport description"
+    "03_DATA_FLOWS_AND_LINEAGE.md - 'Error Reporting Pipeline' and 'InspectHub-to-QADB Flows (JMS Routing)' rInspectHub_ErrorReport description"
    ],
    "artifact_ids": [
     "artifact:cbee1785470d36e8639d",
@@ -962,17 +962,17 @@
    ]
   },
   {
-   "id": "ds-assetcheck-vise--assetcheck-kta",
-   "source_system_id": "sys-vise",
-   "destination_system_id": "sys-assetcheck",
-   "name": "VISE -> AssetCheck: KTA processing",
-   "description": "KTA XML files transformed via XSLT, validated against XSD, enriched via Relatics GetResult, pushed to AssetCheck via REST (context.TalendServicesURL); failures upserted into MSSQL ViseACFailedAssets and notified by email (mechanism: File + SOAP (Relatics) + REST + MSSQL + SMTP)",
+   "id": "ds-inspecthub-qadb--inspecthub-kta",
+   "source_system_id": "sys-qadb",
+   "destination_system_id": "sys-inspecthub",
+   "name": "QADB -> InspectHub: KTA processing",
+   "description": "KTA XML files transformed via XSLT, validated against XSD, enriched via Relatics GetResult, pushed to InspectHub via REST (context.TalendServicesURL); failures upserted into MSSQL QadbACFailedAssets and notified by email (mechanism: File + SOAP (Relatics) + REST + MSSQL + SMTP)",
    "business_object_ids": [
     "bo-kta"
    ],
-   "business_summary": "KTA XML files transformed via XSLT, validated against XSD, enriched via Relatics GetResult, pushed to AssetCheck via REST (context.TalendServicesURL); failures upserted into MSSQL ViseACFailedAssets and notified by email (mechanism: File + SOAP (Relatics) + REST + MSSQL + SMTP)",
+   "business_summary": "KTA XML files transformed via XSLT, validated against XSD, enriched via Relatics GetResult, pushed to InspectHub via REST (context.TalendServicesURL); failures upserted into MSSQL QadbACFailedAssets and notified by email (mechanism: File + SOAP (Relatics) + REST + MSSQL + SMTP)",
    "integration_solution_ids": [
-    "int-sol-assetcheck"
+    "int-sol-inspecthub"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -983,7 +983,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "03_DATA_FLOWS_AND_LINEAGE.md - 'File-Based Batch Processing (Vise2AssetCheck Groups)' and 'Database-Driven Game Loop (VISE2AssetCheck Group)'"
+    "03_DATA_FLOWS_AND_LINEAGE.md - 'File-Based Batch Processing (Qadb2InspectHub Groups)' and 'Database-Driven Game Loop (QADB2InspectHub Group)'"
    ],
    "artifact_ids": [
     "artifact:4e42c9e67654f042bee5",
@@ -996,17 +996,17 @@
    ]
   },
   {
-   "id": "ds-assetcheck-vise--assetcheck-mmd",
-   "source_system_id": "sys-vise",
-   "destination_system_id": "sys-assetcheck",
-   "name": "VISE -> AssetCheck: KTA MMD file processing",
+   "id": "ds-inspecthub-qadb--inspecthub-mmd",
+   "source_system_id": "sys-qadb",
+   "destination_system_id": "sys-inspecthub",
+   "name": "QADB -> InspectHub: KTA MMD file processing",
    "description": "KTA MMD XML files consumed from context.InputDirectory and routed to Talend services via REST (mechanism: File + REST)",
    "business_object_ids": [
     "bo-mmd"
    ],
    "business_summary": "KTA MMD XML files consumed from context.InputDirectory and routed to Talend services via REST (mechanism: File + REST)",
    "integration_solution_ids": [
-    "int-sol-assetcheck"
+    "int-sol-inspecthub"
    ],
    "delivery_path_id": null,
    "status": "inferred",
@@ -1017,7 +1017,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "01_ARCHITECTURE_MAP.md - 'File-Based Entry Points' table; 03_DATA_FLOWS_AND_LINEAGE.md - Vise2AssetCheck group summary (listed under 'Scanner-Limited Units' for detail depth)"
+    "01_ARCHITECTURE_MAP.md - 'File-Based Entry Points' table; 03_DATA_FLOWS_AND_LINEAGE.md - Qadb2InspectHub group summary (listed under 'Scanner-Limited Units' for detail depth)"
    ],
    "artifact_ids": [
     "artifact:2856f23d16ab91d7434a",
@@ -1025,17 +1025,17 @@
    ]
   },
   {
-   "id": "ds-assetcheck-relatics--assetcheck-wid",
+   "id": "ds-inspecthub-relatics--inspecthub-wid",
    "source_system_id": "sys-relatics",
-   "destination_system_id": "sys-assetcheck",
-   "name": "Relatics -> AssetCheck: WID synchronization",
-   "description": "WorkspaceID/Project fields retrieved via Relatics SOAP, compared against AssetCheck's WID table and applied as INSERT/UPDATE/DELETE with system-generated DateCreated/DateModified (mechanism: SOAP + MSSQL)",
+   "destination_system_id": "sys-inspecthub",
+   "name": "Relatics -> InspectHub: WID synchronization",
+   "description": "WorkspaceID/Project fields retrieved via Relatics SOAP, compared against InspectHub's WID table and applied as INSERT/UPDATE/DELETE with system-generated DateCreated/DateModified (mechanism: SOAP + MSSQL)",
    "business_object_ids": [
     "bo-wid"
    ],
-   "business_summary": "WorkspaceID/Project fields retrieved via Relatics SOAP, compared against AssetCheck's WID table and applied as INSERT/UPDATE/DELETE with system-generated DateCreated/DateModified (mechanism: SOAP + MSSQL)",
+   "business_summary": "WorkspaceID/Project fields retrieved via Relatics SOAP, compared against InspectHub's WID table and applied as INSERT/UPDATE/DELETE with system-generated DateCreated/DateModified (mechanism: SOAP + MSSQL)",
    "integration_solution_ids": [
-    "int-sol-assetcheck"
+    "int-sol-inspecthub"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -1053,17 +1053,17 @@
    ]
   },
   {
-   "id": "ds-assetcheck-assetcheck--vise-syncdate",
-   "source_system_id": "sys-assetcheck",
-   "destination_system_id": "sys-vise",
-   "name": "AssetCheck -> VISE: Sync date update",
-   "description": "Base64-encoded sync-date XML payload sent to the VISE DataExchange SOAP Import method, or POSTed to context.ViseSyncDateURL via REST (mechanism: REST + SOAP)",
+   "id": "ds-inspecthub-inspecthub--qadb-syncdate",
+   "source_system_id": "sys-inspecthub",
+   "destination_system_id": "sys-qadb",
+   "name": "InspectHub -> QADB: Sync date update",
+   "description": "Base64-encoded sync-date XML payload sent to the QADB DataExchange SOAP Import method, or POSTed to context.QadbSyncDateURL via REST (mechanism: REST + SOAP)",
    "business_object_ids": [
     "bo-syncdate"
    ],
-   "business_summary": "Base64-encoded sync-date XML payload sent to the VISE DataExchange SOAP Import method, or POSTed to context.ViseSyncDateURL via REST (mechanism: REST + SOAP)",
+   "business_summary": "Base64-encoded sync-date XML payload sent to the QADB DataExchange SOAP Import method, or POSTed to context.QadbSyncDateURL via REST (mechanism: REST + SOAP)",
    "integration_solution_ids": [
-    "int-sol-assetcheck"
+    "int-sol-inspecthub"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -1074,7 +1074,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "03_DATA_FLOWS_AND_LINEAGE.md - 'Supporting Services' (ViseSyncDateService/ViseProcess_SyncDateService) and 'VISE Integration Lineage'"
+    "03_DATA_FLOWS_AND_LINEAGE.md - 'Supporting Services' (QadbSyncDateService/QadbProcess_SyncDateService) and 'QADB Integration Lineage'"
    ],
    "artifact_ids": [
     "artifact:234343d04743f66743ed",
@@ -1086,17 +1086,17 @@
    ]
   },
   {
-   "id": "ds-assetcheck-relatics--sharepoint-document",
+   "id": "ds-inspecthub-relatics--sharepoint-document",
    "source_system_id": "sys-relatics",
    "destination_system_id": "sys-sharepoint",
-   "name": "Relatics/VISE -> SharePoint: Document and managed-metadata sync",
-   "description": "VISE_SP integration items fetched from Relatics/MSSQL, checked/created/updated as SharePoint items via REST (NTLM + form-digest auth), including managed-metadata updates (mechanism: SOAP (Relatics) + REST (SharePoint) + MSSQL)",
+   "name": "Relatics/QADB -> SharePoint: Document and managed-metadata sync",
+   "description": "QADB_SP integration items fetched from Relatics/MSSQL, checked/created/updated as SharePoint items via REST (NTLM + form-digest auth), including managed-metadata updates (mechanism: SOAP (Relatics) + REST (SharePoint) + MSSQL)",
    "business_object_ids": [
     "bo-document"
    ],
-   "business_summary": "VISE_SP integration items fetched from Relatics/MSSQL, checked/created/updated as SharePoint items via REST (NTLM + form-digest auth), including managed-metadata updates (mechanism: SOAP (Relatics) + REST (SharePoint) + MSSQL)",
+   "business_summary": "QADB_SP integration items fetched from Relatics/MSSQL, checked/created/updated as SharePoint items via REST (NTLM + form-digest auth), including managed-metadata updates (mechanism: SOAP (Relatics) + REST (SharePoint) + MSSQL)",
    "integration_solution_ids": [
-    "int-sol-assetcheck"
+    "int-sol-inspecthub"
    ],
    "delivery_path_id": null,
    "status": "inferred",
@@ -1120,15 +1120,15 @@
    ]
   },
   {
-   "id": "ds-ettm-afas--4ps-leaveregistration",
+   "id": "ds-ettm-afas--4fs-leaveregistration",
    "source_system_id": "sys-afas",
-   "destination_system_id": "sys-4ps",
-   "name": "Leave Registrations: AFAS -> 4PS",
-   "description": "Employee absence/leave registration records (employeeNo, companyId) for both normal registrations and revocations (isRevoke flag selects AFAS connector VIALIS_ETTM_VERLOFBOEKING vs VIALIS_ETTM_VERLOFINTREKKING). (mechanism: SOAP/XML (AFAS read) + REST (4PS write))",
+   "destination_system_id": "sys-4fs",
+   "name": "Leave Registrations: AFAS -> 4FS",
+   "description": "Employee absence/leave registration records (employeeNo, companyId) for both normal registrations and revocations (isRevoke flag selects AFAS connector VIALIS_ETTM_VERLOFBOEKING vs VIALIS_ETTM_VERLOFINTREKKING). (mechanism: SOAP/XML (AFAS read) + REST (4FS write))",
    "business_object_ids": [
     "bo-leaveregistration"
    ],
-   "business_summary": "Employee absence/leave registration records (employeeNo, companyId) for both normal registrations and revocations (isRevoke flag selects AFAS connector VIALIS_ETTM_VERLOFBOEKING vs VIALIS_ETTM_VERLOFINTREKKING). (mechanism: SOAP/XML (AFAS read) + REST (4PS write))",
+   "business_summary": "Employee absence/leave registration records (employeeNo, companyId) for both normal registrations and revocations (isRevoke flag selects AFAS connector VIALIS_ETTM_VERLOFBOEKING vs VIALIS_ETTM_VERLOFINTREKKING). (mechanism: SOAP/XML (AFAS read) + REST (4FS write))",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1141,7 +1141,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: AFAS to 4PS Data Flows > Leave Registration Flow; Lineage > Leave Registration Lineage"
+    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: AFAS to 4FS Data Flows > Leave Registration Flow; Lineage > Leave Registration Lineage"
    ],
    "artifact_ids": [
     "artifact:26b644f0ff0061c78196",
@@ -1152,15 +1152,15 @@
    ]
   },
   {
-   "id": "ds-ettm-afas--4ps-payrolljournalentry",
+   "id": "ds-ettm-afas--4fs-payrolljournalentry",
    "source_system_id": "sys-afas",
-   "destination_system_id": "sys-4ps",
-   "name": "Payroll Journal Entries: AFAS -> 4PS",
-   "description": "Payroll journal entries (VIALIS_ETTM_LOONJOURNAALPOST XML nodes) enriched with per-company line numbers; failed writes (5xx/401) are retried via JMS queue ettm.fourpsWriterRetryMechanism.lobby. (mechanism: SOAP/XML (AFAS read) + REST (4PS write) with JMS retry queue)",
+   "destination_system_id": "sys-4fs",
+   "name": "Payroll Journal Entries: AFAS -> 4FS",
+   "description": "Payroll journal entries (VIALIS_ETTM_LOONJOURNAALPOST XML nodes) enriched with per-company line numbers; failed writes (5xx/401) are retried via JMS queue ettm.fourfsWriterRetryMechanism.lobby. (mechanism: SOAP/XML (AFAS read) + REST (4FS write) with JMS retry queue)",
    "business_object_ids": [
     "bo-payrolljournalentry"
    ],
-   "business_summary": "Payroll journal entries (VIALIS_ETTM_LOONJOURNAALPOST XML nodes) enriched with per-company line numbers; failed writes (5xx/401) are retried via JMS queue ettm.fourpsWriterRetryMechanism.lobby. (mechanism: SOAP/XML (AFAS read) + REST (4PS write) with JMS retry queue)",
+   "business_summary": "Payroll journal entries (VIALIS_ETTM_LOONJOURNAALPOST XML nodes) enriched with per-company line numbers; failed writes (5xx/401) are retried via JMS queue ettm.fourfsWriterRetryMechanism.lobby. (mechanism: SOAP/XML (AFAS read) + REST (4FS write) with JMS retry queue)",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1173,7 +1173,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: AFAS to 4PS Data Flows > Payroll Journal Entry Flow; Lineage > Payroll Journal Entry Lineage"
+    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: AFAS to 4FS Data Flows > Payroll Journal Entry Flow; Lineage > Payroll Journal Entry Lineage"
    ],
    "artifact_ids": [
     "artifact:9b671037830a69bc6481",
@@ -1184,15 +1184,15 @@
    ]
   },
   {
-   "id": "ds-ettm-maximo--4ps-workorder",
-   "source_system_id": "sys-maximo",
-   "destination_system_id": "sys-4ps",
-   "name": "Work Orders: Maximo -> 4PS",
-   "description": "Work order XML from Maximo, status-translated (e.g. VOORBEREID -> In Process), written to 4PS serviceOrders; the shared entry gateway maximoRestService validates and routes incoming Maximo webhook data to the JMS queue ettm.maximoFourpsWorkOrder before either consumer picks it up. Two parallel production implementations exist: VRI-group VRI variant (part1) and the non-VRI maximoFourps-group variant (part2), both consuming the same queue -- likely distinct context-group/environment deployments rather than a true duplicate; treat with medium confidence on which is authoritative for a given company context. In the part2 chain, the job AliTST is wired into the real flow but sets placeholder-looking globalMap values (e.g. 'ExchangeTST'), which may indicate leftover test scaffolding never removed from production. (mechanism: REST webhook relay + JMS (ettm.maximoFourpsWorkOrder) + REST (4PS serviceOrders))",
+   "id": "ds-ettm-assetsys--4fs-workorder",
+   "source_system_id": "sys-assetsys",
+   "destination_system_id": "sys-4fs",
+   "name": "Work Orders: AssetSys -> 4FS",
+   "description": "Work order XML from AssetSys, status-translated (e.g. VOORBEREID -> In Process), written to 4FS serviceOrders; the shared entry gateway assetsysRestService validates and routes incoming AssetSys webhook data to the JMS queue ettm.assetsysFourfsWorkOrder before either consumer picks it up. Two parallel production implementations exist: CAI-group CAI variant (part1) and the non-CAI assetsysFourfs-group variant (part2), both consuming the same queue -- likely distinct context-group/environment deployments rather than a true duplicate; treat with medium confidence on which is authoritative for a given company context. In the part2 chain, the job AliTST is wired into the real flow but sets placeholder-looking globalMap values (e.g. 'ExchangeTST'), which may indicate leftover test scaffolding never removed from production. (mechanism: REST webhook relay + JMS (ettm.assetsysFourfsWorkOrder) + REST (4FS serviceOrders))",
    "business_object_ids": [
     "bo-workorder"
    ],
-   "business_summary": "Work order XML from Maximo, status-translated (e.g. VOORBEREID -> In Process), written to 4PS serviceOrders; the shared entry gateway maximoRestService validates and routes incoming Maximo webhook data to the JMS queue ettm.maximoFourpsWorkOrder before either consumer picks it up. Two parallel production implementations exist: VRI-group VRI variant (part1) and the non-VRI maximoFourps-group variant (part2), both consuming the same queue -- likely distinct context-group/environment deployments rather than a true duplicate; treat with medium confidence on which is authoritative for a given company context. In the part2 chain, the job AliTST is wired into the real flow but sets placeholder-looking globalMap values (e.g. 'ExchangeTST'), which may indicate leftover test scaffolding never removed from production. (mechanism: REST webhook relay + JMS (ettm.maximoFourpsWorkOrder) + REST (4PS serviceOrders))",
+   "business_summary": "Work order XML from AssetSys, status-translated (e.g. VOORBEREID -> In Process), written to 4FS serviceOrders; the shared entry gateway assetsysRestService validates and routes incoming AssetSys webhook data to the JMS queue ettm.assetsysFourfsWorkOrder before either consumer picks it up. Two parallel production implementations exist: CAI-group CAI variant (part1) and the non-CAI assetsysFourfs-group variant (part2), both consuming the same queue -- likely distinct context-group/environment deployments rather than a true duplicate; treat with medium confidence on which is authoritative for a given company context. In the part2 chain, the job AliTST is wired into the real flow but sets placeholder-looking globalMap values (e.g. 'ExchangeTST'), which may indicate leftover test scaffolding never removed from production. (mechanism: REST webhook relay + JMS (ettm.assetsysFourfsWorkOrder) + REST (4FS serviceOrders))",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1205,7 +1205,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: Maximo to 4PS (VRI Group); ETTM_part2 03_DATA_FLOWS_AND_LINEAGE: Work Order Flow, Critical Path Lineage #1"
+    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: AssetSys to 4FS (CAI Group); ETTM_part2 03_DATA_FLOWS_AND_LINEAGE: Work Order Flow, Critical Path Lineage #1"
    ],
    "artifact_ids": [
     "artifact:77192ec04dc88d441f40",
@@ -1217,15 +1217,15 @@
    ]
   },
   {
-   "id": "ds-ettm-maximo--4ps-invoice",
-   "source_system_id": "sys-maximo",
-   "destination_system_id": "sys-4ps",
-   "name": "Invoices: Maximo -> 4PS",
-   "description": "Invoice batches (termijn/verreken types) split per line, XSLT-mapped, posted to 4PS via fourpsPosterR. (mechanism: JMS (ettm.maximoFourpsInvoice) + REST (4PS POST via fourpsPosterR))",
+   "id": "ds-ettm-assetsys--4fs-invoice",
+   "source_system_id": "sys-assetsys",
+   "destination_system_id": "sys-4fs",
+   "name": "Invoices: AssetSys -> 4FS",
+   "description": "Invoice batches (termijn/verreken types) split per line, XSLT-mapped, posted to 4FS via fourfsPosterR. (mechanism: JMS (ettm.assetsysFourfsInvoice) + REST (4FS POST via fourfsPosterR))",
    "business_object_ids": [
     "bo-invoice"
    ],
-   "business_summary": "Invoice batches (termijn/verreken types) split per line, XSLT-mapped, posted to 4PS via fourpsPosterR. (mechanism: JMS (ettm.maximoFourpsInvoice) + REST (4PS POST via fourpsPosterR))",
+   "business_summary": "Invoice batches (termijn/verreken types) split per line, XSLT-mapped, posted to 4FS via fourfsPosterR. (mechanism: JMS (ettm.assetsysFourfsInvoice) + REST (4FS POST via fourfsPosterR))",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1238,7 +1238,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: Maximo to 4PS (VRI Group) - maximoFourpsInvoice_VRI; ETTM_part2 03_DATA_FLOWS_AND_LINEAGE: Invoice Flow, Critical Path Lineage #2"
+    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: AssetSys to 4FS (CAI Group) - assetsysFourfsInvoice_CAI; ETTM_part2 03_DATA_FLOWS_AND_LINEAGE: Invoice Flow, Critical Path Lineage #2"
    ],
    "artifact_ids": [
     "artifact:8e2cb35fc451c3d5bb13",
@@ -1247,15 +1247,15 @@
    ]
   },
   {
-   "id": "ds-ettm-4ps--maximo-invoice",
-   "source_system_id": "sys-4ps",
-   "destination_system_id": "sys-maximo",
-   "name": "Invoice Status Updates: 4PS -> Maximo",
-   "description": "Status updates for previously posted invoices, reported back to Maximo. Documentation gives only a one-sentence description with no payload detail. (mechanism: REST (maximo_call to Maximo MAS endpoint))",
+   "id": "ds-ettm-4fs--assetsys-invoice",
+   "source_system_id": "sys-4fs",
+   "destination_system_id": "sys-assetsys",
+   "name": "Invoice Status Updates: 4FS -> AssetSys",
+   "description": "Status updates for previously posted invoices, reported back to AssetSys. Documentation gives only a one-sentence description with no payload detail. (mechanism: REST (assetsys_call to AssetSys MAS endpoint))",
    "business_object_ids": [
     "bo-invoice"
    ],
-   "business_summary": "Status updates for previously posted invoices, reported back to Maximo. Documentation gives only a one-sentence description with no payload detail. (mechanism: REST (maximo_call to Maximo MAS endpoint))",
+   "business_summary": "Status updates for previously posted invoices, reported back to AssetSys. Documentation gives only a one-sentence description with no payload detail. (mechanism: REST (assetsys_call to AssetSys MAS endpoint))",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1268,7 +1268,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: Maximo to 4PS (VRI Group) - 'Status updates are sent back to Maximo via maximo_call'"
+    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: AssetSys to 4FS (CAI Group) - 'Status updates are sent back to AssetSys via assetsys_call'"
    ],
    "artifact_ids": [
     "artifact:8e2cb35fc451c3d5bb13",
@@ -1276,15 +1276,15 @@
    ]
   },
   {
-   "id": "ds-ettm-maximo--4ps-purchaseorder",
-   "source_system_id": "sys-maximo",
-   "destination_system_id": "sys-4ps",
-   "name": "Purchase Orders: Maximo -> 4PS",
-   "description": "PO headers and lines (POLINE array), enriched with isLastLine flag, dimension codes, and shipToName/documentType defaults; written to 4PS purchaseHeaders via fourpsWriter/fourpsPatcher; approval requests POSTed via Microsoft.NAV.sendApprovalRequestForPurchaseOrder; separate 'purchaseOrderReceived' booking confirmations flow through the same pipeline via maximo_fourps_purchase_order_received_book/_mapping. (mechanism: JMS (ettm.maximoFourpsPurchaseOrder.purchaseOrder / .purchaseOrderReceived) + REST (4PS purchaseHeaders, approval endpoint))",
+   "id": "ds-ettm-assetsys--4fs-purchaseorder",
+   "source_system_id": "sys-assetsys",
+   "destination_system_id": "sys-4fs",
+   "name": "Purchase Orders: AssetSys -> 4FS",
+   "description": "PO headers and lines (POLINE array), enriched with isLastLine flag, dimension codes, and shipToName/documentType defaults; written to 4FS purchaseHeaders via fourfsWriter/fourfsPatcher; approval requests POSTed via Microsoft.NAV.sendApprovalRequestForPurchaseOrder; separate 'purchaseOrderReceived' booking confirmations flow through the same pipeline via assetsys_fourfs_purchase_order_received_book/_mapping. (mechanism: JMS (ettm.assetsysFourfsPurchaseOrder.purchaseOrder / .purchaseOrderReceived) + REST (4FS purchaseHeaders, approval endpoint))",
    "business_object_ids": [
     "bo-purchaseorder"
    ],
-   "business_summary": "PO headers and lines (POLINE array), enriched with isLastLine flag, dimension codes, and shipToName/documentType defaults; written to 4PS purchaseHeaders via fourpsWriter/fourpsPatcher; approval requests POSTed via Microsoft.NAV.sendApprovalRequestForPurchaseOrder; separate 'purchaseOrderReceived' booking confirmations flow through the same pipeline via maximo_fourps_purchase_order_received_book/_mapping. (mechanism: JMS (ettm.maximoFourpsPurchaseOrder.purchaseOrder / .purchaseOrderReceived) + REST (4PS purchaseHeaders, approval endpoint))",
+   "business_summary": "PO headers and lines (POLINE array), enriched with isLastLine flag, dimension codes, and shipToName/documentType defaults; written to 4FS purchaseHeaders via fourfsWriter/fourfsPatcher; approval requests POSTed via Microsoft.NAV.sendApprovalRequestForPurchaseOrder; separate 'purchaseOrderReceived' booking confirmations flow through the same pipeline via assetsys_fourfs_purchase_order_received_book/_mapping. (mechanism: JMS (ettm.assetsysFourfsPurchaseOrder.purchaseOrder / .purchaseOrderReceived) + REST (4FS purchaseHeaders, approval endpoint))",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1297,7 +1297,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: Maximo to 4PS (VRI Group) - maximoFourpsPurchaseOrder_VRI; ETTM_part2 03_DATA_FLOWS_AND_LINEAGE: Purchase Order Flow, Critical Path Lineage #3"
+    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: AssetSys to 4FS (CAI Group) - assetsysFourfsPurchaseOrder_CAI; ETTM_part2 03_DATA_FLOWS_AND_LINEAGE: Purchase Order Flow, Critical Path Lineage #3"
    ],
    "artifact_ids": [
     "artifact:7b73419c1afb69e35b7d",
@@ -1315,15 +1315,15 @@
    ]
   },
   {
-   "id": "ds-ettm-maximo--4ps-material",
-   "source_system_id": "sys-maximo",
-   "destination_system_id": "sys-4ps",
-   "name": "Material Usage: Maximo -> 4PS",
-   "description": "Inventory transactions (SOURCEMBO = INVTRANS or MATUSETRANS), mapped and written to 4PS via fourpsWriterR. (mechanism: JMS (ettm.maximoFourpsMaterialUsage) + REST (4PS write via fourpsWriterR))",
+   "id": "ds-ettm-assetsys--4fs-material",
+   "source_system_id": "sys-assetsys",
+   "destination_system_id": "sys-4fs",
+   "name": "Material Usage: AssetSys -> 4FS",
+   "description": "Inventory transactions (SOURCEMBO = INVTRANS or MATUSETRANS), mapped and written to 4FS via fourfsWriterR. (mechanism: JMS (ettm.assetsysFourfsMaterialUsage) + REST (4FS write via fourfsWriterR))",
    "business_object_ids": [
     "bo-material"
    ],
-   "business_summary": "Inventory transactions (SOURCEMBO = INVTRANS or MATUSETRANS), mapped and written to 4PS via fourpsWriterR. (mechanism: JMS (ettm.maximoFourpsMaterialUsage) + REST (4PS write via fourpsWriterR))",
+   "business_summary": "Inventory transactions (SOURCEMBO = INVTRANS or MATUSETRANS), mapped and written to 4FS via fourfsWriterR. (mechanism: JMS (ettm.assetsysFourfsMaterialUsage) + REST (4FS write via fourfsWriterR))",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1336,7 +1336,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: Maximo to 4PS (VRI Group) - maximoFourpsMaterialUsage_VRI; ETTM_part2 03_DATA_FLOWS_AND_LINEAGE: Material Usage Flow, Critical Path Lineage #4"
+    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: AssetSys to 4FS (CAI Group) - assetsysFourfsMaterialUsage_CAI; ETTM_part2 03_DATA_FLOWS_AND_LINEAGE: Material Usage Flow, Critical Path Lineage #4"
    ],
    "artifact_ids": [
     "artifact:f37035b130120911cb43",
@@ -1347,15 +1347,15 @@
    ]
   },
   {
-   "id": "ds-ettm-maximo--4ps-timebooking",
-   "source_system_id": "sys-maximo",
-   "destination_system_id": "sys-4ps",
-   "name": "Time Registrations: Maximo -> 4PS",
-   "description": "Labor transactions (tijdbesteding) split into header/line JSON, including supplyingCompany determination logic, written to 4PS siteManagementHourHeaders / siteManagementHourLines. (mechanism: JMS (ettm.maximoFourpsTijdbesteding) + REST (4PS siteManagementHourHeaders/Lines))",
+   "id": "ds-ettm-assetsys--4fs-timebooking",
+   "source_system_id": "sys-assetsys",
+   "destination_system_id": "sys-4fs",
+   "name": "Time Registrations: AssetSys -> 4FS",
+   "description": "Labor transactions (tijdbesteding) split into header/line JSON, including supplyingCompany determination logic, written to 4FS siteManagementHourHeaders / siteManagementHourLines. (mechanism: JMS (ettm.assetsysFourfsTijdbesteding) + REST (4FS siteManagementHourHeaders/Lines))",
    "business_object_ids": [
     "bo-timebooking"
    ],
-   "business_summary": "Labor transactions (tijdbesteding) split into header/line JSON, including supplyingCompany determination logic, written to 4PS siteManagementHourHeaders / siteManagementHourLines. (mechanism: JMS (ettm.maximoFourpsTijdbesteding) + REST (4PS siteManagementHourHeaders/Lines))",
+   "business_summary": "Labor transactions (tijdbesteding) split into header/line JSON, including supplyingCompany determination logic, written to 4FS siteManagementHourHeaders / siteManagementHourLines. (mechanism: JMS (ettm.assetsysFourfsTijdbesteding) + REST (4FS siteManagementHourHeaders/Lines))",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1368,7 +1368,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: Maximo to 4PS (VRI Group) - maximoFourpsTijdbesteding_VRI; ETTM_part2 03_DATA_FLOWS_AND_LINEAGE: Tijdbesteding Flow, Critical Path Lineage #5"
+    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: AssetSys to 4FS (CAI Group) - assetsysFourfsTijdbesteding_CAI; ETTM_part2 03_DATA_FLOWS_AND_LINEAGE: Tijdbesteding Flow, Critical Path Lineage #5"
    ],
    "artifact_ids": [
     "artifact:7683447e33bf881cce4e",
@@ -1379,15 +1379,15 @@
    ]
   },
   {
-   "id": "ds-ettm-4ps--maximo-element",
-   "source_system_id": "sys-4ps",
-   "destination_system_id": "sys-maximo",
-   "name": "Elements / Jobs Master Data: 4PS -> Maximo",
-   "description": "4PS projectElements and jobs change events; full objects fetched via fourpsObjectReader/fourpsObjectsReader, mapped, and pushed to Maximo. (mechanism: JMS change-event topics (ettm.fourps.changeEvents.projectElements / .jobs) + REST (maximo_call))",
+   "id": "ds-ettm-4fs--assetsys-element",
+   "source_system_id": "sys-4fs",
+   "destination_system_id": "sys-assetsys",
+   "name": "Elements / Jobs Master Data: 4FS -> AssetSys",
+   "description": "4FS projectElements and jobs change events; full objects fetched via fourfsObjectReader/fourfsObjectsReader, mapped, and pushed to AssetSys. (mechanism: JMS change-event topics (ettm.fourfs.changeEvents.projectElements / .jobs) + REST (assetsys_call))",
    "business_object_ids": [
     "bo-element"
    ],
-   "business_summary": "4PS projectElements and jobs change events; full objects fetched via fourpsObjectReader/fourpsObjectsReader, mapped, and pushed to Maximo. (mechanism: JMS change-event topics (ettm.fourps.changeEvents.projectElements / .jobs) + REST (maximo_call))",
+   "business_summary": "4FS projectElements and jobs change events; full objects fetched via fourfsObjectReader/fourfsObjectsReader, mapped, and pushed to AssetSys. (mechanism: JMS change-event topics (ettm.fourfs.changeEvents.projectElements / .jobs) + REST (assetsys_call))",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1400,7 +1400,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: 4PS to Maximo (fourpsMaximo Group) - fourpsMaximoElements"
+    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: 4FS to AssetSys (fourfsAssetSys Group) - fourfsAssetSysElements"
    ],
    "artifact_ids": [
     "artifact:c9854428ff154e237b02",
@@ -1412,15 +1412,15 @@
    ]
   },
   {
-   "id": "ds-ettm-4ps--maximo-material",
-   "source_system_id": "sys-4ps",
-   "destination_system_id": "sys-maximo",
-   "name": "Item Master Data: 4PS -> Maximo",
-   "description": "4PS items, itemUnitOfMeasures, and itemFeatures change events merged into a combined JSON, validated (no/description/purchUnitOfMeasure/baseUnitOfMeasure etc.), mapped, and pushed to Maximo. (mechanism: JMS change-event topics (ettm.fourps.changeEvents.items / .itemUnitOfMeasures / .itemFeatures) + REST (maximo_call))",
+   "id": "ds-ettm-4fs--assetsys-material",
+   "source_system_id": "sys-4fs",
+   "destination_system_id": "sys-assetsys",
+   "name": "Item Master Data: 4FS -> AssetSys",
+   "description": "4FS items, itemUnitOfMeasures, and itemFeatures change events merged into a combined JSON, validated (no/description/purchUnitOfMeasure/baseUnitOfMeasure etc.), mapped, and pushed to AssetSys. (mechanism: JMS change-event topics (ettm.fourfs.changeEvents.items / .itemUnitOfMeasures / .itemFeatures) + REST (assetsys_call))",
    "business_object_ids": [
     "bo-material"
    ],
-   "business_summary": "4PS items, itemUnitOfMeasures, and itemFeatures change events merged into a combined JSON, validated (no/description/purchUnitOfMeasure/baseUnitOfMeasure etc.), mapped, and pushed to Maximo. (mechanism: JMS change-event topics (ettm.fourps.changeEvents.items / .itemUnitOfMeasures / .itemFeatures) + REST (maximo_call))",
+   "business_summary": "4FS items, itemUnitOfMeasures, and itemFeatures change events merged into a combined JSON, validated (no/description/purchUnitOfMeasure/baseUnitOfMeasure etc.), mapped, and pushed to AssetSys. (mechanism: JMS change-event topics (ettm.fourfs.changeEvents.items / .itemUnitOfMeasures / .itemFeatures) + REST (assetsys_call))",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1433,7 +1433,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: 4PS to Maximo (fourpsMaximo Group) - fourpsMaximoItemMasterData"
+    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: 4FS to AssetSys (fourfsAssetSys Group) - fourfsAssetSysItemMasterData"
    ],
    "artifact_ids": [
     "artifact:c9854428ff154e237b02",
@@ -1444,15 +1444,15 @@
    ]
   },
   {
-   "id": "ds-ettm-4ps--maximo-material-2",
-   "source_system_id": "sys-4ps",
-   "destination_system_id": "sys-maximo",
-   "name": "Item Vendor Data: 4PS -> Maximo",
-   "description": "4PS itemVendors change events enriched with trade item data (description, bidPrice, lastCost, lastDate, orderUnit, itemSetId, orgId), mapped and pushed to Maximo. (mechanism: JMS change-event topic (ettm.fourps.changeEvents.itemVendors) + REST (maximo_call))",
+   "id": "ds-ettm-4fs--assetsys-material-2",
+   "source_system_id": "sys-4fs",
+   "destination_system_id": "sys-assetsys",
+   "name": "Item Vendor Data: 4FS -> AssetSys",
+   "description": "4FS itemVendors change events enriched with trade item data (description, bidPrice, lastCost, lastDate, orderUnit, itemSetId, orgId), mapped and pushed to AssetSys. (mechanism: JMS change-event topic (ettm.fourfs.changeEvents.itemVendors) + REST (assetsys_call))",
    "business_object_ids": [
     "bo-material"
    ],
-   "business_summary": "4PS itemVendors change events enriched with trade item data (description, bidPrice, lastCost, lastDate, orderUnit, itemSetId, orgId), mapped and pushed to Maximo. (mechanism: JMS change-event topic (ettm.fourps.changeEvents.itemVendors) + REST (maximo_call))",
+   "business_summary": "4FS itemVendors change events enriched with trade item data (description, bidPrice, lastCost, lastDate, orderUnit, itemSetId, orgId), mapped and pushed to AssetSys. (mechanism: JMS change-event topic (ettm.fourfs.changeEvents.itemVendors) + REST (assetsys_call))",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1465,7 +1465,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: 4PS to Maximo (fourpsMaximo Group) - fourpsMaximoItemVendor"
+    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: 4FS to AssetSys (fourfsAssetSys Group) - fourfsAssetSysItemVendor"
    ],
    "artifact_ids": [
     "artifact:c9854428ff154e237b02",
@@ -1476,15 +1476,15 @@
    ]
   },
   {
-   "id": "ds-ettm-4ps--maximo-vendor",
-   "source_system_id": "sys-4ps",
-   "destination_system_id": "sys-maximo",
-   "name": "Vendor Master Data: 4PS -> Maximo",
-   "description": "4PS vendors change events; full objects fetched via fourpsObjectReader_noErrorMonitoring/fourpsObjectsReader, mapped, and pushed to Maximo. (mechanism: JMS change-event topic (ettm.fourps.changeEvents.vendors) + REST (maximo_call))",
+   "id": "ds-ettm-4fs--assetsys-vendor",
+   "source_system_id": "sys-4fs",
+   "destination_system_id": "sys-assetsys",
+   "name": "Vendor Master Data: 4FS -> AssetSys",
+   "description": "4FS vendors change events; full objects fetched via fourfsObjectReader_noErrorMonitoring/fourfsObjectsReader, mapped, and pushed to AssetSys. (mechanism: JMS change-event topic (ettm.fourfs.changeEvents.vendors) + REST (assetsys_call))",
    "business_object_ids": [
     "bo-vendor"
    ],
-   "business_summary": "4PS vendors change events; full objects fetched via fourpsObjectReader_noErrorMonitoring/fourpsObjectsReader, mapped, and pushed to Maximo. (mechanism: JMS change-event topic (ettm.fourps.changeEvents.vendors) + REST (maximo_call))",
+   "business_summary": "4FS vendors change events; full objects fetched via fourfsObjectReader_noErrorMonitoring/fourfsObjectsReader, mapped, and pushed to AssetSys. (mechanism: JMS change-event topic (ettm.fourfs.changeEvents.vendors) + REST (assetsys_call))",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1497,7 +1497,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: 4PS to Maximo (fourpsMaximo Group) - fourpsMaximoVendorMasterData"
+    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: 4FS to AssetSys (fourfsAssetSys Group) - fourfsAssetSysVendorMasterData"
    ],
    "artifact_ids": [
     "artifact:c9854428ff154e237b02",
@@ -1509,15 +1509,15 @@
    ]
   },
   {
-   "id": "ds-ettm-4ps--maximo-purchaseorder",
-   "source_system_id": "sys-4ps",
-   "destination_system_id": "sys-maximo",
-   "name": "Purchase Order Status: 4PS -> Maximo",
-   "description": "4PS purchase order status change events, validated, mapped, and pushed to Maximo. (mechanism: JMS change-event topic (ettm.fourps.changeEvents.purchaseHeaders) + REST (maximo_call))",
+   "id": "ds-ettm-4fs--assetsys-purchaseorder",
+   "source_system_id": "sys-4fs",
+   "destination_system_id": "sys-assetsys",
+   "name": "Purchase Order Status: 4FS -> AssetSys",
+   "description": "4FS purchase order status change events, validated, mapped, and pushed to AssetSys. (mechanism: JMS change-event topic (ettm.fourfs.changeEvents.purchaseHeaders) + REST (assetsys_call))",
    "business_object_ids": [
     "bo-purchaseorder"
    ],
-   "business_summary": "4PS purchase order status change events, validated, mapped, and pushed to Maximo. (mechanism: JMS change-event topic (ettm.fourps.changeEvents.purchaseHeaders) + REST (maximo_call))",
+   "business_summary": "4FS purchase order status change events, validated, mapped, and pushed to AssetSys. (mechanism: JMS change-event topic (ettm.fourfs.changeEvents.purchaseHeaders) + REST (assetsys_call))",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1530,7 +1530,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: 4PS to Maximo (fourpsMaximo Group) - fourpsMaximoPurchaseOrderStatus"
+    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: 4FS to AssetSys (fourfsAssetSys Group) - fourfsAssetSysPurchaseOrderStatus"
    ],
    "artifact_ids": [
     "artifact:c9854428ff154e237b02",
@@ -1541,15 +1541,15 @@
    ]
   },
   {
-   "id": "ds-ettm-4ps--forsuppliers-vendorinvite",
-   "source_system_id": "sys-4ps",
+   "id": "ds-ettm-4fs--forsuppliers-vendorinvite",
+   "source_system_id": "sys-4fs",
    "destination_system_id": "sys-forsuppliers",
-   "name": "Vendor Invite/Link: 4PS -> ForSuppliers",
-   "description": "4PS contactFeatureTypes fetched and filtered by 2xx response, used to PATCH the feature flag ({\"feature\":\"20\"}) and to invite the vendor via GET to /suppliers/kvk/{kvk}; a separate job family POSTs invitation data to /invites. Both appear to serve the same 'invite a supplier' business function via different endpoints. (mechanism: REST (4PS read + For Suppliers GET/POST))",
+   "name": "Vendor Invite/Link: 4FS -> ForSuppliers",
+   "description": "4FS contactFeatureTypes fetched and filtered by 2xx response, used to PATCH the feature flag ({\"feature\":\"20\"}) and to invite the vendor via GET to /suppliers/kvk/{kvk}; a separate job family POSTs invitation data to /invites. Both appear to serve the same 'invite a supplier' business function via different endpoints. (mechanism: REST (4FS read + For Suppliers GET/POST))",
    "business_object_ids": [
     "bo-vendorinvite"
    ],
-   "business_summary": "4PS contactFeatureTypes fetched and filtered by 2xx response, used to PATCH the feature flag ({\"feature\":\"20\"}) and to invite the vendor via GET to /suppliers/kvk/{kvk}; a separate job family POSTs invitation data to /invites. Both appear to serve the same 'invite a supplier' business function via different endpoints. (mechanism: REST (4PS read + For Suppliers GET/POST))",
+   "business_summary": "4FS contactFeatureTypes fetched and filtered by 2xx response, used to PATCH the feature flag ({\"feature\":\"20\"}) and to invite the vendor via GET to /suppliers/kvk/{kvk}; a separate job family POSTs invitation data to /invites. Both appear to serve the same 'invite a supplier' business function via different endpoints. (mechanism: REST (4FS read + For Suppliers GET/POST))",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1562,7 +1562,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: 4PS to For Suppliers (fourpsForSuppliers Group); For Suppliers Data Flows > For Suppliers Invitation Flow"
+    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: Major Flow: 4FS to For Suppliers (fourfsForSuppliers Group); For Suppliers Data Flows > For Suppliers Invitation Flow"
    ],
    "artifact_ids": [
     "artifact:39c0c8f1f6d43e246175",
@@ -1571,15 +1571,15 @@
    ]
   },
   {
-   "id": "ds-ettm-forsuppliers--4ps-vendor",
+   "id": "ds-ettm-forsuppliers--4fs-vendor",
    "source_system_id": "sys-forsuppliers",
-   "destination_system_id": "sys-4ps",
-   "name": "Vendor Categories: ForSuppliers -> 4PS",
-   "description": "Supplier SBI main/sub codes compared against 4PS vendor categories; creates/updates via fourpsPoster, deletes via fourpsDeleter. (mechanism: JMS entry (ettm.forSuppliers4PSVendorData) + REST (4PS POST/DELETE))",
+   "destination_system_id": "sys-4fs",
+   "name": "Vendor Categories: ForSuppliers -> 4FS",
+   "description": "Supplier SBI main/sub codes compared against 4FS vendor categories; creates/updates via fourfsPoster, deletes via fourfsDeleter. (mechanism: JMS entry (ettm.forSuppliers4FSVendorData) + REST (4FS POST/DELETE))",
    "business_object_ids": [
     "bo-vendor"
    ],
-   "business_summary": "Supplier SBI main/sub codes compared against 4PS vendor categories; creates/updates via fourpsPoster, deletes via fourpsDeleter. (mechanism: JMS entry (ettm.forSuppliers4PSVendorData) + REST (4PS POST/DELETE))",
+   "business_summary": "Supplier SBI main/sub codes compared against 4FS vendor categories; creates/updates via fourfsPoster, deletes via fourfsDeleter. (mechanism: JMS entry (ettm.forSuppliers4FSVendorData) + REST (4FS POST/DELETE))",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1592,7 +1592,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: For Suppliers Data Flows > Vendor Data Synchronization; Major Flow: For Suppliers to 4PS (forSuppliersFourps Group)"
+    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: For Suppliers Data Flows > Vendor Data Synchronization; Major Flow: For Suppliers to 4FS (forSuppliersFourfs Group)"
    ],
    "artifact_ids": [
     "artifact:53e545669e86092ffa8a",
@@ -1601,15 +1601,15 @@
    ]
   },
   {
-   "id": "ds-ettm-forsuppliers--4ps-vendor-2",
+   "id": "ds-ettm-forsuppliers--4fs-vendor-2",
    "source_system_id": "sys-forsuppliers",
-   "destination_system_id": "sys-4ps",
-   "name": "Order Addresses: ForSuppliers -> 4PS",
-   "description": "Supplier order-address/location data (address, city, postCode, countryRegionCode hardcoded 'NL'); reconciled against 4PS by delete-then-repost via fourpsDeleter/fourpsWriter. (mechanism: JMS entry (ettm.forSuppliers4PSVendorData) + REST (4PS GET/POST/DELETE))",
+   "destination_system_id": "sys-4fs",
+   "name": "Order Addresses: ForSuppliers -> 4FS",
+   "description": "Supplier order-address/location data (address, city, postCode, countryRegionCode hardcoded 'NL'); reconciled against 4FS by delete-then-repost via fourfsDeleter/fourfsWriter. (mechanism: JMS entry (ettm.forSuppliers4FSVendorData) + REST (4FS GET/POST/DELETE))",
    "business_object_ids": [
     "bo-vendor"
    ],
-   "business_summary": "Supplier order-address/location data (address, city, postCode, countryRegionCode hardcoded 'NL'); reconciled against 4PS by delete-then-repost via fourpsDeleter/fourpsWriter. (mechanism: JMS entry (ettm.forSuppliers4PSVendorData) + REST (4PS GET/POST/DELETE))",
+   "business_summary": "Supplier order-address/location data (address, city, postCode, countryRegionCode hardcoded 'NL'); reconciled against 4FS by delete-then-repost via fourfsDeleter/fourfsWriter. (mechanism: JMS entry (ettm.forSuppliers4FSVendorData) + REST (4FS GET/POST/DELETE))",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1622,7 +1622,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: For Suppliers Data Flows > Vendor Data Synchronization; Major Flow: For Suppliers to 4PS - Order Addresses Flow"
+    "ETTM_part1 03_DATA_FLOWS_AND_LINEAGE: For Suppliers Data Flows > Vendor Data Synchronization; Major Flow: For Suppliers to 4FS - Order Addresses Flow"
    ],
    "artifact_ids": [
     "artifact:53e545669e86092ffa8a",
@@ -1630,15 +1630,15 @@
    ]
   },
   {
-   "id": "ds-ettm-forsuppliers--4ps-vendor-3",
+   "id": "ds-ettm-forsuppliers--4fs-vendor-3",
    "source_system_id": "sys-forsuppliers",
-   "destination_system_id": "sys-4ps",
-   "name": "Vendor Bank Account Check: ForSuppliers -> 4PS",
-   "description": "Supplier IBAN data compared against 4PS vendorBankAccounts/vendorBankAccountsNL; sets ibanCheckResult ('all ok' or 'check bankaccounts'). (mechanism: JMS entry (ettm.forSuppliers4PSVendorData) + REST (4PS GET/filter query))",
+   "destination_system_id": "sys-4fs",
+   "name": "Vendor Bank Account Check: ForSuppliers -> 4FS",
+   "description": "Supplier IBAN data compared against 4FS vendorBankAccounts/vendorBankAccountsNL; sets ibanCheckResult ('all ok' or 'check bankaccounts'). (mechanism: JMS entry (ettm.forSuppliers4FSVendorData) + REST (4FS GET/filter query))",
    "business_object_ids": [
     "bo-vendor"
    ],
-   "business_summary": "Supplier IBAN data compared against 4PS vendorBankAccounts/vendorBankAccountsNL; sets ibanCheckResult ('all ok' or 'check bankaccounts'). (mechanism: JMS entry (ettm.forSuppliers4PSVendorData) + REST (4PS GET/filter query))",
+   "business_summary": "Supplier IBAN data compared against 4FS vendorBankAccounts/vendorBankAccountsNL; sets ibanCheckResult ('all ok' or 'check bankaccounts'). (mechanism: JMS entry (ettm.forSuppliers4FSVendorData) + REST (4FS GET/filter query))",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1661,15 +1661,15 @@
    ]
   },
   {
-   "id": "ds-ettm-forsuppliers--4ps-vendor-4",
+   "id": "ds-ettm-forsuppliers--4fs-vendor-4",
    "source_system_id": "sys-forsuppliers",
-   "destination_system_id": "sys-4ps",
-   "name": "Vendor Certificates: ForSuppliers -> 4PS",
-   "description": "Supplier certificate data (SNA presence check, line numbers) extracted via JSONPath /bills/bill/line; written via fourpsWriter, WAADI certificates deleted via fourpsDeleter. (mechanism: JMS entry (ettm.forSuppliers4PSVendorData) + REST (4PS POST/DELETE))",
+   "destination_system_id": "sys-4fs",
+   "name": "Vendor Certificates: ForSuppliers -> 4FS",
+   "description": "Supplier certificate data (SNA presence check, line numbers) extracted via JSONPath /bills/bill/line; written via fourfsWriter, WAADI certificates deleted via fourfsDeleter. (mechanism: JMS entry (ettm.forSuppliers4FSVendorData) + REST (4FS POST/DELETE))",
    "business_object_ids": [
     "bo-vendor"
    ],
-   "business_summary": "Supplier certificate data (SNA presence check, line numbers) extracted via JSONPath /bills/bill/line; written via fourpsWriter, WAADI certificates deleted via fourpsDeleter. (mechanism: JMS entry (ettm.forSuppliers4PSVendorData) + REST (4PS POST/DELETE))",
+   "business_summary": "Supplier certificate data (SNA presence check, line numbers) extracted via JSONPath /bills/bill/line; written via fourfsWriter, WAADI certificates deleted via fourfsDeleter. (mechanism: JMS entry (ettm.forSuppliers4FSVendorData) + REST (4FS POST/DELETE))",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1690,15 +1690,15 @@
    ]
   },
   {
-   "id": "ds-ettm-forsuppliers--4ps-vendor-5",
+   "id": "ds-ettm-forsuppliers--4fs-vendor-5",
    "source_system_id": "sys-forsuppliers",
-   "destination_system_id": "sys-4ps",
-   "name": "WKA Check: ForSuppliers -> 4PS",
-   "description": "WKA (Wet Keten Aansprakelijkheid) check records created with code GREKOVONTV (approved=true) and LOONBELNR using the payroll tax number. (mechanism: JMS entry (ettm.forSuppliers4PSVendorData) + REST (4PS write))",
+   "destination_system_id": "sys-4fs",
+   "name": "WKA Check: ForSuppliers -> 4FS",
+   "description": "WKA (Wet Keten Aansprakelijkheid) check records created with code GREKOVONTV (approved=true) and LOONBELNR using the payroll tax number. (mechanism: JMS entry (ettm.forSuppliers4FSVendorData) + REST (4FS write))",
    "business_object_ids": [
     "bo-vendor"
    ],
-   "business_summary": "WKA (Wet Keten Aansprakelijkheid) check records created with code GREKOVONTV (approved=true) and LOONBELNR using the payroll tax number. (mechanism: JMS entry (ettm.forSuppliers4PSVendorData) + REST (4PS write))",
+   "business_summary": "WKA (Wet Keten Aansprakelijkheid) check records created with code GREKOVONTV (approved=true) and LOONBELNR using the payroll tax number. (mechanism: JMS entry (ettm.forSuppliers4FSVendorData) + REST (4FS write))",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1719,15 +1719,15 @@
    ]
   },
   {
-   "id": "ds-ettm-4ps--forsuppliers-vendor",
-   "source_system_id": "sys-4ps",
+   "id": "ds-ettm-4fs--forsuppliers-vendor",
+   "source_system_id": "sys-4fs",
    "destination_system_id": "sys-forsuppliers",
-   "name": "Vendor Data Query: 4PS -> ForSuppliers",
-   "description": "Vendor data queries exposed at /fsVendorData; internal routing via JMS, presumed to be resolved against 4PS-sourced vendor data. Analysis task did not complete for this job's internals, so field-level detail and confirmation of direction is unavailable. (mechanism: REST (For Suppliers-facing endpoint) + internal JMS routing)",
+   "name": "Vendor Data Query: 4FS -> ForSuppliers",
+   "description": "Vendor data queries exposed at /fsVendorData; internal routing via JMS, presumed to be resolved against 4FS-sourced vendor data. Analysis task did not complete for this job's internals, so field-level detail and confirmation of direction is unavailable. (mechanism: REST (For Suppliers-facing endpoint) + internal JMS routing)",
    "business_object_ids": [
     "bo-vendor"
    ],
-   "business_summary": "Vendor data queries exposed at /fsVendorData; internal routing via JMS, presumed to be resolved against 4PS-sourced vendor data. Analysis task did not complete for this job's internals, so field-level detail and confirmation of direction is unavailable. (mechanism: REST (For Suppliers-facing endpoint) + internal JMS routing)",
+   "business_summary": "Vendor data queries exposed at /fsVendorData; internal routing via JMS, presumed to be resolved against 4FS-sourced vendor data. Analysis task did not complete for this job's internals, so field-level detail and confirmation of direction is unavailable. (mechanism: REST (For Suppliers-facing endpoint) + internal JMS routing)",
    "integration_solution_ids": [
     "int-sol-ettm"
    ],
@@ -1747,15 +1747,15 @@
    ]
   },
   {
-   "id": "ds-enterpriseservicebus-afas--maximo-employee",
+   "id": "ds-enterpriseservicebus-afas--assetsys-employee",
    "source_system_id": "sys-afas",
-   "destination_system_id": "sys-maximo",
-   "name": "Employee data: AFAS -> Maximo",
-   "description": "Employee master data extracted from AFAS GetDataResult XML, unescaped and XML-mapped for Maximo (mechanism: JMS/ActiveMQ + Talend job call (tTalendJob))",
+   "destination_system_id": "sys-assetsys",
+   "name": "Employee data: AFAS -> AssetSys",
+   "description": "Employee master data extracted from AFAS GetDataResult XML, unescaped and XML-mapped for AssetSys (mechanism: JMS/ActiveMQ + Talend job call (tTalendJob))",
    "business_object_ids": [
     "bo-employee"
    ],
-   "business_summary": "Employee master data extracted from AFAS GetDataResult XML, unescaped and XML-mapped for Maximo (mechanism: JMS/ActiveMQ + Talend job call (tTalendJob))",
+   "business_summary": "Employee master data extracted from AFAS GetDataResult XML, unescaped and XML-mapped for AssetSys (mechanism: JMS/ActiveMQ + Talend job call (tTalendJob))",
    "integration_solution_ids": [
     "int-sol-enterpriseservicebus"
    ],
@@ -1768,7 +1768,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "EnterpriseServiceBus_part1 03_DATA_FLOWS_AND_LINEAGE.md 'Major Flow: AFAS to Maximo Employee Data'; 01_ARCHITECTURE_MAP.md groups afas_maximo / afas_maximo_medewerkergegevens / AFAS"
+    "EnterpriseServiceBus_part1 03_DATA_FLOWS_AND_LINEAGE.md 'Major Flow: AFAS to AssetSys Employee Data'; 01_ARCHITECTURE_MAP.md groups afas_assetsys / afas_assetsys_medewerkergegevens / AFAS"
    ],
    "artifact_ids": [
     "artifact:7609bb6135adf1e385b8",
@@ -1778,15 +1778,15 @@
    ]
   },
   {
-   "id": "ds-enterpriseservicebus-afas--4ps-employee",
+   "id": "ds-enterpriseservicebus-afas--4fs-employee",
    "source_system_id": "sys-afas",
-   "destination_system_id": "sys-4ps",
-   "name": "Employee data: AFAS -> 4PS",
-   "description": "Employee data (companyId, employeeStartingDate, employeeNo headers) routed for 4PS-side processing (mechanism: JMS/ActiveMQ + XSLT mapping)",
+   "destination_system_id": "sys-4fs",
+   "name": "Employee data: AFAS -> 4FS",
+   "description": "Employee data (companyId, employeeStartingDate, employeeNo headers) routed for 4FS-side processing (mechanism: JMS/ActiveMQ + XSLT mapping)",
    "business_object_ids": [
     "bo-employee"
    ],
-   "business_summary": "Employee data (companyId, employeeStartingDate, employeeNo headers) routed for 4PS-side processing (mechanism: JMS/ActiveMQ + XSLT mapping)",
+   "business_summary": "Employee data (companyId, employeeStartingDate, employeeNo headers) routed for 4FS-side processing (mechanism: JMS/ActiveMQ + XSLT mapping)",
    "integration_solution_ids": [
     "int-sol-enterpriseservicebus"
    ],
@@ -1799,7 +1799,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "EnterpriseServiceBus_part1 01_ARCHITECTURE_MAP.md group summary 'afas_4ps -- AFAS-to-4PS employee data synchronization'"
+    "EnterpriseServiceBus_part1 01_ARCHITECTURE_MAP.md group summary 'afas_4fs -- AFAS-to-4FS employee data synchronization'"
    ],
    "artifact_ids": [
     "artifact:7629279a9a9c694d3051",
@@ -1808,15 +1808,15 @@
    ]
   },
   {
-   "id": "ds-enterpriseservicebus-afas--4ps-employee-2",
+   "id": "ds-enterpriseservicebus-afas--4fs-employee-2",
    "source_system_id": "sys-afas",
-   "destination_system_id": "sys-4ps",
-   "name": "Employee Cost Price: AFAS (inferred) -> 4PS",
-   "description": "Employee cost-price record (employeeNo, startingDate, cost value), GET latest -> compare -> PATCH/POST to 4PS (mechanism: JMS queue esb.fourps_writer + REST (OAuth2 bearer))",
+   "destination_system_id": "sys-4fs",
+   "name": "Employee Cost Price: AFAS (inferred) -> 4FS",
+   "description": "Employee cost-price record (employeeNo, startingDate, cost value), GET latest -> compare -> PATCH/POST to 4FS (mechanism: JMS queue esb.fourfs_writer + REST (OAuth2 bearer))",
    "business_object_ids": [
     "bo-employee"
    ],
-   "business_summary": "Employee cost-price record (employeeNo, startingDate, cost value), GET latest -> compare -> PATCH/POST to 4PS (mechanism: JMS queue esb.fourps_writer + REST (OAuth2 bearer))",
+   "business_summary": "Employee cost-price record (employeeNo, startingDate, cost value), GET latest -> compare -> PATCH/POST to 4FS (mechanism: JMS queue esb.fourfs_writer + REST (OAuth2 bearer))",
    "integration_solution_ids": [
     "int-sol-enterpriseservicebus"
    ],
@@ -1829,7 +1829,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "EnterpriseServiceBus_part2 03_DATA_FLOWS_AND_LINEAGE.md lines 58-70, 301-330, 399-407 -- target (4PS) is certain; the publisher of esb.fourps_writer (presumed AFAS) is not evidenced in these docs"
+    "EnterpriseServiceBus_part2 03_DATA_FLOWS_AND_LINEAGE.md lines 58-70, 301-330, 399-407 -- target (4FS) is certain; the publisher of esb.fourfs_writer (presumed AFAS) is not evidenced in these docs"
    ],
    "artifact_ids": [
     "artifact:a9f7aefd90083122774b",
@@ -1839,15 +1839,15 @@
    ]
   },
   {
-   "id": "ds-enterpriseservicebus-enterpriseservicebus--4ps-object",
+   "id": "ds-enterpriseservicebus-enterpriseservicebus--4fs-object",
    "source_system_id": "sys-enterpriseservicebus",
-   "destination_system_id": "sys-4ps",
-   "name": "Object/item record write: EnterpriseServiceBus -> 4PS",
-   "description": "Generic 4PS object/item record (objectSystemId, objectIdKeys); GET existence check then PATCH or POST (mechanism: JMS queue esb.fourps_writer + REST (OAuth2 bearer))",
+   "destination_system_id": "sys-4fs",
+   "name": "Object/item record write: EnterpriseServiceBus -> 4FS",
+   "description": "Generic 4FS object/item record (objectSystemId, objectIdKeys); GET existence check then PATCH or POST (mechanism: JMS queue esb.fourfs_writer + REST (OAuth2 bearer))",
    "business_object_ids": [
     "bo-object"
    ],
-   "business_summary": "Generic 4PS object/item record (objectSystemId, objectIdKeys); GET existence check then PATCH or POST (mechanism: JMS queue esb.fourps_writer + REST (OAuth2 bearer))",
+   "business_summary": "Generic 4FS object/item record (objectSystemId, objectIdKeys); GET existence check then PATCH or POST (mechanism: JMS queue esb.fourfs_writer + REST (OAuth2 bearer))",
    "integration_solution_ids": [
     "int-sol-enterpriseservicebus"
    ],
@@ -1860,7 +1860,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "EnterpriseServiceBus_part2 03_DATA_FLOWS_AND_LINEAGE.md lines 37-56 -- upstream producer of esb.fourps_writer for this object type is not identified in either part; two independent consumers on the same queue are also flagged as a duplication risk in the source doc"
+    "EnterpriseServiceBus_part2 03_DATA_FLOWS_AND_LINEAGE.md lines 37-56 -- upstream producer of esb.fourfs_writer for this object type is not identified in either part; two independent consumers on the same queue are also flagged as a duplication risk in the source doc"
    ],
    "artifact_ids": [
     "artifact:a9f7aefd90083122774b",
@@ -1869,15 +1869,15 @@
    ]
   },
   {
-   "id": "ds-enterpriseservicebus-ortec--maximo-workorder",
-   "source_system_id": "sys-ortec",
-   "destination_system_id": "sys-maximo",
-   "name": "Work orders (planned/modified/cancelled): Ortec -> Maximo",
-   "description": "Work-order files: geplande directe/indirecte, gewijzigde (modified), geannuleerde (cancelled) werkorder, enriched with LogDB metadata (mechanism: File drop + JMS/ActiveMQ)",
+   "id": "ds-enterpriseservicebus-routeplan--assetsys-workorder",
+   "source_system_id": "sys-routeplan",
+   "destination_system_id": "sys-assetsys",
+   "name": "Work orders (planned/modified/cancelled): RoutePlan -> AssetSys",
+   "description": "Work-order files: geplande directe/indirecte, gewijzigde (modified), geannuleerde (cancelled) workorders_demo, enriched with LogDB metadata (mechanism: File drop + JMS/ActiveMQ)",
    "business_object_ids": [
     "bo-workorder"
    ],
-   "business_summary": "Work-order files: geplande directe/indirecte, gewijzigde (modified), geannuleerde (cancelled) werkorder, enriched with LogDB metadata (mechanism: File drop + JMS/ActiveMQ)",
+   "business_summary": "Work-order files: geplande directe/indirecte, gewijzigde (modified), geannuleerde (cancelled) workorders_demo, enriched with LogDB metadata (mechanism: File drop + JMS/ActiveMQ)",
    "integration_solution_ids": [
     "int-sol-enterpriseservicebus"
    ],
@@ -1890,7 +1890,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "EnterpriseServiceBus_part2 01_ARCHITECTURE_MAP.md line 964: 'Work order data flows from file triggers through JMS to Maximo REST services'; 03_DATA_FLOWS_AND_LINEAGE.md lines 157-197"
+    "EnterpriseServiceBus_part2 01_ARCHITECTURE_MAP.md line 964: 'Work order data flows from file triggers through JMS to AssetSys REST services'; 03_DATA_FLOWS_AND_LINEAGE.md lines 157-197"
    ],
    "artifact_ids": [
     "artifact:a1c5af2a453ba76360a6",
@@ -1902,15 +1902,15 @@
    ]
   },
   {
-   "id": "ds-enterpriseservicebus-maximo--ortec-workorder",
-   "source_system_id": "sys-maximo",
-   "destination_system_id": "sys-ortec",
-   "name": "Work order status (WerkBon): Maximo -> Ortec",
-   "description": "WerkBon (work ticket) status transitions, e.g. status replacement WERK -> NAARHUIS (mechanism: REST (GET /MaximoWerkBon) + JMS/ActiveMQ)",
+   "id": "ds-enterpriseservicebus-assetsys--routeplan-workorder",
+   "source_system_id": "sys-assetsys",
+   "destination_system_id": "sys-routeplan",
+   "name": "Work order status (WerkBon): AssetSys -> RoutePlan",
+   "description": "WerkBon (work ticket) status transitions, e.g. status replacement WERK -> NAARHUIS (mechanism: REST (GET /AssetSysWerkBon) + JMS/ActiveMQ)",
    "business_object_ids": [
     "bo-workorder"
    ],
-   "business_summary": "WerkBon (work ticket) status transitions, e.g. status replacement WERK -> NAARHUIS (mechanism: REST (GET /MaximoWerkBon) + JMS/ActiveMQ)",
+   "business_summary": "WerkBon (work ticket) status transitions, e.g. status replacement WERK -> NAARHUIS (mechanism: REST (GET /AssetSysWerkBon) + JMS/ActiveMQ)",
    "integration_solution_ids": [
     "int-sol-enterpriseservicebus"
    ],
@@ -1923,7 +1923,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "EnterpriseServiceBus_part2 03_DATA_FLOWS_AND_LINEAGE.md lines 129-141, 340-359; 01_ARCHITECTURE_MAP.md lines 37-38, 114-117 -- Maximo->ESB leg is explicit; final Ortec-side consumption of esb.orchestrate is not directly evidenced within this sub-project's scanned jobs"
+    "EnterpriseServiceBus_part2 03_DATA_FLOWS_AND_LINEAGE.md lines 129-141, 340-359; 01_ARCHITECTURE_MAP.md lines 37-38, 114-117 -- AssetSys->ESB leg is explicit; final RoutePlan-side consumption of esb.orchestrate is not directly evidenced within this sub-project's scanned jobs"
    ],
    "artifact_ids": [
     "artifact:c605cfa5100e2462adf1",
@@ -1931,15 +1931,15 @@
    ]
   },
   {
-   "id": "ds-enterpriseservicebus-maximo--4ps-materialusage",
-   "source_system_id": "sys-maximo",
-   "destination_system_id": "sys-4ps",
-   "name": "Material usage: Maximo -> 4PS",
-   "description": "Material usage / consumption data (materiaalverbruik), XSLT-mapped from Maximo XML to 4PS JSON format (mechanism: REST (GET /Maximo) + JMS topic esb.maximo.materiaalverbruik + XSLT)",
+   "id": "ds-enterpriseservicebus-assetsys--4fs-materialusage",
+   "source_system_id": "sys-assetsys",
+   "destination_system_id": "sys-4fs",
+   "name": "Material usage: AssetSys -> 4FS",
+   "description": "Material usage / consumption data (materiaalverbruik), XSLT-mapped from AssetSys XML to 4FS JSON format (mechanism: REST (GET /AssetSys) + JMS topic esb.assetsys.materiaalverbruik + XSLT)",
    "business_object_ids": [
     "bo-materialusage"
    ],
-   "business_summary": "Material usage / consumption data (materiaalverbruik), XSLT-mapped from Maximo XML to 4PS JSON format (mechanism: REST (GET /Maximo) + JMS topic esb.maximo.materiaalverbruik + XSLT)",
+   "business_summary": "Material usage / consumption data (materiaalverbruik), XSLT-mapped from AssetSys XML to 4FS JSON format (mechanism: REST (GET /AssetSys) + JMS topic esb.assetsys.materiaalverbruik + XSLT)",
    "integration_solution_ids": [
     "int-sol-enterpriseservicebus"
    ],
@@ -1960,15 +1960,15 @@
    ]
   },
   {
-   "id": "ds-enterpriseservicebus-maximo--enterpriseservicebus-workorder",
-   "source_system_id": "sys-maximo",
+   "id": "ds-enterpriseservicebus-assetsys--enterpriseservicebus-workorder",
+   "source_system_id": "sys-assetsys",
    "destination_system_id": "sys-enterpriseservicebus",
-   "name": "Work order (unplanned/status-update/processing): Maximo -> EnterpriseServiceBus",
-   "description": "Unplanned work order, status-update work order, and 'verwerking' (processing) work order triggers via XApiKey-checked REST calls (mechanism: REST (GET /Maximo) + JMS/ActiveMQ (esb.enrichment_exchange))",
+   "name": "Work order (unplanned/status-update/processing): AssetSys -> EnterpriseServiceBus",
+   "description": "Unplanned work order, status-update work order, and 'verwerking' (processing) work order triggers via XApiKey-checked REST calls (mechanism: REST (GET /AssetSys) + JMS/ActiveMQ (esb.enrichment_exchange))",
    "business_object_ids": [
     "bo-workorder"
    ],
-   "business_summary": "Unplanned work order, status-update work order, and 'verwerking' (processing) work order triggers via XApiKey-checked REST calls (mechanism: REST (GET /Maximo) + JMS/ActiveMQ (esb.enrichment_exchange))",
+   "business_summary": "Unplanned work order, status-update work order, and 'verwerking' (processing) work order triggers via XApiKey-checked REST calls (mechanism: REST (GET /AssetSys) + JMS/ActiveMQ (esb.enrichment_exchange))",
    "integration_solution_ids": [
     "int-sol-enterpriseservicebus"
    ],
@@ -1988,15 +1988,15 @@
    ]
   },
   {
-   "id": "ds-enterpriseservicebus-maximo--irissys-inspectionreport",
-   "source_system_id": "sys-maximo",
+   "id": "ds-enterpriseservicebus-assetsys--irissys-inspectionreport",
+   "source_system_id": "sys-assetsys",
    "destination_system_id": "sys-irissys",
-   "name": "Inspection report (UltraSoonRapport): Maximo -> Irissys",
-   "description": "UltraSoonRapport (ultrasonic/NDT inspection report data) (mechanism: REST (GET /MaximoUltraSoonRapport, XApiKey) + JMS/ActiveMQ)",
+   "name": "Inspection report (UltraSoonRapport): AssetSys -> Irissys",
+   "description": "UltraSoonRapport (ultrasonic/NDT inspection report data) (mechanism: REST (GET /AssetSysUltraSoonRapport, XApiKey) + JMS/ActiveMQ)",
    "business_object_ids": [
     "bo-inspectionreport"
    ],
-   "business_summary": "UltraSoonRapport (ultrasonic/NDT inspection report data) (mechanism: REST (GET /MaximoUltraSoonRapport, XApiKey) + JMS/ActiveMQ)",
+   "business_summary": "UltraSoonRapport (ultrasonic/NDT inspection report data) (mechanism: REST (GET /AssetSysUltraSoonRapport, XApiKey) + JMS/ActiveMQ)",
    "integration_solution_ids": [
     "int-sol-enterpriseservicebus"
    ],
@@ -2016,15 +2016,15 @@
    ]
   },
   {
-   "id": "ds-enterpriseservicebus-vise--quintiq-asset",
-   "source_system_id": "sys-vise",
+   "id": "ds-enterpriseservicebus-qadb--quintiq-asset",
+   "source_system_id": "sys-qadb",
    "destination_system_id": "sys-quintiq",
-   "name": "Welding/asset inspection data: VISE -> Quintiq",
-   "description": "Welding/asset-check inspection data reconciled through the AssetCheck interface, then upserted/deleted against Quintiq (mechanism: JMS/ActiveMQ + outbound HTTP + direct Quintiq DB (connection_quintiqDB))",
+   "name": "Welding/asset inspection data: QADB -> Quintiq",
+   "description": "Welding/asset-check inspection data reconciled through the InspectHub interface, then upserted/deleted against Quintiq (mechanism: JMS/ActiveMQ + outbound HTTP + direct Quintiq DB (connection_quintiqDB))",
    "business_object_ids": [
     "bo-asset"
    ],
-   "business_summary": "Welding/asset-check inspection data reconciled through the AssetCheck interface, then upserted/deleted against Quintiq (mechanism: JMS/ActiveMQ + outbound HTTP + direct Quintiq DB (connection_quintiqDB))",
+   "business_summary": "Welding/asset-check inspection data reconciled through the InspectHub interface, then upserted/deleted against Quintiq (mechanism: JMS/ActiveMQ + outbound HTTP + direct Quintiq DB (connection_quintiqDB))",
    "integration_solution_ids": [
     "int-sol-enterpriseservicebus"
    ],
@@ -2037,7 +2037,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "EnterpriseServiceBus_part1 01_ARCHITECTURE_MAP.md context group VISE2AssetCheck_Context; 03_DATA_FLOWS_AND_LINEAGE.md 'Major Flow: Asset Check Processing' -- internal component-level wiring between the two source legs (VISE, Maximo) and the Quintiq write is inferred from naming and context groups, not a single explicit statement"
+    "EnterpriseServiceBus_part1 01_ARCHITECTURE_MAP.md context group QADB2InspectHub_Context; 03_DATA_FLOWS_AND_LINEAGE.md 'Major Flow: Asset Check Processing' -- internal component-level wiring between the two source legs (QADB, AssetSys) and the Quintiq write is inferred from naming and context groups, not a single explicit statement"
    ],
    "artifact_ids": [
     "artifact:3acefae9b76897875093",
@@ -2049,15 +2049,15 @@
    ]
   },
   {
-   "id": "ds-enterpriseservicebus-maximo--quintiq-asset",
-   "source_system_id": "sys-maximo",
+   "id": "ds-enterpriseservicebus-assetsys--quintiq-asset",
+   "source_system_id": "sys-assetsys",
    "destination_system_id": "sys-quintiq",
-   "name": "Welding/asset inspection data: Maximo -> Quintiq",
-   "description": "Welding/asset-check inspection data reconciled through the AssetCheck interface (maximo_baseUrl/maximo_username), then upserted/deleted against Quintiq (mechanism: JMS/ActiveMQ + outbound HTTP + direct Quintiq DB (connection_quintiqDB))",
+   "name": "Welding/asset inspection data: AssetSys -> Quintiq",
+   "description": "Welding/asset-check inspection data reconciled through the InspectHub interface (assetsys_baseUrl/assetsys_username), then upserted/deleted against Quintiq (mechanism: JMS/ActiveMQ + outbound HTTP + direct Quintiq DB (connection_quintiqDB))",
    "business_object_ids": [
     "bo-asset"
    ],
-   "business_summary": "Welding/asset-check inspection data reconciled through the AssetCheck interface (maximo_baseUrl/maximo_username), then upserted/deleted against Quintiq (mechanism: JMS/ActiveMQ + outbound HTTP + direct Quintiq DB (connection_quintiqDB))",
+   "business_summary": "Welding/asset-check inspection data reconciled through the InspectHub interface (assetsys_baseUrl/assetsys_username), then upserted/deleted against Quintiq (mechanism: JMS/ActiveMQ + outbound HTTP + direct Quintiq DB (connection_quintiqDB))",
    "integration_solution_ids": [
     "int-sol-enterpriseservicebus"
    ],
@@ -2070,7 +2070,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "EnterpriseServiceBus_part1 01_ARCHITECTURE_MAP.md context group MX2AssetCheckInterface_Context; 03_DATA_FLOWS_AND_LINEAGE.md 'Major Flow: Asset Check Processing' -- same shared pipeline as the VISE leg; source distinguished by maximo_baseUrl context scoping"
+    "EnterpriseServiceBus_part1 01_ARCHITECTURE_MAP.md context group MX2InspectHubInterface_Context; 03_DATA_FLOWS_AND_LINEAGE.md 'Major Flow: Asset Check Processing' -- same shared pipeline as the QADB leg; source distinguished by assetsys_baseUrl context scoping"
    ],
    "artifact_ids": [
     "artifact:3acefae9b76897875093",
@@ -2082,15 +2082,15 @@
    ]
   },
   {
-   "id": "ds-enterpriseservicebus-rhm--maximo-message",
+   "id": "ds-enterpriseservicebus-rhm--assetsys-message",
    "source_system_id": "sys-rhm",
-   "destination_system_id": "sys-maximo",
-   "name": "Realization machine data: RHM -> Maximo",
-   "description": "Unspecified 'Realization Machine' data (job name and context group RHM2Maximo_RealizationMachine match; internal payload not evidenced) (mechanism: File trigger + JMS/ActiveMQ)",
+   "destination_system_id": "sys-assetsys",
+   "name": "Realization machine data: RHM -> AssetSys",
+   "description": "Unspecified 'Realization Machine' data (job name and context group RHM2AssetSys_RealizationMachine match; internal payload not evidenced) (mechanism: File trigger + JMS/ActiveMQ)",
    "business_object_ids": [
     "bo-message"
    ],
-   "business_summary": "Unspecified 'Realization Machine' data (job name and context group RHM2Maximo_RealizationMachine match; internal payload not evidenced) (mechanism: File trigger + JMS/ActiveMQ)",
+   "business_summary": "Unspecified 'Realization Machine' data (job name and context group RHM2AssetSys_RealizationMachine match; internal payload not evidenced) (mechanism: File trigger + JMS/ActiveMQ)",
    "integration_solution_ids": [
     "int-sol-enterpriseservicebus"
    ],
@@ -2110,15 +2110,15 @@
    ]
   },
   {
-   "id": "ds-enterpriseservicebus-quintiq--maximo-workorder",
+   "id": "ds-enterpriseservicebus-quintiq--assetsys-workorder",
    "source_system_id": "sys-quintiq",
-   "destination_system_id": "sys-maximo",
-   "name": "Work orders: Quintiq -> Maximo",
-   "description": "WorkOrder 'picked up' status and planned WorkOrder data (per context groups Quintiq2Maximo_WorkOrderPickedUpXML, PlannedWorkOrder_Quintiq2Maximo) (mechanism: File trigger + JMS/ActiveMQ)",
+   "destination_system_id": "sys-assetsys",
+   "name": "Work orders: Quintiq -> AssetSys",
+   "description": "WorkOrder 'picked up' status and planned WorkOrder data (per context groups Quintiq2AssetSys_WorkOrderPickedUpXML, PlannedWorkOrder_Quintiq2AssetSys) (mechanism: File trigger + JMS/ActiveMQ)",
    "business_object_ids": [
     "bo-workorder"
    ],
-   "business_summary": "WorkOrder 'picked up' status and planned WorkOrder data (per context groups Quintiq2Maximo_WorkOrderPickedUpXML, PlannedWorkOrder_Quintiq2Maximo) (mechanism: File trigger + JMS/ActiveMQ)",
+   "business_summary": "WorkOrder 'picked up' status and planned WorkOrder data (per context groups Quintiq2AssetSys_WorkOrderPickedUpXML, PlannedWorkOrder_Quintiq2AssetSys) (mechanism: File trigger + JMS/ActiveMQ)",
    "integration_solution_ids": [
     "int-sol-enterpriseservicebus"
    ],
@@ -2131,17 +2131,17 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "EnterpriseServiceBus_part1 01_ARCHITECTURE_MAP.md context groups Quintiq2Maximo_WorkOrderPickedUpXML_*, PlannedWorkOrder_Quintiq2Maximo_* plus trigger job name (QQ2MX); reverse leg (Maximo->Quintiq WorkOrder) exists as context group Maximo2Quintiq_Workorder_Context but has no implementing job within this sub-project's 118+26 canonical jobs -- it likely lives in a separate VQ_Quintiq2MX sub-project and is therefore NOT included here"
+    "EnterpriseServiceBus_part1 01_ARCHITECTURE_MAP.md context groups Quintiq2AssetSys_WorkOrderPickedUpXML_*, PlannedWorkOrder_Quintiq2AssetSys_* plus trigger job name (QQ2MX); reverse leg (AssetSys->Quintiq WorkOrder) exists as context group AssetSys2Quintiq_Workorder_Context but has no implementing job within this sub-project's 118+26 canonical jobs -- it likely lives in a separate PQ_Quintiq2MX sub-project and is therefore NOT included here"
    ],
    "artifact_ids": [
     "artifact:3429b2e949525a02edd3"
    ]
   },
   {
-   "id": "ds-enterpriseservicebus-prorail--maximo-message",
-   "source_system_id": "sys-prorail",
-   "destination_system_id": "sys-maximo",
-   "name": "Rail infrastructure data (ILS/PROSAP): Prorail -> Maximo",
+   "id": "ds-enterpriseservicebus-railco--assetsys-message",
+   "source_system_id": "sys-railco",
+   "destination_system_id": "sys-assetsys",
+   "name": "Rail infrastructure data (ILS/PROSAP): RailCo -> AssetSys",
    "description": "Unspecified rail-infrastructure inspection/asset data; sub-system identifiers ILS, ILSLINEAR, PROSAP, PROSAPINFO are never expanded in the docs (mechanism: File trigger + JMS/ActiveMQ)",
    "business_object_ids": [
     "bo-message"
@@ -2159,7 +2159,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "EnterpriseServiceBus_part1 01_ARCHITECTURE_MAP.md lines 488-491, 532-535, 1032-1035 -- direction from explicit 'Prorail2Maximo' naming convention; all four triggers are single-component and scanner-limited for payload detail"
+    "EnterpriseServiceBus_part1 01_ARCHITECTURE_MAP.md lines 488-491, 532-535, 1032-1035 -- direction from explicit 'RailCo2AssetSys' naming convention; all four triggers are single-component and scanner-limited for payload detail"
    ],
    "artifact_ids": [
     "artifact:ceb4825c4b27e0f8a593",
@@ -2197,15 +2197,15 @@
    ]
   },
   {
-   "id": "ds-enterpriseservicebus-dds-visp-unresolved--maximo-message",
+   "id": "ds-enterpriseservicebus-dds-visp-unresolved--assetsys-message",
    "source_system_id": "sys-dds-visp-unresolved",
-   "destination_system_id": "sys-maximo",
-   "name": "Unresolved record (Service Request?): DDS/VISP -> Maximo",
-   "description": "Unknown; job name implies a combined DDS-to-Maximo and VISP-to-ServiceRequest leg (mechanism: File trigger + JMS/ActiveMQ)",
+   "destination_system_id": "sys-assetsys",
+   "name": "Unresolved record (Service Request?): DDS/VISP -> AssetSys",
+   "description": "Unknown; job name implies a combined DDS-to-AssetSys and VISP-to-ServiceRequest leg (mechanism: File trigger + JMS/ActiveMQ)",
    "business_object_ids": [
     "bo-message"
    ],
-   "business_summary": "Unknown; job name implies a combined DDS-to-Maximo and VISP-to-ServiceRequest leg (mechanism: File trigger + JMS/ActiveMQ)",
+   "business_summary": "Unknown; job name implies a combined DDS-to-AssetSys and VISP-to-ServiceRequest leg (mechanism: File trigger + JMS/ActiveMQ)",
    "integration_solution_ids": [
     "int-sol-enterpriseservicebus"
    ],
@@ -2225,17 +2225,17 @@
    ]
   },
   {
-   "id": "ds-vq-mq2rhm-maximo--rhm-workorder",
-   "source_system_id": "sys-maximo",
+   "id": "ds-pq-mq2rhm-assetsys--rhm-workorder",
+   "source_system_id": "sys-assetsys",
    "destination_system_id": "sys-rhm",
-   "name": "Work orders: Maximo -> RHM",
-   "description": "Work order fields from the Maximo REST response (wonum, orgid, siteid, status, description, glaccount, parent, bc, historyflag, changedate) mapped to the RHM WriteToRhm schema (WorkorderNr, OrgId, SiteId, Status, Description, ProjectNr, Parent, MonitoringCode, HistoryFlag, StatusDate, DATUM), then upserted via stored procedure UpsertWorkorders (mechanism: REST read (paginated) -> tMap -> MSSQL write (tMSSqlOutput_5) + stored procedure call)",
+   "name": "Work orders: AssetSys -> RHM",
+   "description": "Work order fields from the AssetSys REST response (wonum, orgid, siteid, status, description, glaccount, parent, bc, historyflag, changedate) mapped to the RHM WriteToRhm schema (WorkorderNr, OrgId, SiteId, Status, Description, ProjectNr, Parent, MonitoringCode, HistoryFlag, StatusDate, DATUM), then upserted via stored procedure UpsertWorkorders (mechanism: REST read (paginated) -> tMap -> MSSQL write (tMSSqlOutput_5) + stored procedure call)",
    "business_object_ids": [
     "bo-workorder"
    ],
-   "business_summary": "Work order fields from the Maximo REST response (wonum, orgid, siteid, status, description, glaccount, parent, bc, historyflag, changedate) mapped to the RHM WriteToRhm schema (WorkorderNr, OrgId, SiteId, Status, Description, ProjectNr, Parent, MonitoringCode, HistoryFlag, StatusDate, DATUM), then upserted via stored procedure UpsertWorkorders (mechanism: REST read (paginated) -> tMap -> MSSQL write (tMSSqlOutput_5) + stored procedure call)",
+   "business_summary": "Work order fields from the AssetSys REST response (wonum, orgid, siteid, status, description, glaccount, parent, bc, historyflag, changedate) mapped to the RHM WriteToRhm schema (WorkorderNr, OrgId, SiteId, Status, Description, ProjectNr, Parent, MonitoringCode, HistoryFlag, StatusDate, DATUM), then upserted via stored procedure UpsertWorkorders (mechanism: REST read (paginated) -> tMap -> MSSQL write (tMSSqlOutput_5) + stored procedure call)",
    "integration_solution_ids": [
-    "int-sol-vq-mq2rhm"
+    "int-sol-pq-mq2rhm"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2246,24 +2246,24 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "03_DATA_FLOWS_AND_LINEAGE.md, Data Flow #2 'Critical Path: Maximo2RHM_Workorders' and Lineage #1 'Workorder Domain (Maximo -> RHM)'"
+    "03_DATA_FLOWS_AND_LINEAGE.md, Data Flow #2 'Critical Path: AssetSys2RHM_Workorders' and Lineage #1 'Workorder Domain (AssetSys -> RHM)'"
    ],
    "artifact_ids": [
     "artifact:acc133e9e7985b169105"
    ]
   },
   {
-   "id": "ds-vq-mq2rhm-rhm--maximo-realizationemployee",
+   "id": "ds-pq-mq2rhm-rhm--assetsys-realizationemployee",
    "source_system_id": "sys-rhm",
-   "destination_system_id": "sys-maximo",
-   "name": "Realization (Employee): RHM -> Maximo",
-   "description": "Employee realization/hours data read from TempMaximoRealizationEmployee (WorkOrderNr, OrgId, SiteId, FINISHDATE, FINISHTIME, EmployeeNr, DNW, REGULARHRS, STARTDATE, STARTTIME, Qualification, FillLine) mapped to FinalOutput XML (adds derived TRANSTYPE, Middel) for Maximo to consume (mechanism: MSSQL read (filtered WHERE Splitted='1' AND REGULARHRS<>0) -> tMap -> XML file write (tAdvancedFileOutputXML), source table updated (SendToMaximo='Y'))",
+   "destination_system_id": "sys-assetsys",
+   "name": "Realization (Employee): RHM -> AssetSys",
+   "description": "Employee realization/hours data read from TempAssetSysRealizationEmployee (WorkOrderNr, OrgId, SiteId, FINISHDATE, FINISHTIME, EmployeeNr, DNW, REGULARHRS, STARTDATE, STARTTIME, Qualification, FillLine) mapped to FinalOutput XML (adds derived TRANSTYPE, Middel) for AssetSys to consume (mechanism: MSSQL read (filtered WHERE Splitted='1' AND REGULARHRS<>0) -> tMap -> XML file write (tAdvancedFileOutputXML), source table updated (SendToAssetSys='Y'))",
    "business_object_ids": [
     "bo-realizationemployee"
    ],
-   "business_summary": "Employee realization/hours data read from TempMaximoRealizationEmployee (WorkOrderNr, OrgId, SiteId, FINISHDATE, FINISHTIME, EmployeeNr, DNW, REGULARHRS, STARTDATE, STARTTIME, Qualification, FillLine) mapped to FinalOutput XML (adds derived TRANSTYPE, Middel) for Maximo to consume (mechanism: MSSQL read (filtered WHERE Splitted='1' AND REGULARHRS<>0) -> tMap -> XML file write (tAdvancedFileOutputXML), source table updated (SendToMaximo='Y'))",
+   "business_summary": "Employee realization/hours data read from TempAssetSysRealizationEmployee (WorkOrderNr, OrgId, SiteId, FINISHDATE, FINISHTIME, EmployeeNr, DNW, REGULARHRS, STARTDATE, STARTTIME, Qualification, FillLine) mapped to FinalOutput XML (adds derived TRANSTYPE, Middel) for AssetSys to consume (mechanism: MSSQL read (filtered WHERE Splitted='1' AND REGULARHRS<>0) -> tMap -> XML file write (tAdvancedFileOutputXML), source table updated (SendToAssetSys='Y'))",
    "integration_solution_ids": [
-    "int-sol-vq-mq2rhm"
+    "int-sol-pq-mq2rhm"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2274,24 +2274,24 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "03_DATA_FLOWS_AND_LINEAGE.md, Data Flow #3 'Critical Path: RHM2Maximo_RealizationEmployee' and Lineage #1 'Realization Employee Domain (RHM -> Maximo)'"
+    "03_DATA_FLOWS_AND_LINEAGE.md, Data Flow #3 'Critical Path: RHM2AssetSys_RealizationEmployee' and Lineage #1 'Realization Employee Domain (RHM -> AssetSys)'"
    ],
    "artifact_ids": [
     "artifact:84e1630f96ca689d50dd"
    ]
   },
   {
-   "id": "ds-vq-mq2rhm-rhm--maximo-realizationmachine",
+   "id": "ds-pq-mq2rhm-rhm--assetsys-realizationmachine",
    "source_system_id": "sys-rhm",
-   "destination_system_id": "sys-maximo",
-   "name": "Realization (Machine): RHM -> Maximo",
-   "description": "Machine realization/usage data read from TempMaximoRealizationMachine (WorkOrderNr, OrgId, SiteId, MachineIdQuintiq, DNW, MachineName, POSITIVEQUANTITY, start) mapped to FinalOutput XML (ITEMNUM concatenation, constant ISSUETYPE='AFGIFTE', derived ACTUALDATE) for Maximo to consume (mechanism: MSSQL read (filtered WHERE Splitted='1') -> tMap -> XML file write (tAdvancedFileOutputXML), source table updated (SendToMaximo='Y'))",
+   "destination_system_id": "sys-assetsys",
+   "name": "Realization (Machine): RHM -> AssetSys",
+   "description": "Machine realization/usage data read from TempAssetSysRealizationMachine (WorkOrderNr, OrgId, SiteId, MachineIdQuintiq, DNW, MachineName, POSITIVEQUANTITY, start) mapped to FinalOutput XML (ITEMNUM concatenation, constant ISSUETYPE='AFGIFTE', derived ACTUALDATE) for AssetSys to consume (mechanism: MSSQL read (filtered WHERE Splitted='1') -> tMap -> XML file write (tAdvancedFileOutputXML), source table updated (SendToAssetSys='Y'))",
    "business_object_ids": [
     "bo-realizationmachine"
    ],
-   "business_summary": "Machine realization/usage data read from TempMaximoRealizationMachine (WorkOrderNr, OrgId, SiteId, MachineIdQuintiq, DNW, MachineName, POSITIVEQUANTITY, start) mapped to FinalOutput XML (ITEMNUM concatenation, constant ISSUETYPE='AFGIFTE', derived ACTUALDATE) for Maximo to consume (mechanism: MSSQL read (filtered WHERE Splitted='1') -> tMap -> XML file write (tAdvancedFileOutputXML), source table updated (SendToMaximo='Y'))",
+   "business_summary": "Machine realization/usage data read from TempAssetSysRealizationMachine (WorkOrderNr, OrgId, SiteId, MachineIdQuintiq, DNW, MachineName, POSITIVEQUANTITY, start) mapped to FinalOutput XML (ITEMNUM concatenation, constant ISSUETYPE='AFGIFTE', derived ACTUALDATE) for AssetSys to consume (mechanism: MSSQL read (filtered WHERE Splitted='1') -> tMap -> XML file write (tAdvancedFileOutputXML), source table updated (SendToAssetSys='Y'))",
    "integration_solution_ids": [
-    "int-sol-vq-mq2rhm"
+    "int-sol-pq-mq2rhm"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2302,14 +2302,14 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "03_DATA_FLOWS_AND_LINEAGE.md, Data Flow #4 'Critical Path: RHM2Maximo_RealizationMachine' and Lineage #1 'Realization Machine Domain (RHM -> Maximo)'"
+    "03_DATA_FLOWS_AND_LINEAGE.md, Data Flow #4 'Critical Path: RHM2AssetSys_RealizationMachine' and Lineage #1 'Realization Machine Domain (RHM -> AssetSys)'"
    ],
    "artifact_ids": [
     "artifact:5ef9deb6a41ae8b6d8ae"
    ]
   },
   {
-   "id": "ds-vq-mq2rhm-centric--rhm-centricdata",
+   "id": "ds-pq-mq2rhm-centric--rhm-centricdata",
    "source_system_id": "sys-centric",
    "destination_system_id": "sys-rhm",
    "name": "Centric data export: Centric -> File (minor parallel path)",
@@ -2319,7 +2319,7 @@
    ],
    "business_summary": "Unspecified Centric Oracle data read and written to an XML file; scanner evidence is limited to the component pair only, no field-level detail (mechanism: Oracle read (tOracleInput_1) -> XML file write (tFileOutputXML_1))",
    "integration_solution_ids": [
-    "int-sol-vq-mq2rhm"
+    "int-sol-pq-mq2rhm"
    ],
    "delivery_path_id": null,
    "status": "proposed",
@@ -2330,24 +2330,24 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "03_DATA_FLOWS_AND_LINEAGE.md, Data Flow #3 'Critical Path: RHM2Maximo_RealizationEmployee', item 6: 'A parallel flow reads Centric data via tOracleInput_1 -> tFileOutputXML_1'"
+    "03_DATA_FLOWS_AND_LINEAGE.md, Data Flow #3 'Critical Path: RHM2AssetSys_RealizationEmployee', item 6: 'A parallel flow reads Centric data via tOracleInput_1 -> tFileOutputXML_1'"
    ],
    "artifact_ids": [
     "artifact:84e1630f96ca689d50dd"
    ]
   },
   {
-   "id": "ds-vq-quintiq2mx-maximo--quintiq-workorder",
-   "source_system_id": "sys-maximo",
+   "id": "ds-pq-quintiq2mx-assetsys--quintiq-workorder",
+   "source_system_id": "sys-assetsys",
    "destination_system_id": "sys-quintiq",
-   "name": "Work orders: Maximo -> Quintiq",
-   "description": "Maximo work-order XML fields (WONUM, SITEID, STATUS, DESCRIPTION, WORKTYPE, LOCATION, GLACCOUNT, SUPERVISOR, LEAD, TARGSTARTDATE, TARGCOMPDATE, ESTDUR, WO3, WO14, WOLO4, WOLO5, WOPM1, WOPM5, BC) mapped into QuintiqDB tables WorkOrder, WorkOrderStatus, EmployeeRequirement, MachineRequirement (mechanism: XML file read (tFileInputXML) -> tMap/tXMLMap -> MSSQL write (tMSSqlOutput/tDBOutput); process-control SQL against LogDB Processes/ProcessData)",
+   "name": "Work orders: AssetSys -> Quintiq",
+   "description": "AssetSys work-order XML fields (WONUM, SITEID, STATUS, DESCRIPTION, WORKTYPE, LOCATION, GLACCOUNT, SUPERVISOR, LEAD, TARGSTARTDATE, TARGCOMPDATE, ESTDUR, WO3, WO14, WOLO4, WOLO5, WOPM1, WOPM5, BC) mapped into QuintiqDB tables WorkOrder, WorkOrderStatus, EmployeeRequirement, MachineRequirement (mechanism: XML file read (tFileInputXML) -> tMap/tXMLMap -> MSSQL write (tMSSqlOutput/tDBOutput); process-control SQL against LogDB Processes/ProcessData)",
    "business_object_ids": [
     "bo-workorder"
    ],
-   "business_summary": "Maximo work-order XML fields (WONUM, SITEID, STATUS, DESCRIPTION, WORKTYPE, LOCATION, GLACCOUNT, SUPERVISOR, LEAD, TARGSTARTDATE, TARGCOMPDATE, ESTDUR, WO3, WO14, WOLO4, WOLO5, WOPM1, WOPM5, BC) mapped into QuintiqDB tables WorkOrder, WorkOrderStatus, EmployeeRequirement, MachineRequirement (mechanism: XML file read (tFileInputXML) -> tMap/tXMLMap -> MSSQL write (tMSSqlOutput/tDBOutput); process-control SQL against LogDB Processes/ProcessData)",
+   "business_summary": "AssetSys work-order XML fields (WONUM, SITEID, STATUS, DESCRIPTION, WORKTYPE, LOCATION, GLACCOUNT, SUPERVISOR, LEAD, TARGSTARTDATE, TARGCOMPDATE, ESTDUR, WO3, WO14, WOLO4, WOLO5, WOPM1, WOPM5, BC) mapped into QuintiqDB tables WorkOrder, WorkOrderStatus, EmployeeRequirement, MachineRequirement (mechanism: XML file read (tFileInputXML) -> tMap/tXMLMap -> MSSQL write (tMSSqlOutput/tDBOutput); process-control SQL against LogDB Processes/ProcessData)",
    "integration_solution_ids": [
-    "int-sol-vq-quintiq2mx"
+    "int-sol-pq-quintiq2mx"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2358,7 +2358,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "03_DATA_FLOWS_AND_LINEAGE.md section 1.2 'Critical Path: Maximo-to-Quintiq Workorder Ingestion' and Lineage 2.2 'Field-Level Lineage: Maximo XML to Quintiq WorkOrder'"
+    "03_DATA_FLOWS_AND_LINEAGE.md section 1.2 'Critical Path: AssetSys-to-Quintiq Workorder Ingestion' and Lineage 2.2 'Field-Level Lineage: AssetSys XML to Quintiq WorkOrder'"
    ],
    "artifact_ids": [
     "artifact:8be3f507a495fe5aac65",
@@ -2368,17 +2368,17 @@
    ]
   },
   {
-   "id": "ds-vq-quintiq2mx-quintiq--maximo-workorderpickupstatus",
+   "id": "ds-pq-quintiq2mx-quintiq--assetsys-workorderpickupstatus",
    "source_system_id": "sys-quintiq",
-   "destination_system_id": "sys-maximo",
-   "name": "Work-order pickup status: Quintiq -> Maximo",
-   "description": "WorkOrder rows where QQProcessed IS NOT NULL, inner-joined with ProcessData, written as XML for Maximo to pick up as confirmation that Quintiq has processed the work order (mechanism: MSSQL read + inner join (tJoin_1) -> XML file write (tAdvancedFileOutputXML), timer-triggered (60000 ms))",
+   "destination_system_id": "sys-assetsys",
+   "name": "Work-order pickup status: Quintiq -> AssetSys",
+   "description": "WorkOrder rows where QQProcessed IS NOT NULL, inner-joined with ProcessData, written as XML for AssetSys to pick up as confirmation that Quintiq has processed the work order (mechanism: MSSQL read + inner join (tJoin_1) -> XML file write (tAdvancedFileOutputXML), timer-triggered (60000 ms))",
    "business_object_ids": [
     "bo-workorderpickupstatus"
    ],
-   "business_summary": "WorkOrder rows where QQProcessed IS NOT NULL, inner-joined with ProcessData, written as XML for Maximo to pick up as confirmation that Quintiq has processed the work order (mechanism: MSSQL read + inner join (tJoin_1) -> XML file write (tAdvancedFileOutputXML), timer-triggered (60000 ms))",
+   "business_summary": "WorkOrder rows where QQProcessed IS NOT NULL, inner-joined with ProcessData, written as XML for AssetSys to pick up as confirmation that Quintiq has processed the work order (mechanism: MSSQL read + inner join (tJoin_1) -> XML file write (tAdvancedFileOutputXML), timer-triggered (60000 ms))",
    "integration_solution_ids": [
-    "int-sol-vq-quintiq2mx"
+    "int-sol-pq-quintiq2mx"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2389,7 +2389,7 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "03_DATA_FLOWS_AND_LINEAGE.md section 1.3 'Critical Path: Quintiq-to-Maximo Export', 'Job 1: Quintiq2Maximo_WorkOrderPickedUpXML'"
+    "03_DATA_FLOWS_AND_LINEAGE.md section 1.3 'Critical Path: Quintiq-to-AssetSys Export', 'Job 1: Quintiq2AssetSys_WorkOrderPickedUpXML'"
    ],
    "artifact_ids": [
     "artifact:6105e2bcb06847527471",
@@ -2397,17 +2397,17 @@
    ]
   },
   {
-   "id": "ds-vq-quintiq2mx-quintiq--maximo-plannedworkorder",
+   "id": "ds-pq-quintiq2mx-quintiq--assetsys-plannedworkorder",
    "source_system_id": "sys-quintiq",
-   "destination_system_id": "sys-maximo",
-   "name": "Planned work order (plan export): Quintiq -> Maximo",
-   "description": "Work-package planning data (from Processes/ProcessVariables lookups and downstream MSSQL reads) mapped via tXMLMap into an XML work-package structure for Maximo (mechanism: MSSQL read (multi-step lookup) -> tXMLMap -> XML file write (tAdvancedFileOutputXML); LogDB updates for process control)",
+   "destination_system_id": "sys-assetsys",
+   "name": "Planned work order (plan export): Quintiq -> AssetSys",
+   "description": "Work-package planning data (from Processes/ProcessVariables lookups and downstream MSSQL reads) mapped via tXMLMap into an XML work-package structure for AssetSys (mechanism: MSSQL read (multi-step lookup) -> tXMLMap -> XML file write (tAdvancedFileOutputXML); LogDB updates for process control)",
    "business_object_ids": [
     "bo-plannedworkorder"
    ],
-   "business_summary": "Work-package planning data (from Processes/ProcessVariables lookups and downstream MSSQL reads) mapped via tXMLMap into an XML work-package structure for Maximo (mechanism: MSSQL read (multi-step lookup) -> tXMLMap -> XML file write (tAdvancedFileOutputXML); LogDB updates for process control)",
+   "business_summary": "Work-package planning data (from Processes/ProcessVariables lookups and downstream MSSQL reads) mapped via tXMLMap into an XML work-package structure for AssetSys (mechanism: MSSQL read (multi-step lookup) -> tXMLMap -> XML file write (tAdvancedFileOutputXML); LogDB updates for process control)",
    "integration_solution_ids": [
-    "int-sol-vq-quintiq2mx"
+    "int-sol-pq-quintiq2mx"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2418,14 +2418,14 @@
    "runtime_observation_ids": [],
    "conflict_ids": [],
    "evidence_ids": [
-    "03_DATA_FLOWS_AND_LINEAGE.md section 1.3 'Critical Path: Quintiq-to-Maximo Export', 'Job 2: Quintiq2Maximo_PlannedWorkOrder'"
+    "03_DATA_FLOWS_AND_LINEAGE.md section 1.3 'Critical Path: Quintiq-to-AssetSys Export', 'Job 2: Quintiq2AssetSys_PlannedWorkOrder'"
    ],
    "artifact_ids": [
     "artifact:e7aa8fb6744c552eedcf"
    ]
   },
   {
-   "id": "ds-vq-rhm2sf-rhm--smartflow-workorder",
+   "id": "ds-pq-rhm2sf-rhm--smartflow-workorder",
    "source_system_id": "sys-rhm",
    "destination_system_id": "sys-smartflow",
    "name": "Work orders: RHM -> Smartflow",
@@ -2435,7 +2435,7 @@
    ],
    "business_summary": "WorkOrders table rows (RefExternal -> WorkorderNr on completion) transformed to Smartflow XML request and uploaded via SOAP (mechanism: MSSQL read (tMSSqlInput_2) -> tXMLMap -> XML file -> SOAP upload (tWebServiceInput) -> MSSQL update (SendToSmartFlow timestamp))",
    "integration_solution_ids": [
-    "int-sol-vq-rhm2sf"
+    "int-sol-pq-rhm2sf"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2453,7 +2453,7 @@
    ]
   },
   {
-   "id": "ds-vq-rhm2sf-rhm--smartflow-employee",
+   "id": "ds-pq-rhm2sf-rhm--smartflow-employee",
    "source_system_id": "sys-rhm",
    "destination_system_id": "sys-smartflow",
    "name": "Employees: RHM -> Smartflow",
@@ -2463,7 +2463,7 @@
    ],
    "business_summary": "Employees table rows (RefExternal -> EmployeeID) transformed to Smartflow XML and uploaded via SOAP (mechanism: MSSQL read -> tXMLMap -> XML file -> SOAP upload -> MSSQL update (SendToSmartflow))",
    "integration_solution_ids": [
-    "int-sol-vq-rhm2sf"
+    "int-sol-pq-rhm2sf"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2481,7 +2481,7 @@
    ]
   },
   {
-   "id": "ds-vq-rhm2sf-rhm--smartflow-employeeexternal",
+   "id": "ds-pq-rhm2sf-rhm--smartflow-employeeexternal",
    "source_system_id": "sys-rhm",
    "destination_system_id": "sys-smartflow",
    "name": "External employees: RHM -> Smartflow",
@@ -2491,7 +2491,7 @@
    ],
    "business_summary": "Externals table rows (RefExternal -> ID) transformed to Smartflow XML and uploaded via SOAP (mechanism: MSSQL read -> tXMLMap -> XML file -> SOAP upload -> MSSQL update (EmployeeExternal.SendToSmartflow))",
    "integration_solution_ids": [
-    "int-sol-vq-rhm2sf"
+    "int-sol-pq-rhm2sf"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2509,7 +2509,7 @@
    ]
   },
   {
-   "id": "ds-vq-rhm2sf-rhm--smartflow-machinegroup",
+   "id": "ds-pq-rhm2sf-rhm--smartflow-machinegroup",
    "source_system_id": "sys-rhm",
    "destination_system_id": "sys-smartflow",
    "name": "Machine groups: RHM -> Smartflow",
@@ -2519,7 +2519,7 @@
    ],
    "business_summary": "MachineGroup table rows (RefExternal -> ID) transformed to Smartflow XML and uploaded via SOAP (mechanism: MSSQL read -> tXMLMap -> XML file -> SOAP upload -> MSSQL update (SendToSmartflow))",
    "integration_solution_ids": [
-    "int-sol-vq-rhm2sf"
+    "int-sol-pq-rhm2sf"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2537,7 +2537,7 @@
    ]
   },
   {
-   "id": "ds-vq-rhm2sf-rhm--smartflow-machine",
+   "id": "ds-pq-rhm2sf-rhm--smartflow-machine",
    "source_system_id": "sys-rhm",
    "destination_system_id": "sys-smartflow",
    "name": "Machines: RHM -> Smartflow",
@@ -2547,7 +2547,7 @@
    ],
    "business_summary": "Machines table rows; RefExternal.substring(2) derives MachineId, transformed to Smartflow XML and uploaded via SOAP (mechanism: MSSQL read -> tXMLMap -> XML file -> SOAP upload -> MSSQL update (Machines.SendToSmartflow))",
    "integration_solution_ids": [
-    "int-sol-vq-rhm2sf"
+    "int-sol-pq-rhm2sf"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2565,7 +2565,7 @@
    ]
   },
   {
-   "id": "ds-vq-rhm2sf-rhm--smartflow-monitoringcode",
+   "id": "ds-pq-rhm2sf-rhm--smartflow-monitoringcode",
    "source_system_id": "sys-rhm",
    "destination_system_id": "sys-smartflow",
    "name": "Monitoring codes: RHM -> Smartflow",
@@ -2575,7 +2575,7 @@
    ],
    "business_summary": "MonitoringCodes table rows (MonitoringCodeId) transformed to Smartflow XML and uploaded via SOAP (mechanism: MSSQL read -> tXMLMap -> XML file -> SOAP upload -> MSSQL update (SendToSmartflow))",
    "integration_solution_ids": [
-    "int-sol-vq-rhm2sf"
+    "int-sol-pq-rhm2sf"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2593,7 +2593,7 @@
    ]
   },
   {
-   "id": "ds-vq-rhm2sf-rhm--smartflow-organization",
+   "id": "ds-pq-rhm2sf-rhm--smartflow-organization",
    "source_system_id": "sys-rhm",
    "destination_system_id": "sys-smartflow",
    "name": "Organization: RHM -> Smartflow",
@@ -2603,7 +2603,7 @@
    ],
    "business_summary": "Organization table rows (RefExternal -> ID) transformed to Smartflow XML and uploaded via SOAP (mechanism: MSSQL read -> tXMLMap -> XML file -> SOAP upload -> MSSQL update (SendToSmartflow))",
    "integration_solution_ids": [
-    "int-sol-vq-rhm2sf"
+    "int-sol-pq-rhm2sf"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2621,7 +2621,7 @@
    ]
   },
   {
-   "id": "ds-vq-rhm2sf-rhm--smartflow-projectandmonitoringcode",
+   "id": "ds-pq-rhm2sf-rhm--smartflow-projectandmonitoringcode",
    "source_system_id": "sys-rhm",
    "destination_system_id": "sys-smartflow",
    "name": "Projects and monitoring codes (combined): RHM -> Smartflow",
@@ -2631,7 +2631,7 @@
    ],
    "business_summary": "Combined Projects + MonitoringCodes table rows (ProjectId / MonitoringCodeId), two XML files generated and uploaded, both source tables updated (mechanism: MSSQL read (dual table) -> tXMLMap -> two XML files -> SOAP upload -> MSSQL update (both tables))",
    "integration_solution_ids": [
-    "int-sol-vq-rhm2sf"
+    "int-sol-pq-rhm2sf"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2649,7 +2649,7 @@
    ]
   },
   {
-   "id": "ds-vq-rhm2sf-rhm--smartflow-project",
+   "id": "ds-pq-rhm2sf-rhm--smartflow-project",
    "source_system_id": "sys-rhm",
    "destination_system_id": "sys-smartflow",
    "name": "Projects: RHM -> Smartflow",
@@ -2659,7 +2659,7 @@
    ],
    "business_summary": "Projects table rows (ProjectId) transformed to Smartflow XML and uploaded via SOAP (mechanism: MSSQL read -> tXMLMap -> XML file -> SOAP upload -> MSSQL update (Projects.SendToSmartflow))",
    "integration_solution_ids": [
-    "int-sol-vq-rhm2sf"
+    "int-sol-pq-rhm2sf"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2677,7 +2677,7 @@
    ]
   },
   {
-   "id": "ds-vq-rhm2sf-rhm--smartflow-qualification",
+   "id": "ds-pq-rhm2sf-rhm--smartflow-qualification",
    "source_system_id": "sys-rhm",
    "destination_system_id": "sys-smartflow",
    "name": "Qualifications: RHM -> Smartflow",
@@ -2687,7 +2687,7 @@
    ],
    "business_summary": "Qualifications table rows (RefExternal / ID) transformed to Smartflow XML and uploaded via SOAP (mechanism: MSSQL read -> tXMLMap -> XML file -> SOAP upload -> MSSQL update (Qualifications.SendToSmartflow))",
    "integration_solution_ids": [
-    "int-sol-vq-rhm2sf"
+    "int-sol-pq-rhm2sf"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2705,7 +2705,7 @@
    ]
   },
   {
-   "id": "ds-vq-rhm2sf-rhm--smartflow-taskcode",
+   "id": "ds-pq-rhm2sf-rhm--smartflow-taskcode",
    "source_system_id": "sys-rhm",
    "destination_system_id": "sys-smartflow",
    "name": "Task codes: RHM -> Smartflow",
@@ -2715,7 +2715,7 @@
    ],
    "business_summary": "TaskCode table rows (ID) transformed to Smartflow XML and uploaded via SOAP (mechanism: MSSQL read -> tXMLMap -> XML file -> SOAP upload -> MSSQL update (TaskCode.SendToSmartflow))",
    "integration_solution_ids": [
-    "int-sol-vq-rhm2sf"
+    "int-sol-pq-rhm2sf"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2733,7 +2733,7 @@
    ]
   },
   {
-   "id": "ds-vq-rhm2sf-rhm--smartflow-planning",
+   "id": "ds-pq-rhm2sf-rhm--smartflow-planning",
    "source_system_id": "sys-rhm",
    "destination_system_id": "sys-smartflow",
    "name": "Planning: RHM -> Smartflow",
@@ -2743,7 +2743,7 @@
    ],
    "business_summary": "PlanningRealization rows (PlanningId) transformed to Smartflow XML and uploaded via SOAP; orchestrated by Planning_Main which invokes the two Planning sub-jobs via tRunJob (mechanism: MSSQL read -> tXMLMap -> XML file -> SOAP upload -> MSSQL update (PlanningId); orchestration via tRunJob)",
    "integration_solution_ids": [
-    "int-sol-vq-rhm2sf"
+    "int-sol-pq-rhm2sf"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2761,7 +2761,7 @@
    ]
   },
   {
-   "id": "ds-vq-rhm2sf-smartflow--rhm-allowancerealization",
+   "id": "ds-pq-rhm2sf-smartflow--rhm-allowancerealization",
    "source_system_id": "sys-smartflow",
    "destination_system_id": "sys-rhm",
    "name": "Allowance employee realization: Smartflow -> RHM",
@@ -2771,7 +2771,7 @@
    ],
    "business_summary": "Allowance employee data downloaded from Smartflow SOAP (Login + ProcessXml), joined and mapped, written/updated into RHM AllowanceRealization (PlanningRealizationId, TaskCodeId converted to integers) (mechanism: SOAP download (tWebServiceInput Login + ProcessXml) -> tXMLMap/tDenormalize/tJoin/tMap -> MSSQL update (tMSSqlOutput_2))",
    "integration_solution_ids": [
-    "int-sol-vq-rhm2sf"
+    "int-sol-pq-rhm2sf"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2789,7 +2789,7 @@
    ]
   },
   {
-   "id": "ds-vq-rhm2sf-smartflow--rhm-performancereview",
+   "id": "ds-pq-rhm2sf-smartflow--rhm-performancereview",
    "source_system_id": "sys-smartflow",
    "destination_system_id": "sys-rhm",
    "name": "Performance review: Smartflow -> RHM",
@@ -2799,7 +2799,7 @@
    ],
    "business_summary": "Performance review data downloaded from Smartflow SOAP, joined with RHM PerformanceReview and Employees, inserted into RHM PerformanceReview (mechanism: SOAP download -> tJoin/tXMLMap -> MSSQL insert (tMSSqlOutput_1))",
    "integration_solution_ids": [
-    "int-sol-vq-rhm2sf"
+    "int-sol-pq-rhm2sf"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2817,7 +2817,7 @@
    ]
   },
   {
-   "id": "ds-vq-rhm2sf-smartflow--rhm-planningrealization",
+   "id": "ds-pq-rhm2sf-smartflow--rhm-planningrealization",
    "source_system_id": "sys-smartflow",
    "destination_system_id": "sys-rhm",
    "name": "Realization: Smartflow -> RHM",
@@ -2827,7 +2827,7 @@
    ],
    "business_summary": "Realization data downloaded from Smartflow SOAP, joined with RHM PlanningRealization, null-safe transformed (Duration, AmountKMTo/Back, MachineId, ShiftCode, EmployeeId, ProjectId, MonitoringCodeId, DateRejected), written back as update/insert to PlanningRealization (mechanism: SOAP download -> tMap/tJoin (multi-path) -> MSSQL update (tMSSqlOutput_2) and insert (tMSSqlOutput_1))",
    "integration_solution_ids": [
-    "int-sol-vq-rhm2sf"
+    "int-sol-pq-rhm2sf"
    ],
    "delivery_path_id": null,
    "status": "confirmed",
@@ -2845,7 +2845,7 @@
    ]
   },
   {
-   "id": "ds-vq-rhm2sf-smartflow--rhm-questionnaireresults",
+   "id": "ds-pq-rhm2sf-smartflow--rhm-questionnaireresults",
    "source_system_id": "sys-smartflow",
    "destination_system_id": "sys-rhm",
    "name": "Question results (legacy): Smartflow -> RHM",
@@ -2855,7 +2855,7 @@
    ],
    "business_summary": "Questionnaire results downloaded via Smartflow SOAP login() + processXml(), extracted via XPath, inner-joined with SmartFlowGUID list from RHM Questionnaire table, inserted into Questionnaire (mechanism: SOAP download (login + processXml) -> XML file -> tJoin -> tXMLMap -> MSSQL insert; Processes.LastRunDateTime updated)",
    "integration_solution_ids": [
-    "int-sol-vq-rhm2sf"
+    "int-sol-pq-rhm2sf"
    ],
    "delivery_path_id": null,
    "status": "inferred",

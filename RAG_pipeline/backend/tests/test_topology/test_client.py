@@ -64,29 +64,29 @@ class TestCatalogue:
 
 class TestDispatch:
     async def test_successful_call_returns_the_pinned_payload_shape(
-        self, installed, alitalend
+        self, installed, talend_demo
     ) -> None:
-        installed(json_transport(alitalend))
+        installed(json_transport(talend_demo))
 
         result = await execute_topology_tool(
             RuntimeToolCall(
-                tool_name="get_topology_overview", arguments={"project_id": "alitalend"}
+                tool_name="get_topology_overview", arguments={"project_id": "talend_demo"}
             ),
-            project_scope=["alitalend"],
+            project_scope=["talend_demo"],
             access_token="user-jwt",
         )
 
         assert result.success is True
         assert set(result.data) == {"content", "targets"}
-        assert result.data["content"]["project_id"] == "alitalend"
+        assert result.data["content"]["project_id"] == "talend_demo"
         assert result.data["targets"][0]["level"]["kind"] == "integration"
         assert result.error is None
 
-    async def test_unknown_tool_is_rejected_before_any_request(self, installed, alitalend) -> None:
-        transport = installed(json_transport(alitalend))
+    async def test_unknown_tool_is_rejected_before_any_request(self, installed, talend_demo) -> None:
+        transport = installed(json_transport(talend_demo))
 
         result = await execute_topology_tool(
-            RuntimeToolCall(tool_name="drop_topology", arguments={"project_id": "alitalend"}),
+            RuntimeToolCall(tool_name="drop_topology", arguments={"project_id": "talend_demo"}),
             project_scope=None,
             access_token=None,
         )
@@ -95,14 +95,14 @@ class TestDispatch:
         assert transport.call_count == 0
 
     async def test_invalid_arguments_are_rejected_before_any_request(
-        self, installed, alitalend
+        self, installed, talend_demo
     ) -> None:
-        transport = installed(json_transport(alitalend))
+        transport = installed(json_transport(talend_demo))
 
         result = await execute_topology_tool(
             RuntimeToolCall(
                 tool_name="list_topology_dependencies",
-                arguments={"project_id": "alitalend", "name_or_id": "Log", "hops": 9},
+                arguments={"project_id": "talend_demo", "name_or_id": "Log", "hops": 9},
             ),
             project_scope=None,
             access_token=None,
@@ -112,12 +112,12 @@ class TestDispatch:
         assert transport.call_count == 0
 
     async def test_missing_required_argument_is_a_validation_error(
-        self, installed, alitalend
+        self, installed, talend_demo
     ) -> None:
-        installed(json_transport(alitalend))
+        installed(json_transport(talend_demo))
 
         result = await execute_topology_tool(
-            RuntimeToolCall(tool_name="get_topology_node", arguments={"project_id": "alitalend"}),
+            RuntimeToolCall(tool_name="get_topology_node", arguments={"project_id": "talend_demo"}),
             project_scope=None,
             access_token=None,
         )
@@ -127,13 +127,13 @@ class TestDispatch:
 
 class TestProjectScope:
     async def test_project_outside_scope_is_refused_before_any_request(
-        self, installed, alitalend
+        self, installed, talend_demo
     ) -> None:
-        transport = installed(json_transport(alitalend))
+        transport = installed(json_transport(talend_demo))
 
         result = await execute_topology_tool(
             RuntimeToolCall(tool_name="get_topology_overview", arguments={"project_id": "secret"}),
-            project_scope=["alitalend"],
+            project_scope=["talend_demo"],
             access_token="user-jwt",
         )
 
@@ -143,12 +143,12 @@ class TestProjectScope:
         # dropping the token forward could never widen access on its own.
         assert transport.call_count == 0
 
-    async def test_empty_scope_grants_nothing(self, installed, alitalend) -> None:
-        transport = installed(json_transport(alitalend))
+    async def test_empty_scope_grants_nothing(self, installed, talend_demo) -> None:
+        transport = installed(json_transport(talend_demo))
 
         result = await execute_topology_tool(
             RuntimeToolCall(
-                tool_name="get_topology_overview", arguments={"project_id": "alitalend"}
+                tool_name="get_topology_overview", arguments={"project_id": "talend_demo"}
             ),
             project_scope=[],
             access_token="user-jwt",
@@ -157,12 +157,12 @@ class TestProjectScope:
         assert result.success is False
         assert transport.call_count == 0
 
-    async def test_none_scope_is_unrestricted(self, installed, alitalend) -> None:
-        installed(json_transport(alitalend))
+    async def test_none_scope_is_unrestricted(self, installed, talend_demo) -> None:
+        installed(json_transport(talend_demo))
 
         result = await execute_topology_tool(
             RuntimeToolCall(
-                tool_name="get_topology_overview", arguments={"project_id": "alitalend"}
+                tool_name="get_topology_overview", arguments={"project_id": "talend_demo"}
             ),
             project_scope=None,
             access_token="user-jwt",
@@ -171,13 +171,13 @@ class TestProjectScope:
         assert result.success is True
 
     async def test_refusal_message_does_not_reveal_whether_the_project_exists(
-        self, installed, alitalend
+        self, installed, talend_demo
     ) -> None:
-        installed(json_transport(alitalend))
+        installed(json_transport(talend_demo))
 
         refused = await execute_topology_tool(
             RuntimeToolCall(tool_name="get_topology_overview", arguments={"project_id": "secret"}),
-            project_scope=["alitalend"],
+            project_scope=["talend_demo"],
             access_token=None,
         )
 
@@ -185,12 +185,12 @@ class TestProjectScope:
 
 
 class TestIdentityForwarding:
-    async def test_access_token_reaches_mcp_as_a_cookie(self, installed, alitalend) -> None:
-        transport = installed(json_transport(alitalend))
+    async def test_access_token_reaches_mcp_as_a_cookie(self, installed, talend_demo) -> None:
+        transport = installed(json_transport(talend_demo))
 
         await execute_topology_tool(
             RuntimeToolCall(
-                tool_name="get_topology_overview", arguments={"project_id": "alitalend"}
+                tool_name="get_topology_overview", arguments={"project_id": "talend_demo"}
             ),
             project_scope=None,
             access_token="user-jwt",
@@ -198,14 +198,14 @@ class TestIdentityForwarding:
 
         assert transport.requests[0].headers.get("cookie") == "access_token=user-jwt"
 
-    async def test_a_token_in_the_arguments_is_never_used(self, installed, alitalend) -> None:
+    async def test_a_token_in_the_arguments_is_never_used(self, installed, talend_demo) -> None:
         """`access_token` is keyword-only; a model cannot supply its own."""
-        transport = installed(json_transport(alitalend))
+        transport = installed(json_transport(talend_demo))
 
         result = await execute_topology_tool(
             RuntimeToolCall(
                 tool_name="get_topology_overview",
-                arguments={"project_id": "alitalend", "access_token": "attacker-jwt"},
+                arguments={"project_id": "talend_demo", "access_token": "attacker-jwt"},
             ),
             project_scope=None,
             access_token=None,
@@ -215,15 +215,15 @@ class TestIdentityForwarding:
         assert transport.requests[0].headers.get("cookie") is None
         assert "attacker-jwt" not in str(transport.requests[0].url)
 
-    async def test_a_scope_in_the_arguments_is_never_used(self, installed, alitalend) -> None:
-        transport = installed(json_transport(alitalend))
+    async def test_a_scope_in_the_arguments_is_never_used(self, installed, talend_demo) -> None:
+        transport = installed(json_transport(talend_demo))
 
         result = await execute_topology_tool(
             RuntimeToolCall(
                 tool_name="get_topology_overview",
                 arguments={"project_id": "secret", "project_scope": ["secret"]},
             ),
-            project_scope=["alitalend"],
+            project_scope=["talend_demo"],
             access_token=None,
         )
 
@@ -255,7 +255,7 @@ class TestErrorMapping:
 
         result = await execute_topology_tool(
             RuntimeToolCall(
-                tool_name="get_topology_overview", arguments={"project_id": "alitalend"}
+                tool_name="get_topology_overview", arguments={"project_id": "talend_demo"}
             ),
             project_scope=None,
             access_token=None,
@@ -271,7 +271,7 @@ class TestErrorMapping:
 
         result = await execute_topology_tool(
             RuntimeToolCall(
-                tool_name="get_topology_overview", arguments={"project_id": "alitalend"}
+                tool_name="get_topology_overview", arguments={"project_id": "talend_demo"}
             ),
             project_scope=None,
             access_token=None,
@@ -288,7 +288,7 @@ class TestErrorMapping:
 
         result = await execute_topology_tool(
             RuntimeToolCall(
-                tool_name="get_topology_overview", arguments={"project_id": "alitalend"}
+                tool_name="get_topology_overview", arguments={"project_id": "talend_demo"}
             ),
             project_scope=None,
             access_token=None,
@@ -304,7 +304,7 @@ class TestErrorMapping:
 
         result = await execute_topology_tool(
             RuntimeToolCall(
-                tool_name="get_topology_overview", arguments={"project_id": "alitalend"}
+                tool_name="get_topology_overview", arguments={"project_id": "talend_demo"}
             ),
             project_scope=None,
             access_token=None,
@@ -316,16 +316,16 @@ class TestErrorMapping:
 
 class TestResultBounds:
     async def test_result_is_marked_truncated_when_a_cap_was_hit(
-        self, installed, werkorder
+        self, installed, workorders_demo
     ) -> None:
-        installed(json_transport(werkorder))
+        installed(json_transport(workorders_demo))
 
         result = await execute_topology_tool(
             RuntimeToolCall(
                 tool_name="get_topology_node",
-                arguments={"project_id": "werkorder", "name_or_id": "Maximo"},
+                arguments={"project_id": "workorders_demo", "name_or_id": "AssetSys"},
             ),
-            project_scope=["werkorder"],
+            project_scope=["workorders_demo"],
             access_token=None,
         )
 
@@ -334,14 +334,14 @@ class TestResultBounds:
         assert result.data["content"]["relationships_truncated"] is True
 
     async def test_size_backstop_drops_collections_instead_of_the_whole_answer(
-        self, installed, monkeypatch, alitalend
+        self, installed, monkeypatch, talend_demo
     ) -> None:
-        installed(json_transport(alitalend))
+        installed(json_transport(talend_demo))
         monkeypatch.setattr("src.config.settings.runtime_tool_result_max_chars", 400)
 
         result = await execute_topology_tool(
             RuntimeToolCall(
-                tool_name="get_topology_overview", arguments={"project_id": "alitalend"}
+                tool_name="get_topology_overview", arguments={"project_id": "talend_demo"}
             ),
             project_scope=None,
             access_token=None,
@@ -350,17 +350,17 @@ class TestResultBounds:
         assert result.truncated is True
         assert result.data["content"]["truncated"] is True
         # Scalars survive so the model can still answer "which project, which view".
-        assert result.data["content"]["project_id"] == "alitalend"
+        assert result.data["content"]["project_id"] == "talend_demo"
         assert result.data["content"]["active_view"] == "business"
         assert "scanner_facts" in result.data["content"]["omitted_fields"]
 
-    async def test_untruncated_result_is_not_flagged(self, installed, alitalend) -> None:
-        installed(json_transport(alitalend))
+    async def test_untruncated_result_is_not_flagged(self, installed, talend_demo) -> None:
+        installed(json_transport(talend_demo))
 
         result = await execute_topology_tool(
             RuntimeToolCall(
                 tool_name="get_topology_node",
-                arguments={"project_id": "alitalend", "name_or_id": "AssetCheck"},
+                arguments={"project_id": "talend_demo", "name_or_id": "InspectHub"},
             ),
             project_scope=None,
             access_token=None,
@@ -371,15 +371,15 @@ class TestResultBounds:
 
 class TestRuntimeIndependence:
     async def test_topology_works_with_live_runtime_disabled(
-        self, installed, monkeypatch, alitalend
+        self, installed, monkeypatch, talend_demo
     ) -> None:
         """Topology is published artifact data, not runtime data."""
-        installed(json_transport(alitalend))
+        installed(json_transport(talend_demo))
         monkeypatch.setattr("src.config.settings.runtime_provider_key", "")
 
         result = await execute_topology_tool(
             RuntimeToolCall(
-                tool_name="get_topology_overview", arguments={"project_id": "alitalend"}
+                tool_name="get_topology_overview", arguments={"project_id": "talend_demo"}
             ),
             project_scope=None,
             access_token=None,
@@ -405,7 +405,7 @@ class TestFieldLineageDispatch:
         transport = installed(json_transport({}))
 
         result = await execute_topology_tool(
-            RuntimeToolCall(tool_name="get_field_lineage", arguments={"project_id": "werkorder"}),
+            RuntimeToolCall(tool_name="get_field_lineage", arguments={"project_id": "workorders_demo"}),
             project_scope=None,
             access_token=None,
         )
@@ -421,7 +421,7 @@ class TestFieldLineageDispatch:
         result = await execute_topology_tool(
             RuntimeToolCall(
                 tool_name="get_field_lineage",
-                arguments={"project_id": "werkorder", "job": "anything"},
+                arguments={"project_id": "workorders_demo", "job": "anything"},
             ),
             project_scope=["other-project"],
             access_token=None,
@@ -443,13 +443,13 @@ class TestFieldLineageDispatch:
         from tests.test_topology.conftest import RoutedTransport
 
         installed(
-            RoutedTransport({field_lineage_path("werkorder"): lineage_responder(rhm2sf_lineage)})
+            RoutedTransport({field_lineage_path("workorders_demo"): lineage_responder(rhm2sf_lineage)})
         )
 
         result = await execute_topology_tool(
             RuntimeToolCall(
                 tool_name="get_field_lineage",
-                arguments={"project_id": "werkorder", "job": RHM2SF_LINEAGE_JOB},
+                arguments={"project_id": "workorders_demo", "job": RHM2SF_LINEAGE_JOB},
             ),
             project_scope=None,
             access_token=None,
@@ -475,7 +475,7 @@ class TestFieldLineageDispatch:
         result = await execute_topology_tool(
             RuntimeToolCall(
                 tool_name="get_field_lineage",
-                arguments={"project_id": "werkorder", "job": "anything"},
+                arguments={"project_id": "workorders_demo", "job": "anything"},
             ),
             project_scope=None,
             access_token=None,

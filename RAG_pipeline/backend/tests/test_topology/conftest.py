@@ -2,11 +2,11 @@
 
 Landscape rollups (L1/L2):
 
-`alitalend_landscape.json` is a real published artifact, verbatim: two distinct
+`talend_demo_landscape.json` is a real published artifact, verbatim: two distinct
 scanner systems named "Log", promoted into two distinct overlay systems with the
 same name. It is the ambiguity case the tools must never collapse.
 
-`werkorder_composite_landscape.json` is a real composite (multi-partition)
+`workorders_demo_composite_landscape.json` is a real composite (multi-partition)
 upload. Entity counts are the real ones -- 43 scanner systems, 25 edges, 38
 diagnostics, 20 curated overlay systems -- so every cap in `tools.py` is
 exceeded by it. Only the repeated per-entity evidence tails were trimmed to keep
@@ -16,18 +16,18 @@ depth tools exist.
 Design manifests (L3/L4), generated from the same two local scans:
 
 `*_project_graph.json` are real `GET /projects/{id}/graph` payloads. The
-werkorder one is trimmed to 115 of its 429 designs -- every one of the 14 real
-source roots is represented, plus the whole Quintiq/Maximo family and the two
+workorders_demo one is trimmed to 115 of its 429 designs -- every one of the 14 real
+source roots is represented, plus the whole Quintiq/AssetSys family and the two
 richest designs -- with per-artifact facts bounded and the descriptors the models
 never parse dropped. Records that remain are verbatim.
 
 `*_job_graph.json` are real `GET .../jobs/{job}/graph` payloads, untrimmed:
-  - `werkorder_quintiq_job_graph`  40 components / 37 connections (28 KB raw)
-  - `werkorder_richest_job_graph`  251 components / 201 connections (142 KB raw)
-  - `werkorder_mapping_job_graph`  the design owning the richest mapping component
-  - `alitalend_job_graph`          a single-root design with one tMap
+  - `workorders_demo_quintiq_job_graph`  40 components / 37 connections (28 KB raw)
+  - `workorders_demo_richest_job_graph`  251 components / 201 connections (142 KB raw)
+  - `workorders_demo_mapping_job_graph`  the design owning the richest mapping component
+  - `talend_demo_job_graph`          a single-root design with one tMap
 
-`pluripharm_collector_job_graph.json` is the real job graph of the Camel route
+`pharma_demo_collector_job_graph.json` is the real job graph of the Camel route
 `collector_jde_shipping_notification_from_db_c006_mediq` (41 components, 32
 connections), produced by running the MCP job-graph builder over that project's
 own scan cache. It is the artifact behind a measured agent failure: asked how a
@@ -35,18 +35,18 @@ shipment is routed to one flow or the other, an agent opened 15 of these
 components one at a time and still reported the criterion as undeterminable,
 because the answer is a ROW of `cSetHeader_5`'s VALUES table
 (`AN8_CHECK = xpath(".../SZAN8/text()")`) and row-structured params were dropped
-before they reached the tool layer. `pluripharm_project_graph.json` is the
+before they reached the tool layer. `pharma_demo_project_graph.json` is the
 matching single-design slice of `GET /projects/{id}/graph`, with the group,
 source root, external systems and component facts taken from that scan's own
 `manifest.json`.
 
 `*_component_graph.json` are real `GET .../components/{name}/graph` payloads.
-`werkorder_richest_component_graph` is the largest mapping graph in the whole
+`workorders_demo_richest_component_graph` is the largest mapping graph in the whole
 upload at 27 KB raw, which is the cap case for `get_component_detail`.
 
 Field lineage (the deepest artifact):
 
-`werkorder_rhm2sf_field_lineage.json` is the real `scan/lineage.json` slice for
+`workorders_demo_rhm2sf_field_lineage.json` is the real `scan/lineage.json` slice for
 the RHM2SF design, flattened into the `GET /projects/{id}/lineage/job` contract
 shape: 85 field mappings, 73 resolved, 12 runtime-determined, across 7 target
 tables. It is served UNPAGED and `lineage_responder` filters and pages it the
@@ -168,9 +168,9 @@ def field_lineage_path(project_id: str) -> str:
 #: lineage service, which is the string the provider's marker list is written
 #: against; the second is a scope miss inside a project that HAS been scanned.
 LINEAGE_NO_ARTIFACT_DETAIL = (
-    "No lineage data for project 'werkorder' -- run a scan to generate scan/lineage.json"
+    "No lineage data for project 'workorders_demo' -- run a scan to generate scan/lineage.json"
 )
-LINEAGE_NO_ENTRIES_DETAIL = "No lineage entries for job 'NotADesign' in project 'werkorder'"
+LINEAGE_NO_ENTRIES_DETAIL = "No lineage entries for job 'NotADesign' in project 'workorders_demo'"
 
 
 def lineage_responder(
@@ -239,7 +239,7 @@ def lineage_404_transport(detail: str) -> RoutedTransport:
     """A lineage endpoint that always 404s with one specific detail message."""
     return RoutedTransport(
         {
-            field_lineage_path("werkorder"): lambda _request: httpx.Response(
+            field_lineage_path("workorders_demo"): lambda _request: httpx.Response(
                 404, json={"detail": detail}
             )
         }
@@ -260,81 +260,81 @@ def make_provider(
 
 
 @pytest.fixture
-def alitalend() -> dict[str, Any]:
-    return load_fixture("alitalend_landscape")
+def talend_demo() -> dict[str, Any]:
+    return load_fixture("talend_demo_landscape")
 
 
 @pytest.fixture
-def werkorder() -> dict[str, Any]:
-    return load_fixture("werkorder_composite_landscape")
+def workorders_demo() -> dict[str, Any]:
+    return load_fixture("workorders_demo_composite_landscape")
 
 
 @pytest.fixture
-def werkorder_graph() -> dict[str, Any]:
-    return load_fixture("werkorder_project_graph")
+def workorders_demo_graph() -> dict[str, Any]:
+    return load_fixture("workorders_demo_project_graph")
 
 
 @pytest.fixture
 def quintiq_job_graph() -> dict[str, Any]:
-    return load_fixture("werkorder_quintiq_job_graph")
+    return load_fixture("workorders_demo_quintiq_job_graph")
 
 
 @pytest.fixture
 def richest_job_graph() -> dict[str, Any]:
-    return load_fixture("werkorder_richest_job_graph")
+    return load_fixture("workorders_demo_richest_job_graph")
 
 
 @pytest.fixture
 def mapping_job_graph() -> dict[str, Any]:
-    return load_fixture("werkorder_mapping_job_graph")
+    return load_fixture("workorders_demo_mapping_job_graph")
 
 
 @pytest.fixture
 def richest_component_graph() -> dict[str, Any]:
-    return load_fixture("werkorder_richest_component_graph")
+    return load_fixture("workorders_demo_richest_component_graph")
 
 
 @pytest.fixture
 def rhm2sf_lineage() -> dict[str, Any]:
     """The real RHM2SF field lineage: 85 mappings, 73 of them resolved."""
-    return load_fixture("werkorder_rhm2sf_field_lineage")
+    return load_fixture("workorders_demo_rhm2sf_field_lineage")
 
 
 @pytest.fixture
-def pluripharm_graph() -> dict[str, Any]:
-    return load_fixture("pluripharm_project_graph")
+def pharma_demo_graph() -> dict[str, Any]:
+    return load_fixture("pharma_demo_project_graph")
 
 
 @pytest.fixture
 def collector_job_graph() -> dict[str, Any]:
-    return load_fixture("pluripharm_collector_job_graph")
+    return load_fixture("pharma_demo_collector_job_graph")
 
 
 @pytest.fixture
-def pluripharm_provider(pluripharm_graph, collector_job_graph):
+def pharma_demo_provider(pharma_demo_graph, collector_job_graph):
     """The design manifest and job graph behind the measured routing question."""
-    transport = werkorder_routes(
+    transport = workorders_demo_routes(
         landscape={},
-        project_graph=pluripharm_graph,
+        project_graph=pharma_demo_graph,
         job_graphs={COLLECTOR_JOB: collector_job_graph},
-        project_id=PLURIPHARM_PROJECT,
+        project_id=PHARMA_DEMO_PROJECT,
     )
     return transport, make_provider(transport)
 
 
 @pytest.fixture
-def alitalend_graph() -> dict[str, Any]:
-    return load_fixture("alitalend_project_graph")
+def talend_demo_graph() -> dict[str, Any]:
+    return load_fixture("talend_demo_project_graph")
 
 
 @pytest.fixture
-def alitalend_job_graph() -> dict[str, Any]:
-    return load_fixture("alitalend_job_graph")
+def talend_demo_job_graph() -> dict[str, Any]:
+    return load_fixture("talend_demo_job_graph")
 
 
 @pytest.fixture
-def alitalend_component_graph() -> dict[str, Any]:
-    return load_fixture("alitalend_component_graph")
+def talend_demo_component_graph() -> dict[str, Any]:
+    return load_fixture("talend_demo_component_graph")
 
 
 #: Real names from the two scans, used across the depth tests.
@@ -343,28 +343,28 @@ def alitalend_component_graph() -> dict[str, Any]:
 #: same partition (`..._intod-249ee1cc0d2b`): the two artifacts hash the
 #: composite path differently, which is why `get_field_lineage` passes the name
 #: through instead of resolving it against the manifest first.
-RHM2SF_LINEAGE_JOB = "VolkerVessels_Workorder_Talend_exports_VQ_RHM2SF___intod-31f9ad59e878"
-RHM2SF_GROUP = "VolkerVessels_Workorder/Talend exports/VQ_RHM2SF.__intodoc_zip__/VQ_RHM2SF"
-#: The real page-scope id for a selected CONNECTION on the werkorder canvas.
+RHM2SF_LINEAGE_JOB = "ClientA_Workorder_Talend_exports_PQ_RHM2SF___intod-31f9ad59e878"
+RHM2SF_GROUP = "ClientA_Workorder/Talend exports/PQ_RHM2SF.__intodoc_zip__/PQ_RHM2SF"
+#: The real page-scope id for a selected CONNECTION on the workorders_demo canvas.
 #: The client sends both this bare form and the `business-stream`-prefixed key.
 SELECTED_EDGE_STREAM_ID = "ds-enterpriseservicebus-rhm--smartflow-message"
-QUINTIQ_JOB = "Quintiq2Maximo_WorkOrderPickedUpXML"
-RICHEST_JOB = "forSuppliersFourpsVendorData"
-MAPPING_JOB = "VISE_SP_VIP_OTL"
+QUINTIQ_JOB = "Quintiq2AssetSys_WorkOrderPickedUpXML"
+RICHEST_JOB = "forSuppliersFourfsVendorData"
+MAPPING_JOB = "QADB_SP_VIP_OTL"
 MAPPING_COMPONENT = "tMap_1"
 QUINTIQ_SOURCE_ROOT = (
-    "VolkerVessels_Workorder/Talend exports/VQ_Quintiq2MX.__intodoc_zip__/VQ_QUINTIQ2MX"
+    "ClientA_Workorder/Talend exports/PQ_Quintiq2MX.__intodoc_zip__/PQ_QUINTIQ2MX"
 )
 #: The Camel route from the measured routing failure, and the component that
 #: holds the criterion: `cSetHeader_5` ("setXmlVar") defines AN8_CHECK from the
 #: shipment's JD Edwards ship-to address-book number, which the cMessageRouter
 #: downstream of it branches on.
-PLURIPHARM_PROJECT = "pluripharm"
+PHARMA_DEMO_PROJECT = "pharma_demo"
 COLLECTOR_JOB = "collector_jde_shipping_notification_from_db_c006_mediq"
 COLLECTOR_ROUTING_COMPONENT = "cSetHeader_5"
 
 
-def werkorder_routes(
+def workorders_demo_routes(
     *,
     landscape: dict[str, Any],
     project_graph: dict[str, Any] | None = None,
@@ -372,7 +372,7 @@ def werkorder_routes(
     component_graphs: dict[tuple[str, str], dict[str, Any]] | None = None,
     lineage: dict[str, Any] | None = None,
     lineage_groups: dict[str, list[str]] | None = None,
-    project_id: str = "werkorder",
+    project_id: str = "workorders_demo",
 ) -> RoutedTransport:
     routes: dict[str, Route] = {landscape_path(project_id): landscape}
     if lineage is not None:

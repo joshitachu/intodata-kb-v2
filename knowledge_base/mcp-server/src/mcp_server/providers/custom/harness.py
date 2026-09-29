@@ -1757,16 +1757,7 @@ Fallback plan example:
     async def run(self, ctx: DocGenContext, log_cb: LogCallback) -> AgentResult:
         from mcp_server.providers.custom.pipeline.helpers import HarnessHelpersImpl
         from mcp_server.providers.custom.pipeline.runner import PipelineRunner
-        from mcp_server.providers.custom.pipeline.phases.phase1_investigation import Phase1Investigation
-        from mcp_server.providers.custom.pipeline.phases.phase2_analysis import Phase2Analysis
-        from mcp_server.providers.custom.pipeline.phases.phase26_scorecard import Phase26Scorecard
-        from mcp_server.providers.custom.pipeline.phases.phase28_bundles import Phase28Bundles
-        from mcp_server.providers.custom.pipeline.phases.phase3_docs import Phase3Docs
-        from mcp_server.providers.custom.pipeline.phases.phase37_business_topology import (
-            Phase37BusinessTopology,
-        )
-        from mcp_server.providers.custom.pipeline.phases.phase4_cleanup import Phase4Cleanup
-        from mcp_server.providers.custom.pipeline.evidence_quality_gate import EvidenceQualityGate
+        from mcp_server.providers.custom.pipeline.sequence import build_phases
 
         start_ms = int(time.time() * 1000)
         _pipeline_log = _PipelineLog()
@@ -1999,16 +1990,11 @@ Fallback plan example:
         else:
             runner_plan = execution_plan
 
-        phases = [
-            Phase1Investigation(helpers),
-            Phase2Analysis(helpers, execution_plan=dag_execution_plan, analysis_policy=analysis_policy),
-            Phase26Scorecard(helpers),
-            Phase28Bundles(helpers),
-            EvidenceQualityGate(),
-            Phase3Docs(helpers, execution_plan=dag_execution_plan),
-            Phase37BusinessTopology(helpers),
-            Phase4Cleanup(helpers),
-        ]
+        phases = build_phases(
+            helpers,
+            execution_plan=dag_execution_plan,
+            analysis_policy=analysis_policy,
+        )
 
         try:
             phase_results = await PipelineRunner(phases).run(ctx, state, runner_plan, log_cb)

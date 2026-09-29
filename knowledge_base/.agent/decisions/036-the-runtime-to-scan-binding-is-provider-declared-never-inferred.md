@@ -21,13 +21,13 @@ closest candidate. A human's mapping (`resolved_by="manual"`) is never overwritt
 ## Why
 
 **A fuzzy tier is worse than no binding, measured.** The frontend's
-`joinHealthToJobs` had an exact -> normalised -> prefix ladder. On the Pluripharm
+`joinHealthToJobs` had an exact -> normalised -> prefix ladder. On the PharmaDemo
 estate the prefix tier produced **25 bindings, every one onto a job that genuinely
 exists**: `DWH_Facts_001` -> `DWH_Facts_Master` (a different job, and one that was
 failing at the time, so the wrong design would have been painted red);
 `Daily_Queries_6_uur_old` -> the live `Daily_Queries_6_uur`;
 `WMS_IE_stock_mirror_copy` -> `WMS_IE_stock_mirror`. This is the same hazard the
-runtime lane already forbids for `AssetCheck_GetLocation` / `AssetCheck_GetLocations`.
+runtime lane already forbids for `InspectHub_GetLocation` / `InspectHub_GetLocations`.
 A wrong binding attributes one design's failures to another and does so invisibly.
 
 **The obvious shortcut is platform-specific.** `runtime_jobs.artifact_name` is the
@@ -39,7 +39,7 @@ every other provider.
 
 **"What does one row mean" is also per-platform, and getting it wrong inverts the
 answer.** A Talend Route row is a *lifecycle*: `state="running"` means "deployed and
-up", not "busy". 68 Pluripharm route rows are `running`, so the execution rule reads a
+up", not "busy". 68 PharmaDemo route rows are `running`, so the execution rule reads a
 perfectly healthy estate as failing. Meanwhile `_job_run_base` coerced
 `executable_kind` to `JOB` for every provider, structurally excluding 49 of 158 rows
 and leaving 14 of 28 business streams -- the entire ESB spine -- with nothing to show.
@@ -55,12 +55,12 @@ made the existing engine reachable; almost nothing new was needed.
 
 ## Consequences
 
-- Binding coverage is honestly partial and must be shown as such. Pluripharm binds 151
+- Binding coverage is honestly partial and must be shown as such. PharmaDemo binds 151
   of 177 runtime jobs, refuses 16 as ambiguous (designs that exist in two source roots,
   `JDE_DWH.../DATAWAREHOUSE` and `Talend8.../TALEND8`) and leaves 10 unmatched.
 - A zero-binding estate is a finding, not a bug to be matched harder. `nexus_logs` has
-  a VW scan against a Pluripharm mirror (0 name overlap -- a project mis-binding);
-  `werkorder` and `alitalend` mirrors carry raw object ids in `artifact_name` because
+  a ClientA scan against a PharmaDemo mirror (0 name overlap -- a project mis-binding);
+  `workorders_demo` and `talend_demo` mirrors carry raw object ids in `artifact_name` because
   the TMC artifact lookup missed and `_to_job` fell back to the id.
 - Unmeasured must render distinctly from healthy, with the reason stated.
 
@@ -72,7 +72,7 @@ measured: `tmc` on 1118 job rows and 88,965 execution rows, plus `mock` and
 `demo-topology`. A **configured** row (`runtime_sources.source_key`) is
 `{source_type}-{uuid}` -- `tmc-ddf1ed37af12`, `tmc-a335fb698715`. Resolving a mirrored
 row's provider by joining `runtime_sources.source_key` therefore matches nothing, and
-does so silently: every one of the 158 live Pluripharm health rows reported
+does so silently: every one of the 158 live PharmaDemo health rows reported
 `liveness="unknown"`, restoring the exact defect the field exists to fix. Unit tests
 passed throughout, because fixtures seeded a matching source row.
 

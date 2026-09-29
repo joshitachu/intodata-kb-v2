@@ -48,7 +48,8 @@ Pass criteria:
 
 - Browser certificate is valid.
 - HTTP redirects to HTTPS.
-- Responses include `Strict-Transport-Security`, `X-Frame-Options`, `X-Content-Type-Options`, and `Referrer-Policy`.
+- Responses include `Strict-Transport-Security`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, and `Content-Security-Policy`.
+- With the CSP on, open the chat, a topology view and `/dashboard/`: the browser console shows no `Content-Security-Policy` violations and the dashboard fonts load.
 - `/dashboard/`, `/mcp/*`, and `/logs/*` return 404 on the public customer domain.
 - Browser console has no mixed-content errors.
 

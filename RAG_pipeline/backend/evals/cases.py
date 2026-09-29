@@ -52,7 +52,7 @@ class EvidenceRef:
 
     ``in_corpus`` distinguishes "this file is ingested into the RAG corpus" from
     "this file exists in the repo but is not something the system can retrieve"
-    (e.g. raw scanner JSON). That distinction is what makes the FMD case
+    (e.g. raw scanner JSON). That distinction is what makes the SVD case
     unanswerable rather than merely hard.
     """
 
@@ -65,7 +65,7 @@ class EvidenceRef:
 class Entity:
     """One thing the answer is expected to name, with accepted surface forms.
 
-    Aliases matter more than they look. "4PS" and "Dynamics 365" are the same
+    Aliases matter more than they look. "4FS" and "Dynamics 365" are the same
     consumer; grading on one spelling turns a correct answer into a miss and
     makes the coverage number meaningless.
     """
@@ -266,6 +266,30 @@ def _parse_case(raw: dict[str, Any]) -> EvalCase:
         tags=tuple(str(t) for t in raw.get("tags", ())),
         notes=str(raw.get("notes", "")).strip(),
     )
+
+
+# The suite is committed with anonymised evidence paths; the client corpus they
+# stand for lives in gitignored output directories. This gitignored map turns an
+# anonymised path back into the real local one, so the strict existence check
+# still runs wherever the corpus is present.
+LOCAL_EVIDENCE_ALIASES = Path(__file__).resolve().parent / "suite" / "evidence_aliases.local.json"
+
+
+def load_evidence_aliases(path: Path = LOCAL_EVIDENCE_ALIASES) -> dict[str, str]:
+    """Return ``{suite path: real local path}``; empty when no map exists."""
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in data.items()
+    ):
+        raise ValueError(f"{path}: must be a JSON object mapping path -> path")
+    return data
+
+
+def resolve_evidence_path(ref: EvidenceRef, repo_root: Path, aliases: dict[str, str]) -> Path:
+    """Where ``ref`` lives on this machine."""
+    return repo_root / aliases.get(ref.path, ref.path)
 
 
 def load_eval_set(path: str | Path) -> EvalSet:

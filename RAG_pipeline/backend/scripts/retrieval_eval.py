@@ -1,19 +1,21 @@
-"""Layered-RAG evaluation harness — golden-set retrieval + ladder gate.
+"""Layered-RAG evaluation harness — golden-set retrieval gate.
 
-Two evaluation scopes (select with ``--mode``):
+Evaluation scope (``--mode``):
 
   retrieval  Raw retrieval metrics against the running Qdrant stack:
              recall@30 pre-rerank, recall@8 post-rerank, and source-layer
              selection accuracy.
 
-  ladder     The conversational retrieval ladder itself, via
-             ``_prepare_rag_context`` against a transient conversation, so
-             the exact contract chat uses is measured: ``fallback_used``,
-             ``primary_source_layer``, ``doc_gap``, refusal correctness, and
-             per-category latency. Also surfaces the Slice 5 inspection
-             warnings (alias-row count, alias-match timing).
-
-  both       Run retrieval then ladder for every applicable case.
+  ladder     REMOVED. It drove ``_prepare_rag_context`` from the legacy
+             layered-RAG chat chain (``src/generation/conversational_rag.py``),
+             which was deleted in ``c7e4fab`` when chat moved to the harness
+             agent runtime. There is no equivalent single-call entry point:
+             the harness turn (``execute_production_agent_chat_turn``) persists
+             messages and computes no ``doc_gap`` signal (see
+             ``src/harness/turn_provenance.py``). End-to-end chat behaviour is
+             evaluated by ``scripts/agent_runtime_eval``. The pure ladder
+             scoring/report helpers below are kept for reports produced before
+             the removal and are no longer called by the CLI.
 
 The runner is admin-level (``user_groups=["admin"]``) and project-scoped; the
 report states this explicitly. Fixtures are typed and validated; unsupported
@@ -25,7 +27,7 @@ Usage:
     cd RAG_pipeline/backend
     uv run python scripts/retrieval_eval.py \\
       --fixture scripts/eval_fixtures/layered_rag_phase2.json \\
-      --project-id phase2 --mode both \\
+      --project-id phase2 --mode retrieval \\
       --output-md scripts/eval_reports/layered_rag_slice6.md \\
       --output-json scripts/eval_reports/layered_rag_slice6.json
 """
@@ -34,7 +36,6 @@ import argparse
 import asyncio
 import json
 import sys
-import time
 from pathlib import Path
 from typing import Literal
 
@@ -364,7 +365,7 @@ async def run_retrieval(client, cases: list[FixtureCase], project_ids, top_k: in
                 top_k=top_k, project_ids=project_ids,
             )
         else:
-            internal_layers = [l for l in layers if l != "canonical_docs"]
+            internal_layers = [layer for layer in layers if layer != "canonical_docs"]
             results = await search_layered(
                 client, case.question, ["admin"],
                 source_layers=internal_layers, top_k=top_k, project_ids=project_ids,
@@ -382,97 +383,6 @@ async def run_retrieval(client, cases: list[FixtureCase], project_ids, top_k: in
         "layer_cases": len(layer_cases),
         "layer_hits": layer_hits,
         "layer_accuracy": (layer_hits / len(layer_cases)) if layer_cases else 1.0,
-    }
-
-
-async def run_ladder(client, db, cases: list[FixtureCase], project_ids) -> dict:
-    from src.db.models import Conversation
-    from src.generation.conversational_rag import _prepare_rag_context
-    from src.retrieval.entity_matcher import match_query_entities
-
-    case_rows: list[dict] = []
-    alias_match_times: list[float] = []
-
-    for case in cases:
-        conv = Conversation(user_id=1)
-        conv.messages = []
-
-        if case.category == "entity_lookup":
-            t0 = time.perf_counter()
-            await match_query_entities(db, case.question, project_ids)
-            alias_match_times.append((time.perf_counter() - t0) * 1000)
-
-        start = time.perf_counter()
-        ctx = await _prepare_rag_context(
-            conv, case.question, ["admin"], client,
-            project_ids=project_ids, db=db, precompute=True,
-        )
-        elapsed_ms = (time.perf_counter() - start) * 1000
-
-        answer = (ctx.precomputed_answer or "").replace("[NEED_SEARCH]", "").strip()
-        lite = _to_lite(ctx.document_sources)
-        passed, reasons = score_ladder_case(
-            case, answer=answer, sources=lite,
-            primary_source_layer=ctx.primary_source_layer,
-        )
-        case_rows.append({
-            "id": case.id,
-            "category": case.category,
-            "passed": passed,
-            "reasons": reasons,
-            "primary_source_layer": ctx.primary_source_layer,
-            "fallback_used": ctx.fallback_used,
-            "doc_gap": ctx.doc_gap,
-            "elapsed_ms": elapsed_ms,
-            "must_pass": case.must_pass,
-            "expected_behavior": case.expected_behavior,
-            "source_display_names": [s.display_name or s.filename for s in lite],
-        })
-
-    by_cat: dict[str, dict] = {}
-    for cat in CATEGORIES:
-        rows = [r for r in case_rows if r["category"] == cat]
-        if not rows:
-            continue
-        mp = [r for r in rows if r["must_pass"]]
-        by_cat[cat] = {
-            "passed": sum(r["passed"] for r in rows),
-            "total": len(rows),
-            "must_pass_passed": sum(r["passed"] for r in mp),
-            "must_pass_total": len(mp),
-            "avg_ms": sum(r["elapsed_ms"] for r in rows) / len(rows),
-        }
-
-    mp_rows = [r for r in case_rows if r["must_pass"]]
-    unsup_rows = [r for r in case_rows if r["expected_behavior"] == "refuse"]
-    rung1 = [r["elapsed_ms"] for r in case_rows if not r["fallback_used"] and r["expected_behavior"] == "answer"]
-    rung2 = [r["elapsed_ms"] for r in case_rows if r["doc_gap"]]
-    refuse = [r["elapsed_ms"] for r in case_rows if r["expected_behavior"] == "refuse"]
-    all_ms = [r["elapsed_ms"] for r in case_rows] or [0.0]
-
-    def _avg(xs):
-        return sum(xs) / len(xs) if xs else 0.0
-
-    return {
-        "cases": case_rows,
-        "by_category": by_cat,
-        "must_pass": {
-            "passed": sum(r["passed"] for r in mp_rows),
-            "failed": sum(not r["passed"] for r in mp_rows),
-            "total": len(mp_rows),
-        },
-        "unsupported": {
-            "total": len(unsup_rows),
-            "clean": sum(r["passed"] for r in unsup_rows),
-            "leaked": sum(not r["passed"] for r in unsup_rows),
-        },
-        "latency": {
-            "rung1_avg_ms": _avg(rung1),
-            "rung2_avg_ms": _avg(rung2),
-            "refuse_avg_ms": _avg(refuse),
-            "max_ms": max(all_ms),
-        },
-        "alias_match_ms_avg": (_avg(alias_match_times) if alias_match_times else None),
     }
 
 
@@ -536,22 +446,13 @@ async def _run(args) -> None:
         "notes": args.notes or [],
     }
 
-    if args.mode in ("retrieval", "both"):
-        summary["retrieval"] = await run_retrieval(client, cases, project_ids, args.top_k)
+    summary["retrieval"] = await run_retrieval(client, cases, project_ids, args.top_k)
 
-    if args.mode in ("ladder", "both"):
-        async with async_session_factory() as db:
-            summary["ladder"] = await run_ladder(client, db, cases, project_ids)
-            summary["slice5"] = {
-                "alias_rows": await _alias_row_count(db, args.project_id),
-                "alias_match_ms_avg": summary["ladder"].get("alias_match_ms_avg"),
-            }
-    else:
-        async with async_session_factory() as db:
-            summary["slice5"] = {
-                "alias_rows": await _alias_row_count(db, args.project_id),
-                "alias_match_ms_avg": None,
-            }
+    async with async_session_factory() as db:
+        summary["slice5"] = {
+            "alias_rows": await _alias_row_count(db, args.project_id),
+            "alias_match_ms_avg": None,
+        }
 
     summary["verdicts"] = compute_verdicts(summary)
     await client.close()
@@ -573,7 +474,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Layered RAG evaluation harness")
     parser.add_argument("--fixture", required=True, type=Path)
     parser.add_argument("--project-id", default=None)
-    parser.add_argument("--mode", choices=("retrieval", "ladder", "both"), default="both")
+    parser.add_argument(
+        "--mode", choices=("retrieval",), default="retrieval",
+        help="Only 'retrieval' remains; the legacy ladder was deleted with "
+        "conversational_rag.py (use scripts/agent_runtime_eval for chat turns)",
+    )
     parser.add_argument("--top-k", type=int, default=8)
     parser.add_argument("--output-md", type=Path, default=None)
     parser.add_argument("--output-json", type=Path, default=None)

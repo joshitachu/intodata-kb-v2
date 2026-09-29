@@ -37,12 +37,7 @@ async def get_generate_estimate(project_id: str) -> RunEstimateOut:
     from mcp_server.providers.custom.validators import build_facts_manifest, REQUIRED_DOCS
     from mcp_server.providers.custom.dag import deterministic_execution_plan
     from mcp_server.providers.custom.pipeline.runner import PipelineRunner
-    from mcp_server.providers.custom.pipeline.phases.phase1_investigation import Phase1Investigation
-    from mcp_server.providers.custom.pipeline.phases.phase2_analysis import Phase2Analysis
-    from mcp_server.providers.custom.pipeline.phases.phase26_scorecard import Phase26Scorecard
-    from mcp_server.providers.custom.pipeline.phases.phase28_bundles import Phase28Bundles
-    from mcp_server.providers.custom.pipeline.phases.phase3_docs import Phase3Docs
-    from mcp_server.providers.custom.pipeline.phases.phase4_cleanup import Phase4Cleanup
+    from mcp_server.providers.custom.pipeline.sequence import build_phases
     from mcp_server.providers.base import DocGenContext
 
     scan_output_dir: Path = config.intodoc_output_dir / project_id
@@ -71,14 +66,7 @@ async def get_generate_estimate(project_id: str) -> RunEstimateOut:
         small_project_threshold=config.small_project_threshold,
     )
 
-    runner = PipelineRunner([
-        Phase1Investigation(helpers=None),   # type: ignore[arg-type]
-        Phase2Analysis(helpers=None),        # type: ignore[arg-type]
-        Phase26Scorecard(helpers=None),      # type: ignore[arg-type]
-        Phase28Bundles(helpers=None),        # type: ignore[arg-type]
-        Phase3Docs(helpers=None),            # type: ignore[arg-type]
-        Phase4Cleanup(helpers=None),         # type: ignore[arg-type]
-    ])
+    runner = PipelineRunner(build_phases(helpers=None))
 
     ctx = DocGenContext(
         project_id=project_id,

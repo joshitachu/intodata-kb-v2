@@ -32,11 +32,11 @@ from src.topology.tools import (
 )
 from tests.test_topology.conftest import json_transport, make_provider
 
-# The two overlay systems that share the name "Log" in the real alitalend
+# The two overlay systems that share the name "Log" in the real talend_demo
 # artifact. They are different databases (LogConnection vs LogDBConnection).
 LOG_A = "landscape-system:aab3dedb92918d1cf853"
 LOG_B = "landscape-system:7535d19590ac8488f941"
-ASSETCHECK = "landscape-application:1d5c0f7777b98508aec8"
+INSPECTHUB = "landscape-application:1d5c0f7777b98508aec8"
 
 
 def scanner_view(payload: dict[str, Any]) -> dict[str, Any]:
@@ -89,14 +89,14 @@ def oversized_landscape(*, neighbours: int) -> dict[str, Any]:
 
 
 class TestActiveView:
-    def test_validated_current_overlay_is_the_active_graph(self, alitalend) -> None:
-        graph = build_graph(ProjectLandscape.model_validate(alitalend))
+    def test_validated_current_overlay_is_the_active_graph(self, talend_demo) -> None:
+        graph = build_graph(ProjectLandscape.model_validate(talend_demo))
 
         assert graph.view is TopologyView.BUSINESS
-        assert {node.id for node in graph.nodes} >= {LOG_A, LOG_B, ASSETCHECK}
+        assert {node.id for node in graph.nodes} >= {LOG_A, LOG_B, INSPECTHUB}
 
-    def test_unvalidated_overlay_falls_back_to_scanner_facts(self, alitalend) -> None:
-        graph = build_graph(ProjectLandscape.model_validate(scanner_view(alitalend)))
+    def test_unvalidated_overlay_falls_back_to_scanner_facts(self, talend_demo) -> None:
+        graph = build_graph(ProjectLandscape.model_validate(scanner_view(talend_demo)))
 
         assert graph.view is TopologyView.SCANNER
         # Scanner ids, not overlay ids: the canvas would render this graph, so a
@@ -105,29 +105,29 @@ class TestActiveView:
             "system:connection:0:log",
             "system:connection:1:log",
             "system:connection:2:common",
-            "talend-project:assetcheck:d3ec09658f7d",
+            "talend-project:inspecthub:d3ec09658f7d",
             "talend-project:references:c7db6393ae51",
         }
 
-    def test_stale_overlay_falls_back_to_scanner_facts(self, alitalend) -> None:
-        mutated = copy.deepcopy(alitalend)
+    def test_stale_overlay_falls_back_to_scanner_facts(self, talend_demo) -> None:
+        mutated = copy.deepcopy(talend_demo)
         mutated["topology_state"]["stale"] = True
 
         assert build_graph(ProjectLandscape.model_validate(mutated)).view is TopologyView.SCANNER
 
-    def test_missing_overlay_falls_back_to_scanner_facts(self, alitalend) -> None:
-        mutated = copy.deepcopy(alitalend)
+    def test_missing_overlay_falls_back_to_scanner_facts(self, talend_demo) -> None:
+        mutated = copy.deepcopy(talend_demo)
         mutated["business_topology"] = None
 
         assert build_graph(ProjectLandscape.model_validate(mutated)).view is TopologyView.SCANNER
 
 
 class TestOverview:
-    async def test_reports_counts_roles_state_and_overlay_separately(self, alitalend) -> None:
-        provider = make_provider(json_transport(alitalend))
+    async def test_reports_counts_roles_state_and_overlay_separately(self, talend_demo) -> None:
+        provider = make_provider(json_transport(talend_demo))
 
         result = await get_topology_overview(
-            GetTopologyOverviewInput(project_id="alitalend"), provider=provider, access_token=None
+            GetTopologyOverviewInput(project_id="talend_demo"), provider=provider, access_token=None
         )
         content = result.content
 
@@ -142,7 +142,7 @@ class TestOverview:
         assert content["scanner_facts"]["systems"] == 3
         assert content["scanner_facts"]["applications"] == 2
         assert [item["label"] for item in content["scanner_facts"]["top_applications"]] == [
-            "AssetCheck",
+            "InspectHub",
             "References",
         ]
         assert content["scanner_facts"]["systems_by_kind"] == {"database": 3}
@@ -156,11 +156,11 @@ class TestOverview:
         assert content["business_overlay"]["data_streams"] == 2
         assert content["scan_fingerprint"].startswith("c203140e")
 
-    async def test_composite_overview_reports_the_curated_overlay_source(self, werkorder) -> None:
-        provider = make_provider(json_transport(werkorder))
+    async def test_composite_overview_reports_the_curated_overlay_source(self, workorders_demo) -> None:
+        provider = make_provider(json_transport(workorders_demo))
 
         result = await get_topology_overview(
-            GetTopologyOverviewInput(project_id="werkorder"), provider=provider, access_token=None
+            GetTopologyOverviewInput(project_id="workorders_demo"), provider=provider, access_token=None
         )
 
         assert result.content["topology_state"]["source"] == "analyst_curated"
@@ -178,14 +178,14 @@ class TestOverview:
             == 8
         )
 
-    async def test_overlay_absent_is_reported_as_null_not_omitted(self, alitalend) -> None:
-        mutated = copy.deepcopy(alitalend)
+    async def test_overlay_absent_is_reported_as_null_not_omitted(self, talend_demo) -> None:
+        mutated = copy.deepcopy(talend_demo)
         mutated["business_topology"] = None
         mutated["topology_state"] = None
         provider = make_provider(json_transport(mutated))
 
         result = await get_topology_overview(
-            GetTopologyOverviewInput(project_id="alitalend"), provider=provider, access_token=None
+            GetTopologyOverviewInput(project_id="talend_demo"), provider=provider, access_token=None
         )
 
         assert result.content["business_overlay"] is None
@@ -193,11 +193,11 @@ class TestOverview:
 
 
 class TestAmbiguity:
-    async def test_find_returns_every_same_named_system(self, alitalend) -> None:
-        provider = make_provider(json_transport(alitalend))
+    async def test_find_returns_every_same_named_system(self, talend_demo) -> None:
+        provider = make_provider(json_transport(talend_demo))
 
         result = await find_topology_node(
-            FindTopologyNodeInput(project_id="alitalend", query="Log"),
+            FindTopologyNodeInput(project_id="talend_demo", query="Log"),
             provider=provider,
             access_token=None,
         )
@@ -212,24 +212,24 @@ class TestAmbiguity:
             LOG_B,
         }
 
-    async def test_find_gives_each_candidate_a_discriminator(self, alitalend) -> None:
-        provider = make_provider(json_transport(alitalend))
+    async def test_find_gives_each_candidate_a_discriminator(self, talend_demo) -> None:
+        provider = make_provider(json_transport(talend_demo))
 
         result = await find_topology_node(
-            FindTopologyNodeInput(project_id="alitalend", query="Log"),
+            FindTopologyNodeInput(project_id="talend_demo", query="Log"),
             provider=provider,
             access_token=None,
         )
 
         adjacency = {item["id"]: item["adjacent"] for item in result.content["candidates"]}
-        assert adjacency[LOG_A] == ["AssetCheck to Log database data: AssetCheck -> Log"]
-        assert adjacency[LOG_B] == ["AssetCheck to second Log database data: AssetCheck -> Log"]
+        assert adjacency[LOG_A] == ["InspectHub to Log database data: InspectHub -> Log"]
+        assert adjacency[LOG_B] == ["InspectHub to second Log database data: InspectHub -> Log"]
 
-    async def test_get_node_refuses_to_pick_one_of_two_same_named_systems(self, alitalend) -> None:
-        provider = make_provider(json_transport(alitalend))
+    async def test_get_node_refuses_to_pick_one_of_two_same_named_systems(self, talend_demo) -> None:
+        provider = make_provider(json_transport(talend_demo))
 
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="alitalend", name_or_id="Log"),
+            GetTopologyNodeInput(project_id="talend_demo", name_or_id="Log"),
             provider=provider,
             access_token=None,
         )
@@ -241,12 +241,12 @@ class TestAmbiguity:
         assert {item["id"] for item in content["candidates"]} == {LOG_A, LOG_B}
 
     async def test_dependencies_refuse_to_pick_one_of_two_same_named_systems(
-        self, alitalend
+        self, talend_demo
     ) -> None:
-        provider = make_provider(json_transport(alitalend))
+        provider = make_provider(json_transport(talend_demo))
 
         result = await list_topology_dependencies(
-            ListTopologyDependenciesInput(project_id="alitalend", name_or_id="Log"),
+            ListTopologyDependenciesInput(project_id="talend_demo", name_or_id="Log"),
             provider=provider,
             access_token=None,
         )
@@ -255,11 +255,11 @@ class TestAmbiguity:
         assert result.content["reason"] == "ambiguous"
         assert "dependencies" not in result.content
 
-    async def test_unknown_name_is_reported_as_not_found_not_as_an_error(self, alitalend) -> None:
-        provider = make_provider(json_transport(alitalend))
+    async def test_unknown_name_is_reported_as_not_found_not_as_an_error(self, talend_demo) -> None:
+        provider = make_provider(json_transport(talend_demo))
 
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="alitalend", name_or_id="Salesforce"),
+            GetTopologyNodeInput(project_id="talend_demo", name_or_id="Salesforce"),
             provider=provider,
             access_token=None,
         )
@@ -270,12 +270,12 @@ class TestAmbiguity:
 
 
 class TestNameResolutionWithoutARoundTrip:
-    async def test_get_node_resolves_a_name_in_one_call(self, alitalend) -> None:
-        transport = json_transport(alitalend)
+    async def test_get_node_resolves_a_name_in_one_call(self, talend_demo) -> None:
+        transport = json_transport(talend_demo)
         provider = make_provider(transport)
 
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="alitalend", name_or_id="AssetCheck"),
+            GetTopologyNodeInput(project_id="talend_demo", name_or_id="InspectHub"),
             provider=provider,
             access_token=None,
         )
@@ -284,13 +284,13 @@ class TestNameResolutionWithoutARoundTrip:
         assert transport.call_count == 1
         assert result.content["resolved"] is True
         assert result.content["matched_on"] == "exact_name"
-        assert result.content["node"]["id"] == ASSETCHECK
+        assert result.content["node"]["id"] == INSPECTHUB
 
-    async def test_get_node_also_accepts_an_id(self, alitalend) -> None:
-        provider = make_provider(json_transport(alitalend))
+    async def test_get_node_also_accepts_an_id(self, talend_demo) -> None:
+        provider = make_provider(json_transport(talend_demo))
 
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="alitalend", name_or_id=LOG_B),
+            GetTopologyNodeInput(project_id="talend_demo", name_or_id=LOG_B),
             provider=provider,
             access_token=None,
         )
@@ -298,12 +298,12 @@ class TestNameResolutionWithoutARoundTrip:
         assert result.content["matched_on"] == "id"
         assert result.content["node"]["id"] == LOG_B
 
-    async def test_dependencies_resolve_a_name_in_one_call(self, alitalend) -> None:
-        transport = json_transport(alitalend)
+    async def test_dependencies_resolve_a_name_in_one_call(self, talend_demo) -> None:
+        transport = json_transport(talend_demo)
         provider = make_provider(transport)
 
         result = await list_topology_dependencies(
-            ListTopologyDependenciesInput(project_id="alitalend", name_or_id="AssetCheck"),
+            ListTopologyDependenciesInput(project_id="talend_demo", name_or_id="InspectHub"),
             provider=provider,
             access_token=None,
         )
@@ -312,24 +312,24 @@ class TestNameResolutionWithoutARoundTrip:
         assert result.content["resolved"] is True
         assert {item["id"] for item in result.content["dependencies"]} == {LOG_A, LOG_B}
 
-    async def test_case_insensitive_name_still_resolves(self, alitalend) -> None:
-        provider = make_provider(json_transport(alitalend))
+    async def test_case_insensitive_name_still_resolves(self, talend_demo) -> None:
+        provider = make_provider(json_transport(talend_demo))
 
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="alitalend", name_or_id="assetcheck"),
+            GetTopologyNodeInput(project_id="talend_demo", name_or_id="inspecthub"),
             provider=provider,
             access_token=None,
         )
 
-        assert result.content["node"]["id"] == ASSETCHECK
+        assert result.content["node"]["id"] == INSPECTHUB
 
 
 class TestProvenance:
-    async def test_overlay_node_keeps_its_claim_status_and_naming(self, alitalend) -> None:
-        provider = make_provider(json_transport(alitalend))
+    async def test_overlay_node_keeps_its_claim_status_and_naming(self, talend_demo) -> None:
+        provider = make_provider(json_transport(talend_demo))
 
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="alitalend", name_or_id=LOG_A),
+            GetTopologyNodeInput(project_id="talend_demo", name_or_id=LOG_A),
             provider=provider,
             access_token=None,
         )
@@ -339,12 +339,12 @@ class TestProvenance:
         assert result.content["node"]["provenance"]["confidence"] == 1.0
 
     async def test_overlay_node_name_match_to_scanner_is_labelled_as_a_name_match(
-        self, alitalend
+        self, talend_demo
     ) -> None:
-        provider = make_provider(json_transport(alitalend))
+        provider = make_provider(json_transport(talend_demo))
 
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="alitalend", name_or_id=LOG_A),
+            GetTopologyNodeInput(project_id="talend_demo", name_or_id=LOG_A),
             provider=provider,
             access_token=None,
         )
@@ -361,11 +361,11 @@ class TestProvenance:
         ]
         assert "not an established identity" in evidence["name_match_note"]
 
-    async def test_scanner_node_is_not_dressed_up_as_an_overlay_claim(self, alitalend) -> None:
-        provider = make_provider(json_transport(scanner_view(alitalend)))
+    async def test_scanner_node_is_not_dressed_up_as_an_overlay_claim(self, talend_demo) -> None:
+        provider = make_provider(json_transport(scanner_view(talend_demo)))
 
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="alitalend", name_or_id="system:connection:1:log"),
+            GetTopologyNodeInput(project_id="talend_demo", name_or_id="system:connection:1:log"),
             provider=provider,
             access_token=None,
         )
@@ -377,12 +377,12 @@ class TestProvenance:
         assert "name_matched_scanner_systems" not in result.content["evidence"]
 
     async def test_overlay_stream_reports_the_scanner_jobs_that_implement_it(
-        self, alitalend
+        self, talend_demo
     ) -> None:
-        provider = make_provider(json_transport(alitalend))
+        provider = make_provider(json_transport(talend_demo))
 
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="alitalend", name_or_id="AssetCheck"),
+            GetTopologyNodeInput(project_id="talend_demo", name_or_id="InspectHub"),
             provider=provider,
             access_token=None,
         )
@@ -395,20 +395,20 @@ class TestProvenance:
         # field name pasted onto its own value.
         assert first["established_note"]
         assert "claim_status" not in first
-        assert first["executed_by"] == ["AssetCheck"]
+        assert first["executed_by"] == ["InspectHub"]
         # Opaque artifact ids resolved through the published evidence catalogue.
         # Keyed as designs, not as untyped "provenance": a caller that has to guess
         # the kind guesses "component", which means something else here.
-        assert "AssetCheck_GetLocation" in first["implemented_by_designs"]
+        assert "InspectHub_GetLocation" in first["implemented_by_designs"]
         assert "scanner_provenance" not in first
 
 
 class TestTargets:
-    async def test_system_target_carries_a_system_id(self, alitalend) -> None:
-        provider = make_provider(json_transport(alitalend))
+    async def test_system_target_carries_a_system_id(self, talend_demo) -> None:
+        provider = make_provider(json_transport(talend_demo))
 
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="alitalend", name_or_id=LOG_A),
+            GetTopologyNodeInput(project_id="talend_demo", name_or_id=LOG_A),
             provider=provider,
             access_token=None,
         )
@@ -425,33 +425,33 @@ class TestTargets:
             "visual_role": "primary",
         }
 
-    async def test_application_target_carries_an_application_id(self, alitalend) -> None:
-        provider = make_provider(json_transport(scanner_view(alitalend)))
+    async def test_application_target_carries_an_application_id(self, talend_demo) -> None:
+        provider = make_provider(json_transport(scanner_view(talend_demo)))
 
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="alitalend", name_or_id="AssetCheck"),
+            GetTopologyNodeInput(project_id="talend_demo", name_or_id="InspectHub"),
             provider=provider,
             access_token=None,
         )
 
         assert result.targets[0] == {
-            "label": "AssetCheck",
+            "label": "InspectHub",
             "level": {
                 "kind": "integration",
                 "selection": {
                     "kind": "application",
-                    "applicationId": "talend-project:assetcheck:d3ec09658f7d",
+                    "applicationId": "talend-project:inspecthub:d3ec09658f7d",
                 },
             },
             "intent": "reference",
             "visual_role": "primary",
         }
 
-    async def test_overlay_edge_target_uses_the_business_stream_key(self, alitalend) -> None:
-        provider = make_provider(json_transport(alitalend))
+    async def test_overlay_edge_target_uses_the_business_stream_key(self, talend_demo) -> None:
+        provider = make_provider(json_transport(talend_demo))
 
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="alitalend", name_or_id="AssetCheck"),
+            GetTopologyNodeInput(project_id="talend_demo", name_or_id="InspectHub"),
             provider=provider,
             access_token=None,
         )
@@ -460,14 +460,14 @@ class TestTargets:
         ]
 
         assert edge_targets[0]["level"]["selection"]["edgeKey"] == (
-            f"business-stream{EDGE_KEY_SEPARATOR}stream:assetcheck-to-log-0"
+            f"business-stream{EDGE_KEY_SEPARATOR}stream:inspecthub-to-log-0"
         )
 
-    async def test_scanner_edge_target_uses_the_seven_part_tuple_key(self, alitalend) -> None:
-        provider = make_provider(json_transport(scanner_view(alitalend)))
+    async def test_scanner_edge_target_uses_the_seven_part_tuple_key(self, talend_demo) -> None:
+        provider = make_provider(json_transport(scanner_view(talend_demo)))
 
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="alitalend", name_or_id="AssetCheck"),
+            GetTopologyNodeInput(project_id="talend_demo", name_or_id="InspectHub"),
             provider=provider,
             access_token=None,
         )
@@ -479,7 +479,7 @@ class TestTargets:
 
         assert edge_key.split(EDGE_KEY_SEPARATOR) == [
             "application",
-            "talend-project:assetcheck:d3ec09658f7d",
+            "talend-project:inspecthub:d3ec09658f7d",
             "system",
             "system:connection:0:log",
             "data",
@@ -487,33 +487,33 @@ class TestTargets:
             "both",
         ]
 
-    async def test_landscape_level_tools_only_emit_integration_targets(self, werkorder) -> None:
+    async def test_landscape_level_tools_only_emit_integration_targets(self, workorders_demo) -> None:
         """Group/job/component targets belong to the depth tools, not to these.
 
         These four read the landscape rollup, which has no job or component
         nodes; emitting one would be a chip pointing at something the tool never
         read.
         """
-        provider = make_provider(json_transport(werkorder))
+        provider = make_provider(json_transport(workorders_demo))
 
         results = [
             await get_topology_overview(
-                GetTopologyOverviewInput(project_id="werkorder"),
+                GetTopologyOverviewInput(project_id="workorders_demo"),
                 provider=provider,
                 access_token=None,
             ),
             await find_topology_node(
-                FindTopologyNodeInput(project_id="werkorder", query="Maximo"),
+                FindTopologyNodeInput(project_id="workorders_demo", query="AssetSys"),
                 provider=provider,
                 access_token=None,
             ),
             await get_topology_node(
-                GetTopologyNodeInput(project_id="werkorder", name_or_id="Maximo"),
+                GetTopologyNodeInput(project_id="workorders_demo", name_or_id="AssetSys"),
                 provider=provider,
                 access_token=None,
             ),
             await list_topology_dependencies(
-                ListTopologyDependenciesInput(project_id="werkorder", name_or_id="Maximo"),
+                ListTopologyDependenciesInput(project_id="workorders_demo", name_or_id="AssetSys"),
                 provider=provider,
                 access_token=None,
             ),
@@ -533,52 +533,52 @@ class TestTargets:
 
 
 class TestVisualTargetRoles:
-    async def test_broad_overview_has_no_primary_target(self, werkorder) -> None:
+    async def test_broad_overview_has_no_primary_target(self, workorders_demo) -> None:
         result = await get_topology_overview(
-            GetTopologyOverviewInput(project_id="werkorder"),
-            provider=make_provider(json_transport(werkorder)),
+            GetTopologyOverviewInput(project_id="workorders_demo"),
+            provider=make_provider(json_transport(workorders_demo)),
             access_token=None,
         )
 
         assert result.targets
         assert {target["visual_role"] for target in result.targets} == {"supporting"}
 
-    async def test_ambiguous_search_has_no_primary_target(self, alitalend) -> None:
+    async def test_ambiguous_search_has_no_primary_target(self, talend_demo) -> None:
         result = await find_topology_node(
-            FindTopologyNodeInput(project_id="alitalend", query="Log"),
-            provider=make_provider(json_transport(alitalend)),
+            FindTopologyNodeInput(project_id="talend_demo", query="Log"),
+            provider=make_provider(json_transport(talend_demo)),
             access_token=None,
         )
 
         assert result.content["ambiguous"] is True
         assert "primary" not in {target["visual_role"] for target in result.targets}
 
-    async def test_single_search_result_is_primary(self, alitalend) -> None:
+    async def test_single_search_result_is_primary(self, talend_demo) -> None:
         result = await find_topology_node(
             FindTopologyNodeInput(
-                project_id="alitalend", query="landscape-system:4dbae6120cef624419bb"
+                project_id="talend_demo", query="landscape-system:4dbae6120cef624419bb"
             ),
-            provider=make_provider(json_transport(alitalend)),
+            provider=make_provider(json_transport(talend_demo)),
             access_token=None,
         )
 
         assert len(result.targets) == 1
         assert result.targets[0]["visual_role"] == "primary"
 
-    async def test_resolved_node_is_primary_and_relationships_are_path(self, werkorder) -> None:
+    async def test_resolved_node_is_primary_and_relationships_are_path(self, workorders_demo) -> None:
         result = await get_topology_node(
-            GetTopologyNodeInput(project_id="werkorder", name_or_id="Maximo"),
-            provider=make_provider(json_transport(werkorder)),
+            GetTopologyNodeInput(project_id="workorders_demo", name_or_id="AssetSys"),
+            provider=make_provider(json_transport(workorders_demo)),
             access_token=None,
         )
 
         assert result.targets[0]["visual_role"] == "primary"
         assert all(target["visual_role"] == "path" for target in result.targets[1:])
 
-    async def test_dependency_root_is_primary_and_traversal_is_path(self, werkorder) -> None:
+    async def test_dependency_root_is_primary_and_traversal_is_path(self, workorders_demo) -> None:
         result = await list_topology_dependencies(
-            ListTopologyDependenciesInput(project_id="werkorder", name_or_id="Maximo"),
-            provider=make_provider(json_transport(werkorder)),
+            ListTopologyDependenciesInput(project_id="workorders_demo", name_or_id="AssetSys"),
+            provider=make_provider(json_transport(workorders_demo)),
             access_token=None,
         )
 
@@ -588,20 +588,20 @@ class TestVisualTargetRoles:
 
 class TestTraversal:
     async def test_direction_follows_graph_orientation_not_the_mechanism_attribute(
-        self, werkorder
+        self, workorders_demo
     ) -> None:
-        provider = make_provider(json_transport(werkorder))
+        provider = make_provider(json_transport(workorders_demo))
 
         upstream = await list_topology_dependencies(
             ListTopologyDependenciesInput(
-                project_id="werkorder", name_or_id="Maximo", direction=TopologyDirection.UPSTREAM
+                project_id="workorders_demo", name_or_id="AssetSys", direction=TopologyDirection.UPSTREAM
             ),
             provider=provider,
             access_token=None,
         )
         downstream = await list_topology_dependencies(
             ListTopologyDependenciesInput(
-                project_id="werkorder", name_or_id="Maximo", direction=TopologyDirection.DOWNSTREAM
+                project_id="workorders_demo", name_or_id="AssetSys", direction=TopologyDirection.DOWNSTREAM
             ),
             provider=provider,
             access_token=None,
@@ -656,16 +656,16 @@ class TestTraversal:
 
     def test_hops_above_two_is_rejected_by_input_validation(self) -> None:
         with pytest.raises(ValueError):
-            ListTopologyDependenciesInput(project_id="alitalend", name_or_id="A", hops=3)
+            ListTopologyDependenciesInput(project_id="talend_demo", name_or_id="A", hops=3)
 
     def test_hops_below_one_is_rejected_by_input_validation(self) -> None:
         with pytest.raises(ValueError):
-            ListTopologyDependenciesInput(project_id="alitalend", name_or_id="A", hops=0)
+            ListTopologyDependenciesInput(project_id="talend_demo", name_or_id="A", hops=0)
 
     def test_unknown_direction_is_rejected_by_input_validation(self) -> None:
         with pytest.raises(ValueError):
             ListTopologyDependenciesInput(
-                project_id="alitalend", name_or_id="A", direction="sideways"
+                project_id="talend_demo", name_or_id="A", direction="sideways"
             )
 
     def test_traversal_project_id_must_be_a_plain_identifier(self) -> None:
@@ -753,24 +753,24 @@ class TestCapsOnAnOversizedArtifact:
 
     @pytest.mark.parametrize("hops", [1, 2])
     async def test_real_composite_hub_stays_inside_the_result_ceiling(
-        self, werkorder, hops
+        self, workorders_demo, hops
     ) -> None:
         """The caps, not the size backstop, are what keeps a hub answer usable.
 
-        Maximo has 32 relationships in this artifact. If a projection here grows,
+        AssetSys has 32 relationships in this artifact. If a projection here grows,
         this test fails before the backstop silently drops the answer's payload.
         """
-        provider = make_provider(json_transport(werkorder))
+        provider = make_provider(json_transport(workorders_demo))
 
         calls = {
             "node": get_topology_node(
-                GetTopologyNodeInput(project_id="werkorder", name_or_id="Maximo"),
+                GetTopologyNodeInput(project_id="workorders_demo", name_or_id="AssetSys"),
                 provider=provider,
                 access_token=None,
             ),
             "dependencies": list_topology_dependencies(
                 ListTopologyDependenciesInput(
-                    project_id="werkorder", name_or_id="Maximo", hops=hops
+                    project_id="workorders_demo", name_or_id="AssetSys", hops=hops
                 ),
                 provider=provider,
                 access_token=None,
@@ -783,15 +783,15 @@ class TestCapsOnAnOversizedArtifact:
 
 
 class TestSchemaDrift:
-    async def test_unknown_upstream_fields_are_ignored(self, alitalend) -> None:
-        mutated = copy.deepcopy(alitalend)
+    async def test_unknown_upstream_fields_are_ignored(self, talend_demo) -> None:
+        mutated = copy.deepcopy(talend_demo)
         mutated["future_family"] = [{"id": "x"}]
         mutated["systems"][0]["future_field"] = {"nested": True}
         mutated["business_topology"]["systems"][0]["future_claim"] = "later"
         provider = make_provider(json_transport(mutated))
 
         result = await get_topology_overview(
-            GetTopologyOverviewInput(project_id="alitalend"), provider=provider, access_token=None
+            GetTopologyOverviewInput(project_id="talend_demo"), provider=provider, access_token=None
         )
 
         assert result.content["scanner_facts"]["systems"] == 3

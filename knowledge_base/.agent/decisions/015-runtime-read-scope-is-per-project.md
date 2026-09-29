@@ -20,7 +20,7 @@ of what was polled. The filter is applied server-side, once, in `GET /runtime/do
 
 "Read scope [...] costs nothing at the vendor API and needs no re-mirroring."
 
-"Why it matters, measured on the live werkorder mirror: unscoped, the estate reports 3392
+"Why it matters, measured on the live workorders_demo mirror: unscoped, the estate reports 3392
 runs / 785 failures = 23.1% failure rate. That figure describes no environment that exists
 -- PROD alone is 2122 runs / 17 failures (0.8%), ACC is 1266 / 768 (60.7%). Filtering
 per-aggregate instead would let one number describe PROD while its neighbour described

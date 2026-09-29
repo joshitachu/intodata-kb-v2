@@ -197,7 +197,7 @@ invent a parallel model (§3, D5): add `source_component`, `target_component`, `
 `dynamic_refs: list[str]`, and widen `confidence` to the enum above. Population moves from the
 abandoned LLM pass to this deterministic pass. The credential filter
 (`intodoc/src/intodoc/scanner/`) must run over `lineage.json` exactly as it does over scan
-output — expressions can embed secrets (the VW sample contains password-handling logic).
+output — expressions can embed secrets (the ClientA sample contains password-handling logic).
 
 **Query API:** `GET /mcp/projects/{id}/lineage/field?job=&component=&table=&column=&direction=up|down|both&max_depth=`
 → BFS over the lineage graph (cycle-safe, depth-capped), returning path nodes/edges plus each
@@ -414,7 +414,7 @@ S1/S2/S4 touch MCP API routes → `/inspect` required before commit (root `CLAUD
 
 ### S0 — Spike (timeboxed, no product code) — **Implemented**
 Verify on live data: (a) TMC `job_name` vs scanner job-name match rate on `cdc`;
-(b) tokenizer hit rate over all tMap expressions in `reverse_engineer_VW` + `cdc`
+(b) tokenizer hit rate over all tMap expressions in `reverse_engineer_ClientA` + `cdc`
 (script only, in scratch); (c) confirm which params on input/output components identify
 tables/connections for future stitching. Output: go/no-go notes attached to this doc.
 Results: §1.4 above. Verdict: go.
@@ -494,7 +494,7 @@ Results: §1.4 above. Verdict: go.
 - `intodoc/src/intodoc/lineage.py` deterministic pass (tokenizer, Var chaining, row→component
   resolution, classification); extend `LineageMatrix`/`LineageEntry` (`models.py`); emit
   credential-filtered `scan/lineage.json`; `lineage_service.py` + `/lineage/field` route.
-- **Acceptance:** for a known VW job, `/lineage/field` returns the verified expected edges
+- **Acceptance:** for a known ClientA job, `/lineage/field` returns the verified expected edges
   (golden-file pytest against the real scan fixture); dynamic refs appear as unresolved with
   `confidence: dynamic`; no credentials in `lineage.json`.
 - **Files created/changed (verified, uncommitted):**
@@ -509,10 +509,10 @@ Results: §1.4 above. Verdict: go.
     `verify_model_leaves` shared leaf-string sweep + `verify_lineage_matrix`, reused by both
     `scan_result.json` and `lineage.json` gates — confirmed by test (§3 below))
   - `knowledge_base/intodoc/tests/test_lineage/` (new: `test_tokenizer.py`,
-    `test_build_lineage_matrix.py`, `test_cli_scan_lineage.py`, `test_golden_vw.py`,
+    `test_build_lineage_matrix.py`, `test_cli_scan_lineage.py`, `test_golden_clienta.py`,
     `test_cross_job_stitching.py` — the last belongs functionally to S5's stitching increment
     but landed in the same test module)
-  - `knowledge_base/intodoc/tests/fixtures/lineage/` (new, real VW fixture)
+  - `knowledge_base/intodoc/tests/fixtures/lineage/` (new, real ClientA fixture)
   - `knowledge_base/mcp-server/src/mcp_server/services/lineage_service.py` (new)
   - `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py` (new `GET
     /projects/{project_id}/lineage/field` handler, `get_field_lineage`)
@@ -520,7 +520,7 @@ Results: §1.4 above. Verdict: go.
     `LineageFieldNode`, `LineageFieldEdge`, `LineageFieldResponse`)
   - `knowledge_base/mcp-server/tests/test_api/test_lineage_field.py`,
     `tests/test_services/test_lineage_service.py` (new)
-  - `knowledge_base/mcp-server/tests/fixtures/lineage/vw_maximo2assetcheck_sendlocation_lineage.json` (new)
+  - `knowledge_base/mcp-server/tests/fixtures/lineage/clienta_assetsys2inspecthub_sendlocation_lineage.json` (new)
   - `RAG_pipeline/frontend/app/api/projects/[id]/lineage/field/route.ts` (new proxy)
   - `RAG_pipeline/frontend/hooks/useFieldLineage.ts`, `types/lineage.ts` (new, Zod-validated;
     also consumed by S5)

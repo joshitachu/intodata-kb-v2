@@ -3,16 +3,16 @@
   {
    "artifact_count": 10,
    "description": "",
-   "id": "talend-project:assetcheck:d3ec09658f7d",
+   "id": "talend-project:inspecthub:d3ec09658f7d",
    "kinds_breakdown": {
     "job": 10
    },
-   "label": "AssetCheck",
+   "label": "InspectHub",
    "project_id": "_3kddkRZdEeqKU_MVyswKqg",
    "role": "execution",
-   "source_root": "werkorder_bundle/ASSETCHECK",
+   "source_root": "workorders_demo_bundle/INSPECTHUB",
    "source_roots": [
-    "werkorder_bundle/ASSETCHECK"
+    "workorders_demo_bundle/INSPECTHUB"
    ]
   },
   {
@@ -23,9 +23,9 @@
    "label": "References",
    "project_id": "_VQorIYglEeyCH-SfJ5ELmQ",
    "role": "support",
-   "source_root": "werkorder_bundle/REFERENCES",
+   "source_root": "workorders_demo_bundle/REFERENCES",
    "source_roots": [
-    "werkorder_bundle/REFERENCES"
+    "workorders_demo_bundle/REFERENCES"
    ]
   }
  ],
@@ -64,17 +64,17 @@
     "conflict_ids": [],
     "control_ids": [],
     "delivery_path_id": null,
-    "description": "Scanner-backed data dependency from AssetCheck to the first Log database identity.",
+    "description": "Scanner-backed data dependency from InspectHub to the first Log database identity.",
     "destination_system_id": "landscape-system:aab3dedb92918d1cf853",
     "evidence_ids": [
      "landscape-edge:d8346a2c7f96fd68fe23",
      "artifact:3937a2482d7d5ff54f1a"
     ],
-    "id": "stream:assetcheck-to-log-0",
+    "id": "stream:inspecthub-to-log-0",
     "integration_solution_ids": [
-     "integration-solution:assetcheck"
+     "integration-solution:inspecthub"
     ],
-    "name": "AssetCheck to Log database data",
+    "name": "InspectHub to Log database data",
     "protocols": [
      "Database"
     ],
@@ -97,17 +97,17 @@
     "conflict_ids": [],
     "control_ids": [],
     "delivery_path_id": null,
-    "description": "Scanner-backed outbound data dependency from AssetCheck to the second Log database identity.",
+    "description": "Scanner-backed outbound data dependency from InspectHub to the second Log database identity.",
     "destination_system_id": "landscape-system:7535d19590ac8488f941",
     "evidence_ids": [
      "landscape-edge:a8a781af37d4f72d71e0",
      "artifact:e46c6ba576cc897a3e95"
     ],
-    "id": "stream:assetcheck-to-log-1",
+    "id": "stream:inspecthub-to-log-1",
     "integration_solution_ids": [
-     "integration-solution:assetcheck"
+     "integration-solution:inspecthub"
     ],
-    "name": "AssetCheck to second Log database data",
+    "name": "InspectHub to second Log database data",
     "protocols": [
      "Database"
     ],
@@ -142,8 +142,8 @@
      "landscape-application:1d5c0f7777b98508aec8",
      "artifact:d7fa7b4bfe239675d3a4"
     ],
-    "id": "integration-solution:assetcheck",
-    "name": "AssetCheck",
+    "id": "integration-solution:inspecthub",
+    "name": "InspectHub",
     "platform": "Talend",
     "role": "execution",
     "status": "observed"
@@ -153,7 +153,7 @@
   "metadata": {
    "generated_by": "documentation_topology_agent",
    "model_name": "gpt-5.6-luna",
-   "project_id": "alitalend",
+   "project_id": "talend_demo",
    "scan_fingerprint": "c203140e7d7fafbd4032e56716a403c7ab5cd3f28cdd88681d21a08f87b66765"
   },
   "risks": [],
@@ -170,7 +170,7 @@
     ],
     "id": "landscape-application:1d5c0f7777b98508aec8",
     "kind": "software_system",
-    "name": "AssetCheck",
+    "name": "InspectHub",
     "owner": "",
     "purpose": "",
     "status": "observed"
@@ -246,8 +246,8 @@
     "question": "What business objects and business purposes do these database dependencies represent?",
     "status": "not_established",
     "stream_ids": [
-     "stream:assetcheck-to-log-0",
-     "stream:assetcheck-to-log-1"
+     "stream:inspecthub-to-log-0",
+     "stream:inspecthub-to-log-1"
     ]
    }
   ]
@@ -263,127 +263,127 @@
    "mechanism": "db",
    "provenance": [
     {
-     "artifact_id": "AssetCheck_GetLocation",
+     "artifact_id": "InspectHub_GetLocation",
      "component_name": "tMSSqlInput_1",
      "fact_type": "artifact_resource",
-     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_GetLocation",
-     "source_root": "werkorder_bundle/ASSETCHECK"
+     "qualified_artifact_id": "workorders_demo_bundle/INSPECTHUB::InspectHub_GetLocation",
+     "source_root": "workorders_demo_bundle/INSPECTHUB"
     },
     {
-     "artifact_id": "AssetCheck_GetLocation",
+     "artifact_id": "InspectHub_GetLocation",
      "component_name": "tMSSqlOutput_1",
      "fact_type": "artifact_resource",
-     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_GetLocation",
-     "source_root": "werkorder_bundle/ASSETCHECK"
+     "qualified_artifact_id": "workorders_demo_bundle/INSPECTHUB::InspectHub_GetLocation",
+     "source_root": "workorders_demo_bundle/INSPECTHUB"
     },
     {
-     "artifact_id": "AssetCheck_GetLocations",
+     "artifact_id": "InspectHub_GetLocations",
      "component_name": "tDBInput_1",
      "fact_type": "artifact_resource",
-     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_GetLocations",
-     "source_root": "werkorder_bundle/ASSETCHECK"
+     "qualified_artifact_id": "workorders_demo_bundle/INSPECTHUB::InspectHub_GetLocations",
+     "source_root": "workorders_demo_bundle/INSPECTHUB"
     },
     {
-     "artifact_id": "AssetCheck_GetLocations",
+     "artifact_id": "InspectHub_GetLocations",
      "component_name": "tDBOutput_1",
      "fact_type": "artifact_resource",
-     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_GetLocations",
-     "source_root": "werkorder_bundle/ASSETCHECK"
+     "qualified_artifact_id": "workorders_demo_bundle/INSPECTHUB::InspectHub_GetLocations",
+     "source_root": "workorders_demo_bundle/INSPECTHUB"
     },
     {
-     "artifact_id": "AssetCheck_GetWorkOrder",
+     "artifact_id": "InspectHub_GetWorkOrder",
      "component_name": "tDBOutput_1",
      "fact_type": "artifact_resource",
-     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_GetWorkOrder",
-     "source_root": "werkorder_bundle/ASSETCHECK"
+     "qualified_artifact_id": "workorders_demo_bundle/INSPECTHUB::InspectHub_GetWorkOrder",
+     "source_root": "workorders_demo_bundle/INSPECTHUB"
     },
     {
-     "artifact_id": "AssetCheck_GetWorkOrder",
+     "artifact_id": "InspectHub_GetWorkOrder",
      "component_name": "tMSSqlInput_1",
      "fact_type": "artifact_resource",
-     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_GetWorkOrder",
-     "source_root": "werkorder_bundle/ASSETCHECK"
+     "qualified_artifact_id": "workorders_demo_bundle/INSPECTHUB::InspectHub_GetWorkOrder",
+     "source_root": "workorders_demo_bundle/INSPECTHUB"
     },
     {
-     "artifact_id": "AssetCheck_GetWorkOrders",
+     "artifact_id": "InspectHub_GetWorkOrders",
      "component_name": "tDBOutput_1",
      "fact_type": "artifact_resource",
-     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_GetWorkOrders",
-     "source_root": "werkorder_bundle/ASSETCHECK"
+     "qualified_artifact_id": "workorders_demo_bundle/INSPECTHUB::InspectHub_GetWorkOrders",
+     "source_root": "workorders_demo_bundle/INSPECTHUB"
     },
     {
-     "artifact_id": "AssetCheck_GetWorkOrders",
+     "artifact_id": "InspectHub_GetWorkOrders",
      "component_name": "tMSSqlInput_1",
      "fact_type": "artifact_resource",
-     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_GetWorkOrders",
-     "source_root": "werkorder_bundle/ASSETCHECK"
+     "qualified_artifact_id": "workorders_demo_bundle/INSPECTHUB::InspectHub_GetWorkOrders",
+     "source_root": "workorders_demo_bundle/INSPECTHUB"
     },
     {
-     "artifact_id": "AssetCheck_SendServiceRequest",
+     "artifact_id": "InspectHub_SendServiceRequest",
      "component_name": "tMSSqlInput_1",
      "fact_type": "artifact_resource",
-     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_SendServiceRequest",
-     "source_root": "werkorder_bundle/ASSETCHECK"
+     "qualified_artifact_id": "workorders_demo_bundle/INSPECTHUB::InspectHub_SendServiceRequest",
+     "source_root": "workorders_demo_bundle/INSPECTHUB"
     },
     {
-     "artifact_id": "AssetCheck_SendServiceRequest",
+     "artifact_id": "InspectHub_SendServiceRequest",
      "component_name": "tMSSqlOutput_1",
      "fact_type": "artifact_resource",
-     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_SendServiceRequest",
-     "source_root": "werkorder_bundle/ASSETCHECK"
+     "qualified_artifact_id": "workorders_demo_bundle/INSPECTHUB::InspectHub_SendServiceRequest",
+     "source_root": "workorders_demo_bundle/INSPECTHUB"
     },
     {
-     "artifact_id": "AssetCheck_SendWorkOrderUpdate",
+     "artifact_id": "InspectHub_SendWorkOrderUpdate",
      "component_name": "tMSSqlInput_1",
      "fact_type": "artifact_resource",
-     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_SendWorkOrderUpdate",
-     "source_root": "werkorder_bundle/ASSETCHECK"
+     "qualified_artifact_id": "workorders_demo_bundle/INSPECTHUB::InspectHub_SendWorkOrderUpdate",
+     "source_root": "workorders_demo_bundle/INSPECTHUB"
     },
     {
-     "artifact_id": "AssetCheck_SendWorkOrderUpdate",
+     "artifact_id": "InspectHub_SendWorkOrderUpdate",
      "component_name": "tMSSqlOutput_1",
      "fact_type": "artifact_resource",
-     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::AssetCheck_SendWorkOrderUpdate",
-     "source_root": "werkorder_bundle/ASSETCHECK"
+     "qualified_artifact_id": "workorders_demo_bundle/INSPECTHUB::InspectHub_SendWorkOrderUpdate",
+     "source_root": "workorders_demo_bundle/INSPECTHUB"
     },
     {
-     "artifact_id": "Maximo2AssetCheck_SendLocation",
+     "artifact_id": "AssetSys2InspectHub_SendLocation",
      "component_name": "tMSSqlInput_1",
      "fact_type": "artifact_resource",
-     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::Maximo2AssetCheck_SendLocation",
-     "source_root": "werkorder_bundle/ASSETCHECK"
+     "qualified_artifact_id": "workorders_demo_bundle/INSPECTHUB::AssetSys2InspectHub_SendLocation",
+     "source_root": "workorders_demo_bundle/INSPECTHUB"
     },
     {
-     "artifact_id": "Maximo2AssetCheck_SendLocation",
+     "artifact_id": "AssetSys2InspectHub_SendLocation",
      "component_name": "tMSSqlInput_2",
      "fact_type": "artifact_resource",
-     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::Maximo2AssetCheck_SendLocation",
-     "source_root": "werkorder_bundle/ASSETCHECK"
+     "qualified_artifact_id": "workorders_demo_bundle/INSPECTHUB::AssetSys2InspectHub_SendLocation",
+     "source_root": "workorders_demo_bundle/INSPECTHUB"
     },
     {
-     "artifact_id": "Maximo2AssetCheck_SendLocation",
+     "artifact_id": "AssetSys2InspectHub_SendLocation",
      "component_name": "tMSSqlOutput_1",
      "fact_type": "artifact_resource",
-     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::Maximo2AssetCheck_SendLocation",
-     "source_root": "werkorder_bundle/ASSETCHECK"
+     "qualified_artifact_id": "workorders_demo_bundle/INSPECTHUB::AssetSys2InspectHub_SendLocation",
+     "source_root": "workorders_demo_bundle/INSPECTHUB"
     },
     {
-     "artifact_id": "Maximo2AssetCheck_SendWorkOrder",
+     "artifact_id": "AssetSys2InspectHub_SendWorkOrder",
      "component_name": "tMSSqlInput_1",
      "fact_type": "artifact_resource",
-     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::Maximo2AssetCheck_SendWorkOrder",
-     "source_root": "werkorder_bundle/ASSETCHECK"
+     "qualified_artifact_id": "workorders_demo_bundle/INSPECTHUB::AssetSys2InspectHub_SendWorkOrder",
+     "source_root": "workorders_demo_bundle/INSPECTHUB"
     },
     {
-     "artifact_id": "Maximo2AssetCheck_SendWorkOrder",
+     "artifact_id": "AssetSys2InspectHub_SendWorkOrder",
      "component_name": "tMSSqlInput_2",
      "fact_type": "artifact_resource",
-     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::Maximo2AssetCheck_SendWorkOrder",
-     "source_root": "werkorder_bundle/ASSETCHECK"
+     "qualified_artifact_id": "workorders_demo_bundle/INSPECTHUB::AssetSys2InspectHub_SendWorkOrder",
+     "source_root": "workorders_demo_bundle/INSPECTHUB"
     }
    ],
    "reliability": "unknown",
-   "source": "talend-project:assetcheck:d3ec09658f7d",
+   "source": "talend-project:inspecthub:d3ec09658f7d",
    "source_kind": "application",
    "target": "system:connection:0:log",
    "target_kind": "system"
@@ -396,15 +396,15 @@
    "mechanism": "db",
    "provenance": [
     {
-     "artifact_id": "Maximo2AssetCheck_SendWorkOrder",
+     "artifact_id": "AssetSys2InspectHub_SendWorkOrder",
      "component_name": "tMSSqlOutput_1",
      "fact_type": "artifact_resource",
-     "qualified_artifact_id": "werkorder_bundle/ASSETCHECK::Maximo2AssetCheck_SendWorkOrder",
-     "source_root": "werkorder_bundle/ASSETCHECK"
+     "qualified_artifact_id": "workorders_demo_bundle/INSPECTHUB::AssetSys2InspectHub_SendWorkOrder",
+     "source_root": "workorders_demo_bundle/INSPECTHUB"
     }
    ],
    "reliability": "unknown",
-   "source": "talend-project:assetcheck:d3ec09658f7d",
+   "source": "talend-project:inspecthub:d3ec09658f7d",
    "source_kind": "application",
    "target": "system:connection:1:log",
    "target_kind": "system"
@@ -430,7 +430,7 @@
     {
      "detail": {
       "connection_type": "Microsoft SQL Server",
-      "source_root": "werkorder_bundle/ASSETCHECK",
+      "source_root": "workorders_demo_bundle/INSPECTHUB",
       "xmi_id": "_QOenYPBFEeOwluABMJAUrQ"
      },
      "label": "LogConnection",
@@ -439,7 +439,7 @@
     {
      "detail": {
       "connection_type": "Microsoft SQL Server",
-      "source_root": "werkorder_bundle/ASSETCHECK",
+      "source_root": "workorders_demo_bundle/INSPECTHUB",
       "xmi_id": "_QOenYPBFEeOwluABMJAUrQ"
      },
      "label": "LogConnection",
@@ -450,7 +450,7 @@
    "kind": "database",
    "name": "Log",
    "source_roots": [
-    "werkorder_bundle/ASSETCHECK"
+    "workorders_demo_bundle/INSPECTHUB"
    ]
   },
   {
@@ -458,7 +458,7 @@
     {
      "detail": {
       "connection_type": "Microsoft SQL Server",
-      "source_root": "werkorder_bundle/ASSETCHECK",
+      "source_root": "workorders_demo_bundle/INSPECTHUB",
       "xmi_id": "_bNno8BvxEeqwlth2Il2VSg"
      },
      "label": "LogDBConnection",
@@ -467,7 +467,7 @@
     {
      "detail": {
       "connection_type": "Microsoft SQL Server",
-      "source_root": "werkorder_bundle/ASSETCHECK",
+      "source_root": "workorders_demo_bundle/INSPECTHUB",
       "xmi_id": "_bNno8BvxEeqwlth2Il2VSg"
      },
      "label": "LogDBConnection",
@@ -478,7 +478,7 @@
    "kind": "database",
    "name": "Log",
    "source_roots": [
-    "werkorder_bundle/ASSETCHECK"
+    "workorders_demo_bundle/INSPECTHUB"
    ]
   },
   {
@@ -486,7 +486,7 @@
     {
      "detail": {
       "connection_type": "Microsoft SQL Server",
-      "source_root": "werkorder_bundle/ASSETCHECK",
+      "source_root": "workorders_demo_bundle/INSPECTHUB",
       "xmi_id": "_c7xBEApmEemak-xJBaXk-g"
      },
      "label": "CommonDbConnection",
@@ -495,7 +495,7 @@
     {
      "detail": {
       "connection_type": "Microsoft SQL Server",
-      "source_root": "werkorder_bundle/ASSETCHECK",
+      "source_root": "workorders_demo_bundle/INSPECTHUB",
       "xmi_id": "_c7xBEApmEemak-xJBaXk-g"
      },
      "label": "CommonDbConnection",
@@ -506,7 +506,7 @@
    "kind": "database",
    "name": "Common",
    "source_roots": [
-    "werkorder_bundle/ASSETCHECK"
+    "workorders_demo_bundle/INSPECTHUB"
    ]
   }
  ],
@@ -516,57 +516,57 @@
     "artifact_kind": "job",
     "artifact_role": "standalone",
     "id": "artifact:3937a2482d7d5ff54f1a",
-    "job_id": "AssetCheck_GetLocation",
-    "name": "AssetCheck_GetLocation",
-    "source_root": "werkorder_bundle/ASSETCHECK"
+    "job_id": "InspectHub_GetLocation",
+    "name": "InspectHub_GetLocation",
+    "source_root": "workorders_demo_bundle/INSPECTHUB"
    },
    {
     "artifact_kind": "job",
     "artifact_role": "standalone",
     "id": "artifact:e5cf41748a381a21743e",
-    "job_id": "AssetCheck_GetLocations",
-    "name": "AssetCheck_GetLocations",
-    "source_root": "werkorder_bundle/ASSETCHECK"
+    "job_id": "InspectHub_GetLocations",
+    "name": "InspectHub_GetLocations",
+    "source_root": "workorders_demo_bundle/INSPECTHUB"
    },
    {
     "artifact_kind": "job",
     "artifact_role": "standalone",
     "id": "artifact:064f84603a4bc4ce7c00",
-    "job_id": "AssetCheck_GetWorkOrder",
-    "name": "AssetCheck_GetWorkOrder",
-    "source_root": "werkorder_bundle/ASSETCHECK"
+    "job_id": "InspectHub_GetWorkOrder",
+    "name": "InspectHub_GetWorkOrder",
+    "source_root": "workorders_demo_bundle/INSPECTHUB"
    },
    {
     "artifact_kind": "job",
     "artifact_role": "standalone",
     "id": "artifact:e1b859347326adc8cce1",
-    "job_id": "AssetCheck_GetWorkOrders",
-    "name": "AssetCheck_GetWorkOrders",
-    "source_root": "werkorder_bundle/ASSETCHECK"
+    "job_id": "InspectHub_GetWorkOrders",
+    "name": "InspectHub_GetWorkOrders",
+    "source_root": "workorders_demo_bundle/INSPECTHUB"
    },
    {
     "artifact_kind": "job",
     "artifact_role": "standalone",
     "id": "artifact:3a6bee3ba7f463be2f32",
-    "job_id": "AssetCheck_SendServiceRequest",
-    "name": "AssetCheck_SendServiceRequest",
-    "source_root": "werkorder_bundle/ASSETCHECK"
+    "job_id": "InspectHub_SendServiceRequest",
+    "name": "InspectHub_SendServiceRequest",
+    "source_root": "workorders_demo_bundle/INSPECTHUB"
    },
    {
     "artifact_kind": "job",
     "artifact_role": "standalone",
     "id": "artifact:ee2cb78c88df2f57669a",
-    "job_id": "AssetCheck_SendWorkOrderUpdate",
-    "name": "AssetCheck_SendWorkOrderUpdate",
-    "source_root": "werkorder_bundle/ASSETCHECK"
+    "job_id": "InspectHub_SendWorkOrderUpdate",
+    "name": "InspectHub_SendWorkOrderUpdate",
+    "source_root": "workorders_demo_bundle/INSPECTHUB"
    },
    {
     "artifact_kind": "job",
     "artifact_role": "standalone",
     "id": "artifact:e46c6ba576cc897a3e95",
-    "job_id": "Maximo2AssetCheck_SendWorkOrder",
-    "name": "Maximo2AssetCheck_SendWorkOrder",
-    "source_root": "werkorder_bundle/ASSETCHECK"
+    "job_id": "AssetSys2InspectHub_SendWorkOrder",
+    "name": "AssetSys2InspectHub_SendWorkOrder",
+    "source_root": "workorders_demo_bundle/INSPECTHUB"
    }
   ],
   "components": [],

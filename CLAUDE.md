@@ -57,8 +57,8 @@ Two independent sub-systems sharing infrastructure:
 ## Services (docker-compose.yml)
 
 Ten services are defined. Seven are the EP-001 Compose health boundary.
-`mission-control` and `demo-mcp` also start with `docker compose up -d` but are
-outside it; `opencode-labs` starts only with `--profile labs`.
+`mission-control` also starts with `docker compose up -d` but is outside it;
+`demo-mcp` starts only with `--profile demo` and `opencode-labs` only with `--profile labs`.
 
 | Service | Image/Build | Port | Purpose |
 |---------|------------|------|---------|
@@ -70,7 +70,7 @@ outside it; `opencode-labs` starts only with `--profile labs`.
 | mcp-server | knowledge_base/mcp-server | `${MCP_PORT:-8002}` | MCP + REST API (nginx webhooks, operator tunnels) |
 | dashboard | knowledge_base/dashboard | 8001 | intodoc control panel |
 | mission-control | mission_control/ | `${MC_PORT:-9100}` (127.0.0.1) | Aggregates heartbeat snapshots from customer instances. NOT part of the health boundary -- it is an operator-side aggregator, not a per-client service. |
-| demo-mcp | examples/demo-mcp | `${DEMO_MCP_PORT:-8765}` | Read-only MCP server with invented work-order data, for demonstrating project-scoped MCP calls. Not in the health boundary. |
+| demo-mcp | examples/demo-mcp | `${DEMO_MCP_PORT:-8765}` | Read-only MCP server with invented work-order data, for demonstrating project-scoped MCP calls. Profile `demo` only; never in a client deployment. |
 | opencode-labs | labs/opencode | none (compose network, 4096) | Experimental OpenCode loop behind `/labs/chat`. Profile `labs` only; not in the health boundary. |
 
 `RAG_pipeline/docker-compose.yml` is a **dev-only** file that redefines four of

@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import rawTopology from "../fixtures/werkorder_org_business_topology.json";
+import rawTopology from "../fixtures/workorders_demo_org_business_topology.json";
 import { architectureFlowsForPair, architectureRelationshipPairs, normalizeArchitectureL1, relationshipIntegrationNodes } from "@/lib/architectureViewModel";
 import { BusinessTopologySchema } from "@/types/landscape";
 
 const topology = BusinessTopologySchema.parse(rawTopology);
 
 describe("normalizeArchitectureL1", () => {
-  it("derives a non-Werkorder anchor and directional columns from business streams", () => {
+  it("derives a non-Workorder anchor and directional columns from business streams", () => {
     const claim = {
       aliases: [], kind: "software_system" as const, description: "", purpose: "", owner: "",
       status: "confirmed" as const, confidence: 0.9, evidence_ids: [],
@@ -52,7 +52,7 @@ describe("normalizeArchitectureL1", () => {
   it("keeps an evidence-bounded topology with no streams renderable", () => {
     const noStreamTopology = BusinessTopologySchema.parse({
       ...topology,
-      systems: [topology.systems.find((system) => system.id === "sys-maximo")!],
+      systems: [topology.systems.find((system) => system.id === "sys-assetsys")!],
       integration_solutions: [],
       data_streams: [],
     });
@@ -60,7 +60,7 @@ describe("normalizeArchitectureL1", () => {
     const model = normalizeArchitectureL1(noStreamTopology);
 
     expect(model.relationships).toEqual([]);
-    expect(model.nodes).toMatchObject([{ label: "Maximo", layer: "core" }]);
+    expect(model.nodes).toMatchObject([{ label: "AssetSys", layer: "core" }]);
   });
 
   it("creates a bounded, traceable company architecture projection from real topology evidence", () => {
@@ -69,7 +69,7 @@ describe("normalizeArchitectureL1", () => {
     expect(model.level).toBe("L1");
     expect(model.nodes.length).toBeLessThanOrEqual(15);
     expect(model.relationships.length).toBeLessThanOrEqual(18);
-    expect(model.nodes.find((node) => node.label === "Maximo")).toMatchObject({ layer: "core" });
+    expect(model.nodes.find((node) => node.label === "AssetSys")).toMatchObject({ layer: "core" });
     expect(model.nodes.find((node) => node.label === "ETTM")).toMatchObject({ layer: "integration" });
     expect(model.nodes.find((node) => node.label === "ActiveMQ")).toMatchObject({ kind: "broker" });
     expect(model.nodes.find((node) => node.id === "group:supporting-and-unresolved")?.systemIds).toEqual(expect.arrayContaining([
@@ -77,9 +77,9 @@ describe("normalizeArchitectureL1", () => {
     ]));
   });
 
-  it("collapses Maximo to 4PS streams into one L1 relationship without losing their ids", () => {
+  it("collapses AssetSys to 4FS streams into one L1 relationship without losing their ids", () => {
     const model = normalizeArchitectureL1(topology);
-    const relationship = model.relationships.find((item) => item.source === "system:sys-maximo" && item.target === "system:sys-4ps");
+    const relationship = model.relationships.find((item) => item.source === "system:sys-assetsys" && item.target === "system:sys-4fs");
 
     expect(relationship).toMatchObject({
       businessObjects: expect.arrayContaining(["WorkOrder", "Invoice", "PurchaseOrder"]),
@@ -106,7 +106,7 @@ describe("normalizeArchitectureL1", () => {
   it("collapses opposite directions into one L1 connection and restores direction in L2", () => {
     const model = normalizeArchitectureL1(topology);
     const pair = architectureRelationshipPairs(model).find((item) =>
-      item.streamIds.some((streamId) => streamId.includes("maximo--4ps")),
+      item.streamIds.some((streamId) => streamId.includes("assetsys--4fs")),
     );
 
     expect(pair).toBeDefined();
@@ -114,7 +114,7 @@ describe("normalizeArchitectureL1", () => {
     expect(pair?.streamIds.length).toBeGreaterThan(6);
     const flows = architectureFlowsForPair(topology, pair!);
     expect(new Set(flows.map((flow) => flow.sourceSystemId))).toEqual(
-      new Set(["sys-maximo", "sys-4ps"]),
+      new Set(["sys-assetsys", "sys-4fs"]),
     );
     expect(flows.every((flow) => flow.evidenceIds.length > 0)).toBe(true);
   });
@@ -132,19 +132,19 @@ describe("normalizeArchitectureL1", () => {
     const topology = BusinessTopologySchema.parse({
       ...rawTopology,
       systems: [
-        { ...claim, id: "sys-maximo", name: "Maximo", kind: "software_system", aliases: [] },
-        { ...claim, id: "sys-4ps", name: "4PS", kind: "software_system", aliases: [] },
+        { ...claim, id: "sys-assetsys", name: "AssetSys", kind: "software_system", aliases: [] },
+        { ...claim, id: "sys-4fs", name: "4FS", kind: "software_system", aliases: [] },
       ],
       integration_solutions: [],
       business_objects: [{ ...claim, id: "obj-wo", name: "WorkOrder", aliases: [] }],
       data_streams: [{
         ...claim,
         id: "ds-wo",
-        source_system_id: "sys-maximo",
-        destination_system_id: "sys-4ps",
-        name: "Werkorders",
+        source_system_id: "sys-assetsys",
+        destination_system_id: "sys-4fs",
+        name: "Workorders",
         business_object_ids: ["obj-wo"],
-        business_summary: "Maximo levert werkorders aan 4PS.",
+        business_summary: "AssetSys levert workorders aan 4FS.",
         integration_solution_ids: [],
         protocols: ["JMS"],
         artifact_ids: [],
@@ -168,7 +168,7 @@ describe("normalizeArchitectureL1", () => {
         transformation("tr-status", "value_domain", { target_field: "serviceOrders.status", mappings: [{ source: "GGK", target: "In Process", mapping_type: "value" }] }),
         transformation("tr-priority", "value_domain", { target_field: "serviceOrders.status", mappings: [{ source: "AFG", target: "Closed", mapping_type: "value" }] }),
         transformation("tr-derived", "derived_rule", { mappings: [{ source: "WORKORDER.SITEID", target: "serviceOrders.site", mapping_type: "derived", expression: "lookup(SITEID)" }] }),
-        transformation("tr-constant", "constant_set", { mappings: [{ source: "\"MAXIMO\"", target: "serviceOrders.origin", mapping_type: "constant" }] }),
+        transformation("tr-constant", "constant_set", { mappings: [{ source: "\"ASSETSYS\"", target: "serviceOrders.origin", mapping_type: "constant" }] }),
         transformation("tr-legacy", "unknown", { mappings: [{ source: "A", target: "B" }] }),
       ],
       business_rules: [
@@ -201,7 +201,7 @@ describe("normalizeArchitectureL1", () => {
     expect(flow.fieldRows.map((row) => [row.index, row.targetField, row.sourceOrExpression])).toEqual([
       [1, "serviceOrders.orderNo", "WORKORDER.WONUM"],
       [2, "serviceOrders.description", "substring(DESCRIPTION, 1, 50)"],
-      [3, "serviceOrders.origin", "\"MAXIMO\""],
+      [3, "serviceOrders.origin", "\"ASSETSYS\""],
     ]);
     expect(flow.fieldRows.map((row) => row.reachesTarget)).toEqual(["yes", "partial", "unknown"]);
     // A derived rule is NOT a field mapping. A message route builds its payload
@@ -235,7 +235,7 @@ describe("normalizeArchitectureL1", () => {
   it("resolves absent structured slots without inventing a value", () => {
     const model = normalizeArchitectureL1(topology);
     const pair = architectureRelationshipPairs(model).find((item) =>
-      item.streamIds.some((streamId) => streamId.includes("maximo--4ps")),
+      item.streamIds.some((streamId) => streamId.includes("assetsys--4fs")),
     )!;
     const [flow] = architectureFlowsForPair(topology, pair);
 
