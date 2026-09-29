@@ -50,6 +50,17 @@ async function mcPost(path: string): Promise<{ status: string; message: string }
   return res.json();
 }
 
+/**
+ * Codes whose meaning is fixed, so the sentence is ours rather than the
+ * server's. Codes that carry a `message` (invalid_slug, invalid_url,
+ * insecure_url) are NOT here: their message says which rule failed.
+ */
+const FIXED_CODE_SENTENCES: Record<string, string> = {
+  issuing_disabled: "Issuing is not configured on this Mission Control (no signing key)",
+  client_exists: "A client with this slug is already registered",
+  managed_by_file: "This client is managed by clients.json and cannot be changed here",
+};
+
 /** A human sentence for any Mission Control or instance error `detail`. */
 export function describeMcDetail(detail: unknown): string {
   if (detail == null || detail === "") return "no reason given";
@@ -63,8 +74,8 @@ export function describeMcDetail(detail: unknown): string {
   }
   if (typeof detail === "object") {
     const obj = detail as Record<string, unknown>;
-    if (obj.code === "issuing_disabled") {
-      return "Issuing is not configured on this Mission Control (no signing key)";
+    if (typeof obj.code === "string" && obj.code in FIXED_CODE_SENTENCES) {
+      return FIXED_CODE_SENTENCES[obj.code];
     }
     for (const key of ["message", "reason", "detail"]) {
       const value = obj[key];
@@ -174,7 +185,33 @@ export const ClientSnapshotSchema = z.object({
   _mc_received_at: z.string().optional(),
 });
 
-export const AllSnapshotsSchema = z.record(z.string(), ClientSnapshotSchema);
+/**
+ * One slug's entry in `/ops/snapshots`. Each snapshot is client-supplied and
+ * parsed on its own, so one malformed heartbeat becomes an `invalid` entry
+ * for that slug instead of failing the whole fleet.
+ */
+export type SnapshotEntry =
+  | { status: "valid"; snapshot: ClientSnapshot }
+  | { status: "invalid"; error: string };
+
+function describeZodIssues(error: z.ZodError): string {
+  return error.issues
+    .slice(0, 3)
+    .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+    .join("; ");
+}
+
+/** The outer shape must be an object keyed by slug; each value is parsed independently. */
+export const AllSnapshotsSchema = z.record(z.string(), z.unknown()).transform((raw) => {
+  const entries: Record<string, SnapshotEntry> = {};
+  for (const [slug, value] of Object.entries(raw)) {
+    const parsed = ClientSnapshotSchema.safeParse(value);
+    entries[slug] = parsed.success
+      ? { status: "valid", snapshot: parsed.data }
+      : { status: "invalid", error: describeZodIssues(parsed.error) };
+  }
+  return entries;
+});
 
 export type ClientSnapshot = z.infer<typeof ClientSnapshotSchema>;
 export type FleetProject = z.infer<typeof FleetProjectSchema>;
@@ -261,7 +298,7 @@ export type LicenceHistoryEntry = z.infer<typeof LicenceHistoryEntrySchema>;
 
 // ── API calls ─────────────────────────────────────────────────────────────────
 
-export async function fetchAllSnapshots(): Promise<Record<string, ClientSnapshot>> {
+export async function fetchAllSnapshots(): Promise<Record<string, SnapshotEntry>> {
   return mcRequest("/ops/snapshots", AllSnapshotsSchema);
 }
 
@@ -298,4 +335,102 @@ export async function issueClientLicence(
     method: "POST",
     body: JSON.stringify(IssueLicenceRequestSchema.parse(body)),
   });
+}
+
+// ── Client registry (central Mission Control only) ────────────────────────────
+
+export const FleetClientSchema = z.object({
+  slug: z.string(),
+  mcp_url: z.string().nullable(),
+  has_control_key: z.boolean(),
+  heartbeat_auth: z.enum(["client_key", "shared_key_only"]),
+  source: z.enum(["registry", "file"]),
+  created_at: z.string().nullable(),
+  updated_at: z.string().nullable(),
+  last_heartbeat_at: z.string().nullable(),
+});
+
+export const FleetClientsResponseSchema = z.object({
+  clients: z.array(FleetClientSchema),
+  telemetry_base_url: z.string().nullable(),
+  // True when Mission Control could not read its registry file: the client
+  // list may be incomplete and registry changes are refused. Absent on older
+  // Mission Controls.
+  registry_unavailable: z.boolean().optional().default(false),
+});
+
+/** The three env lines a client needs to heartbeat to this Mission Control. */
+export const ClientEnvSchema = z.object({
+  MCP_OPS_TELEMETRY_URL: z.string().nullable(),
+  MCP_OPS_TELEMETRY_API_KEY: z.string(),
+  MCP_OPS_CLIENT_SLUG: z.string(),
+});
+
+export const CreatedClientResponseSchema = z.object({
+  client: FleetClientSchema,
+  telemetry_key: z.string(),
+  client_env: ClientEnvSchema,
+});
+
+export const TelemetryKeyResponseSchema = z.object({
+  telemetry_key: z.string(),
+  client_env: ClientEnvSchema,
+});
+
+export const UpdatedClientResponseSchema = z.object({
+  client: FleetClientSchema,
+});
+
+export type FleetClient = z.infer<typeof FleetClientSchema>;
+export type FleetClientsResponse = z.infer<typeof FleetClientsResponseSchema>;
+export type ClientEnv = z.infer<typeof ClientEnvSchema>;
+export type CreatedClientResponse = z.infer<typeof CreatedClientResponseSchema>;
+export type TelemetryKeyResponse = z.infer<typeof TelemetryKeyResponseSchema>;
+
+export interface CreateClientRequest {
+  slug: string;
+  mcp_url: string;
+  control_key: string | null;
+}
+
+/** Only the fields present are changed; `control_key: null` clears the key. */
+export interface UpdateClientRequest {
+  mcp_url?: string;
+  control_key?: string | null;
+}
+
+function clientPath(slug: string): string {
+  return `/ops/fleet/clients/${encodeURIComponent(slug)}`;
+}
+
+export async function fetchFleetClients(): Promise<FleetClientsResponse> {
+  return mcRequest("/ops/fleet/clients", FleetClientsResponseSchema);
+}
+
+/**
+ * Register a client. The response carries the client's heartbeat key, shown
+ * once; callers must keep it out of any cache (see `useAddFleetClient`).
+ */
+export async function createFleetClient(body: CreateClientRequest): Promise<CreatedClientResponse> {
+  return mcRequest("/ops/fleet/clients", CreatedClientResponseSchema, {
+    method: "POST",
+    body: JSON.stringify({ slug: body.slug, mcp_url: body.mcp_url, control_key: body.control_key }),
+  });
+}
+
+export async function updateFleetClient(slug: string, body: UpdateClientRequest): Promise<FleetClient> {
+  const data = await mcRequest(clientPath(slug), UpdatedClientResponseSchema, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+  return data.client;
+}
+
+/** Issue a new heartbeat key; the old one stops working. Shown once. */
+export async function rotateTelemetryKey(slug: string): Promise<TelemetryKeyResponse> {
+  return mcRequest(`${clientPath(slug)}/telemetry-key`, TelemetryKeyResponseSchema, { method: "POST" });
+}
+
+export async function deleteFleetClient(slug: string): Promise<void> {
+  await mcFetch(clientPath(slug), { method: "DELETE" });
 }

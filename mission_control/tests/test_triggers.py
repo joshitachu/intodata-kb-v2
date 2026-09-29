@@ -69,7 +69,7 @@ def test_trigger_without_pinned_mcp_url_is_422_even_with_a_heartbeat_url(kind, s
     mc_env["add_client"]("acme", mcp_url=None, snapshot=snapshot)
     resp = client.post(f"/ops/clients/acme/trigger/{kind}/p1", headers=AUTH)
     assert resp.status_code == 422
-    assert "pin mcp_url for 'acme' in clients.json" in resp.json()["detail"]
+    assert "pin mcp_url for 'acme' in the Fleet registry or clients.json" in resp.json()["detail"]
     assert instance["requests"] == []
 
 

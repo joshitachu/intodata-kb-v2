@@ -1,8 +1,10 @@
 import { useState } from "react";
 import type React from "react";
-import type { ClientSnapshot, FleetProject, ModelStat } from "../api/fleet";
+import type { ClientSnapshot, FleetClient, FleetProject, ModelStat } from "../api/fleet";
 import { useTriggerGenerate, useTriggerScan } from "../hooks/useFleet";
+import { safeInstanceHref } from "../lib/fleetClient";
 import { timeAgo, formatAbsoluteDate } from "../lib/timeago";
+import FleetClientSettings from "./FleetClientSettings";
 import FleetLicenceBadge from "./FleetLicenceBadge";
 import FleetLicencePanel from "./FleetLicencePanel";
 
@@ -81,7 +83,40 @@ function BarChart({
 
 // ── Tab: Overview ─────────────────────────────────────────────────────────────
 
-function OverviewTab({ snapshot }: { snapshot: ClientSnapshot }) {
+/**
+ * The instance URL. A registered client shows (and links to) its pinned
+ * registry URL; otherwise the heartbeat's client-controlled `mcp_url` is
+ * shown, labelled unverified, and linked only when it is https (or http on
+ * localhost).
+ */
+function InstanceUrl({ client, snapshot }: { client: FleetClient | null; snapshot: ClientSnapshot }) {
+  const url = client ? client.mcp_url : (snapshot.mcp_url ?? null);
+  if (!url) return null;
+  const href = safeInstanceHref(url);
+  return (
+    <div className="col-span-2">
+      <span className="text-[10px] uppercase tracking-widest text-slate-500 font-mono">
+        {client ? "URL (registered)" : "URL (reported by the instance, unverified)"}
+      </span>
+      {href ? (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="block text-sm text-indigo-400 hover:text-indigo-300 truncate mt-0.5"
+        >
+          {url}
+        </a>
+      ) : (
+        <span data-testid="instance-url-text" className="block text-sm text-slate-300 break-all mt-0.5">
+          {url}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function OverviewTab({ snapshot, client }: { snapshot: ClientSnapshot; client: FleetClient | null }) {
   const st = clientStatus(snapshot);
   const { totals, rag, _mc_source_ip } = snapshot;
 
@@ -101,19 +136,7 @@ function OverviewTab({ snapshot }: { snapshot: ClientSnapshot }) {
           value={timeAgo(snapshot.sent_at)}
           sub={formatAbsoluteDate(snapshot.sent_at)}
         />
-        {snapshot.mcp_url && (
-          <div className="col-span-2">
-            <span className="text-[10px] uppercase tracking-widest text-slate-500 font-mono">URL</span>
-            <a
-              href={snapshot.mcp_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="block text-sm text-indigo-400 hover:text-indigo-300 truncate mt-0.5"
-            >
-              {snapshot.mcp_url}
-            </a>
-          </div>
-        )}
+        <InstanceUrl client={client} snapshot={snapshot} />
       </div>
 
       {/* Services */}
@@ -174,6 +197,44 @@ function OverviewTab({ snapshot }: { snapshot: ClientSnapshot }) {
               value={rag.peak_hour != null ? `${rag.peak_hour}:00` : "—"}
             />
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Overview for a registered client that has not sent a (current) heartbeat. */
+function WaitingOverview({ client, invalidSnapshot }: { client: FleetClient | null; invalidSnapshot: string | null }) {
+  return (
+    <div className="space-y-4">
+      <div className="p-4 bg-white/[0.03] rounded-lg border border-white/[0.06] space-y-2">
+        {invalidSnapshot != null ? (
+          <>
+            <p data-testid="invalid-heartbeat" className="text-sm text-red-400">
+              Invalid heartbeat data.
+            </p>
+            <p className="text-[11px] text-slate-500 font-mono break-all">{invalidSnapshot}</p>
+          </>
+        ) : (
+          <p data-testid="waiting-heartbeat" className="text-sm text-slate-300">
+            {client?.last_heartbeat_at
+              ? `No current snapshot (last heartbeat ${timeAgo(client.last_heartbeat_at)}).`
+              : "Waiting for first heartbeat."}
+          </p>
+        )}
+        <p className="text-xs text-slate-500">
+          Health, projects and usage appear here once the instance reports. See the Settings tab for its
+          connection details.
+        </p>
+      </div>
+      {client && (
+        <div className="grid grid-cols-2 gap-3 p-4 bg-white/[0.03] rounded-lg border border-white/[0.06]">
+          <MetricBlock label="Instance URL" value={client.mcp_url ?? "—"} />
+          <MetricBlock
+            label="Registered"
+            value={client.created_at ? timeAgo(client.created_at) : "—"}
+            sub={client.created_at ? formatAbsoluteDate(client.created_at) : undefined}
+          />
         </div>
       )}
     </div>
@@ -373,25 +434,48 @@ function BenchmarkTab({ snapshot }: { snapshot: ClientSnapshot }) {
 
 // ── Main panel ────────────────────────────────────────────────────────────────
 
-type Tab = "overview" | "projects" | "activity" | "benchmark" | "licence";
+type Tab = "overview" | "projects" | "activity" | "benchmark" | "licence" | "settings";
 
 interface Props {
   slug: string;
-  snapshot: ClientSnapshot;
+  /** Null for a registered client that has not sent a heartbeat yet. */
+  snapshot: ClientSnapshot | null;
+  /** Why this slug's heartbeat failed to parse; null when it parsed or there is none. */
+  invalidSnapshot?: string | null;
+  /** The registry entry; null when the client is not registered (or the registry is unavailable). */
+  client?: FleetClient | null;
+  /** Set when the registry could not be read, so "not registered" is not claimed. */
+  registryError?: unknown;
+  /** Mission Control could not read its registry file: registry changes are disabled. */
+  registryUnavailable?: boolean;
   onClose: () => void;
   /** Recorded as `issued_by` on licences issued from this panel. */
   currentUsername?: string | null;
 }
 
-export default function FleetDetailPanel({ slug, snapshot, onClose, currentUsername = null }: Props) {
+export default function FleetDetailPanel({
+  slug,
+  snapshot,
+  invalidSnapshot = null,
+  client = null,
+  registryError = null,
+  registryUnavailable = false,
+  onClose,
+  currentUsername = null,
+}: Props) {
   const [tab, setTab] = useState<Tab>("overview");
 
   const tabs: { key: Tab; label: string }[] = [
     { key: "overview", label: "Overview" },
-    { key: "projects", label: `Projects (${snapshot.projects.length})` },
-    { key: "activity", label: "Activity" },
-    { key: "benchmark", label: "Benchmark" },
+    ...(snapshot
+      ? ([
+          { key: "projects", label: `Projects (${snapshot.projects.length})` },
+          { key: "activity", label: "Activity" },
+          { key: "benchmark", label: "Benchmark" },
+        ] as const)
+      : []),
     { key: "licence", label: "Licence" },
+    { key: "settings", label: "Settings" },
   ];
 
   return (
@@ -403,20 +487,33 @@ export default function FleetDetailPanel({ slug, snapshot, onClose, currentUsern
       />
 
       {/* Panel */}
-      <div className="fixed top-0 right-0 h-full w-full max-w-xl bg-[#0f1117] border-l border-white/[0.08] z-50 flex flex-col shadow-2xl">
+      <div
+        role="dialog"
+        aria-label={`Client ${slug}`}
+        className="fixed top-0 right-0 h-full w-full max-w-xl bg-[#0f1117] border-l border-white/[0.08] z-50 flex flex-col shadow-2xl"
+      >
         {/* Header */}
         <div className="flex items-start justify-between px-5 pt-5 pb-4 border-b border-white/[0.06] shrink-0">
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-base font-semibold text-slate-100">{slug}</h2>
-              <FleetLicenceBadge licence={snapshot.licence} />
+              <FleetLicenceBadge licence={snapshot?.licence} />
             </div>
             <p className="text-[10px] text-slate-500 font-mono mt-0.5">
-              {snapshot._mc_source_ip ?? "IP unknown"} &middot; {snapshot.environment}
+              {snapshot ? (
+                <>
+                  {snapshot._mc_source_ip ?? "IP unknown"} &middot; {snapshot.environment}
+                </>
+              ) : invalidSnapshot != null ? (
+                "Invalid heartbeat data"
+              ) : (
+                "No heartbeat yet"
+              )}
             </p>
           </div>
           <button
             onClick={onClose}
+            aria-label="Close"
             className="text-slate-500 hover:text-slate-300 transition-colors text-lg leading-none mt-0.5"
           >
             ×
@@ -442,12 +539,25 @@ export default function FleetDetailPanel({ slug, snapshot, onClose, currentUsern
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-5 py-5">
-          {tab === "overview" && <OverviewTab snapshot={snapshot} />}
-          {tab === "projects" && <ProjectsTab snapshot={snapshot} />}
-          {tab === "activity" && <ActivityTab snapshot={snapshot} />}
-          {tab === "benchmark" && <BenchmarkTab snapshot={snapshot} />}
+          {tab === "overview" && (snapshot ? (
+              <OverviewTab snapshot={snapshot} client={client} />
+            ) : (
+              <WaitingOverview client={client} invalidSnapshot={invalidSnapshot} />
+            ))}
+          {tab === "projects" && snapshot && <ProjectsTab snapshot={snapshot} />}
+          {tab === "activity" && snapshot && <ActivityTab snapshot={snapshot} />}
+          {tab === "benchmark" && snapshot && <BenchmarkTab snapshot={snapshot} />}
           {tab === "licence" && (
-            <FleetLicencePanel slug={slug} licence={snapshot.licence} currentUsername={currentUsername} />
+            <FleetLicencePanel slug={slug} licence={snapshot?.licence} currentUsername={currentUsername} />
+          )}
+          {tab === "settings" && (
+            <FleetClientSettings
+              slug={slug}
+              client={client}
+              registryError={registryError}
+              registryUnavailable={registryUnavailable}
+              onRemoved={onClose}
+            />
           )}
         </div>
       </div>

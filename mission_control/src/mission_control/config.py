@@ -37,6 +37,28 @@ class Settings(BaseSettings):
     #: ``licences/`` next to ``snapshots_dir``.
     licence_ledger_dir: Path | None = None
 
+    #: ``MC_FLEET_REGISTRY``: the writable client registry (ADR-039), written
+    #: by ``/ops/fleet/clients``. Default: ``fleet_clients.json`` next to
+    #: ``snapshots_dir``. Put it on a persistent volume: it holds each client's
+    #: control key and the hash of its telemetry key.
+    fleet_registry: Path | None = None
+
+    #: ``MC_ALLOW_SHARED_HEARTBEAT``: accept heartbeats authenticated with the
+    #: global ``MC_API_KEY`` (legacy instances that predate per-client
+    #: telemetry keys, ADR-039). Even when true, the shared key is refused for
+    #: a slug that has its own key, and entirely while ``MC_API_KEY`` is the
+    #: repo default. Set false once every instance has its own key.
+    allow_shared_heartbeat: bool = True
+
+    #: ``MC_PUBLIC_URL``: the public base URL client instances heartbeat to
+    #: (``MCP_OPS_TELEMETRY_URL`` on the client), e.g. ``https://nexus.example``.
+    #: Optional; only echoed back in ``client_env`` so the operator can paste it.
+    public_url: str | None = None
+
+    @property
+    def uses_repo_default_api_key(self) -> bool:
+        return self.api_key == REPO_DEFAULT_API_KEY
+
     @property
     def data_dir(self) -> Path:
         """The directory that holds ``snapshots_dir``; defaults are relative to it."""
@@ -49,6 +71,15 @@ class Settings(BaseSettings):
     @property
     def licence_ledger_path(self) -> Path:
         return self.licence_ledger_dir or self.data_dir / "licences"
+
+    @property
+    def fleet_registry_path(self) -> Path:
+        return self.fleet_registry or self.data_dir / "fleet_clients.json"
+
+    @property
+    def telemetry_base_url(self) -> str | None:
+        """``MC_PUBLIC_URL`` without a trailing slash, or ``None`` when unset/blank."""
+        return (self.public_url or "").strip().rstrip("/") or None
 
 
 settings = Settings()

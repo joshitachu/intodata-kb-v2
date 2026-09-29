@@ -260,7 +260,7 @@ def test_push_without_pinned_mcp_url_is_422_and_issues_nothing(snapshot, signing
     detail = resp.json()["detail"]
     assert detail["code"] == "instance_not_addressable"
     assert detail["reason"] == "no_pinned_url"
-    assert "pin mcp_url for 'acme' in clients.json" in detail["message"]
+    assert "pin mcp_url for 'acme' in the Fleet registry or clients.json" in detail["message"]
     assert _ledger_text(mc_env) == ""
     assert instance["requests"] == []
 
@@ -278,6 +278,36 @@ def test_push_to_an_unaddressable_client_is_422_and_issues_nothing(setup, reason
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "instance_not_addressable"
     assert resp.json()["detail"]["reason"] == reason
+    assert _ledger_text(mc_env) == ""
+    assert instance["requests"] == []
+
+
+def _register(client, *, control_key):
+    resp = client.post("/ops/fleet/clients", headers=AUTH, json={
+        "slug": "acme", "mcp_url": "https://registered.example/", "control_key": control_key})
+    assert resp.status_code == 201
+
+
+def test_push_reaches_a_client_registered_through_the_fleet_api(signing_key, mc_env, instance,
+                                                                 client):
+    _register(client, control_key="registered-ctl")
+    instance["handler"] = lambda r: httpx.Response(
+        200, json={"installed": True, "slot": "current", "licence": INSTANCE_LICENCE})
+    resp = client.post("/ops/clients/acme/licences", json={"plan": "basic"}, headers=AUTH)
+    assert resp.status_code == 201
+    assert resp.json()["push"]["ok"] is True
+    (req,) = instance["requests"]
+    assert str(req.url) == "https://registered.example/ops/control/licence"
+    assert req.headers["authorization"] == "Bearer registered-ctl"
+
+
+def test_push_to_a_registered_client_without_control_key_is_422_and_issues_nothing(
+        signing_key, mc_env, instance, client):
+    _register(client, control_key=None)
+    resp = client.post("/ops/clients/acme/licences", json={"plan": "basic"}, headers=AUTH)
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert (detail["code"], detail["reason"]) == ("instance_not_addressable", "no_control_key")
     assert _ledger_text(mc_env) == ""
     assert instance["requests"] == []
 

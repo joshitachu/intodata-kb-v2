@@ -17,6 +17,10 @@ doc-generation providers (15), and the agent runtime v2 rollout flags (16).
 The subscription licence (17) is NOT optional: a production instance without a
 valid licence is view-only.
 
+Registering a client in the central Mission Control and giving it its own
+heartbeat key (18) happens on the operator host, plus one redeploy of the
+client with three env lines.
+
 ## 1. Set Deployment Variables
 
 Replace these values for the environment being deployed.
@@ -948,11 +952,12 @@ directory.
 
 See ADR-038. One-time setup on the operator machine, which is the only place the key lives:
 
-1. Copy `deploy/operator/clients.example.json` to `deploy/operator/clients.json`
-   (gitignored). Add each client's `control_key` (its `MCP_OPS_CONTROL_KEY`,
-   from `/etc/intodata-kb/envs/<client>.env` on the VPS) and its `mcp_url`
-   (`https://<client>.<base-domain>`). `mcp_url` is REQUIRED and must be https:
-   Mission Control never addresses a push by the heartbeat URL.
+1. Register each client in the Fleet screen (section 18) with its `mcp_url`
+   (`https://<client>.<base-domain>`) and control key (its `MCP_OPS_CONTROL_KEY`,
+   from `/etc/intodata-kb/envs/<client>.env` on the VPS). `mcp_url` is REQUIRED
+   and must be https: Mission Control never addresses a push by the heartbeat
+   URL. Clients already listed in a hand-written `deploy/operator/clients.json`
+   (legacy, read-only, gitignored) keep working.
 2b. Set a strong `MC_API_KEY` (not the repo default, which disables issuing).
 2. Set `MC_LICENCE_SIGNING_KEY_HOST_PATH` and `MC_LICENCE_SIGNING_KID=nexus-2026-09`
    in your shell or root `.env`. This is never a client env file.
@@ -971,7 +976,7 @@ To issue:
 
 If a push fails, the licence is still issued and recorded, and the reason is shown:
 - `503`: the VPS has no `MCP_OPS_CONTROL_KEY`. Re-run `deploy-client.sh` there.
-- `401`: the key in `clients.json` is wrong.
+- `401`: the control key in the Fleet registry (or `clients.json`) is wrong.
 - `422` from the instance: wrong client slug, or an expired licence.
 - `422` from Mission Control, before anything is issued: `start_in_past` (more than
   24h back), `period_too_long` (more than 37 months), `invalid_period`, or
@@ -1100,6 +1105,165 @@ Symptoms: users see the licence banner and chat or generation returns 402 with
    that turns enforcement off: `LICENCE_ENFORCEMENT=off` is refused at startup
    when `APP_ENV=production`, and changing `APP_ENV` also disables the other
    production secret checks, so do not do that.
+
+## 18. Fleet: add a client
+
+See ADR-039. Clients are registered in the central Mission Control (the one
+that issues licences, section 17-UI), not by editing `clients.json`. Each
+registered client gets its own telemetry key for its heartbeat. That key only
+authorises its own slug, so a leaked client key cannot overwrite another
+client's Fleet data.
+
+### 18a. One-time setup on the operator host
+
+1. Run Mission Control with a persistent registry. Both operator compose files
+   (`deploy/operator/docker-compose.issuer.yml`,
+   `deploy/operator/docker-compose.operator.yml`) set
+   `MC_FLEET_REGISTRY=/app/fleet/fleet_clients.json` on a named volume
+   (`mission_control_fleet` / `mission_control_operator_fleet`). Back that
+   volume up together with the licence ledger: it holds every client's control
+   key (file mode 0600).
+2. Set `MC_PUBLIC_URL` to the public HTTPS base URL that client servers
+   heartbeat to, e.g. `https://nexus.intodata.nl`, in the root `.env` or
+   `deploy/operator/operator.env`. Then recreate the container:
+   `docker compose ... up -d mission-control`. The Fleet screen puts this value
+   into the env lines it shows. If it is unset, `MCP_OPS_TELEMETRY_URL` is shown
+   empty and you have to fill it in by hand.
+3. Publish the heartbeat route on that host. The route is exactly
+   `POST /ops/clients/<slug>/telemetry` and nothing else. No other `/ops` or
+   `/mc` path is exposed. Choose one of:
+   - **Host deployed with `deploy-client.sh`:** re-run it with
+     `--fleet-host --fleet-mc-port <port>`, where `<port>` is the port the
+     central Mission Control publishes on 127.0.0.1 (its `MC_PORT`, 9100 for
+     the headless operator compose). `--fleet-mc-port` is required: the
+     script exits 2 without it rather than guess from this stack's offset.
+   - **Any other host** (for example `nexus.intodata.nl`, which was NOT
+     deployed with the script):
+     ```bash
+     sudo install -m 0644 deploy/operator/nginx-fleet-telemetry.conf \
+       /etc/nginx/snippets/nexus-fleet-telemetry.conf
+     # edit 9100 in the snippet if Mission Control listens on another loopback port
+     # then, inside the `listen 443 ssl` server block for that host, add:
+     #     include /etc/nginx/snippets/nexus-fleet-telemetry.conf;
+     sudo nginx -t && sudo systemctl reload nginx
+     ```
+     The snippet's location is a regex location, so it wins over prefix
+     locations such as `location /`. It does NOT win over a `location ^~ /ops/`
+     or an earlier regex that also matches, so check the existing server block
+     for either.
+4. Verify from outside. You should get 401 for a wrong key, 403 for GET, and
+   400 for a query string:
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Authorization: Bearer wrong' \
+     -H 'Content-Type: application/json' -d '{}' "$MC_PUBLIC_URL/ops/clients/probe/telemetry"   # 401
+   curl -s -o /dev/null -w '%{http_code}\n' "$MC_PUBLIC_URL/ops/clients/probe/telemetry"       # 403
+   curl -s -o /dev/null -w '%{http_code}\n' "$MC_PUBLIC_URL/ops/fleet/clients"                 # not 200 from Mission Control
+   ```
+
+### 18b. Add a client
+
+1. In the Fleet screen (loopback `http://localhost:8001`, or an SSH tunnel to
+   it), choose **Add client** and enter:
+   - the slug, which is the `--client-name` of its `deploy-client.sh`;
+   - `mcp_url`, which is `https://<client>.<base-domain>` (https is required
+     except on localhost);
+   - optionally its control key, which is `MCP_OPS_CONTROL_KEY` from
+     `/etc/intodata-kb/envs/<client>.env` on the client VPS. You can add a
+     client before its server exists and set the control key later with
+     **Edit**. Until it is set, licence pushes and triggers answer 422
+     `no_control_key`.
+2. The result shows the telemetry key **once**, as three env lines:
+   ```
+   MCP_OPS_TELEMETRY_URL=<MC_PUBLIC_URL>
+   MCP_OPS_TELEMETRY_API_KEY=<the new key>
+   MCP_OPS_CLIENT_SLUG=<slug>
+   ```
+   Only a hash is stored, so the key cannot be shown again. If you lose it,
+   use **Rotate key**.
+3. On the client VPS, apply them in either of these ways:
+   - Put the key in a root-only file and re-run the script with it, so the
+     key never appears in argv, `ps`, shell history or sudo's auth log:
+     ```bash
+     sudo install -m 0600 /dev/null /root/<slug>.telemetry-key
+     sudo nano /root/<slug>.telemetry-key          # paste the key as the first line
+     sudo deploy/deploy-client.sh --client-name <slug> ... \
+       --ops-telemetry-url <MC_PUBLIC_URL> \
+       --ops-telemetry-key-file /root/<slug>.telemetry-key
+     sudo shred -u /root/<slug>.telemetry-key      # the env file now holds it
+     ```
+     Alternatively export `OPS_TELEMETRY_KEY` and run
+     `sudo --preserve-env=OPS_TELEMETRY_KEY deploy/deploy-client.sh ...` with
+     neither key flag. `--ops-telemetry-key <key>` still works but prints a
+     warning, because the key is then visible on the command line. The script
+     validates the key, replaces any old values, sets
+     `MCP_OPS_CLIENT_SLUG=<slug>`, never prints the key, keeps the env file
+     0600, and redeploys. The licence guard (exit 4) still applies to an
+     existing client without a licence.
+   - Or paste the three lines into `/etc/intodata-kb/envs/<slug>.env`,
+     replacing the existing empty `MCP_OPS_TELEMETRY_*` lines (a duplicate
+     later in the file wins), then redeploy the same way.
+4. Within about 5 minutes (`MCP_OPS_TELEMETRY_INTERVAL_SECONDS=300`), the Fleet
+   list shows `last_heartbeat_at` for the client and `heartbeat_auth: client_key`.
+   The stored snapshot records `_mc_auth: client_key`.
+
+### 18c. Rotate, edit, remove
+
+- **Rotate key.** The old key stops working immediately. Apply the new one
+  as in 18b step 3. Until you do, the client's heartbeats get 401 and its
+  Fleet data goes stale.
+- **Edit.** Changes `mcp_url` and/or the control key. Neither is ever shown
+  back; the list only shows `has_control_key`.
+- **Remove.** Deletes the registry entry and its keys. The last snapshot and
+  the licence history stay.
+- Clients still in the legacy `clients.json` are listed with
+  `source: file`. They are read-only through the API (409 `managed_by_file`).
+  To move one to the registry, delete it from `clients.json`, then add it in
+  the Fleet screen.
+
+### 18d. Moving existing instances off the shared key
+
+Heartbeats signed with the operator's global `MC_API_KEY` (the "shared key")
+are legacy only, kept for instances deployed before per-client keys. Mission
+Control accepts one only when ALL of these hold; otherwise it answers the
+same 401 as a wrong key:
+
+- `MC_ALLOW_SHARED_HEARTBEAT` is true (the default);
+- `MC_API_KEY` is not the public repo default `mc-dev-local-secret`
+  (Mission Control also logs a startup WARNING whenever it runs on that key);
+- the fleet registry is readable (a corrupt registry fails closed, since
+  Mission Control cannot tell which slugs have their own key; the Fleet list
+  then reports `registry_unavailable: true`);
+- the slug has NO registered telemetry key. As soon as a client is in the
+  registry, only its own key works for it.
+
+Accepted shared-key heartbeats are logged as
+`shared-key heartbeat client=<slug>` and refused ones as
+`shared-key heartbeat refused client=<slug>: <reason>`, each once per slug per
+process. The Fleet list shows unkeyed clients as
+`heartbeat_auth: shared_key_only`.
+
+For each such instance:
+
+1. Add it in the Fleet screen (18b). Its shared-key heartbeats stop being
+   accepted at that moment, so do step 2 straight away; until then its Fleet
+   data goes stale (the last snapshot is kept).
+2. Apply the three env lines on its VPS (18b step 3) and redeploy.
+3. Confirm the snapshot shows `_mc_auth: client_key`.
+
+Once no instance uses the shared key, turn it off and rotate the old value:
+
+```bash
+# deploy/operator/operator.env (or the root .env) on the operator host;
+# the compose files pass MC_ALLOW_SHARED_HEARTBEAT through to Mission Control
+MC_ALLOW_SHARED_HEARTBEAT=false
+MC_API_KEY=<new random value, e.g. openssl rand -hex 32>
+docker compose ... up -d mission-control dashboard
+```
+
+Startup then logs `Heartbeats: per-client telemetry keys only`. Rotating
+`MC_API_KEY` matters because the old value may still sit in client env files.
+The dashboard's `/mc/` proxy injects the same `MC_API_KEY`, which is why it is
+recreated too.
 
 ## Gap Capture
 

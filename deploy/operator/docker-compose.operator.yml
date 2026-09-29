@@ -6,7 +6,6 @@
 # docker-compose.yml requires.
 #
 # Usage (from the repo root):
-#   cp deploy/operator/clients.example.json deploy/operator/clients.json   # fill in keys
 #   docker compose -p nexus-operator \
 #     --env-file deploy/operator/operator.env \
 #     -f deploy/operator/docker-compose.operator.yml up -d --build
@@ -16,8 +15,14 @@
 #   MC_API_KEY=<long random>
 #   MC_LICENCE_SIGNING_KEY_HOST_PATH=/secure/path/licence-signing.pem
 #   MC_LICENCE_SIGNING_KID=<kid pinned in both services' licensing/keys.py>
-#   MC_CLIENTS_CONFIG_HOST_PATH=./clients.json    # optional
+#   MC_PUBLIC_URL=https://nexus.example.com         # optional: base URL clients
+#                                                  # heartbeat to (RUNBOOK section 18)
+#   MC_CLIENTS_CONFIG_HOST_PATH=./clients.json    # optional, legacy, read-only
 #   MC_PORT=9100                                   # optional
+#
+# Clients are registered through the API (/ops/fleet/clients, ADR-039) and
+# stored in the mission_control_operator_fleet volume. clients.json is only
+# read, and only needed for clients that were configured by hand before.
 #
 # Key file: mode 0400, readable by uid 1001 (the container user), e.g.
 #   sudo chown 1001:1001 licence-signing.pem && sudo chmod 0400 licence-signing.pem
@@ -35,14 +40,19 @@ services:
       - "127.0.0.1:${MC_PORT:-9100}:9100"
     environment:
       MC_API_KEY: ${MC_API_KEY:?Set MC_API_KEY in deploy/operator/operator.env}
+      # false = only per-client heartbeat keys (ADR-039); true keeps legacy shared-key clients.
+      MC_ALLOW_SHARED_HEARTBEAT: ${MC_ALLOW_SHARED_HEARTBEAT:-true}
       MC_SNAPSHOTS_DIR: /app/snapshots
       MC_CLIENTS_CONFIG: /run/config/clients.json
       MC_LICENCE_LEDGER_DIR: /app/licences
       MC_LICENCE_SIGNING_KEY_FILE: /run/secrets/licence-signing.pem
       MC_LICENCE_SIGNING_KID: ${MC_LICENCE_SIGNING_KID:?Set MC_LICENCE_SIGNING_KID in deploy/operator/operator.env}
+      MC_FLEET_REGISTRY: /app/fleet/fleet_clients.json
+      MC_PUBLIC_URL: ${MC_PUBLIC_URL:-}
     volumes:
       - mission_control_operator_snapshots:/app/snapshots
       - mission_control_operator_licences:/app/licences
+      - mission_control_operator_fleet:/app/fleet
       - ${MC_CLIENTS_CONFIG_HOST_PATH:-./clients.json}:/run/config/clients.json:ro
       - ${MC_LICENCE_SIGNING_KEY_HOST_PATH:?Set MC_LICENCE_SIGNING_KEY_HOST_PATH in deploy/operator/operator.env}:/run/secrets/licence-signing.pem:ro
     healthcheck:
@@ -59,3 +69,5 @@ volumes:
   mission_control_operator_snapshots:
   # issued.jsonl: the issuance ledger. Back this volume up.
   mission_control_operator_licences:
+  # fleet_clients.json: the client registry (control keys). Back it up too.
+  mission_control_operator_fleet:

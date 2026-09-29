@@ -61,7 +61,8 @@ Read the ones touching your area before changing it. Grouped by theme:
   `024` one VPS per client, `025` production secrets hard-fail,
   `026` IP allowlist before ProxyHeaders, `037` subscription licence is a signed
   file verified offline, `038` licences issued centrally and pushed,
-  verified before storing
+  verified before storing, `039` Fleet clients registered through Mission
+  Control, each heartbeating with its own key
 
 New decisions continue the numbering. One decision per file; do not add a count to
 this heading -- a hardcoded number here would drift the moment a file is added.

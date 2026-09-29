@@ -77,3 +77,12 @@ def test_load_client_config_reads_the_configured_file(mc_env):
     assert load_client_config("acme") == {"control_key": "abc",
                                           "mcp_url": "https://acme.example"}
     assert load_client_config("ghost") == {}
+
+
+def test_registry_treats_a_directory_as_no_clients(tmp_path, caplog):
+    """Docker creates a directory for an absent bind-mounted file."""
+    path = tmp_path / "clients.json"
+    path.mkdir()
+    assert ClientRegistry(path).get("acme") is None
+    assert ClientRegistry(path).all() == {}
+    assert "Failed to read" not in caplog.text

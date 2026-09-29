@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir .
 
 RUN addgroup --system --gid 1001 appgroup && \
     adduser --system --uid 1001 --ingroup appgroup appuser && \
-    mkdir -p /app/snapshots /app/licences && \
+    mkdir -p /app/snapshots /app/licences /app/fleet && \
     chown -R appuser:appgroup /app
 USER appuser
 

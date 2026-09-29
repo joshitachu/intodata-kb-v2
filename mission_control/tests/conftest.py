@@ -30,6 +30,9 @@ def mc_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(settings, "licence_ledger_dir", tmp_path / "licences")
     monkeypatch.setattr(settings, "licence_signing_key_file", None)
     monkeypatch.setattr(settings, "licence_signing_kid", None)
+    registry = tmp_path / "fleet" / "fleet_clients.json"
+    monkeypatch.setattr(settings, "fleet_registry", registry)
+    monkeypatch.setattr(settings, "public_url", None)
 
     def add_client(slug: str, *, mcp_url: str | None = "https://acme.example",
                    control_key: str | None = "ctl-key", snapshot: dict | None = None) -> None:
@@ -46,7 +49,8 @@ def mc_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             data[slug] = entry
             clients.write_text(json.dumps(data))
 
-    return {"tmp": tmp_path, "snapshots": snapshots, "clients": clients, "add_client": add_client}
+    return {"tmp": tmp_path, "snapshots": snapshots, "clients": clients, "registry": registry,
+            "add_client": add_client}
 
 
 @pytest.fixture

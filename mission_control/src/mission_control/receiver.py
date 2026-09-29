@@ -9,8 +9,10 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
+from .auth import HeartbeatAuth, require_heartbeat_auth
 from .auth import require_api_key as _require_auth
 from .config import settings
+from .fleet import valid_slug
 from .instance_client import (
     InstanceControlClient,
     InstanceHTTPError,
@@ -20,6 +22,7 @@ from .instance_client import (
     get_instance_client,
 )
 from .snapshots import snapshot_path as _snapshot_path
+from .storage import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -28,23 +31,92 @@ router = APIRouter(prefix="/ops")
 
 # ── Heartbeat receiver ────────────────────────────────────────────────────────
 
+#: Largest heartbeat body accepted. nginx caps the public ingress at the same
+#: 512k, but loopback callers bypass nginx, so the app enforces it too.
+MAX_HEARTBEAT_BYTES = 512 * 1024
+
+
+def _payload_too_large() -> HTTPException:
+    return HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail={
+        "code": "payload_too_large",
+        "message": f"the heartbeat body must be at most {MAX_HEARTBEAT_BYTES} bytes"})
+
+
+def _invalid_payload() -> HTTPException:
+    return HTTPException(status_code=422, detail={
+        "code": "invalid_payload", "message": "the heartbeat body must be a JSON object"})
+
+
+def _render_snapshot(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, indent=2)
+
+
+async def _read_capped_body(request: Request, limit: int) -> bytes:
+    """The request body, refused with 413 as soon as it exceeds ``limit``.
+
+    A declared ``Content-Length`` over the limit is refused before reading;
+    otherwise the stream is read chunk by chunk, so a chunked or lying client
+    never makes us buffer more than ``limit`` plus one chunk.
+    """
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > limit:
+                raise _payload_too_large()
+        except ValueError:
+            raise HTTPException(status_code=400, detail={
+                "code": "invalid_content_length", "message": "bad Content-Length"}) from None
+    received = bytearray()
+    async for chunk in request.stream():
+        received.extend(chunk)
+        if len(received) > limit:
+            raise _payload_too_large()
+    return bytes(received)
+
+
 @router.post(
     "/clients/{client_slug}/telemetry",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(_require_auth)],
 )
-async def receive_telemetry(client_slug: str, request: Request) -> None:
-    payload: dict[str, Any] = await request.json()
+async def receive_telemetry(
+    client_slug: str,
+    request: Request,
+    auth: Annotated[HeartbeatAuth, Depends(require_heartbeat_auth)],
+) -> None:
+    """Store a heartbeat. Auth: the slug's own telemetry key, or (legacy) the
+    shared ``MC_API_KEY`` (see ``require_heartbeat_auth``). The body is read
+    only after auth, capped at ``MAX_HEARTBEAT_BYTES``."""
+    if not valid_slug(client_slug):  # auth already refused it; kept for the path write
+        raise HTTPException(status_code=422,
+                            detail={"code": "invalid_slug", "message": "invalid client slug"})
+    body = await _read_capped_body(request, MAX_HEARTBEAT_BYTES)
+    try:
+        payload: Any = json.loads(body)
+    except (ValueError, RecursionError):
+        # ValueError covers JSONDecodeError and UnicodeDecodeError; RecursionError
+        # is a deeply nested body ("[[[[...") that overflows the parser.
+        raise _invalid_payload() from None
+    if not isinstance(payload, dict):
+        raise _invalid_payload()
     payload["_mc_source_ip"] = request.client.host if request.client else None
     payload["_mc_received_at"] = datetime.now(UTC).isoformat()
-    settings.snapshots_dir.mkdir(parents=True, exist_ok=True)
-    _snapshot_path(client_slug).write_text(json.dumps(payload, indent=2))
+    payload["_mc_auth"] = auth.value
+    try:
+        # The pretty-printer recurses in Python, deeper than the C parser: a
+        # body nested just under the parse limit can still overflow here.
+        text = _render_snapshot(payload)
+    except RecursionError:
+        raise _invalid_payload() from None
+    atomic_write_text(_snapshot_path(client_slug), text, mode=0o640)
+    totals = payload.get("totals")
+    totals = totals if isinstance(totals, dict) else {}
     logger.info(
-        "snapshot stored client=%s schema=%s projects=%s cost_usd=%s",
+        "snapshot stored client=%s auth=%s schema=%s projects=%s cost_usd=%s",
         client_slug,
+        auth.value,
         payload.get("schema_version"),
-        payload.get("totals", {}).get("project_count"),
-        payload.get("totals", {}).get("cost_usd"),
+        totals.get("project_count"),
+        totals.get("cost_usd"),
     )
 
 

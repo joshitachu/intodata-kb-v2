@@ -55,9 +55,43 @@ Optional:
                              Default: /etc/nginx/sites-enabled
   --repo-root <path>         Repository root containing docker-compose.yml.
                              Default: script's ../.
+  --ops-telemetry-url <url>  Central Mission Control base URL this instance
+                             heartbeats to (its MC_PUBLIC_URL). Written to
+                             MCP_OPS_TELEMETRY_URL, replacing any old value.
+                             https:// required (http only for localhost).
+  --ops-telemetry-key-file <path>
+                             File whose first line is this client's telemetry
+                             key from the Fleet screen ("Add client" / "Rotate
+                             key"). Written to MCP_OPS_TELEMETRY_API_KEY,
+                             replacing any old value; never printed. Preferred:
+                             the key stays out of argv, `ps` and shell history.
+                             Without either key flag, a non-empty
+                             OPS_TELEMETRY_KEY environment variable is used
+                             instead (under sudo: sudo
+                             --preserve-env=OPS_TELEMETRY_KEY ...). Any key
+                             source, or --ops-telemetry-url, also sets
+                             MCP_OPS_CLIENT_SLUG to --client-name.
+  --ops-telemetry-key <key>  Same, with the key on the command line. Still
+                             accepted, but it is visible in `ps`, shell
+                             history and sudo's auth log; prefer the file or
+                             the environment variable.
+  --fleet-host               THIS host runs the central Mission Control: render
+                             the public heartbeat route (POST
+                             /ops/clients/<slug>/telemetry only) into this
+                             client's nginx block. Never on a client VPS.
+                             Requires --fleet-mc-port.
+  --fleet-mc-port <port>     The port the central Mission Control publishes on
+                             127.0.0.1 (its MC_PORT, e.g. 9100). Required with
+                             --fleet-host: it is NOT this client stack's own
+                             MC_PORT, so there is no default.
   --help                     Show this help and exit.
 EOF
 }
+
+# Captured before the option variables below are reset: the key may come from
+# the environment instead of argv (see --ops-telemetry-key-file).
+OPS_TELEMETRY_KEY_ENV="${OPS_TELEMETRY_KEY-}"
+unset OPS_TELEMETRY_KEY
 
 CLIENT=""
 PORT_OFFSET=0
@@ -71,6 +105,15 @@ ALLOW_VIEW_ONLY=0
 NGINX_AVAILABLE="/etc/nginx/sites-available"
 NGINX_ENABLED="/etc/nginx/sites-enabled"
 REPO_ROOT=""
+OPS_TELEMETRY_URL=""
+OPS_TELEMETRY_KEY=""
+OPS_TELEMETRY_URL_SET=0
+OPS_TELEMETRY_KEY_SET=0
+OPS_TELEMETRY_KEY_ARG_SET=0
+OPS_TELEMETRY_KEY_FILE=""
+OPS_TELEMETRY_KEY_FILE_SET=0
+FLEET_HOST=0
+FLEET_MC_PORT=""
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT_DEFAULT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
@@ -89,6 +132,11 @@ while [[ $# -gt 0 ]]; do
         --nginx-sites-available) NGINX_AVAILABLE="$2"; shift 2 ;;
         --nginx-sites-enabled) NGINX_ENABLED="$2"; shift 2 ;;
         --repo-root) REPO_ROOT="$2"; shift 2 ;;
+        --ops-telemetry-url) OPS_TELEMETRY_URL="${2-}"; OPS_TELEMETRY_URL_SET=1; shift 2 ;;
+        --ops-telemetry-key) OPS_TELEMETRY_KEY="${2-}"; OPS_TELEMETRY_KEY_ARG_SET=1; shift 2 ;;
+        --ops-telemetry-key-file) OPS_TELEMETRY_KEY_FILE="${2-}"; OPS_TELEMETRY_KEY_FILE_SET=1; shift 2 ;;
+        --fleet-host) FLEET_HOST=1; shift ;;
+        --fleet-mc-port) FLEET_MC_PORT="$2"; shift 2 ;;
         --help|-h) usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
     esac
@@ -104,6 +152,68 @@ done
     exit 2
 }
 INITIAL_ADMIN_EMAIL="${INITIAL_ADMIN_EMAIL:-admin@$CLIENT.$BASE_DOMAIN}"
+
+# Heartbeat settings are pasted into the env file verbatim, so refuse anything
+# that is not plainly a URL / token before a single file is written.
+TELEMETRY_URL_HTTPS='^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$'
+TELEMETRY_URL_LOCAL='^http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$'
+if (( OPS_TELEMETRY_URL_SET )); then
+    OPS_TELEMETRY_URL="${OPS_TELEMETRY_URL%/}"
+    [[ "$OPS_TELEMETRY_URL" =~ $TELEMETRY_URL_HTTPS || "$OPS_TELEMETRY_URL" =~ $TELEMETRY_URL_LOCAL ]] || {
+        echo "Invalid --ops-telemetry-url: must be https://<host>[:port][/path] (http only for localhost), without credentials, query or fragment" >&2
+        exit 2
+    }
+fi
+# The telemetry key: from a file (preferred), the environment, or argv (legacy).
+# The value is never echoed, whatever the source.
+if (( OPS_TELEMETRY_KEY_ARG_SET && OPS_TELEMETRY_KEY_FILE_SET )); then
+    echo "Give either --ops-telemetry-key-file or --ops-telemetry-key, not both" >&2
+    exit 2
+fi
+OPS_TELEMETRY_KEY_SOURCE=""
+if (( OPS_TELEMETRY_KEY_FILE_SET )); then
+    OPS_TELEMETRY_KEY_SOURCE="--ops-telemetry-key-file"
+    [[ -n "$OPS_TELEMETRY_KEY_FILE" && -f "$OPS_TELEMETRY_KEY_FILE" && -r "$OPS_TELEMETRY_KEY_FILE" ]] || {
+        echo "--ops-telemetry-key-file: '$OPS_TELEMETRY_KEY_FILE' is not a readable file" >&2
+        exit 2
+    }
+    OPS_TELEMETRY_KEY=""
+    IFS= read -r OPS_TELEMETRY_KEY < "$OPS_TELEMETRY_KEY_FILE" || true  # a last line without \n still fills it
+    OPS_TELEMETRY_KEY="${OPS_TELEMETRY_KEY%$'\r'}"
+    OPS_TELEMETRY_KEY_SET=1
+elif (( OPS_TELEMETRY_KEY_ARG_SET )); then
+    OPS_TELEMETRY_KEY_SOURCE="--ops-telemetry-key"
+    OPS_TELEMETRY_KEY_SET=1
+    echo "WARNING: --ops-telemetry-key puts the key in the process list, shell history and sudo's log." >&2
+    echo "         Prefer --ops-telemetry-key-file <path> or the OPS_TELEMETRY_KEY environment variable." >&2
+elif [[ -n "$OPS_TELEMETRY_KEY_ENV" ]]; then
+    OPS_TELEMETRY_KEY_SOURCE="OPS_TELEMETRY_KEY"
+    OPS_TELEMETRY_KEY="$OPS_TELEMETRY_KEY_ENV"
+    OPS_TELEMETRY_KEY_SET=1
+fi
+unset OPS_TELEMETRY_KEY_ENV
+if (( OPS_TELEMETRY_KEY_SET )); then
+    # (Length checked separately: some regex engines cap {m,n} at 255.)
+    [[ "$OPS_TELEMETRY_KEY" =~ ^[A-Za-z0-9._~+/=-]{16,}$ && ${#OPS_TELEMETRY_KEY} -le 512 ]] || {
+        echo "Invalid telemetry key (from $OPS_TELEMETRY_KEY_SOURCE): expected the 16-512 character key shown in the Fleet screen" >&2
+        exit 2
+    }
+fi
+
+# --fleet-host proxies the public heartbeat route to the CENTRAL Mission
+# Control, whose port is unrelated to this stack's offset; guessing it would
+# silently send every client's heartbeat to the wrong (or no) service.
+if (( FLEET_HOST )) && [[ -z "$FLEET_MC_PORT" ]]; then
+    echo "--fleet-host requires --fleet-mc-port <port>: the port the central Mission Control publishes on 127.0.0.1 (its MC_PORT, e.g. 9100)" >&2
+    exit 2
+fi
+if [[ -n "$FLEET_MC_PORT" ]]; then
+    if ! [[ "$FLEET_MC_PORT" =~ ^[0-9]{1,5}$ ]] || (( 10#$FLEET_MC_PORT < 1 || 10#$FLEET_MC_PORT > 65535 )); then
+        echo "--fleet-mc-port must be a TCP port number" >&2
+        exit 2
+    fi
+    FLEET_MC_PORT=$(( 10#$FLEET_MC_PORT ))
+fi
 
 REPO_ROOT="${REPO_ROOT:-$REPO_ROOT_DEFAULT}"
 [[ -f "$REPO_ROOT/docker-compose.yml" ]] || {
@@ -306,6 +416,47 @@ ensure_env_var LICENCE_DIR "$LICENCE_DIR"
 ensure_env_var LICENCE_FILE /etc/intodata-kb/licence/licence.jwt
 ensure_env_var MCP_OPS_CONTROL_KEY "$(rand_hex 32)"
 ensure_env_var OPS_CONTROL_ALLOWED_IPS ""
+ensure_env_var MCP_OPS_CLIENT_SLUG "$CLIENT"
+ensure_env_var MCP_OPS_TELEMETRY_URL ""
+ensure_env_var MCP_OPS_TELEMETRY_API_KEY ""
+
+# --- Explicitly passed values replace what is there ---
+# ensure_env_var only backfills a MISSING key; a flag the operator passes must
+# win over an existing (possibly empty) value. Rewrites the file through a temp
+# file in the same directory (mode 600, then mv), keeps the first occurrence's
+# position, drops duplicates (a later duplicate would win in an env file), and
+# never prints the value. awk reads the value from ENVIRON, not -v, so
+# backslashes in it are not interpreted.
+set_env_var() {
+    local key="$1"
+    local value="$2"
+    local tmp
+    tmp="$(mktemp "$ENV_FILE.XXXXXX")"
+    chmod 600 "$tmp"
+    if ! SET_KEY="$key" SET_VALUE="$value" awk '
+        BEGIN { k = ENVIRON["SET_KEY"]; v = ENVIRON["SET_VALUE"]; done = 0 }
+        index($0, k "=") == 1 { if (!done) { print k "=" v; done = 1 }; next }
+        { print }
+        END { if (!done) print k "=" v }
+    ' "$ENV_FILE" > "$tmp"; then
+        rm -f "$tmp"
+        echo "Failed to update $key in $ENV_FILE" >&2
+        exit 2
+    fi
+    mv "$tmp" "$ENV_FILE"
+    echo "Set $key in $ENV_FILE"
+}
+
+if (( OPS_TELEMETRY_URL_SET )); then
+    set_env_var MCP_OPS_TELEMETRY_URL "$OPS_TELEMETRY_URL"
+fi
+if (( OPS_TELEMETRY_KEY_SET )); then
+    set_env_var MCP_OPS_TELEMETRY_API_KEY "$OPS_TELEMETRY_KEY"
+fi
+if (( OPS_TELEMETRY_URL_SET || OPS_TELEMETRY_KEY_SET )); then
+    # A telemetry key authorises exactly one slug; the sender must use it.
+    set_env_var MCP_OPS_CLIENT_SLUG "$CLIENT"
+fi
 
 # --- The licence signing key must never reach a client stack ---
 # Licences are signed on the operator machine only. If the private key (or the
@@ -380,9 +531,25 @@ done
 [[ -z "$OPS_CONTROL_ALLOW" ]] || OPS_CONTROL_ALLOW+="deny all;"
 export OPS_CONTROL_ALLOW
 
+# Public heartbeat route to the central Mission Control, only on the host that
+# runs it (--fleet-host). Rendered from the same snippet a hand-configured host
+# includes, with the loopback port rewritten; empty everywhere else.
+FLEET_TELEMETRY_INGRESS=""
+if (( FLEET_HOST )); then
+    FLEET_SNIPPET="$SCRIPT_DIR/operator/nginx-fleet-telemetry.conf"
+    [[ -f "$FLEET_SNIPPET" ]] || { echo "Missing snippet: $FLEET_SNIPPET" >&2; exit 2; }
+    FLEET_TELEMETRY_INGRESS="$(cat "$FLEET_SNIPPET")"
+    [[ "$FLEET_TELEMETRY_INGRESS" == *"127.0.0.1:9100"* ]] || {
+        echo "$FLEET_SNIPPET: expected proxy_pass to 127.0.0.1:9100" >&2
+        exit 2
+    }
+    FLEET_TELEMETRY_INGRESS="${FLEET_TELEMETRY_INGRESS//127.0.0.1:9100/127.0.0.1:$FLEET_MC_PORT}"
+fi
+export FLEET_TELEMETRY_INGRESS
+
 # envsubst only replaces the named variables so stray $ in the template don't
 # get clobbered. Listing each variable explicitly keeps this predictable.
-envsubst '${CLIENT} ${NEXUS_BASE} ${BACKEND_PORT} ${FRONTEND_PORT} ${DASHBOARD_PORT} ${MCP_PORT} ${OPS_CONTROL_ALLOW}' \
+envsubst '${CLIENT} ${NEXUS_BASE} ${BACKEND_PORT} ${FRONTEND_PORT} ${DASHBOARD_PORT} ${MCP_PORT} ${OPS_CONTROL_ALLOW} ${FLEET_TELEMETRY_INGRESS}' \
     < "$NGINX_TEMPLATE" > "$NGINX_DEST"
 ln -sf "$NGINX_DEST" "$NGINX_ENABLED/nexus-$CLIENT.conf"
 echo "Rendered nginx config at $NGINX_DEST"
@@ -477,8 +644,22 @@ Env file:   $ENV_FILE
 Nginx conf: $NGINX_DEST
 Licence:    $LICENCE_FILE_HOST
 
-Mission Control control channel: add this client to the central Mission
-Control clients.json with the value of MCP_OPS_CONTROL_KEY from $ENV_FILE
-(the key is not printed here) and base URL https://$CLIENT.$BASE_DOMAIN.
+Mission Control: add (or edit) this client in the Fleet screen with
+mcp_url https://$CLIENT.$BASE_DOMAIN and the value of MCP_OPS_CONTROL_KEY
+from $ENV_FILE as its control key (the key is not printed here).
 Edge allowlist for /ops/control/: ${OPS_CONTROL_ALLOWED_IPS:-none (bearer key only)}
 EOF
+
+HEARTBEAT_URL="$(env_file_value MCP_OPS_TELEMETRY_URL)"
+if [[ -n "$HEARTBEAT_URL" && -n "$(env_file_value MCP_OPS_TELEMETRY_API_KEY)" ]]; then
+    echo "Heartbeat: to $HEARTBEAT_URL as '$(env_file_value MCP_OPS_CLIENT_SLUG)' (key set, not shown)"
+else
+    echo "Heartbeat: off (pass --ops-telemetry-url and --ops-telemetry-key-file; deploy/RUNBOOK.md section 18)"
+fi
+if (( FLEET_HOST )); then
+    cat <<EOF
+Fleet host: POST /ops/clients/<slug>/telemetry on $CLIENT.$BASE_DOMAIN now
+proxies to Mission Control on 127.0.0.1:$FLEET_MC_PORT (after nginx reload).
+Set MC_PUBLIC_URL=https://$CLIENT.$BASE_DOMAIN for that Mission Control.
+EOF
+fi

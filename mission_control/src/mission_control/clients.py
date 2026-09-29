@@ -1,4 +1,9 @@
-"""Per-client config: the control key used to call each instance's control channel.
+"""Legacy, read-only per-client config file (``clients.json``).
+
+Since ADR-039 clients are normally registered through Mission Control
+(``/ops/fleet/clients``, stored by ``fleet.JsonFleetRegistry``). This file is
+still read, merged behind the registry by ``fleet.FleetDirectory``: its entries
+are reported as ``source: "file"`` and cannot be changed through the API.
 
 Config file: ``MC_CLIENTS_CONFIG`` (default ``clients.json`` next to the
 snapshots directory; see ``Settings.clients_config_path``).
@@ -13,8 +18,8 @@ Format::
 
 Both fields are required for any control call (licence push, scan/generate
 triggers). ``mcp_url`` must be pinned here: the URL a heartbeat reports is never
-used for addressing, because heartbeats share one ``MC_API_KEY`` and a forged
-one could redirect the control key. It must be ``https://`` (plain ``http://``
+used for addressing, because a heartbeat may still arrive on the shared
+``MC_API_KEY`` and a forged one could redirect the control key. It must be ``https://`` (plain ``http://``
 only for localhost) and carry no credentials. The control_key must match
 MCP_OPS_CONTROL_KEY on the target VPS.
 
@@ -58,6 +63,11 @@ class ClientRegistry:
             stat = path.stat()
         except FileNotFoundError:
             return {}
+        if path.is_dir():
+            # The operator compose files bind-mount this file optionally; when
+            # the host file is absent Docker creates an empty directory in its
+            # place. That means "no file clients", not a malformed file.
+            return {}
         stamp = (str(path), stat.st_mtime_ns, stat.st_size)
         with self._lock:
             if stamp == self._stamp:
@@ -78,6 +88,11 @@ class ClientRegistry:
         entry = self._load().get(slug)
         return entry if isinstance(entry, dict) else None
 
+    def all(self) -> dict[str, dict[str, Any]]:
+        """Every well-formed entry, keyed by slug (a copy; the cache stays private)."""
+        return {slug: dict(entry) for slug, entry in self._load().items()
+                if isinstance(slug, str) and isinstance(entry, dict)}
+
 
 def _default_path() -> Path:
     from .config import settings
@@ -94,5 +109,8 @@ default_registry = ClientRegistry(_default_path)
 
 
 def load_client_config(slug: str) -> dict[str, Any]:
-    """Backwards-compatible accessor: the client's entry, or ``{}``."""
-    return default_registry.get(slug) or {}
+    """Backwards-compatible accessor: the client's control entry (registry first,
+    then this file), or ``{}``."""
+    from .fleet import default_directory
+
+    return default_directory.get(slug) or {}

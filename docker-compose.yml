@@ -515,6 +515,9 @@ services:
     restart: unless-stopped
 
   demo-mcp:
+    # Demo only: invented data for showing project connectors. Never part of a
+    # client deployment -- start it with `docker compose --profile demo up -d`.
+    profiles: ["demo"]
     build:
       context: ./examples/demo-mcp
       dockerfile: Dockerfile
@@ -539,9 +542,19 @@ services:
       - "127.0.0.1:${MC_PORT:-9100}:9100"
     environment:
       MC_API_KEY: ${MC_API_KEY:-mc-dev-local-secret}
+      # false = only per-client heartbeat keys (ADR-039); true keeps legacy shared-key clients.
+      MC_ALLOW_SHARED_HEARTBEAT: ${MC_ALLOW_SHARED_HEARTBEAT:-true}
       MC_SNAPSHOTS_DIR: /app/snapshots
+      # Fleet client registry + licence ledger (ADR-038/039) live on named
+      # volumes so clients added in the Fleet screen survive a rebuild.
+      MC_FLEET_REGISTRY: /app/fleet/fleet_clients.json
+      MC_LICENCE_LEDGER_DIR: /app/licences
+      # Public base URL clients heartbeat to (shown in the Fleet connect panel).
+      MC_PUBLIC_URL: ${MC_PUBLIC_URL:-}
     volumes:
       - mission_control_snapshots:/app/snapshots
+      - mission_control_fleet:/app/fleet
+      - mission_control_licences:/app/licences
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:9100/health')\" || exit 1"]
       interval: 15s
@@ -636,6 +649,8 @@ volumes:
   qdrant_data:
   hindsight_data:
   mission_control_snapshots:
+  mission_control_fleet:
+  mission_control_licences:
   labs_workspaces:
   opencode_labs_home:
   claude_home:

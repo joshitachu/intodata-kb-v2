@@ -1,10 +1,11 @@
 """Adapter for an instance's control channel (``{mcp_url}/ops/control/*``).
 
 Both the instance URL (``mcp_url``) and the bearer key (``control_key``) come
-from the operator's ``clients.json``, never from a heartbeat snapshot: a
-heartbeat is guarded only by the shared ``MC_API_KEY``, so anyone holding that
-key could otherwise redirect the control key (and a signed licence) to a host
-they control. This module knows nothing about FastAPI: resolution and transport
+from what the operator pinned (the Fleet registry, then the legacy
+``clients.json``; see ``fleet.FleetDirectory``), never from a heartbeat
+snapshot: a heartbeat may still arrive on the shared ``MC_API_KEY``, so anyone
+holding that key could otherwise redirect the control key (and a signed
+licence) to a host they control. This module knows nothing about FastAPI: resolution and transport
 problems are typed exceptions, and each route decides which HTTP status they
 become.
 """
@@ -13,12 +14,12 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 import httpx
 
-from .clients import ClientRegistry, default_registry
+from .fleet import default_directory
 
 DEFAULT_TIMEOUT_SECONDS = 20.0
 
@@ -29,7 +30,7 @@ _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 class ResolutionFailure(str, enum.Enum):
-    #: No ``clients.json`` entry: an unknown client (404).
+    #: No registry or ``clients.json`` entry: an unknown client (404).
     NO_CLIENT_ENTRY = "no_client_entry"
     NO_CONTROL_KEY = "no_control_key"
     #: The entry has no ``mcp_url``. There is deliberately no heartbeat fallback.
@@ -83,75 +84,99 @@ class InstanceReply:
         return 200 <= self.status_code < 300
 
 
-def _checked_url(client_slug: str, mcp_url: str) -> str:
-    """The pinned URL, normalised, or ``InstanceResolutionError``.
+class UrlRejected(ValueError):
+    """``validate_mcp_url`` refused the URL; ``failure`` is INVALID_URL or INSECURE_URL."""
 
-    ``https://`` is required unless the host is loopback; userinfo is refused
-    (it would be sent to, and logged by, whatever host the URL names).
+    def __init__(self, failure: ResolutionFailure, reason: str) -> None:
+        super().__init__(reason)
+        self.failure = failure
+        self.reason = reason
+
+
+def validate_mcp_url(mcp_url: str) -> str:
+    """The instance URL, normalised (no trailing slash), or ``UrlRejected``.
+
+    The one rule for every pinned ``mcp_url``, whether it comes from
+    ``clients.json`` or is registered through ``/ops/fleet/clients``:
+    ``https://`` unless the host is loopback, no userinfo (it would be sent to,
+    and logged by, whatever host the URL names), no query or fragment.
     """
-    def fail(failure: ResolutionFailure, why: str) -> InstanceResolutionError:
-        return InstanceResolutionError(
-            failure, f"mcp_url for '{client_slug}' in clients.json {why}")
-
     try:
         parts = urlsplit(mcp_url)
         host = parts.hostname
         parts.port  # noqa: B018 -- raises ValueError on a malformed port
     except ValueError:
-        raise fail(ResolutionFailure.INVALID_URL, "is not a valid URL") from None
+        raise UrlRejected(ResolutionFailure.INVALID_URL, "is not a valid URL") from None
     if parts.scheme not in ("http", "https") or not host:
-        raise fail(ResolutionFailure.INVALID_URL,
-                   "must be an absolute https:// URL with a host")
+        raise UrlRejected(ResolutionFailure.INVALID_URL,
+                          "must be an absolute https:// URL with a host")
     if parts.query or parts.fragment:
-        raise fail(ResolutionFailure.INVALID_URL, "must not carry a query or fragment")
+        raise UrlRejected(ResolutionFailure.INVALID_URL, "must not carry a query or fragment")
     if "@" in parts.netloc:
-        raise fail(ResolutionFailure.INSECURE_URL,
-                   "must not contain credentials (user:password@)")
+        raise UrlRejected(ResolutionFailure.INSECURE_URL,
+                          "must not contain credentials (user:password@)")
     if parts.scheme != "https" and host.lower() not in _LOOPBACK_HOSTS:
-        raise fail(ResolutionFailure.INSECURE_URL,
-                   "must use https:// (plain http is allowed only for localhost)")
+        raise UrlRejected(ResolutionFailure.INSECURE_URL,
+                          "must use https:// (plain http is allowed only for localhost)")
     return mcp_url.rstrip("/")
+
+
+def _checked_url(client_slug: str, mcp_url: str) -> str:
+    try:
+        return validate_mcp_url(mcp_url)
+    except UrlRejected as exc:
+        raise InstanceResolutionError(
+            exc.failure, f"mcp_url for '{client_slug}' {exc.reason}") from None
+
+
+class ClientSource(Protocol):
+    """Anything with ``get(slug) -> {"control_key", "mcp_url"} | None``."""
+
+    def get(self, slug: str) -> dict[str, Any] | None: ...
 
 
 class InstanceControlClient:
     def __init__(
         self,
         *,
-        registry: ClientRegistry | None = None,
+        registry: ClientSource | None = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
-        self._registry = registry or default_registry
+        self._registry = registry or default_directory
         self._timeout = timeout
 
     # -- addressing -------------------------------------------------------------
 
     def resolve(self, client_slug: str) -> InstanceTarget:
-        """Address + key for a client's control channel, from ``clients.json`` only.
+        """Address + key for a client's control channel, from the pinned entry only
+        (Fleet registry first, then ``clients.json``).
 
         Used by every control call (licence push and scan/generate triggers),
         since they all send the same control key. The heartbeat's ``mcp_url``
-        is never used: heartbeats share one ``MC_API_KEY``, so a reported URL
-        is attacker-controllable by anyone holding that key. An entry without
-        a pinned ``mcp_url`` is refused, not guessed.
+        is never used: a heartbeat may arrive on the shared ``MC_API_KEY``, so
+        a reported URL is attacker-controllable by anyone holding that key. An
+        entry without a pinned ``mcp_url`` is refused, not guessed.
         """
         entry = self._registry.get(client_slug)
         if entry is None:
             raise InstanceResolutionError(
                 ResolutionFailure.NO_CLIENT_ENTRY,
-                f"Unknown client '{client_slug}': no entry in clients.json",
+                f"Unknown client '{client_slug}': no entry in the Fleet registry or clients.json",
             )
         control_key = str(entry.get("control_key") or "")
         if not control_key:
             raise InstanceResolutionError(
                 ResolutionFailure.NO_CONTROL_KEY,
-                f"No control_key configured for '{client_slug}' in clients.json",
+                f"No control_key configured for '{client_slug}': set it in the Fleet screen "
+                "(or clients.json) to the instance's MCP_OPS_CONTROL_KEY",
             )
         mcp_url = str(entry.get("mcp_url") or "").strip()
         if not mcp_url:
             raise InstanceResolutionError(
                 ResolutionFailure.NO_PINNED_URL,
-                f"No mcp_url for '{client_slug}': pin mcp_url for '{client_slug}' in "
-                "clients.json (the heartbeat URL is not trusted for addressing)",
+                f"No mcp_url for '{client_slug}': pin mcp_url for '{client_slug}' in the "
+                "Fleet registry or clients.json (the heartbeat URL is not trusted for "
+                "addressing)",
             )
         return InstanceTarget(_checked_url(client_slug, mcp_url), control_key)
 

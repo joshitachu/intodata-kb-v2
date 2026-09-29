@@ -7,7 +7,7 @@ Issuing is also refused while ``MC_API_KEY`` is the public repo default.
 
 Flow for ``POST /ops/clients/{slug}/licences``:
 auth -> slug -> request shape -> signing key -> plan -> (push) resolve instance
-(pinned ``clients.json`` URL only) -> period (``start_after_current`` reads the
+(pinned registry / ``clients.json`` URL only) -> period (``start_after_current`` reads the
 ledger, never a snapshot) -> ledger writable -> sign (shared billing path) ->
 (push) install -> ledger append. Everything that can refuse the request runs
 before a licence is signed.
@@ -16,7 +16,6 @@ before a licence is signed.
 from __future__ import annotations
 
 import logging
-import re
 import threading
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
@@ -29,6 +28,7 @@ from .billing.fulfilment import LicenceSigner, SigningKeyUnavailable
 from .billing.models import IssuedLicence
 from .billing.providers import ManualProvider
 from .config import REPO_DEFAULT_API_KEY, settings
+from .fleet import SLUG_PATTERN
 from .instance_client import (
     InstanceControlClient,
     InstanceReply,
@@ -47,7 +47,7 @@ router = APIRouter(prefix="/ops", dependencies=[Depends(require_api_key)])
 
 # Same rule the issuer enforces on ``sub``; checked first so a bad slug never
 # reaches the clients.json or ledger paths.
-_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+_SLUG = SLUG_PATTERN
 _MAX_DETAIL_CHARS = 2000
 #: Longest period an explicit ``end`` may give (``months`` is capped at 36).
 _MAX_PERIOD_MONTHS = 37
