@@ -278,10 +278,12 @@ services:
       # filter expression, a SQL lookup or a router condition survives only
       # here. The deep-dive capabilities read it and never write.
       - ./knowledge_base/intodoc-output:/intodoc-output:ro
-      # Licence DIRECTORY, read-only, shared with mcp-server. A directory and not
-      # a single-file bind: renewal replaces the file (new inode), which a file
-      # bind would never see, while the verifier reloads on mtime change. On a
-      # client VPS deploy-client.sh sets LICENCE_DIR and creates it root:1001 0750.
+      # Licence DIRECTORY, shared with mcp-server. Read-only HERE: only
+      # mcp-server writes it (POST /ops/control/licence, an atomic replace). A
+      # directory and not a single-file bind: renewal replaces the file (new
+      # inode), which a file bind would never see, while the verifier reloads on
+      # mtime change. On a client VPS deploy-client.sh sets LICENCE_DIR and
+      # creates it root:1001 0770 (group-writable for mcp-server's uid 1001).
       - ${LICENCE_DIR:-./deploy/licence}:/etc/intodata-kb/licence:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -454,6 +456,9 @@ services:
       MCP_OPS_TELEMETRY_URL: ${MCP_OPS_TELEMETRY_URL:-}
       MCP_OPS_TELEMETRY_API_KEY: ${MCP_OPS_TELEMETRY_API_KEY:-}
       MCP_OPS_TELEMETRY_INTERVAL_SECONDS: ${MCP_OPS_TELEMETRY_INTERVAL_SECONDS:-300}
+      # Bearer key Mission Control uses for /ops/control/* (scan, generate,
+      # licence install). Empty = every control endpoint answers 503.
+      MCP_OPS_CONTROL_KEY: ${MCP_OPS_CONTROL_KEY:-}
       # Same licence vars as the backend (see the comment there). Do not give
       # these their own env-file keys: one source is what keeps them in step.
       MCP_LICENCE_ENFORCEMENT: ${LICENCE_ENFORCEMENT:-enforce}
@@ -476,8 +481,11 @@ services:
       - ./knowledge_base/intodoc-output:/app/intodoc-output
       - ./knowledge_base/output:/app/workspace/output
       - ./knowledge_base/packs:/app/workspace/packs
-      # Same read-only licence directory as the backend.
-      - ${LICENCE_DIR:-./deploy/licence}:/etc/intodata-kb/licence:ro
+      # Same licence directory as the backend, but READ-WRITE: mcp-server is
+      # the only writer. POST /ops/control/licence verifies a pushed token
+      # against the pinned keys and this client's slug, then replaces
+      # licence.jwt atomically (licensing/install.py). The backend keeps :ro.
+      - ${LICENCE_DIR:-./deploy/licence}:/etc/intodata-kb/licence
       # Claude Code OAuth credentials. HOME is /app/.home (baked into the image),
       # so the CLI reads ~/.claude/.credentials.json from here. It is a named
       # volume and NOT a bind mount: an operator runs `claude login` once inside

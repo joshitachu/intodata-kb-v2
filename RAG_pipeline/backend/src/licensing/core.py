@@ -16,6 +16,15 @@ Layers:
 - ``LicenceSource``     where the token comes from (Strategy; a file today, a
                         per-tenant subscription record for multi-tenant SaaS)
 - ``EntitlementPolicy`` ``check(capability)`` -> ``None`` or a ``Refusal``
+
+Two slots. The *current* licence lives in the configured licence file; a
+gapless renewal (a token whose period has not started yet) is queued in the
+*next* slot, a sibling file named by ``next_licence_path`` (``licence.jwt`` ->
+``licence.next.jwt``). ``EntitlementPolicy.status`` serves the current licence
+while it is VALID and falls back to the next one only once the next one is
+itself VALID, so a pushed renewal never displaces a running licence and takes
+over the moment its period starts, with no process having to move a file.
+Moving next -> current afterwards is housekeeping done by the writer.
 """
 
 from __future__ import annotations
@@ -194,29 +203,46 @@ class LicenceSource(Protocol):
 UNREADABLE_TOKEN = "<unreadable licence file>"
 
 
+def next_licence_path(licence_file: str | Path) -> Path:
+    """The next-slot sibling of a licence file: ``licence.jwt`` -> ``licence.next.jwt``.
+
+    Same directory on purpose: the licence directory is the unit that is
+    mounted (read-write into mcp-server, read-only into the RAG backend), so
+    both services see both slots.
+    """
+    path = Path(licence_file)
+    return path.with_name(f"{path.stem}.next{path.suffix}")
+
+
 class FileLicenceSource:
-    """Reads the token from a mounted file; re-reads when its mtime changes."""
+    """Reads the token from a mounted file; re-reads when the file changes.
+
+    "Changes" is keyed on inode, size and nanosecond mtime together, so an
+    atomic replace (new inode) is seen even when the filesystem's timestamp
+    granularity would give the new file the same mtime as the old one.
+    """
 
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
         self._lock = threading.Lock()
-        self._mtime: float | None = None
+        self._stamp: tuple[int, int, int] | None = None
         self._token: str | None = None
 
     def read_token(self) -> str | None:
         try:
-            mtime = self._path.stat().st_mtime
+            st = self._path.stat()
         except OSError:
             return None
+        stamp = (st.st_ino, st.st_size, st.st_mtime_ns)
         with self._lock:
-            if mtime != self._mtime:
+            if stamp != self._stamp:
                 try:
                     self._token = self._path.read_text(encoding="utf-8").strip() or None
                 except UnicodeDecodeError:
                     self._token = UNREADABLE_TOKEN
                 except OSError:
                     return None
-                self._mtime = mtime
+                self._stamp = stamp
             return self._token
 
 
@@ -254,7 +280,10 @@ GENERATIONS_LIMIT_KEY = "generations_per_period"
 
 
 class EntitlementPolicy:
-    """Decides whether a capability is allowed under the current licence."""
+    """Decides whether a capability is allowed under the current licence.
+
+    ``next_source`` is the optional queued-renewal slot (see module docstring).
+    """
 
     def __init__(
         self,
@@ -263,15 +292,54 @@ class EntitlementPolicy:
         public_keys: Mapping[str, str],
         expected_subject: str,
         enforce: bool,
+        next_source: LicenceSource | None = None,
     ) -> None:
         self._source = source
+        self._next_source = next_source
         self._public_keys = dict(public_keys)
         self._expected_subject = expected_subject
         self.enforce = enforce
 
-    def status(self, *, now: datetime | None = None) -> LicenceStatus:
-        return verify_token(self._source.read_token(), public_keys=self._public_keys,
+    def _verify(self, token: str | None, now: datetime | None) -> LicenceStatus:
+        return verify_token(token, public_keys=self._public_keys,
                             expected_subject=self._expected_subject, now=now)
+
+    def _read_next(self, now: datetime | None) -> LicenceStatus | None:
+        if self._next_source is None:
+            return None
+        token = self._next_source.read_token()
+        return None if token is None else self._verify(token, now)
+
+    def status(self, *, now: datetime | None = None) -> LicenceStatus:
+        """The licence in force: current while VALID, else next once it is VALID.
+
+        Otherwise the current slot's status, so a refusal names the current
+        licence's problem (expired, missing, ...), not the queued one's.
+        """
+        now = now or datetime.now(timezone.utc)
+        current = self._verify(self._source.read_token(), now)
+        if current.state is LicenceState.VALID:
+            return current
+        queued = self._read_next(now)
+        if queued is not None and queued.state is LicenceState.VALID:
+            return queued
+        return current
+
+    def next_status(self, *, now: datetime | None = None) -> LicenceStatus | None:
+        """The queued renewal, for status endpoints and telemetry.
+
+        ``None`` when the next slot is empty, or when ``status`` is already
+        serving it (the next licence has started and replaced an expired one).
+        """
+        now = now or datetime.now(timezone.utc)
+        queued = self._read_next(now)
+        if queued is None:
+            return None
+        if queued.state is LicenceState.VALID:
+            current = self._verify(self._source.read_token(), now)
+            if current.state is not LicenceState.VALID:
+                return None
+        return queued
 
     def check(
         self,

@@ -1,9 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchAllSnapshots, triggerGenerate, triggerScan } from "../api/fleet";
 
+export const FLEET_SNAPSHOTS_KEY = ["fleet-snapshots"] as const;
+
 export function useFleet() {
   return useQuery({
-    queryKey: ["fleet-snapshots"],
+    queryKey: FLEET_SNAPSHOTS_KEY,
     queryFn: fetchAllSnapshots,
     refetchInterval: 30_000,
     staleTime: 15_000,
@@ -15,7 +17,7 @@ export function useTriggerScan() {
   return useMutation({
     mutationFn: ({ clientSlug, projectId }: { clientSlug: string; projectId: string }) =>
       triggerScan(clientSlug, projectId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["fleet-snapshots"] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: FLEET_SNAPSHOTS_KEY }),
   });
 }
 
@@ -24,6 +26,6 @@ export function useTriggerGenerate() {
   return useMutation({
     mutationFn: ({ clientSlug, projectId }: { clientSlug: string; projectId: string }) =>
       triggerGenerate(clientSlug, projectId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["fleet-snapshots"] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: FLEET_SNAPSHOTS_KEY }),
   });
 }

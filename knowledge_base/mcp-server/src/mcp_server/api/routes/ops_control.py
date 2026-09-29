@@ -1,19 +1,35 @@
 """Mission Control inbound control endpoints.
 
-Allows the Mission Control service to trigger scans and doc generation on this
-VPS without JWT cookie auth. Uses a dedicated Bearer key (MCP_OPS_CONTROL_KEY).
-Only registered if ops_control_key is set in config.
+Lets Mission Control trigger scans and doc generation, and install a pushed
+subscription licence, on this VPS without JWT cookie auth. A dedicated Bearer
+key (``MCP_OPS_CONTROL_KEY``) authenticates the caller. The router is always
+registered. While the key is unset, every endpoint answers 503, so an instance
+that was never given a key cannot be driven remotely.
+
+At the edge, nginx routes ``/ops/control/`` straight to mcp-server with no
+superadmin gate (this is a machine caller), optionally behind an IP allowlist
+(``OPS_CONTROL_ALLOWED_IPS``).
 """
 
 from __future__ import annotations
 
+import hmac
 import logging
+from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from mcp_server.config import config
+from mcp_server.licensing.install import (
+    MAX_TOKEN_BYTES,
+    LicenceInstallService,
+    LicenceRejected,
+    LicenceStoreUnwritable,
+    LicenceTooLarge,
+)
+from mcp_server.licensing.runtime import get_policy
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +45,73 @@ def _require_control_auth(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Ops control not configured on this instance",
         )
-    if credentials.credentials != config.ops_control_key:
+    # Constant-time: a plain ``!=`` leaks the matching prefix length through timing.
+    if not hmac.compare_digest(
+        credentials.credentials.encode("utf-8"), config.ops_control_key.encode("utf-8")
+    ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid control key")
 
 
 class TriggerResponse(BaseModel):
     status: str
     message: str
+
+
+class LicenceInstallRequest(BaseModel):
+    token: str
+
+
+class LicenceInstallResponse(BaseModel):
+    installed: bool
+    #: ``current`` (the licence in force was replaced) or ``next`` (a gapless
+    #: renewal was queued behind a still-valid licence).
+    slot: Literal["current", "next"]
+    #: The licence in force after the install.
+    licence: dict[str, Any]
+    #: The queued renewal, or ``None`` when nothing is queued.
+    next_licence: dict[str, Any] | None
+
+
+@router.post(
+    "/licence",
+    response_model=LicenceInstallResponse,
+    dependencies=[Depends(_require_control_auth)],
+)
+def install_licence(body: LicenceInstallRequest) -> LicenceInstallResponse:
+    """Install a licence pushed by Mission Control (verify first, then store).
+
+    A plain ``def``, so FastAPI runs the blocking file I/O and fsyncs in its
+    threadpool rather than on the event loop. Replies with the state the
+    process policy reads back from the slot files, never with the token.
+    """
+    try:
+        result = LicenceInstallService.from_config().install(body.token)
+    except LicenceTooLarge as exc:
+        raise HTTPException(
+            status_code=413,
+            detail={"code": "licence_too_large", "max_bytes": MAX_TOKEN_BYTES,
+                    "reason": str(exc)},
+        ) from exc
+    except LicenceRejected as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "licence_rejected", "state": exc.status.state.value,
+                    "reason": exc.status.reason or None},
+        ) from exc
+    except LicenceStoreUnwritable as exc:
+        logger.error("licence install failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "licence_store_unwritable", "reason": str(exc)},
+        ) from exc
+    policy = get_policy()
+    queued = policy.next_status()
+    return LicenceInstallResponse(
+        installed=True,
+        slot=result.slot,
+        licence=policy.status().to_public_dict(),
+        next_licence=queued.to_public_dict() if queued is not None else None,
+    )
 
 
 @router.post(

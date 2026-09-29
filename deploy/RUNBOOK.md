@@ -945,7 +945,48 @@ The signing key and `MC_LICENCE_SIGNING_*` must never be put on a client VPS.
 PEM private key in the client env file, the connectors env file, or the licence
 directory.
 
-### 17a. Issue a licence (operator machine)
+### 17-UI. Issue and push from the Fleet screen (preferred)
+
+See ADR-038. One-time setup on the operator machine, which is the only place the key lives:
+
+1. Copy `deploy/operator/clients.example.json` to `deploy/operator/clients.json`
+   (gitignored). Add each client's `control_key` (its `MCP_OPS_CONTROL_KEY`,
+   from `/etc/intodata-kb/envs/<client>.env` on the VPS) and its `mcp_url`
+   (`https://<client>.<base-domain>`). `mcp_url` is REQUIRED and must be https:
+   Mission Control never addresses a push by the heartbeat URL.
+2b. Set a strong `MC_API_KEY` (not the repo default, which disables issuing).
+2. Set `MC_LICENCE_SIGNING_KEY_HOST_PATH` and `MC_LICENCE_SIGNING_KID=nexus-2026-09`
+   in your shell or root `.env`. This is never a client env file.
+3. `docker compose -f docker-compose.yml -f deploy/operator/docker-compose.issuer.yml up -d --build mission-control dashboard`.
+4. Open `http://localhost:8001` as a superadmin and go to Fleet, then the client, then the Licence tab.
+   "Issuing is not configured" means the key did not mount. Check step 2.
+
+To issue:
+- Pick a plan and a duration.
+- Start "Now" for a new client, or "When the current licence ends" for a gapless renewal.
+  The renewal starts when the last licence in the ledger ends. The instance keeps it as a
+  queued next licence (`licence.next.jwt`), and it takes over at its start date with no
+  lockout. The result shows "Queued as next licence".
+- Keep "Push to instance" on, then confirm.
+- The result shows the instance's own read-back (`state: valid`), and the history table records it.
+
+If a push fails, the licence is still issued and recorded, and the reason is shown:
+- `503`: the VPS has no `MCP_OPS_CONTROL_KEY`. Re-run `deploy-client.sh` there.
+- `401`: the key in `clients.json` is wrong.
+- `422` from the instance: wrong client slug, or an expired licence.
+- `422` from Mission Control, before anything is issued: `start_in_past` (more than
+  24h back), `period_too_long` (more than 37 months), `invalid_period`, or
+  `instance_not_addressable` (`mcp_url` not pinned, not https, or invalid).
+- Unreachable: check `mcp_url` and `OPS_CONTROL_ALLOWED_IPS`.
+
+To fall back to a manual install, untick push, tick "Show licence for manual install", and continue with 17b.
+
+The Fleet screen is loopback-only by design: the client edge does not route `/mc/`.
+Reach a remote operator host through an SSH tunnel (`ssh -L 8001:127.0.0.1:8001 ...`).
+Back up the `mission_control_licences` volume, which holds the ledger `issued.jsonl`,
+together with the signing key.
+
+### 17a. Issue a licence by CLI (operator machine, fallback)
 
 ```bash
 cd /path/to/intodata-kb-v2/mission_control

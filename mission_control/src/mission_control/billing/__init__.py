@@ -8,9 +8,9 @@ key are resolved lazily, when they are actually used.
 from __future__ import annotations
 
 import os
-from typing import Callable, Mapping
+from collections.abc import Callable, Mapping
 
-from .fulfilment import LicenceSigner, SigningKeyUnavailable, fulfil
+from .fulfilment import LicenceSigner, SigningKeyUnavailable, fulfil, issue_licence
 from .models import BillingEvent, BillingEventKind, CheckoutSession, IssuedLicence
 from .providers import ManualProvider, PaymentProvider, StubExternalProvider
 
@@ -47,4 +47,5 @@ __all__ = [
     "StubExternalProvider",
     "fulfil",
     "get_provider",
+    "issue_licence",
 ]

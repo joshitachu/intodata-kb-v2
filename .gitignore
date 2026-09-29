@@ -179,3 +179,7 @@ docs/screenshots/
 
 # Local dev licence mount (docker-compose LICENCE_DIR default); licences are per-client secrets
 deploy/licence/
+
+# Central Mission Control operator config (control keys, operator secrets)
+deploy/operator/clients.json
+deploy/operator/operator.env

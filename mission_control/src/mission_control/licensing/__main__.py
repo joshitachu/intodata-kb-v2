@@ -6,7 +6,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
@@ -20,7 +20,7 @@ KID_ENV = "MC_LICENCE_SIGNING_KID"
 
 def _parse_date(value: str) -> datetime:
     parsed = datetime.fromisoformat(value)
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _keygen(args: argparse.Namespace) -> int:
@@ -51,7 +51,7 @@ def _issue(args: argparse.Namespace) -> int:
     if args.plan not in plans:
         print(f"unknown plan {args.plan!r}; known: {', '.join(sorted(plans))}", file=sys.stderr)
         return 2
-    start = _parse_date(args.start) if args.start else datetime.now(timezone.utc)
+    start = _parse_date(args.start) if args.start else datetime.now(UTC)
     end = _parse_date(args.end) if args.end else add_months(start, args.months)
     token = issue(client_slug=args.client, plan=plans[args.plan], period_start=start,
                   period_end=end, private_key=load_private_key(Path(key_file)), kid=kid)

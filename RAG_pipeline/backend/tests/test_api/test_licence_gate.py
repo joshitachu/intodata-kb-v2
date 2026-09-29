@@ -276,8 +276,9 @@ class TestLicenceStatus:
         body = resp.json()
         assert set(body) == {
             "state", "reason", "plan", "features", "limits", "period_start",
-            "period_end", "days_remaining", "near_expiry", "enforcement",
+            "period_end", "days_remaining", "near_expiry", "enforcement", "next_licence",
         }
+        assert body["next_licence"] is None  # no renewal queued
         assert body["state"] == "valid"
         assert body["enforcement"] == "enforce"
         assert body["plan"] == "basic"
@@ -285,6 +286,23 @@ class TestLicenceStatus:
         assert body["limits"] == {"generations_per_period": 3}
         assert body["days_remaining"] in (28, 29)
         assert body["near_expiry"] is False
+        assert "token" not in json.dumps(body).lower()
+
+    async def test_status_reports_a_queued_renewal(self, mock_deps):
+        """A pushed renewal sits in the next slot; the banner and Fleet must see it."""
+        set_policy(EntitlementPolicy(
+            _StaticSource(_valid()),
+            public_keys=_VECTORS["public_keys"],
+            expected_subject=_VECTORS["expected_subject"],
+            enforce=True,
+            next_source=_StaticSource(_token(start_offset_days=29, end_offset_days=59)),
+        ))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/v1/licence/status")
+
+        body = resp.json()
+        assert body["state"] == "valid"
+        assert body["next_licence"]["state"] == "not_yet_valid"
         assert "token" not in json.dumps(body).lower()
 
     async def test_status_is_readable_while_expired(self, mock_deps):

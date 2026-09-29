@@ -928,6 +928,15 @@ procedure: root `deploy/RUNBOOK.md` section 17.
 - **Operator side**: licences are issued with
   `python -m mission_control.licensing issue` on the operator machine. The signing
   key (`MC_LICENCE_SIGNING_KEY_FILE`) must never be on a client stack.
+- **Issuing UI + push (ADR-038)**: the Fleet tab calls Mission Control `/ops/licensing/plans` and
+  `/ops/clients/{slug}/licences`, which issue, record and push. The instance endpoint
+  `POST /ops/control/licence` (`api/routes/ops_control.py` -> `licensing/install.py`) verifies the token
+  against the pinned keys and slug BEFORE an atomic write: 422 `licence_rejected`, 413 when oversize,
+  503 when the store is not writable. Only mcp-server mounts the licence dir read-write. The heartbeat
+  carries a `licence` block (with `next_licence`). Mission Control addresses every control call by the
+  `mcp_url` pinned in `clients.json` (https, required; the heartbeat URL is never used). A renewal
+  pushed while the current licence is valid is queued in `licence.next.jwt` and served once it starts
+  (`EntitlementPolicy(next_source=...)`); do not write a not-yet-valid token over the current file.
 
 ## Project Structure
 

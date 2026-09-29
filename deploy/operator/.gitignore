@@ -1,0 +1,4 @@
+# Operator secrets: never commit.
+operator.env
+clients.json
+*.pem

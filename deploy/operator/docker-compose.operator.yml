@@ -1,0 +1,61 @@
+# Central (operator-side) Mission Control: the ONLY process that holds the
+# licence signing key. Never deploy this file to a client VPS.
+#
+# Standalone on purpose: it defines only `mission-control`, so it does not need
+# the client stack's secrets (POSTGRES_PASSWORD etc.) that the root
+# docker-compose.yml requires.
+#
+# Usage (from the repo root):
+#   cp deploy/operator/clients.example.json deploy/operator/clients.json   # fill in keys
+#   docker compose -p nexus-operator \
+#     --env-file deploy/operator/operator.env \
+#     -f deploy/operator/docker-compose.operator.yml up -d --build
+#
+# deploy/operator/operator.env (gitignored; NOT the client .env that
+# deploy-client.sh reads):
+#   MC_API_KEY=<long random>
+#   MC_LICENCE_SIGNING_KEY_HOST_PATH=/secure/path/licence-signing.pem
+#   MC_LICENCE_SIGNING_KID=<kid pinned in both services' licensing/keys.py>
+#   MC_CLIENTS_CONFIG_HOST_PATH=./clients.json    # optional
+#   MC_PORT=9100                                   # optional
+#
+# Key file: mode 0400, readable by uid 1001 (the container user), e.g.
+#   sudo chown 1001:1001 licence-signing.pem && sudo chmod 0400 licence-signing.pem
+# It is mounted read-only and only its path is passed in the environment.
+
+name: nexus-operator
+
+services:
+  mission-control:
+    build:
+      context: ../../mission_control
+      dockerfile: Dockerfile
+    pull_policy: build
+    ports:
+      - "127.0.0.1:${MC_PORT:-9100}:9100"
+    environment:
+      MC_API_KEY: ${MC_API_KEY:?Set MC_API_KEY in deploy/operator/operator.env}
+      MC_SNAPSHOTS_DIR: /app/snapshots
+      MC_CLIENTS_CONFIG: /run/config/clients.json
+      MC_LICENCE_LEDGER_DIR: /app/licences
+      MC_LICENCE_SIGNING_KEY_FILE: /run/secrets/licence-signing.pem
+      MC_LICENCE_SIGNING_KID: ${MC_LICENCE_SIGNING_KID:?Set MC_LICENCE_SIGNING_KID in deploy/operator/operator.env}
+    volumes:
+      - mission_control_operator_snapshots:/app/snapshots
+      - mission_control_operator_licences:/app/licences
+      - ${MC_CLIENTS_CONFIG_HOST_PATH:-./clients.json}:/run/config/clients.json:ro
+      - ${MC_LICENCE_SIGNING_KEY_HOST_PATH:?Set MC_LICENCE_SIGNING_KEY_HOST_PATH in deploy/operator/operator.env}:/run/secrets/licence-signing.pem:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:9100/health')\" || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: 128m
+    cpus: 0.25
+    restart: unless-stopped
+
+volumes:
+  mission_control_operator_snapshots:
+  # issued.jsonl: the issuance ledger. Back this volume up.
+  mission_control_operator_licences:

@@ -10,8 +10,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from typing import Mapping, Protocol, runtime_checkable
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from typing import Protocol, runtime_checkable
 
 from ..licensing.issuer import Plan, add_months, load_plans
 from .fulfilment import LicenceSigner, fulfil
@@ -79,12 +80,21 @@ class ManualProvider:
         *,
         months: int = 1,
         period_start: datetime | None = None,
+        period_end: datetime | None = None,
         renewal: bool = False,
+        metadata: Mapping[str, str] | None = None,
     ) -> IssuedLicence:
-        """Record a manual payment and issue the licence for its period."""
-        start = period_start or datetime.now(timezone.utc)
+        """Record a manual payment and issue the licence for its period.
+
+        ``period_end`` (explicit) wins over ``months``. This is also the path the
+        operator "Issue" API uses, so UI and billing issue identically.
+        """
+        start = period_start or datetime.now(UTC)
         if start.tzinfo is None:
-            start = start.replace(tzinfo=timezone.utc)
+            start = start.replace(tzinfo=UTC)
+        end = period_end or add_months(start, months)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=UTC)
         event = BillingEvent(
             kind=(BillingEventKind.SUBSCRIPTION_RENEWED if renewal
                   else BillingEventKind.SUBSCRIPTION_ACTIVATED),
@@ -92,8 +102,9 @@ class ManualProvider:
             client_slug=client_slug,
             plan=plan,
             period_start=start,
-            period_end=add_months(start, months),
+            period_end=end,
             external_id=f"manual-{uuid.uuid4()}",
+            metadata=dict(metadata or {}),
         )
         signer = self._signer or LicenceSigner.from_env()
         issued = fulfil(event, signer, plans=self._plans_catalogue())

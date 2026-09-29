@@ -2,6 +2,15 @@
 
 **Invariant**: newest-first. Every entry is a `## Session: YYYY-MM-DD -- <title>` heading, and the newest entry is always at the top. Entries older than ~30 days are rotated verbatim to `archive/PROGRESS_LOG-pre-2026-08-05.md`. Last rotation: 2026-09-04 (cutoff 2026-08-05).
 
+## Session: 2026-09-29 -- Licence core gains a queued-renewal slot; status reports it
+
+- **Files changed**: modified `RAG_pipeline/backend/src/licensing/{core,runtime}.py`, `.../src/api/routes/licence.py`, `.../tests/test_licensing/test_core.py`, `.../tests/test_api/test_licence_gate.py`. Main feature logged in knowledge_base PROGRESS_LOG 2026-09-29 (ADR-038).
+- **Problem**: a pushed gapless renewal overwrote the valid licence and caused an immediate lockout (found in adversarial review, reproduced).
+- **Root cause**: one file held one token, and the policy refuses anything not VALID.
+- **Change**: `EntitlementPolicy(next_source=)` serves the next licence only when the current one is not VALID; `next_status()`, `next_licence_path()`. `FileLicenceSource` keys its cache on inode+size+mtime_ns. `runtime.build_policy` wires `licence.next.jwt`. `GET /api/v1/licence/status` adds `next_licence`. `core.py` is still byte-identical to the mcp-server copy.
+- **Why this approach**: a separate slot keeps the current licence authoritative until the renewal starts, and makes a replayed future-dated token harmless.
+- **Verification**: `pytest tests/test_licensing tests/test_api -q` -> `2 failed, 588 passed` (pre-existing `test_project_ownership_api`, `no such table: projects`); `cmp` of the core mirrors is identical.
+
 ## Session: 2026-09-28 -- Clustered route deployments: engine in the key, cluster as the row, version and coverage recorded
 
 - **Files changed**: new `RAG_pipeline/backend/alembic/versions/107_runtime_cluster_and_version.py`, `.../backend/scripts/{probe_tmc_engine_log_gap.py,probe_tmc_route_metrics.py}`; modified `.../backend/src/db/models/runtime_data.py`, `.../src/runtime/models.py`, `.../src/runtime/providers/talend_tmc.py`, `.../src/runtime/store/repository.py`, `.../backend/scripts/probe_tmc_engine_logs.py`, `.../backend/tests/test_runtime/{test_store_repository.py,test_talend_tmc_provider.py,test_talend_tmc_environment_scope.py}`, `RAG_pipeline/frontend/{types/runtime.ts,types/index.ts,components/runtime/RuntimeConsole.tsx,tests/components/RuntimeLogsPage.test.tsx}`.

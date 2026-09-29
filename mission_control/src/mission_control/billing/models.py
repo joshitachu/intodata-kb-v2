@@ -8,9 +8,9 @@ leaks provider objects past its adapter.
 from __future__ import annotations
 
 import enum
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Mapping
 
 
 class BillingEventKind(str, enum.Enum):
@@ -71,11 +71,17 @@ class BillingEvent:
 
 @dataclass(frozen=True)
 class IssuedLicence:
-    """A licence produced for a billing event, ready to install on the VPS."""
+    """A signed licence, ready to install on the VPS.
+
+    ``token`` is the secret-bearing part: it is excluded from ``repr`` so it
+    cannot leak into logs, and it is never written to the issuance ledger.
+    """
 
     client_slug: str
     plan: str
     period_start: datetime
     period_end: datetime
     kid: str
-    token: str
+    licence_id: str
+    issued_at: datetime
+    token: str = field(repr=False)

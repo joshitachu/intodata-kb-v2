@@ -3,6 +3,7 @@ import type { ClientSnapshot, FleetProject } from "../api/fleet";
 import { useFleet, useTriggerGenerate, useTriggerScan } from "../hooks/useFleet";
 import { timeAgo } from "../lib/timeago";
 import FleetDetailPanel from "./FleetDetailPanel";
+import FleetLicenceBadge from "./FleetLicenceBadge";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -120,6 +121,7 @@ function ClientCard({ slug, snapshot, onSelect }: { slug: string; snapshot: Clie
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          <FleetLicenceBadge licence={snapshot.licence} />
           {hasErrors && (
             <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-red-500/10 text-red-400 border border-red-500/20">
               {errorProjects.length} error{errorProjects.length > 1 ? "s" : ""}
@@ -209,7 +211,7 @@ function FleetSummary({ snapshots }: { snapshots: Record<string, ClientSnapshot>
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-export default function FleetPage() {
+export default function FleetPage({ currentUsername = null }: { currentUsername?: string | null }) {
   const { data: snapshots, isLoading, error, dataUpdatedAt } = useFleet();
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
 
@@ -240,6 +242,7 @@ export default function FleetPage() {
           slug={selectedSlug}
           snapshot={snapshots[selectedSlug]}
           onClose={() => setSelectedSlug(null)}
+          currentUsername={currentUsername}
         />
       )}
       <div className="flex items-center justify-between">

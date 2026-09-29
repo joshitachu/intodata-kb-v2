@@ -1,29 +1,84 @@
 import { z } from "zod";
+import { ApiError } from "../lib/errors";
+import { LicenceStatusSchema } from "../lib/licence";
 
 // No client-side API key — Authorization header is injected by the nginx
 // reverse proxy at /mc/ so the key is never exposed in the JS bundle.
 const MC_BASE = "/mc";
 
-async function mcRequest<T>(path: string, schema: z.ZodType<T>, options: RequestInit = {}): Promise<T> {
+/**
+ * A failed Mission Control request. Carries the status and the parsed
+ * `detail` of the FastAPI error body so callers can branch on a code
+ * (`issuing_disabled`) and show the server's reason instead of raw JSON.
+ */
+export class McError extends ApiError {
+  readonly detail: unknown;
+
+  constructor(status: number, body: string) {
+    super(status, body);
+    this.name = "McError";
+    this.message = `Mission Control ${status}: ${body}`;
+    let detail: unknown = body;
+    try {
+      const parsed: unknown = JSON.parse(body);
+      detail = parsed && typeof parsed === "object" && "detail" in parsed ? (parsed as { detail: unknown }).detail : parsed;
+    } catch {
+      // Not JSON; keep the raw text as the detail.
+    }
+    this.detail = detail;
+  }
+}
+
+async function mcFetch(path: string, options: RequestInit = {}): Promise<Response> {
   const res = await fetch(`${MC_BASE}${path}`, {
     ...options,
     headers: { "Content-Type": "application/json", ...(options.headers as Record<string, string>) },
   });
   if (!res.ok) {
-    const detail = await res.text();
-    throw new Error(`Mission Control ${res.status}: ${detail}`);
+    throw new McError(res.status, await res.text());
   }
-  const data = await res.json();
-  return schema.parse(data);
+  return res;
+}
+
+async function mcRequest<T>(path: string, schema: z.ZodType<T>, options: RequestInit = {}): Promise<T> {
+  const res = await mcFetch(path, options);
+  return schema.parse(await res.json());
 }
 
 async function mcPost(path: string): Promise<{ status: string; message: string }> {
-  const res = await fetch(`${MC_BASE}${path}`, { method: "POST", headers: { "Content-Type": "application/json" } });
-  if (!res.ok) {
-    const detail = await res.text();
-    throw new Error(`Mission Control ${res.status}: ${detail}`);
-  }
+  const res = await mcFetch(path, { method: "POST" });
   return res.json();
+}
+
+/** A human sentence for any Mission Control or instance error `detail`. */
+export function describeMcDetail(detail: unknown): string {
+  if (detail == null || detail === "") return "no reason given";
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    // FastAPI 422 validation errors: [{loc, msg, type}]
+    const msgs = detail
+      .map((d) => (d && typeof d === "object" && "msg" in d ? String((d as { msg: unknown }).msg) : describeMcDetail(d)))
+      .filter(Boolean);
+    return msgs.length ? msgs.join("; ") : JSON.stringify(detail);
+  }
+  if (typeof detail === "object") {
+    const obj = detail as Record<string, unknown>;
+    if (obj.code === "issuing_disabled") {
+      return "Issuing is not configured on this Mission Control (no signing key)";
+    }
+    for (const key of ["message", "reason", "detail"]) {
+      const value = obj[key];
+      if (value != null && value !== "") return describeMcDetail(value);
+    }
+    if (typeof obj.code === "string") return obj.code;
+    return JSON.stringify(detail);
+  }
+  return String(detail);
+}
+
+export function describeMcError(error: unknown): string {
+  if (error instanceof McError) return `${error.status}: ${describeMcDetail(error.detail)}`;
+  return error instanceof Error ? error.message : String(error);
 }
 
 // ── Schemas ───────────────────────────────────────────────────────────────────
@@ -85,6 +140,20 @@ export const RagMetricsSchema = z.object({
   avg_queries_per_conversation: z.number(),
 });
 
+/**
+ * An instance's licence as reported in its heartbeat: the instance's own
+ * `LicenceStatus` (same contract as `/mcp/licence/status`) plus `unknown`,
+ * which the instance reports when it cannot evaluate its licence. That
+ * fallback is the bare `{"state": "unknown"}`, so every field it omits must be
+ * optional or defaulted here -- `enforcement` is required in the instance's
+ * own contract but not in the fleet's. (Fleet schema only; the local
+ * `LicenceStatusSchema` is unchanged.)
+ */
+export const FleetLicenceSchema = LicenceStatusSchema.extend({
+  state: z.enum(["valid", "expired", "not_yet_valid", "missing", "invalid", "unknown"]),
+  enforcement: z.enum(["enforce", "off"]).optional(),
+});
+
 export const ClientSnapshotSchema = z.object({
   schema_version: z.string(),
   client_slug: z.string(),
@@ -98,6 +167,9 @@ export const ClientSnapshotSchema = z.object({
   latest_generate_runs: z.array(FleetGenerateRunSchema),
   model_stats: z.array(ModelStatSchema).optional(),
   rag: RagMetricsSchema.optional(),
+  // Absent on instances older than the licence telemetry. A malformed block
+  // degrades to null ("not reporting") instead of failing the whole fleet parse.
+  licence: FleetLicenceSchema.nullable().optional().catch(null),
   _mc_source_ip: z.string().nullable().optional(),
   _mc_received_at: z.string().optional(),
 });
@@ -109,6 +181,83 @@ export type FleetProject = z.infer<typeof FleetProjectSchema>;
 export type FleetTotals = z.infer<typeof FleetTotalsSchema>;
 export type ModelStat = z.infer<typeof ModelStatSchema>;
 export type RagMetrics = z.infer<typeof RagMetricsSchema>;
+export type FleetLicence = z.infer<typeof FleetLicenceSchema>;
+
+// ── Licensing (central Mission Control only) ──────────────────────────────────
+
+export const LicencePlanSchema = z.object({
+  name: z.string(),
+  description: z.string().nullable().optional(),
+  features: z.array(z.string()).default([]),
+  limits: z.record(z.string(), z.number().nullable()).default({}),
+});
+
+export const LicencePlansResponseSchema = z.object({
+  plans: z.array(LicencePlanSchema),
+  issuing_enabled: z.boolean(),
+});
+
+export const IssueLicenceRequestSchema = z.object({
+  plan: z.string(),
+  months: z.number().nullable().optional(),
+  start: z.string().nullable().optional(),
+  end: z.string().nullable().optional(),
+  start_after_current: z.boolean().optional(),
+  push: z.boolean().optional(),
+  return_token: z.boolean().optional(),
+  issued_by: z.string().nullable().optional(),
+});
+
+export const LicencePushResultSchema = z.object({
+  attempted: z.boolean(),
+  ok: z.boolean().nullable().optional(),
+  status_code: z.number().nullable().optional(),
+  detail: z.unknown().optional(),
+  // The instance's public licence dict after install. Kept loose: a shape
+  // drift here must not throw away the response of a licence already issued.
+  instance_licence: z.unknown().optional(),
+  // Where the instance put the licence: "current", or "next" when it was
+  // queued behind the running one. Absent from older instances and MCs.
+  slot: z.enum(["current", "next"]).nullable().optional().catch(null),
+  // The queued licence's public view (same shape as the heartbeat licence).
+  // A malformed block degrades to null rather than failing the response.
+  next_licence: FleetLicenceSchema.nullable().optional().catch(null),
+});
+
+export const IssuedLicenceResponseSchema = z.object({
+  licence_id: z.string(),
+  client: z.string(),
+  plan: z.string(),
+  period_start: z.string(),
+  period_end: z.string(),
+  issued_at: z.string(),
+  issued_by: z.string().nullable().optional(),
+  push: LicencePushResultSchema,
+  token: z.string().nullable().optional(),
+});
+
+export const LicenceHistoryEntrySchema = z.object({
+  licence_id: z.string(),
+  client: z.string(),
+  plan: z.string(),
+  period_start: z.string(),
+  period_end: z.string(),
+  issued_at: z.string(),
+  issued_by: z.string().nullable().optional(),
+  push_ok: z.boolean().nullable().optional(),
+  push_status_code: z.number().nullable().optional(),
+});
+
+export const LicenceHistoryResponseSchema = z.object({
+  licences: z.array(LicenceHistoryEntrySchema),
+});
+
+export type LicencePlan = z.infer<typeof LicencePlanSchema>;
+export type LicencePlansResponse = z.infer<typeof LicencePlansResponseSchema>;
+export type IssueLicenceRequest = z.infer<typeof IssueLicenceRequestSchema>;
+export type LicencePushResult = z.infer<typeof LicencePushResultSchema>;
+export type IssuedLicenceResponse = z.infer<typeof IssuedLicenceResponseSchema>;
+export type LicenceHistoryEntry = z.infer<typeof LicenceHistoryEntrySchema>;
 
 // ── API calls ─────────────────────────────────────────────────────────────────
 
@@ -122,4 +271,31 @@ export async function triggerScan(clientSlug: string, projectId: string) {
 
 export async function triggerGenerate(clientSlug: string, projectId: string) {
   return mcPost(`/ops/clients/${clientSlug}/trigger/generate/${projectId}`);
+}
+
+export async function fetchLicencePlans(): Promise<LicencePlansResponse> {
+  return mcRequest("/ops/licensing/plans", LicencePlansResponseSchema);
+}
+
+export async function fetchClientLicences(clientSlug: string): Promise<LicenceHistoryEntry[]> {
+  const data = await mcRequest(
+    `/ops/clients/${encodeURIComponent(clientSlug)}/licences`,
+    LicenceHistoryResponseSchema,
+  );
+  return data.licences;
+}
+
+/**
+ * Issue (and optionally push) a licence. The response may carry the signed
+ * token when `return_token` was requested; callers must keep it out of any
+ * cache (see `useIssueLicence`).
+ */
+export async function issueClientLicence(
+  clientSlug: string,
+  body: IssueLicenceRequest,
+): Promise<IssuedLicenceResponse> {
+  return mcRequest(`/ops/clients/${encodeURIComponent(clientSlug)}/licences`, IssuedLicenceResponseSchema, {
+    method: "POST",
+    body: JSON.stringify(IssueLicenceRequestSchema.parse(body)),
+  });
 }

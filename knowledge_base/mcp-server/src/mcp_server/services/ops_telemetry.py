@@ -19,6 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mcp_server.config import config
 from mcp_server.db.models import GenerateRun, Project, ScanRun
 from mcp_server.db.session import async_session_factory
+from mcp_server.licensing.runtime import get_policy
+from mcp_server.licensing.usage import usage_summary
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +146,26 @@ def _build_model_stats(runs: list[GenerateRun]) -> list[dict[str, Any]]:
     return stats
 
 
+async def _licence_payload() -> dict[str, Any]:
+    """Licence state for the Fleet screen: public status, enforcement and usage.
+
+    Same shape as ``GET /mcp/licence/status``, and like it never the token.
+    A licence fault must not cost the whole heartbeat, so any error is logged
+    and reported as ``unknown`` instead of raising into the telemetry loop.
+    """
+    try:
+        policy = get_policy()
+        body: dict[str, Any] = policy.status().to_public_dict()
+        body["enforcement"] = "enforce" if policy.enforce else "off"
+        body["usage"] = await usage_summary()
+        queued = policy.next_status()
+        body["next_licence"] = queued.to_public_dict() if queued is not None else None
+        return body
+    except Exception as exc:
+        logger.warning("IntoData Ops telemetry: licence state unavailable: %s", exc)
+        return {"state": "unknown"}
+
+
 async def build_ops_snapshot(db: AsyncSession) -> dict[str, Any]:
     """Build one safe telemetry snapshot from local MCP metadata tables."""
 
@@ -223,6 +245,7 @@ async def build_ops_snapshot(db: AsyncSession) -> dict[str, Any]:
         "latest_generate_runs": [_run_payload(run) for run in latest_generate_runs],
         "latest_scan_runs": [_scan_payload(run) for run in latest_scan_runs],
         "model_stats": _build_model_stats(latest_generate_runs),
+        "licence": await _licence_payload(),
     }
 
 

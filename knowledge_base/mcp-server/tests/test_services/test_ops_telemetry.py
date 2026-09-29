@@ -93,3 +93,54 @@ def test_ops_telemetry_requires_url_key_and_client_slug(monkeypatch):
 
     monkeypatch.setattr(config, "ops_client_slug", "acme")
     assert telemetry_enabled() is True
+
+
+@pytest.fixture
+def _reset_licence_policy():
+    from mcp_server.licensing.runtime import set_policy
+
+    yield
+    set_policy(None)
+
+
+@pytest.mark.asyncio
+async def test_ops_snapshot_carries_licence_state_and_usage(
+    db_session, session_factory, monkeypatch, _reset_licence_policy
+):
+    """The Fleet screen reads licence state from the heartbeat (plan Decision 6)."""
+    import mcp_server.db.session as session_mod
+    from tests.test_licensing.licence_fixtures import install_policy, issue_token
+
+    monkeypatch.setattr(session_mod, "async_session_factory", session_factory)
+    token = issue_token(generations=4)
+    install_policy(token)
+    db_session.add(Project(id="lic-p", display_name="P", local_path="/tmp/lic-p",
+                          platform="talend", status="ready"))
+    db_session.add(GenerateRun(project_id="lic-p", triggered_by="api", status="completed",
+                               started_at=datetime.datetime.now(datetime.timezone.utc)))
+    await db_session.commit()
+
+    snapshot = await build_ops_snapshot(db_session)
+
+    licence = snapshot["licence"]
+    assert licence["state"] == "valid"
+    assert licence["plan"] == "basic"
+    assert licence["enforcement"] == "enforce"
+    assert licence["usage"] == {"generations_used": 1, "generations_limit": 4}
+    assert token not in repr(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_ops_snapshot_survives_a_licence_failure(db_session, monkeypatch):
+    """A broken licence read must not cost the heartbeat."""
+    import mcp_server.services.ops_telemetry as telemetry_mod
+
+    def _boom():
+        raise RuntimeError("licence store exploded")
+
+    monkeypatch.setattr(telemetry_mod, "get_policy", _boom)
+
+    snapshot = await build_ops_snapshot(db_session)
+
+    assert snapshot["licence"] == {"state": "unknown"}
+    assert snapshot["schema_version"] == "ops.telemetry.v1"

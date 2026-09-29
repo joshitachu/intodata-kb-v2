@@ -1,0 +1,10 @@
+{
+  "example-client": {
+    "control_key": "REPLACE-with-that-client's-MCP_OPS_CONTROL_KEY",
+    "mcp_url": "https://example-client.nexus.intodata.nl"
+  },
+  "another-client": {
+    "control_key": "REPLACE-ME",
+    "mcp_url": "https://another-client.nexus.intodata.nl"
+  }
+}

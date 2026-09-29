@@ -6,10 +6,11 @@ import calendar
 import json
 import re
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import jwt
 from cryptography.hazmat.primitives import serialization
@@ -26,13 +27,15 @@ class Plan:
     name: str
     features: tuple[str, ...]
     limits: Mapping[str, int]
+    description: str = ""
 
 
 def load_plans(path: Path = PLANS_FILE) -> dict[str, Plan]:
     raw = json.loads(path.read_text(encoding="utf-8"))
     return {
         name: Plan(name, tuple(spec.get("features", [])),
-                   {k: int(v) for k, v in spec.get("limits", {}).items()})
+                   {k: int(v) for k, v in spec.get("limits", {}).items()},
+                   str(spec.get("description", "")))
         for name, spec in raw.items()
     }
 
@@ -69,12 +72,13 @@ def issue(
     private_key: Ed25519PrivateKey,
     kid: str,
     licence_id: str | None = None,
+    issued_at: datetime | None = None,
 ) -> str:
     if not _SLUG.match(client_slug):
         raise ValueError(f"invalid client slug: {client_slug!r}")
     if period_end <= period_start:
         raise ValueError("period_end must be after period_start")
-    now = datetime.now(timezone.utc)
+    now = issued_at or datetime.now(UTC)
     payload: dict[str, Any] = {
         "iss": ISSUER,
         "sub": client_slug,

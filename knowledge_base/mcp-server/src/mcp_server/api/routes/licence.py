@@ -71,4 +71,7 @@ async def licence_status() -> dict[str, object]:
     # the policy is what actually decides.
     body["enforcement"] = "enforce" if policy.enforce else "off"
     body["usage"] = await usage_summary()
+    # A pushed renewal waiting for its period to start (ADR-038).
+    queued = policy.next_status()
+    body["next_licence"] = queued.to_public_dict() if queued is not None else None
     return body

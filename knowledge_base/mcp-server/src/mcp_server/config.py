@@ -156,7 +156,8 @@ class MCPServerConfig(BaseSettings):
     ops_release_version: str = "unknown"
     ops_telemetry_interval_seconds: int = 300
     # Mission Control inbound control key — set this to allow Mission Control to
-    # trigger scans and doc generation on this VPS remotely.
+    # trigger scans and doc generation and push licences to this VPS
+    # (/ops/control/*). Empty = those endpoints answer 503.
     ops_control_key: str = ""
 
     # Subscription licence (mcp_server/licensing). ``enforce`` makes an expired

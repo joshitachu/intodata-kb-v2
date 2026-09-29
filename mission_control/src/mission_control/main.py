@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from fastapi import FastAPI
 
 from .config import settings
+from .licences_api import get_signer_provider
+from .licences_api import router as licences_router
 from .receiver import router
 
 logging.basicConfig(
@@ -25,11 +27,15 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         settings.port,
         settings.snapshots_dir.resolve(),
     )
+    # Reports only whether issuing is possible; the key itself is never logged.
+    logger.info("Licence issuing %s", "enabled" if get_signer_provider().available()
+                else "disabled (no signing key)")
     yield
 
 
 app = FastAPI(title="Mission Control", version="0.1.0", lifespan=lifespan)
 app.include_router(router)
+app.include_router(licences_router)
 
 
 @app.get("/health")

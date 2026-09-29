@@ -75,6 +75,11 @@ ALLOWLIST: dict[tuple[str, str], str] = {
     ("DELETE", "/mcp/projects/{project_id}/github-webhook"): "webhook removal",
     ("POST", "/mcp/projects/{project_id}/reviews"): "stores a human review",
     ("PUT", "/mcp/admin/instance-settings"): "operator settings; superadmin",
+    # Must work on a lapsed (view-only) instance: it is how the lapse is fixed.
+    ("POST", "/ops/control/licence"): (
+        "installs a pushed licence; verified against the pinned keys and slug before "
+        "storing; no scan, no model call, spends nothing"
+    ),
     ("POST", "/mcp/multi-repo/projects"): "source administration",
     ("POST", "/mcp/multi-repo/projects/{project_id}/members"): "source administration",
     ("DELETE", "/mcp/multi-repo/projects/{project_id}/members/{source_id}"): "source administration",

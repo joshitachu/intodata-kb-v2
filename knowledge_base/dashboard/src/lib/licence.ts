@@ -126,7 +126,8 @@ const CAPABILITY_LABEL: Record<LicenceCapability, string> = {
   scan: "scanning",
 };
 
-function formatDate(iso: string | null | undefined): string | null {
+/** `YYYY-MM-DD` for an ISO timestamp, or null when absent or unparseable. */
+export function formatDate(iso: string | null | undefined): string | null {
   if (!iso) return null;
   const date = new Date(iso);
   return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
@@ -152,7 +153,9 @@ export function licenceStateSentence(status: LicenceStatus): string {
 }
 
 export function generationUsage(
-  status: LicenceStatus | null | undefined,
+  // Only the usage fields are read, so a fleet heartbeat's licence block
+  // (a superset with an extra `unknown` state) can be passed as well.
+  status: Pick<LicenceStatus, "usage" | "limits"> | null | undefined,
 ): { used: number; limit: number } | null {
   const used = status?.usage?.generations_used;
   const limit = status?.usage?.generations_limit ?? status?.limits.generations_per_period;

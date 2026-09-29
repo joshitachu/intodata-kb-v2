@@ -298,7 +298,7 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
           {/* Documentation Pack workspace; legacy registry editing is admin-only inside it. */}
 
           {/* Fleet / Mission Control — nexus operator server only */}
-          {topNav === "fleet" && FLEET_ENABLED && user?.is_superadmin && <FleetPage />}
+          {topNav === "fleet" && FLEET_ENABLED && user?.is_superadmin && <FleetPage currentUsername={user.username} />}
 
           {/* Models — per-VPS default model overrides (superadmin only) */}
           {topNav === "models" && user?.is_superadmin && <ModelsPage />}

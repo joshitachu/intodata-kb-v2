@@ -2,30 +2,28 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
-from typing import Any
+from collections.abc import Awaitable
+from datetime import UTC, datetime
+from typing import Annotated, Any
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from .clients import load_client_config
+from .auth import require_api_key as _require_auth
 from .config import settings
+from .instance_client import (
+    InstanceControlClient,
+    InstanceHTTPError,
+    InstanceResolutionError,
+    InstanceUnreachable,
+    ResolutionFailure,
+    get_instance_client,
+)
+from .snapshots import snapshot_path as _snapshot_path
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ops")
-_bearer = HTTPBearer()
-
-
-def _require_auth(credentials: HTTPAuthorizationCredentials = Depends(_bearer)) -> None:
-    if credentials.credentials != settings.api_key:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-
-
-def _snapshot_path(client_slug: str) -> Path:
-    return settings.snapshots_dir / f"{client_slug}.json"
 
 
 # ── Heartbeat receiver ────────────────────────────────────────────────────────
@@ -38,7 +36,7 @@ def _snapshot_path(client_slug: str) -> Path:
 async def receive_telemetry(client_slug: str, request: Request) -> None:
     payload: dict[str, Any] = await request.json()
     payload["_mc_source_ip"] = request.client.host if request.client else None
-    payload["_mc_received_at"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+    payload["_mc_received_at"] = datetime.now(UTC).isoformat()
     settings.snapshots_dir.mkdir(parents=True, exist_ok=True)
     _snapshot_path(client_slug).write_text(json.dumps(payload, indent=2))
     logger.info(
@@ -111,64 +109,40 @@ async def billing_webhook() -> JSONResponse:
 
 # ── Remote trigger proxy ──────────────────────────────────────────────────────
 
-def _get_vps_url_and_key(client_slug: str) -> tuple[str, str]:
-    """Resolve the remote VPS MCP URL and control key for a given client."""
-    snapshot_path = _snapshot_path(client_slug)
-    if not snapshot_path.exists():
-        raise HTTPException(status_code=404, detail=f"No snapshot for '{client_slug}'")
-
-    snapshot = json.loads(snapshot_path.read_text())
-    mcp_url = snapshot.get("mcp_url")
-    if not mcp_url:
-        raise HTTPException(
-            status_code=422,
-            detail=f"No mcp_url in snapshot for '{client_slug}' — ensure MCP_PUBLIC_URL is set on the VPS",
-        )
-
-    client_cfg = load_client_config(client_slug)
-    control_key = client_cfg.get("control_key", "")
-    if not control_key:
-        raise HTTPException(
-            status_code=422,
-            detail=f"No control_key configured for '{client_slug}' in clients.json",
-        )
-
-    return mcp_url.rstrip("/"), control_key
+async def _proxy_trigger(call: Awaitable[Any]) -> Any:
+    """Map the adapter's typed failures to the trigger endpoints' HTTP contract."""
+    try:
+        return await call
+    except InstanceResolutionError as exc:
+        code = 404 if exc.failure is ResolutionFailure.NO_CLIENT_ENTRY else 422
+        raise HTTPException(status_code=code, detail=exc.message) from exc
+    except InstanceHTTPError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.text) from exc
+    except InstanceUnreachable as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach VPS: {exc}") from exc
 
 
 @router.post(
     "/clients/{client_slug}/trigger/scan/{project_id}",
     dependencies=[Depends(_require_auth)],
 )
-async def trigger_scan(client_slug: str, project_id: str) -> dict[str, Any]:
+async def trigger_scan(
+    client_slug: str,
+    project_id: str,
+    instances: Annotated[InstanceControlClient, Depends(get_instance_client)],
+) -> dict[str, Any]:
     """Proxy a scan trigger to the remote VPS MCP server."""
-    mcp_url, control_key = _get_vps_url_and_key(client_slug)
-    url = f"{mcp_url}/ops/control/scan/{project_id}"
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        try:
-            resp = await client.post(url, headers={"Authorization": f"Bearer {control_key}"})
-            resp.raise_for_status()
-            return resp.json()
-        except httpx.HTTPStatusError as exc:
-            raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text) from exc
-        except httpx.RequestError as exc:
-            raise HTTPException(status_code=502, detail=f"Could not reach VPS: {exc}") from exc
+    return await _proxy_trigger(instances.trigger_scan(client_slug, project_id))
 
 
 @router.post(
     "/clients/{client_slug}/trigger/generate/{project_id}",
     dependencies=[Depends(_require_auth)],
 )
-async def trigger_generate(client_slug: str, project_id: str) -> dict[str, Any]:
+async def trigger_generate(
+    client_slug: str,
+    project_id: str,
+    instances: Annotated[InstanceControlClient, Depends(get_instance_client)],
+) -> dict[str, Any]:
     """Proxy a doc generation trigger to the remote VPS MCP server."""
-    mcp_url, control_key = _get_vps_url_and_key(client_slug)
-    url = f"{mcp_url}/ops/control/generate/{project_id}"
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        try:
-            resp = await client.post(url, headers={"Authorization": f"Bearer {control_key}"})
-            resp.raise_for_status()
-            return resp.json()
-        except httpx.HTTPStatusError as exc:
-            raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text) from exc
-        except httpx.RequestError as exc:
-            raise HTTPException(status_code=502, detail=f"Could not reach VPS: {exc}") from exc
+    return await _proxy_trigger(instances.trigger_generate(client_slug, project_id))

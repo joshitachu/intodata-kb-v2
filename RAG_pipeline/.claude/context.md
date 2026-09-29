@@ -42,7 +42,7 @@ runtime, the runtime-data mirror) and a Next.js frontend (:3000 -- chat, topolog
   and `get_topology_node` on a stream returns `business_facts` (uncommitted, 2026-09-23).
 - **Sources**: GitHub App, Azure DevOps (organization PAT) and ZIP are first-class; multi-repo projects are selectable from
   `/settings/sources` with branch pinning. Model: `kimi/kimi-k2.6` (k2.5 was retired by the provider).
-- **Subscription licence (UNCOMMITTED, 2026-09-28)**: `src/licensing/` (ADR 037). Every LLM route carries `require_capability(CHAT)`
+- **Subscription licence** (committed `37d9c62`, ADR 037; queued-renewal slot + `next_licence` UNCOMMITTED 2026-09-29, ADR 038): `src/licensing/`. Every LLM route carries `require_capability(CHAT)`
   (402, never 401), pinned by `tests/test_api/test_route_inventory.py`; `GET /api/v1/licence/status`. Frontend treats 402 as a typed
   `LicenceRefusal` (banner, disabled composer). Compose defaults `LICENCE_ENFORCEMENT=enforce`; local `.env` needs `off`. Inspection WARN.
 
@@ -66,7 +66,7 @@ runtime, the runtime-data mirror) and a Next.js frontend (:3000 -- chat, topolog
 
 ## Next step
 
-Licence: user sets plan `verdict: PASS`, scoped commit, browser smoke (SMOKE-TEST section 10). Then:
+Licence issuing (ADR 038): user sets plan `verdict: PASS`, commit, Fleet browser pass. Then:
 Authenticated browser pass over the walkthrough and the admin consoles, then narrow each runtime source's environment scope and
 decide a `runtime_log_events` retention policy.
 

@@ -1,0 +1,45 @@
+# Turns the mission-control service of YOUR OWN full Nexus stack into the
+# central licence issuer, so the dashboard Fleet screen (http://localhost:8001,
+# superadmin only, loopback-bound) can issue and push licences.
+#
+#   docker compose -f docker-compose.yml -f deploy/operator/docker-compose.issuer.yml up -d mission-control
+#
+# NEVER apply this on a client VPS. deploy-client.sh never passes it, and it
+# aborts if signing material appears in a client env file.
+#
+# Needs (root .env or shell; NOT a client env file):
+#   MC_API_KEY=<long random>      # required: the repo default is public, and
+#                                 # Mission Control refuses to issue with it
+#   MC_LICENCE_SIGNING_KEY_HOST_PATH=/Users/<you>/.intodata/licence-signing/nexus-2026-09.pem
+#   MC_LICENCE_SIGNING_KID=nexus-2026-09
+#   MC_CLIENTS_CONFIG_HOST_PATH=./deploy/operator/clients.json   # optional, gitignored
+#
+# The key must be readable by uid 1001 inside the container (mounted read-only).
+# The ledger volume holds issued.jsonl -- back it up.
+#
+# Isolation: this override puts the issuer on the full stack's Docker network,
+# next to backend, mcp-server, hindsight etc. Any of those containers can reach
+# mission-control:9100 directly, and dashboard:8001/mc/ injects the API key.
+# The dashboard's nginx refuses /mc/ unless the Host is localhost/127.0.0.1,
+# which stops DNS-rebinding pages and casual in-network calls, but a container
+# that forges `Host: localhost` still gets through, and so does anything that
+# learns MC_API_KEY. For strict isolation prefer the headless
+# docker-compose.operator.yml: its own Compose project (nexus-operator), its own
+# network with no other services, loopback-only port, and no key-injecting
+# proxy in front of it (API only, no Fleet screen).
+
+services:
+  mission-control:
+    environment:
+      MC_API_KEY: ${MC_API_KEY:?Set a strong MC_API_KEY for the issuer}
+      MC_CLIENTS_CONFIG: /run/config/clients.json
+      MC_LICENCE_LEDGER_DIR: /app/licences
+      MC_LICENCE_SIGNING_KEY_FILE: /run/secrets/licence-signing.pem
+      MC_LICENCE_SIGNING_KID: ${MC_LICENCE_SIGNING_KID:?Set MC_LICENCE_SIGNING_KID}
+    volumes:
+      - mission_control_licences:/app/licences
+      - ${MC_CLIENTS_CONFIG_HOST_PATH:-./deploy/operator/clients.json}:/run/config/clients.json:ro
+      - ${MC_LICENCE_SIGNING_KEY_HOST_PATH:?Set MC_LICENCE_SIGNING_KEY_HOST_PATH}:/run/secrets/licence-signing.pem:ro
+
+volumes:
+  mission_control_licences:

@@ -19,6 +19,7 @@ from src.licensing.core import (
     LicenceRefused,
     LicenceState,
     RefusalCode,
+    next_licence_path,
     verify_token,
 )
 
@@ -143,3 +144,90 @@ def test_corrupt_inputs_are_invalid_not_exceptions(tmp_path: Path) -> None:
     assert policy.status(now=IN_PERIOD).state is LicenceState.INVALID
     refusal = policy.check(Capability.CHAT, now=IN_PERIOD)
     assert refusal is not None and refusal.code is RefusalCode.LICENCE_INVALID
+
+
+# -- next slot (queued gapless renewal) ---------------------------------------
+
+NEXT_START = datetime(2026, 11, 1, tzinfo=timezone.utc)
+IN_NEXT_PERIOD = datetime(2026, 11, 15, tzinfo=timezone.utc)
+AFTER_NEXT_PERIOD = datetime(2026, 12, 15, tzinfo=timezone.utc)
+
+
+def _renewal_token() -> str:
+    """A 'pro' licence that starts exactly when ``VALID_TOKEN`` ends."""
+    import jwt as pyjwt
+
+    return pyjwt.encode(
+        {"iss": "intodata-nexus", "sub": SUBJECT, "lid": "renewal-1", "plan": "pro",
+         "features": ["chat", "generation"], "limits": {"generations_per_period": 9},
+         "nbf": int(NEXT_START.timestamp()),
+         "exp": int(datetime(2026, 12, 1, tzinfo=timezone.utc).timestamp())},
+        VECTORS["test_private_key_pem"], algorithm="EdDSA", headers={"kid": "test-1"},
+    )
+
+
+def _two_slot_policy(current: str | None, queued: str | None) -> EntitlementPolicy:
+    return EntitlementPolicy(_Static(current), next_source=_Static(queued), public_keys=KEYS,
+                             expected_subject=SUBJECT, enforce=True)
+
+
+def test_next_slot_waits_while_current_is_valid() -> None:
+    policy = _two_slot_policy(VALID_TOKEN, _renewal_token())
+    status = policy.status(now=IN_PERIOD)
+    assert status.state is LicenceState.VALID and status.claims.plan == "basic"
+    queued = policy.next_status(now=IN_PERIOD)
+    assert queued is not None and queued.state is LicenceState.NOT_YET_VALID
+    assert queued.claims.plan == "pro"
+    assert policy.check(Capability.CHAT, now=IN_PERIOD) is None
+
+
+def test_next_slot_takes_over_once_it_starts() -> None:
+    policy = _two_slot_policy(VALID_TOKEN, _renewal_token())
+    status = policy.status(now=IN_NEXT_PERIOD)
+    assert status.state is LicenceState.VALID and status.claims.plan == "pro"
+    # Being served, it is no longer "queued".
+    assert policy.next_status(now=IN_NEXT_PERIOD) is None
+    assert policy.check(Capability.GENERATION, generations_used=8, now=IN_NEXT_PERIOD) is None
+
+
+def test_expired_next_slot_reports_the_current_licence() -> None:
+    policy = _two_slot_policy(VALID_TOKEN, _renewal_token())
+    status = policy.status(now=AFTER_NEXT_PERIOD)
+    assert status.state is LicenceState.EXPIRED and status.claims.plan == "basic"
+
+
+def test_invalid_next_slot_never_grants() -> None:
+    policy = _two_slot_policy(None, "not.a.jwt")
+    assert policy.status(now=IN_PERIOD).state is LicenceState.MISSING
+    queued = policy.next_status(now=IN_PERIOD)
+    assert queued is not None and queued.state is LicenceState.INVALID
+
+
+def test_no_next_source_keeps_single_slot_behaviour() -> None:
+    policy = _policy(VALID_TOKEN)
+    assert policy.next_status(now=IN_PERIOD) is None
+    assert policy.status(now=IN_NEXT_PERIOD).state is LicenceState.EXPIRED
+
+
+def test_empty_next_slot_is_none() -> None:
+    assert _two_slot_policy(VALID_TOKEN, None).next_status(now=IN_PERIOD) is None
+
+
+def test_next_licence_path_is_a_sibling() -> None:
+    assert next_licence_path("/etc/x/licence.jwt") == Path("/etc/x/licence.next.jwt")
+
+
+def test_file_source_sees_a_replace_with_an_equal_mtime(tmp_path: Path) -> None:
+    """An atomic replace changes the inode; that alone must invalidate the cache."""
+    import os
+
+    path = tmp_path / "licence.jwt"
+    path.write_text("first\n")
+    source = FileLicenceSource(path)
+    assert source.read_token() == "first"
+    mtime_ns = path.stat().st_mtime_ns
+    tmp = tmp_path / "new.tmp"
+    tmp.write_text("secon\n")  # same size as "first"
+    os.utime(tmp, ns=(mtime_ns, mtime_ns))
+    os.replace(tmp, path)
+    assert source.read_token() == "secon"

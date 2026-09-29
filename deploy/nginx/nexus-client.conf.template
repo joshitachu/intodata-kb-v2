@@ -1,11 +1,17 @@
 # nginx server block for per-client Nexus stacks.
 #
-# Rendered by deploy/deploy-client.sh via `envsubst`. Required variables:
-#   ${CLIENT}               — subdomain slug (e.g. "acme" → acme.nexus.intodata.nl)
-#   ${NEXUS_BASE}           — base domain (e.g. "nexus.intodata.nl")
-#   ${BACKEND_PORT}         — host port for the RAG backend container
-#   ${FRONTEND_PORT}        — host port for the Next.js frontend container
-#   ${MCP_PORT}             — host port for the MCP server container
+# Rendered by deploy/deploy-client.sh via `envsubst`. Required variables
+# (written here WITHOUT the dollar-brace form on purpose: envsubst also expands
+# comments, and a multi-line value such as OPS_CONTROL_ALLOW would spill out of
+# the comment and break `nginx -t`):
+#   CLIENT               -- subdomain slug (e.g. "acme" -> acme.nexus.intodata.nl)
+#   NEXUS_BASE           -- base domain (e.g. "nexus.intodata.nl")
+#   BACKEND_PORT         -- host port for the RAG backend container
+#   FRONTEND_PORT        -- host port for the Next.js frontend container
+#   MCP_PORT             -- host port for the MCP server container
+#   OPS_CONTROL_ALLOW    -- `allow <ip>;` lines plus `deny all;` for
+#                           /ops/control/, built from OPS_CONTROL_ALLOWED_IPS
+#                           in the client env file; empty = no IP restriction
 #
 # SSL is provisioned by certbot --nginx after this file is in place, so the
 # template itself is HTTP-only until certbot adds the 443 block.
@@ -42,6 +48,30 @@ server {
     # GitHub webhook — HMAC-verified, no JWT required.
     location /webhook/ {
         proxy_pass http://127.0.0.1:${MCP_PORT}$request_uri;
+    }
+
+    # Mission Control -> instance control channel (scan, generate, licence push).
+    # A machine caller: the MCP route checks a bearer key (MCP_OPS_CONTROL_KEY,
+    # constant-time) and answers 503 while it is unset, so there is deliberately
+    # NO superadmin auth_request here -- the caller has no user cookie. Without
+    # this block the path fell through to the Next.js catch-all and never
+    # reached mcp-server. The optional allowlist narrows it to the central
+    # Mission Control host(s).
+    #
+    # proxy_pass forwards the raw $request_uri, so only the exact control
+    # routes may pass; anything else (dot segments, encoded slashes, query
+    # strings, unknown paths) is 400 before it can be interpreted differently
+    # by nginx and by the app. The project id charset and length mirror
+    # PROJECT_ID_PATTERN in mcp_server/schemas.py. `return` is safe inside `if`.
+    # (The rewrite phase runs before allow/deny, so a malformed path is 400
+    # even from a non-allowlisted IP; a well-formed one still gets 403.)
+    location /ops/control/ {
+        if ($request_uri !~ "^/ops/control/(licence|scan/[A-Za-z0-9][A-Za-z0-9_-]{0,99}|generate/[A-Za-z0-9][A-Za-z0-9_-]{0,99})$") {
+            return 400;
+        }
+        ${OPS_CONTROL_ALLOW}
+        proxy_pass http://127.0.0.1:${MCP_PORT}$request_uri;
+        client_max_body_size 64k;
     }
 
     # Operator surface, published on the customer domain but gated on superadmin.

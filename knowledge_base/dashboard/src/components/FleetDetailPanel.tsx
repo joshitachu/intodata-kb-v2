@@ -3,6 +3,8 @@ import type React from "react";
 import type { ClientSnapshot, FleetProject, ModelStat } from "../api/fleet";
 import { useTriggerGenerate, useTriggerScan } from "../hooks/useFleet";
 import { timeAgo, formatAbsoluteDate } from "../lib/timeago";
+import FleetLicenceBadge from "./FleetLicenceBadge";
+import FleetLicencePanel from "./FleetLicencePanel";
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -371,15 +373,17 @@ function BenchmarkTab({ snapshot }: { snapshot: ClientSnapshot }) {
 
 // ── Main panel ────────────────────────────────────────────────────────────────
 
-type Tab = "overview" | "projects" | "activity" | "benchmark";
+type Tab = "overview" | "projects" | "activity" | "benchmark" | "licence";
 
 interface Props {
   slug: string;
   snapshot: ClientSnapshot;
   onClose: () => void;
+  /** Recorded as `issued_by` on licences issued from this panel. */
+  currentUsername?: string | null;
 }
 
-export default function FleetDetailPanel({ slug, snapshot, onClose }: Props) {
+export default function FleetDetailPanel({ slug, snapshot, onClose, currentUsername = null }: Props) {
   const [tab, setTab] = useState<Tab>("overview");
 
   const tabs: { key: Tab; label: string }[] = [
@@ -387,6 +391,7 @@ export default function FleetDetailPanel({ slug, snapshot, onClose }: Props) {
     { key: "projects", label: `Projects (${snapshot.projects.length})` },
     { key: "activity", label: "Activity" },
     { key: "benchmark", label: "Benchmark" },
+    { key: "licence", label: "Licence" },
   ];
 
   return (
@@ -402,7 +407,10 @@ export default function FleetDetailPanel({ slug, snapshot, onClose }: Props) {
         {/* Header */}
         <div className="flex items-start justify-between px-5 pt-5 pb-4 border-b border-white/[0.06] shrink-0">
           <div>
-            <h2 className="text-base font-semibold text-slate-100">{slug}</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-semibold text-slate-100">{slug}</h2>
+              <FleetLicenceBadge licence={snapshot.licence} />
+            </div>
             <p className="text-[10px] text-slate-500 font-mono mt-0.5">
               {snapshot._mc_source_ip ?? "IP unknown"} &middot; {snapshot.environment}
             </p>
@@ -438,6 +446,9 @@ export default function FleetDetailPanel({ slug, snapshot, onClose }: Props) {
           {tab === "projects" && <ProjectsTab snapshot={snapshot} />}
           {tab === "activity" && <ActivityTab snapshot={snapshot} />}
           {tab === "benchmark" && <BenchmarkTab snapshot={snapshot} />}
+          {tab === "licence" && (
+            <FleetLicencePanel slug={slug} licence={snapshot.licence} currentUsername={currentUsername} />
+          )}
         </div>
       </div>
     </>
