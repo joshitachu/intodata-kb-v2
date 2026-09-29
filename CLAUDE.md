@@ -10,64 +10,12 @@
 - **Start all**: `docker-compose up -d`
 - **Test**: `cd RAG_pipeline/backend && pytest` | `cd knowledge_base/dashboard && npm test`
 
-## MANDATORY: Session Start
+## Before You Start
 
-Invoke the `session-start` skill first. It loads current state, recovers the pipeline
-position, and classifies the work. Do not skip.
-
-Manual steps (if not using the skill):
-1. `knowledge_base/CLAUDE.md` -- KB platform rules, doc generation workflow, known pitfalls
-2. `RAG_pipeline/CLAUDE.md` -- RAG system rules, logging format, code style
-3. The relevant `.claude/context.md` -- live state only, no history
-4. `.plans/plan.md` -- if it exists, check its `verdict` before coding
-
-For knowledge_base work, also read `.agent/README.md` to find the right SOPs and system docs.
-Architecture decisions live in `knowledge_base/.agent/decisions/`.
-
-## Development Workflow
-
-Two paths. The gate that matters is plan approval; everything else is a check, not a ritual.
-
-### Fast path — small, well-understood change
-1. `session-start` -- confirms fast-path classification
-2. Build
-3. `validate` -> commit
-
-Qualifies when: fewer than ~3 files, no new module or schema or API contract, and no
-critical area touched.
-
-### Planned — everything else
-1. `session-start` -- classification + pipeline recovery
-2. `plan <description>` -> `.plans/plan.md` with `verdict: PENDING`
-3. **You** set `verdict: PASS` -- this is the gate, and the agent must not open it itself
-4. Build
-5. `inspect` -> `.plans/inspection.md` (mandatory for critical areas)
-6. `validate` -> commit (only on inspection PASS or WARN)
-
-Multi-slice work repeats steps 4-6 per slice against the same plan.
-
-**Critical areas requiring `inspect` without exception:**
-- Harness pipeline phases (`knowledge_base/mcp-server/src/mcp_server/providers/custom/pipeline/`)
-- MCP API routes (`knowledge_base/mcp-server/src/mcp_server/api/`)
-- RAG retrieval chain (`RAG_pipeline/backend/src/retrieval/`)
-- Auth / RBAC (`RAG_pipeline/backend/src/auth/`, `RAG_pipeline/backend/src/rbac/`)
-
-### Pipeline coordination files (`.plans/`)
-```
-plan.md         -- intent, decisions, design, slices, risk (verdict: PENDING/PASS/BLOCK)
-inspection.md   -- audit result (verdict: PASS/WARN/BLOCK)
-archive/        -- completed and abandoned features; never read at session start
-```
-Only loose `.md` files at the top level are live. `session-start` reads them to recover
-position after a crash. **One feature at a time** -- archive the previous feature's
-artifacts before starting the next, or pipeline detection becomes ambiguous.
-
-### Agent config
-- `.claude/skills/` is the single source of truth for skills.
-- `.codex/skills/` is a generated mirror. After editing a skill, run
-  `scripts/sync-agent-skills.sh`; `--check` fails if the mirror is stale.
-- Never hand-edit `.codex/skills/`. Three hand-maintained copies is what caused the
-  last drift, where every file disagreed with every other.
+Read the sub-project doc for the area you are changing (`knowledge_base/CLAUDE.md`,
+`RAG_pipeline/CLAUDE.md`, `knowledge_base/intodoc/CLAUDE.md`). For knowledge_base work,
+`knowledge_base/.agent/README.md` points to the right SOPs and system docs. Architecture
+decisions live in `knowledge_base/.agent/decisions/`.
 
 ## Project Structure
 
@@ -173,19 +121,6 @@ Each sub-project has its own detailed CLAUDE.md. **Read the relevant one before 
 - **`RAG_pipeline/CLAUDE.md`** -- RAG backend/frontend, logging rules, code style, environment config
 - **`knowledge_base/intodoc/CLAUDE.md`** -- Scanner CLI internals (prompts, phases, IR format)
 
-## Logging
-
-After every change run the `session-end` skill -- it reads the git diff, prepends the
-log entry to `PROGRESS_LOG.md` (newest-first), and rewrites `context.md` in place.
-Format and field rules are in that skill. Never skip. Use specific file paths and
-verbatim error messages.
-
-Two invariants keep these files usable:
-- `PROGRESS_LOG.md` is append-only history, **newest-first**, rotated to
-  `.claude/archive/` after ~30 days.
-- `context.md` is **live state only** -- no dated sections, under 60 lines. Adding a
-  `## Current State (date)` block to it is the regression that made it useless before.
-
 ## Key Rules
 
 1. **Read sub-project CLAUDE.md** before working on knowledge_base/ or RAG_pipeline/
@@ -194,7 +129,7 @@ Two invariants keep these files usable:
 4. **Credential safety** -- never send raw credentials to LLMs
 5. **No intermediate files** -- only final docs in output/{project_id}/docs/
 6. **Doc generation uses staging** -- the custom harness writes to `docs_staging/`, server swaps to `docs/` on success (see `knowledge_base/CLAUDE.md` for details)
-7. **ALWAYS document changes** -- run `/session-end` after every change; update sub-project CLAUDE.md and `.agent/` docs if architecture or workflow changed; stale docs are worse than no docs
+7. **ALWAYS document changes** -- update the sub-project CLAUDE.md and `.agent/` docs when architecture or behaviour changes; stale docs are worse than no docs
 8. **Python builds**: hatchling not setuptools; **Testing**: pytest (Python), Vitest (frontend)
 9. **No workarounds** -- fixes must address the root cause, not suppress symptoms. If a proper fix requires broader changes, make them. Never ship a narrow patch when the defect pattern exists elsewhere in the codebase.
 10. **Generalize fixes** -- before fixing anything, check whether the same failure can occur in other places. Fix it at the level that prevents all recurrences. One-off special-case branches are not acceptable solutions.

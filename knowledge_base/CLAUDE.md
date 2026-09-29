@@ -34,7 +34,7 @@ cd ../RAG_pipeline/backend && python -m uvicorn src.api.main:app --port 8000
 ## Rules
 
 1. **Read `.agent/README.md` first** -- it tells you which docs to read for your task
-2. **Run the `session-start` skill before starting work** -- it reads `context.md` (live state, capped at 60 lines) and the newest 3 entries of `PROGRESS_LOG.md`. Architecture decisions live in `.agent/decisions/`. Follow the logging rules in root `CLAUDE.md` (section "Logging") for all changes -- same format, same discipline as `RAG_pipeline/`.
+2. **Check the decision record** -- architecture decisions live in `.agent/decisions/`; read the relevant one before changing a design
 3. **Credential filter first** -- never send raw credentials to any LLM
 4. **ASCII-only Markdown** -- no Unicode box-drawing characters in generated docs
 5. **No intermediate files** -- only final `.md` docs in `output/{project_id}/docs/` (generated via `docs_staging/`, see Documentation Generation)
@@ -44,8 +44,6 @@ cd ../RAG_pipeline/backend && python -m uvicorn src.api.main:app --port 8000
 9. **No workarounds** -- fixes must address the root cause, not suppress symptoms. If a proper fix requires broader changes, make them. Never ship a narrow patch when the defect pattern exists elsewhere in the codebase.
 10. **Generalize fixes** -- before fixing anything, check whether the same failure can occur in other places. Fix it at the level that prevents all recurrences. One-off special-case branches are not acceptable solutions.
 11. **Use design patterns** -- before writing a new class, service, or module, identify whether an established pattern fits (Strategy, Repository, Factory, Observer, Pipeline, etc.). Don't invent bespoke structures when a well-understood pattern solves the problem.
-12. **Plan gate** -- anything beyond a small, well-understood change needs `plan` → the user sets `verdict: PASS` → build → `inspect` → `validate` → commit. The agent never sets `verdict: PASS` itself. See root `CLAUDE.md` Development Workflow.
-13. **Inspect required** -- after building any change to harness pipeline phases or MCP API routes, run `inspect` before committing. Max 2 BLOCK cycles before escalating to the human.
 
 ## Documentation Generation
 
@@ -95,21 +93,23 @@ constraint on Phase 2 depth for a large estate, and it is also the runaway guard
 UNPROVEN: no generation has run against this method. It trades Python validators
 for a method document -- better rules, less enforcement.
 
-The MCP-based 7-phase documentation workflow is documented in:
+The MCP-based documentation workflow (phase table included) is documented in:
 **`.agent/system/mcp-workflow.md`**
 
 This is the primary method for generating project documentation. Follow it exactly.
 
 ### Current Custom Harness Notes
 
-- Doc generation runs a **7-phase pipeline** orchestrated by `PipelineRunner` in
+- Doc generation runs a **phase pipeline** orchestrated by `PipelineRunner` in
   `mcp-server/src/mcp_server/providers/custom/pipeline/runner.py`.
 - Phase bodies live in `providers/custom/pipeline/phases/` (one file per phase);
   `evidence_quality_gate.py` is at the package root (not under `phases/`).
   `harness.py` owns setup, state management, enterprise gate evaluation, and the
   staging swap; it no longer contains phase logic.
-- The seven phases are: `phase1_investigation`, `phase2_analysis`, `phase26_scorecard`,
-  `phase28_bundles`, `evidence_quality_gate`, `phase3_docs`, `phase4_cleanup`.
+- The phases, in the order `harness.py` builds them: `phase1_investigation`,
+  `phase2_analysis`, `phase26_scorecard`, `phase28_bundles`, `evidence_quality_gate`,
+  `phase3_docs`, `phase37_business_topology`, `phase4_cleanup`. Details per phase are
+  in `.agent/system/mcp-workflow.md`.
 - `evidence_quality_gate` is a pure Python phase (no LLM calls) that checks
   `_preprocess/{group}.md` file sizes before Phase 3. Groups below 500 bytes emit a
   `THIN_BUNDLE` warning and are listed in `state.thin_bundle_groups`. Phase 3 prepends
@@ -943,7 +943,6 @@ procedure: root `deploy/RUNBOOK.md` section 17.
 ```
 knowledge_base/                     -- Platform root
   .agent/                           -- Agent context docs (README, system, SOPs, tasks)
-  .claude/                          -- legacy agent settings + session logs
   .mcp.json                         -- MCP server configuration
   CLAUDE.md                         -- This file
   mcp-server/                       -- MCP + REST API server (Python, FastAPI)

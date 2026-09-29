@@ -57,31 +57,28 @@ knowledge_base/intodoc-output/
 knowledge_base/agentic-workspaces/*
 !knowledge_base/agentic-workspaces/.gitkeep
 
-# Claude Code local settings
-.claude/settings.local.json
-**/.claude/settings.local.json
-
-# Claude Code temp files
+# Personal AI-agent workflow: never part of the repo.
+# Claude Code / Codex / OpenCode config, hooks, skills, agents, session logs,
+# context files, agent memory, plans and MCP client config are local to the
+# developer. Project knowledge that IS shared lives in CLAUDE.md and .agent/.
+**/.claude/
+# ...except the pack starter's .claude/commands, which the product ships to users.
+!knowledge_base/mcp-server/data/swap_pack_starter/.claude/
+**/.codex/
+**/.agents/
+**/.opencode/
+**/.plans/
+**/.mcp.json
+**/CLAUDE.local.md
+opencode.json
+AGENTS.md
+skills-lock.json
+scripts/sync-agent-skills.sh
 tmpclaude-*
 
 # Mavis / stray local artifacts
 .mavis/
 *-command-messagecode-reviewcommand-message.txt
-
-# Claude Code skills (auto-generated, not project code)
-.agents/
-.claude/skills/
-
-# Personal workflow tools (not project code)
-.claude/commands/
-.claude/hooks/
-.opencode/
-.codex/*
-!.codex/skills/
-!.codex/skills/**
-.plans/
-opencode.json
-AGENTS.md
 
 # Large binary files (not project code)
 OpenBrain_Behavioral_Architecture.pdf
@@ -95,7 +92,6 @@ knowledge_base/mcp-server/data/logs/
 mission_control/clients.json
 mission_control/snapshots/
 knowledge_base/dashboard/tsconfig.tsbuildinfo
-.claude/.session_end_nudge
 
 # Local database dumps — may contain client data, and are far too large for git
 /.backups/
@@ -159,12 +155,6 @@ IntoData_KB_Architecture.pdf
 # (it is served to users at runtime). docs/screenshots/ held 9 byte-identical
 # copies plus 2 drifted ones and was referenced by nothing. Do not reintroduce.
 docs/screenshots/
-
-# Completed plan pipelines. The active set stays tracked at .plans/*.md.
-.plans/archive/
-
-# Per-session cost log written by the track-cost hook (machine-local)
-.claude/cost-log.json
 
 # Agent session transcripts dumped at the repo root. One of these was a
 # 100k-line dialogue log -- raw conversation, not source, and not reviewable.

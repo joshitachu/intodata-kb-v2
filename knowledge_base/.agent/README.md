@@ -4,7 +4,7 @@
 
 | You are...                        | Read these files                                    |
 |-----------------------------------|-----------------------------------------------------|
-| Starting any session              | This file + `.claude/PROGRESS_LOG.md`               |
+| Starting any session              | This file                                           |
 | Generating documentation          | `system/mcp-workflow.md`                              |
 | Understanding the architecture    | `system/architecture.md`, `system/tech-stack.md`    |
 | Adding a new project to scan      | `sop/add-new-project.md`                            |
@@ -14,13 +14,12 @@
 | Setting up the dev environment    | `sop/setup-dev-environment.md`                      |
 | Debugging an issue                | `sop/troubleshooting.md`                            |
 | Planning a new phase/feature      | Check `tasks/` for existing FRDs first              |
-| After completing a feature        | Run `/update-doc` to update documentation           |
 
 ## Directory Contents
 
 ### system/ -- How things work
 - `architecture.md` -- Platform architecture, components, data pipeline
-- `mcp-workflow.md` -- 4-phase MCP documentation generation workflow (moved from CLAUDE.md)
+- `mcp-workflow.md` -- custom-harness doc generation pipeline; its phase table is the one place the phase list is kept
 - `tech-stack.md` -- Technology stack reference (Python, React, databases)
 - `mcp-server.md` -- MCP tools, REST API endpoints, configuration
 - `dashboard.md` -- Dashboard components, features, API integration
@@ -40,8 +39,7 @@
 
 The canonical home for cross-cutting architecture decisions across BOTH sub-projects
 (knowledge_base and RAG_pipeline). Consolidated here on 2026-09-04 from the former
-per-sub-project `PROJECT_MEMORY.md` files, which are archived under
-`<sub-project>/.claude/archive/PROJECT_MEMORY.md`.
+per-sub-project `PROJECT_MEMORY.md` files (no longer in the repo).
 
 Read the ones touching your area before changing it. Grouped by theme:
 

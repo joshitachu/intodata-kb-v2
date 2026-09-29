@@ -12,11 +12,6 @@
 ## Project Structure
 ```
 RAG_pipeline/
-├── .claude/
-│   ├── context.md             # Current state, blockers, next steps
-│   ├── progress.md            # High-level phase tracking
-│   ├── PROGRESS_LOG.md        # Detailed session-by-session log
-│   └── PROJECT_MEMORY.md      # Architecture decisions, patterns, gotchas
 ├── backend/
 │   ├── src/
 │   │   ├── api/routes/        # FastAPI endpoints:
@@ -54,16 +49,6 @@ RAG_pipeline/
 - Local models (no API costs): `nomic-embed-text` + `gemma3:12b`
 - No LangChain (direct implementation, full control)
 - React (not Streamlit) for production-ready UX
-
----
-
-## MANDATORY: Logging & Documentation Rules
-
-See root `CLAUDE.md` (section "Logging") for the full logging format and rules. They apply here without exception — same format, same discipline.
-
-**Before coding**: run the `session-start` skill. It reads `.claude/context.md` (live state, capped at 60 lines) and the newest 3 entries of `.claude/PROGRESS_LOG.md`. Architecture decisions live in `knowledge_base/.agent/decisions/`.
-
-**After every change**: run the `session-end` skill. It prepends to `PROGRESS_LOG.md` (newest-first) and rewrites `context.md` in place. Never append a dated section to `context.md` — history belongs in the log.
 
 ---
 
@@ -128,14 +113,12 @@ return (
 3. **RBAC**: Filter EVERY Qdrant query by user groups
 4. **Async**: Use async/await for all I/O operations
 5. **Testing**: Write tests before committing
-6. **Logging**: Log EVERY change to `.claude/PROGRESS_LOG.md` — no exceptions (see Logging rules above)
-7. **Context**: Read all `.claude/` files at session start, update them after every change
+6. **Document changes**: update this file and the `.agent/` docs when behaviour or architecture changes
+7. **Decisions**: architecture decisions live in `knowledge_base/.agent/decisions/`; check them before changing a design
 8. **Specificity**: Always reference exact file paths, line numbers, and error messages in logs
 9. **No workarounds**: Fixes must address the root cause, not suppress symptoms. If a proper fix requires broader refactoring, do it. Never ship a narrow patch when the defect pattern exists elsewhere.
 10. **Generalize fixes**: Before fixing anything, check whether the same failure can occur in other places. Fix it at the level that prevents all recurrences — one-off special-case branches are not acceptable.
 11. **Use design patterns**: Before writing a new class, service, or module, identify whether an established pattern fits (Strategy, Repository, Factory, Observer, Pipeline, etc.). Don't invent bespoke structures when a well-understood pattern solves the problem.
-12. **Plan gate**: Anything beyond a small, well-understood change needs `plan` → the user sets `verdict: PASS` → build → `inspect` → `validate` → commit. The agent never sets `verdict: PASS` itself. See root `CLAUDE.md` Development Workflow.
-13. **Inspect required**: After building any change to the RAG retrieval chain (`src/retrieval/`) or auth/RBAC (`src/auth/`, `src/rbac/`), run `inspect` before committing. Max 2 BLOCK cycles before escalating to the human.
 
 ## Agent Docs
 

@@ -4,7 +4,6 @@
 
 | You are...                                         | Read these files                                            |
 |----------------------------------------------------|-------------------------------------------------------------|
-| Starting any session                               | `.claude/context.md` + last 3 entries of `PROGRESS_LOG.md` |
 | Understanding the overall system                   | `system/architecture.md`                                    |
 | Looking up an API endpoint                         | `system/api-reference.md`                                   |
 | Working on Auth / RBAC / Onboarding                | `system/subsystems.md` (Auth, RBAC, Onboarding sections)    |
@@ -13,8 +12,7 @@
 | Setting up local dev for the first time            | `SOP/setup-dev.md`                                          |
 | Diagnosing a runtime error or service issue        | `SOP/troubleshooting.md`                                    |
 | Adding a new API endpoint                          | `SOP/add-route.md`                                          |
-| Checking architecture decisions                    | `decisions/` + `.claude/PROJECT_MEMORY.md`                  |
-| Looking at deferred work                           | `.claude/context.md` (Next Steps section)                   |
+| Checking architecture decisions                    | `decisions/` + `knowledge_base/.agent/decisions/`           |
 
 ## Directory Contents
 
@@ -34,5 +32,4 @@
 
 ## Related Documentation
 - `CLAUDE.md` -- Platform rules, quick commands, code style, critical rules
-- `.claude/PROJECT_MEMORY.md` -- 70+ architecture decisions with rationale
-- `.claude/PROGRESS_LOG.md` -- Session-by-session change log
+- `knowledge_base/.agent/decisions/` -- Architecture decision records (shared across sub-projects)

@@ -118,7 +118,7 @@ class StubExternalProvider:
     name = "external"
     _REASON = (
         "No hosted payment provider is integrated yet; the choice of provider is "
-        "an open question (see .plans/plan.md). Use MC_BILLING_PROVIDER=manual."
+        "still open. Use MC_BILLING_PROVIDER=manual."
     )
 
     def create_checkout(self, client_slug: str, plan: str) -> CheckoutSession:

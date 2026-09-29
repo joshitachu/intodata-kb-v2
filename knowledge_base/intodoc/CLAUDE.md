@@ -123,8 +123,6 @@ Rules that matter when working on this area:
 
 ## Rules
 - Always read `.agent/README.md` before planning work
-- Always read `.claude/context.md` and `.claude/PROGRESS_LOG.md` before coding
-- Log EVERY change to `.claude/PROGRESS_LOG.md` -- this includes doc generation runs, architecture changes, new prompts/reference docs, and bug fixes
 - Update `.agent/` docs when architecture/models/config changes
 - Run credential filter BEFORE any LLM calls -- never send raw credentials to API
 - Legacy CLI analyzer: claude-sonnet for passes 1-17, opus for pass 18 (synthesis)

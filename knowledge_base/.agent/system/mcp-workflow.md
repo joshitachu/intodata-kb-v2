@@ -1,6 +1,6 @@
 # MCP Documentation Generation Workflow
 
-The custom harness runs a 7-phase pipeline orchestrated by `PipelineRunner`
+The custom harness runs an 8-phase pipeline orchestrated by `PipelineRunner`
 (`providers/custom/pipeline/runner.py`). Each phase is a `Phase` subclass in
 `providers/custom/pipeline/phases/`, except `evidence_quality_gate.py` which
 lives at `providers/custom/pipeline/evidence_quality_gate.py`. The harness
@@ -18,13 +18,16 @@ files.
 | 2.8 | phase28_bundles | `phase28_bundles.py` | Deterministic reassembly of analysis sections into per-doc evidence bundles (`_analysis/_doc_pack_*.md`). Each bundle = `GROUP_SUMMARY` (baseline floor) + doc's `phase2_sections` from `doc_catalog.yaml` (standard) or `evidence_profiles` (plugin). No LLM calls. | 0 | `plan.doc_bundles == False` |
 | 2.9 | evidence_quality_gate | `pipeline/evidence_quality_gate.py` | Pure Python thin-bundle check over `_preprocess/{group}.md`. Emits `THIN_BUNDLE` warnings and `_assessment/thin_bundle_report.json`. | 0 | never skipped |
 | 3 | phase3_docs | `phase3_docs.py` | Writes one markdown document per required doc in `docs_staging/`. Persists one agent task per doc under `_agent_tasks/phase3/`. For tool-capable non-plugin providers, pushes the targeted doc pack (≤100 KB) as starter context in `system_prompt`; model uses tools for drill-down. Plugin-mode runs disable Phase 3 tools entirely. Runs `EvidenceTraceabilityValidator` post-write. | N .. N*3 (N = required docs) | never skipped |
+| 3.7 | phase37_business_topology | `phase37_business_topology.py` | Thin adapter onto the shared topology builder (`services/business_topology/builder.py`): flow extraction from this run's finished Phase 3 docs, scanner-floor merge, pruning, deterministic enrichment, validation; single-shot synthesis only when extraction underperforms. Writes `docs_staging/_topology/`. Additive and non-blocking: a topology failure never fails the run. | 1 .. 4 | never skipped |
 | 4 | phase4_cleanup | `phase4_cleanup.py` | Enterprise gate evaluation, audit bundle write, engineering artifact archival, `_rag_support/` packaging (Phase 2 group analyses + manifest, via `services/rag_support_package.py`, before `_preprocess`/`_analysis`/`_transient` deletion), and run log. No LLM calls. | 0 | never skipped |
 
 Inputs flow forward: Phase 1 populates `facts_manifest.json`; Phase 2 reads it
 and writes `_analysis/`; Phase 2.6 reads `_analysis/`; Phase 2.8 reads
 `_analysis/` and writes `_analysis/_doc_pack_*.md`; the evidence quality gate
 reads `_preprocess/`; Phase 3 reads `_analysis/_doc_pack_*.md`, `_preprocess/`,
-and `_analysis/`; Phase 4 reads all prior artifacts.
+and `_analysis/`; Phase 3.7 reads the published Phase 3 docs and the staged
+runtime-evidence cache (`_transient/runtime/`, which Phase 4 destroys, hence the
+ordering) and writes `_topology/`; Phase 4 reads all prior artifacts.
 
 ## Plugin Pack Integration
 
